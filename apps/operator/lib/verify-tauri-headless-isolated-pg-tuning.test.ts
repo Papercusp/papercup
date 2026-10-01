@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 const REPO = resolve(__dirname, '../../..');
 // PROBE_SCRIPT lets scripts/mutation-probe.sh point this guard at a historical copy.
@@ -86,14 +87,10 @@ async function runBootScript(opts: { withResourceProfile: boolean }): Promise<Ru
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let stdout = '';
-  let stderr = '';
-  child.stdout.on('data', (b: Buffer) => {
-    stdout += b.toString();
-    if (stdout.includes('PG_READY')) child.kill('SIGTERM');
-  });
-  child.stderr.on('data', (b: Buffer) => {
-    stderr += b.toString();
+  const stdoutText = createTextCollector(child.stdout);
+  const stderrText = createTextCollector(child.stderr);
+  child.stdout.on('data', () => {
+    if (stdoutText.peek().includes('PG_READY')) child.kill('SIGTERM');
   });
   const killer = setTimeout(() => child.kill('SIGKILL'), 20_000);
   const code = await new Promise<number | null>((res) => child.on('close', (c) => res(c)));
@@ -104,7 +101,7 @@ async function runBootScript(opts: { withResourceProfile: boolean }): Promise<Ru
   } catch {
     recorded = null;
   }
-  return { code, stdout, stderr, opts: recorded };
+  return { code, stdout: stdoutText.text(), stderr: stderrText.text(), opts: recorded };
 }
 
 async function productConnectionSettings(): Promise<Record<string, string>> {

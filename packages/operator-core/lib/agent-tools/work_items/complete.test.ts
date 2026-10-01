@@ -320,7 +320,9 @@ beforeEach(() => {
   resolveAdoptedName.mockReset();
   resolveAdoptedName.mockResolvedValue(null);
   dbMocks.planItemStatusRows.mockReset();
-  dbMocks.planItemStatusRows.mockResolvedValue([{ status: 'done' }]);
+  dbMocks.planItemStatusRows.mockImplementation(async (strings: TemplateStringsArray) =>
+    strings.join('').includes('SELECT 1 AS one FROM harness_shared.work_items wi') ? [] : [{ status: 'done' }],
+  );
   contentionMocks.acquireWithContentionRetry.mockReset();
   contentionMocks.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => run());
   hiveMocks.potHomeSlugForHarness.mockReset();
@@ -1100,6 +1102,11 @@ describe('work_items:complete (keyed-array)', () => {
   });
 
   it('refuses terminal completion of a remote-authored issue before emitting a false completion', async () => {
+    // The shared DB stub defaults to a non-empty plan-item result. This early
+    // remote-origin guard also asks whether this row is own-node authored, so
+    // give that query an explicit non-match instead of letting the unrelated
+    // default fixture bypass the refusal.
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([]);
     getWorkItem.mockResolvedValue({
       id: 'WI-remote',
       kind: 'bug',

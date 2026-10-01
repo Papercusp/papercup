@@ -1433,7 +1433,8 @@
             "scripts/*.test.ts",
             "scripts/*.test.mjs",
             "scripts/lib/**/*.test.ts",
-            "scripts/lib/**/*.test.mjs"
+            "scripts/lib/**/*.test.mjs",
+            "scripts/agent-capacity/**/*.test.ts"
           ]
         },
         {

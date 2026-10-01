@@ -37,7 +37,6 @@ const {
   fleetMock,
   findLiveHostMock,
   endedSessionsMock,
-  endedOwnersMock,
 } = vi.hoisted(() => ({
   listPresenceMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   federatedMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
@@ -51,7 +50,6 @@ const {
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
   // EI-21488009366204518: the targeted-miss session-log death leg.
   endedSessionsMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
-  endedOwnersMock: vi.fn(async () => new Set<string>()),
 }));
 // importOriginal spread (not a bare factory): real presence-wakeability — kept
 // real below via its own importOriginal — imports PRESENCE_STALE_MS from
@@ -65,7 +63,6 @@ vi.mock('./presence', async (importOriginal) => ({
 vi.mock('./federated-presence', () => ({ listFederatedPresence: federatedMock }));
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
-  endedRecordedOwnerIds: endedOwnersMock,
   listRecordedLiveSessions: recordedLiveSessionsMock,
   // Unification P-002: the snapshot's recorded-session oracle leg.
   recordedLiveOwnerIds: vi.fn(async () => new Set<string>()),
@@ -78,7 +75,6 @@ vi.mock('../../adv-sessions', async (orig) => ({
 vi.mock('./recorded-sessions', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   reconcileRosterSources: (rows: unknown[]) => rows,
-  RECORDED_SESSION_SOURCE: 'recorded-session',
 }));
 // EI-16639: the nursery-alias leg — no running nursery bees in these fixtures,
 // so it contributes nothing (existing counts/ids stay exactly as asserted below).
@@ -119,6 +115,7 @@ vi.mock('./watermarks', () => ({ writeWatermark: vi.fn(async () => undefined) })
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 
 import { assemblePresenceSnapshot, type ResolvedPresenceScope } from './presence-snapshot';
+import { RECORDED_ENDED_SESSION_SOURCE, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 
 const RESOLVED: ResolvedPresenceScope = { scope: 'workspace', wsId: 'test-ws', potId: null };
 
@@ -137,7 +134,6 @@ beforeEach(() => {
   // defaults explicitly so the EI-21488009366204518 tests cannot leak their
   // fixtures into each other (order-dependent false positives).
   endedSessionsMock.mockResolvedValue([]);
-  endedOwnersMock.mockResolvedValue(new Set<string>());
   listPresenceMock.mockResolvedValue([row('su-aaa', false), row('su-bbb', false), row('su-ccc', true)]);
   federatedMock.mockResolvedValue([]);
   recordedLiveSessionsMock.mockResolvedValue([]);
@@ -271,10 +267,9 @@ describe('assemblePresenceSnapshot targeted { owner } lookup — reaped-row sess
 
   it('synthesizes an ENDED row for a reaped owner whose adv_sessions records the death', async () => {
     endedSessionsMock.mockResolvedValue([endedSessionRow]);
-    // The oracle legs that classify the synthesized base row as explicit `ended`:
-    // not wakeable + positive recorded death evidence for its id.
+    // A reaped row comes from positive ended_at evidence, not the live
+    // session-log marker that means the owner may still be starting.
     wakeabilityMock.mockResolvedValue(new Map([[DEAD, { wakeable: false, liveTurn: false }]]));
-    endedOwnersMock.mockResolvedValue(new Set([DEAD]));
 
     const snap = await assemblePresenceSnapshot(RESOLVED, { owner: DEAD });
     // The miss fired the leg with exactly the needle…
@@ -282,7 +277,10 @@ describe('assemblePresenceSnapshot targeted { owner } lookup — reaped-row sess
     // …the synthesized row came back…
     const emitted = snap.active.find((r) => r.ownerId === DEAD);
     expect(emitted).toBeDefined();
-    // …and the oracle classified it explicitly dead, not unknown.
+    // …and the end marker cannot be mistaken for a live session-log row.
+    expect(emitted?.source).toBe(RECORDED_ENDED_SESSION_SOURCE);
+    expect(emitted?.source).not.toBe(RECORDED_SESSION_SOURCE);
+    // …so the shared oracle classified it explicitly dead, not unknown.
     expect(emitted?.sessionState).toBe('ended');
     // The summary says HOW the needle resolved (session-log evidence, not presence).
     expect(snap.summary.ownerLookup).toEqual({ needle: DEAD, matched: 1, fromSessionLog: true });

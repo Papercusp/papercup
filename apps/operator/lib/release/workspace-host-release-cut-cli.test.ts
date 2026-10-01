@@ -32,6 +32,7 @@ import {
   pruneWorkspaceHostCutIntermediates,
   removeReleaseSourceWorktree,
   runWorkspaceHostReleaseCut,
+  runWorkspaceHostReleaseCutCli,
   sha256OfFile,
   workspaceHostCutStageContext,
   type WorkspaceHostBuildResult,
@@ -559,10 +560,42 @@ describe('publication input', () => {
 describe('CLI args', () => {
   it('passes publisher flags through and rejects unknown flags', () => {
     expect(
-      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--base', 'https://b', '--plan-only'], {}),
-    ).toMatchObject({ sourceSha: SHA, publish: true, publisherArgs: ['--base', 'https://b', '--plan-only'] });
+      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--base', 'https://b', '--publish-plan-only'], {}),
+    ).toMatchObject({ sourceSha: SHA, publish: true, planOnly: false, publisherArgs: ['--base', 'https://b', '--plan-only'] });
+    expect(
+      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--plan-only'], {}),
+    ).toMatchObject({ sourceSha: SHA, publish: true, planOnly: true, publisherArgs: [] });
     expect(() => parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--nope', 'x'], {})).toThrow(/unknown flag/);
     expect(() => parseWorkspaceHostReleaseCutArgs(['--version', VERSION, '--work-dir', '/tmp/x'], {})).toThrow(/--source-sha/);
+    expect(() => parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--plan-only', '--publish-plan-only'], {}))
+      .toThrow(/cannot be combined/);
+  });
+
+  it('prints a whole-cut preview without invoking the cut runner or creating its work directory', async () => {
+    const plannedWorkDir = join(workDir, 'planned-cut');
+    const lines: string[] = [];
+    const result = await runWorkspaceHostReleaseCutCli(
+      ['--source-sha', SHA, '--version', VERSION, '--work-dir', plannedWorkDir, '--plan-only'],
+      {
+        env: {},
+        signingKeyPath: join(workDir, 'missing-signing-key'),
+        newTaskId: () => TASK_ID,
+        newOperationId: () => OPERATION_ID,
+        log: (line) => lines.push(line),
+        run: async () => {
+          throw new Error('the cut runner must not run during --plan-only');
+        },
+      },
+    );
+
+    expect(result).toBe('planned');
+    expect(existsSync(plannedWorkDir)).toBe(false);
+    expect(lines.join('\n')).toContain(`source sha: ${SHA}`);
+    expect(lines.join('\n')).toContain(`version: ${VERSION}`);
+    expect(lines.join('\n')).toContain(`work directory: ${plannedWorkDir}`);
+    expect(lines.join('\n')).toContain(`task id: ${TASK_ID} (planned)`);
+    expect(lines.join('\n')).toContain(`operation id: ${OPERATION_ID} (planned)`);
+    expect(lines.join('\n')).toContain('signing key present: no');
   });
 
   // WI-10003172: from a box that SNI-blackholes the branded Cupboard (EI-16742) the cut

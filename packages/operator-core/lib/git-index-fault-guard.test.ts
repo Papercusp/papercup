@@ -31,6 +31,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   EXIT_NOT_CHECKED,
+  INDEX_FAULT_CAPTURE_COMMAND,
+  INDEX_FAULT_TRACKING_ITEM,
   RepositoryIndexFaultError,
   isRepositoryIndexFault,
   reportIndexFaultNotChecked,
@@ -185,6 +187,24 @@ describe('reporting — an undetermined run announces itself', () => {
     expect(text).toContain('NOT CHECKED');
     expect(text).toContain('demo-guard');
     expect(text).toContain('index file smaller than expected');
+  });
+
+  it('tells the agent who hits a torn index to CAPTURE the writer, not to wait it out (WI-10004911)', () => {
+    // The torn-index writer is still unknown after three recurrences, and the auditd trail that
+    // names it rotates within hours. The banner is printed at the one moment someone is looking,
+    // so it must carry the capture command and the owning item; calling the fault a "known
+    // transient" is exactly what let two earlier items close without a cause.
+    const lines: string[] = [];
+    reportIndexFaultNotChecked(execFileSyncLikeError(REAL_INCIDENT_STDERR), {
+      guard: 'demo-guard',
+      log: (m: string) => lines.push(m),
+    });
+    const text = lines.join('\n');
+    expect(text).toContain(INDEX_FAULT_TRACKING_ITEM);
+    expect(text).toContain(INDEX_FAULT_CAPTURE_COMMAND);
+    expect(INDEX_FAULT_CAPTURE_COMMAND).toContain('-k papercusp-gitindex');
+    expect(INDEX_FAULT_CAPTURE_COMMAND).toContain('--start recent');
+    expect(text).not.toMatch(/known transient/i);
   });
 
   it('returns null for a non-index error so the caller rethrows instead of swallowing it', () => {

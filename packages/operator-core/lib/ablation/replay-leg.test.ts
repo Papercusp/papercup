@@ -9,6 +9,7 @@ import {
   DEFAULT_ABLATION_REPLAY_MODEL,
 } from './replay-leg';
 import { parseTranscriptJsonl } from '../replay/transcript';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 const mockedParse = vi.mocked(parseTranscriptJsonl);
 
@@ -38,7 +39,7 @@ describe('makeAblationReplayLeg', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('pins replay continuations to the canonical learning model', () => {
-    expect(DEFAULT_ABLATION_REPLAY_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(DEFAULT_ABLATION_REPLAY_MODEL).toBe(LEARNING_MODEL_SPEC);
   });
 
   it('skips with no-cases when no transcript clears the byte floor', async () => {

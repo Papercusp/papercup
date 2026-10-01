@@ -123,6 +123,51 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
     runqueueMeasured, processes, unavailable };
 }
 
+const MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+const MAX_SAMPLES = 1200;
+
+/** Keep diagnostic disk I/O outside the sampled startup interval. The byte bound
+ * includes UTF-8 encoding, and an oversized record is rejected in its entirety. */
+export class NativeSampleBuffer {
+  private readonly lines: string[] = [];
+  private finished = false;
+  private bufferedBytes = 0;
+  private maxReadDurationMs = 0;
+  private maxSampleWorkMs = 0;
+  private totalSampleWorkMs = 0;
+  constructor(private readonly maxBytes = MAX_BUFFERED_BYTES, private readonly maxSamples = MAX_SAMPLES) {}
+
+  add(sample: ReturnType<typeof collectOwnedWebKitSample>): boolean {
+    if (this.finished || this.lines.length >= this.maxSamples) return false;
+    const started = performance.now();
+    const line = `${JSON.stringify({ kind: 'sample', ...sample })}\n`;
+    const bytes = Buffer.byteLength(line);
+    const accepted = this.bufferedBytes + bytes <= this.maxBytes;
+    if (accepted) {
+      this.lines.push(line);
+      this.bufferedBytes += bytes;
+      this.maxReadDurationMs = Math.max(this.maxReadDurationMs, sample.readDurationMs);
+    }
+    // Includes collection + serialization + insertion, never disk flushing.
+    // This is sampler work, not a measurement of its effect on user latency.
+    const workMs = sample.readDurationMs + performance.now() - started;
+    this.totalSampleWorkMs += workMs;
+    this.maxSampleWorkMs = Math.max(this.maxSampleWorkMs, workMs);
+    return accepted;
+  }
+
+  finish(reason: string, elapsedMs: number): string | null {
+    if (this.finished) return null;
+    this.finished = true;
+    const end = { kind: 'end', reason, samples: this.lines.length, bufferedBytes: this.bufferedBytes,
+      maxReadDurationMs: this.maxReadDurationMs, maxSampleWorkMs: this.maxSampleWorkMs,
+      totalSampleWorkMs: this.totalSampleWorkMs, elapsedMs, epochMs: Date.now() };
+    const result = this.lines.join('') + `${JSON.stringify(end)}\n`;
+    this.lines.length = 0;
+    return result;
+  }
+}
+
 /** A separate Node process continues sampling while WebKit's main task stalls. */
 export function startNativeProcessProbe(driverPid: number, appPath: string, file: string): ChildProcess {
   if (process.platform !== 'linux') throw new Error('Native CPU diagnostic requires Linux /proc');
@@ -130,8 +175,9 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
   if (!driverIdentity) throw new Error('Native CPU diagnostic cannot identify its driver');
   const options = { driverPid, driverIdentity, appPath: realpathSync(appPath) };
   // Exclusive create prevents a rerun from overwriting earlier diagnostic evidence.
-  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v1',
-    options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: 1200 })}\n`, { flag: 'wx', mode: 0o600 });
+  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v2',
+    options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: MAX_SAMPLES,
+    persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES })}\n`, { flag: 'wx', mode: 0o600 });
   return fork(__filename, [JSON.stringify(options), file], {
     execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
@@ -150,26 +196,26 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const options = JSON.parse(process.argv[2]) as NativeProbeOptions;
   const file = process.argv[3];
   const started = performance.now();
+  const buffer = new NativeSampleBuffer();
   let samples = 0;
-  let maxReadDurationMs = 0;
   let finished = false;
   let timer: NodeJS.Timeout;
   const finish = (reason: string) => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    appendFileSync(file, `${JSON.stringify({ kind: 'end', reason, samples,
-      maxReadDurationMs, elapsedMs: performance.now() - started, epochMs: Date.now() })}\n`);
+    // One append after sampling has stopped; no per-tick file writes.
+    appendFileSync(file, buffer.finish(reason, performance.now() - started)!);
     process.disconnect?.();
   };
   const tick = () => {
     if (finished) return;
-    if (samples >= 1200 || performance.now() - started >= 120_000) return finish('bound');
+    if (samples >= MAX_SAMPLES || performance.now() - started >= 120_000) return finish('bound');
     try {
       const sample = collectOwnedWebKitSample(options);
-      maxReadDurationMs = Math.max(maxReadDurationMs, sample.readDurationMs);
-      appendFileSync(file, `${JSON.stringify({ kind: 'sample', ...sample })}\n`);
+      if (!buffer.add(sample)) return finish('buffer-bound');
       samples++;
+      if (samples === 1 && process.connected) process.send?.({ kind: 'sampling-started' });
       timer = setTimeout(tick, 100);
     } catch (error) { finish(`unavailable: ${String(error).slice(0, 300)}`); }
   };

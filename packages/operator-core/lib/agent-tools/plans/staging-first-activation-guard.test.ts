@@ -52,6 +52,30 @@ describe('staging-first activation guard', () => {
     },
   );
 
+  it.each(['Prepare', 'Configure', 'Inventory'])(
+    'allows %s of a self-hosted media deployment as a source prerequisite',
+    (action) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` ${action} public TLS and TURN for the self-hosted media deployment.`,
+        '- **P-002** `todo` Implement current-build recovery tests and alerts. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it.each(['main promotion', 'final deployment', ':3070'])(
+    'still rejects preparation explicitly gated on %s',
+    (releasePlane) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` Prepare the deployment after ${releasePlane}.`,
+        '- **P-002** `todo` Implement current-build recovery tests and alerts. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([
+        expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+      ]);
+    },
+  );
+
   it('rejects a direct release-plane blocker on ordinary implementation work', () => {
     expect(
       stagingFirstBlockerProblem({

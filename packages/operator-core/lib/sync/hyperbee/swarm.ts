@@ -36,7 +36,12 @@ import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type PotGitServeConfig } from '../pot-git/serve-wiring';
 import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../pot-git/peer-dial-registry';
 import { loadOrGenerateSwarmSeed } from '../../identity/swarm-keypair';
-import { describeSyncRelayFallback, resolveSyncRelayKeys, syncRelayThroughOption } from './sync-relay';
+import {
+  describeSyncRelayFallback,
+  resolveSyncRelayKeys,
+  scheduleRelayLivenessCheck,
+  syncRelayThroughOption,
+} from './sync-relay';
 import {
   readWireStats,
   dataPathProven,
@@ -4147,6 +4152,10 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
   // actually happened on the wire — the distinction that cost ~7h of packet
   // archaeology when a correctly-configured DHT could not reach its bootstrap.
   scheduleDhtReachabilityCheck(_sharedSwarm);
+  // WI-10004904: the same configured-vs-actual gap for the relay fallback. The
+  // relay line above counts configured keys; this says whether any of them is
+  // actually served on the DHT (a key dead since June read as "1 key" all along).
+  scheduleRelayLivenessCheck(_sharedSwarm, relayKeys, DHT_BOOTSTRAP_GRACE_MS);
   return _sharedSwarm;
 }
 

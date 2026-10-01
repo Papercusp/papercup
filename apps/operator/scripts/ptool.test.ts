@@ -1206,6 +1206,82 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     expect(first.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
   });
 
+  it('reconnects once after a pre-connect ECONNREFUSED proves the tool was not dispatched', async () => {
+    const params = buildCallToolParams('coord:declare-intent', {
+      intent: 'resume after the operator restart',
+      items: [],
+    }, { idempotencyKey: 'ptool-pre-connect-refused-1' });
+    const refusal = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:3170' },
+    });
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const first = {
+      callTool: vi.fn().mockRejectedValue(refusal),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const second = {
+      callTool: vi.fn().mockResolvedValue(result),
+      close: vi.fn(),
+    };
+    const reconnect = vi.fn().mockResolvedValue(second);
+
+    await expect(callToolWithReplayRecovery(first, params, {
+      reconnect,
+      timeoutMs: 1,
+    })).resolves.toEqual({ client: second, result });
+
+    expect(first.callTool).toHaveBeenCalledTimes(1);
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(second.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
+  });
+
+  it('bounds pre-connect refusal recovery to one reconnect attempt', async () => {
+    const refusal = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:3170' },
+    });
+    const first = {
+      callTool: vi.fn().mockRejectedValue(refusal),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const second = {
+      callTool: vi.fn().mockRejectedValue(refusal),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const reconnect = vi.fn().mockResolvedValue(second);
+
+    await expect(callToolWithReplayRecovery(first, buildCallToolParams('coord:declare-intent', {}), {
+      reconnect,
+      timeoutMs: 1,
+    })).rejects.toBe(refusal);
+
+    expect(first.callTool).toHaveBeenCalledTimes(1);
+    expect(second.callTool).toHaveBeenCalledTimes(1);
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(second.close).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry ECONNREFUSED text in a proxy HTTP response with unknown forwarding outcome', async () => {
+    const params = buildCallToolParams('coord:declare-intent', {});
+    const upstreamError = Object.assign(new Error(
+      'Streamable HTTP error: {"error":"mcp_proxy_upstream_error","forwardingResult":"outcome_unknown","detail":"ECONNREFUSED after upstream connected"}',
+    ), { code: 502 });
+    const client = {
+      callTool: vi.fn().mockRejectedValue(upstreamError),
+      close: vi.fn(),
+    };
+    const reconnect = vi.fn();
+
+    await expect(callToolWithReplayRecovery(client, params, {
+      reconnect,
+      timeoutMs: 1,
+    })).rejects.toBe(upstreamError);
+
+    expect(client.callTool).toHaveBeenCalledTimes(1);
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
   it('replays one exact code:run body only through the explicit proof helper', async () => {
     const params = buildCallToolParams('code:run', { script: 'return { ok: true };' }, {
       idempotencyKey: 'ptool-code-run-key-1',

@@ -525,12 +525,39 @@ function strandedByFailure(
   );
 }
 
+export function validateWorkspaceHostLifecycleRequest<
+  T extends Pick<RunWorkspaceHostLifecycleInput, 'action' | 'hostId' | 'image' | 'snapshot' | 'desired'>,
+>(
+  input: T,
+): asserts input is T &
+  (
+    | { action: 'upgrade'; image: WorkspaceHostImageRef }
+    | {
+        action: 'restore';
+        snapshot: WorkspaceHostSnapshotRef;
+        desired: StoredWorkspaceHostDestroyTarget['desired'];
+      }
+    | { action: Exclude<WorkspaceHostExistingLifecycleAction, 'upgrade' | 'restore'> }
+  ) {
+  if (input.action === 'upgrade' && !input.image) {
+    throw new WorkspaceHostProvisioningRequestError(['upgrade image is required']);
+  }
+  if (input.action === 'restore') {
+    if (!input.snapshot) throw new WorkspaceHostProvisioningRequestError(['restore snapshot is required']);
+    if (!input.desired) throw new WorkspaceHostProvisioningRequestError(['restore desired host spec is required']);
+    if (input.desired.hostId === input.hostId) {
+      throw new WorkspaceHostProvisioningRequestError(['restore must target a distinct desired.hostId']);
+    }
+  }
+}
+
 function planRequest(
   input: RunWorkspaceHostLifecycleInput,
   target: StoredWorkspaceHostDestroyTarget,
   operationId: string,
   desiredRevision: number,
 ): WorkspaceHostPlanRequest {
+  validateWorkspaceHostLifecycleRequest(input);
   const base = {
     operationId,
     idempotencyKey: `workspace-host:${input.workspaceId}:${input.hostId}:revision:${desiredRevision}:${operationId}:${input.action}`,
@@ -543,7 +570,6 @@ function planRequest(
   if (input.action === 'snapshot')
     return { ...base, action: input.action, ...(input.name ? { name: input.name } : {}) };
   if (input.action === 'upgrade') {
-    if (!input.image) throw new WorkspaceHostProvisioningRequestError(['upgrade image is required']);
     const rollbackImage = effectiveRollbackImage(input, target);
     return {
       ...base,
@@ -553,11 +579,6 @@ function planRequest(
     };
   }
   if (input.action === 'restore') {
-    if (!input.snapshot) throw new WorkspaceHostProvisioningRequestError(['restore snapshot is required']);
-    if (!input.desired) throw new WorkspaceHostProvisioningRequestError(['restore desired host spec is required']);
-    if (input.desired.hostId === input.hostId) {
-      throw new WorkspaceHostProvisioningRequestError(['restore must target a distinct desired.hostId']);
-    }
     return { ...base, action: input.action, snapshot: input.snapshot, desired: input.desired };
   }
   return { ...base, action: input.action };

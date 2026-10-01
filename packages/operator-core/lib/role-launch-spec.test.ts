@@ -1730,12 +1730,17 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
       expect(rendered.baseText).toContain("AUTO mode — the owner's switch");
 
       const workspaceDir = mkdtempSync(join(root, 'workspace-'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const artifact = await compileLaunchSpecificationArtifact({
         promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
         harnessSlug: null, role: 'su', stack: [], impliedStack: 'su-static',
         state: { schemaVersion: 1 },
       });
       expect(artifact.promptText).toBe('SU KERNEL');
+      // The unrecorded implied layers are named with the refusal, not swallowed.
+      const warned = warn.mock.calls.map((call) => String(call[0]));
+      warn.mockRestore();
+      expect(warned.some((line) => line.includes('implied domain:') && line.includes('attestation-missing'))).toBe(true);
     } finally {
       if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
       else process.env.PAPERCUSP_HOME = priorHome;

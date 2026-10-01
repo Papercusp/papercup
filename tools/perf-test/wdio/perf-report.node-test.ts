@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import test from "node:test";
-import { evaluateRequiredPageLoad, readPageStartupTrace, type WebVitalsReading } from "./web-vitals-probe";
+import { buildStartupStorageProbeScript, evaluateRequiredPageLoad, installStartupStorageProbe, readPageStartupTrace, type WebVitalsReading } from "./web-vitals-probe";
 import type { Browser } from "webdriverio";
-import { collectOwnedWebKitSample, parseSchedstat, schedstatDelta, startNativeProcessProbe,
+import { collectOwnedWebKitSample, NativeSampleBuffer, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
 
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
@@ -129,7 +129,32 @@ test('native sampling marks disabled scheduler-wait accounting and missing count
   assert.match(sample.unavailable.join(' '), /schedstat/);
 });
 
-test('native diagnostic stops its own child and preserves earlier evidence rather than overwriting it', {
+test('native sample memory has exact byte/sample bounds and reports work including serialization', () => {
+  const f = nativeProcFixture();
+  const sample = collectOwnedWebKitSample(f.options, f.proc);
+  sample.unavailable = ['Unicode diagnostic: 🎯'];
+  const bytes = Buffer.byteLength(`${JSON.stringify({ kind: 'sample', ...sample })}\n`);
+  const buffer = new NativeSampleBuffer(bytes * 2 - 1);
+  assert.equal(buffer.add(sample), true);
+  assert.equal(buffer.add(sample), false);
+  const rows = buffer.finish('buffer-bound', 100)!.trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0].unavailable, sample.unavailable);
+  assert.equal(rows[1].bufferedBytes, bytes);
+  assert.equal(rows[1].samples, 1);
+  assert(rows[1].totalSampleWorkMs >= sample.readDurationMs);
+  assert(rows[1].maxSampleWorkMs >= sample.readDurationMs);
+  assert.equal(buffer.finish('stopped', 101), null);
+  assert.equal(buffer.add(sample), false);
+  const countBound = new NativeSampleBuffer(bytes * 3, 1);
+  assert.equal(countBound.add(sample), true);
+  assert.equal(countBound.add(sample), false);
+  const oversized = new NativeSampleBuffer(bytes - 1);
+  assert.equal(oversized.add(sample), false);
+  assert.equal(JSON.parse(oversized.finish('buffer-bound', 1)!).samples, 0);
+});
+
+test('native diagnostic buffers during sampling, flushes on stop, and preserves earlier evidence', {
   skip: process.platform !== 'linux', timeout: 10_000,
 }, async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'native-process-probe-'));
@@ -137,29 +162,117 @@ test('native diagnostic stops its own child and preserves earlier evidence rathe
   let child: ReturnType<typeof startNativeProcessProbe> | null = null;
   try {
     child = startNativeProcessProbe(process.pid, process.execPath, file);
+    const header = readFileSync(file, 'utf8');
     await new Promise<void>((resolve, reject) => {
-      const deadline = Date.now() + 5000;
-      const poll = () => {
-        if (readFileSync(file, 'utf8').includes('"kind":"sample"')) return resolve();
-        if (Date.now() >= deadline) return reject(new Error('native sampler never produced a sample'));
-        setTimeout(poll, 25);
-      };
-      poll();
+      const timeout = setTimeout(() => reject(new Error('native sampler never produced a sample')), 5000);
+      child!.once('message', (message) => {
+        clearTimeout(timeout);
+        assert.deepEqual(message, { kind: 'sampling-started' });
+        resolve();
+      });
     });
+    // A real child has sampled, but no sample reached the filesystem.
+    assert.equal(readFileSync(file, 'utf8'), header);
     await stopNativeProcessProbe(child);
     assert.equal(child.exitCode, 0);
     const rows = readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.equal(rows[0].maxSamples, 1200);
+    assert.equal(rows[0].persistence, 'buffered-until-finish');
+    assert.equal(rows[0].maxBufferedBytes, 16 * 1024 * 1024);
     assert.equal(rows.at(-1).kind, 'end');
     assert.equal(rows.at(-1).reason, 'stopped');
     assert(rows.at(-1).samples >= 1);
     assert(rows.at(-1).maxReadDurationMs >= 0);
+    assert(rows.at(-1).totalSampleWorkMs >= rows.at(-1).maxReadDurationMs);
+    assert.equal(rows.at(-1).samples, rows.filter((row) => row.kind === 'sample').length);
     const saved = readFileSync(file, 'utf8');
     assert.throws(() => startNativeProcessProbe(process.pid, process.execPath, file), /EEXIST/);
     assert.equal(readFileSync(file, 'utf8'), saved);
   } finally {
     await stopNativeProcessProbe(child);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('early serialized storage probe measures native getters/calls, preserves semantics and restores', () => {
+  const globals = ['window', 'Storage', 'performance'] as const;
+  const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  let clock = 0;
+  let getterCalls = 0;
+  let getterFailure = false;
+  const failure = new Error('native failure');
+  class NativeStorage {
+    private readonly data = new Map<string, string>();
+    getItem(key: string) { clock += 10; return this.data.get(key) ?? null; }
+    setItem(key: string, value: string) { if (key === 'fail') throw failure; this.data.set(String(key), String(value)); }
+    removeItem(key: string) { this.data.delete(key); }
+    clear() { this.data.clear(); }
+    key(index: number) { return [...this.data.keys()][index] ?? null; }
+  }
+  const native = new NativeStorage();
+  const fakeWindow = {} as { localStorage: NativeStorage; __pcStartupStorageProbe?: unknown };
+  const getter = () => { getterCalls++; clock += 6; if (getterFailure) throw failure; return native; };
+  Object.defineProperty(fakeWindow, 'localStorage', { configurable: true, get: getter });
+  Object.defineProperty(fakeWindow, 'sessionStorage', { configurable: false, get: getter });
+  const originalGetItem = NativeStorage.prototype.getItem;
+  for (const [name, value] of [['window', fakeWindow], ['Storage', NativeStorage],
+    ['performance', { now: () => clock++, timeOrigin: 1000 }]] as const) {
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+  }
+  try {
+    // Exercise the exact bundled payload inserted in a native diagnostic SPA.
+    const script = buildStartupStorageProbeScript();
+    assert(!script.includes('__name'));
+    Function(script)();
+    const probe = fakeWindow.__pcStartupStorageProbe as ReturnType<typeof installStartupStorageProbe>;
+    assert.equal(getterCalls, 0);
+    const storage = fakeWindow.localStorage;
+    storage.setItem('key', 'private value');
+    assert.equal(storage.getItem('key'), 'private value');
+    assert.equal(storage.key(0), 'key');
+    let coercions = 0;
+    storage.setItem('coercion', { toString() { coercions++; return 'coerced'; } } as unknown as string);
+    assert.equal(coercions, 1);
+    assert.throws(() => storage.setItem('fail', 'secret'), (error) => error === failure);
+    getterFailure = true;
+    assert.throws(() => fakeWindow.localStorage, (error) => error === failure);
+    getterFailure = false;
+    storage.removeItem('key');
+    assert.equal(storage.getItem('key'), null);
+    storage.clear();
+    const report = probe.stop();
+    assert.equal(fakeWindow.__pcStartupStorageProbe, probe);
+    assert(report.unavailable.includes('get:sessionStorage'));
+    assert(report.rows.some((row) => row.operation === 'get:localStorage' && row.durationMs >= 6));
+    assert(report.rows.some((row) => row.operation === 'get:localStorage' && row.threw));
+    assert(report.rows.some((row) => row.operation === 'getItem' && row.area === 'localStorage' && row.caller));
+    assert(report.rows.some((row) => row.operation === 'setItem' && row.threw && row.key === 'fail'));
+    assert.equal(report.rows.find((row) => row.operation === 'setItem')!.valueBytes, 'private value'.length * 2);
+    assert(!JSON.stringify(report).includes('private value'));
+    assert(!JSON.stringify(report).includes('secret'));
+    assert.equal(Object.getOwnPropertyDescriptor(fakeWindow, 'localStorage')!.get, getter);
+    assert.equal(NativeStorage.prototype.getItem, originalGetItem);
+    assert.deepEqual(probe.stop().rows, report.rows);
+    const bounded = installStartupStorageProbe();
+    for (let i = 0; i < 220; i++) fakeWindow.localStorage.getItem('missing');
+    const boundedReport = bounded.stop();
+    assert.equal(boundedReport.rows.length, 200);
+    assert(boundedReport.dropped > 0);
+    const expired = installStartupStorageProbe();
+    clock += 60_001;
+    fakeWindow.localStorage.getItem('missing');
+    assert.equal(expired.stop().rows.length, 0);
+    const replaced = installStartupStorageProbe();
+    const laterGetItem = () => 'later owner';
+    NativeStorage.prototype.getItem = laterGetItem;
+    replaced.stop();
+    assert.equal(NativeStorage.prototype.getItem, laterGetItem);
+    NativeStorage.prototype.getItem = originalGetItem;
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
   }
 });
 
@@ -194,6 +307,7 @@ test("startup trace separates completed-before-paint requests from later complet
   try {
     const trace = await readPageStartupTrace({ fcpMs: 100, lcpMs: 200 });
     assert.equal(trace.lcp, lcp);
+    assert.equal(trace.storage, null);
     assert.deepEqual(trace.documentClock, { timeOriginMs: 1_700_000_000_000, capturedAtMs: 250 });
     assert.equal(trace.queryCountCompletedBeforeFcp, 1);
     assert.equal(trace.startedBeforeFcpCompletedLater, 3);
@@ -219,13 +333,20 @@ test("startup trace separates completed-before-paint requests from later complet
     assert.equal(missing.beforeLcp.queryCountCompleted, 0);
     // A real IPC round trip yielded to a later LCP observer in native r146.
     // The trace must keep the subject captured with the measured 200ms value.
-    Object.assign(values.window, { __TAURI_INTERNALS__: { invoke: async () => {
+    let storageStopped = false;
+    const storageTrace = { marker: 'captured before IPC' };
+    Object.assign(values.window, { __pcStartupStorageProbe: { stop: () => {
+      storageStopped = true;
+      return storageTrace;
+    } }, __TAURI_INTERNALS__: { invoke: async () => {
+      assert.equal(storageStopped, true);
       values.window.__wv_lcp = { ...lcp, startMs: 900 };
       return { client: 'connected', ownerIsContentOrigin: true };
     } } });
     const atomic = await readPageStartupTrace({ fcpMs: 100, lcpMs: 200,
       attribution: { lcp, lcpAttributionError: null } });
     assert.equal(atomic.lcp, lcp);
+    assert.deepEqual(atomic.storage, storageTrace);
     assert.equal(values.window.__wv_lcp.startMs, 900);
   } finally {
     for (const [name, descriptor] of originals) {

@@ -1308,20 +1308,32 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     const runtimeBoundaries: Array<{ threadId: string; turnId?: string; phase: string;
       runtime: Awaited<ReturnType<typeof captureCarryRuntimeSnapshot>> }> = [];
     const sourceGuards: Array<{ peer: SuStdioPeer; threadId: string; path: string; device: bigint; inode: bigint }> = [];
+    const sourceGuardObservations: Array<Record<string, unknown>> = [];
     let source: CarrySourceSnapshot | undefined;
     try {
       const assertSourceGuards = () => {
         for (const guard of sourceGuards) {
           const file = (() => { try { return lstatSync(guard.path, { bigint: true }); } catch { return null; } })();
           const holder = codexThreadWriterHolder(nativeHome, guard.threadId);
+          const peerState = guard.peer.receiptState?.();
+          const peerPid = guard.peer.pid();
           const missing = [
             !file?.isFile() && 'lock-file-missing',
             file && (file.dev !== guard.device || file.ino !== guard.inode) && 'lock-inode-changed',
-            guard.peer.receiptState?.().exited !== false && 'guard-peer-exited',
+            peerState?.exited !== false && 'guard-peer-exited',
             !holder.held && `flock-${holder.reason}`,
-            holder.held && holder.pid !== guard.peer.pid() && 'flock-holder-mismatch',
+            holder.held && holder.pid !== peerPid && 'flock-holder-mismatch',
           ].filter(Boolean);
-          if (missing.length) throw new Error(`frozen source native writer guard lost (${missing.join(',')})`);
+          const observation = {
+            at: new Date().toISOString(), phase, threadId: guard.threadId, path: guard.path,
+            expectedDevice: guard.device.toString(), expectedInode: guard.inode.toString(),
+            fileIsFile: file?.isFile() ?? false, actualDevice: file?.dev.toString() ?? null,
+            actualInode: file?.ino.toString() ?? null,
+            peerPid, peerExited: peerState?.exited ?? null,
+            holderHeld: holder.held, holderPid: holder.pid, holderReason: holder.reason,
+          };
+          sourceGuardObservations.push(observation);
+          if (missing.length) throw new Error(`frozen source native writer guard lost (${missing.join(',')}; probe=${JSON.stringify(observation)})`);
         }
       };
       const port = await gateway.listen(0);
@@ -1970,7 +1982,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(incomplete.status).not.toBe('observations-linked');
           expect(incomplete.population!.unmatchedGatewayRequestIds.length).toBeGreaterThan(0);
         }
-        console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, taskId: task.id, sourceSha256: source.snapshot.sha256,
+      console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, taskId: task.id, sourceSha256: source.snapshot.sha256,
           armTimings, timingScope: 'local HTTP headers write to scripted task response; not remote receipt or natural-first-two acceptance',
           sourceReadCount: observedReads.length, sourceWindow, responseQuality: 'not-established',
           modelWitnesses, modelWitnessScope: 'native-client-request-and-persisted-context; no authenticated serving account',
@@ -1992,6 +2004,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             .map(path => path.slice(path.lastIndexOf('/') + 1))))].sort(),
           captureSha256: evidence.captureSha256, nativePeers: captures.length, nativeTurns: evidence.native.turns.length,
           canonicalRows: evidence.canonical!.rows.length, admission: evidence.admission, accountingComplete: false }));
+      if (resetHome && switchModel) console.info('SOURCE_GUARD_HOLDER_PROBE', JSON.stringify({ mode, armOrder, observations: sourceGuardObservations }));
       } finally { dbSpy.mockRestore(); workspaceSpy.mockRestore(); await org?.cleanup(); }
     } finally {
       for (const guard of sourceGuards) { await guard.peer.close(); await guard.peer.done; }

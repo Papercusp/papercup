@@ -183,7 +183,6 @@ import {
   coerceCarryRowShape,
   type CarryArgRepair,
   evidenceFirst,
-  lintRelativeScratchPaths,
   RELATIVE_SCRATCH_ADVISORY,
   normalizeCheckEntries,
   normalizeFlattenedContinuityProbeRow,
@@ -199,6 +198,7 @@ import {
   CHECKPOINT_BODY_CAP_CHARS,
   type WorkItemSubject,
 } from '../../carry-note';
+import { filterTrackedRelativeScratchPaths } from '../checkpoint-relative-scratch';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { describeUnreadRun } from '../../carry-note-unread-run';
 import { uncoveredAbsencePremises } from '../../premises-claim-port';
@@ -2785,10 +2785,13 @@ export default defineTool({
            * STORED note, like its siblings, so it reports what a successor is actually
            * re-injected with. Advisory + fail-open.
            */
-          ...(() => {
+          ...await (async () => {
             try {
               if (stored === null) return {};
-              const refs = lintRelativeScratchPaths(splitCarryNoteChecks(stored).body);
+              const refs = await filterTrackedRelativeScratchPaths(splitCarryNoteChecks(stored).body, {
+                workspaceId,
+                harness,
+              });
               return refs.length > 0
                 ? { scratchPathLint: { flagged: true as const, note: RELATIVE_SCRATCH_ADVISORY, refs } }
                 : {};

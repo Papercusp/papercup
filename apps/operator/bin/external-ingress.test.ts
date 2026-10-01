@@ -96,7 +96,8 @@ describe('external-ingress listener (WI-10004174)', () => {
       method: 'POST', headers: { host: PUBLIC_HOST, 'content-type': 'application/json' }, body: '{}',
     }));
     expect(pair.status).toBe(400);
-    for (const path of ['/api/device/attention', '/api/device/plans', '/api/device/monitoring', '/api/device/runtime-config']) {
+    for (const path of ['/api/device/attention', '/api/device/plans', '/api/device/monitoring',
+      '/api/device/runtime-config', '/api/device/operator/conversation/turns']) {
       const response = await externalIngressHandler(get(path, PUBLIC_HOST));
       expect(response.status, path).toBe(401);
     }

@@ -437,9 +437,10 @@ export async function findCapturedDirectiveContaining(
 ): Promise<OwnerDirectiveRow | null> {
   const token = input.token.trim();
   if (!token) return null;
+  const ws = resolveConcreteWorkspaceId(input.workspaceId);
   const rows = await db(sql)<RawRow[]>`
     SELECT * FROM harness_shared.owner_directives
-     WHERE workspace_id = ${input.workspaceId}
+     WHERE workspace_id = ${ws}
        AND recorded_by = ${input.recordedBy}
        AND captured_by_hook = true
        AND disposition_status IS DISTINCT FROM 'declined'

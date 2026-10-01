@@ -63,6 +63,8 @@ export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env
         loadProofs: typeof loadReuseProofs;
         changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
         inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
+        testConfigMainProcess: (root: any) => Promise<any>;
+        toolchainTsconfigs: (root: any) => Promise<any>;
         now: () => number;
         makeTempDir: () => string;
         removeTempDir: (dir: any) => void;

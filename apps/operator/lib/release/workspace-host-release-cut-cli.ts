@@ -22,7 +22,7 @@
  *   manifest  `runPublicationManifestCli`, exactly once per operation: a regenerated manifest
  *             carries a new timestamp, which the publisher reads as a changed stage input.
  *   publish   The journaled publisher, handed the SAME task + operation.
- *   prune     After a real (not --plan-only) publish, the rebuildable intermediates — the pinned
+ *   prune     After a real (not --publish-plan-only) publish, the rebuildable intermediates — the pinned
  *             source worktree, the sidecar tree and the extracted audit copy, ~89% of a ~18 GB work
  *             dir — are removed (WI-10003700). Everything resume, R-4 and audit read stays:
  *             publication/, build-result.json, release-cut.json, logs/, sidecar-trust/, the tauri
@@ -764,7 +764,7 @@ export interface WorkspaceHostReleaseCutOptions {
   taskId?: string;
   operationId?: string;
   publish: boolean;
-  /** Passed through to the publisher (`--base`, `--token`, `--plan-only`). */
+  /** Passed through to the publisher (`--base`, `--token`, and publisher `--plan-only`). */
   publisherArgs: readonly string[];
   /** Keep source/, sidecar/ and extracted/ after a real publish (default: prune them). */
   keepIntermediates?: boolean;
@@ -964,8 +964,7 @@ export async function runWorkspaceHostReleaseCut(
   options: WorkspaceHostReleaseCutOptions,
   deps: WorkspaceHostReleaseCutDeps,
 ): Promise<WorkspaceHostReleaseCutResult> {
-  if (!SOURCE_SHA.test(options.sourceSha)) throw new Error(`--source-sha must be a full commit sha, got '${options.sourceSha}'`);
-  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(options.version)) throw new Error(`--version '${options.version}' is not a release version`);
+  validateWorkspaceHostReleaseCutIdentity(options.sourceSha, options.version);
 
   const identity: WorkspaceHostReleaseIdentity = {
     sourceSha: options.sourceSha,
@@ -1051,6 +1050,8 @@ export interface WorkspaceHostReleaseCutCliArgs {
   taskId?: string;
   operationId?: string;
   publish: boolean;
+  /** Print a whole-cut preview and exit before creating files or opening a release task. */
+  planOnly: boolean;
   publisherArgs: string[];
   keepIntermediates: boolean;
 }
@@ -1081,12 +1082,14 @@ export function parseWorkspaceHostReleaseCutArgs(
   const valueFlags = new Set(['source-sha', 'version', 'work-dir', 'task-id', 'operation-id', 'base', 'token']);
   let publish = true;
   let planOnly = false;
+  let publishPlanOnly = false;
   let keepIntermediates = false;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index] ?? '';
     if (flag === '--no-publish') { publish = false; continue; }
     if (flag === '--keep-intermediates') { keepIntermediates = true; continue; }
     if (flag === '--plan-only') { planOnly = true; continue; }
+    if (flag === '--publish-plan-only') { publishPlanOnly = true; continue; }
     if (!flag.startsWith('--')) throw new Error(`unexpected argument '${flag}'`);
     const key = flag.slice(2);
     if (!valueFlags.has(key)) throw new Error(`unknown flag '--${key}'`);
@@ -1098,11 +1101,17 @@ export function parseWorkspaceHostReleaseCutArgs(
   for (const required of ['source-sha', 'version', 'work-dir']) {
     if (!values[required]) throw new Error(`--${required} is required`);
   }
+  if (Boolean(values['task-id']) !== Boolean(values['operation-id'])) {
+    throw new Error('--task-id and --operation-id must be provided together');
+  }
+  if (planOnly && publishPlanOnly) throw new Error('--plan-only and --publish-plan-only cannot be combined');
+  if (publishPlanOnly && !publish) throw new Error('--publish-plan-only requires publishing');
+  validateWorkspaceHostReleaseCutIdentity(values['source-sha']!, values.version!);
   const base = values.base ?? cupboardBaseOverride(env);
   const publisherArgs = [
     ...(base ? ['--base', base] : []),
     ...(values.token ? ['--token', values.token] : []),
-    ...(planOnly ? ['--plan-only'] : []),
+    ...(publishPlanOnly ? ['--plan-only'] : []),
   ];
   return {
     sourceSha: values['source-sha']!,
@@ -1111,9 +1120,51 @@ export function parseWorkspaceHostReleaseCutArgs(
     ...(values['task-id'] ? { taskId: values['task-id'] } : {}),
     ...(values['operation-id'] ? { operationId: values['operation-id'] } : {}),
     publish,
+    planOnly,
     publisherArgs,
     keepIntermediates,
   };
+}
+
+function validateWorkspaceHostReleaseCutIdentity(sourceSha: string, version: string): void {
+  if (!SOURCE_SHA.test(sourceSha)) throw new Error(`--source-sha must be a full commit sha, got '${sourceSha}'`);
+  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version)) throw new Error(`--version '${version}' is not a release version`);
+}
+
+export interface WorkspaceHostReleaseCutCliRunner {
+  env?: NodeJS.ProcessEnv;
+  signingKeyPath: string;
+  newTaskId(): string;
+  newOperationId(): string;
+  log(line: string): void;
+  run(args: WorkspaceHostReleaseCutCliArgs): Promise<void>;
+}
+
+/**
+ * Handle the read-only whole-cut preview before the execution callback. This keeps the preview
+ * ahead of work-directory creation, locking, task registration, builds, manifests and publishing.
+ */
+export async function runWorkspaceHostReleaseCutCli(
+  argv: readonly string[],
+  runner: WorkspaceHostReleaseCutCliRunner,
+): Promise<'planned' | 'executed'> {
+  const args = parseWorkspaceHostReleaseCutArgs(argv, runner.env);
+  if (!args.planOnly) {
+    await runner.run(args);
+    return 'executed';
+  }
+
+  const taskId = args.taskId ?? runner.newTaskId();
+  const operationId = args.operationId ?? runner.newOperationId();
+  runner.log('plan-only: no task will be registered and no work-directory files will be written');
+  runner.log(`source sha: ${args.sourceSha}`);
+  runner.log(`version: ${args.version}`);
+  runner.log(`work directory: ${args.workDir}`);
+  runner.log(`task id: ${taskId} (planned)`);
+  runner.log(`operation id: ${operationId} (planned)`);
+  runner.log(`publish: ${args.publish ? 'enabled' : 'disabled'}`);
+  runner.log(`signing key present: ${existsSync(runner.signingKeyPath) ? 'yes' : 'no'}`);
+  return 'planned';
 }
 
 /** One cut per work directory at a time: two would race each other's journal and files. */
@@ -1151,79 +1202,88 @@ function readDesktopVersionFromGit(repoRoot: string, gitlinks: Readonly<Record<s
 }
 
 async function main(): Promise<void> {
-  const args = parseWorkspaceHostReleaseCutArgs(process.argv.slice(2));
   const repoRoot = resolve(HERE, '../../../..');
-  const paths = workspaceHostCutPaths(args.workDir);
-  await mkdir(args.workDir, { recursive: true });
-  const release = await acquireWorkDirLock(paths.lock);
   const signingKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ?? join(homedir(), '.papercusp/signing/papercusp.key');
   const log = (line: string) => process.stdout.write(`[workspace-host-cut] ${line}\n`);
-  try {
-    const result = await runWorkspaceHostReleaseCut(
-      { repoRoot, ...args },
-      {
-        ledger: { getTask: (taskId) => getTask(taskId), taskReleaseJournalFromDetail, appendTaskReleaseReceipt },
-        registerTask: (spec, opts) => registerTask(spec, opts),
-        newTaskId: () => newTaskId(),
-        newOperationId: () => randomUUID(),
-        readGitlinks: readSourceGitlinks,
-        readDesktopVersion: readDesktopVersionFromGit,
-        sourceEpochSeconds: (root, sha) =>
-          Number.parseInt(execFileSync('git', ['-C', root, 'show', '-s', '--format=%ct', sha], { encoding: 'utf8' }).trim(), 10),
-        build: (plan) =>
-          buildWorkspaceHostBundle({
-            ...plan,
-            releaseIdentityEnvFile: process.env.PAPERCUSP_RELEASE_IDENTITY_ENV ?? join(homedir(), '.papercusp/release-identity.env'),
-            signingKeyPath,
-            signingKeyPassword: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
-            tauriCliVersion: process.env.PAPERCUSP_TAURI_CLI_VERSION ?? DEFAULT_TAURI_CLI_VERSION,
-          }),
-        verifyBuild: verifyWorkspaceHostBuild,
-        readBuildResult: async (workDir) => {
-          const raw = await readJsonIfPresent(workspaceHostCutPaths(workDir).buildResult);
-          return raw === null ? null : parseWorkspaceHostBuildResult(raw);
-        },
-        resolveRollbackRelease: (taskId) => latestGreenShippedReleaseInScope(taskId),
-        emitManifest: async ({ workDir, identity, desktopVersion, rollbackVersion }) => {
-          const cut = workspaceHostCutPaths(workDir);
-          const input = buildWorkspaceHostPublicationInput(
-            JSON.parse(await readFile(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8')),
-            {
-              version: identity.version,
-              sourceSha: identity.sourceSha,
-              desktopVersion,
-              desktopRevision: identity.gitlinks['papercusp-desktop'] ?? '',
-              sourceRoot: cut.source,
-              bundleRoot: cut.extracted,
-              rollbackVersion,
+  await runWorkspaceHostReleaseCutCli(process.argv.slice(2), {
+    env: process.env,
+    signingKeyPath,
+    newTaskId: () => newTaskId(),
+    newOperationId: () => randomUUID(),
+    log,
+    run: async (args) => {
+      const { planOnly: _planOnly, ...cutArgs } = args;
+      const paths = workspaceHostCutPaths(args.workDir);
+      await mkdir(args.workDir, { recursive: true });
+      const release = await acquireWorkDirLock(paths.lock);
+      try {
+        const result = await runWorkspaceHostReleaseCut(
+          { repoRoot, ...cutArgs },
+          {
+            ledger: { getTask: (taskId) => getTask(taskId), taskReleaseJournalFromDetail, appendTaskReleaseReceipt },
+            registerTask: (spec, opts) => registerTask(spec, opts),
+            newTaskId: () => newTaskId(),
+            newOperationId: () => randomUUID(),
+            readGitlinks: readSourceGitlinks,
+            readDesktopVersion: readDesktopVersionFromGit,
+            sourceEpochSeconds: (root, sha) =>
+              Number.parseInt(execFileSync('git', ['-C', root, 'show', '-s', '--format=%ct', sha], { encoding: 'utf8' }).trim(), 10),
+            build: (plan) =>
+              buildWorkspaceHostBundle({
+                ...plan,
+                releaseIdentityEnvFile: process.env.PAPERCUSP_RELEASE_IDENTITY_ENV ?? join(homedir(), '.papercusp/release-identity.env'),
+                signingKeyPath,
+                signingKeyPassword: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
+                tauriCliVersion: process.env.PAPERCUSP_TAURI_CLI_VERSION ?? DEFAULT_TAURI_CLI_VERSION,
+              }),
+            verifyBuild: verifyWorkspaceHostBuild,
+            readBuildResult: async (workDir) => {
+              const raw = await readJsonIfPresent(workspaceHostCutPaths(workDir).buildResult);
+              return raw === null ? null : parseWorkspaceHostBuildResult(raw);
             },
-          );
-          await writeJsonAtomic(cut.publicationInput, input);
-          return runPublicationManifestCli({ publicationDir: cut.publication, inputFile: cut.publicationInput, sourceRoot: cut.source });
-        },
-        publish: ({ repoRoot: root, workDir, taskId, operationId, args: extra }) =>
-          runStep(
-            'publish',
-            process.execPath,
-            [
-              '--import', 'tsx',
-              join(root, 'scripts/publish-workspace-host-artifacts.mjs'),
-              '--dir', workspaceHostCutPaths(workDir).publication,
-              '--task-id', taskId,
-              '--operation-id', operationId,
-              ...extra,
-            ],
-            { cwd: root },
-          ),
-        pruneIntermediates: (input) => pruneWorkspaceHostCutIntermediates(input),
-        log,
-      },
-    );
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    process.stdout.write(`WORKSPACE_HOST_CUT_TASK_ID=${result.taskId}\nWORKSPACE_HOST_CUT_BUNDLE_SHA256=${result.bundleSha256}\n`);
-  } finally {
-    await release();
-  }
+            resolveRollbackRelease: (taskId) => latestGreenShippedReleaseInScope(taskId),
+            emitManifest: async ({ workDir, identity, desktopVersion, rollbackVersion }) => {
+              const cut = workspaceHostCutPaths(workDir);
+              const input = buildWorkspaceHostPublicationInput(
+                JSON.parse(await readFile(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8')),
+                {
+                  version: identity.version,
+                  sourceSha: identity.sourceSha,
+                  desktopVersion,
+                  desktopRevision: identity.gitlinks['papercusp-desktop'] ?? '',
+                  sourceRoot: cut.source,
+                  bundleRoot: cut.extracted,
+                  rollbackVersion,
+                },
+              );
+              await writeJsonAtomic(cut.publicationInput, input);
+              return runPublicationManifestCli({ publicationDir: cut.publication, inputFile: cut.publicationInput, sourceRoot: cut.source });
+            },
+            publish: ({ repoRoot: root, workDir, taskId, operationId, args: extra }) =>
+              runStep(
+                'publish',
+                process.execPath,
+                [
+                  '--import', 'tsx',
+                  join(root, 'scripts/publish-workspace-host-artifacts.mjs'),
+                  '--dir', workspaceHostCutPaths(workDir).publication,
+                  '--task-id', taskId,
+                  '--operation-id', operationId,
+                  ...extra,
+                ],
+                { cwd: root },
+              ),
+            pruneIntermediates: (input) => pruneWorkspaceHostCutIntermediates(input),
+            log,
+          },
+        );
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        process.stdout.write(`WORKSPACE_HOST_CUT_TASK_ID=${result.taskId}\nWORKSPACE_HOST_CUT_BUNDLE_SHA256=${result.bundleSha256}\n`);
+      } finally {
+        await release();
+      }
+    },
+  });
 }
 
 if (isCliEntry(import.meta.url)) {

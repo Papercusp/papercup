@@ -8,6 +8,13 @@ const auditParams: unknown[][] = [];
 
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
 
+// notifyRegistryChanged() fans out through sync-sse's pg_notify on the org pool,
+// which the getOrgPg mock below models only for the audit write's `sql.unsafe`.
+vi.mock('../sync-sse', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../sync-sse')>()),
+  notifySyncInvalidate: vi.fn(async () => {}),
+}));
+
 vi.mock('../operator-state-pg', () => ({
   readOperatorState: async () => prevState,
   writeOperatorState: async (table: string, payload: RegistryPayload, ws?: string) => {

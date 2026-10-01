@@ -99,7 +99,7 @@ describe('EI-13120: periodic path re-verify bounds a cross-process-stale anchor'
     // Pre-fix this stayed frozen at 350_000 forever (EI-12966's documented bug, now
     // additionally bounded by this re-verify instead of persisting for the rest of
     // the process's life). Post-fix it self-corrects to the successor's real reading.
-    expect(tokens).toBe(tokensFromFileSize(successorFile));
+    expect(tokens).toBe(await tokensFromFileSize(successorFile));
     expect(tokens).not.toBe(350_000);
     expect(sqlMock).toHaveBeenCalledTimes(1);
   });
@@ -142,6 +142,6 @@ describe('EI-13120: periodic path re-verify bounds a cross-process-stale anchor'
     // async) on this process.
     await vi.advanceTimersByTimeAsync(0);
     expect(sqlMock).toHaveBeenCalled();
-    expect(currentContextTokensSyncForOwner('owner-sync')).toBe(tokensFromFileSize(successorFile));
+    expect(currentContextTokensSyncForOwner('owner-sync')).toBe(await tokensFromFileSize(successorFile));
   });
 });

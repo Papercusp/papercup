@@ -22,6 +22,7 @@ import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
 import { DEFAULT_IDEATOR_MISSION } from './lenses';
 import { DEFAULT_CRITIC_MISSION } from './critics';
 import { DEFAULT_SCOUT_MODELS } from './models';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', () => {
   it('is built FROM the engine defaults (byte-identical, no copy that can drift)', () => {
@@ -50,7 +51,7 @@ describe('DEFAULT_SCOUT_CONFIG — anti-drift binding to the engine constants', 
     expect(DEFAULT_SCOUT_CONFIG.novelty.decidedPenalty).toBe(0.15);
     expect(DEFAULT_SCOUT_CONFIG.routing.defaultRail).toBe('improvement');
     expect(DEFAULT_SCOUT_CONFIG.federatedPriming).toEqual({ foreignElites: 3, crowded: 5, empty: 5 });
-    expect(DEFAULT_SCOUT_CONFIG.models.ideator).toBe('gpt-5.6-sol:xhigh');
+    expect(DEFAULT_SCOUT_CONFIG.models.ideator).toBe(LEARNING_MODEL_SPEC);
   });
 });
 

@@ -21,6 +21,7 @@
  * same code, so a refused call can be retried once the owner has typed it.
  */
 import { createHash } from 'node:crypto';
+import type { Sql } from 'postgres';
 import {
   findCapturedDirectiveContaining,
   getOwnerDirective,
@@ -77,7 +78,7 @@ export async function verifyReleaseAuthority(params: {
   directiveId?: number;
   /** Newest delivery / rule change the release covers; the directive must postdate it. */
   notBefore: Date | null;
-}): Promise<ReleaseAuthority> {
+}, sql?: Sql): Promise<ReleaseAuthority> {
   const agentOwnerId = params.agentOwnerId?.trim();
   if (!agentOwnerId) {
     return {
@@ -104,12 +105,12 @@ export async function verifyReleaseAuthority(params: {
       workspaceId: params.workspaceId,
       recordedBy: agentOwnerId,
       token: code,
-    });
+    }, sql);
     if (!directive) {
       return refuse('release_authority_required', `no owner-typed turn in this session carries release code ${code}`);
     }
   } else {
-    directive = await getOwnerDirective(params.directiveId);
+    directive = await getOwnerDirective(params.directiveId, sql);
     if (!directive || directive.workspaceId !== params.workspaceId) {
       return refuse('release_authority_not_found', `owner directive #${params.directiveId} does not exist in this workspace`);
     }

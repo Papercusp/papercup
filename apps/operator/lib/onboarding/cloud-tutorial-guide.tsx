@@ -1,0 +1,93 @@
+"use client";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Button } from "@/app/harness/Button";
+import { CLOUD_TUTORIAL_STEPS, confirmedTutorialSteps, currentTutorialStep, tutorialStepStatus, type TutorialEvent, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
+
+const statusCopy = {
+  loading: "Preparing your lesson…", ready: "Use the highlighted control in the app.",
+  waiting: "Waiting for the action to finish. You can keep using the app.",
+  delayed: "This action is taking longer than expected. Check its status in the app before retrying.",
+  error: "This step needs attention. Follow the recovery shown by the app.",
+  blocked: "Your session or workspace access needs attention. Sign in or request access to continue.",
+  "missing-target": "The control is not visible yet. Open the indicated app view, then check again.",
+  complete: "Your first agent lesson is complete.",
+};
+export function CloudTutorialHelpEntry({ onStart }: { onStart: () => void }) {
+  return <details><summary>Help</summary><Button onClick={onStart}>Get your first agent running</Button></details>;
+}
+
+/** A nonmodal companion to the real product. It never calls a provision,
+ * launch, send-task or repair endpoint. Those actions stay with the user. */
+export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, help, voice, reducedMotion = false }: {
+  state: TutorialState; dispatch: (event: TutorialEvent) => void;
+  onShowStep?: (step: (typeof CLOUD_TUTORIAL_STEPS)[number]["id"]) => void;
+  onCheckAgain?: () => void; help?: ReactNode; voice?: ReactNode; reducedMotion?: boolean;
+}) {
+  const [reviewIndex, setReviewIndex] = useState<number | null>(null);
+  const [highlightStatus, setHighlightStatus] = useState<"waiting" | "missing" | "ready">("waiting");
+  const pendingFocus = useRef<string | null>(null);
+  const previousScope = useRef(state.scope);
+  const trigger = useRef<HTMLElement | null>(null);
+  const disposedScope = `${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}`;
+  useEffect(() => {
+    trigger.current = document.activeElement as HTMLElement | null;
+    return () => { if (trigger.current?.isConnected) trigger.current.focus({ preventScroll: true }); };
+  }, [disposedScope]);
+  useEffect(() => {
+    if (previousScope.current !== state.scope) { pendingFocus.current = null; setHighlightStatus("waiting"); setReviewIndex(null); previousScope.current = state.scope; }
+  }, [state.scope]);
+  const domainStep = currentTutorialStep(state);
+  const step = reviewIndex === null ? domainStep : CLOUD_TUTORIAL_STEPS[reviewIndex];
+  const completed = confirmedTutorialSteps(state);
+  const status = tutorialStepStatus(state);
+  const displayStatus = reviewIndex !== null && highlightStatus === "missing" ? "missing-target" : status;
+  const active = state.disposition === "active";
+  useEffect(() => {
+    if (!active) { pendingFocus.current = null; return; }
+    if (highlightStatus !== "ready" || pendingFocus.current !== step?.id) return;
+    const target = document.querySelector<HTMLElement>(step.target);
+    if (target) { target.scrollIntoView({ behavior: reducedMotion ? "instant" : "smooth", block: "center" }); target.focus({ preventScroll: true }); pendingFocus.current = null; }
+  }, [active, highlightStatus, step, reducedMotion]);
+  const replay = () => { setReviewIndex(0); dispatch({ type: "action", action: "replay" }); };
+  const action = (name: "pause" | "resume" | "skip" | "exit") => {
+    dispatch({ type: "action", action: name });
+    if (name === "exit" && trigger.current?.isConnected) trigger.current.focus({ preventScroll: true });
+  };
+  if (state.disposition === "closed") return <CloudTutorialHelpEntry onStart={replay} />;
+  return <>
+    <CloudTutorialHelpEntry onStart={replay} />
+    <aside role="region" aria-label="First agent guide" data-cloud-tutorial-guide
+      style={{ border: "1px solid var(--border)", background: "var(--bg-1)", borderRadius: 8, padding: 20, display: "flex", flexDirection: "column", gap: 12, width: "min(100%, 360px)", alignSelf: "start" }}>
+      <h2 id="cloud-tutorial-title">Get your first agent running</h2>
+      <p>{completed.length} of {CLOUD_TUTORIAL_STEPS.length} steps confirmed</p>
+      {active && step && <>
+        <h3>{step.title}</h3><p>{step.brief}</p><p>{step.details}</p>
+        {completed.includes(step.id) && <p>Already completed in this workspace.</p>}
+      </>}
+      <p role={displayStatus === "error" || displayStatus === "blocked" ? "alert" : "status"} aria-live="polite">
+        {state.disposition === "paused" ? "Your lesson is paused." : state.disposition === "skipped" ? "You can start this lesson again from Help." : statusCopy[displayStatus]}
+      </p>
+      {active && step && (displayStatus === "error" || displayStatus === "delayed" || displayStatus === "missing-target") && <p>{step.recovery}</p>}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {active && step && <Button onClick={() => {
+          pendingFocus.current = step.id;
+          onShowStep?.(step.id);
+          const target = document.querySelector<HTMLElement>(step.target);
+          if (target) { target.scrollIntoView({ behavior: reducedMotion ? "instant" : "smooth", block: "center" }); target.focus({ preventScroll: true }); pendingFocus.current = null; }
+          else { setHighlightStatus("missing"); dispatch({ type: "target", scope: state.scope, step: step.id, status: "missing" }); }
+        }}>Show me</Button>}
+        {active && status !== "complete" && <Button onClick={() => { dispatch({ type: "action", action: "check-again" }); onCheckAgain?.(); }}>Check again</Button>}
+        {active && <Button onClick={() => action("pause")}>Pause</Button>}
+        {state.disposition === "paused" && <Button onClick={() => action("resume")}>Resume guide</Button>}
+        {state.disposition !== "skipped" && <Button onClick={() => action("skip")}>Skip lesson</Button>}
+        <Button onClick={replay}>{status === "complete" ? "Replay lesson" : "Restart lesson"}</Button>
+        {reviewIndex !== null && active && <Button onClick={() => setReviewIndex(reviewIndex < CLOUD_TUTORIAL_STEPS.length - 1 ? reviewIndex + 1 : null)}>Next explanation</Button>}
+        <Button onClick={() => action("exit")}>Close guide</Button>
+      </div>
+      {active && <>{voice}{help ?? <p>Contextual help is unavailable. You can continue using the instructions above.</p>}</>}
+    </aside>
+    {active && step && <CloudTutorialHighlight target={step.target} active contextKey={`${disposedScope}:${step.id}`} reducedMotion={reducedMotion}
+      onStatus={targetStatus => { setHighlightStatus(targetStatus); if (step.id === domainStep?.id) dispatch({ type: "target", scope: state.scope, step: step.id, status: targetStatus }); }} />}
+  </>;
+}

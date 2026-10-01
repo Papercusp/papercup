@@ -160,6 +160,12 @@ export interface ImplementationReadinessEvidence {
    * revision-current contract is qualifying acceptance.
    */
   acceptance?: Partial<ImplementationAcceptanceContract>;
+  /**
+   * P-009 (D-019): the contract an undone intake promotion had sealed. Kept for
+   * audit and re-review under a key no claim floor reads, so a reversed row is
+   * not-ready and never counts as accepted.
+   */
+  reversedAcceptance?: Partial<ImplementationAcceptanceContract>;
   review?: {
     submittedBy?: string;
     reviewer?: string;

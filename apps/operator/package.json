@@ -234,6 +234,7 @@
     "react-diff-view": "^3.3.3",
     "react-dom": "^19.2.0",
     "react-hook-form": "^7.75.0",
+    "react-joyride": "3.2.0",
     "react-json-view-lite": "^2.5.0",
     "react-markdown": "^10.1.0",
     "react-virtuoso": "^4.18.6",
@@ -266,7 +267,6 @@
     "@typescript/native": "npm:typescript@7.0.2",
     "driver.js": "1.8.0",
     "lost-pixel": "^3.22.0",
-    "react-joyride": "3.2.0",
     "storybook": "^10.3.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "vitest": "^4.1.4"

@@ -113,6 +113,8 @@ export function ConnectStage({
 
   return (
     <section
+      data-tutorial-target="cloud-connection"
+      tabIndex={-1}
       className={styles.stage}
       aria-labelledby="connect-stage-heading"
       data-stage="connect"

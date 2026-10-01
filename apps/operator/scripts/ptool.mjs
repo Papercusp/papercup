@@ -2275,6 +2275,11 @@ export function formatOperatorConnectFailure(operatorUrl, error) {
  * immediate retry can overlap the original handler before its receipt exists.
  */
 export const PTOOL_POST_CONNECT_RETRIES = 0;
+// A raw ECONNREFUSED proves the tools/call never reached the operator. Allow
+// one reconnect through the bounded local connect-recovery path, then retry the
+// exact request once. This is separate from POST_CONNECT_RETRIES: socket closes
+// and timeouts after connect remain outcome-unknown and must not be replayed.
+export const PTOOL_PRE_CONNECT_CALL_RETRIES = 1;
 
 async function closeClientQuietly(client) {
   try {
@@ -2315,11 +2320,22 @@ export async function callToolWithReplayRecovery(
   const retryBudget = isCodeRunReplayAuthorized(params, replayProof)
     ? Math.min(requestedRetries, 1)
     : 0;
+  let preConnectRetriesUsed = 0;
   while (true) {
     try {
       const result = await callToolWithPressureRetry(activeClient, params, { timeoutMs });
       return { client: activeClient, result };
     } catch (error) {
+      if (
+        isPreConnectConnectionRefused(error) &&
+        preConnectRetriesUsed < PTOOL_PRE_CONNECT_CALL_RETRIES &&
+        typeof reconnect === 'function'
+      ) {
+        preConnectRetriesUsed += 1;
+        await closeClientQuietly(activeClient);
+        activeClient = await reconnect();
+        continue;
+      }
       if (
         !isTransportFailure(error) ||
         retriesUsed >= retryBudget ||

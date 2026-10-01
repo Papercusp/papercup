@@ -29,7 +29,6 @@
 
 import { z } from 'zod';
 import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { HARVESTED_COORD_NOTES_RULE } from '../../harness/improvements/observation-title-guidance';
@@ -200,6 +199,7 @@ import {
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { isGitTrackedPath, repoRelativePathUnderRoot, type GitTrackednessProbe } from '../../git-trackedness';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   itemIsArmB,
@@ -750,7 +750,17 @@ function issuesNotCoveredByPreflight(issues: readonly z.core.$ZodIssue[], prefli
     list.flatMap((issue): z.core.$ZodIssue[] => {
       if (isCovered(issue.path)) return [];
       if (issue.code === 'invalid_union' && Array.isArray(issue.errors)) {
-        return [{ ...issue, errors: issue.errors.map((branch) => filter(branch)) } as z.core.$ZodIssue];
+        const filtered = {
+          ...issue,
+          errors: issue.errors.map((branch) => filter(branch)),
+        } as z.core.$ZodIssue;
+        // formatIssues preserves a union's contract-specific message and expands
+        // only the generic "Invalid input" form. Keep the guidance and add a
+        // generic-message copy so its shared issueLeaves selector exposes the
+        // matching branch's remaining field errors alongside the preflight issue.
+        return issue.message === 'Invalid input'
+          ? [filtered]
+          : [filtered, { ...filtered, message: 'Invalid input' } as z.core.$ZodIssue];
       }
       return [issue];
     });
@@ -1817,10 +1827,7 @@ function completionHasFilesChanged(completion: unknown): boolean {
  * definite positive suppresses the generic scratch warning; every other result stays
  * fail-open and keeps the warning visible.
  */
-export type CompletionTrackednessProbe = (
-  repoRoot: string,
-  repoRelativePath: string,
-) => boolean | null | undefined;
+export type CompletionTrackednessProbe = GitTrackednessProbe;
 
 export interface CompletionEphemeralDeliverableProbe {
   /** Compatibility seam for one candidate checkout. */
@@ -1841,41 +1848,6 @@ export interface CompletionEphemeralDeliverableProbe {
  * warning-bearing population here. Any other failure is ownership uncertainty and remains
  * `undefined` so a broken Git/package install cannot silently suppress a warning.
  */
-function defaultCompletionTrackedness(repoRoot: string, repoRelativePath: string): boolean | undefined {
-  try {
-    execFileSync('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', repoRelativePath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'ignore', 'ignore'],
-      timeout: 5_000,
-      killSignal: 'SIGKILL',
-    });
-    return true;
-  } catch (error) {
-    const status =
-      typeof error === 'object' && error !== null && 'status' in error
-        ? (error as { status?: unknown }).status
-        : undefined;
-    return status === 1 ? false : undefined;
-  }
-}
-
-function completionScratchRepoRelativePath(reference: string, repoRoot: string): string | undefined {
-  const value = reference.trim();
-  if (!value || value.startsWith('~')) return undefined;
-
-  // A leading parent traversal is an external/ambiguous ownership claim. Keep it warning-
-  // bearing even if normalisation would happen to land under a candidate root.
-  if (value === '..' || value.startsWith('../') || value.startsWith('..\\')) return undefined;
-
-  const root = nodePath.resolve(repoRoot);
-  const absolute = nodePath.isAbsolute(value) ? nodePath.resolve(value) : nodePath.resolve(root, value);
-  const relative = nodePath.relative(root, absolute);
-  if (!relative || relative === '..' || relative.startsWith('..' + nodePath.sep) || nodePath.isAbsolute(relative)) {
-    return undefined;
-  }
-  return relative.split(nodePath.sep).join('/');
-}
-
 function completionCandidateRoots(probe: CompletionEphemeralDeliverableProbe): string[] {
   const rawRoots = 'repoRoots' in probe ? probe.repoRoots : ['repoRoot' in probe ? probe.repoRoot : completionRoot()];
   return [
@@ -1939,7 +1911,7 @@ function filterTrackedCompletionScratchReferences(
     ),
   );
   const roots = completionCandidateRoots(probe);
-  const isTracked = probe.isTracked ?? defaultCompletionTrackedness;
+  const isTracked = probe.isTracked ?? isGitTrackedPath;
 
   return references.filter((reference) => {
     if (reference.kind === 'artifact-url') return !hasProvenDurableChangedPath;
@@ -1949,7 +1921,7 @@ function filterTrackedCompletionScratchReferences(
     // result, an exception, or a path that cannot be mapped to a candidate root all preserve
     // the original advisory warning.
     for (const root of roots) {
-      const relativePath = completionScratchRepoRelativePath(reference.reference, root);
+      const relativePath = repoRelativePathUnderRoot(reference.reference, root);
       if (!relativePath) continue;
       try {
         if (isTracked(root, relativePath) === true) return false;

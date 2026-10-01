@@ -2492,7 +2492,7 @@ describe('relative scratch references are advised against (R-6b)', () => {
   // — but it does NOT prove the branch is reachable at runtime. Both handlers
   // are heavy (PG + locks); the runtime path stays covered by the integration
   // sibling, and this gap is disclosed rather than papered over.
-  it('wires the lint to the advisory on BOTH checkpoint surfaces', () => {
+  it('uses the registered-harness tracked-path filter on BOTH checkpoint surfaces', () => {
     const surfaces = [
       'agent-tools/loop/checkpoint.ts',
       'agent-tools/work_items/checkpoint.ts',
@@ -2502,9 +2502,10 @@ describe('relative scratch references are advised against (R-6b)', () => {
       // Vacuity floor: a file rewritten into a stub must fail here rather than
       // sail past the matchers below on an empty string.
       expect(text.length, `${relpath} is unexpectedly small`).toBeGreaterThan(1000);
-      // It computes the refs...
-      expect(text, relpath).toMatch(/lintRelativeScratchPaths\(/);
-      // ...and returns them to the caller as scratchPathLint carrying THIS
+      // It resolves tracked paths against the checkpoint's own harness scope...
+      expect(text, relpath).toMatch(/filterTrackedRelativeScratchPaths\(/);
+      expect(text, relpath).toMatch(/workspaceId,\s*harness/);
+      // ...and returns remaining warnings as scratchPathLint carrying THIS
       // advisory. Matching the field-to-constant wiring, not two independent
       // mentions, is what makes the assertion fail when the emission is cut
       // while the import happens to survive.

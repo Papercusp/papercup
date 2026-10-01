@@ -6,6 +6,7 @@ import { WorkspaceHostCustomerAcceptanceError } from '../../../workspace-host/cu
 import { WorkspaceHostReleaseCleanupError } from '../../../workspace-host/release-cleanup-release-receipt';
 import { WorkspaceHostReleaseShipmentError } from '../../../workspace-host/release-shipment-green-receipt';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
+import { WorkspaceHostProvisioningRequestError } from '../../../workspace-host/provisioning-runner';
 import type { WorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
 
 const CTX: RouteContext = {
@@ -761,6 +762,27 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
     await expect(restore.json()).resolves.toMatchObject({ hostId: 'host-restored-1' });
     expect(startLifecycle).toHaveBeenLastCalledWith(
       expect.objectContaining({ action: 'restore', snapshot, desired: restored, canary }),
+    );
+  });
+
+  it('maps a pre-enqueue lifecycle request refusal to HTTP 422', async () => {
+    const { dependencies, startLifecycle } = harness();
+    startLifecycle.mockRejectedValueOnce(new WorkspaceHostProvisioningRequestError(['upgrade image is required']));
+
+    const response = await post(dependencies, {
+      action: 'upgrade',
+      workspaceId: 'host-1',
+      operationId: 'op-upgrade-preflight-1',
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host upgrade request rejected',
+      problems: ['upgrade image is required'],
+    });
+    expect(startLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'upgrade', operationId: 'op-upgrade-preflight-1' }),
     );
   });
 

@@ -9,6 +9,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 import {
   auditMigrationList,
   COORD_SUBSCRIPTION_SUBSTRATE,
@@ -397,15 +398,10 @@ function isFixtureSource(rel: string): boolean {
   return /\.test\.m?ts$/.test(rel) || rel.startsWith('test/') || /-rig\.ts$/.test(rel);
 }
 
-/** Remove block comments and `//` line comments that start a line or follow whitespace
- *  (so a `http://` inside a string survives). A migration named only in prose is not an apply. */
-function stripTsComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|\s)\/\/[^\n]*/g, '$1');
-}
-
 /** PURE — the event-substrate migration stems a fixture source names in code. */
 function handAppliedEventMigrations(src: string): string[] {
-  const code = stripTsComments(src);
+  // A migration named only in prose is not an apply; the shared stripper keeps string contents.
+  const code = stripCommentsOnly(src, 'fixture.ts');
   return EVENT_MIGRATION_STEMS.filter((stem) => code.includes(stem));
 }
 

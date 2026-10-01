@@ -11,8 +11,8 @@
 //   2. its inputs were captured and it is not opaque;
 //   3. drift(recordedSha, judgedSha) is computable and disjoint from: the file, every executed
 //      module, every runtime read (a trailing '/' = directory prefix), the package.json and
-//      tsconfig*.json of every package directory an executed module lives under, and the global
-//      runner inputs.
+//      tsconfig*.json of every package directory an executed module lives under (P-004: only a
+//      tsconfig the vitest toolchain reads), and the global runner inputs.
 //
 // Everything else runs. PURE: every input is a value or a seam, so the unit tests pin the rule.
 
@@ -44,6 +44,14 @@ export const TEST_REUSE_AUDIT_RATE_DEFAULT = 0.05;
  * PINNED equal to libs/test-config/src/test-pass-reuse-skip.ts REUSE_PROOF_FORMAT (the recorder).
  */
 export const REUSE_PROOF_FORMAT = "proof-v2";
+
+/**
+ * The cap on vitest's importDurations record, which is where a proof's executedModules come from.
+ * A proof that lists this many modules may have been cut short, so it cannot prove it did NOT load
+ * a worker-side test-config file (P-003): it is opaque whenever such a file is in the drift.
+ * PINNED equal to libs/test-config/src/vitest-config.ts EXECUTED_SOURCE_MAP_IMPORT_LIMIT.
+ */
+export const EXECUTED_SOURCE_MAP_IMPORT_LIMIT = 1_000_000;
 
 /**
  * The runner identity a selector compares proofs against: the proof format plus the
@@ -110,10 +118,24 @@ export function auditDraw(file, judgedSha) {
  * lockfile edit that leaves the installed tree identical (packageLockChangeIsInert, asked through
  * the inertGlobalChange seam). A patches/ edit always rewrites an installed package, so it has no
  * inert case.
+ *
+ * P-003 (D-004): given `testConfigMainProcess` (libs/test-config/src/main-process-closure.ts, the
+ * derived set of test-config source files the vitest MAIN process can load), a test-config source
+ * file outside it is NOT global: it runs only in workers, where executedModules records it per
+ * proof. Its package.json and tsconfig stay global. Omitted or null = every source file is global.
+ *
+ * P-004 (D-007): given `toolchainTsconfigs` (libs/test-config/src/toolchain-tsconfigs.ts, the
+ * derived set of tsconfig/jsconfig files vite and vite-tsconfig-paths read), a root
+ * `tsconfig.*.json` outside it is NOT global (tsconfigUnreadByToolchain). Omitted or null = every
+ * root tsconfig is global.
+ *
+ * @param {string} rel
+ * @param {ReadonlySet<string> | null} [testConfigMainProcess]
+ * @param {ReadonlySet<string> | null} [toolchainTsconfigs]
  */
-export function isGlobalRunnerInput(rel) {
+export function isGlobalRunnerInput(rel, testConfigMainProcess = null, toolchainTsconfigs = null) {
   if (rel === "package-lock.json" || rel === "package.json" || rel === "tsconfig.json") return true;
-  if (/^tsconfig\.[^/]*\.json$/.test(rel)) return true;
+  if (/^tsconfig\.[^/]*\.json$/.test(rel)) return !tsconfigUnreadByToolchain(rel, toolchainTsconfigs);
   if (/^vitest\.[^/]*$/.test(rel)) return true;
   if (/^libs\/test-config\/(src\/|package\.json|tsconfig)/.test(rel)) {
     if (/\.test\.[cm]?[jt]sx?$/.test(rel)) return false;
@@ -123,6 +145,7 @@ export function isGlobalRunnerInput(rel) {
     // runner. Each used to discard every pass proof fleet-wide.
     if (/^libs\/test-config\/src\/(?:.*\/)?__fixtures__\//.test(rel)) return false;
     if (/^libs\/test-config\/src\//.test(rel) && !/\.(?:[cm]?[jt]sx?|json)$/.test(rel)) return false;
+    if (testConfigMainProcess && /^libs\/test-config\/src\//.test(rel)) return testConfigMainProcess.has(rel);
     return true;
   }
   if (/^patches\//.test(rel)) return true;
@@ -290,7 +313,29 @@ export function packageLockChangeIsInert(beforeText, afterText) {
 }
 
 /** The package.json / tsconfig*.json names that configure every file beneath their directory. */
-const CONFIG_BASENAME_RE = /^(package\.json|tsconfig[^/]*\.json|\.babelrc|babel\.config\.[cm]?js)$/;
+const CONFIG_BASENAME_RE = /^(package\.json|(?:ts|js)config[^/]*\.json|\.babelrc|babel\.config\.[cm]?js)$/;
+
+/** Any tsconfig / jsconfig file name. */
+const TSCONFIG_BASENAME_RE = /^(?:ts|js)config[^/]*\.json$/;
+/** The names vite-tsconfig-paths discovers as entries: always read, so never narrowed (a deletion must still invalidate). */
+const TOOLCHAIN_ENTRY_BASENAME_RE = /^(?:ts|js)config\.json$/;
+
+/**
+ * P-004 (D-007): is `rel` a tsconfig/jsconfig file that neither vite nor vite-tsconfig-paths reads,
+ * per the derived `toolchainTsconfigs` set? Such a file configures no test transform, so it is not
+ * a global input and does not configure the files beneath its directory. A test that reads it
+ * still records it in readPaths (or turns opaque when a child process reads it). Null set = false
+ * for every path (nothing is narrowed).
+ *
+ * @param {string} rel
+ * @param {ReadonlySet<string> | null | undefined} toolchainTsconfigs
+ */
+export function tsconfigUnreadByToolchain(rel, toolchainTsconfigs) {
+  if (!toolchainTsconfigs) return false;
+  const base = path.posix.basename(rel);
+  if (!TSCONFIG_BASENAME_RE.test(base) || TOOLCHAIN_ENTRY_BASENAME_RE.test(base)) return false;
+  return !toolchainTsconfigs.has(rel);
+}
 
 /**
  * Does a drift path invalidate a proof whose inputs are `modules` + `reads`? `dirs` is the set of
@@ -305,7 +350,16 @@ function invalidates(rel, o) {
   // "." is an ancestor of every executed module.
   if (o.inert.has(rel)) return false;
   const base = path.posix.basename(rel);
-  if (CONFIG_BASENAME_RE.test(base) && o.dirs.has(path.posix.dirname(rel))) return true;
+  if (CONFIG_BASENAME_RE.test(base) && o.dirs.has(path.posix.dirname(rel))) {
+    // P-004: a tsconfig the toolchain never reads configures nothing beneath its directory.
+    // Without this, an unread ROOT tsconfig would still reach every proof here ("." is an
+    // ancestor of every executed module), exactly as the inert case above.
+    if (tsconfigUnreadByToolchain(rel, o.toolchainTsconfigs)) {
+      o.unreadTsconfigHit = true;
+      return false;
+    }
+    return true;
+  }
   return false;
 }
 
@@ -340,6 +394,14 @@ function invalidates(rel, o) {
  *        itself is still invalidated). Any other result, or a throw, keeps it global. Omitted =
  *        every global path stays global. Implemented over git by gitInertGlobalChange
  *        (scripts/lib/executed-source-map.mjs).
+ * @param {ReadonlySet<string> | null} [o.testConfigMainProcess] P-003: the test-config source
+ *        files the vitest main process can load (isGlobalRunnerInput). A drift path it narrows to
+ *        per-proof is matched against executedModules, so a proof whose executedModules reached
+ *        EXECUTED_SOURCE_MAP_IMPORT_LIMIT is opaque for that drift. Omitted = all stay global.
+ * @param {ReadonlySet<string> | null} [o.toolchainTsconfigs] P-004 (D-007): the tsconfig/jsconfig
+ *        files vite and vite-tsconfig-paths read (libs/test-config/src/toolchain-tsconfigs.ts).
+ *        A drift tsconfig outside it is neither global nor an ancestor config; it still
+ *        invalidates a proof whose readPaths name it. Omitted = no tsconfig is narrowed.
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
@@ -356,6 +418,8 @@ export function selectReusablePasses({
   maxAgeMs,
   auditRate = 0,
   inertGlobalChange = null,
+  testConfigMainProcess = null,
+  toolchainTsconfigs = null,
 }) {
   const summary = {
     candidates: 0,
@@ -374,11 +438,17 @@ export function selectReusablePasses({
     // P-002: proofs that got past the global check only because a global drift path was inert.
     // Each would have been counted as globalInput before P-002, whatever its outcome is now.
     inertGlobal: 0,
+    // P-003: proofs that got past the global check only because a test-config drift path is
+    // outside the main-process closure (it was then matched per proof).
+    testConfigNarrowed: 0,
+    // P-004: proofs REUSED (or audited / watched) that an unread drift tsconfig would have
+    // invalidated before P-004: as a global root tsconfig, or as an ancestor-directory config.
+    tsconfigNarrowed: 0,
   };
   const skip = [];
   /** @type {Map<string, "audit" | "expired-clean">} */
   const watch = new Map();
-  /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string> }>} */
+  /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string>, narrowed: boolean, tsconfigNarrowed: boolean }>} */
   const driftCache = new Map();
   const driftFor = (sha) => {
     if (!driftCache.has(sha)) {
@@ -393,10 +463,21 @@ export function selectReusablePasses({
         }
       }
       let global = false;
+      let narrowed = false;
+      let tsconfigNarrowed = false;
       const inert = new Set();
       if (drift !== null) {
         for (const rel of drift) {
-          if (!isGlobalRunnerInput(rel)) continue;
+          if (!isGlobalRunnerInput(rel, testConfigMainProcess, toolchainTsconfigs)) {
+            if (isGlobalRunnerInput(rel)) {
+              // Separate flags: only the test-config narrowing is matched against executedModules
+              // (and so needs the capped-record guard below); an unread tsconfig is matched
+              // against readPaths only.
+              if (tsconfigUnreadByToolchain(rel, toolchainTsconfigs)) tsconfigNarrowed = true;
+              else narrowed = true;
+            }
+            continue;
+          }
           let isInert = false;
           if (inertGlobalChange) {
             try {
@@ -412,7 +493,7 @@ export function selectReusablePasses({
           }
         }
       }
-      driftCache.set(sha, { drift, global, inert });
+      driftCache.set(sha, { drift, global, inert, narrowed, tsconfigNarrowed });
     }
     return driftCache.get(sha);
   };
@@ -457,7 +538,7 @@ export function selectReusablePasses({
       reject("opaque");
       continue;
     }
-    const { drift, global, inert } = driftFor(p.recordedSha);
+    const { drift, global, inert, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
     if (drift === null) {
       reject("unknownDrift");
       continue;
@@ -466,7 +547,13 @@ export function selectReusablePasses({
       reject("globalInput");
       continue;
     }
+    if (narrowed && p.executedModules.length >= EXECUTED_SOURCE_MAP_IMPORT_LIMIT) {
+      // D-004 guard: a capped record may be missing the worker-side file that changed.
+      reject("opaque");
+      continue;
+    }
     if (inert.size > 0 && !expired) summary.inertGlobal += 1;
+    if (narrowed && !expired) summary.testConfigNarrowed += 1;
     const inputs = new Set([file, ...p.executedModules]);
     const readDirs = [];
     for (const r of p.readPaths ?? []) {
@@ -483,8 +570,9 @@ export function selectReusablePasses({
       }
     }
     let changed = false;
+    const check = { inputs, readDirs, dirs, inert, toolchainTsconfigs, unreadTsconfigHit: false };
     for (const rel of drift) {
-      if (invalidates(rel, { inputs, readDirs, dirs, inert })) {
+      if (invalidates(rel, check)) {
         changed = true;
         break;
       }
@@ -493,6 +581,7 @@ export function selectReusablePasses({
       reject("inputChanged");
       continue;
     }
+    if ((tsconfigNarrowed || check.unreadTsconfigHit) && !expired) summary.tsconfigNarrowed += 1;
     if (expired) {
       summary.expiredClean += 1;
       watch.set(file, "expired-clean");
@@ -700,6 +789,7 @@ export function formatTestReuseLine(wsName, summary, extra = "") {
     `otherContext=${s.otherContext} otherRunner=${s.otherRunner} expired=${s.expired} ` +
     `notCaptured=${s.notCaptured} opaque=${s.opaque} unknownDrift=${s.unknownDrift} ` +
     `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
-    `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0}${extra}`
+    `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0} ` +
+    `testConfigNarrowed=${s.testConfigNarrowed ?? 0} tsconfigNarrowed=${s.tsconfigNarrowed ?? 0}${extra}`
   );
 }

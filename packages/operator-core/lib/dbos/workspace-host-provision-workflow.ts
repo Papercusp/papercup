@@ -45,6 +45,7 @@ import {
 } from '../workspace-host/provisioning-runner';
 import {
   runWorkspaceHostLifecycle,
+  validateWorkspaceHostLifecycleRequest,
   type RunWorkspaceHostLifecycleInput,
 } from '../workspace-host/lifecycle-runner';
 import {
@@ -624,6 +625,9 @@ export async function startWorkspaceHostDestroyWorkflow(
 export async function startWorkspaceHostLifecycleWorkflow(
   input: StartWorkspaceHostLifecycleInput,
 ): Promise<WorkspaceHostProvisioningResult | WorkspaceHostOperationAcceptance> {
+  // Reject request-shape errors before DBOS binds the operationId to a workflow result. A corrected
+  // retry with the same ID must remain admissible after an invalid request.
+  validateWorkspaceHostLifecycleRequest(input);
   const operationId = input.operationId ?? randomUUID();
   const workflowInput: WorkspaceHostLifecycleWorkflowInput = { ...input, operationId };
   const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });

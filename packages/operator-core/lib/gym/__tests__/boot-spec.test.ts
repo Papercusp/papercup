@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 import {
   buildGymOperatorBootSpec,
   scrubLauncherClaudeSessionEnv,
@@ -129,7 +130,7 @@ describe('buildGymOperatorBootSpec', () => {
     // committed role floors can move a Gym-spawned role off the learning policy.
     const defaults = JSON.parse(buildGymOperatorBootSpec(base).env.AGENT_MODELS) as Record<string, string>;
     expect(Object.keys(defaults).sort()).toEqual([...AGENT_ROLES].sort());
-    expect(new Set(Object.values(defaults))).toEqual(new Set(['gpt-5.6-sol:xhigh']));
+    expect(new Set(Object.values(defaults))).toEqual(new Set([LEARNING_MODEL_SPEC]));
 
     // Zero-LLM fixtures can explicitly suppress model resolution so a Codex-shaped
     // spec does not backend-swap their injected Node command.

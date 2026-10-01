@@ -541,7 +541,7 @@ describe("<InboxBulkReport>", () => {
       intake('failed-intake', { outcome: 'failed', actionId: null }),
       intake('unapplied-intake', { outcome: 'recommended', actionId: 'apply-intake' }),
       intake('retained-intake', { outcome: 'auto_resolved', intakeDecision: {
-        disposition: 'retain-evidence', reason: 'Preserve the observation', decidedBy: 'reviewer', owner: 'agent',
+        disposition: 'retain', reason: 'Preserve the observation', decidedBy: 'reviewer', owner: 'agent',
         targetRef: null, missingInformation: null, decidedAt: '2026-10-01T12:00:00Z',
         workKind: null, acceptance: null, sourceRevision: 'src-v1:fixture',
       } }),

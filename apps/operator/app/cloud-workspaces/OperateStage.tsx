@@ -112,6 +112,8 @@ export function OperateStage({
   if (workspaces.length === 0) {
     return (
       <section
+        data-tutorial-target="cloud-workspace"
+        tabIndex={-1}
         className={styles.stage}
         aria-labelledby="operate-stage-heading"
         data-stage="operate"
@@ -144,6 +146,8 @@ export function OperateStage({
 
   return (
     <section
+      data-tutorial-target="cloud-workspace"
+      tabIndex={-1}
       className={styles.stage}
       aria-labelledby="operate-stage-heading"
       data-stage="operate"

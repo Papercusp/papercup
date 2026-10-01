@@ -28,8 +28,19 @@
  * works and say nothing about whether the tree it feeds actually gets materialised.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +51,27 @@ const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
 const repoRoot = resolve(here, '../../..');
 
 const mod = await import(scriptPath);
-const { parseArgs, detectorPathsFromCommand, parseGitmodules, planLinkExcludes, summarize, isDirectCliInvocation } = mod as {
+const {
+  parseArgs,
+  detectorPathsFromCommand,
+  parseGitmodules,
+  planLinkExcludes,
+  cloneWorkspaceTarget,
+  linkNodeModulesShadow,
+  owningSubmodule,
+  showAtRef,
+  summarize,
+  isDirectCliInvocation,
+} = mod as {
+  cloneWorkspaceTarget: (realTarget: unknown, repoRoot: unknown, workRoot: unknown) => string | null;
+  linkNodeModulesShadow: (
+    sharedNm: string,
+    cloneNm: string,
+    repoRoot: string,
+    workRoot: string,
+  ) => { entries: number; remapped: number; fallback: number };
+  owningSubmodule: (path: string, submodulePaths: unknown) => string | null;
+  showAtRef: (repoRoot: string, ref: string, path: string) => string | null;
   parseArgs: (argv: string[]) => {
     help: boolean;
     scripts: string[];
@@ -286,6 +317,120 @@ describe('planLinkExcludes (WI-10004898 — linked node_modules made every extra
   it('is total on junk input', () => {
     expect(planLinkExcludes(undefined, undefined)).toEqual({});
     expect(planLinkExcludes(['', 42, 'node_modules'], [null, ''])).toEqual({ '': ['/node_modules'] });
+  });
+});
+
+describe('cloneWorkspaceTarget (EI-24790229053787032 — workspace links must resolve into the extracted tree)', () => {
+  it('maps a workspace package inside the shared checkout to the same path in the extracted tree', () => {
+    expect(cloneWorkspaceTarget('/r/shared/libs/generic/search', '/r/shared', '/tmp/clone')).toBe(
+      '/tmp/clone/libs/generic/search',
+    );
+  });
+
+  it('leaves anything that is not a workspace package alone', () => {
+    // a real dependency living in a node_modules
+    expect(cloneWorkspaceTarget('/r/shared/node_modules/.pnpm/x', '/r/shared', '/tmp/clone')).toBeNull();
+    // outside the checkout, including a sibling that merely shares the prefix
+    expect(cloneWorkspaceTarget('/r/elsewhere/pkg', '/r/shared', '/tmp/clone')).toBeNull();
+    expect(cloneWorkspaceTarget('/r/shared-other/pkg', '/r/shared', '/tmp/clone')).toBeNull();
+    // the checkout root itself
+    expect(cloneWorkspaceTarget('/r/shared', '/r/shared', '/tmp/clone')).toBeNull();
+  });
+
+  it('is total on junk input', () => {
+    expect(cloneWorkspaceTarget(undefined, '/r', '/c')).toBeNull();
+    expect(cloneWorkspaceTarget('/r/a', '', '/c')).toBeNull();
+    expect(cloneWorkspaceTarget('/r/a', '/r', 42)).toBeNull();
+  });
+});
+
+describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link ran the SHARED tree)', () => {
+  function writePkg(dir: string, marker: string): void {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', main: 'index.js' }));
+    writeFileSync(join(dir, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
+  }
+
+  function fixture(): { root: string; shared: string; clone: string } {
+    const root = mkdtempSync(join(tmpdir(), 'lac-shadow-'));
+    const shared = join(root, 'shared');
+    const clone = join(root, 'clone');
+    // shared checkout: two workspace packages, one real dependency
+    writePkg(join(shared, 'libs', 'foo'), 'shared-foo');
+    writePkg(join(shared, 'libs', 'gone'), 'shared-gone');
+    writePkg(join(shared, 'node_modules', 'leftpad'), 'leftpad');
+    mkdirSync(join(shared, 'node_modules', '@papercusp'), { recursive: true });
+    symlinkSync('../../libs/foo', join(shared, 'node_modules', '@papercusp', 'foo'));
+    symlinkSync('../../libs/gone', join(shared, 'node_modules', '@papercusp', 'gone'));
+    // extracted tree: has its own (committed) foo, lacks gone (an uninitialised submodule)
+    writePkg(join(clone, 'libs', 'foo'), 'clone-foo');
+    mkdirSync(join(clone, 'app'), { recursive: true });
+    return { root, shared, clone };
+  }
+
+  it('resolves a workspace package to the extracted tree copy, everything else to the shared install', () => {
+    const { root, shared, clone } = fixture();
+    try {
+      const stats = linkNodeModulesShadow(join(shared, 'node_modules'), join(clone, 'node_modules'), shared, clone);
+      expect(stats).toEqual({ entries: 3, remapped: 1, fallback: 1 });
+      expect(lstatSync(join(clone, 'node_modules')).isSymbolicLink()).toBe(false);
+
+      // The failure this guards is a RUNTIME resolution, so assert what require() actually loads.
+      const req = createRequire(join(clone, 'app', 'x.js'));
+      expect(req('@papercusp/foo')).toBe('clone-foo');
+      expect(realpathSync(req.resolve('@papercusp/foo'))).toBe(realpathSync(join(clone, 'libs', 'foo', 'index.js')));
+      // absent in the extracted tree: falls back to the shared package (counted above, not silent)
+      expect(req('@papercusp/gone')).toBe('shared-gone');
+      // a real dependency is linked, never copied or installed
+      expect(lstatSync(join(clone, 'node_modules', 'leftpad')).isSymbolicLink()).toBe(true);
+      expect(req('leftpad')).toBe('leftpad');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('control: the previous whole-directory link loads the SHARED copy (the bug)', () => {
+    const { root, shared, clone } = fixture();
+    try {
+      symlinkSync(join(shared, 'node_modules'), join(clone, 'node_modules'), 'dir');
+      expect(createRequire(join(clone, 'app', 'x.js'))('@papercusp/foo')).toBe('shared-foo');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('showAtRef (WI-10004908 — submodule test operands were refused as absent at the ref)', () => {
+  const gitOut = (cwd: string, args: string[]) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+
+  it('owningSubmodule picks the deepest containing submodule and ignores prefix-sharing siblings', () => {
+    const subs = ['libs/papercusp', 'libs/papercusp/libs/db'];
+    expect(owningSubmodule('libs/papercusp/libs/db/sql/1.sql', subs)).toBe('libs/papercusp/libs/db');
+    expect(owningSubmodule('libs/papercusp/README.md', subs)).toBe('libs/papercusp');
+    expect(owningSubmodule('libs/papercusp-extra/x.ts', subs)).toBeNull();
+    expect(owningSubmodule('package.json', undefined)).toBeNull();
+  });
+
+  it('reads a superproject path exactly as git show does', () => {
+    expect(showAtRef(repoRoot, 'HEAD', 'package.json')).toBe(gitOut(repoRoot, ['show', 'HEAD:package.json']));
+  });
+
+  it('reads a path INSIDE a submodule from the submodule at the pinned commit, not null', () => {
+    const subRoot = 'libs/papercusp';
+    const subRelFile = 'libs/db/src/connection.ts';
+    // Calibration: the instrument this fix replaces really is blind here, so a pass below
+    // cannot be the old code path answering by accident.
+    expect(() => gitOut(repoRoot, ['show', `HEAD:${subRoot}/${subRelFile}`])).toThrow();
+    const pin = gitOut(repoRoot, ['rev-parse', `HEAD:${subRoot}`]).trim();
+    const committed = gitOut(join(repoRoot, subRoot), ['show', `${pin}:${subRelFile}`]);
+    expect(committed.length).toBeGreaterThan(0);
+    expect(showAtRef(repoRoot, 'HEAD', `${subRoot}/${subRelFile}`)).toBe(committed);
+  });
+
+  it('still answers null for a path absent at the ref, inside or outside a submodule', () => {
+    expect(showAtRef(repoRoot, 'HEAD', 'no-such-dir/definitely-absent-WI-10004908.ts')).toBeNull();
+    expect(showAtRef(repoRoot, 'HEAD', 'libs/papercusp/no-such-dir/definitely-absent-WI-10004908.ts')).toBeNull();
   });
 });
 

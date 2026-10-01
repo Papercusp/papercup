@@ -32,6 +32,8 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'respawn-carry-fresh-epoch-retry' ||
     kind === 'respawn-carry-turn-start-retry' ||
     kind === 'operator-pin-healed' ||
+    // The same heal, resolved by routing through the staging proxy instead.
+    kind === 'operator-pin-routed' ||
     kind === 'owner-composer-cleared-on-respawn' ||
     kind === 'inject-mutex-force-released' ||
     kind === 'mcp-reconnect-completed' ||
@@ -77,6 +79,8 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'launch-kickoff-model-turn-absent' ||
     kind === 'launch-role-mcp-unavailable' ||
     kind === 'busy-gate-expired' ||
+    // A respawn whose compaction was never reported to the operator.
+    kind === 'respawn-compaction-unannounced' ||
     /(?:^|-)(?:failed|error|expired|timeout|timed-out|unconfirmed|unverified|exhausted|truncated|dropped|refused|stuck|starvation|suspected|partial)$/.test(kind)
   ) return 'failure';
 

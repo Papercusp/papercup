@@ -970,4 +970,74 @@ describe('workspace-host provisioning DBOS admission', () => {
     control.resultError = refused;
     await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(refused);
   });
+
+  it('rejects an upgrade with no image before enqueue so the same operation ID can be retried', async () => {
+    control.admissionPending = true;
+    const incomplete = {
+      workspaceId: 'ws-1',
+      hostId: 'host-1',
+      action: 'upgrade' as const,
+      connection,
+      operationId: 'upgrade-preflight-1',
+    };
+
+    await expect(startWorkspaceHostLifecycleWorkflow(incomplete)).rejects.toMatchObject({
+      name: 'WorkspaceHostProvisioningRequestError',
+      problems: ['upgrade image is required'],
+    });
+    expect(control.startOptions).toBeNull();
+    expect(control.getResult).not.toHaveBeenCalled();
+
+    await expect(
+      startWorkspaceHostLifecycleWorkflow({
+        ...incomplete,
+        image: { id: 'projects/images/global/images/papercusp-v2' },
+      }),
+    ).resolves.toMatchObject({
+      status: 'accepted',
+      operationId: 'upgrade-preflight-1',
+      hostId: 'host-1',
+    });
+    expect(control.startOptions).toMatchObject({
+      workflowID: 'workspace-host:ws-1:host-1:operation:upgrade-preflight-1',
+    });
+  });
+
+  it('rejects every incomplete restore request before enqueue', async () => {
+    control.admissionPending = true;
+    const snapshot = { target: 'gcp' as const, providerId: 'snapshot-1', hostId: 'host-1' };
+    const restored = { ...desired, hostId: 'host-restored-1' };
+    const base = {
+      workspaceId: 'ws-1',
+      hostId: 'host-1',
+      action: 'restore' as const,
+      connection,
+    };
+    const invalidRequests: Array<{
+      request: Parameters<typeof startWorkspaceHostLifecycleWorkflow>[0];
+      problem: string;
+    }> = [
+      {
+        request: { ...base, operationId: 'restore-preflight-snapshot-1', desired: restored },
+        problem: 'restore snapshot is required',
+      },
+      {
+        request: { ...base, operationId: 'restore-preflight-desired-1', snapshot },
+        problem: 'restore desired host spec is required',
+      },
+      {
+        request: { ...base, operationId: 'restore-preflight-host-1', snapshot, desired },
+        problem: 'restore must target a distinct desired.hostId',
+      },
+    ];
+
+    for (const { request, problem } of invalidRequests) {
+      await expect(startWorkspaceHostLifecycleWorkflow(request)).rejects.toMatchObject({
+        name: 'WorkspaceHostProvisioningRequestError',
+        problems: [problem],
+      });
+      expect(control.startOptions).toBeNull();
+      expect(control.getResult).not.toHaveBeenCalled();
+    }
+  });
 });

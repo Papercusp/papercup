@@ -7,6 +7,7 @@ import {
   type ScoutReviseDeps,
 } from './revise';
 import type { ScoutRevisionRequest } from './scheduler';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import { withPlanLock as realWithPlanLock } from '../agent-tools/plans/with-plan-lock';
 
 /** A fake withPlanLock over an in-memory plan store (no PG). */
@@ -155,7 +156,7 @@ describe('runScoutRevisionCycle (P-001 targeted revision)', () => {
 
 describe('revise helpers', () => {
   it('DEFAULT_REVISION_MODEL is the synthesis-tier model', () => {
-    expect(DEFAULT_REVISION_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(DEFAULT_REVISION_MODEL).toBe(LEARNING_MODEL_SPEC);
   });
 
   it('looksLikePlanMarkdown requires frontmatter + the slug', () => {

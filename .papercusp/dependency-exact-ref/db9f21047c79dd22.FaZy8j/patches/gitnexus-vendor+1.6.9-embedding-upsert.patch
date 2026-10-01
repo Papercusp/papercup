@@ -1,0 +1,18 @@
+--- a/dist/core/embeddings/embedding-pipeline.js
++++ b/dist/core/embeddings/embedding-pipeline.js
+@@ -150,6 +150,15 @@
+         embedding: u.embedding,
+         contentHash: u.contentHash ?? STALE_HASH_SENTINEL,
+     }));
++    if (paramsList.length === 0)
++        return;
++    // papercusp-patch:gitnexus-1.6.9-embedding-upsert (WI-39394, plan gitnexus-embeddings-enablement-2026-09-05)
++    // Backport of gitnexus 1.6.11 batchInsertEmbeddings: DELETE by embedding id immediately before the
++    // CREATE, so re-embedding a node whose CodeEmbedding row already exists (cache-restored on a --force
++    // rebuild) UPSERTS instead of aborting the whole analyze with 'Found duplicated primary key value'
++    // (measured 2026-09-05, /tmp/wi39394/run3-embed-run.log). Re-applied by scripts/vendor-gitnexus-patch.mjs;
++    // pinned by packages/operator-core/lib/doc-claims/gitnexus-vendor-embedding-upsert.test.ts.
++    await executeWithReusedStatement(`MATCH (e:${EMBEDDING_TABLE_NAME} {id: $id}) DELETE e`, paramsList.map(({ id }) => ({ id })));
+     await executeWithReusedStatement(cypher, paramsList);
+ };
+ /**

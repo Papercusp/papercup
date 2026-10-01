@@ -49,6 +49,9 @@ vi.mock('../../memory/embed-sidecar-wiring', () => ({
   // above is unaffected — only the skipAcquisitionWhenCold suite below flips
   // this to false to exercise the cold-pipeline short-circuit.
   isLocalEmbedAcquisitionCheap: vi.fn().mockReturnValue(true),
+  // memory/configure.ts localAvailable() consults this before probing the local
+  // package; no test here installs an engine override, so mirror the real default.
+  hasLocalEmbedEngineOverride: vi.fn().mockReturnValue(false),
 }));
 
 import {

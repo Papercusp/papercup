@@ -286,6 +286,19 @@ export function buildWebVitalsBundle(): string {
  * — FCP/LCP are buffered and arrive almost immediately — but a little slack keeps
  * the reading stable on a loaded box.
  */
+export { installStartupStorageProbe } from './startup-storage-probe';
+import type { installStartupStorageProbe } from './startup-storage-probe';
+
+/** Compile a standalone browser payload, including no tsx name helpers. */
+export function buildStartupStorageProbeScript(): string {
+  const esbuild = require('esbuild') as typeof import('esbuild');
+  return esbuild.buildSync({
+    stdin: { contents: "import { installStartupStorageProbe } from './startup-storage-probe'; installStartupStorageProbe();",
+      resolveDir: __dirname, loader: 'ts' },
+    bundle: true, platform: 'browser', format: 'iife', minify: true, keepNames: false, write: false,
+  }).outputFiles[0].text;
+}
+
 export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
   fcpMs: number | null; lcpMs: number | null; attribution?: WebVitalsReading['attribution'];
 }) {
@@ -293,6 +306,10 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
   // clock with the external native diagnostic's epoch-ms read intervals.
   const documentClock = { timeOriginMs: Number.isFinite(performance.timeOrigin) ? performance.timeOrigin : null,
     capturedAtMs: performance.now() };
+  // Snapshot and restore before the following IPC await or popup interaction.
+  const storage = (window as unknown as {
+    __pcStartupStorageProbe?: ReturnType<typeof installStartupStorageProbe>;
+  }).__pcStartupStorageProbe?.stop() ?? null;
   const metrics = (window as unknown as {
     __sync_metrics__?: {
       snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null;
@@ -359,7 +376,7 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
     .map((entry) => ({ path: new URL(entry.name, location.href).pathname, startMs: Math.round(entry.startTime),
       durationMs: Math.round(entry.duration), endMs: Math.round(entry.startTime + entry.duration), initiator: entry.initiatorType }));
   return {
-    documentClock, readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
+    documentClock, storage, readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
     syncTrace: { unit: 'ms' as const, clock: 'performance.now' as const, startupQueries,
       planQueries: planQueries.map(compact), planStages },
     ...capturedAttribution,

@@ -49,10 +49,16 @@ export function auditDraw(file: string, judgedSha: string): number;
  * file outside it is NOT global: it runs only in workers, where executedModules records it per
  * proof. Its package.json and tsconfig stay global. Omitted or null = every source file is global.
  *
+ * P-004 (D-007): given `toolchainTsconfigs` (libs/test-config/src/toolchain-tsconfigs.ts, the
+ * derived set of tsconfig/jsconfig files vite and vite-tsconfig-paths read), a root
+ * `tsconfig.*.json` outside it is NOT global (tsconfigUnreadByToolchain). Omitted or null = every
+ * root tsconfig is global.
+ *
  * @param {string} rel
  * @param {ReadonlySet<string> | null} [testConfigMainProcess]
+ * @param {ReadonlySet<string> | null} [toolchainTsconfigs]
  */
-export function isGlobalRunnerInput(rel: string, testConfigMainProcess?: ReadonlySet<string> | null): boolean;
+export function isGlobalRunnerInput(rel: string, testConfigMainProcess?: ReadonlySet<string> | null, toolchainTsconfigs?: ReadonlySet<string> | null): boolean;
 /**
  * Can a change to this npm script change how a recorded proof's file runs? True for a task script,
  * for its `pre`/`post` hook (npm runs `pretest` and `posttest` around `npm run test`), and for an
@@ -113,6 +119,17 @@ export function packageLockInstallView(text: string): string | null;
  */
 export function packageLockChangeIsInert(beforeText: string, afterText: string): boolean;
 /**
+ * P-004 (D-007): is `rel` a tsconfig/jsconfig file that neither vite nor vite-tsconfig-paths reads,
+ * per the derived `toolchainTsconfigs` set? Such a file configures no test transform, so it is not
+ * a global input and does not configure the files beneath its directory. A test that reads it
+ * still records it in readPaths (or turns opaque when a child process reads it). Null set = false
+ * for every path (nothing is narrowed).
+ *
+ * @param {string} rel
+ * @param {ReadonlySet<string> | null | undefined} toolchainTsconfigs
+ */
+export function tsconfigUnreadByToolchain(rel: string, toolchainTsconfigs: ReadonlySet<string> | null | undefined): boolean;
+/**
  * @typedef {object} ReuseProof
  * @property {string}   recordedSha
  * @property {number}   recordedAtMs
@@ -146,12 +163,16 @@ export function packageLockChangeIsInert(beforeText: string, afterText: string):
  *        files the vitest main process can load (isGlobalRunnerInput). A drift path it narrows to
  *        per-proof is matched against executedModules, so a proof whose executedModules reached
  *        EXECUTED_SOURCE_MAP_IMPORT_LIMIT is opaque for that drift. Omitted = all stay global.
+ * @param {ReadonlySet<string> | null} [o.toolchainTsconfigs] P-004 (D-007): the tsconfig/jsconfig
+ *        files vite and vite-tsconfig-paths read (libs/test-config/src/toolchain-tsconfigs.ts).
+ *        A drift tsconfig outside it is neither global nor an ancestor config; it still
+ *        invalidates a proof whose readPaths name it. Omitted = no tsconfig is narrowed.
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
  *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
  */
-export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, }: {
+export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, }: {
     candidates: string[];
     proofs: Map<string, ReuseProof>;
     judgedSha: string;
@@ -163,6 +184,7 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     auditRate?: number | undefined;
     inertGlobalChange?: ((rel: string, fromSha: string, toSha: string) => boolean) | null | undefined;
     testConfigMainProcess?: ReadonlySet<string> | null | undefined;
+    toolchainTsconfigs?: ReadonlySet<string> | null | undefined;
 }): {
     skip: string[];
     summary: Record<string, number>;

@@ -3,6 +3,7 @@ import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch } from '../hosted-browser-context';
 import { readTutorialProgress, updateTutorialProgress, tutorialProgressUpdateSchema, TutorialProgressConflict } from '../../onboarding/cloud-tutorial-progress';
+import { sameTutorialScope } from '../../onboarding/cloud-tutorial-lesson';
 export const HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH = '/hosted/browser/onboarding/tutorial-progress' as const;
 export function createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant }: {
   origin: string; controlPlaneWorkspaceId: string;
@@ -26,6 +27,7 @@ export function createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspa
       const scope = { tenantId: principal.activeOrganizationId, userId: principal.userId, workspaceId: principal.selectedWorkspaceId! };
       const parsed = method === 'POST' ? tutorialProgressUpdateSchema.safeParse(await request.json().catch(() => null)) : null;
       if (parsed && !parsed.success) return jsonError('invalid_tutorial_progress', 400);
+      if (parsed?.success && !sameTutorialScope(scope, parsed.data.expectedScope)) return jsonError('tutorial_scope_changed', 403);
       try {
         const record = await runTenant(tenantContext(principal), tx => parsed?.success
           ? updateTutorialProgress(tx, scope, parsed.data) : readTutorialProgress(tx, scope));

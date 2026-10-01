@@ -1,13 +1,16 @@
 /**
  * Reader-set labels against real Postgres (WI-10004864, plan
- * personal-data-reader-set-labels-2026-10-01 P-001/P-003/P-004).
+ * personal-data-reader-set-labels-2026-10-01 P-001/P-003/P-004; owner controls
+ * P-005, WI-10004902).
  *
  * The pure label maths is pinned by disclosure-labels.test.ts. What only a real
  * database can show is the ledger itself: that a delivery leaves exactly one
  * active row per (agent, document), that the conflict rule tightens and never
- * widens, that a sink reads the rows back across users, and that migration
- * 1303's workspace RLS holds. Every ledger call runs as harness_app inside a
- * transaction carrying app.workspace_id — the shape ctx.tx has in production.
+ * widens, that a sink reads the rows back across users, that a release touches
+ * only the caller's rows delivered before the authorizing turn, and that
+ * migration 1303's workspace RLS holds. Every ledger call runs as harness_app
+ * inside a transaction carrying app.workspace_id — the shape ctx.tx has in
+ * production.
  */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
@@ -16,9 +19,14 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { LabelableDocument, PrivacyLevel, PrivacyRuleMatch } from './disclosure-labels';
 import {
   assertDisclosurePermits,
+  deletePrivacyRule,
   discloseDocuments,
   DisclosureRefused,
+  listPrivacyRuleRows,
   loadActiveDisclosures,
+  loadReleasableDisclosures,
+  releaseDisclosures,
+  upsertPrivacyRule,
 } from './disclosure-ledger';
 
 const WS = 'disclosure-ledger-test';
@@ -225,6 +233,119 @@ describe('assertDisclosurePermits', () => {
       recipients: ['bob@private.example'],
       sink: 'mail:send',
     })).rejects.toMatchObject({ code: 'disclosure_ledger_unavailable' });
+  });
+});
+
+describe('owner controls (P-005)', () => {
+  function upsert(level: PrivacyLevel, authorityRef: string | null) {
+    return inWorkspace((tx) => upsertPrivacyRule(tx, {
+      workspaceId: WS,
+      userId,
+      matchKind: 'sender-domain',
+      matchValue: 'private.example',
+      level,
+      actor: AGENT,
+      authorityRef,
+    }));
+  }
+
+  function releasable(documentIds: string[] | null, agentOwnerId = AGENT) {
+    return inWorkspace((tx) => loadReleasableDisclosures(tx, { workspaceId: WS, agentOwnerId, documentIds }));
+  }
+
+  function release(ids: string[], deliveredBefore: Date) {
+    return inWorkspace((tx) => releaseDisclosures(tx, {
+      workspaceId: WS,
+      agentOwnerId: AGENT,
+      ids,
+      deliveredBefore,
+      releasedBy: AGENT,
+      releaseRef: 'owner_directive:9',
+    }));
+  }
+
+  it('records the authority of a loosening edit and keeps it through a later tightening', async () => {
+    expect(await upsert('sender-only', null)).toMatchObject({ level: 'sender-only', authorityRef: null, createdBy: AGENT });
+    expect(await upsert('unrestricted', 'owner_directive:7')).toMatchObject({ level: 'unrestricted', authorityRef: 'owner_directive:7' });
+    expect(await upsert('participants', null)).toMatchObject({ level: 'participants', authorityRef: 'owner_directive:7' });
+
+    const rows = await inWorkspace((tx) => listPrivacyRuleRows(tx, WS, userId));
+    expect(rows).toEqual([expect.objectContaining({
+      matchKind: 'sender-domain',
+      matchValue: 'private.example',
+      level: 'participants',
+      updatedBy: AGENT,
+      authorityRef: 'owner_directive:7',
+    })]);
+    expect(rows[0].updatedAt).toBeInstanceOf(Date);
+  });
+
+  it('deletes a rule once and reports a second delete as absent', async () => {
+    await upsert('participants', null);
+    const remove = () => inWorkspace((tx) => deletePrivacyRule(tx, {
+      workspaceId: WS,
+      userId,
+      matchKind: 'sender-domain',
+      matchValue: 'private.example',
+    }));
+
+    expect(await remove()).toMatchObject({ level: 'participants' });
+    expect(await remove()).toBeNull();
+    expect(await inWorkspace((tx) => listPrivacyRuleRows(tx, WS, userId))).toEqual([]);
+  });
+
+  it("lists only this agent's active disclosures, all of them or narrowed to the named documents", async () => {
+    await setRule('sender-domain', 'private.example', 'participants');
+    const [first, second, foreign] = [privateMail(), privateMail(), privateMail()];
+    await disclose([first, second]);
+    await disclose([foreign], OTHER_AGENT);
+
+    const all = await releasable(null);
+    expect(all.map((row) => row.documentId).sort()).toEqual([first.id, second.id].sort());
+    expect(all.every((row) => row.deliveredAt instanceof Date)).toBe(true);
+    expect((await releasable([second.id])).map((row) => row.documentId)).toEqual([second.id]);
+    expect(await releasable([foreign.id])).toEqual([]);
+  });
+
+  it("releases only this agent's rows delivered before the authorizing turn, after which the sink stops counting them", async () => {
+    await setRule('sender-domain', 'private.example', 'participants');
+    const [early, late, foreign] = [privateMail(), privateMail(), privateMail()];
+    await disclose([early, late]);
+    await disclose([foreign], OTHER_AGENT);
+    const authorizedAt = new Date(Date.now() - 30 * 60_000);
+    await org.adminSql`
+      UPDATE harness_shared.personal_disclosures
+         SET delivered_at = ${new Date(authorizedAt.getTime() - 60_000)}
+       WHERE workspace_id = ${WS} AND document_id IN (${early.id}::uuid, ${foreign.id}::uuid)`;
+    const ids = (await org.adminSql<{ id: string }[]>`
+      SELECT id::text FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`).map((row) => row.id);
+
+    expect(await release([], authorizedAt)).toEqual([]);
+    // Every row id is offered, the other agent's included: the WHERE clause, not
+    // the caller's list, decides what a release may touch.
+    expect(await release(ids, authorizedAt)).toEqual([early.id]);
+    const after = await org.adminSql<Array<{ documentId: string; releasedBy: string | null; releaseRef: string | null }>>`
+      SELECT document_id::text AS "documentId", released_by AS "releasedBy", release_ref AS "releaseRef"
+        FROM harness_shared.personal_disclosures
+       WHERE workspace_id = ${WS} AND released_at IS NOT NULL`;
+    expect(after).toEqual([{ documentId: early.id, releasedBy: AGENT, releaseRef: 'owner_directive:9' }]);
+    await expect(permits(['mallory@evil.example'])).rejects.toBeInstanceOf(DisclosureRefused);
+
+    expect(await release(ids, new Date(Date.now() + 60_000))).toEqual([late.id]);
+    await expect(permits(['mallory@evil.example'])).resolves.toBeUndefined();
+    await expect(permits(['mallory@evil.example'], { agentOwnerId: OTHER_AGENT })).rejects.toBeInstanceOf(DisclosureRefused);
+  });
+
+  it('labels the agent again when it re-reads a document it was released from', async () => {
+    await setRule('sender-domain', 'private.example', 'participants');
+    const doc = privateMail();
+    await disclose([doc]);
+    const [row] = await releasable(null);
+    expect(await release([row.id], new Date(Date.now() + 60_000))).toEqual([doc.id]);
+
+    await disclose([doc]);
+    expect((await releasable(null)).map((active) => active.documentId)).toEqual([doc.id]);
+    await expect(permits(['mallory@evil.example'])).rejects.toBeInstanceOf(DisclosureRefused);
   });
 });
 

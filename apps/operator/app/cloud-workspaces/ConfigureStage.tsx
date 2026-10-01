@@ -95,6 +95,8 @@ export function ConfigureStage({
   if (connections.length === 0) {
     return (
       <section
+        data-tutorial-target="cloud-configuration"
+        tabIndex={-1}
         className={styles.stage}
         aria-labelledby="configure-stage-heading"
         data-stage="configure"
@@ -125,6 +127,8 @@ export function ConfigureStage({
 
   return (
     <section
+      data-tutorial-target="cloud-configuration"
+      tabIndex={-1}
       className={styles.stage}
       aria-labelledby="configure-stage-heading"
       data-stage="configure"

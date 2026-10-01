@@ -428,13 +428,18 @@ describe('P-006 apply-intake', () => {
   it('executes the recorded decision against the improvement source and resolves on effect', async () => {
     const deps = spyDeps();
     const executeIntakeDecision = vi.fn(async () => ({ terminal: true }));
+    const recheckIntakeApply = vi.fn(async () => ({ allowed: true }));
     const result = await dispatchAttentionTerminalAction({
       item: asTerminalItem(FIXTURES.improvement),
       actionId: 'apply-intake',
-      deps: { ...deps, executeIntakeDecision },
+      deps: { ...deps, executeIntakeDecision, recheckIntakeApply },
       intake: { decision, runId: 'run-9' },
     });
     expect(result).toEqual({ resolved: true });
+    expect(recheckIntakeApply).toHaveBeenCalledWith({ runId: 'run-9', itemId: FIXTURES.improvement.id });
+    expect(recheckIntakeApply.mock.invocationCallOrder[0]).toBeLessThan(
+      executeIntakeDecision.mock.invocationCallOrder[0],
+    );
     expect(executeIntakeDecision).toHaveBeenCalledWith({
       sourceId: 'EI-1',
       harnessSlug: FIXTURES.improvement.harnessSlug ?? null,
@@ -455,6 +460,7 @@ describe('P-006 apply-intake', () => {
     expect(
       await dispatchAttentionTerminalAction({ item, actionId: 'apply-intake', deps, intake: { decision, runId: 'r' } }),
     ).toEqual({ resolved: false });
+    const allow = vi.fn(async () => ({ allowed: true }));
     const refusing = vi.fn(async () => {
       throw new Error('intake promote refused (source-revision-changed): edited');
     });
@@ -462,10 +468,54 @@ describe('P-006 apply-intake', () => {
       dispatchAttentionTerminalAction({
         item,
         actionId: 'apply-intake',
-        deps: { ...deps, executeIntakeDecision: refusing },
+        deps: { ...deps, executeIntakeDecision: refusing, recheckIntakeApply: allow },
         intake: { decision, runId: 'r' },
       }),
     ).rejects.toThrow('source-revision-changed');
+    expect(sourceMutatingCalls(deps)).toBe(0);
+  });
+
+  // P-009 (R-31, D-019): the kill switch and the run's stop state are rechecked at
+  // application time, immediately before the executor.
+  it('fails closed without an application-time recheck, and a refused recheck writes nothing', async () => {
+    const deps = spyDeps();
+    const item = asTerminalItem(FIXTURES.improvement);
+    const executeIntakeDecision = vi.fn(async () => ({ terminal: true }));
+
+    // An executor without the recheck cannot apply intake.
+    expect(
+      await dispatchAttentionTerminalAction({
+        item,
+        actionId: 'apply-intake',
+        deps: { ...deps, executeIntakeDecision },
+        intake: { decision, runId: 'run-9' },
+      }),
+    ).toEqual({ resolved: false });
+    expect(executeIntakeDecision).not.toHaveBeenCalled();
+
+    // Kill switch flipped (or run stopped) after the tool-entry check: refused, nothing executed.
+    const killed = vi.fn(async () => ({ allowed: false, reason: 'inbox-bulk-resolve is off (kill switch)' }));
+    await expect(
+      dispatchAttentionTerminalAction({
+        item,
+        actionId: 'apply-intake',
+        deps: { ...deps, executeIntakeDecision, recheckIntakeApply: killed },
+        intake: { decision, runId: 'run-9' },
+      }),
+    ).rejects.toThrow('intake apply refused at application time: inbox-bulk-resolve is off (kill switch)');
+    expect(killed).toHaveBeenCalledWith({ runId: 'run-9', itemId: FIXTURES.improvement.id });
+    expect(executeIntakeDecision).not.toHaveBeenCalled();
+
+    const stopped = vi.fn(async () => ({ allowed: false }));
+    await expect(
+      dispatchAttentionTerminalAction({
+        item,
+        actionId: 'apply-intake',
+        deps: { ...deps, executeIntakeDecision, recheckIntakeApply: stopped },
+        intake: { decision, runId: 'run-9' },
+      }),
+    ).rejects.toThrow('intake apply refused at application time: recheck refused');
+    expect(executeIntakeDecision).not.toHaveBeenCalled();
     expect(sourceMutatingCalls(deps)).toBe(0);
   });
 });

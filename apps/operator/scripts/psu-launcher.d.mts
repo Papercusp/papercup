@@ -2417,6 +2417,32 @@ export function hexToRgb(hex: any): number[] | null;
  *  text for a fleet with no bound color. `color` is the `{ bg, fg, cursor }` the
  *  /options endpoint resolves per fleet (fleet-color-schemes). Pure — for tests. */
 export function colorSwatch(color: any): string;
+/**
+ * named-su-agent-fleets P-006: pick a named fleet to run this session in, create a
+ * new one, or stay unfleeted (default). Mirrors pickAccount — the FIRST row keeps
+ * today's behavior (no fleet, no name). Picking an existing persisted fleet JOINS it
+ * as a member; entering a NEW name makes this agent the LEADER of a freshly-created
+ * fleet (D-002). Returns `{ slug, role, name }`: slug+role null for "no fleet";
+ * `name` is set only for a freshly-entered new fleet (its title — threaded to the
+ * server, which creates the agent_fleets row + re-derives the slug authoritatively).
+ * Exported for tests.
+ */
+export function pickFleet(workspace: any): Promise<{
+    slug: null;
+    role: null;
+    name: null;
+    scheme: null;
+} | {
+    slug: string;
+    role: string;
+    name: string;
+    scheme: any;
+} | {
+    slug: any;
+    role: string;
+    name: null;
+    scheme: null;
+}>;
 /** A scheme's name rendered in its own cursor accent (ANSI truecolor fg), or plain
  *  when the colour is unparseable. Pure — for the fleet colour-picker rows; for tests. */
 export function schemeNameInAccent(scheme: any): any;
@@ -3867,6 +3893,17 @@ export function detectBackendBin(agent: any): {
     path: string;
     onPath: boolean;
 } | null;
+/**
+ * Ensure the chosen backend CLI is installed before we launch it. Returns true when
+ * it's usable (already present, or installed here + made resolvable), false when the
+ * user declined or it didn't land — the caller then aborts the launch. Non-interactive
+ * (scripted / non-TTY) launches never prompt; they fail with guidance instead.
+ * Exported for tests; `detect` is injectable so a test can stage a missing backend.
+ */
+export function ensureBackendInstalled(agent: any, { interactive, detect }?: {
+    interactive?: boolean | undefined;
+    detect?: typeof detectBackendBin | undefined;
+}): Promise<boolean>;
 /**
  * The pre-TUI "your setup isn't finished" nudge (owner batch #5). PURE: given the
  * concierge setup STAGE name, return the reminder lines to print, or null when there

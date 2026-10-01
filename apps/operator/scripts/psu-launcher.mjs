@@ -8794,8 +8794,9 @@ async function fetchFleetChoices(workspace) {
  * fleet (D-002). Returns `{ slug, role, name }`: slug+role null for "no fleet";
  * `name` is set only for a freshly-entered new fleet (its title — threaded to the
  * server, which creates the agent_fleets row + re-derives the slug authoritatively).
+ * Exported for tests.
  */
-async function pickFleet(workspace) {
+export async function pickFleet(workspace) {
   // D-002 rule 2: a hosted customer's psu never joins or creates a fleet.
   if (isHostedPsuCustomer(process.env))
     return { slug: null, role: null, name: null, scheme: null };
@@ -15603,12 +15604,13 @@ function runInstallerInherit(spec) {
  * it's usable (already present, or installed here + made resolvable), false when the
  * user declined or it didn't land — the caller then aborts the launch. Non-interactive
  * (scripted / non-TTY) launches never prompt; they fail with guidance instead.
+ * Exported for tests; `detect` is injectable so a test can stage a missing backend.
  */
-async function ensureBackendInstalled(
+export async function ensureBackendInstalled(
   agent,
-  { interactive = Boolean(process.stdout.isTTY) } = {},
+  { interactive = Boolean(process.stdout.isTTY), detect = detectBackendBin } = {},
 ) {
-  const present = detectBackendBin(agent);
+  const present = detect(agent);
   if (present) {
     if (!present.onPath) ensureDirOnPath(present.path);
     return true;

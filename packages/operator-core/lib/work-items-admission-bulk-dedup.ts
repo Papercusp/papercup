@@ -286,6 +286,12 @@ export interface BulkDedupStageResult {
   servedAccounts: string[];
   /** Model batches recovered from the durable stage envelope rather than called again. */
   reusedBatches: number;
+  /**
+   * D-007: pairs whose judgement was donated by an EARLIER bulk-stage row (not
+   * re-judged, and not counted in this stage's spend). Absent on stages written
+   * before D-007.
+   */
+  priorRunDonatedPairs?: number;
   /** D-007 report for the frozen independent-label replay (non-empty stages). */
   mergeQuality?: AdmissionMergeQualityReport;
   /** Exact protected/drifted endpoints the shared writer refused. */
@@ -1036,6 +1042,71 @@ function pairFingerprintsFor(batch: readonly PromoterPair[]): Record<string, str
   return out;
 }
 
+/**
+ * D-007 (plan work-queue-bulk-cleanup-remediation-2026-10-01): how far back, and
+ * how many earlier bulk-stage rows, a new stage reads for per-pair donors. Every
+ * driver fire mints a fresh runId and a pass is cancelled at the 24h fire
+ * timeout, so without cross-row donors a pass longer than one fire restarts from
+ * zero each day and never completes. The window spans several missed fires; the
+ * row cap bounds the read (a full-corpus row holds ~1,600 batch checkpoints).
+ */
+export const PRIOR_STAGE_DONOR_WINDOW_MS = 14 * 24 * 60 * 60_000;
+export const PRIOR_STAGE_DONOR_ROW_LIMIT = 8;
+
+/**
+ * Read pair-reusable batch checkpoints from EARLIER bulk-stage rows of the same
+ * workspace + harness — any outcome, since a stage cancelled at the fire timeout
+ * never persists its judgements anywhere else. Only checkpoints that could pass
+ * `checkpointSupportsPairReuse` for this stage's quality gate are returned; the
+ * per-pair evidence fingerprint is still checked against the live pair before
+ * any judgement is donated. Rows that started after this stage are excluded so a
+ * DBOS recovery of this stage reads the same donor population.
+ */
+export async function readPriorStageDonorCheckpoints(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    stageRunId: string;
+    qualityGateKey: string;
+    windowMs?: number;
+    rowLimit?: number;
+  },
+): Promise<BulkBatchCheckpoint[]> {
+  const windowSec = (input.windowMs ?? PRIOR_STAGE_DONOR_WINDOW_MS) / 1000;
+  const rowLimit = input.rowLimit ?? PRIOR_STAGE_DONOR_ROW_LIMIT;
+  const rows = await sql<Array<{ checkpoint: BulkBatchCheckpoint }>>`
+    WITH own AS (
+      SELECT COALESCE(
+               (SELECT started_at FROM harness_shared.admission_runs
+                 WHERE workspace_id = ${input.workspaceId} AND id = ${input.stageRunId}),
+               now()) AS started_at
+    ),
+    prior AS (
+      SELECT r.detail
+        FROM harness_shared.admission_runs r, own
+       WHERE r.workspace_id = ${input.workspaceId}
+         AND r.harness_slug = ${input.harnessSlug}
+         AND r.run_kind = 'bulk-stage'
+         AND r.id <> ${input.stageRunId}
+         AND r.started_at < own.started_at
+         AND r.started_at >= own.started_at - make_interval(secs => ${windowSec}::double precision)
+       ORDER BY r.started_at DESC
+       LIMIT ${rowLimit}
+    )
+    SELECT b.value AS checkpoint
+      FROM prior, jsonb_each(COALESCE(prior.detail->'checkpoints'->'batches', '{}'::jsonb)) b
+     WHERE b.value->>'status' = 'complete'
+       AND b.value->>'schemaVersion' = ${BULK_BATCH_CHECKPOINT_SCHEMA_VERSION}
+       AND b.value->>'qualityGateKey' = ${input.qualityGateKey}
+       AND jsonb_typeof(b.value->'pairFingerprints') = 'object'
+       AND jsonb_typeof(b.value->'pairKeys') = 'array'
+       AND jsonb_typeof(b.value->'judgements') = 'array'`;
+  return rows
+    .map((row) => row.checkpoint)
+    .filter((checkpoint) => checkpointSupportsPairReuse(checkpoint, input.qualityGateKey));
+}
+
 /** A checkpoint that can donate individual pair judgements after corpus drift. */
 function checkpointSupportsPairReuse(checkpoint: BulkBatchCheckpoint, qualityGateKey: string): boolean {
   return (
@@ -1418,6 +1489,12 @@ async function judgeBulkPairs(
     now: () => number;
     step: BulkDedupStepRunner;
     checkpoints: Record<string, BulkBatchCheckpoint>;
+    /**
+     * D-007: pair-reusable checkpoints from EARLIER bulk-stage rows. Used for
+     * per-pair donation only — never offset-keyed batch reuse or the canary —
+     * and their spend is not folded into this stage's counters.
+     */
+    priorRunCheckpoints?: readonly BulkBatchCheckpoint[];
     /** Merge-quality gate key every new checkpoint is stamped with. */
     qualityGateKey: string;
     /**
@@ -1440,6 +1517,7 @@ async function judgeBulkPairs(
   tokensOut: number;
   servedAccounts: string[];
   reusedBatches: number;
+  priorRunDonatedPairs: number;
 }> {
   const byShard = new Map<number, PromoterPair[]>();
   for (const pair of input.pairs) {
@@ -1452,23 +1530,33 @@ async function judgeBulkPairs(
   // recorded evidence (quality gate key + both endpoint snapshot fingerprints)
   // still matches the live pair. Batch offsets shift whenever one earlier pair
   // leaves the input, so offset-keyed batch reuse alone cannot survive drift.
+  // D-007: earlier bulk-stage rows donate under the same per-pair guard, so a
+  // pass cancelled at the fire timeout is continued by the next fire's fresh
+  // runId instead of restarting from zero.
   const pairDonors = new Map<
     string,
-    { checkpoint: BulkBatchCheckpoint; fingerprint: string; judgements: PromoterJudgement[] }
+    { checkpoint: BulkBatchCheckpoint; fingerprint: string; judgements: PromoterJudgement[]; priorRun: boolean }
   >();
-  for (const checkpoint of Object.values(opts.checkpoints)) {
-    if (!checkpointSupportsPairReuse(checkpoint, opts.qualityGateKey)) continue;
-    for (const pairKey of checkpoint.pairKeys) {
-      const fingerprint = checkpoint.pairFingerprints?.[pairKey];
-      const judgements = checkpoint.judgements.filter((judgement) => judgement.pairKey === pairKey);
-      // An omitted pair has no judgement to donate; it is judged again.
-      if (!fingerprint || judgements.length === 0) continue;
-      const prior = pairDonors.get(pairKey);
-      if (!prior || checkpoint.completedAt > prior.checkpoint.completedAt) {
-        pairDonors.set(pairKey, { checkpoint, fingerprint, judgements });
+  const addDonors = (checkpoints: Iterable<BulkBatchCheckpoint>, priorRun: boolean) => {
+    for (const checkpoint of checkpoints) {
+      if (!checkpointSupportsPairReuse(checkpoint, opts.qualityGateKey)) continue;
+      for (const pairKey of checkpoint.pairKeys) {
+        const fingerprint = checkpoint.pairFingerprints?.[pairKey];
+        const judgements = checkpoint.judgements.filter((judgement) => judgement.pairKey === pairKey);
+        // An omitted pair has no judgement to donate; it is judged again.
+        if (!fingerprint || judgements.length === 0) continue;
+        const prior = pairDonors.get(pairKey);
+        // The newest judgement wins; on a tie this stage's own checkpoint wins.
+        const newer =
+          !prior ||
+          checkpoint.completedAt > prior.checkpoint.completedAt ||
+          (checkpoint.completedAt === prior.checkpoint.completedAt && !priorRun && prior.priorRun);
+        if (newer) pairDonors.set(pairKey, { checkpoint, fingerprint, judgements, priorRun });
       }
     }
-  }
+  };
+  addDonors(opts.priorRunCheckpoints ?? [], true);
+  addDonors(Object.values(opts.checkpoints), false);
   const shardEntries = [...byShard.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([shard, pairs]) => {
@@ -1527,6 +1615,7 @@ async function judgeBulkPairs(
     tokensOut: number;
     servedAccounts: string[];
     reusedBatches: number;
+    priorRunDonatedPairs: number;
   }>(shardEntries.length);
   let nextShardIndex = 0;
   const judgeShard = async ({
@@ -1567,9 +1656,15 @@ async function judgeBulkPairs(
       for (const account of saved.servedAccounts) servedAccounts.add(account);
       reusedBatches += 1;
     };
+    let priorRunDonatedPairs = 0;
     for (const pair of donated) {
       const donor = pairDonors.get(pair.pairKey)!;
       judgements.push(...donor.judgements);
+      // An earlier row's spend belongs to that row's ledger, not this stage's.
+      if (donor.priorRun) {
+        priorRunDonatedPairs += 1;
+        continue;
+      }
       if (!foldedDonors.has(donor.checkpoint.key)) {
         foldedDonors.add(donor.checkpoint.key);
         foldCheckpoint(donor.checkpoint);
@@ -1729,6 +1824,7 @@ async function judgeBulkPairs(
       tokensOut,
       servedAccounts: [...servedAccounts].sort(),
       reusedBatches,
+      priorRunDonatedPairs,
     };
   };
   const workers = Array.from({ length: Math.min(opts.shardConcurrency, shardEntries.length) }, async () => {
@@ -1756,6 +1852,7 @@ async function judgeBulkPairs(
     tokensOut: results.reduce((sum, result) => sum + result.tokensOut, 0),
     servedAccounts: [...new Set(results.flatMap((result) => result.servedAccounts))].sort(),
     reusedBatches: results.reduce((sum, result) => sum + result.reusedBatches, 0),
+    priorRunDonatedPairs: results.reduce((sum, result) => sum + result.priorRunDonatedPairs, 0),
   };
 }
 
@@ -2150,6 +2247,12 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     const startedAt = now();
     try {
       const mergeQuality = await ensureMergeQuality(stageRunId, stageEnvelope);
+      const priorRunCheckpoints = await readPriorStageDonorCheckpoints(sql, {
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        stageRunId,
+        qualityGateKey: mergeQualityPrepared.gateKey,
+      });
       const judged = await judgeBulkPairs(input, {
         llmCall: opts.llmCall,
         model,
@@ -2165,6 +2268,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         now,
         step,
         checkpoints: savedCheckpoints,
+        priorRunCheckpoints,
         qualityGateKey: mergeQualityPrepared.gateKey,
         inputFingerprintMatched: leaseState.reused,
       });
@@ -2243,6 +2347,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           scopedPairsAfter: nextInput.pairs.length,
           servedAccounts: judged.servedAccounts,
           reusedBatches: judged.reusedBatches,
+          priorRunDonatedPairs: judged.priorRunDonatedPairs,
           mergeQuality,
           guardRefusals: persistence.guardRefusals,
         };
@@ -2278,6 +2383,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                    },
                    servedAccounts: judged.servedAccounts,
                    reusedBatches: judged.reusedBatches,
+                   priorRunDonatedPairs: judged.priorRunDonatedPairs,
                    preflight: preflightResult,
                    verdicts,
                    // before/after only. There used to be an `ok: true` here, a

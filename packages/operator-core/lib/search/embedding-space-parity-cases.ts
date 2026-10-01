@@ -27,7 +27,7 @@ import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
-import { chunkAwareVectorLegSql, type PgHandle } from '@papercusp/search';
+import { chunkAwareVectorLegSpaceColumns, type PgHandle } from '@papercusp/search';
 import { CHUNK_SURFACES } from './chunks/registry';
 import {
   PROSE_ELIGIBLE_MODES,
@@ -131,18 +131,11 @@ export function chunkSurfaceSpaceColumns(): Array<{ surface: string; profileColu
   const sql = recordingSql();
   const seen: Array<{ surface: string; profileColumn: string; modeColumn: string }> = [];
   for (const surface of CHUNK_SURFACES) {
-    chunkAwareVectorLegSql(sql, {
-      surface,
-      qVec: '[0]',
-      limit: 1,
-      mode: 'retrieve',
-      spaceFilter: (cols) => {
-        if (cols.profileColumn && cols.modeColumn) {
-          seen.push({ surface: surface.surface, profileColumn: cols.profileColumn, modeColumn: cols.modeColumn });
-        }
-        return (sql as unknown as (s: TemplateStringsArray) => never)`TRUE` as never;
-      },
-    });
+    for (const cols of chunkAwareVectorLegSpaceColumns(sql, { surface, mode: 'retrieve' })) {
+      if (cols.profileColumn && cols.modeColumn) {
+        seen.push({ surface: surface.surface, profileColumn: cols.profileColumn, modeColumn: cols.modeColumn });
+      }
+    }
   }
   return seen;
 }

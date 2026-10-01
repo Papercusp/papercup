@@ -74,7 +74,7 @@ import {
   type SelfWakeSignals,
   type SelfWakeSource,
 } from './presence-selfwake';
-import { RECORDED_SESSION_SOURCE } from './recorded-sessions';
+import { RECORDED_ENDED_SESSION_SOURCE, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 
@@ -315,13 +315,16 @@ export function deriveVerdict(
       recordedLive.has(subject.ownerId) ||
       (psuHostLive && psuHost?.positive === true));
   let sessionState: SessionState;
-  if (recordedLiveOnly) {
-    sessionState = 'recorded';
-  } else if (recordedEnded.has(subject.ownerId)) {
+  if (
+    recordedEnded.has(subject.ownerId) ||
+    subject.source === RECORDED_ENDED_SESSION_SOURCE
+  ) {
     // A warm heartbeat and a lingering wake-await can outlive the process.
     // Positive session-log death evidence settles that ambiguity immediately;
     // claims still held remain suspect until their cleanup is reconciled.
     sessionState = subject.claimsHeld ? 'suspect' : 'ended';
+  } else if (recordedLiveOnly) {
+    sessionState = 'recorded';
   } else {
     sessionState = deriveSessionState({
       stale: !!stale,

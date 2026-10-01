@@ -402,7 +402,7 @@ export async function getSelectedModeCatalog() {
 type SelectedModeEntry = ModeCatalogSnapshot['entries'][number];
 
 /** Why an identity lookup refused, as one short token for an error message. */
-function identityRefusal(identity: Awaited<ReturnType<typeof getIdentitySource>>): string {
+export function identityRefusal(identity: Awaited<ReturnType<typeof getIdentitySource>>): string {
   if (identity.ok) return 'no-source-path';
   const record = identity as { error?: unknown; errors?: Array<{ code?: unknown }> };
   if (typeof record.error === 'string') return record.error;

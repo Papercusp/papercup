@@ -62,6 +62,7 @@ import {
 } from "./test-pass-reuse.mjs";
 import { STANDALONE_PACKAGE_DIRS, expandWorkspaceDirs } from "./test-runner-classes.mjs";
 import { scriptRunsZeroFilesAsPass } from "./empty-suite-guard.mjs";
+import { pathToFileURL } from "node:url";
 
 /** The lane split of a workspace's unit suite. scripts/affected-tests.mjs imports this list. */
 export const LANE_SCRIPTS = Object.freeze(["test:lane-pure", "test:lane-stateful"]);
@@ -163,6 +164,18 @@ const defaultDeps = {
   changedBetween: (root) => gitChangedBetween({ repoRoot: root, relative: true }),
   // gate-test-reuse-yield-2026-10-01 P-002: the same inert-global seam affected-tests passes.
   inertGlobalChange: (root) => gitInertGlobalChange({ repoRoot: root }),
+  // P-003: the same main-process closure affected-tests passes, derived at the judged tree. Loaded
+  // from that tree by URL, so the declaration build (tsconfig.declarations.json) never follows it.
+  testConfigMainProcess: async (root) => {
+    const srcDir = path.join(root, "libs/test-config/src");
+    const mod = await import(pathToFileURL(path.join(srcDir, "main-process-closure.ts")).href);
+    return mod.testConfigMainProcessFiles({ repoRoot: root, srcDir });
+  },
+  // P-004 (D-007): the same toolchain tsconfig set affected-tests passes, loaded the same way.
+  toolchainTsconfigs: async (root) => {
+    const mod = await import(pathToFileURL(path.join(root, "libs/test-config/src/toolchain-tsconfigs.ts")).href);
+    return mod.toolchainTsconfigFiles({ repoRoot: root });
+  },
   now: () => Date.now(),
   makeTempDir: () => mkdtempSync(path.join(tmpdir(), "pc-targeted-reuse-")),
   removeTempDir: (dir) => rmSync(dir, { recursive: true, force: true }),
@@ -318,6 +331,22 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     maxAgeMs: testReuseMaxAgeMs(out),
     auditRate: testReuseAuditRate(out),
     inertGlobalChange: typeof d.inertGlobalChange === "function" ? d.inertGlobalChange(root) : null,
+    testConfigMainProcess: await (async () => {
+      // Unavailable = null: every test-config source file stays global (the pre-P-003 rule).
+      try {
+        return typeof d.testConfigMainProcess === "function" ? await d.testConfigMainProcess(root) : null;
+      } catch {
+        return null;
+      }
+    })(),
+    toolchainTsconfigs: await (async () => {
+      // Unavailable = null: every root tsconfig stays global (the pre-P-004 rule).
+      try {
+        return typeof d.toolchainTsconfigs === "function" ? await d.toolchainTsconfigs(root) : null;
+      } catch {
+        return null;
+      }
+    })(),
   });
   let reused = 0;
   if (skip.length > 0) {

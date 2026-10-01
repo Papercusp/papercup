@@ -787,6 +787,7 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS: 60000;
  * immediate retry can overlap the original handler before its receipt exists.
  */
 export const PTOOL_POST_CONNECT_RETRIES: 0;
+export const PTOOL_PRE_CONNECT_CALL_RETRIES: 1;
 /**
  * Explicitly replay one exact code:run body after an unknown transport result.
  * This is intentionally separate from normal recovery so catalog annotations

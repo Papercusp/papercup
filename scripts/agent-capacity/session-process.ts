@@ -18,6 +18,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 export const STATS_MARKER = 'CAPDRV_CGROUP';
 
@@ -26,10 +27,9 @@ export type Isolation = 'systemd' | 'none';
 export function runAsync(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let err = '';
-    p.stderr.on('data', (d: Buffer) => (err += d.toString()));
+    const err = createTextCollector(p.stderr);
     p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}: ${err.slice(0, 500)}`))));
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}: ${err.text().slice(0, 500)}`))));
   });
 }
 

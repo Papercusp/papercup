@@ -33,7 +33,6 @@ import { dependsOnSpec } from '../../freshness/tool-schema';
 import {
   lintUncheckedExternalClaims,
   lintUncheckedImperativeActions,
-  lintRelativeScratchPaths,
   RELATIVE_SCRATCH_ADVISORY,
   mergeCarryRows,
   parseCarryNote,
@@ -66,6 +65,7 @@ import {
   withCarryNoteWalls,
   type CarryArgRepair,
 } from '../../carry-note';
+import { filterTrackedRelativeScratchPaths } from '../checkpoint-relative-scratch';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getSessionBrief } from '../../session-brief';
@@ -1718,14 +1718,9 @@ export default defineTool({
     // R-6(b): a relative `scratchpad/...` reference is unresolvable to the next wake —
     // the session scratchpad is absolute and per-session, so the successor re-derives an
     // artifact that is already on disk. Advisory + fail-open, like every sibling here.
-    const relativeScratchRefs = (() => {
-      if (!hasNoteWrite) return [];
-      try {
-        return lintRelativeScratchPaths(narrativeBody);
-      } catch {
-        return []; // advisory lint must never cost the checkpoint write
-      }
-    })();
+    const relativeScratchRefs = hasNoteWrite
+      ? await filterTrackedRelativeScratchPaths(narrativeBody, { workspaceId, harness })
+      : [];
 
     // EI-20079511619330371: a carry-note's `left`/`next` is read as an
     // instruction at wake time, even though its singleton/shared-state

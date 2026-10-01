@@ -45,6 +45,7 @@ vi.mock('../../personal-vault/disclosure-ledger', () => ({
 
 import captureTool from '../orders/capture';
 import { releaseCode } from '../../personal-vault/release-authority';
+import { classifyCallOrigin } from '../../telemetry-call-origin';
 import declassifyTool from './declassify';
 import privacyRulesTool from './privacy-rules';
 
@@ -53,6 +54,11 @@ const DELIVERED = new Date('2026-10-01T11:00:00Z');
 const OWNER_TYPED = Date.parse('2026-10-01T12:00:00Z');
 const DOC = '00000000-0000-4000-8000-000000000001';
 const ALL_CODE = releaseCode(AGENT, 'declassify:all');
+
+/** Every personal:* tool answers with a `data` envelope; narrow the handler's declared union to it. */
+function dataOf(result: unknown): Record<string, unknown> {
+  return (result as { data: Record<string, unknown> }).data;
+}
 
 function ctx(agent: string | null = AGENT) {
   return { workspaceId: 'ws-1', principal: { workspaceId: 'ws-1' }, tx: {}, agent } as never;
@@ -109,16 +115,16 @@ beforeEach(() => {
 describe('personal:declassify', () => {
   it('refuses without an owner turn carrying the code, and hands back the code to relay', async () => {
     const result = await declassifyTool.handler({ all: true }, ctx());
-    expect(result.data).toMatchObject({ refused: true, code: 'release_authority_required', releaseCode: ALL_CODE });
-    expect((result.data as { ownerPrompt: string }).ownerPrompt).toContain(`release ${ALL_CODE}`);
-    expect(mocks.findCaptured).toHaveBeenCalledWith({ workspaceId: 'ws-1', recordedBy: AGENT, token: ALL_CODE });
+    expect(dataOf(result)).toMatchObject({ refused: true, code: 'release_authority_required', releaseCode: ALL_CODE });
+    expect((dataOf(result) as { ownerPrompt: string }).ownerPrompt).toContain(`release ${ALL_CODE}`);
+    expect(mocks.findCaptured).toHaveBeenCalledWith({ workspaceId: 'ws-1', recordedBy: AGENT, token: ALL_CODE }, undefined);
     expect(mocks.release).not.toHaveBeenCalled();
   });
 
   it('releases with a hook-captured owner turn in this session carrying the code', async () => {
     mocks.findCaptured.mockResolvedValue(directive());
     const result = await declassifyTool.handler({ all: true }, ctx());
-    expect(result.data).toEqual({ ok: true, released: [DOC], releaseRef: 'owner_directive:41' });
+    expect(dataOf(result)).toEqual({ ok: true, released: [DOC], releaseRef: 'owner_directive:41' });
     expect(mocks.release).toHaveBeenCalledWith({}, {
       workspaceId: 'ws-1',
       agentOwnerId: AGENT,
@@ -141,7 +147,7 @@ describe('personal:declassify', () => {
   ])('refuses a cited directive that is %s', async (_label, row, code) => {
     mocks.getOwnerDirective.mockResolvedValue(row);
     const result = await declassifyTool.handler({ all: true, directiveId: 41 }, ctx());
-    expect(result.data).toMatchObject({ refused: true, code });
+    expect(dataOf(result)).toMatchObject({ refused: true, code });
     expect(mocks.release).not.toHaveBeenCalled();
   });
 
@@ -149,12 +155,12 @@ describe('personal:declassify', () => {
     const foreignCode = releaseCode('su-other', 'declassify:all');
     mocks.getOwnerDirective.mockResolvedValue(directive({ verbatimText: `release ${foreignCode}` }));
     const result = await declassifyTool.handler({ all: true, directiveId: 41 }, ctx());
-    expect(result.data).toMatchObject({ refused: true, code: 'release_authority_code_missing' });
+    expect(dataOf(result)).toMatchObject({ refused: true, code: 'release_authority_code_missing' });
   });
 
   it('a caller with no identity carries nothing and releases nothing', async () => {
     const result = await declassifyTool.handler({ all: true }, ctx(null));
-    expect(result.data).toMatchObject({ ok: true, released: [] });
+    expect(dataOf(result)).toMatchObject({ ok: true, released: [] });
     expect(mocks.loadReleasable).not.toHaveBeenCalled();
   });
 });
@@ -166,7 +172,7 @@ describe('personal:privacy-rules', () => {
       { action: 'set', matchKind: 'source', matchValue: 'Gmail', level: 'sender-only' },
       ctx(),
     );
-    expect(result.data).toMatchObject({ ok: true, effect: 'tighten', rule: { matchValue: 'gmail', level: 'sender-only' } });
+    expect(dataOf(result)).toMatchObject({ ok: true, effect: 'tighten', rule: { matchValue: 'gmail', level: 'sender-only' } });
     expect(mocks.findCaptured).not.toHaveBeenCalled();
     expect(mocks.getOwnerDirective).not.toHaveBeenCalled();
     expect(mocks.upsertRule).toHaveBeenCalledWith({}, expect.objectContaining({ authorityRef: null, actor: AGENT }));
@@ -177,7 +183,7 @@ describe('personal:privacy-rules', () => {
       { action: 'set', matchKind: 'sender', matchValue: 'Alice <alice@example.com>', level: 'unrestricted' },
       ctx(),
     );
-    expect(result.data).toMatchObject({
+    expect(dataOf(result)).toMatchObject({
       refused: true,
       effect: 'loosen',
       code: 'release_authority_required',
@@ -188,7 +194,7 @@ describe('personal:privacy-rules', () => {
 
   it('deleting a restrictive rule is loosening and is refused without the owner', async () => {
     const result = await privacyRulesTool.handler({ action: 'delete', matchKind: 'source', matchValue: 'gmail' }, ctx());
-    expect(result.data).toMatchObject({ refused: true, effect: 'loosen', code: 'release_authority_required' });
+    expect(dataOf(result)).toMatchObject({ refused: true, effect: 'loosen', code: 'release_authority_required' });
     expect(mocks.deleteRule).not.toHaveBeenCalled();
   });
 
@@ -199,7 +205,7 @@ describe('personal:privacy-rules', () => {
       { action: 'set', matchKind: 'sender', matchValue: 'alice@example.com', level: 'unrestricted' },
       ctx(),
     );
-    expect(result.data).toMatchObject({ ok: true, effect: 'loosen', rule: { authorityRef: 'owner_directive:77' } });
+    expect(dataOf(result)).toMatchObject({ ok: true, effect: 'loosen', rule: { authorityRef: 'owner_directive:77' } });
   });
 
   it('refuses a loosening whose owner turn predates the last rule change', async () => {
@@ -207,24 +213,38 @@ describe('personal:privacy-rules', () => {
     mocks.listRules.mockResolvedValue([{ ...rule('source', 'gmail', 'sender-only'), updatedAt: new Date(OWNER_TYPED + 1) }]);
     mocks.findCaptured.mockResolvedValue(directive({ verbatimText: `release ${code}` }));
     const result = await privacyRulesTool.handler({ action: 'delete', matchKind: 'source', matchValue: 'gmail' }, ctx());
-    expect(result.data).toMatchObject({ refused: true, code: 'release_authority_stale' });
+    expect(dataOf(result)).toMatchObject({ refused: true, code: 'release_authority_stale' });
     expect(mocks.deleteRule).not.toHaveBeenCalled();
   });
 
   it('rejects a match value that could never match a document', async () => {
     const result = await privacyRulesTool.handler({ action: 'set', matchKind: 'sender', matchValue: 'not an address', level: 'sender-only' }, ctx());
-    expect(result.data).toMatchObject({ refused: true, code: 'privacy_rule_match_invalid' });
+    expect(dataOf(result)).toMatchObject({ refused: true, code: 'privacy_rule_match_invalid' });
   });
 });
 
 describe('orders:capture accepts only the hook (the proof R-6 rests on)', () => {
-  function captureCtx(query: Record<string, string>) {
-    return { workspaceId: 'ws-1', requestOrigin: { query, headers: {} } } as never;
+  function captureCtx(query: Record<string, string>, headers: Record<string, string> = {}) {
+    return { workspaceId: 'ws-1', requestOrigin: { query, headers } } as never;
   }
   const args = { verbatim: `release ${ALL_CODE}`, sourceTurnRef: 'native-session:abc' };
 
   it('refuses a model client, so an agent cannot mint an owner-typed turn', async () => {
     const result = await captureTool.handler(args, captureCtx({ superuser: '1', tools: 'seed', profile: 'su' }));
+    expect(JSON.parse((result as { content: Array<{ text: string }> }).content[0].text)).toMatchObject({
+      ok: false,
+      error: 'hook_origin_required',
+    });
+    expect(mocks.recordOwnerDirective).not.toHaveBeenCalled();
+  });
+
+  it('refuses a client that only looks like the hook, so a script an agent writes cannot either', async () => {
+    const lookalike = { query: { superuser: '1' }, headers: { 'user-agent': 'Python-urllib/3.12' } };
+    // The fixture must classify as an UNDECLARED hook, or this case would also
+    // pass against a rail that checked the origin and ignored its source.
+    expect(classifyCallOrigin({ requestOrigin: lookalike })).toEqual({ origin: 'hook', source: 'derived' });
+
+    const result = await captureTool.handler(args, captureCtx(lookalike.query, lookalike.headers));
     expect(JSON.parse((result as { content: Array<{ text: string }> }).content[0].text)).toMatchObject({
       ok: false,
       error: 'hook_origin_required',

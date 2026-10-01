@@ -1183,7 +1183,7 @@ export default function InboxBulkReport({
     (item) => item.outcome !== "auto_resolved" && item.outcome !== "dismissed",
   ).length;
   const retainedEvidence = intakeItems.filter(
-    (item) => item.outcome === "auto_resolved" && item.intakeDecision?.disposition === "retain-evidence",
+    (item) => item.outcome === "auto_resolved" && item.intakeDecision?.disposition === "retain",
   ).length;
   const partition = useMemo(() => partitionReviewRows(groups), [groups]);
   const runAgeMs = useMemo(() => {

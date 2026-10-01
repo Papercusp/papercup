@@ -24,6 +24,7 @@
  * its SQL template.
  */
 import { describe, expect, it } from 'vitest';
+import { stripCommentsOnly } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 
@@ -47,19 +48,8 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Remove block comments and whole-line or trailing `//` comments whose prefix
- * holds no quote or backtick (so a `//` inside a string survives). */
-export function stripComments(src: string): string {
-  const noBlocks = src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
-  return noBlocks
-    .split('\n')
-    .map((line) => {
-      const i = line.indexOf('//');
-      if (i < 0) return line;
-      return /['"`]/.test(line.slice(0, i)) ? line : line.slice(0, i);
-    })
-    .join('\n');
-}
+/** Remove comments (strings and templates survive) via the shared lexer-backed stripper. */
+export const stripComments = (src: string): string => stripCommentsOnly(src, 'source.ts');
 
 const read = (abs: string) => stripComments(readFileSync(abs, 'utf8'));
 const opRel = (abs: string) => relative(OPERATOR_CORE, abs);

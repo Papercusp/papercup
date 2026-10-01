@@ -10,13 +10,14 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
 import { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, createHostedTutorialProgressRoutes } from '../endpoint-route/routes/hosted-tutorial-progress';
 import { tenantContext } from '../endpoint-route/hosted-browser-context';
+import { saveHostedUserPreferences } from '../auth/hosted/governance';
 import { createTutorialState, confirmedTutorialSteps } from './cloud-tutorial-lesson';
 import { readTutorialProgress, updateTutorialProgress, TutorialProgressConflict, type TutorialProgressUpdate } from './cloud-tutorial-progress';
 
 const ORIGIN = 'https://app.papercusp.com';
 const tenantA = randomUUID(), tenantB = randomUUID(), userA = randomUUID(), userB = randomUUID();
 const scope = { tenantId: tenantA, userId: userA, workspaceId: 'customer-a' };
-const change = (patch: Partial<TutorialProgressUpdate> = {}): TutorialProgressUpdate => ({ expectedRevision: 0, mutationId: randomUUID(), disposition: 'paused', ...patch });
+const change = (patch: Partial<TutorialProgressUpdate> = {}, selected = scope): TutorialProgressUpdate => ({ expectedScope: selected, expectedRevision: 0, mutationId: randomUUID(), disposition: 'paused', ...patch });
 const principal = (patch: Partial<Parameters<typeof createHostedPrincipal>[0]> = {}) => createHostedPrincipal({
   workspaceId: 'control', userId: userA, activeOrganizationId: tenantA, selectedWorkspaceId: 'customer-a',
   sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view'], ...patch,
@@ -26,9 +27,7 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
   beforeAll(async () => {
     db = await createOrgTestDb();
     const sqlRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
-    let migration: string;
-    try { migration = readFileSync(resolve(sqlRoot, '1304-hosted-tutorial-preferences-scope.sql'), 'utf8'); }
-    catch { migration = readFileSync(resolve(sqlRoot, '1304-hosted-tutorial-preferences-scope.sql.DRAFT'), 'utf8'); }
+    const migration = readFileSync(process.env.CLOUD_TUTORIAL_PROGRESS_MIGRATION_PROBE ?? resolve(sqlRoot, '1304-hosted-tutorial-preferences-scope.sql'), 'utf8');
     await db.adminSql.unsafe(migration);
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
@@ -66,6 +65,9 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     expect(confirmedTutorialSteps(restored)).toEqual([]);
   });
   it('isolates the same user by tenant/workspace and different users by RLS', async () => {
+    // This oracle is independently runnable by name: it owns its positive row.
+    const current = await withScope(scope, tx => readTutorialProgress(tx, scope));
+    if (current.revision === 0) await withScope(scope, tx => updateTutorialProgress(tx, scope, change()));
     for (const other of [{ ...scope, tenantId: tenantB }, { ...scope, userId: userB }, { ...scope, workspaceId: 'customer-b' }]) {
       expect((await withScope(other, tx => readTutorialProgress(tx, other))).revision).toBe(0);
       await expect(withScope(scope, tx => readTutorialProgress(tx, other))).rejects.toThrow('tutorial_scope_mismatch');
@@ -80,7 +82,7 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     const oldKey = JSON.stringify([s.workspaceId, 'first-cloud-agent', 0]);
     await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences SET profile = jsonb_set(profile, '{cloudTutorial}', (profile->'cloudTutorial') || ${JSON.stringify({ [oldKey]: { disposition: 'skipped' } })}::jsonb) WHERE user_id = ${userA}::uuid AND organization_id = ${tenantA}::uuid`;
     expect((await withScope(s, tx => readTutorialProgress(tx, s))).revision).toBe(0);
-    await withScope(s, tx => updateTutorialProgress(tx, s, change()));
+    await withScope(s, tx => updateTutorialProgress(tx, s, change({}, s)));
     expect(await withScope(scope, tx => readTutorialProgress(tx, scope))).toEqual(prior);
     const [row] = await db.adminSql`SELECT profile FROM papercusp_auth.hosted_user_preferences WHERE user_id = ${userA}::uuid AND organization_id = ${tenantA}::uuid`;
     expect(row.profile.displayName).toBe('Avi');
@@ -89,8 +91,8 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
   it('serializes competing tabs; one CAS succeeds and one returns a recoverable conflict', async () => {
     const s = { ...scope, workspaceId: randomUUID() };
     const results = await Promise.allSettled([
-      withScope(s, tx => updateTutorialProgress(tx, s, change({ disposition: 'paused' }))),
-      withScope(s, tx => updateTutorialProgress(tx, s, change({ disposition: 'skipped' }))),
+      withScope(s, tx => updateTutorialProgress(tx, s, change({ disposition: 'paused' }, s))),
+      withScope(s, tx => updateTutorialProgress(tx, s, change({ disposition: 'skipped' }, s))),
     ]);
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     const rejected = results.find(result => result.status === 'rejected') as PromiseRejectedResult;
@@ -98,10 +100,15 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     expect(rejected.reason.current.revision).toBe(1);
   });
   it('makes retries idempotent and rejects different writes reusing the same mutation id', async () => {
-    const s = { ...scope, workspaceId: randomUUID() }, patch = change();
+    const s = { ...scope, workspaceId: randomUUID() }, patch = change({}, s);
     const first = await withScope(s, tx => updateTutorialProgress(tx, s, patch));
     expect(await withScope(s, tx => updateTutorialProgress(tx, s, patch))).toEqual(first);
     await expect(withScope(s, tx => updateTutorialProgress(tx, s, { ...patch, disposition: 'skipped' }))).rejects.toThrow('tutorial_mutation_reused');
+  });
+  it('the maintained profile preference writer preserves tutorial state', async () => {
+    const previous = await withScope(scope, tx => readTutorialProgress(tx, scope));
+    await withScope(scope, tx => saveHostedUserPreferences({ organizationId: tenantA, userId: userA, locale: 'en-US', timeZone: 'UTC', profile: { displayName: 'Updated profile' } }, tx));
+    expect(await withScope(scope, tx => readTutorialProgress(tx, scope))).toEqual(previous);
   });
   it('uses verified principal scope, rejects forged scope/completion fields and cross-origin writes', async () => {
     const post = handler('POST');
@@ -115,10 +122,21 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
   });
   it('returns current state on stale-tab writes instead of replaying a product action', async () => {
     const p = principal({ selectedWorkspaceId: randomUUID() }), post = handler('POST');
+    const selected = { ...scope, workspaceId: p.selectedWorkspaceId! };
     const request = (body: unknown) => new Request(`${ORIGIN}/api${HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH}`, { method: 'POST', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    expect((await post(request(change()), context(p))).status).toBe(200);
-    const conflict = await post(request(change()), context(p));
+    expect((await post(request(change({}, selected)), context(p))).status).toBe(200);
+    const conflict = await post(request(change({}, selected)), context(p));
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({ error: 'tutorial_progress_conflict', record: { revision: 1 } });
+  });
+  it('a cookie/user/workspace transition cannot copy a stale tab’s progress into the new scope', async () => {
+    const post = handler('POST');
+    for (const destination of [{ ...scope, tenantId: tenantB }, { ...scope, userId: userB }, { ...scope, workspaceId: randomUUID() }]) {
+      const p = principal({ activeOrganizationId: destination.tenantId, userId: destination.userId, selectedWorkspaceId: destination.workspaceId });
+      const response = await post(new Request(`${ORIGIN}/api${HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH}`, { method: 'POST', headers: { origin: ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(change()) }), context(p));
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: 'tutorial_scope_changed' });
+      expect((await withScope(destination, tx => readTutorialProgress(tx, destination))).revision).toBe(0);
+    }
   });
 });

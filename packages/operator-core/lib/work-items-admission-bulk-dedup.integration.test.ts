@@ -1609,7 +1609,13 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
   // adjudications + 178 item edits on the pinned members in 56 min). The stage
   // used to wipe its whole checkpoint map on any drift and re-judge every batch.
   // Judgements are now donated per pair while both endpoints are unchanged.
-  async function crashAfterFirstCheckpointThenDrift(runId: string, driftItemId: string) {
+  // D-007: with `freshRunId` the second executor is the NEXT driver fire (a new
+  // runId and stage row), not a DBOS recovery of the same stage.
+  async function crashAfterFirstCheckpointThenDrift(
+    runId: string,
+    driftItemId: string,
+    opts: { freshRunId?: string } = {},
+  ) {
     await seed();
     await db.sql`
       INSERT INTO harness_shared.work_items
@@ -1665,22 +1671,26 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       runBulk({ ...base, executionId: 'executor-dead', now: () => 10_000, llmCall: judge(2) }),
     ).rejects.toThrow('executor died after first checkpoint');
     expect(seenPairs).toEqual(['a::b', 'c::d']);
-    await db.sql`
-      UPDATE harness_shared.admission_runs
-         SET finished_at = NULL,
-             detail = detail || ${JSON.stringify({
-               status: 'running',
-               lease: { ownerId: 'executor-dead', acquiredAt: 1, heartbeatAt: 1, expiresAt: 1, takeoverCount: 0 },
-             })}::text::jsonb
-       WHERE id = ${`${runId}-stage-1`}`;
+    if (!opts.freshRunId) {
+      await db.sql`
+        UPDATE harness_shared.admission_runs
+           SET finished_at = NULL,
+               detail = detail || ${JSON.stringify({
+                 status: 'running',
+                 lease: { ownerId: 'executor-dead', acquiredAt: 1, heartbeatAt: 1, expiresAt: 1, takeoverCount: 0 },
+               })}::text::jsonb
+         WHERE id = ${`${runId}-stage-1`}`;
+    }
     // The drift a live corpus produces while the executor is down: one edit.
     await db.sql`
       UPDATE harness_shared.work_items
          SET summary = summary || ' (edited while the stage was down)'
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${driftItemId}`;
     seenPairs.length = 0;
+    const secondRunId = opts.freshRunId ?? runId;
     const resumed = await runBulk({
       ...base,
+      runId: secondRunId,
       executionId: 'executor-replacement',
       now: () => 20_000,
       step: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
@@ -1690,7 +1700,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       llmCall: judge(),
     });
     const rows = await db.sql<Array<{ detail: Record<string, unknown> }>>`
-      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${secondRunId}-stage-1`}`;
     return { resumed, seenPairs, stepNames, detail: rows[0]!.detail };
   }
 
@@ -1729,6 +1739,35 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       (detail.checkpoints as { batches: Record<string, { canary: boolean }> }).batches,
     ).filter((batch) => batch.canary);
     expect(canaries).toHaveLength(1);
+  }, 60_000);
+
+  // D-007: each driver fire mints a fresh runId and a full-corpus pass is
+  // cancelled at the 24h fire timeout. Judgements lived only in that fire's own
+  // stage row, so a pass longer than one fire restarted from zero every day and
+  // could never complete. Earlier stage rows now donate under the same per-pair
+  // evidence guard, and their spend stays on their own ledger row.
+  it('continues a pass cancelled in an earlier fire: a fresh runId reuses that row’s judged pairs', async () => {
+    const { resumed, seenPairs, detail } = await crashAfterFirstCheckpointThenDrift('bulk-fire-1', 'd', {
+      freshRunId: 'bulk-fire-2',
+    });
+    expect(seenPairs).toEqual(['c::d']);
+    expect(resumed).toMatchObject({ runId: 'bulk-fire-2', converged: true, initialCensus: 2, finalCensus: 0 });
+    // Only c::d was called; the donated pair's call is fire-1's spend, not fire-2's.
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 1, reusedBatches: 0, priorRunDonatedPairs: 1 });
+    expect(detail).toMatchObject({ status: 'complete' });
+    const ledger = await db.sql<Array<{ donated: string | null }>>`
+      SELECT detail->>'priorRunDonatedPairs' AS donated
+        FROM harness_shared.admission_runs
+       WHERE id = 'bulk-fire-2-stage-1'`;
+    expect(ledger[0]?.donated).toBe('1');
+  }, 60_000);
+
+  it('re-judges an earlier fire’s pair whose endpoint changed since, instead of donating stale evidence', async () => {
+    const { resumed, seenPairs } = await crashAfterFirstCheckpointThenDrift('bulk-fire-stale-1', 'a', {
+      freshRunId: 'bulk-fire-stale-2',
+    });
+    expect(seenPairs).toEqual(['a::b', 'c::d']);
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, priorRunDonatedPairs: 0 });
   }, 60_000);
 
   it('judges independent shards concurrently while keeping each shard internally ordered', async () => {

@@ -54,6 +54,7 @@ import {
 // read site below already goes through `??`/truthiness, so absent and null behave
 // identically here.
 interface ObservationRow {
+  triageState?: 'awaiting' | 'handled';
   id: string;
   title: string;
   body?: string;
@@ -188,6 +189,11 @@ export default function ObservationsPanel({
   // compile from the same server predicate. Kind keeps its compact chip UI.
   const filterColumns = useMemo<FilterableColumn<ObservationRow>[]>(
     () => [
+      {
+        key: "triageState",
+        header: "Intake triage",
+        filter: { type: "enum", accessor: (row) => row.triageState ?? "—" },
+      },
       {
         key: "scope",
         header: "Scope",
@@ -530,8 +536,8 @@ export default function ObservationsPanel({
             aria-label={counts.ariaLabel}
             title={
               isFiltered
-                ? "Observations matching the current filter / search, out of the total"
-                : "Retained observation evidence, including pending and processed rows; not an awaiting-triage or delivered-work count"
+                ? "Scope: workspace and current observation filters; cohort: retained raw observation stock; units: rows; writer: readLearningObservationsSummaryFromStore; matched / total"
+                : "Scope: workspace; cohort: all retained raw observation stock, including pending and processed rows; units: rows; writer: readLearningObservationsSummaryFromStore; not an awaiting-triage or delivered-work count"
             }
             style={{
               color: "var(--fg-mute)",
@@ -543,8 +549,16 @@ export default function ObservationsPanel({
           </span>
         ) : null}
         <span style={{ color: 'var(--fg-mute)', fontSize: 11 }}>
-          Retained evidence · pending triage is tracked in the <a href="/inbox">bulk report</a>
+          Retained evidence · intake handling is separate from delivered work · <a href="/inbox">bulk report</a>
         </span>
+        {summary && !pairedFetching ? (
+          <span data-testid="observations-triage-counts" style={{ color: 'var(--fg-mute)', fontSize: 11 }}
+            title="Scope: current observation filters excluding Intake triage; cohort: retained raw observation rows; units: rows; writer: readLearningObservationsSummaryFromStore">
+            {(summary.facets.find((facet) => facet.key === 'triageState')?.values ?? []).map((value) => (
+              <span key={value.value}>{value.count.toLocaleString()} {value.value === 'awaiting' ? 'awaiting triage' : 'handled intake'} · </span>
+            ))}
+          </span>
+        ) : null}
         <div
           className="pc-observations__viewtoggle"
           role="group"

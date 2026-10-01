@@ -516,7 +516,7 @@ async function selectedLaunchCompositionSource(
 ) : Promise<EffectiveLaunchSource> {
   const [{ BlueprintSourceDocumentSchema, layerSourceDocument, mergeByRules, replayAgentSpecification,
     resolveBlueprint, resolveBlueprintSource, slotSpec, stackBindingFromRefs },
-    { getIdentitySource, localDirs, resolveNamedIdentityCompositionSelection }, { operatorResolveExtends }] =
+    { getIdentitySource, identityRefusal, localDirs, resolveNamedIdentityCompositionSelection }, { operatorResolveExtends }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('./agent-identities/source'),
@@ -568,8 +568,7 @@ async function selectedLaunchCompositionSource(
       // that getIdentitySource refuses (attestation-missing); failing here would have
       // broken every SU launch there. The recording gap is tracked as a trust follow-up.
       if (impliedRefs.has(`${layer.slot}:${layer.id}`)) {
-        console.warn(`[role-launch-spec] implied ${layer.slot}:${layer.id} not recorded: ` +
-          `${identity.ok ? 'no source path or slot' : JSON.stringify((identity as { error?: unknown }).error ?? 'invalid')}`);
+        console.warn(`[role-launch-spec] implied ${layer.slot}:${layer.id} not recorded: ${identityRefusal(identity)}`);
         continue;
       }
       throw new Error(`launch stack identity ${JSON.stringify(layer.id)} is unavailable for ${layer.slot} composition`);

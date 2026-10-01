@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   allowedRecipients,
   checkRecipients,
+  classifyRuleChange,
   documentSender,
   labelDocument,
+  normalizeRuleValue,
   readerSetFor,
   resolvePrivacyLevel,
   type ActiveDisclosure,
@@ -26,6 +28,54 @@ function mail(overrides: Partial<LabelableDocument> = {}): LabelableDocument {
 function disclosure(id: string, readerSet: string[], level: ActiveDisclosure['level'] = 'participants'): ActiveDisclosure {
   return { id, documentId: `doc-${id}`, level, readerSet };
 }
+
+describe('classifyRuleChange — loosening is judged by effect (D-005)', () => {
+  const gmailSenderOnly: PrivacyRule = { matchKind: 'source', matchValue: 'gmail', level: 'sender-only' };
+
+  it('a new restrictive source rule tightens; an unrestricted one is a no-op', () => {
+    expect(classifyRuleChange([], { op: 'set', matchKind: 'source', matchValue: 'gmail', level: 'participants' })).toBe('tighten');
+    expect(classifyRuleChange([], { op: 'set', matchKind: 'source', matchValue: 'gmail', level: 'unrestricted' })).toBe('noop');
+  });
+
+  it('lowering or deleting an existing restrictive rule loosens', () => {
+    expect(classifyRuleChange([gmailSenderOnly], { op: 'set', matchKind: 'source', matchValue: 'gmail', level: 'participants' })).toBe('loosen');
+    expect(classifyRuleChange([gmailSenderOnly], { op: 'delete', matchKind: 'source', matchValue: 'gmail' })).toBe('loosen');
+  });
+
+  it('a more-specific carve-out below the source level loosens, even though no row is lowered', () => {
+    expect(classifyRuleChange([gmailSenderOnly], { op: 'set', matchKind: 'sender', matchValue: 'alice@example.com', level: 'unrestricted' })).toBe('loosen');
+    expect(classifyRuleChange([gmailSenderOnly], { op: 'set', matchKind: 'sender-domain', matchValue: 'example.com', level: 'participants' })).toBe('loosen');
+  });
+
+  it('a sender rule falls back to its domain rule, not to the source', () => {
+    const rules: PrivacyRule[] = [
+      gmailSenderOnly,
+      { matchKind: 'sender-domain', matchValue: 'example.com', level: 'participants' },
+      { matchKind: 'sender', matchValue: 'alice@example.com', level: 'participants' },
+    ];
+    // Without alice's rule her mail resolves to the domain's participants, so deleting it changes nothing.
+    expect(classifyRuleChange(rules, { op: 'delete', matchKind: 'sender', matchValue: 'alice@example.com' })).toBe('noop');
+    expect(classifyRuleChange(rules, { op: 'set', matchKind: 'sender', matchValue: 'alice@example.com', level: 'sender-only' })).toBe('tighten');
+  });
+
+  it('deleting a rule that does not exist is a no-op', () => {
+    expect(classifyRuleChange([gmailSenderOnly], { op: 'delete', matchKind: 'sender', matchValue: 'nobody@example.com' })).toBe('noop');
+  });
+});
+
+describe('normalizeRuleValue', () => {
+  it('stores values in the form resolvePrivacyLevel derives from a document', () => {
+    expect(normalizeRuleValue('sender', 'Alice Smith <Alice@Example.com>')).toBe('alice@example.com');
+    expect(normalizeRuleValue('sender-domain', '@Example.COM')).toBe('example.com');
+    expect(normalizeRuleValue('source', ' Gmail ')).toBe('gmail');
+  });
+
+  it('rejects a value that could never match', () => {
+    expect(normalizeRuleValue('sender', 'not an address')).toBeNull();
+    expect(normalizeRuleValue('sender-domain', 'alice@example.com')).toBeNull();
+    expect(normalizeRuleValue('source', 'gmail; drop')).toBeNull();
+  });
+});
 
 describe('resolvePrivacyLevel', () => {
   it('defaults to unrestricted when no rule matches (D-001)', () => {

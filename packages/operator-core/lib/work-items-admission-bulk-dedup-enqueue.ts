@@ -101,6 +101,17 @@ export async function activeBulkDedupFire(
   }
 }
 
+/**
+ * DBOS statuses after which a workflow never runs again on its own. A stage row
+ * leased to a workflow in one of these is abandoned (WI-10004918).
+ */
+export const DEAD_LEASE_OWNER_STATUSES = [
+  'SUCCESS',
+  'ERROR',
+  'CANCELLED',
+  'MAX_RECOVERY_ATTEMPTS_EXCEEDED',
+] as const;
+
 export type BulkDedupInFlight =
   | { inFlight: false }
   | {
@@ -170,17 +181,46 @@ export async function bulkDedupInFlight(
     if (pgErrorCode(error) !== '42P01') throw error;
   }
 
-  const open = await sql<{ id: string; runKind: string; startedAt: Date }[]>`
-    SELECT id, run_kind AS "runKind", started_at AS "startedAt"
-      FROM harness_shared.admission_runs
-     WHERE workspace_id = ${input.workspaceId}
-       AND harness_slug = ${input.harnessSlug}
-       AND run_kind IN ('census', 'bulk-stage')
-       AND finished_at IS NULL
-       AND started_at > ${since}
-     ORDER BY started_at DESC
-     LIMIT 1
-  `;
+  // An open row whose lease owner is a DBOS workflow that has already ended is
+  // abandoned, not in flight: nothing will ever resume it (WI-10004918). A
+  // routineFire dead-lettered by host restarts (MAX_RECOVERY_ATTEMPTS_EXCEEDED)
+  // used to keep its stage row "open" and block the retry for the whole window.
+  // The next run's reapStaleRunningAdmissionRuns then marks the row failed, and
+  // D-007 donates its completed batches. A row whose owner is not a DBOS
+  // workflow (or is still PENDING/ENQUEUED) keeps counting, as before.
+  let open: { id: string; runKind: string; startedAt: Date }[];
+  try {
+    open = await sql<{ id: string; runKind: string; startedAt: Date }[]>`
+      SELECT a.id, a.run_kind AS "runKind", a.started_at AS "startedAt"
+        FROM harness_shared.admission_runs a
+       WHERE a.workspace_id = ${input.workspaceId}
+         AND a.harness_slug = ${input.harnessSlug}
+         AND a.run_kind IN ('census', 'bulk-stage')
+         AND a.finished_at IS NULL
+         AND a.started_at > ${since}
+         AND NOT EXISTS (
+           SELECT 1
+             FROM dbos.workflow_status d
+            WHERE d.workflow_uuid = a.detail->'lease'->>'ownerId'
+              AND d.status = ANY(${DEAD_LEASE_OWNER_STATUSES as unknown as string[]}::text[])
+         )
+       ORDER BY a.started_at DESC
+       LIMIT 1
+    `;
+  } catch (error) {
+    if (pgErrorCode(error) !== '42P01') throw error;
+    open = await sql<{ id: string; runKind: string; startedAt: Date }[]>`
+      SELECT id, run_kind AS "runKind", started_at AS "startedAt"
+        FROM harness_shared.admission_runs
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND run_kind IN ('census', 'bulk-stage')
+         AND finished_at IS NULL
+         AND started_at > ${since}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+  }
   if (open[0]) {
     return {
       inFlight: true,

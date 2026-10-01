@@ -102,6 +102,16 @@ export interface TerminalActionDependencies {
     itemId: string;
   }): Promise<{ terminal: boolean }>;
   /**
+   * P-009 (R-31, D-019) — the application-time recheck for an intake decision.
+   * The bulk tool checks the kill switch once at entry, BEFORE it takes the run
+   * row lock, so an owner flipping the switch (or stopping the run) between that
+   * read and the write would otherwise not stop the effect. This runs inside the
+   * run-row authority window, immediately before the executor. Required for
+   * intake: a caller that supplies an executor without it cannot apply intake
+   * (fail closed), and `allowed:false` throws so the item is recorded as failed.
+   */
+  recheckIntakeApply?(input: { runId: string; itemId: string }): Promise<{ allowed: boolean; reason?: string }>;
+  /**
    * Best-effort owner-authoritative reply delivery for named escalation picks.
    * The browser injects its admin-only route.  The bulk resolver injects the
    * same underlying server helper, but only from its run-authority-guarded tool.
@@ -146,7 +156,11 @@ export async function dispatchAttentionTerminalAction(input: {
   if (isNavigateAction(actionId)) return { resolved: false };
 
   if (item.ref.kind === 'improvement' && actionId === INTAKE_APPLY_ACTION_ID) {
-    if (!input.intake || !deps.executeIntakeDecision) return { resolved: false };
+    if (!input.intake || !deps.executeIntakeDecision || !deps.recheckIntakeApply) return { resolved: false };
+    const recheck = await deps.recheckIntakeApply({ runId: input.intake.runId, itemId: item.id });
+    if (!recheck.allowed) {
+      throw new Error(`intake apply refused at application time: ${recheck.reason ?? 'recheck refused'}`);
+    }
     const executed = await deps.executeIntakeDecision({
       sourceId: refString(item, 'issueId'),
       harnessSlug: item.harnessSlug ?? null,

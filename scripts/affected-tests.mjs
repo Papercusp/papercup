@@ -154,6 +154,7 @@ import {
 } from "./lib/batch-watchdog.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
 import { sweepStaleTestScratch } from "../libs/test-config/src/hermetic-tmpdir.ts";
+import { testConfigMainProcessFiles } from "../libs/test-config/src/main-process-closure.ts";
 
 // EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
 // Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
@@ -5581,6 +5582,31 @@ async function armTestPassReuse(taskList) {
   const changedBetween = gitChangedBetween({ repoRoot: ROOT, relative: true });
   // gate-test-reuse-yield-2026-10-01 P-002: a scripts-only root package.json change is not global.
   const inertGlobalChange = gitInertGlobalChange({ repoRoot: ROOT });
+  // P-003: the test-config files the vitest main process can load, derived at the judged tree.
+  // Unavailable = null, which keeps every test-config source file global (the pre-P-003 rule).
+  let testConfigMainProcess = null;
+  try {
+    testConfigMainProcess = testConfigMainProcessFiles({
+      repoRoot: ROOT,
+      srcDir: join(ROOT, "libs/test-config/src"),
+    });
+  } catch (err) {
+    console.log(
+      `TEST_PASS_REUSE_TEST_CONFIG_CLOSURE state=unavailable reason=${String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 120)}`,
+    );
+  }
+  // P-004 (D-007): the tsconfig/jsconfig files vite and vite-tsconfig-paths read, derived at the
+  // judged tree. Unavailable = null, which keeps every root tsconfig global (the pre-P-004 rule).
+  // Imported lazily: a missing tsconfck must degrade to "unavailable", never break this script.
+  let toolchainTsconfigs = null;
+  try {
+    const { toolchainTsconfigFiles } = await import("../libs/test-config/src/toolchain-tsconfigs.ts");
+    toolchainTsconfigs = await toolchainTsconfigFiles({ repoRoot: ROOT });
+  } catch (err) {
+    console.log(
+      `TEST_PASS_REUSE_TSCONFIG_CLOSURE state=unavailable reason=${String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 120)}`,
+    );
+  }
   const maxAgeMs = testReuseMaxAgeMs();
   const auditRate = testReuseAuditRate();
   const nowMs = Date.now();
@@ -5649,6 +5675,8 @@ async function armTestPassReuse(taskList) {
         maxAgeMs,
         auditRate,
         inertGlobalChange,
+        testConfigMainProcess,
+        toolchainTsconfigs,
       });
       // P-012: the files reuse WOULD have skipped but that run this time; a red among them is a
       // TEST_PASS_REUSE_ALARM (phase C), judged on the first pass before any retry.

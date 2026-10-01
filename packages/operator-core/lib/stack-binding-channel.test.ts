@@ -136,6 +136,34 @@ describe('renderStackTransitionContext (P-012)', () => {
     expect(warnings[0]).toMatch(/stack transition not delivered/);
   });
 
+  // WI-10004896: a vm-release host's content root holds unattested first-party copies of
+  // every blueprint. Attaching AUTO mid-session must deliver the catalog-selected built-in
+  // definition, not refuse the installed copy the id would re-resolve to.
+  it('attaches AUTO from the selected catalog source when the content root holds an unattested copy', async () => {
+    const { cpSync, mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const root = mkdtempSync(join(tmpdir(), 'stack-channel-vm-release-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      for (const id of ['base', 'su.mode-auto']) {
+        cpSync(dirname(blueprint.builtinBlueprintPath(id)), join(root, 'blueprints', id), { recursive: true });
+      }
+      const warnings: string[] = [];
+      const out = await renderStackTransitionContext(
+        { state: state({ stack: ['autonomy:su.mode-auto'] }), stackBefore: [] },
+        { ...opts, warn: (m) => warnings.push(m) },
+      );
+      expect(warnings).toEqual([]);
+      expect(out).toContain('"id":"su.mode-auto"');
+      expect(out).toContain("AUTO mode — the owner's switch");
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks domain/client mutations fresh-context so the old host cannot acknowledge them', async () => {
     const result = await renderStackTransitionContextResult(
       {

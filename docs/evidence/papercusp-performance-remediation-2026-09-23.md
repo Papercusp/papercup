@@ -4042,6 +4042,75 @@ impact. No shared-host restart, new source fix, unchanged test rerun,
 acceptance binding or shipment occurred in this continuation. P-008 / R-8
 remain open.
 
+### Gateway cancellation loaded-build receipt — October 1, 15:04Z
+
+The existing gateway runtime owner, su-839dcda5 / WI-10004644, supplied
+`coord-send-b626b8412ed5cbd248892b69ed959df68399926d5744954dba5521b4aec9eb85`.
+That 14:59:08Z receipt reports the gateway restarted at 14:29Z, loaded
+build `a6ab88c04e`, and health process-start stamp `1790864960064`.
+The owner reports no further gateway restart planned. The fleet leader
+separately confirmed this existing adoption route. No P-008 restart was
+performed.
+
+This continuation compared `git show` bytes at that reported loaded build
+with verified commit `8cfe6fd85b042b7f97c6f5a2cedaa495d1cfbf40`.
+All four SHA-256 fingerprints match the final source verification above:
+gateway `a6bcb149`, stage test `e119c153`, OAuth adapter `f4275b9b`,
+and OAuth adapter test `b055eca0`. The loaded build thus contains the
+exact verified cancellation sources, with the two tests as provenance;
+this does not assert that the test files execute inside the gateway.
+The process binding comes from the runtime owner's dated health receipt,
+not a fresh product-request trace. Existing 351-test and final 31-test
+receipts were retained without rerunning unchanged tests.
+
+The previously unknown gateway cancellation-source adoption is now
+established for that recorded incarnation. Historical downstream-close
+trigger, account proxy configuration, app impact, and R-8 acceptance
+remain open. This is not a final-shipment claim.
+
+### Archived owner-backfill SQL attribution — October 1, 15:14Z
+
+The bounded PostgreSQL stderr reducer, task `0mupo95ttkn7xqzu852`,
+exit 0, read only `/var/log/postgresql/postgresql-18-main.log` for
+14:04–14:14 UTC. It classified 317 timestamped records in that file and
+returned one owner-backfill UPDATE duration record, with no omitted
+matches: **14:12:49.381Z**, backend PID **1030409**, application name
+**`pcusp:org-admin:p4099092`**, duration **284,354.979 ms**.
+The unreturned full record's SHA-256 is
+`541d2daf238e5cb1322e35888d3726e38a2b9d6c1f10cf7c10237c62383728a8`.
+`pgAppName` in `libs/papercusp/libs/db/src/connection.ts` writes
+`pcusp:<pool-label>:p<process.pid>`, so the application name binds this
+statement to the same bg-host PID as the ingestion receipt above.
+
+The exact-backend follow-up, task `0mupod94xkrz7qw17e2`, exit 0,
+retained two records in the same file/window: that completed UPDATE and
+its parameter-detail record. The third parameter is **`claude`**.
+Thus the slow statement is `backfillSessionOwners` for Claude, rather
+than the Codex `adv_sessions` metadata UPDATE. The first two parameter
+values each retain 1,027 characters without a complete closing array;
+their exact array cardinalities were not recovered. Parameters and SQL
+text were processed inside the reducer and not returned. The parameter
+record SHA-256 is
+`fe1d288af14506631281975a637aca5b4c10eeb1c9253ec3ed642034af035d9d`.
+
+This directly locates almost all of the reported 284,423 ms backfill
+bucket in one PostgreSQL statement. It does not decompose that statement
+into execution, lock or I/O time. No target-backend lock/cancellation
+record was retained in this one-file window; that is not proof of no
+wait. A current settings read shows `log_lock_waits=off` and a 7,000 ms
+slow-statement floor, but no historical settings receipt was obtained.
+The current `session_turns` catalogue includes its composite primary
+index `(workspace_id, source_kind, session_id, turn_idx)` and a
+`session_id` index. Index existence does not establish the historical
+plan or its efficiency. The process-local completed-query ring retains
+32 results and cannot recover evicted historical query/wait linkage.
+
+Next, distinguish the bulk UPDATE's access plan and wait mechanism using
+the existing query/runtime route. The matched PostgreSQL and ingestion
+receipts narrow the investigation; historical app impact, R-8 acceptance
+and final shipment remain open. No production SQL mutation or shared
+restart was performed.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

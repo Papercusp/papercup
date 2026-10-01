@@ -91,9 +91,20 @@
  *    explicitly, so you can see WHY a working-tree run disagreed with this one.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  mkdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 /* ─────────────────────────── pure helpers (unit-tested) ─────────────────────────── */
 
@@ -252,6 +263,74 @@ export function planLinkExcludes(linkedPaths, submodulePaths) {
 }
 
 /**
+ * Where a symlinked `node_modules` entry should point INSIDE the extracted tree, or null when it
+ * is not a workspace-package link (EI-24790229053787032).
+ *
+ * WHY: npm links each workspace package as a RELATIVE symlink (`node_modules/@papercusp/search ->
+ * ../../libs/generic/search`). When the whole shared `node_modules` was symlinked into the
+ * extracted tree, those relative links resolved against the SHARED checkout, so every
+ * `@papercusp/*` import ran the working tree instead of the ref, beside the extracted tree's own
+ * copy of the same files reached by relative import. Module-scoped state then split across the
+ * two copies, with no error: measured on harness-doc-sections-sync R-29 (the search policy read
+ * an embedder registry the test never stamped, so the semantic leg got no profile and returned
+ * nothing) and carry-notes-no-unread-vector R-32 ("configureResourceProfile() called after the
+ * profile was already detected"). Both passed in the shared tree at the same commit.
+ *
+ * `realTarget` is the entry's resolved real path. A target inside the shared checkout and outside
+ * any `node_modules` is a workspace package; it maps to the same relative path under `workRoot`.
+ */
+export function cloneWorkspaceTarget(realTarget, repoRoot, workRoot) {
+  if (typeof realTarget !== 'string' || typeof repoRoot !== 'string' || typeof workRoot !== 'string') return null;
+  if (!realTarget || !repoRoot || !workRoot) return null;
+  const rel = relative(repoRoot, realTarget);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  if (rel.split(sep).includes('node_modules')) return null;
+  return join(workRoot, rel);
+}
+
+/**
+ * Build `cloneNm` as a REAL directory mirroring `sharedNm` entry by entry (EI-24790229053787032).
+ * Every entry is a symlink to the shared one (nothing is installed or copied), except a
+ * workspace-package link, which points at the extracted tree's own package when that package
+ * exists there (has a package.json). A workspace package absent from the extracted tree (an
+ * uninitialised submodule) falls back to the shared target and is COUNTED, so the fallback is
+ * visible rather than silent. Scope directories (`@x`) are mirrored one level down.
+ * Returns `{ entries, remapped, fallback }`.
+ */
+export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot) {
+  const stats = { entries: 0, remapped: 0, fallback: 0 };
+  const linkEntry = (sharedPath, clonePath) => {
+    let real = null;
+    try {
+      if (lstatSync(sharedPath).isSymbolicLink()) real = realpathSync(sharedPath);
+    } catch {
+      /* a dangling link stays a link to the shared path, exactly as before */
+    }
+    const remap = real ? cloneWorkspaceTarget(real, repoRoot, workRoot) : null;
+    if (remap && existsSync(join(remap, 'package.json'))) {
+      symlinkSync(remap, clonePath, 'dir');
+      stats.remapped += 1;
+    } else {
+      if (remap) stats.fallback += 1;
+      symlinkSync(sharedPath, clonePath);
+    }
+    stats.entries += 1;
+  };
+  mkdirSync(cloneNm, { recursive: true });
+  for (const ent of readdirSync(sharedNm, { withFileTypes: true })) {
+    const sharedPath = join(sharedNm, ent.name);
+    const clonePath = join(cloneNm, ent.name);
+    if (ent.name.startsWith('@') && ent.isDirectory()) {
+      mkdirSync(clonePath, { recursive: true });
+      for (const sub of readdirSync(sharedPath)) linkEntry(join(sharedPath, sub), join(clonePath, sub));
+    } else {
+      linkEntry(sharedPath, clonePath);
+    }
+  }
+  return stats;
+}
+
+/**
  * Overall verdict. Nonzero if ANY lint failed OR could not be run.
  *
  * `missing` (absent at the ref) and `error` (the run itself blew up) MUST count as
@@ -294,13 +373,55 @@ function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim();
 }
 
-/** Bytes of a path at a ref, or null if the path does not exist there. */
-function showAtRef(repoRoot, ref, path) {
+function gitShowOrNull(cwd, spec) {
   try {
-    return execFileSync('git', ['show', `${ref}:${path}`], { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    return execFileSync('git', ['show', spec], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
   } catch {
     return null;
   }
+}
+
+/**
+ * The submodule (by repo-relative path) that owns `path`, or null when the superproject does.
+ * Deepest match wins, mirroring `planLinkExcludes`; nested submodules are resolved one level
+ * at a time by `showAtRef` recursing into the owner's own repository.
+ */
+export function owningSubmodule(path, submodulePaths) {
+  const subs = (Array.isArray(submodulePaths) ? submodulePaths : [])
+    .filter((p) => typeof p === 'string' && p)
+    .sort((a, b) => b.length - a.length);
+  return subs.find((s) => path.startsWith(`${s}/`)) ?? null;
+}
+
+/**
+ * Bytes of a path at a ref, or null if the path does not exist there.
+ *
+ * WI-10004908: `git show <ref>:<path>` never crosses a gitlink, so for a path inside a
+ * submodule it reports "exists on disk, but not in <ref>" even though the materialised tree
+ * contains the file. That made every submodule test operand (libs/generic/*, libs/papercusp/*)
+ * fail the forwarded-operand check below as MISSING@REF. A path inside a submodule is
+ * therefore read from THAT submodule's repository at the commit the superproject pins at
+ * `ref` — the same bytes the submodule-init step materialises into the clone.
+ */
+export function showAtRef(repoRoot, ref, path) {
+  const gitmodules = gitShowOrNull(repoRoot, `${ref}:.gitmodules`);
+  const owner = owningSubmodule(path, parseGitmodules(gitmodules ?? '').map((s) => s.path));
+  if (owner === null) return gitShowOrNull(repoRoot, `${ref}:${path}`);
+  let pin;
+  try {
+    pin = git(['rev-parse', `${ref}:${owner}`], repoRoot);
+  } catch {
+    return null;
+  }
+  if (!/^[0-9a-f]{40}$/.test(pin)) return null;
+  const subRoot = join(repoRoot, owner);
+  if (!existsSync(subRoot)) return null;
+  return showAtRef(subRoot, pin, path.slice(owner.length + 1));
 }
 
 function main() {
@@ -486,6 +607,7 @@ function main() {
     // version is not made reproducible by this tool.
     let linked = 0;
     const linkedPaths = [];
+    const shadow = { remapped: 0, fallback: 0 };
     const nmDirs = spawnSync(
       'bash',
       ['-c', `find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*' 2>/dev/null`],
@@ -497,12 +619,30 @@ function main() {
       if (existsSync(linkPath)) continue;
       try {
         mkdirSync(dirname(linkPath), { recursive: true });
-        symlinkSync(target, linkPath, 'dir');
-        linked += 1;
-        linkedPaths.push(rel);
       } catch {
-        /* a workspace absent at this ref simply has nowhere to link — fine */
+        continue; /* a workspace absent at this ref simply has nowhere to link — fine */
       }
+      try {
+        // Entry-by-entry, so workspace packages resolve INTO this tree (EI-24790229053787032).
+        const s = linkNodeModulesShadow(target, linkPath, repoRoot, workRoot);
+        shadow.remapped += s.remapped;
+        shadow.fallback += s.fallback;
+      } catch (err) {
+        // Never leave a half-built directory: fall back to the whole-directory link, loudly,
+        // because that link re-opens the shared-tree import escape for this location.
+        rmSync(linkPath, { recursive: true, force: true });
+        try {
+          symlinkSync(target, linkPath, 'dir');
+        } catch {
+          continue;
+        }
+        console.warn(
+          `  ⚠ ${rel}: per-entry link failed (${err instanceof Error ? err.message : String(err)}); ` +
+            `linked the whole directory, so @papercusp/* imports there run the SHARED tree`,
+        );
+      }
+      linked += 1;
+      linkedPaths.push(rel);
     }
     // Keep the extracted tree CLEAN to `git status` (WI-10004898, see planLinkExcludes):
     // a run inside it must be able to record worktree_dirty=false.
@@ -512,7 +652,11 @@ function main() {
       mkdirSync(infoDir, { recursive: true });
       appendFileSync(join(infoDir, 'exclude'), `\n# lint-as-committed: linked node_modules (WI-10004898)\n${patterns.join('\n')}\n`);
     }
-    console.log(`  linked ${linked} node_modules dir(s) (not installed, not copied; excluded from git status)`);
+    console.log(
+      `  linked ${linked} node_modules dir(s) (not installed, not copied; excluded from git status); ` +
+        `${shadow.remapped} workspace package link(s) resolve into this tree` +
+        (shadow.fallback ? `, ${shadow.fallback} fell back to the SHARED tree (package absent here)` : ''),
+    );
 
     // ── read the COMMITTED package.json: the script DEFINITION is versioned too ──
     let refScripts = {};

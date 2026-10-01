@@ -1,9 +1,11 @@
 import type { Sql } from 'postgres';
 import { z } from 'zod';
-import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, type SavedTutorialProgress, type TutorialScope } from './cloud-tutorial-lesson';
+import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, sameTutorialScope, type SavedTutorialProgress, type TutorialScope } from './cloud-tutorial-lesson';
 
 const receipt = z.object({ sessionId: z.string().min(1).max(160), taskId: z.string().min(1).max(160), resultId: z.string().min(1).max(160) }).strict();
 export const tutorialProgressUpdateSchema = z.object({
+  /** A consistency check against the verified principal, never authority. */
+  expectedScope: z.object({ tenantId: z.string().min(1).max(256), userId: z.string().min(1).max(256), workspaceId: z.string().min(1).max(256) }).strict(),
   expectedRevision: z.number().int().nonnegative().safe(),
   mutationId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:-]+$/),
   disposition: z.enum(['active', 'paused', 'skipped', 'closed']),
@@ -52,6 +54,7 @@ export async function readTutorialProgress(tx: Sql, scope: TutorialScope): Promi
  * CAS atomic across tabs and preserves unrelated profile keys/workspaces. */
 export async function updateTutorialProgress(tx: Sql, scope: TutorialScope, input: TutorialProgressUpdate): Promise<TutorialProgressRecord> {
   const patch = tutorialProgressUpdateSchema.parse(input);
+  if (!sameTutorialScope(scope, patch.expectedScope)) throw new Error('tutorial_scope_changed');
   await assertTransactionScope(tx, scope);
   await tx`INSERT INTO papercusp_auth.hosted_user_preferences (organization_id, user_id)
     VALUES (${scope.tenantId}::uuid, ${scope.userId}::uuid) ON CONFLICT (organization_id, user_id) DO NOTHING`;

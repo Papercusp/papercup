@@ -43,7 +43,8 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       run_kind text NOT NULL,
       started_at timestamptz NOT NULL,
-      finished_at timestamptz
+      finished_at timestamptz,
+      detail jsonb
     );
     CREATE SCHEMA dbos;
     CREATE TABLE dbos.workflow_status (
@@ -89,12 +90,29 @@ async function fire(routineId: string, status: string) {
     VALUES (${`wf-${routineId}-${status}`}, ${status}, ${`routine:${routineId}`})`;
 }
 
-async function admissionRun(row: { id: string; kind: string; ageMs: number; finished?: boolean; harness?: string }) {
+async function admissionRun(row: {
+  id: string;
+  kind: string;
+  ageMs: number;
+  finished?: boolean;
+  harness?: string;
+  leaseOwner?: string;
+}) {
   const startedAt = new Date(NOW_MS - row.ageMs).toISOString();
+  // Build the object in SQL: a JSON string bound as a parameter can land as a
+  // jsonb string scalar, which would make detail->'lease' NULL and the test vacuous.
+  const owner = row.leaseOwner ?? null;
   await db.sql`
-    INSERT INTO harness_shared.admission_runs (id, workspace_id, harness_slug, run_kind, started_at, finished_at)
+    INSERT INTO harness_shared.admission_runs (id, workspace_id, harness_slug, run_kind, started_at, finished_at, detail)
     VALUES (${row.id}, ${WS}, ${row.harness ?? HARNESS}, ${row.kind}, ${startedAt}::timestamptz,
-            ${row.finished ? startedAt : null}::timestamptz)`;
+            ${row.finished ? startedAt : null}::timestamptz,
+            CASE WHEN ${owner}::text IS NULL THEN NULL
+                 ELSE jsonb_build_object('status', 'running', 'lease', jsonb_build_object('ownerId', ${owner}::text))
+            END)`;
+}
+
+async function workflow(uuid: string, status: string) {
+  await db.sql`INSERT INTO dbos.workflow_status (workflow_uuid, status) VALUES (${uuid}, ${status})`;
 }
 
 const check = () => bulkDedupInFlight(sql, { workspaceId: WS, harnessSlug: HARNESS, nowMs: NOW_MS });
@@ -130,6 +148,26 @@ describe('bulkDedupInFlight', () => {
       reason: 'admission-run-open',
       ref: 'stage-open',
     });
+  });
+
+  it('treats an open stage whose lease-owning workflow has ended as abandoned, so the driver retries it (WI-10004918)', async () => {
+    // Measured 2026-10-01: host restarts dead-lettered the 24h routineFire
+    // (MAX_RECOVERY_ATTEMPTS_EXCEEDED) and its stage row stayed open for the whole window.
+    for (const [i, status] of ['MAX_RECOVERY_ATTEMPTS_EXCEEDED', 'ERROR', 'CANCELLED', 'SUCCESS'].entries()) {
+      await workflow(`wf-dead-${i}`, status);
+      await admissionRun({ id: `stage-orphan-${i}`, kind: 'bulk-stage', ageMs: 3 * HOUR, leaseOwner: `wf-dead-${i}` });
+    }
+    await expect(check()).resolves.toEqual({ inFlight: false });
+  });
+
+  it('still counts an open stage whose lease owner is live, or is not a DBOS workflow at all', async () => {
+    await workflow('wf-live', 'PENDING');
+    await admissionRun({ id: 'stage-live', kind: 'bulk-stage', ageMs: 3 * HOUR, leaseOwner: 'wf-live' });
+    await expect(check()).resolves.toMatchObject({ inFlight: true, reason: 'admission-run-open', ref: 'stage-live' });
+
+    await db.sql.unsafe('TRUNCATE harness_shared.admission_runs, dbos.workflow_status');
+    await admissionRun({ id: 'stage-manual', kind: 'bulk-stage', ageMs: 3 * HOUR, leaseOwner: 'su-manual-caller' });
+    await expect(check()).resolves.toMatchObject({ inFlight: true, reason: 'admission-run-open', ref: 'stage-manual' });
   });
 
   it('ignores stale leftovers older than the fire-timeout window, so they cannot block the driver forever', async () => {
