@@ -24,7 +24,12 @@ export interface StepVerdict {
   label: string;
   n: number;
   ok: boolean;
-  /** Why the step saturated (`driver-rc=1,failed=2`), null when it passed. */
+  /**
+   * The step never held N sessions in flight (WI-10004672), so it measured the driver, not the
+   * machine: it is neither a pass nor a saturation, and it ends what the ramp can say.
+   */
+  underdriven: boolean;
+  /** Why the step saturated (`driver-rc=1,failed=2`) or was underdriven (`achieved=12.7/64`); null when it passed. */
   reason: string | null;
   wallSlowdown: number | null;
 }
@@ -33,10 +38,10 @@ export interface StepVerdict {
 export function parseRampLog(text: string): StepVerdict[] {
   const out: StepVerdict[] = [];
   for (const line of text.split('\n')) {
-    const m = /^RAMP_STEP_END p005-(.+)-n(\d+) n=\d+ rc=-?\d+ (OK|SATURATED reason=(\S*))(.*)$/.exec(line.trim());
+    const m = /^RAMP_STEP_END p005-(.+)-n(\d+) n=\d+ rc=-?\d+ (OK|SATURATED reason=(\S*)|UNDERDRIVEN (achieved=\S*))(.*)$/.exec(line.trim());
     if (!m) continue;
-    const slow = /wallSlowdown=([\d.]+)/.exec(m[5]);
-    out.push({ label: m[1], n: Number(m[2]), ok: m[3] === 'OK', reason: m[4] ?? null, wallSlowdown: slow ? Number(slow[1]) : null });
+    const slow = /wallSlowdown=([\d.]+)/.exec(m[6]);
+    out.push({ label: m[1], n: Number(m[2]), ok: m[3] === 'OK', underdriven: m[5] !== undefined, reason: m[4] ?? m[5] ?? null, wallSlowdown: slow ? Number(slow[1]) : null });
   }
   return out;
 }
@@ -54,6 +59,8 @@ export interface CapacityRow {
   /** True when no step saturated, so `capacity` is a lower bound. */
   censored: boolean;
   saturatedAt: { n: number; reason: string } | null;
+  /** The ramp stopped at an UNDERDRIVEN step: capacity beyond the last pass is unmeasured, not refuted. */
+  underdrivenAt: { n: number; reason: string } | null;
   /** Measured at the capacity step (null when there is none). */
   wallSlowdown: number | null;
   coresPerAgent: number | null;
@@ -77,8 +84,9 @@ export function capacityRow(
   diskGb: number,
 ): CapacityRow {
   const mine = steps.filter((s) => s.label === label);
-  const firstSat = mine.find((s) => !s.ok) ?? null;
-  const passed = mine.filter((s) => s.ok && (!firstSat || s.n < firstSat.n));
+  const firstStop = mine.find((s) => !s.ok) ?? null;
+  const firstSat = firstStop && !firstStop.underdriven ? firstStop : null;
+  const passed = mine.filter((s) => s.ok && (!firstStop || s.n < firstStop.n));
   const best = passed.at(-1) ?? null;
   const capacity = best?.n ?? 0;
   const usdPerHour = hourlyPriceUsd(machineType, diskGb);
@@ -97,6 +105,7 @@ export function capacityRow(
     capacity,
     censored: firstSat === null && best !== null,
     saturatedAt: firstSat ? { n: firstSat.n, reason: firstSat.reason ?? '' } : null,
+    underdrivenAt: firstStop?.underdriven ? { n: firstStop.n, reason: firstStop.reason ?? '' } : null,
     wallSlowdown: best?.wallSlowdown ?? null,
     coresPerAgent,
     sliceAnonMbPerAgent,
@@ -113,7 +122,7 @@ export function renderMarkdown(rows: readonly CapacityRow[]): string {
   const out = [head, '|' + ' --- |'.repeat(10)];
   for (const r of rows) {
     out.push(
-      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} |`,
+      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} |`,
     );
   }
   return out.join('\n');

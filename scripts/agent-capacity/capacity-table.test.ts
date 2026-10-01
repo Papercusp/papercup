@@ -72,8 +72,24 @@ describe('capacity-table', () => {
   it('parses only RAMP_STEP_END lines, keeping the saturation reason and slowdown', () => {
     const steps = parseRampLog(['noise', end('a-b', 8, 'OK'), end('a-b', 16, 'SATURATED reason=driver-rc=1,failed=2')].join('\n'));
     expect(steps).toEqual([
-      { label: 'a-b', n: 8, ok: true, reason: null, wallSlowdown: 1.8 },
-      { label: 'a-b', n: 16, ok: false, reason: 'driver-rc=1,failed=2', wallSlowdown: 1.16 },
+      { label: 'a-b', n: 8, ok: true, underdriven: false, reason: null, wallSlowdown: 1.8 },
+      { label: 'a-b', n: 16, ok: false, underdriven: false, reason: 'driver-rc=1,failed=2', wallSlowdown: 1.16 },
     ]);
+  });
+
+  // WI-10004672: a step that never held N sessions measured the driver, so it neither passes nor
+  // saturates. Capacity stops at the last real pass, as a floor, and the table says why.
+  it('treats an UNDERDRIVEN step as unmeasured: capacity is the last pass, censored, never a saturation', () => {
+    vm('e2-standard-32', 'mixed-normal', [end('mixed-normal', 8, 'OK'), end('mixed-normal', 16, 'UNDERDRIVEN achieved=12.7/16'), end('mixed-normal', 32, 'OK')], {
+      n: 8,
+      cores: 1,
+      anonMb: 80,
+      peaksMiB: [400],
+    });
+    const [row] = buildTable(root, 120);
+    expect(row).toMatchObject({ capacity: 8, censored: true, saturatedAt: null, underdrivenAt: { n: 16, reason: 'achieved=12.7/16' } });
+    const md = renderMarkdown([row]);
+    expect(md).toMatch(/\| ≥8 \| not measured past 8 \(underdriven at 16, achieved=12\.7\/16\) \|/);
+    expect(parseRampLog(end('a', 16, 'UNDERDRIVEN achieved=12.7/16'))).toEqual([{ label: 'a', n: 16, ok: false, underdriven: true, reason: 'achieved=12.7/16', wallSlowdown: 1.16 }]);
   });
 });
