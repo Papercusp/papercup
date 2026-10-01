@@ -378,30 +378,21 @@ export function selectOrientationImprovementTriage(
 /**
  * Evidence that this agent's MCP tool surface loaded EMPTY (EI-21308269358666878).
  *
- * A psu session can come up with ZERO papercusp tools and never notice: it keeps
- * heartbeating, presence stays 'live', and it looks healthy to every peer — while
- * being unable to claim, checkpoint, complete, or control its own loop. The tool
- * list is fetched once at MCP connect and never re-listed, so the condition is
- * PERMANENT for that session's life: it cannot self-heal, and retrying inside the
- * session cannot fix it. That is why this warns instead of waiting.
- *
- * The signal is the CALL-ORIGIN SPLIT, not a call count. Hook calls reach the
- * operator over plain HTTP, BYPASSING the agent MCP surface, so they keep flowing
- * while agent-issued calls stop dead. Measured on the confirmed incident
- * (su-b39c3537, sessions cdcdc38c + ed80eafe, 2026-08-24): 355+ hook calls against
- * 0 agent calls, over ~4 hours — a state its own transcript describes as "no
- * papercusp tools registered". That asymmetry also rules out "merely idle": an
- * idle session is not being handed turn-start blocks at all.
+ * A hook/agent-origin call gap describes observed activity only. Zero
+ * agent-origin calls cannot distinguish a missing client tool list from an idle
+ * or parked session. There is no persisted authoritative client-registration
+ * signal here, so this observation is informational and must not trigger a
+ * restart or heal.
  *
  * ⚠ A raw invocation COUNT does not work and was tried first: the sanctioned
  * `scripts/mcp-call.mjs` fallback and the hooks both write rows, so a toolless
  * agent still logs plenty of invocations. Only the split separates them.
  *
- * Present ⇒ toolless. `null` is BOTH "healthy" and "cannot tell", deliberately:
- * every unknown degrades to silence, never to a false alarm on a working agent.
+ * Present means only that no agent-origin call was observed after many hooks.
+ * It does not establish the client tool-list registration state.
  */
 export interface OrientationToolSurface {
-  /** Hook-origin calls since the context generation began — proves the operator is reachable. */
+  /** Hook-origin calls since the context generation began. */
   hookCalls: number;
   /** Minutes since the context generation began, so the line can say how long. */
   windowMinutes: number;
@@ -2413,9 +2404,9 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
         render: (toolSurface) =>
           toolSurface
             ? [
-                `- 🚨 MCP TOOLS NOT REGISTERED — 0 tool calls in ${toolSurface.windowMinutes}m vs ` +
-                  `${toolSurface.hookCalls} harness beats OK. Tool list loaded EMPTY; it cannot ` +
-                  `self-heal. RESTART THE SESSION (EI-21308269358666878).`,
+                `- No agent-origin MCP calls recorded in ${toolSurface.windowMinutes}m despite ` +
+                  `${toolSurface.hookCalls} harness beats. Tool-list registration is unknown; ` +
+                  `this activity gap alone does not justify a restart.`,
               ]
             : [],
       },
