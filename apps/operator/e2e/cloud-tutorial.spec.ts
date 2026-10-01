@@ -40,22 +40,10 @@ async function setupJourney(page: Page, existing: boolean) {
       workspaceHostEndpoints: { connection: '/api/hosted/browser/workspace-hosts/connection', provision: '/api/hosted/browser/workspace-hosts/provision', action: '/api/hosted/browser/workspace-hosts/action' },
     };
     localStorage.clear();
-    const resizeCalls: Array<{ at: number; stack: string; targets: string[] }> = [];
-    const NativeObserver = window.ResizeObserver;
-    window.ResizeObserver = class extends NativeObserver {
-      constructor(callback: ResizeObserverCallback) {
-        const stack = new Error().stack ?? '';
-        super((entries, observer) => {
-          resizeCalls.push({ at: performance.now(), stack, targets: entries.map(entry => entry.target.className) });
-          if (resizeCalls.length > 12) resizeCalls.shift();
-          callback(entries, observer);
-        });
-      }
-    };
-    const resizeErrors: Array<{ at: number; message: string; calls: typeof resizeCalls }> = [];
+    const resizeErrors: Array<{ at: number; message: string }> = [];
     Object.defineProperty(window, '__tutorialResizeErrors', { value: resizeErrors });
     window.addEventListener('error', event => {
-      if (event.message.includes('ResizeObserver loop')) resizeErrors.push({ at: performance.now(), message: event.message, calls: [...resizeCalls] });
+      if (event.message.includes('ResizeObserver loop')) resizeErrors.push({ at: performance.now(), message: event.message });
     });
   });
   // Fail closed for unmodelled API traffic; no test writes reach the real
