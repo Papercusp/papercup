@@ -77,6 +77,17 @@ describe('requests', () => {
     expect(await c.createPortalSession({ customerId: 'cus_x', returnUrl: 'https://app.example/billing' })).toEqual({ ok: false, code: 'provider-error', status: 400, detail: 'No such customer' });
   });
 
+  it('sends an explicit portal configuration only when one is configured', async () => {
+    const { client: c, calls } = client([
+      { body: { url: 'https://billing.stripe.com/p/session_2' } },
+      { body: { url: 'https://billing.stripe.com/p/session_3' } },
+    ]);
+    await c.createPortalSession({ customerId: 'cus_1', returnUrl: 'https://app.example/billing', configurationId: 'bpc_123' });
+    await c.createPortalSession({ customerId: 'cus_1', returnUrl: 'https://app.example/billing', configurationId: null });
+    expect(calls[0]!.form.get('configuration')).toBe('bpc_123');
+    expect(calls[1]!.form.has('configuration')).toBe(false);
+  });
+
   it('a response without the expected id is malformed, not success', async () => {
     const { client: c } = client([{ body: { object: 'customer' } }]);
     expect(await c.createCustomer({ organizationId: ORG })).toMatchObject({ ok: false, code: 'malformed-response' });

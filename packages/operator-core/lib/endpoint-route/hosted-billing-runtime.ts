@@ -14,6 +14,7 @@
  *   PAPERCUSP_STRIPE_SECRET_KEY_REF           env:/file: ref to sk_test_… (sk_live_… needs the flag)
  *   PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF       env:/file: ref to the endpoint's whsec_…
  *   PAPERCUSP_HOSTED_BILLING_PLANS            JSON [{ planKey, priceId, label, description? }]
+ *   PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID  optional bpc_… (API-created portal configuration)
  *
  * stripe-subscription-signup-2026-10-01 P-005.
  */
@@ -42,6 +43,20 @@ export interface HostedBillingRuntimeConfiguration {
   readonly stripeSecretKeyRef: string | null;
   readonly stripeWebhookSecretRef: string | null;
   readonly plans: readonly HostedBillingPlan[];
+  /** Explicit customer-portal configuration (`bpc_…`, not a secret); null = Stripe's dashboard default. */
+  readonly stripePortalConfigurationId?: string | null;
+}
+
+const PORTAL_CONFIGURATION_ID = /^bpc_[A-Za-z0-9]+$/;
+
+/** A malformed portal configuration id is a configuration error, never silently ignored. */
+export function parseStripePortalConfigurationId(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  if (!PORTAL_CONFIGURATION_ID.test(value)) {
+    throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID');
+  }
+  return value;
 }
 
 const PLAN_KEY = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -85,6 +100,7 @@ export function readHostedBillingRuntimeConfiguration(
     stripeSecretKeyRef: optionalRef(env.PAPERCUSP_STRIPE_SECRET_KEY_REF),
     stripeWebhookSecretRef: optionalRef(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF),
     plans: parseHostedBillingPlans(env.PAPERCUSP_HOSTED_BILLING_PLANS),
+    stripePortalConfigurationId: parseStripePortalConfigurationId(env.PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID),
   };
 }
 
@@ -133,7 +149,14 @@ async function resolveStripe(
     liveModeAllowed,
   });
   if (!built.ok) return { stripe: null, reason: built.code };
-  return { stripe: { client: built.client, webhookSecret }, reason: null };
+  return {
+    stripe: {
+      client: built.client,
+      webhookSecret,
+      portalConfigurationId: configuration.stripePortalConfigurationId ?? null,
+    },
+    reason: null,
+  };
 }
 
 function denial(status: 401 | 403 | 503, message: string): Response {
