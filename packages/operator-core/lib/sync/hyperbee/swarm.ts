@@ -36,6 +36,7 @@ import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type PotGitServeConfig } from '../pot-git/serve-wiring';
 import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../pot-git/peer-dial-registry';
 import { loadOrGenerateSwarmSeed } from '../../identity/swarm-keypair';
+import { describeSyncRelayFallback, resolveSyncRelayKeys, syncRelayThroughOption } from './sync-relay';
 import {
   readWireStats,
   dataPathProven,
@@ -4030,6 +4031,8 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
         dht?: unknown;
         firewall?: (remotePublicKey: Buffer) => boolean;
         seed?: Buffer;
+        /** WI-10004827: blind-relay keys, used only after a direct holepunch fails. */
+        relayThrough?: Buffer[];
       }) => HyperswarmLike;
     }
   ).default;
@@ -4097,6 +4100,13 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
     dht = new DHT({ bootstrap: opts.bootstrap, host: opts.dhtHost });
     console.info(`[swarm] DHT host = ${opts.dhtHost}`);
   }
+  // WI-10004827: peers that cannot holepunch each other (same NAT without
+  // hairpin, CGNAT, one Cloud NAT) need a relay or they never replicate. Reuse
+  // the voice blind-relay set; hyperswarm uses it only after a direct connect
+  // fails (sync-relay.ts). Read once per process: a relay added later takes
+  // effect on the next restart.
+  const relayKeys = await resolveSyncRelayKeys();
+  console.info(describeSyncRelayFallback(relayKeys));
   // P-003: the firewall runs BEFORE the Noise handshake completes — it cheaply
   // rejects banned keys without spending handshake CPU. Hyperswarm only hands
   // the firewall the remote public key, so IP-level bans are enforced in the
@@ -4106,6 +4116,7 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
     maxClientConnections: opts.maxClientConnections,
     ...(dht ? { dht } : opts.bootstrap ? { bootstrap: opts.bootstrap } : {}),
     ...(swarmSeed ? { seed: swarmSeed } : {}),
+    ...syncRelayThroughOption(relayKeys),
     firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
   });
   // WI-6063: make the budget split VISIBLE at construction. The reserve only
