@@ -269,6 +269,14 @@ function inboxBulkAction(
 
 function evidenceLines(runItem: BulkRunItem): string[] {
   const lines: string[] = [];
+  if (runItem.intakeDecision) {
+    const decision = runItem.intakeDecision;
+    lines.push(`intake decision · ${decision.disposition} · ${decision.reason}`);
+    lines.push(`decided by ${decision.decidedBy} at ${decision.decidedAt} · next owner ${decision.owner}`);
+    if (decision.targetRef) lines.push(`canonical target · ${decision.targetRef}`);
+    if (decision.missingInformation) lines.push(`missing information · ${decision.missingInformation}`);
+    if (decision.acceptance?.evidence?.length) lines.push(`acceptance evidence · ${decision.acceptance.evidence.join('; ')}`);
+  }
   if (runItem.recommendation?.label)
     lines.push(`next step · ${runItem.recommendation.label}`);
   if (runItem.recommendation?.responsibility) {
@@ -1202,13 +1210,20 @@ export default function InboxBulkReport({
       subtitle={
         <span className="inbox-bulk-report__subtitle">
           <span>
-            {counts.total} assessed · {counts.resolved} auto-resolved ·{" "}
+            {counts.total} run snapshot items · {counts.resolved} auto-resolved ·{" "}
             {counts.unresolved} still open
             <br />
             {counts.recommendationTotal} recommendations · {counts.ownerAction}{" "}
             owner actions · {counts.cleanupCandidate} cleanup ·{" "}
             {counts.retryNeeded + counts.pending} retry needed · {counts.routed}{" "}
             routed · {counts.investigate} investigate
+            <br />
+            {counts.failed} failed triage · {counts.pending} not reached
+            <details><summary>Count scope and definitions</summary>
+              Run {run.runId} · {run.harnessSlug ?? 'cross-harness inbox snapshot'} · frozen membership, item rows.
+              Writer: deriveRunCounts over persisted attention bulk-run items. Auto-resolved counts actions on intake or inbox rows; it does not count delivered fixes.
+              Intake decisions, observation consumption, pair comparisons, duplicate closures and accepted-work completions remain separate measures.
+            </details>
           </span>
           {notice ? (
             <span role="alert" className="inbox-bulk-report__error">
@@ -1235,10 +1250,11 @@ export default function InboxBulkReport({
         <span data-testid="inbox-bulk-report-footer">
           {presentation === "settled" ? (
             <>
-              <strong>Audit trail.</strong> This run finished on its own — every
-              row below is an item Papercup already resolved, with the evidence
-              it resolved on. Nothing here is waiting on you; open a row to see
-              why, or re-run the same scope from the bar above.
+              <strong>Audit trail.</strong> This run finished. Each row retains
+              its own outcome and evidence. Failed and unreached triage stays
+              visible for retry; processing an observation does not establish
+              that accepted work was completed. Open a row to inspect the
+              decision, or re-run the same scope from the bar above.
             </>
           ) : presentation === "failed" ? (
             <>

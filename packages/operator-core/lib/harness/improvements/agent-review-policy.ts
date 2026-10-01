@@ -636,7 +636,7 @@ export function acceptanceSourceRevisionSql(
   );
 }
 
-function acceptanceSourceRevisionFromFragmentsSql(
+export function acceptanceSourceRevisionFromFragmentsSql(
   sql: OrgSql,
   itemKind: postgres.Fragment,
   title: postgres.Fragment,
@@ -738,7 +738,7 @@ function implementationReadinessValidSql(sql: OrgSql, payloadColumn: string) {
   );
 }
 
-function implementationReadinessValidFromJsonSql(sql: OrgSql, readinessJson: postgres.Fragment) {
+export function implementationReadinessValidFromJsonSql(sql: OrgSql, readinessJson: postgres.Fragment) {
   const readinessStatuses = [...IMPLEMENTATION_READINESS_STATUSES];
   const readinessSources = [...IMPLEMENTATION_READINESS_SOURCES];
   // COALESCE: a missing key is SQL NULL, and `NOT (NULL)` would let a malformed
@@ -753,6 +753,38 @@ function implementationReadinessValidFromJsonSql(sql: OrgSql, readinessJson: pos
     AND jsonb_typeof(${readinessJson} -> 'updatedAt') = 'string'
     AND (${readinessJson} ->> 'updatedAt') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
   ), FALSE)`;
+}
+
+/** P-010 SQL twin over narrow stored projections. Compute acceptance once upstream. */
+export function workItemPresentationStageFromSignalsSql(sql: OrgSql, row: {
+  observation: postgres.Fragment;
+  terminal: postgres.Fragment;
+  readinessValid: postgres.Fragment;
+  readinessEnrolled: postgres.Fragment;
+  readiness: postgres.Fragment;
+  acceptanceState: postgres.Fragment;
+  status: postgres.Fragment;
+  assigned: postgres.Fragment;
+  blocked: postgres.Fragment;
+  authority: postgres.Fragment;
+}) {
+  const accepted = sql`(${row.readinessValid} AND ${row.readiness} ->> 'status' = 'ready'
+    AND ${row.acceptanceState} = 'qualifying')`;
+  return sql`CASE
+    WHEN ${row.observation} THEN 'observation'
+    WHEN ${row.terminal} THEN CASE
+      WHEN ${accepted} AND ${row.status} = ANY(${[...ALL_SUCCESSFUL_STATUSES]}::text[])
+        AND ${row.authority} IN ('committed', 'validated') THEN 'verified-completion'
+      ELSE 'terminal-other' END
+    WHEN NOT COALESCE(${row.readinessEnrolled}, FALSE) OR NOT ${row.readinessValid} THEN 'unknown'
+    WHEN NOT COALESCE(${accepted}, FALSE) THEN 'candidate'
+    WHEN ${row.blocked}
+      OR ${row.status} <> ALL(ARRAY['open','wip','in_progress','in-progress','active','running']::text[])
+      THEN 'accepted-blocked'
+    WHEN ${row.assigned} OR ${row.status} = ANY(ARRAY['wip','in_progress','in-progress','active','running']::text[])
+      THEN 'accepted-active'
+    ELSE 'accepted-ready'
+  END`;
 }
 
 /** SQL twin of deriveWorkItemIntakeStage for set-based queue projections. */

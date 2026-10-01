@@ -103,14 +103,14 @@ interface DirectiveActuationEnvelopeEntry extends DirectiveEffectEnvelopeEntry {
 
 async function fetchDirectiveActuationEntries(
   recipientIds: string[],
-  opts: { fromId?: string; nowMs?: number; lookbackMs?: number } = {},
+  opts: { fromId?: string; nowMs?: number; lookbackMs?: number; workspaceId?: string } = {},
 ): Promise<DirectiveActuationEnvelopeEntry[]> {
   if (recipientIds.length === 0 || !coordHasPgFastPath()) return [];
   try {
     const nowMs = opts.nowMs ?? Date.now();
     const sinceMs = nowMs - (opts.lookbackMs ?? DIRECTIVE_EFFECT_LOOKBACK_MS);
     const sql = coordSql();
-    const ws = coordWorkspaceId();
+    const ws = opts.workspaceId ?? coordWorkspaceId();
     const from = opts.fromId ?? null;
     const rows = await sql<DirectiveEffectEnvelopeRow[]>`
       SELECT r AS recipient,
@@ -149,7 +149,7 @@ async function fetchDirectiveActuationEntries(
 /** Message ids whose explicitly declared effect is proven to have happened. */
 export async function fetchSatisfiedDirectiveMessageIds(
   recipientIds: string[],
-  opts: { nowMs?: number; lookbackMs?: number } = {},
+  opts: { nowMs?: number; lookbackMs?: number; workspaceId?: string } = {},
 ): Promise<Set<string>> {
   const entries = await fetchDirectiveActuationEntries(recipientIds, opts);
   return new Set(

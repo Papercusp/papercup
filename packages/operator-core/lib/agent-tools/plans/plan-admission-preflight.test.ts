@@ -23,6 +23,22 @@ vi.mock('../../work-items', async (importOriginal) => ({
 vi.mock('../../fleet/lane-health', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readClaimSpecLaneHealth: (...args: unknown[]) => mocks.readClaimSpecLaneHealth(...args),
+  // The real diagnosed reader calls the raw reader through a module-internal
+  // binding the mock above cannot intercept, so route it through the same mock
+  // with the real wrapper's contract: exact read → unavailable:null; null or a
+  // thrown read → laneHealth as read plus a detail naming the cause.
+  readClaimSpecLaneHealthDiagnosed: async (args: Record<string, unknown>) => {
+    try {
+      const laneHealth = (await mocks.readClaimSpecLaneHealth(args)) as FleetLaneHealth | null;
+      if (laneHealth?.effective.claimable != null) return { laneHealth, unavailable: null };
+      return { laneHealth, unavailable: { code: 'lane-health-unavailable', detail: 'no exact measurement' } };
+    } catch (error) {
+      return {
+        laneHealth: null,
+        unavailable: { code: 'lane-health-unavailable', detail: `Cause: ${(error as Error).message}` },
+      };
+    }
+  },
 }));
 
 import {
@@ -816,6 +832,33 @@ describe('preflightExactPlanLaneHealth', () => {
         }),
       }),
     );
+  });
+
+  it('names the lane-read failure cause in the lane-unknown refusal (WI-10004851)', async () => {
+    mocks.readClaimSpecLaneHealth.mockRejectedValueOnce(new Error('issue-family aggregate timed out'));
+    const verdict = await preflightExactPlanAdmission({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      actor: 'su-test',
+      claimant: 'su-test',
+      specId: 'plans-start-plan-a',
+      claimKinds: ['bug'],
+    });
+    expect(verdict).toMatchObject({ ready: false, reason: 'lane-unknown' });
+    expect(verdict.message).toContain('could not be read completely');
+    expect(verdict.message).toContain('issue-family aggregate timed out');
+  });
+
+  it('keeps the lane-unknown message unchanged when no cause is known', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: undefined, payload: { planItem: { itemId: 'P-001' } } }],
+      laneHealth: null,
+    } as Parameters<typeof evaluateExactPlanAdmission>[0]);
+    expect(verdict).toMatchObject({ reason: 'lane-unknown' });
+    expect(verdict.message).toBe('The exact-plan claim lane could not be read completely.');
   });
 
   it('preserves UNKNOWN instead of converting an unavailable lane read to zero', async () => {

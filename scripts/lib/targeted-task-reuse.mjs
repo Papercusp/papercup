@@ -61,6 +61,7 @@ import {
   writeReuseSkipList,
 } from "./test-pass-reuse.mjs";
 import { STANDALONE_PACKAGE_DIRS, expandWorkspaceDirs } from "./test-runner-classes.mjs";
+import { scriptRunsZeroFilesAsPass } from "./empty-suite-guard.mjs";
 
 /** The lane split of a workspace's unit suite. scripts/affected-tests.mjs imports this list. */
 export const LANE_SCRIPTS = Object.freeze(["test:lane-pure", "test:lane-stateful"]);
@@ -264,7 +265,8 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   const pkg = resolveWorkspacePackage(root, workspace);
   if (!pkg) return off("workspace-unresolved");
   // An all-reused task runs zero files; only a script that treats that as a pass may skip.
-  if (!/--passWithNoTests\b/.test(pkg.scripts[script] ?? "")) return off("script-cannot-run-zero-files");
+  // The pure-lane runner does, without naming the flag (gate-test-reuse-yield P-006, D-005).
+  if (!scriptRunsZeroFilesAsPass(pkg.scripts[script] ?? "")) return off("script-cannot-run-zero-files");
   if (!testReuseEnabled(out)) return off("disabled-by-env");
   const head = (d.git(root, ["rev-parse", "HEAD"]) ?? "").trim();
   if (!head) return off("no-judged-sha");

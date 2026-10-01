@@ -601,6 +601,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       };
     };
     const defs = json.$defs ?? {};
+    const resolveRef = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object') return value;
+      const ref = (value as Record<string, unknown>).$ref;
+      if (typeof ref !== 'string' || !ref.startsWith('#/$defs/')) return value;
+      return defs[ref.slice('#/$defs/'.length)] ?? value;
+    };
     const shorthandBodyRef = json.properties?.checkpoint?.$ref;
     const itemBodyRef = json.properties?.items?.items?.properties?.checkpoint?.$ref;
     const shorthandChecksRef = json.properties?.checks?.$ref;

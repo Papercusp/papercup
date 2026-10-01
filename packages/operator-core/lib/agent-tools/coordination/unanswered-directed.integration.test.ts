@@ -34,6 +34,9 @@ const MEMBER = ident('unans-member');
 const OTHER = ident('unans-other');
 const EFFECT_ITEM = 'EI-unanswered-expect-effect-checkpoint';
 const EFFECT_SCOPE = `workitem:papercusp:${EFFECT_ITEM}`;
+const EXPLICIT_SCOPE_WORKSPACE = 'unanswered-directed-explicit-scope';
+const EXPLICIT_SCOPE_ITEM = 'EI-unanswered-explicit-scope-effect';
+const EXPLICIT_SCOPE_ITEM_NOTE = `workitem:papercusp:${EXPLICIT_SCOPE_ITEM}`;
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
@@ -45,6 +48,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${effectWorkspace} AND scope = ${EFFECT_SCOPE}`.catch(() => {});
   await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${effectWorkspace} AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`.catch(() => {});
+  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE} AND scope = ${EXPLICIT_SCOPE_ITEM_NOTE}`.catch(() => {});
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE} AND harness_slug = 'papercusp' AND feature_id = ${EXPLICIT_SCOPE_ITEM}`.catch(() => {});
   await fx.admin`TRUNCATE harness_shared.coord_event_log`.catch(() => {});
   await fx.dispose();
 });
@@ -52,6 +57,8 @@ beforeEach(async () => {
   await fx.admin`TRUNCATE harness_shared.coord_event_log`;
   await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${effectWorkspace} AND scope = ${EFFECT_SCOPE}`;
   await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${effectWorkspace} AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`;
+  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE} AND scope = ${EXPLICIT_SCOPE_ITEM_NOTE}`;
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE} AND harness_slug = 'papercusp' AND feature_id = ${EXPLICIT_SCOPE_ITEM}`;
 });
 
 describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
@@ -371,6 +378,66 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
 
     const unanswered = await fetchUnansweredDirected([MEMBER.ownerId]);
     expect(unanswered.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
+  it('honors an explicit workspace for unanswered counts and expectEffect actuation', async () => {
+    await fx.admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts)
+      VALUES
+        (${EXPLICIT_SCOPE_WORKSPACE}, 'papercusp', ${EXPLICIT_SCOPE_ITEM}, 'bug', ${`explicit scope ${EXPLICIT_SCOPE_ITEM}`}, 'open', 0, 0)
+    `;
+    const sentAtMs = Date.now() - 60_000;
+    await fx.admin`
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, updated_ts)
+      VALUES (${EXPLICIT_SCOPE_WORKSPACE}, ${EXPLICIT_SCOPE_ITEM_NOTE}, 'checkpoint after explicit-scope ask', ${sentAtMs + 1})
+    `;
+
+    const bodies = [
+      {
+        msg_id: 'unans-explicit-scope-open',
+        ts: new Date(sentAtMs).toISOString(),
+        from: LEADER.ownerId,
+        to: [MEMBER.ownerId],
+        kind: 'message',
+        expectsReply: true,
+        expects: 'action',
+        summary: 'open explicit-scope ask',
+      },
+      {
+        msg_id: 'unans-explicit-scope-effect',
+        ts: new Date(sentAtMs).toISOString(),
+        from: LEADER.ownerId,
+        to: [MEMBER.ownerId],
+        kind: 'message',
+        expectsReply: true,
+        expects: 'action',
+        summary: 'completed explicit-scope checkpoint ask',
+        expectEffect: { kind: 'checkpoint', itemId: EXPLICIT_SCOPE_ITEM, harness: 'papercusp' },
+      },
+    ];
+    for (const body of bodies) {
+      await fx.admin`
+        INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts, workspace_id, origin)
+        VALUES ('messages', ${body.msg_id}, ${JSON.stringify(body)}::jsonb, ${new Date(sentAtMs)}, ${EXPLICIT_SCOPE_WORKSPACE}, 'local')
+      `;
+    }
+
+    const actuation = await fetchDirectiveActuationSummaries([MEMBER.ownerId], {
+      fromId: LEADER.ownerId,
+      workspaceId: EXPLICIT_SCOPE_WORKSPACE,
+    });
+    expect(actuation.get(MEMBER.ownerId)).toMatchObject({ total: 1, satisfied: 1, notYet: 0 });
+
+    const unanswered = await fetchUnansweredDirected([MEMBER.ownerId], {
+      workspaceId: EXPLICIT_SCOPE_WORKSPACE,
+    });
+    expect(unanswered.get(MEMBER.ownerId)?.count).toBe(1);
+
+    const activeScope = await fetchUnansweredDirected([MEMBER.ownerId], {
+      workspaceId: effectWorkspace,
+    });
+    expect(activeScope.get(MEMBER.ownerId)).toBeUndefined();
   });
 
   it('EI-21665996495417179: committed terminal completion is a checkpoint-safety alternative', async () => {
