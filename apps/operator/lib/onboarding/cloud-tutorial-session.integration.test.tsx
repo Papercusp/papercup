@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { StrictMode } from "react";
+import { StrictMode, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
@@ -10,7 +10,7 @@ import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import { CloudTutorialCompanion } from "./cloud-tutorial-companion";
 import { correlatedTutorialTask } from "./cloud-tutorial-session";
 
-vi.mock("@papercusp/sync", () => ({ useSyncQuery: () => ({ data: [], loading: false, error: null }) }));
+vi.mock("@papercusp/sync", async importOriginal => ({ ...(await importOriginal<typeof import("@papercusp/sync")>()), useSyncQuery: () => ({ data: [], loading: false, error: null }) }));
 vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (value: string) => value }));
 vi.mock("@/app/admin/plans/plans-api", () => ({ usePlanList: () => ({ data: { plans: [] }, loading: false }) }));
 vi.mock("@/app/adv/sessions/use-su-launch-options", () => ({
@@ -33,13 +33,13 @@ beforeEach(() => {
     if (url.includes("tutorial-progress")) return Response.json({ record: { revision: 0, progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version: CLOUD_TUTORIAL_VERSION, disposition: body.disposition ?? "active", ...(body.inspectedResult ? { inspectedResult: body.inspectedResult } : {}) } } });
     if (url.includes("launch-su")) { actions.push({ url, body }); return Response.json({ status: "ok", ownerId: "su-first" }); }
     if (url.includes("sessions/list")) return Response.json({ sessions: [{ source_kind: "codex", session_id: "native-first", active: true, last_ts: null }] });
-    if (url.includes("coord/send")) { actions.push({ url, body }); sentPrompt = body.body; return Response.json({ results: [{ wake: { queued: 1 } }] }); }
+    if (url.includes("coord/send")) { actions.push({ url, body }); sentPrompt = String(body.body); return Response.json({ results: [{ wake: { queued: 1 } }] }); }
     return Response.json({});
   }));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__PAPERCUSP_HOSTED_BROWSER__; });
 const props = { selectionKey: "selected", connection, workspace, boundWorkspaceId: "customer", configurationValid: true, configurationReviewed: true, controlLoading: false, controlError: null, onCheckAgain: () => {}, onShowStep: () => {} };
-const view = (value: typeof props) => <StrictMode><NuqsTestingAdapter><CloudTutorialCompanion {...value} /></NuqsTestingAdapter></StrictMode>;
+const view = (value: ComponentProps<typeof CloudTutorialCompanion>) => <StrictMode><NuqsTestingAdapter><CloudTutorialCompanion {...value} /></NuqsTestingAdapter></StrictMode>;
 async function answer(outcome: "succeeded" | "failed", prompt = sentPrompt) {
   await act(async () => {
     const stream = latestEventSource();
@@ -60,7 +60,7 @@ async function launch() {
 describe("authenticated first-agent product journey", () => {
   it.each(["new-user", "existing-workspace"])("%s reaches an inspected successful correlated result using explicit real controls", async path => {
     const initial = path === "new-user" ? { ...props, connection: null, workspace: null, boundWorkspaceId: null, configurationValid: false, configurationReviewed: false } : { ...props, configurationReviewed: false };
-    const mounted = render(view(initial as unknown as typeof props));
+    const mounted = render(view(initial));
     const guide = await screen.findByRole("region", { name: "First agent guide" });
     await within(guide).findByRole("heading", { name: path === "new-user" ? "Connect Google Cloud" : "Review configuration and cost" });
     expect(actions).toEqual([]);
@@ -82,7 +82,9 @@ describe("authenticated first-agent product journey", () => {
     expect(within(guide).getByText("4 of 6 steps confirmed")).toBeTruthy();
     await answer("succeeded");
     await within(guide).findByRole("heading", { name: "Inspect the result" });
-    expect(screen.getByText("Available tools: read files and search code.")).toBeTruthy();
+    // The maintained chat renders Markdown asynchronously and may split its
+    // text into spans. Require the actual answer in its visible result region.
+    await waitFor(() => expect(document.querySelector('[data-tutorial-target="cloud-result"]')?.textContent).toContain("Available tools: read files and search code."));
     fireEvent.click(screen.getByRole("button", { name: "I've inspected this answer" }));
     await within(guide).findByText("Your first agent lesson is complete.");
     expect(within(guide).getByText("6 of 6 steps confirmed")).toBeTruthy();
