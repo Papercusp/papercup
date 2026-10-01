@@ -3891,6 +3891,92 @@ restart of the shared background host. R-8 revision 4 requires live/operational
 causal closure or an evidenced non-defect disposition for each named lead.
 **P-008/R-8 remains open; no acceptance binding or shipment is claimed.**
 
+### Committed cancellation proof and natural ingestion window — October 1, 14:06Z
+
+Fire 79 compared the four final cancellation source/test fingerprints in
+the "Codex cancellation parity" section
+with committed HEAD `8cfe6fd85b042b7f97c6f5a2cedaa495d1cfbf40`.
+All four match. Gateway and stage-test blobs landed in
+`d499db39862610c9c7f3748293612cc8bf83092a` at 13:43:52Z; OAuth adapter
+and adapter-test blobs landed in
+`49f6d06dcfa53e7c822abebacf342ffe358f9ff9` at 13:43:45Z.
+The existing 351-test matrix, final 31-test stage run and scoped typecheck
+remain the verification receipts; unchanged tests were not rerun.
+The gateway peer received the exact refs in `muplnt57-0000-faf70cd5f92f424b90be3b5edaa58817`.
+No further gateway source edits are planned during the requested quiet
+window through 14:23:52Z.
+
+The fresh path-scoped runtime read reports gateway owner build
+`6563e1ea76`, `containsChange:false`, method `start-after-mtime`.
+The serving-runtime writer compares process start with file mtime when the
+canonical-tree host has no matching boot-commit blob; this result is not a
+deployment verdict. The staging operator at `8cfe6fd85b` contains the
+gateway path by blob comparison. The ingestion path's later read reports
+bg-host build `8cfe6fd85b` containing that path by blob comparison, while
+the staging operator's health is unknown in that later receipt. No shared
+host was restarted. Gateway adoption was requested from the fleet leader;
+the first required wake missed, and a subsequent wake queued. Neither
+receipt proves pickup or completed adoption.
+
+One bounded natural-ingestion journal query covered October 1
+13:30:00–14:02:00 UTC, selected `session-ingest.*phases=`, and kept at most
+12 collapsed rows. It returned 10 matches without truncation, journal error
+or unknown-unit diagnostics. Numeric evidence was recovered from the
+unshaped result rather than the nested, shortened inline view:
+
+| Receipt UTC | Scanned | Total wall ms | Discovery ms | Decode ms | Writes ms |
+|---|---:|---:|---:|---:|---:|
+| 13:38:08.666 | 7306 | 115556 | 32031.6 | 25705.9 | 44513.9 |
+| 13:38:34.539 | 7309 | 3472 | 1097.9 | 299.4 | 489.7 |
+| 13:41:12.650 | 7319 | 36410 | 32322.2 | 757.2 | 958 |
+| 13:43:23.383 | 7353 | 52589 | 24522.6 | 4452.9 | 11223.9 |
+| 13:46:55.676 | 7364 | 136844 | 111637.7 | 1085.8 | 3541.6 |
+| 13:50:54.457 | 7384 | 14445 | 3328.4 | 1313.4 | 7687.3 |
+| 13:53:23.975 | 7405 | 42799 | 27852.9 | 2570.7 | 6091.7 |
+| 13:55:20.252 | 7418 | 41381 | 14794.3 | 3262 | 17437.3 |
+| 13:59:16.295 | 7430 | 165296 | 141881.6 | 6195.8 | 13612.3 |
+| 14:01:43.979 | 7517 | 73473 | 12479.9 | 19982.9 | 35304.2 |
+
+Each retained row reports zero errors. `runSessionIngestOnce` measures
+discovery around `listCandidateFiles`, which awaits directory enumeration
+and then serial file stats; these are exclusive wall buckets, including
+scheduling and I/O waits. This does not identify which operation caused
+the delay or establish CPU pressure, shared-pool pressure or app impact.
+The log-read surface omits process/invocation identifiers. A separate
+service-health read recognizes current `papercusp-bg-host.service`, and
+marks the queried `papercup-bg-host.service` name unknown; the journal
+reader's historical-name support means its successful old-name query
+cannot by itself bind these rows to the current service incarnation.
+
+A follow-up native journal read resolved that gap for the exact same ten
+timestamps. The first five rows (through 13:46:55.676Z) carry PID `3236420`
+and invocation `31884442bef849a180bfa2c133b6c0a5`. The last five carry
+PID `4099092`, invocation `ceec6e03ddd841b28c50ddd48a6223f2` and unit
+`papercusp-bg-host.service`. Targeted systemd reads resolve both old and
+new unit names to that current PID/invocation, started at 13:48:20Z.
+Thus service-health's old-name unknown is not evidence of an absent alias.
+The exact journal task is `0mupm2dp9tzatt8127v`, exit 0; its distilled
+identifiers partition all ten receipt timestamps into those two incarnations.
+
+An already-published profile for current PID `4099092`,
+`loop-saturation-1790863645955-pid4099092-p95_617ms.cpuprofile`, SHA-256
+`81927da9db2054243330cfc048d9109d5ce8a3eba9d8380dfb47ec0c0edf3708`,
+contains 134 samples over a 3.341397-second monotonic interval. Four
+distinct `spawn` leaves contribute 24, 20, 14 and 11 self samples; their
+ancestry passes through `streamGitFields` and
+`completionBlobHistoryContains`/`completionHistoryLocation`, including
+`residualPathsForCommit`. This is source-attribution evidence for that
+profile, not an explanation of the earlier ten sweeps: its artifact time
+is later than their window, and neither CPU samples nor wall buckets
+alone establish the causal connection or user latency. The exact bundled
+caller and same-window overlap still need a distinguishing measurement.
+
+Portal and the two additional checkpoint-harvest observations
+`EI-24784971427298446` / `EI-24784699543275632` remain in the leader's
+routing lane. R-8 still requires causal operational evidence or an
+evidenced non-defect disposition for each named lead. No acceptance
+binding, final shipment or causal closure is claimed here.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

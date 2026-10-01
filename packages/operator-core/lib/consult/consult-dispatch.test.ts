@@ -155,6 +155,8 @@ function makeFakes(
       };
     },
     fetchContextPressure: async () => new Map(),
+    estimateTranscriptTokens: async () => null,
+    bucketTranscriptPressure: async () => null,
     verifyResumeStarted: async (ownerId: string, o: { timeoutMs?: number } = {}) => {
       calls.verify.push({ ownerId, ...o });
       return { started: true, waitedMs: 900 };
@@ -443,6 +445,57 @@ describe('dispatchConsultResponder — the walk', () => {
     const r = await dispatchConsultResponder(OPTS, CTX, deps);
     expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', reason: 'source-context-critical' });
     expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+  });
+
+  // WI-10004888: the owner-level read measures the owner's CURRENT session, but a
+  // fork replays the evidence-selected session, which was an older transcript at
+  // 90.6% of the same limit while the owner read 81% ('high'). The fork started
+  // over its limit and could only decline, burning a grading cascade slot.
+  describe('the fork SOURCE transcript is bucketed, not only the owner', () => {
+    const sourceTranscript = '/fixture/evidence-session.jsonl';
+    function transcriptFakes(bucket: 'ok' | 'high' | 'critical' | null) {
+      const seen: { estimated: string[]; bucketed: Array<[string, number]> } = { estimated: [], bucketed: [] };
+      const { deps } = makeFakes({
+        fetchContextPressure: async () => new Map([['su-expert', 'high']]),
+        checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: sourceTranscript }),
+        estimateTranscriptTokens: async (path: string) => {
+          seen.estimated.push(path);
+          return 407_627;
+        },
+        bucketTranscriptPressure: async (ownerId: string, tokens: number) => {
+          seen.bucketed.push([ownerId, tokens]);
+          return bucket;
+        },
+      });
+      return { deps, seen };
+    }
+
+    it('a CRITICAL source transcript blocks the fork ranks even when the owner reads high', async () => {
+      const { deps, seen } = transcriptFakes('critical');
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(seen.estimated).toEqual([sourceTranscript]);
+      expect(seen.bucketed).toEqual([['su-expert', 407_627]]);
+      expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', reason: 'source-context-critical' });
+      expect(r.attempts[0].detail).toContain('407627 tokens');
+      expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    it('a non-critical source transcript leaves the fork rank eligible', async () => {
+      const { deps } = transcriptFakes('high');
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts.some((a) => a.reason === 'source-context-critical')).toBe(false);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork' });
+    });
+
+    it('an unreadable estimate fails open on this leg (the owner-level gate already fails closed)', async () => {
+      const { deps } = transcriptFakes('critical');
+      deps.estimateTranscriptTokens = async () => {
+        throw new Error('EACCES');
+      };
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts.some((a) => a.reason === 'source-context-critical')).toBe(false);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork' });
+    });
   });
 
   // WI-10004260: two acceptance-grading forks of sources whose transcripts

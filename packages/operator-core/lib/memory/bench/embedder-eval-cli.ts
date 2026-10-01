@@ -102,7 +102,6 @@ import {
   shutdownLocalEmbedder,
   getWorkerState,
 } from '@papercusp/memory';
-import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
 import { createEmbedSidecarServer, embedResponseMeasuredModel, EMBED_SIDECAR_RUNTIME, type EmbedSidecarHandle } from '../embed-sidecar-server';
 import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
@@ -334,6 +333,9 @@ async function buildLegs(
         const fn = await buildLocalEmbedder();
         out.push({ name, doc: fn, query: fn });
       } else if (name === 'openai') {
+        // The operator configuration hydrates its backend from Postgres on
+        // import. Local/reference/performance runs must stay database-free.
+        const { buildOpenAiEmbedder, resolveOpenAiKey } = await import('../configure');
         const key = await resolveOpenAiKey();
         if (!key) out.push({ name, error: 'no_key' });
         else {

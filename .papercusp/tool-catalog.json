@@ -6954,7 +6954,7 @@
           "POST"
         ]
       },
-      "description": "One cheap combined fleet glance: wake mode (default) + staged-wake count, bees in flight (bees.running = fresh-heartbeat nursery rows, a process-alive signal that can include parked/idle sessions; bees.working = the confirmed-active subset with fresh child-stdout output — prefer it for real health checks), paused governor buckets, recent cross-CLI activity rows, and contextual tips (with ready-to-run slash commands) evaluated for the caller's audience. With audience 'user' also returns a server-rendered `display` block (title + statusline lines + tip notice) that client status surfaces print verbatim — the single-source TUI render. The statusline/TUI read — one call instead of four. Takes ONLY audience/state/activity_limit/display_only — no `fleet`, `workspace`, or `harness` arg (scope is inferred from context); use fleet:assignments or fleet:leader-brief for named-fleet health.",
+      "description": "One cheap combined fleet glance: wake mode (default) + staged-wake count, bees in flight (bees.running = fresh-heartbeat nursery rows, may include parked/idle sessions; bees.working = confirmed-active subset with fresh child-stdout output — prefer it for health checks), paused governor buckets, recent cross-CLI activity rows, and contextual tips (with ready-to-run slash commands) evaluated for the caller's audience. With audience 'user' also returns a server-rendered `display` block (title + statusline lines + tip notice) that client status surfaces print verbatim — the single-source TUI render. Statusline/TUI read — one call instead of four. Takes ONLY audience/state/activity_limit/display_only — no `fleet`, `workspace`, or `harness` arg (scope is inferred from context); use fleet:assignments or fleet:leader-brief for named-fleet health.",
       "capabilities": [
         "coord:read"
       ],
@@ -7956,7 +7956,7 @@
           "POST"
         ]
       },
-      "description": "Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, your current named-fleet membership (fleetSlug/fleetRole, from live presence with launch-env fallback on read failure), and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.",
+      "description": "Return your resolved coordination identity: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, named-fleet membership (fleetSlug/fleetRole, live presence with launch-env fallback on read failure), and your inbox_wake_key (the key coord:send {wake:true} fires + the one coord:await-inbox watches). Debug aid for how the coordination layer sees this agent.",
       "capabilities": [
         "coord:read"
       ],
@@ -28360,7 +28360,7 @@
           "POST"
         ]
       },
-      "description": "List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). The acceptance-grading-sweep row also carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp, so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).",
+      "description": "List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, distinguishable from a stall). The acceptance-grading-sweep row carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded; group first).",
       "capabilities": [
         "operator:read"
       ],

@@ -21,7 +21,7 @@ describe('self-contained embedding CLI startup', () => {
     try {
       const port = (server.address() as net.AddressInfo).port;
       const url = `postgres://probe:probe@127.0.0.1:${port}/probe`;
-      const env = { ...process.env, HARNESS_DATABASE_URL: url, HARNESS_ADMIN_DATABASE_URL: url, DATABASE_URL: url,
+      const env: NodeJS.ProcessEnv = { ...process.env, HARNESS_DATABASE_URL: url, HARNESS_ADMIN_DATABASE_URL: url, DATABASE_URL: url,
         PAPERCUSP_PGBOUNCER: '0', PAPERCUSP_SKIP_PG_DISCOVERY: '1', PAPERCUSP_FORBID_REAL_PG: '0' };
       delete env.VITEST;
       const script = `

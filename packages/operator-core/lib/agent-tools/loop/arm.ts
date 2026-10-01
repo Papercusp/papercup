@@ -25,6 +25,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
+import { resolveWakeMode } from '../coordination/wake-mode';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
@@ -726,6 +727,51 @@ export default defineTool({
               message:
                 `Refusing to arm: dispatch scope harness "${dispatchHarness}" conflicts with inner harness "${innerHarness}". ` +
                 'The verified dispatch scope is authoritative; re-arm with a matching harness.',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    // EI-24188436415268799 — an owner-directed graceful pause sets the effective
+    // wake mode to `manual` and ends the current engine loop. Without checking the
+    // target's mode here, a later loop:arm call can recreate that loop while the
+    // pause is still in force; wake-mode would only stage its future wake after the
+    // routine had already been re-armed. Refuse before any routine, claim, or wake
+    // mutation. If the pause state cannot be read, fail closed for the same reason.
+    let targetWakeMode: 'auto' | 'manual';
+    try {
+      targetWakeMode = await resolveWakeMode(ownerId);
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'wake_mode_unavailable',
+              ownerId,
+              message:
+                `Refusing to arm a loop for ${ownerId}: the effective wake mode could not be verified ` +
+                `(${error instanceof Error ? error.message : String(error)}). No loop or wake was created.`,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (targetWakeMode === 'manual') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'wake_mode_manual',
+              ownerId,
+              message:
+                `Refusing to arm a loop for ${ownerId} while the effective wake mode is manual. ` +
+                'Restore auto with coord:wake-mode before intentionally resuming loop scheduling.',
             }),
           },
         ],

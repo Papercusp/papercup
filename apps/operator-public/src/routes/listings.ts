@@ -61,7 +61,7 @@ import {
   checkRepoPermission,
 } from '../auth.ts';
 import { checkAndRecordUserPublishHourly, checkIpListPerMinute, RateLimitError } from '../ratelimit.ts';
-import { isSelfDescribingKind, pinListingContent, type ContentPin } from '../content-pin.ts';
+import { isSelfDescribingKind, pinListingContent, pinRefusalToHttp, type ContentPin } from '../content-pin.ts';
 import { resolveVerifiedBy } from '../attestation.ts';
 
 interface PublishBody {
@@ -786,17 +786,9 @@ function registerListingEndpoints(
         kind,
       });
       if (!pinned.ok) {
-        if (pinned.code === 'github_tree_unreachable') {
-          return c.json({ error: pinned.code, step: pinned.step, status: pinned.status }, 400);
-        }
-        if (pinned.code === 'github_blob_unreachable') {
-          return c.json({ error: pinned.code, path: pinned.path, status: pinned.status }, 400);
-        }
-        if (pinned.code === 'identity_leak') {
-          return c.json({ error: pinned.code, commitSha: pinned.commitSha, hits: pinned.hits }, 422);
-        }
-        const { ok: _ok, code, ...detail } = pinned;
-        return c.json({ error: code, ...detail }, 422);
+        // One refusal->HTTP table shared with the review re-pin (P-008).
+        const refusal = pinRefusalToHttp(pinned);
+        return c.json(refusal.body, refusal.status);
       }
       pin = pinned;
     }

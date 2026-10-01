@@ -15,21 +15,29 @@
  *   PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF       env:/file: ref to the endpoint's whsec_…
  *   PAPERCUSP_HOSTED_BILLING_PLANS            JSON [{ planKey, priceId, label, description? }]
  *   PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID  optional bpc_… (API-created portal configuration)
+ *   PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID
+ *                                             optional: the workspace whose reconciliation pass
+ *                                             records this Stripe account's payment receipts
+ *                                             (P-046). Unset = `/receipts` answers 503.
  *
- * stripe-subscription-signup-2026-10-01 P-005.
+ * stripe-subscription-signup-2026-10-01 P-005; receipts WI-10004802.
  */
+import { withWorkspace } from '@papercusp/db-org';
 import { withHostedServiceContext } from '@papercusp/db-org/tenant-context';
+import type { Sql } from 'postgres';
 import { Hono } from 'hono';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
 import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
 import { createStripeBillingClient } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
+import { customerPaymentReceipts } from '../cupboard/payment-receipt-store';
 import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
 import {
   HOSTED_BILLING_ROUTES,
   createHostedBillingRoutes,
   type HostedBillingPlan,
+  type HostedBillingReceiptSource,
   type HostedBillingRoute,
   type HostedBillingStripe,
 } from './routes/hosted-billing';
@@ -45,9 +53,37 @@ export interface HostedBillingRuntimeConfiguration {
   readonly plans: readonly HostedBillingPlan[];
   /** Explicit customer-portal configuration (`bpc_…`, not a secret); null = Stripe's dashboard default. */
   readonly stripePortalConfigurationId?: string | null;
+  /** Workspace whose ledger holds this Stripe account's payment receipts; null = receipts not served. */
+  readonly receiptsWorkspaceId?: string | null;
 }
 
 const PORTAL_CONFIGURATION_ID = /^bpc_[A-Za-z0-9]+$/;
+const WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+
+/** A malformed receipts workspace id is a configuration error, never silently ignored. */
+export function parseReceiptsWorkspaceId(raw: string | undefined): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  if (!WORKSPACE_ID.test(value)) {
+    throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID');
+  }
+  return value;
+}
+
+/** Runs one read inside a workspace-scoped transaction (the receipt tables are workspace-RLS). */
+export type HostedBillingWorkspaceRunner = <T>(workspaceId: string, fn: (sql: Sql) => Promise<T>) => Promise<T>;
+
+/**
+ * The default receipts source: the given workspace's ledger, read under that
+ * workspace's RLS context. The route passes only the signed-in org's own
+ * customer id, so this can never list another customer's payments.
+ */
+export function workspaceReceiptSource(
+  workspaceId: string,
+  runWorkspace: HostedBillingWorkspaceRunner = (id, fn) => withWorkspace(id, fn),
+): HostedBillingReceiptSource {
+  return (stripeCustomerId) => runWorkspace(workspaceId, (sql) => customerPaymentReceipts(workspaceId, stripeCustomerId, { sql }));
+}
 
 /** A malformed portal configuration id is a configuration error, never silently ignored. */
 export function parseStripePortalConfigurationId(raw: string | undefined): string | null {
@@ -101,6 +137,7 @@ export function readHostedBillingRuntimeConfiguration(
     stripeWebhookSecretRef: optionalRef(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF),
     plans: parseHostedBillingPlans(env.PAPERCUSP_HOSTED_BILLING_PLANS),
     stripePortalConfigurationId: parseStripePortalConfigurationId(env.PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID),
+    receiptsWorkspaceId: parseReceiptsWorkspaceId(env.PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID),
   };
 }
 
@@ -118,6 +155,10 @@ export interface HostedBillingRuntimeDependencies {
    */
   readonly liveModeAllowed?: () => Promise<boolean>;
   readonly entitlementProvider?: HostedSubscriptionEntitlementProvider;
+  /** Overrides the configured receipts source (tests, or a composition with its own ledger access). */
+  readonly receipts?: HostedBillingReceiptSource;
+  /** Workspace-scoped transaction runner for the default receipts source. */
+  readonly runWorkspace?: HostedBillingWorkspaceRunner;
   readonly clock?: () => Date;
 }
 
@@ -177,6 +218,10 @@ export async function createHostedBillingRuntime(
     stripe,
     unavailableReason: reason,
     entitlementProvider: dependencies.entitlementProvider,
+    receipts: dependencies.receipts
+      ?? (configuration.receiptsWorkspaceId
+        ? workspaceReceiptSource(configuration.receiptsWorkspaceId, dependencies.runWorkspace)
+        : undefined),
     clock: dependencies.clock,
   });
   const mounted = routes.map((route) => `${route.method} ${route.path}`);

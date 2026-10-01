@@ -163,6 +163,43 @@ describe('plans:cleanup-manifest', () => {
       ],
     });
   });
+
+  it('applies the run confidence policy to the manifest verdict that cleanup-act enforces', async () => {
+    const policyRun = {
+      ...run,
+      automationPolicy: { mode: 'review-all', minConfidence: 'high' },
+    };
+    h.getRun.mockResolvedValue(policyRun);
+    h.recordRunHeartbeat.mockResolvedValue(policyRun);
+
+    const manifest = body(
+      await cleanupManifest.handler({ runId: run.runId, includeReported: false }, {} as never),
+    );
+    expect(manifest).toMatchObject({
+      findings: [
+        expect.objectContaining({
+          findingId: finding.findingId,
+          current: true,
+          autoApply: false,
+          autoApplyBlockedBy: 'review-all',
+        }),
+      ],
+    });
+
+    const action = body(
+      await cleanupAct.handler(
+        { runId: run.runId, findingId: finding.findingId, rationale: 'The linked work is complete.' },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(action).toMatchObject({
+      ok: false,
+      refused: 'confidence_policy',
+      reason: 'review-all',
+    });
+    expect(h.executeCleanupFindingAction).not.toHaveBeenCalled();
+    expect(h.dispatchCleanupFindingAction).not.toHaveBeenCalled();
+  });
 });
 
 describe('plans:cleanup-act', () => {

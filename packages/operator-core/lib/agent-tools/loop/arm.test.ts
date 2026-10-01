@@ -35,6 +35,9 @@ vi.mock('@papercusp/flags', () => ({
 // never touched by any test that does not opt in with ctx.isSuperuser.
 vi.mock('../../harness-core', () => ({ resolveWorkspaceForHarnessSlugIn: vi.fn(async () => null) }));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/wake-mode', () => ({
+  resolveWakeMode: vi.fn(async () => 'auto'),
+}));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({
     ownerId: 'su-caller-own-id',
@@ -207,6 +210,7 @@ const eventReachabilityM = vi.mocked(readEventConditionReachability);
 // (non-async) describe callback, and this file's describes are synchronous.
 const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
 const carryNoteM = vi.mocked(getLoopCarryNoteWithMeta);
+const wakeModeM = vi.mocked((await import('../coordination/wake-mode')).resolveWakeMode);
 const tool = (await import('./arm')).default;
 
 describe('loop:arm — ambient workspace transaction safety (EI-20224334803038640)', () => {
@@ -222,6 +226,27 @@ const call = (args: Record<string, unknown>) =>
     { harnessSlug: 'papercusp' } as never,
   ) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
+
+describe('loop:arm — owner-directed pause guard (EI-24188436415268799)', () => {
+  it('refuses to rearm a target whose effective wake mode is manual', async () => {
+    wakeModeM.mockResolvedValueOnce('manual');
+    const out = body(await call({ ownerId: 'su-paused-owner' }));
+
+    expect(wakeModeM).toHaveBeenCalledWith('su-paused-owner');
+    expect(out).toMatchObject({ ok: false, error: 'wake_mode_manual', ownerId: 'su-paused-owner' });
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when effective wake mode cannot be read', async () => {
+    wakeModeM.mockRejectedValueOnce(new Error('settings unavailable'));
+    const out = body(await call({ ownerId: 'su-paused-owner' }));
+
+    expect(out).toMatchObject({ ok: false, error: 'wake_mode_unavailable', ownerId: 'su-paused-owner' });
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+});
 
 describe('loop:arm — plan progress before a main wait', () => {
   it('refuses to arm before any durable loop is written when staging work is ready', async () => {
@@ -286,6 +311,7 @@ const asWorkItem = (overrides: Partial<WorkItem> = {}): WorkItem => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  wakeModeM.mockResolvedValue('auto');
   materializeM.mockResolvedValue({ name: 'loop-x', nextFireAt: new Date('2026-01-01T00:00:00Z') } as never);
   mockResolvedTyped(probeM, {
     reachable: true,

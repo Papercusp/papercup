@@ -279,6 +279,13 @@ describe('workItemIntakeStageSql', () => {
       reReviewRequested: true,
     });
     expect(byId.get('invalid-self-review')).toMatchObject({ acceptance: 'invalid-authority' });
+    // R-24 (P-007): duplicate admission and confidence are never acceptance authority —
+    // pinned directly so a symmetric SQL+TS widening of the policy allowlist still fails.
+    expect(byId.get('invalid-unknown-policy')).toMatchObject({ acceptance: 'invalid-authority', qualifyingAcceptance: false });
+    expect(byId.get('invalid-confidence-authority')).toMatchObject({
+      acceptance: 'invalid-authority',
+      qualifyingAcceptance: false,
+    });
     expect(byId.get('incomplete-missing-contract-version')).toMatchObject({ acceptance: 'incomplete' });
     expect(byId.get('incomplete-newline-only-scope')).toMatchObject({ acceptance: 'incomplete' });
     expect(byId.get('malformed-missing-schema-version')).toMatchObject({ primaryStage: 'unknown', readiness: 'malformed' });

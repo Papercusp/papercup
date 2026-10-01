@@ -48,7 +48,11 @@ import {
   verifyResumeStarted,
   type ResumeTarget,
 } from '../agent-launch-core';
-import { fetchContextPressure } from '../agent-tools/coordination/context-pressure';
+import {
+  bucketTokensAgainstOwnerLimit,
+  fetchContextPressure,
+} from '../agent-tools/coordination/context-pressure';
+import { tokensFromFileSize } from '../compaction-usage';
 import {
   analyzeClaudeResumeTranscriptFile,
   type ClaudeResumeTranscriptAnalysis,
@@ -233,6 +237,10 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   spawnHeadless: typeof spawnHeadless;
   verifyResumeStarted: typeof verifyResumeStarted;
   fetchContextPressure: typeof fetchContextPressure;
+  /** WI-10004888: the canonical transcript estimator, applied to the fork SOURCE transcript. */
+  estimateTranscriptTokens: (transcriptPath: string) => Promise<number | null>;
+  /** WI-10004888: bucket that estimate against the source owner's own compaction limit. */
+  bucketTranscriptPressure: typeof bucketTokensAgainstOwnerLimit;
   /** Is there budget to run this backend at all right now? (D-004 walls.) */
   probeBackendAvailable: (agent: ExpertBackend, workspaceId: string) => Promise<BackendAvailability>;
   mintOwnerId: () => string;
@@ -842,6 +850,8 @@ export async function dispatchConsultResponder(
     spawnHeadless,
     verifyResumeStarted,
     fetchContextPressure,
+    estimateTranscriptTokens: (transcriptPath) => tokensFromFileSize(transcriptPath),
+    bucketTranscriptPressure: bucketTokensAgainstOwnerLimit,
     probeBackendAvailable: defaultProbeBackendAvailable,
     mintOwnerId: () => `su-${randomUUID()}`,
     stopFailedLaunch: defaultStopFailedLaunch,
@@ -956,6 +966,29 @@ async function walkConsultDispatch(
         forkBlockedByPressure =
           `context-pressure preflight failed for ${target.ownerId} ` +
           `(${(e as Error)?.message ?? String(e)}); forking was refused rather than assumed safe`;
+      }
+    }
+
+    // WI-10004888: the owner-level read above measures the owner's CURRENT
+    // native session, but a fork replays the evidence-selected session (pinned
+    // to target.sessionId above), which can be an older, larger transcript from
+    // before a carry-respawn. Measured: owner at 81% ('high') while the forked
+    // session estimated 407,627 tokens, 90.6% of the same 450K limit, and the
+    // fork started over its limit and could only decline. So bucket the
+    // transcript the fork will actually replay, against the same limit and
+    // bands. An unknown estimate does not block: the owner-level gate above
+    // already fails closed, and conversion legs are unaffected either way.
+    if (!forkBlockedByPressure && target.ownerId && transcript.transcriptPath) {
+      try {
+        const tokens = await d.estimateTranscriptTokens(transcript.transcriptPath);
+        if (tokens != null && (await d.bucketTranscriptPressure(target.ownerId, tokens)) === 'critical') {
+          forkBlockedByPressure =
+            `the fork source transcript for ${target.ownerId} (session ${target.sessionId ?? 'unknown'}) ` +
+            `estimates ${tokens} tokens, at or above 90% of its compaction limit, so a fork would inherit ` +
+            'a transcript with no room to answer';
+        }
+      } catch {
+        // Fail open on this leg only; see the comment above.
       }
     }
 

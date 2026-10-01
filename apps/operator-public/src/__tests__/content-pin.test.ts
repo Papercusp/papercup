@@ -10,7 +10,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { canonicalTreeDigest } from '@papercusp/artifact-registry';
 import { buildApi } from '../routes/index.ts';
-import { PIN_BYTE_BUDGET, PIN_FILE_BUDGET, SELF_DESCRIBING_KINDS } from '../content-pin.ts';
+import {
+  PIN_BYTE_BUDGET,
+  PIN_FILE_BUDGET,
+  SELF_DESCRIBING_KINDS,
+  pinRefusalToHttp,
+  type ContentPinRefusal,
+} from '../content-pin.ts';
 import { makeEnv, stubGithub, STUB_HEAD_SHA, stubTreeFor, type GhStubTreeEntry } from './fake-d1.ts';
 
 function publish(
@@ -126,6 +132,27 @@ describe('P-001 content pin at publish', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'github_tree_unreachable', step: 'ref', status: 403 });
     expect(store.tables.harnesses).toHaveLength(0);
+  });
+
+  it('WI-10004642: publish renders a pin refusal exactly as the shared pinRefusalToHttp (the review re-pin uses the same table)', async () => {
+    const cases: Array<{ stub: Parameters<typeof stubGithub>[0]; refusal: ContentPinRefusal }> = [
+      {
+        stub: { ...USER, repo: REPO, head: { error: 403 }, tree: { entries: stubTreeFor('r') } },
+        refusal: { ok: false, code: 'github_tree_unreachable', step: 'ref', status: 403 },
+      },
+      {
+        stub: { ...USER, repo: REPO, head: { sha: STUB_HEAD_SHA }, tree: { entries: stubTreeFor('other') } },
+        refusal: { ok: false, code: 'listing_ref_missing', commitSha: STUB_HEAD_SHA },
+      },
+    ];
+    for (const { stub, refusal } of cases) {
+      const { env } = makeEnv();
+      stubGithub(stub);
+      const res = await publish(api, env, { ...BASE, listing_kind: 'recipe', listing_ref: 'r' });
+      const expected = pinRefusalToHttp(refusal);
+      expect(res.status).toBe(expected.status);
+      expect(await res.json()).toEqual(expected.body);
+    }
   });
 
   it('refuses 400 when the repo metadata carries no default branch', async () => {

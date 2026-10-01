@@ -74,9 +74,19 @@ beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
   admin = fx.admin;
 });
-afterAll(async () => {
-  await admin`TRUNCATE harness_shared.adv_sessions`.catch(() => {});
-  await fx.dispose();
+async function cleanupReanchorFixture(
+  currentAdmin?: postgres.Sql,
+  currentFixture?: BaselineCoordFixture,
+): Promise<void> {
+  if (currentAdmin) await currentAdmin`TRUNCATE harness_shared.adv_sessions`.catch(() => {});
+  if (currentFixture) await currentFixture.dispose();
+}
+afterAll(async () => cleanupReanchorFixture(admin, fx));
+
+describe('baseline fixture teardown', () => {
+  it('is safe when beforeAll fails before returning fixture resources', async () => {
+    await expect(cleanupReanchorFixture()).resolves.toBeUndefined();
+  });
 });
 beforeEach(async () => {
   await admin`TRUNCATE harness_shared.adv_sessions`;

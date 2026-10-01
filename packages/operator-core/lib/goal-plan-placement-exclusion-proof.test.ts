@@ -6,8 +6,9 @@ import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
 const NOW = new Date('2026-09-23T11:00:00.000Z');
 const scenarios = ['holder-not-independent', 'independent-member-positive', 'existing-one-fleet'] as const;
 type Scenario = typeof scenarios[number];
+const controls = [...scenarios, 'drain-and-test-excluded'] as const;
 const control = process.env.PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL;
-if (control && !scenarios.includes(control as Scenario)) {
+if (control && !controls.includes(control as typeof controls[number])) {
   throw new Error(`Unknown permanent placement exclusion control: ${control}`);
 }
 
@@ -46,6 +47,31 @@ describe('placement exclusion causal contracts (WI-1074216)', () => {
       plan: { harness: null, slug: 'alpha', ambiguousMatches: 1 },
       status: 'active', itemStatuses: ['todo'], actionableItemId: 'P-001', source: {}, now: NOW,
     })).toMatchObject({ state: 'blocked', reconciliation: { action: 'resolve-plan-identity', toolCall: null } });
+  });
+  it('repaired exclusion contract: drain-and-test-excluded', () => {
+    for (const activity of ['goal-drain', 'test-child']) {
+      // Exercise the actual admission input; an opaque activity label alone
+      // would be ignored by the compiler and could not falsify the exclusion.
+      const source = {
+        goalHolderOwnerIds: ['su-goal'],
+        claims: [{ itemId: 'P-001', ownerId: 'su-member', fleetSlug: activity, holderLive: true,
+          expiresAt: '2026-09-23T11:05:00.000Z', workItemId: 'WI-fixture' }],
+        fleet: { slug: activity, controlState: 'active', leaderOwnerId: 'su-leader',
+          leaderLive: true, liveMembers: 2, target: 2,
+          claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter:
+            control === 'drain-and-test-excluded'
+              ? { field: 'plan', op: '=', value: 'alpha' }
+              : { field: 'goal', op: '=', value: 'goal-fixture' } } },
+          launchTransaction: { transactionId: 'tx-activity', state: 'verified' } },
+      };
+      expect(compileGoalPlanPlacement({
+        plan: { harness: 'fixture', slug: 'alpha', ambiguousMatches: 1 }, status: 'started',
+        itemStatuses: ['wip'], actionableItemId: 'P-001', source, now: NOW,
+      }), `exclusion-contract:drain-and-test-excluded:${activity}`).toMatchObject({
+        state: 'blocked', fleet: { slug: activity, planScoped: false, planAdmitted: false },
+        reconciliation: { consistent: false, action: 'reconcile-plan-lane-holder', toolCall: null },
+      });
+    }
   });
   it.each(scenarios)('repaired exclusion contract: %s', (scenario) => {
     const row = placement(scenario);

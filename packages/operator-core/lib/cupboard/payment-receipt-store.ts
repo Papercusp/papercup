@@ -244,7 +244,11 @@ export async function issuePaymentReceipt(
 
 export interface CustomerReceiptEntry {
   readonly balanceTransactionId: string;
+  /** Unix seconds. */
   readonly created: number;
+  /** Signed minor units and currency, so a not-yet-anchored entry can still be listed. */
+  readonly amount: number;
+  readonly currency: string;
   readonly result: IssueReceiptResult;
 }
 
@@ -261,6 +265,8 @@ export async function customerPaymentReceipts(
     out.push({
       balanceTransactionId: r.transaction.id,
       created: r.transaction.created,
+      amount: r.transaction.amount,
+      currency: r.transaction.currency,
       result: await issuePaymentReceipt(workspaceId, r.transaction.id, { ...deps, store }),
     });
   }

@@ -5,13 +5,15 @@
  *   GET  /hosted/billing/subscription  member   — current subscription + what it entitles
  *   POST /hosted/billing/checkout      billing:manage — Stripe Checkout (subscription mode) URL
  *   POST /hosted/billing/portal        billing:manage — Stripe customer-portal URL (manage/cancel)
+ *   GET  /hosted/billing/receipts      billing:manage — the org's own payment receipts (P-046)
  *   POST /hosted/billing/webhook       public, Stripe-signed — subscription state intake
  *
  * Mounted only by `hosted-billing-runtime.ts`, never the local route barrel.
  * Entitlement policy is NOT decided here: the subscription route asks the
  * `HostedSubscriptionEntitlementProvider` seam.
  *
- * stripe-subscription-signup-2026-10-01 P-005.
+ * stripe-subscription-signup-2026-10-01 P-005; receipts:
+ * agent-economy-flywheel-2026-08-30 P-046 / D-029 §7 (WI-10004802).
  */
 import type { HostedPermission, HostedPrincipal } from '../../../auth/hosted-principal';
 import type { HostedBillingStore } from '../../../auth/hosted/billing/billing-store';
@@ -23,6 +25,7 @@ import {
 import type { StripeBillingClient } from '../../../auth/hosted/billing/stripe-billing-client';
 import { parseHostedBillingEvent } from '../../../auth/hosted/billing/stripe-billing-events';
 import { createStripeAdapter } from '../../../cupboard/payment-adapters/stripe';
+import type { CustomerReceiptEntry } from '../../../cupboard/payment-receipt-store';
 import { webhookBodyDigest } from '../../../cupboard/webhook-inbox';
 
 export const HOSTED_BILLING_ROUTES = [
@@ -30,8 +33,42 @@ export const HOSTED_BILLING_ROUTES = [
   { method: 'GET', path: '/hosted/billing/subscription', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/checkout', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/portal', access: 'authenticated' },
+  { method: 'GET', path: '/hosted/billing/receipts', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/webhook', access: 'public' },
 ] as const;
+
+/**
+ * Every payment receipt for ONE Stripe customer, newest first. The route only
+ * ever passes the signed-in organization's own customer id; which workspace's
+ * ledger holds the receipts is the composition's decision.
+ */
+export type HostedBillingReceiptSource = (stripeCustomerId: string) => Promise<readonly CustomerReceiptEntry[]>;
+
+/** One entry of `GET /hosted/billing/receipts`. */
+export interface HostedBillingReceiptView {
+  readonly balanceTransactionId: string;
+  readonly created: string;
+  readonly amount: number;
+  readonly currency: string;
+  /** `anchored` carries the verifiable receipt; anything else is still waiting for an anchored root. */
+  readonly status: 'anchored' | 'not-yet-anchored';
+  /** Why a not-yet-anchored entry is waiting (`not-chained` | `not-in-log` | `not-yet-anchored` | …). */
+  readonly pendingReason: string | null;
+  /** The receipt exactly as `scripts/verify-payment-receipt.mts` checks it; null until anchored. */
+  readonly receipt: unknown;
+}
+
+export function hostedBillingReceiptView(entry: CustomerReceiptEntry): HostedBillingReceiptView {
+  const base = {
+    balanceTransactionId: entry.balanceTransactionId,
+    created: new Date(entry.created * 1000).toISOString(),
+    amount: entry.amount,
+    currency: entry.currency,
+  };
+  return entry.result.ok
+    ? { ...base, status: 'anchored', pendingReason: null, receipt: entry.result.receipt }
+    : { ...base, status: 'not-yet-anchored', pendingReason: entry.result.error, receipt: null };
+}
 
 /** Browser path (under the `/api` base) the Checkout and portal flows return to. */
 export const HOSTED_BILLING_RETURN_PATH = '/billing';
@@ -61,6 +98,8 @@ export interface HostedBillingRouteDependencies {
   /** Why `stripe` is null, surfaced to the UI (e.g. `live_mode_not_allowed`). */
   readonly unavailableReason?: string | null;
   readonly entitlementProvider?: HostedSubscriptionEntitlementProvider;
+  /** Absent = receipts are not configured on this host; `/receipts` answers 503. */
+  readonly receipts?: HostedBillingReceiptSource;
   readonly clock?: () => Date;
 }
 
@@ -218,6 +257,32 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
     },
   };
 
+  const receipts: HostedBillingRoute = {
+    method: 'GET',
+    path: '/hosted/billing/receipts',
+    auth: { capabilities: ['billing:manage'] },
+    async handler(_req, ctx) {
+      const organizationId = organizationOf(ctx);
+      if (!organizationId) return jsonError('organization_required', 'An active organization is required.', 403);
+      if (!deps.receipts) return jsonError('receipts_unavailable', 'Payment receipts are not configured on this host.', 503);
+      let customer;
+      try {
+        customer = await deps.store.customerFor(organizationId);
+      } catch {
+        return jsonError('billing_store_unavailable', 'Billing state could not be read.', 503);
+      }
+      // No billing customer yet means nothing was ever paid: an empty list, not an error.
+      if (!customer) return Response.json({ ok: true, receipts: [] });
+      let entries;
+      try {
+        entries = await deps.receipts(customer.stripeCustomerId);
+      } catch {
+        return jsonError('receipts_unavailable', 'Payment receipts could not be read.', 503);
+      }
+      return Response.json({ ok: true, receipts: entries.map(hostedBillingReceiptView) });
+    },
+  };
+
   const webhook: HostedBillingRoute = {
     method: 'POST',
     path: '/hosted/billing/webhook',
@@ -267,5 +332,5 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
     },
   };
 
-  return [plans, subscription, checkout, portal, webhook];
+  return [plans, subscription, checkout, portal, receipts, webhook];
 }

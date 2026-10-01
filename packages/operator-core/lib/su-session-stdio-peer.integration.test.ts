@@ -2432,12 +2432,62 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     expect(Array.isArray(servers.data)).toBe(true);
   }, 90_000);
 
-  it('OMP exposes its assigned session and tool catalog through RPC', async () => {
-    const p = await peer('omp', ['--mode', 'rpc', '--no-title', '--no-extensions', '--no-skills', '--no-lsp', '--no-session']);
-    let state: RpcFrame;
-    try { state = await p.request({ type: 'get_state' }); }
-    catch (error) { throw new Error(`${String(error)}; native startup diagnostic: ${processState.stderr}`); }
-    expect(state).toMatchObject({ sessionId: expect.any(String), model: { id: expect.any(String) }, dumpTools: expect.any(Array) });
-    await expect(p.request({ type: 'abort' })).resolves.toEqual({});
+});
+
+describe('OMP native protocol startup', () => {
+  it('exposes its assigned session and tool catalog through RPC without provider credentials', async () => {
+    // The peer helper sets PI_CODING_AGENT_DIR to the supplied home. Seed a
+    // loopback-only model there so the handshake never depends on ambient user
+    // configuration or credentials and cannot issue provider inference.
+    const home = mkdtempSync(join(tmpdir(), 'pui-omp-protocol-'));
+    homes.push(home);
+    const providerRequests: string[] = [];
+    const server = createServer((req, res) => {
+      providerRequests.push(`${req.method} ${req.url}`);
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('Offline protocol fixture: provider requests are not allowed.');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing OMP fixture loopback listener');
+    writeFileSync(join(home, 'config.yml'), [
+      'modelRoles:',
+      '  default: pui-protocol-fixture/fixture-model',
+      '',
+    ].join('\n'));
+    writeFileSync(join(home, 'models.yml'), [
+      'providers:',
+      '  pui-protocol-fixture:',
+      `    baseUrl: "http://127.0.0.1:${address.port}"`,
+      '    apiKey: "offline-fixture"',
+      '    api: openai-responses',
+      '    auth: apiKey',
+      '    models:',
+      '      - id: fixture-model',
+      '        name: Offline protocol fixture',
+      '        api: openai-responses',
+      '        input: [text]',
+      '        contextWindow: 64000',
+      '        maxTokens: 1024',
+      '',
+    ].join('\n'));
+    let p: SuStdioPeer | undefined;
+    try {
+      p = await peer('omp', ['--mode', 'rpc', '--no-title', '--no-extensions', '--no-skills', '--no-lsp', '--no-session'],
+        { HOME: home, USERPROFILE: home }, undefined, undefined, undefined, home);
+      let state: RpcFrame;
+      try { state = await p.request({ type: 'get_state' }); }
+      catch (error) { throw new Error(`${String(error)}; native startup diagnostic: ${processState.stderr}`); }
+      expect(state).toMatchObject({ sessionId: expect.any(String), model: { id: expect.stringContaining('fixture-model') }, dumpTools: expect.any(Array) });
+      await expect(p.request({ type: 'abort' })).resolves.toEqual({});
+      expect(providerRequests).toEqual([]);
+    } finally {
+      try {
+        if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); }
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
+    }
   }, 90_000);
 });

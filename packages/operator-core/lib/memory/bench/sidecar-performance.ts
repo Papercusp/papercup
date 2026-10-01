@@ -253,7 +253,9 @@ export async function runPerformanceBlocks(manifestFile: string, expectedSha: st
             const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(new URL('./embedder-eval-cli.ts', import.meta.url)),
               '--manifest', manifestFile, '--manifest-sha256', expectedSha, '--cell', cell.id,
               '--legs', `sidecar:${cell.armId}`, '--isolated-sidecar', '--mdenseon-model', mdenseonModel, '--out', raw],
-            { stdio: ['ignore', log, log], env: process.env });
+            // Local HTTP/worker measurements must never acquire operator
+            // database pools, including after a future import regression.
+            { stdio: ['ignore', log, log], env: { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1' } });
             child.once('error', reject); child.once('exit', resolve);
           });
           if (exitCode !== 0) throw new Error(`performance child failed ${cell.id}: exit ${exitCode}; see immutable cell log`);
