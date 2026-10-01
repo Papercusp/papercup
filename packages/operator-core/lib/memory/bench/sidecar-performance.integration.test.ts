@@ -3,6 +3,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createEmbedSidecarServer } from '../embed-sidecar-server';
 import { collectSidecarPerformance, summarizePerformanceReceipts, performanceSchedule, isolatedEvaluationBuilders, type PerformanceInput, type PerformanceReceipt } from './sidecar-performance';
 import { sidecarEmbedBatch } from '@papercusp/memory';
@@ -13,6 +15,66 @@ const input: PerformanceInput = { formatVersion: 1, seed: 'synthetic', blocks: 5
   batches: [1, 2], concurrency: [1, 2], cachedSamples: 2, serverConcurrency: 2,
   requests: { query: [{ id: 'q', corpus: 'memory', text: 'query' }], document: [{ id: 'd', corpus: 'prose', text: 'document' }] } };
 describe('performance collector through real HTTP/client/sidecar queue', () => {
+  it('keeps the shared client usable across an idle-boundary event-loop pause without retry', async () => {
+    // The real warm128 probe failed on the first POST after a 10s gap. Run
+    // the same server/client in a production Node child so pausing its loop
+    // cannot stall Vitest or its other tests. Synthetic weights isolate the
+    // transport; this is a recurrence guard, not model-performance evidence.
+    const serverModule = fileURLToPath(new URL('../embed-sidecar-server.ts', import.meta.url));
+    const clientModule = fileURLToPath(new URL('../../../../../libs/generic/memory/src/sidecar-embedder.ts', import.meta.url));
+    const script = `
+      import { createEmbedSidecarServer } from ${JSON.stringify(serverModule)};
+      import { sidecarEmbedBatch } from ${JSON.stringify(clientModule)};
+      const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false,
+        builders: { harrier: async () => async () => [1, ...Array(1023).fill(0)] }, log: () => {} });
+      const events = [];
+      sidecar.server.on('connection', socket => {
+        socket.on('timeout', () => events.push({ event: 'timeout', at: Date.now() }));
+        socket.on('close', () => events.push({ event: 'close', at: Date.now() }));
+      });
+      const url = 'http://127.0.0.1:' + await sidecar.listening;
+      const report = { keepAliveTimeout: sidecar.server.keepAliveTimeout,
+        headersTimeout: sidecar.server.headersTimeout, completed: 0, error: null, events };
+      try {
+        for (let i = 0; i < 4; i++) {
+          await sidecarEmbedBatch(url, { model: 'harrier', kind: 'query', texts: ['frozen'], bypassCache: true });
+          report.completed++;
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        report.pauseStartedAt = Date.now();
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6500);
+        report.pauseEndedAt = Date.now();
+        await sidecarEmbedBatch(url, { model: 'harrier', kind: 'query', texts: ['frozen'], bypassCache: true });
+        report.completed++;
+      } catch (error) {
+        report.error = { message: error.message, code: error.cause?.code,
+          cause: error.cause?.message };
+      } finally {
+        await sidecar.close();
+        console.log(JSON.stringify(report));
+        process.exit(0);
+      }
+    `;
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const env = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1' };
+      delete env.VITEST;
+      delete env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
+      delete env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;
+      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env });
+      let stdout = '', stderr = '';
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('idle-boundary child exceeded 25s')); }, 25000);
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.once('error', (error) => { clearTimeout(timer); reject(error); });
+      child.once('exit', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+    expect(report.error, JSON.stringify(report)).toBeNull();
+    expect(report.completed).toBe(5);
+    expect(report.keepAliveTimeout).toBe(61000);
+    expect(report.headersTimeout).toBeGreaterThan(report.keepAliveTimeout);
+  }, 30000);
   it('retains the actual socket failure cause and frozen request identity in its failure receipt', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-socket-failure-'));
     const server = http.createServer((req) => req.socket.destroy());
