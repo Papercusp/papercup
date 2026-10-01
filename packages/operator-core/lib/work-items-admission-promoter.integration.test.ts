@@ -2488,6 +2488,10 @@ describe('work-item admission promoter (real Postgres)', () => {
     const rows = [
       { id: 'ready', status: 'open', payload: { implementationReadiness: ready } },
       { id: 'active', status: 'open', assignee: 'worker', payload: { implementationReadiness: ready } },
+      // Keeps accepted-ready (1) and accepted-active (2) unequal. With one of each, a writer that
+      // counted one stage under the other's FILTER matched the classifier by arithmetic accident
+      // (mutation probe 2026-10-01, test run 20440804: an active->ready FILTER swap survived).
+      { id: 'active-2', status: 'open', assignee: 'worker-2', payload: { implementationReadiness: ready } },
       { id: 'blocked', status: 'open', payload: { implementationReadiness: ready, _claimHold: true } },
       { id: 'failed-retryable', status: 'failed', payload: { implementationReadiness: ready } },
       { id: 'delivered', status: 'done', completionAuthority: 'committed', payload: { implementationReadiness: ready } },
@@ -2511,7 +2515,7 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(actual.presentation).toEqual({ ...expected, writer: 'readWorkItemReadinessProjection', classifier: 'deriveWorkItemPresentationStage' });
     expect(actual.presentation?.population).toBe(actual.headline.population);
     expect(Object.values(actual.presentation!.counts).reduce((a, b) => a + b, 0)).toBe(rows.length);
-    expect(actual.presentation).toMatchObject({ remainingBugs: 4, verifiedCompletions: 1, counts: { 'terminal-other': 2, candidate: 2, observation: 0 } });
+    expect(actual.presentation).toMatchObject({ remainingBugs: 5, verifiedCompletions: 1, counts: { 'terminal-other': 2, candidate: 2, observation: 0, 'accepted-ready': 1, 'accepted-active': 2 } });
     expect(actual.flow.verifiedCompletionsInWindow).toBe(1);
     expect(actual.scope).toMatchObject({ workspaceId: WS, harnessSlug: HARNESS, population: 'root issue-family rows excluding observation-lane records' });
   });
