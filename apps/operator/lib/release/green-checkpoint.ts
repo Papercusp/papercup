@@ -5220,8 +5220,13 @@ export function admittedPathsOf(queue: FrozenCandidateRepairQueue): string[] {
   return [...out].sort();
 }
 
+/** How long the staging bridge queues for `git-sync:<slug>` behind an in-flight git-sync fire.
+ *  Fires routinely hold the lease for several minutes under fleet load (one held it from
+ *  07:56:02Z past 08:00:40Z on 2026-10-01), and a give-up costs a whole hourly tick. */
+const STAGING_ABSORPTION_LEASE_QUEUE_SEC = 15 * 60;
+
 export interface FoldPromotedLineageDeps {
-  /** Test seam. Production acquires the same workspace-scoped `git-sync:<slug>` resource
+  /** Test seam. Production queues for the same workspace-scoped `git-sync:<slug>` resource
    * as the auto-commit routine and releases it in a finally block. */
   withGitSyncLock?: <T>(
     run: () => Promise<T>,
@@ -5243,8 +5248,8 @@ export interface FoldPromotedLineageDeps {
  *
  * The lock callback is injectable so the git semantics can be tested against a real temporary
  * repository without touching the live resource store. Production reuses the canonical
- * `inWorkspaceTxn` + `registerGitSyncResource` + `tryAcquireResource` primitives rather than
- * inventing a parallel lock.
+ * `registerGitSyncResource` + `acquireResourceExclusiveQueued` (the store's exclusive FIFO)
+ * primitives rather than inventing a parallel lock.
  */
 export async function foldPromotedLineageIntoStaging(
   input: {
@@ -5268,36 +5273,37 @@ export async function foldPromotedLineageIntoStaging(
     ): Promise<T | { busy: true; reason?: string }> => {
       const [
         { inWorkspaceTxn },
-        { tryAcquireResource, tryReleaseResource },
+        { tryReleaseResource },
+        { acquireResourceExclusiveQueued },
         { registerGitSyncResource },
       ] = await Promise.all([
         import("@papercusp/operator-core/lib/agent-tools/locks/in-workspace-txn"),
         import("@papercusp/operator-core/lib/agent-tools/locks/su-lock-store"),
+        import("@papercusp/operator-core/lib/agent-tools/locks/resource-acquire-wait"),
         import("@papercusp/operator-core/lib/harness/git-sync/git-sync-action"),
       ]);
       const owner =
         `system:green-checkpoint:staging-absorption:${process.pid}:` +
         randomUUID();
-      const acquired = await inWorkspaceTxn(
-        input.workspaceId,
+      // Queue rather than try once: a git-sync fire holds this lease for minutes and fires
+      // every 3 min, so one attempt per hourly tick lost four times in a row (2026-09-29
+      // 16:23Z/17:24Z, 09-30 14:23Z, 10-01 07:22Z) and staging never absorbed the lineage.
+      const acquired = await acquireResourceExclusiveQueued({
+        coordinationDomain: input.workspaceId,
         owner,
-        async (tx: unknown) => {
-          await registerGitSyncResource(tx as never, input.installSlug);
-          return tryAcquireResource(tx as never, {
-            coordinationDomain: input.workspaceId,
-            resource,
-            mode: "exclusive",
-            owner,
-            ownerLabel: `green-checkpoint:${input.installSlug}`,
-            reason: `absorb promoted frozen lineage ${input.repairHead.slice(0, 12)} into ${input.integrationBranch}`,
-            ttlSec: 120,
-          });
-        },
-      );
-      if (!acquired?.ok) {
+        ownerLabel: `green-checkpoint:${input.installSlug}`,
+        resource,
+        reason: `absorb promoted frozen lineage ${input.repairHead.slice(0, 12)} into ${input.integrationBranch}`,
+        ttlSec: 120,
+        maxQueueSec: STAGING_ABSORPTION_LEASE_QUEUE_SEC,
+        beforeAcquire: (tx) => registerGitSyncResource(tx as never, input.installSlug),
+      });
+      if (!acquired.ok) {
         return {
           busy: true,
-          ...(acquired?.reason ? { reason: acquired.reason } : {}),
+          reason:
+            `${acquired.reason} after ${acquired.waited_sec}s` +
+            (acquired.queue_position !== undefined ? ` at queue position ${acquired.queue_position}` : ""),
         };
       }
       try {
