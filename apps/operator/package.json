@@ -264,7 +264,9 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@typescript/native": "npm:typescript@7.0.2",
+    "driver.js": "1.8.0",
     "lost-pixel": "^3.22.0",
+    "react-joyride": "3.2.0",
     "storybook": "^10.3.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "vitest": "^4.1.4"
