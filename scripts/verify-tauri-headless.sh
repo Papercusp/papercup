@@ -1903,7 +1903,50 @@ BOOT_ONLY_ENV_SCRIPT
   }
 }
 
+write_xvfb_stop_script() {
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'EXPECTED_PROVENANCE=%q\n' "$TAURI_LAUNCH_PROVENANCE"
+    printf 'EXPECTED_DISPLAY=%q\n' ":$DISPLAY_NUM"
+    cat <<'XVFB_STOP'
+set -uo pipefail
+
+xvfb_is_owned() {
+  local xvfb_pid="$1" env_p
+  [ -n "$xvfb_pid" ] && [ -r "/proc/$xvfb_pid/environ" ] || return 1
+  env_p="$(tr '\0' '\n' < "/proc/$xvfb_pid/environ" 2>/dev/null || true)"
+  grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$EXPECTED_PROVENANCE" <<<"$env_p" &&
+    grep -qxF "PAPERCUSP_VERIFY_XVFB_DISPLAY=$EXPECTED_DISPLAY" <<<"$env_p"
+  }
+
+find_owned_xvfb() {
+  local candidate
+  while IFS= read -r candidate; do
+    if xvfb_is_owned "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(pgrep -x Xvfb 2>/dev/null || true)
+  }
+
+xvfb_pid="$(find_owned_xvfb || true)"
+[ -n "$xvfb_pid" ] || exit 0
+xvfb_is_owned "$xvfb_pid" || exit 0
+kill -TERM "$xvfb_pid" 2>/dev/null || exit 0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  xvfb_is_owned "$xvfb_pid" || exit 0
+  sleep 0.2
+done
+if xvfb_is_owned "$xvfb_pid"; then
+  kill -KILL "$xvfb_pid" 2>/dev/null || true
+fi
+XVFB_STOP
+  } > "$WORK/stop-xvfb.sh"
+  chmod +x "$WORK/stop-xvfb.sh"
+}
+
 write_stop_script() {
+  write_xvfb_stop_script
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
 # EI-20227529270079601 / EI-9748 Route A: stop sibling scopes first so no
@@ -1911,7 +1954,6 @@ write_stop_script() {
 if [ "$VERIFY_SCOPE_ENABLED" = 1 ] && command -v systemctl >/dev/null 2>&1; then
   [ -n "$TAURI_SCOPE_UNIT" ] && systemctl --user stop --no-block "${TAURI_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
   systemctl --user stop --no-block "${VERIFY_SCOPE_BASE}-openbox.scope" >/dev/null 2>&1 || true
-  systemctl --user stop --no-block "${VERIFY_SCOPE_BASE}-xvfb.scope" >/dev/null 2>&1 || true
 fi
 # EI-11559: do NOT force-kill the port-lock keeper here — killing it releases the
 # advisory flock IMMEDIATELY, while the sidecar (its own process group) still holds
@@ -1944,18 +1986,9 @@ for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   kill -9 "\$_p" 2>/dev/null
 done
 [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
-# EI-18816386093046558: SIGKILL gives Xvfb no chance to unlink /tmp/.X11-unix/X<N>,
-# so EVERY run leaked its own socket (97 had accumulated, the oldest from 07-13).
-# That leak is not cosmetic: the picker above treats a leaked socket as "display
-# taken" (WI-2115, correctly) and walks past it, and PORT_BASE is DERIVED from the
-# display number — so each leak permanently pushed the port range upward. It had
-# reached :173 -> base 34530, and surviving X450 sockets show a past walk to :450
-# -> 37300, well inside other services' ports. SIGTERM first so Xvfb unlinks after
-# itself; SIGKILL only as the fallback; then remove OUR OWN socket unconditionally
-# (we started this server, so this file is unambiguously ours to clean up).
-[ -n "$XVFB_PID" ] && { kill -TERM $XVFB_PID 2>/dev/null; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 $XVFB_PID 2>/dev/null || break; sleep 0.2; done; kill -9 $XVFB_PID 2>/dev/null; }
-pkill -9 -f "Xvfb :$DISPLAY_NUM " 2>/dev/null
-rm -f "/tmp/.X11-unix/X$DISPLAY_NUM" 2>/dev/null
+# This helper matches this run's provenance and display before each signal.
+# Xvfb removes its own socket and lock during normal SIGTERM shutdown.
+"$WORK/stop-xvfb.sh" || true
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 [ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
@@ -2106,7 +2139,7 @@ verify_assertion_input_integrity() {
 # teardown() and the SIGTERM/SIGINT handlers below already read those as
 # ambient globals, so a re-run's fresh PIDs are picked up with no other wiring.
 start_display_server() {
-  XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" Xvfb ":$DISPLAY_NUM" -screen 0 "${XVFB_SCREEN_W}x${XVFB_SCREEN_H}x24" -nolisten tcp)"
+  XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" env "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" "PAPERCUSP_VERIFY_XVFB_DISPLAY=:$DISPLAY_NUM" "DISPLAY=:$DISPLAY_NUM" Xvfb ":$DISPLAY_NUM" -screen 0 "${XVFB_SCREEN_W}x${XVFB_SCREEN_H}x24" -nolisten tcp)"
   sleep 1
   DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
   OPENBOX_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox)"
@@ -2824,16 +2857,13 @@ while :; do
     if [ "$DISPLAY_LOST" = 1 ]; then
       # EI-21903832503219853: re-pick BOTH display and ports — a bare process
       # retry on the SAME display would panic identically, since the display
-      # itself (not the tauri binary) is what died. Tear down Xvfb/openbox for
-      # the dead display the same way teardown() does on final exit (TERM then
-      # KILL for Xvfb so it unlinks its own socket; KILL for openbox), release
-      # its lock so another launcher can reclaim it, then re-run the SAME
-      # pick+boot procedure the initial display selection used.
+      # itself (not the tauri binary) is what died. Stop only this run's Xvfb
+      # using its provenance/display markers, then release the lock and re-pick.
       log "GTK-init panic (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down display :$DISPLAY_NUM and re-picking a fresh display + ports once. Box contention right now: $(contention_summary)."
       [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
-      [ -n "$XVFB_PID" ] && { kill -TERM $XVFB_PID 2>/dev/null; for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 $XVFB_PID 2>/dev/null || break; sleep 0.2; done; kill -9 $XVFB_PID 2>/dev/null; }
-      pkill -9 -f "Xvfb :$DISPLAY_NUM " 2>/dev/null
-      rm -f "/tmp/.X11-unix/X$DISPLAY_NUM" "/tmp/.X$DISPLAY_NUM-lock" 2>/dev/null
+      write_xvfb_stop_script
+      "$WORK/stop-xvfb.sh" || true
+      XVFB_PID=""
       display_lock_release
       fed_release_port_locks
       DISPLAY_NUM=$((DISPLAY_NUM + 1))
