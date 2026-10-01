@@ -4602,9 +4602,14 @@ export default defineTool({
     // FleetHeadcountConfig cannot represent their heterogeneous boot settings.
     // Keep this write AFTER command composition: an invalid effective model/effort
     // pair must not leave a governor recipe for a launch that never reached spawn.
+    // R-8 (feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01): a
+    // pure claim-spec drain fleet (claimKinds, no plan) gets the same default
+    // target. Requiring a plan here left every plan-less drain fleet with a NULL
+    // target, so nothing recorded what headcount it was launched to hold. The
+    // claim scope itself stays in the claim-spec store, which top-ups read.
     if (
       freshFleetCreated &&
-      Boolean(planSlug) &&
+      (Boolean(planSlug) || Boolean(args.claimKinds?.length)) &&
       launchFleetType !== 'paired' &&
       memberSpecs.length === 0 &&
       !(args.perMemberLaunchContext && args.perMemberLaunchContext.length > 0)
@@ -4634,7 +4639,7 @@ export default defineTool({
       const modelSpec = composeModelSpec(fleetDefaults.model, fleetDefaults.effort) ?? null;
       const split = splitModelSpec(modelSpec);
       const config = normalizePersistedFleetLaunchConfig({
-        plan: planSlug!,
+        ...(planSlug ? { plan: planSlug } : {}),
         harness,
         agent: (fleetDefaults.agent ?? effAgent) as FleetHeadcountConfig['agent'],
         ...(split.model ? { model: split.model } : {}),

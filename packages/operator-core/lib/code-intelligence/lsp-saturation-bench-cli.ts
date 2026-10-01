@@ -54,7 +54,7 @@
  *   …lsp-saturation-bench-cli.ts typescript 1,8,64 references 2
  */
 import { performance } from 'node:perf_hooks';
-import { resolve } from 'node:path';
+import { moduleRepoRoot } from '../module-repo-root';
 
 import {
   lspQuery,
@@ -72,7 +72,7 @@ import {
 import type { CodeIntelIntent } from './contracts.ts';
 
 /** packages/operator-core/lib/code-intelligence → repo root. */
-const REPO_ROOT = resolve(import.meta.dirname, '../../../..');
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
 
 /** 100→1000 is the plan's stated range; the low rungs establish the unloaded baseline the knee is measured against. */
 const DEFAULT_LEVELS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000];

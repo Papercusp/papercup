@@ -272,6 +272,22 @@ describe('emitWorkItemSettledEvents', () => {
     expect(arg.to.sort()).toEqual(['su-grand', 'su-parent']);
   });
 
+  it('reports terminal lifecycle state separately from proposed completion authority', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    await emitWorkItemSettledEvents(wi({ id: 'WI-PROPOSED', state: 'done', completionAuthority: 'proposed' }), {
+      emit: emit as never,
+      getItem: vi.fn(async () => null) as never,
+      listOut: vi.fn(async () => []) as never,
+      listIn: vi.fn(async () => []) as never,
+    });
+
+    const arg = (emit.mock.calls[0] as unknown as [{ key: string; summary: string; payload: Record<string, unknown> }])[0];
+    expect(arg.key).toBe('work-item:done:WI-PROPOSED');
+    expect(arg.summary).toBe("WI-PROPOSED reached terminal state 'done' (completion authority: proposed): the work");
+    expect(arg.summary).not.toContain('settled');
+    expect(arg.payload).toMatchObject({ state: 'done', completionAuthority: 'proposed' });
+  });
+
   it('emits targeted claim:released when terminalization clears a prior assignee without broad claimable co-fire', async () => {
     const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     await emitWorkItemSettledEvents(wi({ id: 'WI-TERMINAL', assignee: null, state: 'done' }), {

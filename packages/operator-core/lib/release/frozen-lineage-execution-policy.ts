@@ -707,6 +707,13 @@ const CARRY_RETRACTION_AFTER =
 // followed by a reporting verb before the candidate relation.
 const CARRY_DIAGNOSTIC_BEFORE =
   /\b(?:refusal|refused|diagnostic|description|describ(?:e|es|ed|ing)|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|error|message|row|prose|text|guard|policy|receipt|checkpoint|run|verdict|note|record|output|log|evidence|result)\b(?:\s+\S+){0,10}\s+(?:say(?:s|ing)?|said|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|describ(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|read(?:s|ing)?|flag(?:s|ged|ging)?|reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)?|block(?:s|ed|ing)?)\b/i;
+// A false positive can itself be described as a classifier result: “It classified
+// the sentence as selecting staging for the judged candidate.” That reports the
+// guard's prior decision; it does not instruct a successor to select staging.
+// Require both a classification verb and a text-bearing object so ordinary
+// candidate-selection directions remain governed.
+const CARRY_CLASSIFICATION_DIAGNOSTIC_BEFORE =
+  /\bclassif(?:y|ies|ied|ying)\b.{0,80}\b(?:sentence|text|note|prose|statement|clause|phrase|message|receipt)\b.{0,40}\bas\b/i;
 
 // A candidate's distance from a moving branch is measurement prose, not a
 // selection of that branch. Keep this relation list deliberately narrow: broad
@@ -728,6 +735,7 @@ function carryDirectiveIsNegated(clause: string, start: number, end: number): bo
   const after = clause.slice(end, Math.min(clause.length, end + 160));
   if (CARRY_NEGATION_BEFORE.test(before)) return true;
   if (CARRY_DIAGNOSTIC_BEFORE.test(before)) return true;
+  if (CARRY_CLASSIFICATION_DIAGNOSTIC_BEFORE.test(before)) return true;
   if (/\b(?:not|never)\b/i.test(span)) return true;
   if (CARRY_RETRACTION_AFTER.test(after)) return true;
   return false;

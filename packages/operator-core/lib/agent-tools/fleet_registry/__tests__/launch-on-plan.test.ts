@@ -4636,6 +4636,34 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
   });
 
+  // R-8 (feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01, AUTO-BAR-R-8-P-007):
+  // the fresh-recipe write used to require a plan, so every plan-less drain fleet was left with
+  // a NULL headcount target. A drain launched without an explicit headcount must still record one.
+  it('R-8: a fresh plan-less claimKinds drain fleet receives a headcount target (no plan, no supervise grant)', async () => {
+    const res = await invokeLaunchHandler(
+      { name: 'Target Drain Fleet', harness: 'papercusp', count: 3, claimKinds: ['bug', 'change'] } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+    expect(payload.ok).toBe(true);
+    expect(setFleetHeadcountTargetMock).toHaveBeenCalledTimes(1);
+    const persisted = setFleetHeadcountTargetMock.mock.calls[0][0] as {
+      fleetSlug: string;
+      target: number;
+      config: Record<string, unknown>;
+    };
+    expect(persisted.fleetSlug).toBe('target-drain-fleet');
+    expect(persisted.target).toBe(3);
+    expect(persisted.config).toMatchObject({ harness: 'papercusp', headless: true, carry: 'warm' });
+    // Claim scope lives in the claim-spec store (top-ups launch plan-less and read it there),
+    // so the recipe carries no plan and no duplicated claimKinds.
+    expect(persisted.config).not.toHaveProperty('plan');
+    expect(persisted.config).not.toHaveProperty('claimKinds');
+    // A recorded target is not supervision consent (R5 / WI-1454201).
+    expect(persisted.config).not.toHaveProperty('supervise');
+    expect(payload.headcountProfile).toMatchObject({ applied: true, target: 3 });
+  });
+
   it('#4: ALWAYS sets a PLAN-scoped claim spec even when claimKinds is omitted', async () => {
     const res = await invokeLaunchHandler(
       { name: 'No Kinds Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,

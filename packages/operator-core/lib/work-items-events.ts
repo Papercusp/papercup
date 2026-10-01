@@ -1,9 +1,12 @@
 /**
- * work-items-events — settled-item events through the await-event primitive
+ * work-items-events — terminal-lifecycle events through the await-event primitive
  * (await-event-primitive-2026-06-05 P-012/P-013, D-006 #4/#5).
  *
- * When a work-item SETTLES (feature → passed/deprecated; issue →
- * resolved/closed) two event families fire:
+ * When a work-item reaches a terminal lifecycle state (feature →
+ * passed/deprecated; issue → resolved/closed) two event families fire. This
+ * lifecycle signal is independent of completionAuthority: a terminal row can
+ * still have proposed or otherwise unsettled completion evidence. The done
+ * event includes completionAuthority so consumers can distinguish those cases.
  *
  *   `work-item:done:<id>` — the children-done / delegated-work signal: the
  *   delegator (assignedBy) and the parent chunk's claimant are notified; any
@@ -1142,13 +1145,14 @@ export async function emitWorkItemDoneEvent(
   const completionIntentId = completionEventIntentIdOf(wi);
   await emit({
     key: `work-item:done:${wi.id}`,
-    summary: `${wi.id} settled → ${wi.state}: ${wi.title}`,
+    summary: `${wi.id} reached terminal state '${wi.state}' (completion authority: ${wi.completionAuthority ?? 'unknown'}): ${wi.title}`,
     payload: workItemEventPayload({
       id: wi.id,
       state: wi.state,
       kind: wi.kind,
       harness: wi.harness,
       title: wi.title,
+      completionAuthority: wi.completionAuthority,
       ...(completionIntentId ? { completionIntentId } : {}),
     }),
     to: [...notifyDone],

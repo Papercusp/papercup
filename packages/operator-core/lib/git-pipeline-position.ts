@@ -101,6 +101,9 @@ import {
   type ServingRuntimeEntry,
 } from './serving-runtimes';
 
+import { createCache } from '@papercusp/cache';
+import { pinModuleState } from '@papercusp/module-singleton';
+
 const pexec = promisify(execFile);
 
 /**
@@ -4981,12 +4984,54 @@ const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight
 // codeAsOfMs` more likely TRUE. This detector exists to refuse exactly that
 // unearned YES, so the derivation is a fallback for hosts without /proc, never a
 // preference. Preference order + rationale live on the helper.
-const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
+const probeUnitStartUncached = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
   // EI-24356772206513832: this diagnostic already keeps its release Git reads
   // local. A failed spawner-sidecar startup otherwise adds its 10s timeout to
   // the systemd probe before it falls back to the same local command. Several
   // unit probes share this read, so use the bounded local exec path directly.
   resolveServiceStartMs(await probeServiceStart(unit, (command, args, options) => pexec(command, args, options)), Date.now());
+
+/**
+ * jev-memory-timeouts-to-zero-2026-10-01 D-001: ONE unit-start probe per unit per
+ * {@link UNIT_START_PROBE_TTL_MS}, shared by every concurrent caller.
+ *
+ * One `gitPipelinePosition({ path })` probes the serving unit, every
+ * GENERATION_HOSTS unit, and the serving-runtime census, and
+ * `deploymentPositionForEvidence` runs up to 12 paths in parallel. Unmemoized,
+ * that was ~10 local forks per path (systemctl + ps per unit). Each fork froze a
+ * 1.5-4 GB operator's event loop for 16-55 ms (bpftrace 2026-10-01: 30 systemctl
+ * + 30 ps in 30 s on :3170, 6.0 s of a 60 s window frozen in one :3070 worker).
+ * Soft TTL = hard TTL, so an expired entry is re-probed BLOCKING and is never
+ * served stale. Within the 2 s window a just-restarted unit can still read its
+ * previous start, which errs toward "not yet running your code", the
+ * conservative direction for this detector. Null results are cached too
+ * (`cacheEmpty`), so an unreadable systemd is not re-forked per path.
+ */
+export const UNIT_START_PROBE_TTL_MS = 2_000;
+
+const unitStartProbe = pinModuleState('@papercusp/operator-core.git-pipeline-position.unit-start-probe', () => ({
+  cache: createCache(),
+}));
+
+/** Memoized unit-start probe; `uncached` is injectable for tests. */
+export function probeUnitStartShared(
+  unit: string,
+  uncached: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null> = probeUnitStartUncached,
+): Promise<{ pid: number | null; startedAtMs: number | null } | null> {
+  return unitStartProbe.cache.getOrSet('host-local', `unit-start:${unit}`, () => uncached(unit), {
+    softTtlMs: UNIT_START_PROBE_TTL_MS,
+    hardTtlMs: UNIT_START_PROBE_TTL_MS,
+    cacheEmpty: true,
+  });
+}
+
+const realProbeUnitStart = (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
+  probeUnitStartShared(unit);
+
+/** Test-only: drop memoized unit-start probes. */
+export function resetUnitStartProbeCacheForTest(): void {
+  unitStartProbe.cache = createCache();
+}
 
 /**
  * WI-2141731 — the release operator's own `/api/health` origin.

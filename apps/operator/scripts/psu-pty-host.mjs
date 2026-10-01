@@ -1814,6 +1814,16 @@ const RECYCLE_CARRY_INJECT_BUDGET_MS =
  *  requeue when an attempt defers fast. */
 const RECYCLE_CARRY_RETRY_BACKOFF_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS) || 3_000;
+/** WI-10004943 (d): hard ceiling on how long a fresh Codex LAUNCH KICKOFF is held
+ *  past its ordinary budget while the Codex footer positively reads `Starting`.
+ *  The footer means the TUI is alive and its composer is still unavailable (MCP
+ *  servers booting), so dropping the kickoff at the 600s budget threw the session's
+ *  first turn away and left it idle at its prompt. Measured in production: the
+ *  footer read `Starting` for 10-20 minutes before the session frame appeared.
+ *  30 minutes covers that with margin. Measured from the start of the kickoff
+ *  attempt, not from the end of the ordinary budget. Env-overridable. */
+const CODEX_STARTING_KICKOFF_HOLD_CEILING_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS) || 1_800_000;
 /** Native transcript proof can lag a freshly painted TUI even after the
  *  verifier's raw-CR retry. Give the carry one fresh child epoch to retry the
  *  whole submission before recording a terminal drop. This is intentionally
@@ -7233,6 +7243,9 @@ export function hostThroughPty(o) {
   // request is an idempotent ok instead of a second kill. Unlike `recycling` this is
   // terminal — nothing clears it, because the host is on its way out.
   let shuttingDown = false;
+  // WI-10004943 (d): set by cleanup() once the host has torn down, so a kickoff
+  // HELD for a Codex frame (minutes) stops waiting instead of polling a dead host.
+  let hostCleanedUp = false;
   // EI-18665672258948707: the moment (Date.now()) THIS host last successfully
   // spawned a fresh child via recycleChild — the supersession clock a queued
   // carry-respawn is checked against right before delivery (isCarryRespawnSuperseded).
@@ -7914,10 +7927,16 @@ export function hostThroughPty(o) {
     freshChildOwnerInputGeneration = null,
     abortBeforeWrite = null,
     prepareBeforeWrite = null,
+    // WI-10004943 (d): when set (ms, measured from this call), a kickoff whose
+    // budget expires while the Codex footer still reads `Starting` is HELD for
+    // the session frame up to this ceiling instead of being dropped.
+    codexStartingHoldCeilingMs = null,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
     const injectChild = child; // bail if a newer recycle supersedes this one
-    const deadline = Date.now() + budgetMs;
+    const injectStartedAt = Date.now();
+    // Mutable only by the WI-10004943 Codex `Starting` hold below.
+    let deadline = injectStartedAt + budgetMs;
     let attempts = 0;
     let dropReason = 'never-settled';
     const freshChildWasInterrupted = () =>
@@ -7965,6 +7984,43 @@ export function hostThroughPty(o) {
       }
       return budgetSpent;
     };
+    // WI-10004943 (d): the ordinary budget expired, but the Codex footer still
+    // positively reads `Starting`, so the TUI is alive and its composer is not
+    // available yet. Dropping here discarded the session's first turn, and it
+    // then idled at its prompt (production: `Starting` for 10-20 minutes, then
+    // the frame). HOLD instead: extend the deadline once, to the caller's
+    // ceiling. The hold is self-limiting: once the footer leaves `Starting`
+    // without a frame, codexBackendFrameWaitExpired() ends the wait with the
+    // ordinary `codex-backend-frame-not-observed` drop, and owner input ends it
+    // through freshChildWasInterrupted().
+    const holdCeilingAt =
+      Number(codexStartingHoldCeilingMs) > 0
+        ? injectStartedAt + Math.max(budgetMs, Number(codexStartingHoldCeilingMs))
+        : 0;
+    let codexStartingHeldAt = 0;
+    const holdForCodexStartingFooter = () => {
+      if (
+        codexStartingHeldAt > 0 ||
+        holdCeilingAt <= 0 ||
+        !requireInitialOutput ||
+        Date.now() >= holdCeilingAt ||
+        child !== injectChild ||
+        freshChildWasInterrupted() ||
+        !codexStartupExplicitlyStarting()
+      ) {
+        return false;
+      }
+      codexStartingHeldAt = Date.now();
+      deadline = holdCeilingAt;
+      appendHostEvent(ownerId, 'kickoff-held-for-codex-frame', {
+        label,
+        budgetMs,
+        holdCeilingMs: holdCeilingAt - injectStartedAt,
+        elapsedMs: codexStartingHeldAt - injectStartedAt,
+        remainingMs: Math.max(0, holdCeilingAt - codexStartingHeldAt),
+      });
+      return true;
+    };
     try {
       // A scripted resume/port begins this task before wireChildData() is
       // reached later in host setup. Yield until the listener has observed at
@@ -7977,7 +8033,8 @@ export function hostThroughPty(o) {
         !freshChildWasInterrupted() &&
         !startupFallbackCanAuthorize() &&
         !codexBackendFrameWaitExpired() &&
-        Date.now() < deadline
+        !(codexStartingHeldAt > 0 && hostCleanedUp) &&
+        (Date.now() < deadline || holdForCodexStartingFooter())
       ) {
         const recoveryState = claudeResumeCompaction.tick();
         if (recoveryState.timedOut) {
@@ -7986,6 +8043,26 @@ export function hostThroughPty(o) {
           break;
         }
         await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
+      }
+      if (codexStartingHeldAt > 0) {
+        const frameObserved = startupReadinessProven();
+        appendHostEvent(ownerId, 'kickoff-codex-frame-hold-ended', {
+          label,
+          outcome: frameObserved
+            ? 'frame-observed'
+            : hostCleanedUp
+              ? 'host-ended'
+              : freshChildWasInterrupted()
+              ? 'owner-input'
+              : codexStartupExplicitlyStarting()
+                ? 'ceiling-still-starting'
+                : 'footer-left-starting',
+          heldMs: Math.max(0, Date.now() - codexStartingHeldAt),
+        });
+        // Released by the frame: give delivery a fresh ordinary budget, never
+        // past the ceiling. Every other outcome drops below as before.
+        if (frameObserved) deadline = Math.min(holdCeilingAt, Date.now() + budgetMs);
+        else if (hostCleanedUp) return { delivered: false, reason: 'host-ended', attempts };
       }
       // The inner delivery loop below owns the common drop/diagnostic path. Do
       // not return or break from this outer try block when the recovery machine
@@ -8399,6 +8476,11 @@ export function hostThroughPty(o) {
           : {}),
         requireInitialOutput: true,
         verifyKickoffMarkerEcho,
+        // WI-10004943 (d): hold, don't drop, while the Codex footer reads Starting.
+        codexStartingHoldCeilingMs: positiveNumber(
+          env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
+          CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+        ),
         prepareBeforeWrite: requireRoleMcp ? async () => {
           const tap = makeOutputTap();
           try {
@@ -10261,6 +10343,7 @@ export function hostThroughPty(o) {
     const cleanup = (code, signal = null) => {
       if (cleaned) return;
       cleaned = true;
+      hostCleanedUp = true;
       stopStartupTrace('host-cleanup');
       const endedSignal = signal ?? teardownSignal;
       // A PTY leader can exit before its descendants. Reap the group while its

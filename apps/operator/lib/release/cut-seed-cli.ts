@@ -85,7 +85,7 @@
  */
 
 import { resolve, join, dirname, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 import { constants, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -1277,9 +1277,7 @@ export async function withSeedOutput<T>(
 }
 
 function resolveWorkspaceRoot(): string {
-  // Mirrors role-codex-home.ts. From apps/operator/lib/release → up to the repo root.
-  const here = dirname(fileURLToPath(import.meta.url));
-  return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(here, '..', '..', '..', '..');
+  return process.env.PAPERCUSP_WORKSPACE_ROOT || moduleRepoRoot(import.meta.url);
 }
 
 /**

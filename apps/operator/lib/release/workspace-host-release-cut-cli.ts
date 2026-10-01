@@ -45,6 +45,7 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/prom
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
@@ -1274,7 +1275,7 @@ function readDesktopVersionFromGit(repoRoot: string, gitlinks: Readonly<Record<s
 }
 
 async function main(): Promise<void> {
-  const repoRoot = resolve(HERE, '../../../..');
+  const repoRoot = moduleRepoRoot(import.meta.url);
   const signingKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ?? join(homedir(), '.papercusp/signing/papercusp.key');
   const log = (line: string) => process.stdout.write(`[workspace-host-cut] ${line}\n`);
   await runWorkspaceHostReleaseCutCli(process.argv.slice(2), {

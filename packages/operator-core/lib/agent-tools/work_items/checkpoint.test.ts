@@ -379,6 +379,28 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
   });
 
+  it('allows diagnostic prose reporting that a sentence was classified as candidate selection', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, stored: string | null | undefined) => stored);
+
+    const result = await one({
+      id: 'WI-7',
+      checkpoint:
+        'It classified the sentence as selecting staging for the judged frozen candidate, although the note gave no instruction to judge or release staging.',
+    });
+
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+  });
+
   it('accepts factual canonical-tree location prose while a frozen queue is open', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),

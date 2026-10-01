@@ -568,6 +568,7 @@ describe('frozen lineage carry policy', () => {
     'The earlier instruction to pin current staging/current HEAD was wrong and is retracted.',
     'Never derive the judged candidate from staging; use the live repairHead.',
     'I am NOT selecting current-head as the judged candidate',
+    'It classified the sentence as selecting staging for the judged frozen candidate, although the note gave no instruction to judge or release staging.',
     'A checkpoint that instructs a successor to use current HEAD as the judged candidate is rejected.',
     'The policy refuses candidate selection from integrationBranch.',
     'The refusal says staging was selected as the judged candidate; this sentence describes the diagnostic, not a directive.',
