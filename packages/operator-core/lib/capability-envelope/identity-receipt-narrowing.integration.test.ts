@@ -2,11 +2,18 @@
  * Real-PostgreSQL contract for the identity gate's narrowed body read
  * (WI-10004801, #1155): the SQL in `selectNarrowedLaunchSpecBody` must return
  * exactly what `narrowIdentityHistory` states, for every record shape the
- * column can hold, and must return the record whole when asked to.
+ * column can hold, and must return the record whole when asked to. The
+ * per-row form the wedged-identity watchdog reads through
+ * (`narrowedLaunchSpecToAppliedPairSql`, WI-10004803) is held to the same
+ * statement, for every shape the applied pair can take.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { narrowIdentityHistory, selectNarrowedLaunchSpecBody } from './identity-receipt-narrowing';
+import {
+  narrowedLaunchSpecToAppliedPairSql,
+  narrowIdentityHistory,
+  selectNarrowedLaunchSpecBody,
+} from './identity-receipt-narrowing';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { readGateSelectedLaunchSpec } = await import('../agent-tools/coordination/control-anchor');
@@ -101,6 +108,57 @@ describe('selectNarrowedLaunchSpecBody (real PostgreSQL, WI-10004801)', () => {
       selectNarrowedLaunchSpecBody(db.adminSql, { advSessionId: id, ownerId: OWNER, workspaceId: 'other-ws', revisions: [A] }),
     ]);
     expect(rows.map((r) => r.length)).toEqual([0, 0]);
+  });
+
+  // WI-10004803: the watchdog's pair is a COLUMN of `n` (each owner's own
+  // control_state->activation->applied), not one bound parameter. It must equal
+  // narrowIdentityHistory(spec, [pair]) for every shape that column can hold:
+  // only two jsonb strings narrow; anything else keeps the record whole.
+  // `undefined` is the SQL-NULL case: JSON.stringify drops the key, so `->`
+  // yields SQL NULL, and revisionsParam([undefined]) is null (whole) in JS.
+  const APPLIED_PAIRS: Array<[string, unknown]> = [
+    ['A', A],
+    ['B', B],
+    ['C', C],
+    ['A with extra keys', { ...A, extra: 1 }],
+    ['numeric specification revision', { specificationRevision: 1, stateRevision: A.stateRevision }],
+    ['numeric state revision', { specificationRevision: A.specificationRevision, stateRevision: 7 }],
+    ['missing state revision', { specificationRevision: A.specificationRevision }],
+    ['jsonb null', null],
+    ['an array holding the pair', [A]],
+    ['a string', A.stateRevision],
+    ['SQL NULL (no applied pair)', undefined],
+  ];
+
+  it('per-row applied-pair narrowing: each row narrowed to its OWN pair, in one statement', async () => {
+    let narrowed = 0;
+    let whole = 0;
+    // Rotate the pairs across the rows so every (record, pair) combination is
+    // covered, and every statement mixes pairs across rows.
+    for (let shift = 0; shift < APPLIED_PAIRS.length; shift++) {
+      const pairFor = (i: number) => APPLIED_PAIRS[(i + shift) % APPLIED_PAIRS.length];
+      const pairById: Record<string, unknown> = {};
+      SPECS.forEach(([name], i) => { pairById[String(ids.get(name))] = pairFor(i)[1]; });
+      const rows = await db.adminSql<Array<{ id: number | string; launch_spec: unknown }>>`
+        SELECT n.id, ${narrowedLaunchSpecToAppliedPairSql(db.adminSql)} AS launch_spec
+          FROM (
+            SELECT s.id, s.launch_spec, (${JSON.stringify(pairById)}::text::jsonb)->(s.id::text) AS applied_pair
+              FROM harness_shared.adv_sessions s
+             WHERE s.id IN ${db.adminSql([...ids.values()])}
+          ) AS n`;
+      expect(rows).toHaveLength(SPECS.length);
+      const byId = new Map(rows.map((r) => [Number(r.id), r.launch_spec]));
+      SPECS.forEach(([name, spec], i) => {
+        const [pairName, pair] = pairFor(i);
+        const expected = narrowIdentityHistory(spec, [pair]);
+        expect(byId.get(ids.get(name)!), `${name} × ${pairName}`).toEqual(expected);
+        if (JSON.stringify(expected) === JSON.stringify(spec)) whole++;
+        else narrowed++;
+      });
+    }
+    // Not vacuous: some combinations really narrow, and some really stay whole.
+    expect(narrowed).toBeGreaterThan(0);
+    expect(whole).toBeGreaterThan(0);
   });
 
   // readGateSelectedLaunchSpec shares the SQL fragment; these hold its selection

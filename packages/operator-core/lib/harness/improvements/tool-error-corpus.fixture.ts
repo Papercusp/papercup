@@ -114,6 +114,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
 
   // ── caller: bad input / scope (DX, not a tool bug) ─────────────────────────
   {
+    n: 3, errorCode: 'mcp_auth_failed', status: 'error',
+    message: 'superuser_invalid_bearer',
+    expectedClass: 'caller',
+    note: 'MCP auth gate recorded an invalid-bearer refusal before dispatch; keep this credential rejection out of the structural bug lane (EI-24772367245361033)',
+  },
+  {
     n: 835, errorCode: 'handler_error', status: 'error',
     message: "resolvePlanScope: harness 'shared-hive-test' is not registered in harness_shared.projects in any workspace, so its plan workspace cannot be resolved",
     expectedClass: 'caller',

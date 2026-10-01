@@ -17,7 +17,7 @@ import { seedPlan, cleanupPlans } from './agent-tools/plans/__tests__/_pg-tool-f
 import { deriveIndexFromContent } from './agent-tools/plans/derive-index';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pass-record';
-import { recordGoalPlacementTurnEnd } from './goal-placement-turn-receipts';
+import { readGoalHarness, recordGoalPlacementTurnEnd } from './goal-placement-turn-receipts';
 import { readVerbatimTail } from './turn-journal';
 import { createPgTelemetryStore } from './activity-pg-store';
 import { preflightExactPlanAdmission, type ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
@@ -138,6 +138,7 @@ describe('native turn-end policy observation from canonical goal sources', () =>
         nativeSessionId: native.sessionId, sourceKind: 'codex' }, {
         current: async () => native,
         goalSubject: (ownerId, workspaceId) => defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId),
+        goalHarness: readGoalHarness,
         tail: (source) => readVerbatimTail(source.filePath, source.sourceKind, 50),
         agenda: async () => readAgenda(), append: createPgTelemetryStore().append, now: Date.now,
       });

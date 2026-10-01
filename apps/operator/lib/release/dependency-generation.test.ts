@@ -2564,3 +2564,76 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     expect(result.stderr).not.toContain('copy progress');
   }, NATIVE_SHELL_TIMEOUT_MS);
 });
+
+describe('WI-10004825: scratch trees stranded by dead runs are reaped', () => {
+  const parents: string[] = [];
+  afterEach(() => {
+    for (const p of parents.splice(0)) rmSync(p, { recursive: true, force: true });
+  });
+
+  function deadPid(): number {
+    const child = spawnSync('bash', ['-c', 'echo $$'], { encoding: 'utf8' });
+    const pid = Number(child.stdout.trim());
+    expect(Number.isInteger(pid) && pid > 0).toBe(true);
+    expect(existsSync(`/proc/${pid}`)).toBe(false);
+    return pid;
+  }
+
+  function scratch(path: string, ageSec: number): void {
+    mkdirSync(join(path, 'pkg'), { recursive: true });
+    writeFileSync(join(path, 'pkg/index.js'), 'partial\n');
+    const t = Date.now() / 1000 - ageSec;
+    utimesSync(path, t, t);
+  }
+
+  it('removes only siblings whose pid is gone and whose mtime is past the grace window', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-reap-'));
+    parents.push(parent);
+    const dest = join(parent, 'node_modules');
+    mkdirSync(dest);
+    const dead = deadPid();
+    const live = process.pid;
+    const nestedDead = `${dest}.deploy-tmp.${dead}.generation-tmp.${dead}`;
+    const oldDead = `${dest}.deploy-old.${dead}`;
+    const genDead = `${dest}.generation-tmp.${dead}`;
+    const liveOwned = `${dest}.deploy-tmp.${live}`;
+    const recentDead = `${dest}.generation-old.${dead}`;
+    scratch(nestedDead, 7200);
+    scratch(oldDead, 7200);
+    scratch(genDead, 7200);
+    // A read-only directory inside a frozen generation copy must not block removal.
+    chmodSync(join(genDead, 'pkg'), 0o555);
+    scratch(liveOwned, 7200);
+    scratch(recentDead, 5);
+
+    const result = spawnSync(
+      'bash',
+      ['-c', 'set -euo pipefail; source "$SCRIPT"; dependency_generation_reap_dead_siblings "$DEST"; echo RC=$?'],
+      {
+        env: { ...process.env, SCRIPT, DEST: dest, DEPENDENCY_GENERATION_REAP_GRACE_SEC: '600' },
+        encoding: 'utf8',
+      },
+    );
+    expect(result.stdout, result.stderr).toContain('RC=0');
+    expect(existsSync(nestedDead)).toBe(false);
+    expect(existsSync(oldDead)).toBe(false);
+    expect(existsSync(genDead)).toBe(false);
+    expect(existsSync(liveOwned)).toBe(true);
+    expect(existsSync(recentDead)).toBe(true);
+    expect(existsSync(dest)).toBe(true);
+    expect(result.stderr).toContain(`reaping orphaned scratch tree from dead pid ${dead}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('is a no-op when no sibling exists', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-reap-'));
+    parents.push(parent);
+    const dest = join(parent, 'node_modules');
+    const result = spawnSync(
+      'bash',
+      ['-c', 'set -euo pipefail; source "$SCRIPT"; dependency_generation_reap_dead_siblings "$DEST"; echo RC=$?'],
+      { env: { ...process.env, SCRIPT, DEST: dest }, encoding: 'utf8' },
+    );
+    expect(result.stdout, result.stderr).toContain('RC=0');
+    expect(readdirSync(parent)).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});

@@ -4,7 +4,7 @@ import integration from "../../vitest.integration.config";
 
 describe("maintained operator integration suite routing", () => {
   it.each(["test", "app", "lib", "scripts"])("enrolls both TS and TSX integrations in %s", (directory) => {
-    const include = integration.test?.include ?? [];
+    const include: string[] = integration.test?.include ?? [];
     for (const extension of ["ts", "tsx"]) {
       expect(include.some((glob) => minimatch(`${directory}/onboarding/example.integration.test.${extension}`, glob))).toBe(true);
     }

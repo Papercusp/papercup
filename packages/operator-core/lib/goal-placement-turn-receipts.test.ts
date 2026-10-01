@@ -246,7 +246,7 @@ describe('native turn-end policy observation', () => {
     f.setTail([turn('prior', 1), turn('current', 3)]); f.setNow(4);
     const read = { goalId: 'goal', portfolio: null, observedAt: at(4).toISOString(),
       agenda: { evaluations: [row] } } as AgentObligationAgendaRead;
-    const deps: GoalPlacementTurnEndDeps = { ...f.deps, goalSubject: vi.fn(async () => 'goal'), agenda: vi.fn(async () => read),
+    const deps: GoalPlacementTurnEndDeps = { ...f.deps, goalSubject: vi.fn(async () => 'goal'), goalHarness: vi.fn(async () => 'home-harness'), agenda: vi.fn(async () => read),
       sleep: vi.fn(async () => {}) };
     const endInput = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: session.sessionId, sourceKind: session.sourceKind };
     return { ...f, read, deps, endInput };
@@ -260,6 +260,24 @@ describe('native turn-end policy observation', () => {
         actionKind: 'delegate', obligationId: row.id, sourceGeneration: 'generation-1', ruleRevision: 'v1' }],
     } } }));
   });
+  it.each(['failed', 'empty', 'other-harness'] as const)(
+    'WI-10004818: uses the goal filing harness when the portfolio is %s', async (state) => {
+      const f = endFixture();
+      f.read.portfolio = state === 'failed' ? null : {
+        worklist: state === 'empty' ? [] : [{ harness: 'other-harness' }],
+      } as NonNullable<AgentObligationAgendaRead['portfolio']>;
+      f.read.agenda.evaluations = [{ ...row, scope: { ...row.scope, planSlug: undefined }, status: 'unknown', action: undefined,
+        measurementFailure: { code: 'canonical-plan-placement-read-failed',
+          detail: 'goal portfolio timeout after 900ms', retry: 'retry' } }];
+      expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(true);
+      expect(f.deps.goalHarness).toHaveBeenCalledExactlyOnceWith('goal', 'workspace');
+      expect(f.deps.append).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'workspace', scope: 'home-harness',
+        detail: { goalPlacementTurnEnd: expect.objectContaining({ rows: [expect.objectContaining({
+          measurementFailure: expect.objectContaining({ code: 'canonical-plan-placement-read-failed' }),
+        })] }) },
+      }));
+    });
   it('records why an unknown placement row could not be measured', async () => {
     const f = endFixture();
     const unknown = { ...row, status: 'unknown' as const, action: { kind: 'inspect' as const, summary: 'retry', targetRef: 'plan:harness/plan' },

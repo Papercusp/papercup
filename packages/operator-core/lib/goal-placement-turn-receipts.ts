@@ -135,6 +135,7 @@ export const GOAL_PLACEMENT_TURN_END_SETTLE_POLLS = 10;
 export const GOAL_PLACEMENT_TURN_END_SETTLE_POLL_MS = 200;
 export interface GoalPlacementTurnEndDeps extends Pick<GoalPlacementTurnReceiptDeps, 'current' | 'tail' | 'append' | 'now'> {
   goalSubject: (ownerId: string, workspaceId: string) => Promise<string | null>;
+  goalHarness: (goalId: string, workspaceId: string) => Promise<string | null>;
   agenda: (ownerId: string, workspaceId: string) => Promise<AgentObligationAgendaRead>;
   pending?: (ownerId: string, workspaceId: string) => Promise<unknown>;
   admission?: (input: AdmissionInput) => Promise<GoalPlacementAdmissionObservation>;
@@ -220,10 +221,20 @@ export function placementSelection(read: Pick<AgentObligationAgendaRead, 'portfo
 /** Sample policy at the native turn-end seam, independently of the next-turn ACK.
  * This is descriptive policy evidence, not a grade or a delivery receipt. Its
  * observedAt remains explicit; a later replay cannot masquerade as timely proof. */
+/** WI-10004818: the goal's filing harness (`goals.install_slug`) — the turn-end row's scope. */
+export async function readGoalHarness(goalId: string, workspaceId: string): Promise<string | null> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const rows = await getOrgPg().sql<Array<{ install_slug: string | null }>>`
+    SELECT install_slug FROM harness_shared.goals
+      WHERE workspace_id = ${workspaceId} AND id = ${goalId}`;
+  return rows[0]?.install_slug ?? null;
+}
+
 export async function recordGoalPlacementTurnEnd(input: {
   ownerId: string; workspaceId: string; nativeSessionId: string; sourceKind: SelfSession['sourceKind'];
 }, deps: GoalPlacementTurnEndDeps = { ...defaults,
   pending: readPendingDelivery,
+  goalHarness: readGoalHarness,
   goalSubject: async (ownerId, workspaceId) =>
     (await import('./agent-obligation-reader')).defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId),
   agenda: async (ownerId, workspaceId) => (await import('./agent-obligation-reader')).readAgentObligationAgenda({ ownerId, workspaceId }),
@@ -254,6 +265,9 @@ export async function recordGoalPlacementTurnEnd(input: {
   const endedAt = completed.ts!.getTime();
   const timely = (now: number) => Number.isFinite(now) && now >= endedAt && now - endedAt <= GOAL_PLACEMENT_TURN_END_MAX_LAG_MS;
   if (!timely(deps.now())) return { recorded: false, reason: 'turn-end-observation-stale' };
+  // WI-10004818: scope belongs to the goal's filing harness, even when its portfolio
+  // is unreadable, empty, or lists plans from other harnesses.
+  const harness = await deps.goalHarness(goalId, input.workspaceId);
   const read = await deps.agenda(input.ownerId, input.workspaceId);
   if (!read.goalId) return { recorded: false, reason: 'no-canonical-goal' };
   if (read.goalId !== goalId) return { recorded: false, reason: 'goal-scope-changed-during-observation' };
@@ -296,7 +310,7 @@ export async function recordGoalPlacementTurnEnd(input: {
     return { recorded: false, reason: 'native-decision-advanced-during-observation' };
   }
   await deps.append({ workspaceId: input.workspaceId, owner: input.ownerId, agent: session.sourceKind,
-    sessionId: session.sessionId, scope: read.portfolio?.worklist[0]?.harness ?? null,
+    sessionId: session.sessionId, scope: harness,
     kind: 'lifecycle', toolName: null, phase: null, toolUseId: `goal-placement-turn-end:${completedRef(session, completed)}`,
     summary: 'Goal placement policy observed at native turn end', status: 'ok', cwd: null,
     detail: { goalPlacementTurnEnd: { version: 1, goalId: read.goalId,

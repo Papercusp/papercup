@@ -566,7 +566,24 @@ export function acceptanceSourceRevisionSql(
 /** SQL twin of `evaluateImplementationAcceptance(...).state`. */
 export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemIntakeStageSqlColumns = {}) {
   const payload = sql.unsafe(columns.payload ?? 'payload');
-  const readinessJson = sql`COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness'`;
+  return implementationAcceptanceStateFromReadinessSql(
+    sql,
+    sql`(COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness')`,
+    acceptanceSourceRevisionSql(sql, columns),
+  );
+}
+
+/**
+ * The same verdict over an already-extracted readiness document and the row's
+ * current source revision, so a census that projects `implementationReadiness`
+ * into its own column (the admission promoter) judges acceptance with the exact
+ * predicate the claim floor uses.
+ */
+export function implementationAcceptanceStateFromReadinessSql(
+  sql: OrgSql,
+  readinessJson: postgres.Fragment,
+  currentRevision: postgres.Fragment,
+) {
   const acc = sql`(${readinessJson} -> 'evidence' -> 'acceptance')`;
   const authority = sql`(${acc} -> 'authority')`;
   const policies = [...IMPLEMENTATION_ACCEPTANCE_POLICIES];
@@ -576,7 +593,7 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
   const nonEmptyText = (value: postgres.Fragment) =>
     sql`COALESCE(jsonb_typeof(${value}) = 'string' AND (${value} #>> '{}') ~ '[^[:space:]]', FALSE)`;
   const nonEmpty = (path: string) => nonEmptyText(sql`(${acc} -> ${path})`);
-  const readinessValid = implementationReadinessValidSql(sql, columns.payload ?? 'payload');
+  const readinessValid = implementationReadinessValidFromJsonSql(sql, readinessJson);
   // Every branch below is COALESCEd: a missing key yields SQL NULL, and a NULL
   // CASE condition silently falls through to the next branch (toward 'qualifying').
   const proposalComplete = sql`COALESCE((
@@ -624,13 +641,19 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
       OR ${acc} = '{}'::jsonb THEN 'absent'
     WHEN NOT (${proposalComplete} AND ${sealComplete}) THEN 'incomplete'
     WHEN NOT (${authorityValid}) THEN 'invalid-authority'
-    WHEN (${acc} ->> 'sourceRevision') IS DISTINCT FROM ${acceptanceSourceRevisionSql(sql, columns)} THEN 'stale-revision'
+    WHEN (${acc} ->> 'sourceRevision') IS DISTINCT FROM ${currentRevision} THEN 'stale-revision'
     ELSE 'qualifying'
   END)`;
 }
 
 function implementationReadinessValidSql(sql: OrgSql, payloadColumn: string) {
-  const readinessJson = sql`COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb) -> 'implementationReadiness'`;
+  return implementationReadinessValidFromJsonSql(
+    sql,
+    sql`(COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb) -> 'implementationReadiness')`,
+  );
+}
+
+function implementationReadinessValidFromJsonSql(sql: OrgSql, readinessJson: postgres.Fragment) {
   const readinessStatuses = [...IMPLEMENTATION_READINESS_STATUSES];
   const readinessSources = [...IMPLEMENTATION_READINESS_SOURCES];
   // COALESCE: a missing key is SQL NULL, and `NOT (NULL)` would let a malformed

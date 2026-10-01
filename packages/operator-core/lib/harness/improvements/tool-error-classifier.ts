@@ -40,7 +40,7 @@
  *   - structural — a real bug/misconfig (the tool, a missing table, a wiring
  *     gap). Fires on FEW occurrences OR a high error-rate → auto-implement.
  *   - transient  — timeout / load / shared-infra exhaustion. Volume-gated.
- *   - caller     — the caller sent bad input or lacks a role (DX/schema). kind=change.
+ *   - caller     — the caller sent bad input, lacks a role, or was rejected at the MCP auth gate (DX/auth). kind=change.
  *   - rate-limit — an EXTERNAL provider rate-limit / quota (OpenAI embed TPM
  *     429). Capacity, not a code bug → infra/owner, never the auto-implement lane.
  */
@@ -135,11 +135,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     errorCodes: [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',
-      'flush-required', 'rubric-not-found',
+      'flush-required', 'rubric-not-found', 'mcp_auth_failed',
     ],
     statuses: ['role-not-allowed'],
     messagePattern: CALLER_MESSAGE_PATTERN,
-    why: 'the caller sent bad input, lacks a role, named no (or an unregistered) harness, or hit an explicit flush precondition — not a tool bug',
+    why: 'the caller sent bad input, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, or hit an explicit flush precondition — not a tool bug',
   },
   {
     class: 'caller',

@@ -184,6 +184,82 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
   });
 });
 
+describe('EI-24684014950807803 — a hex token that names no commit is not a sha', () => {
+  // The measured message: a peer named by its agent short id beside a real candidate sha.
+  const text =
+    'c0b38c83 is live on staging and owns the repair; candidate 9a4319b7 is what green-checkpoint is judging';
+  const realShas = new Set(['9a4319b7']);
+  const resolvesToCommit = (token: string) => realShas.has(token.toLowerCase());
+
+  it('POSITIVE CONTROL: without a resolver the shape-only scan still flags the agent short id', () => {
+    expect(detectCellTranscriptions(text).map((h) => h.value)).toContain('c0b38c83');
+  });
+
+  it('drops an agent short id that does not resolve, and keeps the real candidate sha', () => {
+    const hits = detectCellTranscriptions(text, { resolvesToCommit });
+    expect(hits.map((h) => h.value)).not.toContain('c0b38c83');
+    expect(hits.some((h) => h.value === '9a4319b7' && h.cell === 'gate.greenCheckpoint.candidate')).toBe(true);
+    expect(cellTranscriptionHint(text, { resolvesToCommit })).not.toContain('c0b38c83');
+  });
+
+  it('keeps the hit when the resolver cannot tell (null) or throws — fail-open', () => {
+    expect(detectCellTranscriptions(':3070 is serving abc1234', { resolvesToCommit: () => null })).toHaveLength(1);
+    const throwing = () => {
+      throw new Error('git unavailable');
+    };
+    expect(detectCellTranscriptions(':3070 is serving abc1234', { resolvesToCommit: throwing })).toHaveLength(1);
+  });
+
+  it('never applies the resolver to commit COUNTS, which are not shas', () => {
+    const hits = detectCellTranscriptions('main is 3 commits behind staging', { resolvesToCommit: () => false });
+    expect(hits).toHaveLength(1);
+  });
+
+  it('the async two-pass hint resolves only sha-claimed tokens and applies the verdicts', async () => {
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      asked.push(token);
+      return realShas.has(token);
+    });
+    expect(asked.sort()).toEqual(['9a4319b7', 'c0b38c83']);
+    expect(hint).toContain('9a4319b7');
+    expect(hint).not.toContain('c0b38c83');
+  });
+
+  it('the async hint fails open: a rejecting resolver keeps every shape-only hit', async () => {
+    const hint = await cellTranscriptionHintResolvingCommits(text, async () => {
+      throw new Error('git unavailable');
+    });
+    expect(hint).toContain('c0b38c83');
+    expect(hint).toContain('9a4319b7');
+  });
+
+  it('the async hint spawns nothing for text with no sha-shaped claim', async () => {
+    let calls = 0;
+    const hint = await cellTranscriptionHintResolvingCommits('main is 3 commits behind staging', async () => {
+      calls += 1;
+      return false;
+    });
+    expect(calls).toBe(0);
+    expect(hint).not.toBeNull();
+  });
+
+  it('resolves against PAPERCUSP_INTEGRATION_ROOT, not the release checkout cwd', () => {
+    expect(commitResolverRepo({ PAPERCUSP_INTEGRATION_ROOT: '/srv/integration' }, '/srv/release/apps/operator')).toBe(
+      '/srv/integration',
+    );
+    expect(commitResolverRepo({}, '/srv/repo')).toBe('/srv/repo');
+  });
+
+  it('the git resolver answers true for a real commit, false for an agent short id, null outside a repo', async () => {
+    const head = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], { encoding: 'utf8' }).trim();
+    expect(await gitResolvesToCommit(head, process.cwd())).toBe(true);
+    expect(await gitResolvesToCommit('c0b38c83', process.cwd())).toBe(false);
+    expect(await gitResolvesToCommit('not-hex', process.cwd())).toBe(false);
+    expect(await gitResolvesToCommit('abc1234', '/')).toBeNull();
+  });
+});
+
 describe('cell-transcription detector — never throws, never blocks (tier-3 invariant)', () => {
   const junk: unknown[] = [null, undefined, 42, {}, [], true, Symbol('x'), () => {}, NaN];
 

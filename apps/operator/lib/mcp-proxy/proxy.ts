@@ -4711,16 +4711,34 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   return server;
 }
 
+/**
+ * The upstream named in the startup log line. Must resolve through the same
+ * option precedence as `resolveTargetCandidates` — the bin entry passes
+ * `resolveTargets` (never `targetPort`), so reading `opts.targetPort` here
+ * logged `127.0.0.1:undefined` (WI-10004334).
+ */
+export function describeMcpProxyTarget(opts: McpProxyOptions): string {
+  if (!opts.resolveTargets && opts.resolveTarget)
+    return "dynamic operator.json target";
+  try {
+    const [primary, ...fallbacks] = resolveTargetCandidates(opts).map(
+      (t) => `${t.host}:${t.port}`,
+    );
+    return fallbacks.length
+      ? `${primary} (fallback ${fallbacks.join(", ")})`
+      : primary!;
+  } catch (err) {
+    return `unresolved target (${(err as Error).message})`;
+  }
+}
+
 /** Start the proxy from env/opts. Returns the listening server. */
 export function startMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
   const server = createMcpProxy(opts);
   server.listen(opts.listenPort, opts.listenHost ?? "127.0.0.1", () => {
-    const target = opts.resolveTarget
-      ? "dynamic operator.json target"
-      : `${opts.targetHost ?? "127.0.0.1"}:${opts.targetPort}`;
     log(
-      `listening on ${opts.listenHost ?? "127.0.0.1"}:${opts.listenPort} → ${target} ` +
+      `listening on ${opts.listenHost ?? "127.0.0.1"}:${opts.listenPort} → ${describeMcpProxyTarget(opts)} ` +
         `(retry-on-refused window ${opts.retryWindowMs}ms)`,
     );
   });

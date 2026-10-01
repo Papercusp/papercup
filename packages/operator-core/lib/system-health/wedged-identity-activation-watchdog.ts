@@ -70,6 +70,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { resolveIdentityArtifact } from '../capability-envelope/identity-grants-port';
+import { narrowedLaunchSpecToAppliedPairSql } from '../capability-envelope/identity-receipt-narrowing';
 import { normalizeSessionActivation } from '../session-activation';
 import { activeWorkspaceId } from '../workspace-registry';
 
@@ -120,7 +121,8 @@ export interface WedgedSession {
 }
 
 export interface WedgedIdentitySweepDeps {
-  loadCandidates: () => Promise<CandidateRow[]>;
+  /** One array, or a stream of pages (the default streams; WI-10004803). */
+  loadCandidates: () => Promise<CandidateRow[]> | AsyncIterable<CandidateRow[]>;
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, WedgedLiveness>>;
   escalateWedged: (wedged: WedgedSession[]) => Promise<void>;
   escalateNotMeasured: (info: { reason: string }) => Promise<void>;
@@ -166,10 +168,23 @@ export function classifyCandidate(row: CandidateRow): { wedged: false } | { wedg
 
 const CANDIDATE_SQL_ORDER = LAUNCH_RECORD_SELECTION_ORDER;
 
-async function defaultLoadCandidates(): Promise<CandidateRow[]> {
+/** Rows per cursor page. A page is the most launch-record JSON this sweep holds
+ * at once; most records are one ~0.6 MB artifact, the largest ~2 MB narrowed. */
+export const CANDIDATE_PAGE_ROWS = 25;
+
+/**
+ * WI-10004803: STREAMED and NARROWED. Reading every candidate at once parsed
+ * ~1.5 GB of launch-record JSON (1,724 rows, measured 2026-10-01) in one
+ * result on the bg-host. Now a cursor holds one page at a time, and each
+ * record's identityHistory is narrowed in PostgreSQL to the receipt for that
+ * row's own applied pair, the only receipt `resolveIdentityArtifact` reads
+ * (the gate narrows its own body read the same way). The rows selected, their
+ * order, and the classification are unchanged.
+ */
+async function* defaultLoadCandidates(): AsyncGenerator<CandidateRow[]> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
-  const rows = await sql<Array<{
+  const query = sql<Array<{
     owner_id: string;
     launch_spec: unknown;
     adv_session_id: string | number | null;
@@ -181,22 +196,39 @@ async function defaultLoadCandidates(): Promise<CandidateRow[]> {
            b.control_state->'activation' AS activation
       FROM harness_shared.session_briefs b
       LEFT JOIN LATERAL (
-        SELECT s.id, to_jsonb(s)->'launch_spec' AS launch_spec
-          FROM harness_shared.adv_sessions s
-         WHERE s.coord_owner_id = b.owner_id
-           AND s.workspace_id = b.workspace_id
-         ORDER BY ${sql.unsafe(CANDIDATE_SQL_ORDER)}
-         LIMIT 1
+        SELECT n.id, ${narrowedLaunchSpecToAppliedPairSql(sql)} AS launch_spec
+          FROM (
+            SELECT s.id, s.launch_spec, b.control_state->'activation'->'applied' AS applied_pair
+              FROM harness_shared.adv_sessions s
+             WHERE s.coord_owner_id = b.owner_id
+               AND s.workspace_id = b.workspace_id
+             ORDER BY ${sql.unsafe(CANDIDATE_SQL_ORDER)}
+             LIMIT 1
+          ) AS n
       ) a ON true
      WHERE b.workspace_id = ${workspaceId}
        AND b.control_state->'activation' IS NOT NULL
   `;
-  return rows.map((r) => ({
-    ownerId: r.owner_id,
-    launchSpec: r.launch_spec,
-    advSessionId: r.adv_session_id == null ? null : String(r.adv_session_id),
-    activation: r.activation,
-  }));
+  for await (const rows of query.cursor(CANDIDATE_PAGE_ROWS)) {
+    yield rows.map((r) => ({
+      ownerId: r.owner_id,
+      launchSpec: r.launch_spec,
+      advSessionId: r.adv_session_id == null ? null : String(r.adv_session_id),
+      activation: r.activation,
+    }));
+  }
+}
+
+/** One iteration shape for both loader forms: a page stream, or one array. */
+async function* candidatePages(
+  load: () => Promise<CandidateRow[]> | AsyncIterable<CandidateRow[]>,
+): AsyncGenerator<CandidateRow[]> {
+  const source = load();
+  if (Symbol.asyncIterator in Object(source)) {
+    yield* source as AsyncIterable<CandidateRow[]>;
+  } else {
+    yield await (source as Promise<CandidateRow[]>);
+  }
 }
 
 async function defaultResolveLiveness(ownerIds: string[]): Promise<Map<string, WedgedLiveness>> {
@@ -294,32 +326,41 @@ export async function runWedgedIdentitySweepOnce(
 ): Promise<WedgedIdentitySweepOutcome> {
   const deps = sweepDeps(overrides);
 
-  let rows: CandidateRow[];
-  try {
-    rows = await deps.loadCandidates();
-  } catch (e) {
-    const reason = `candidate read failed: ${e instanceof Error ? e.message : String(e)}`;
-    await deps.escalateNotMeasured({ reason });
-    return { verdict: 'not-measured', reason, escalated: 1 };
+  // Pages are classified and dropped as they arrive (WI-10004803). A read that
+  // fails on ANY page fails the whole sweep closed, exactly as a failed
+  // single read did: a partial scan must never report clean. Only the read is
+  // guarded, so a classification error still propagates as before.
+  let scanned = 0;
+  const confirmed: Array<{ ownerId: string; reason: string }> = [];
+  const pages = candidatePages(() => deps.loadCandidates())[Symbol.asyncIterator]();
+  for (;;) {
+    let page: IteratorResult<CandidateRow[]>;
+    try {
+      page = await pages.next();
+    } catch (e) {
+      const reason = `candidate read failed: ${e instanceof Error ? e.message : String(e)}`;
+      await deps.escalateNotMeasured({ reason });
+      return { verdict: 'not-measured', reason, escalated: 1 };
+    }
+    if (page.done) break;
+    scanned += page.value.length;
+    for (const row of page.value) {
+      const verdict = classifyCandidate(row);
+      if (verdict.wedged) confirmed.push({ ownerId: row.ownerId, reason: verdict.reason });
+    }
   }
 
   // A built-in positive control. Every operator has session_briefs rows carrying
   // an activation; zero means the query matched nothing it should have matched
   // (wrong workspace, renamed column, a migration not applied) — which returns
   // an empty `wedged` list that is indistinguishable from a clean fleet.
-  if (rows.length === 0) {
+  if (scanned === 0) {
     const reason = 'no session_briefs rows carried an activation — the sweep cannot have measured anything';
     await deps.escalateNotMeasured({ reason });
     return { verdict: 'not-measured', reason, escalated: 1 };
   }
 
-  const confirmed: Array<{ ownerId: string; reason: string }> = [];
-  for (const row of rows) {
-    const verdict = classifyCandidate(row);
-    if (verdict.wedged) confirmed.push({ ownerId: row.ownerId, reason: verdict.reason });
-  }
-
-  if (confirmed.length === 0) return { verdict: 'clean', scanned: rows.length, escalated: 0 };
+  if (confirmed.length === 0) return { verdict: 'clean', scanned, escalated: 0 };
 
   let liveness: Map<string, WedgedLiveness>;
   try {
@@ -334,10 +375,10 @@ export async function runWedgedIdentitySweepOnce(
     .map((c) => ({ ...c, liveness: liveness.get(c.ownerId) ?? 'unknown' }))
     .filter((w) => !TERMINAL_STATES.has(w.liveness));
 
-  if (wedged.length === 0) return { verdict: 'clean', scanned: rows.length, escalated: 0 };
+  if (wedged.length === 0) return { verdict: 'clean', scanned, escalated: 0 };
 
   await deps.escalateWedged(wedged);
-  return { verdict: 'wedged', scanned: rows.length, wedged, escalated: 1 };
+  return { verdict: 'wedged', scanned, wedged, escalated: 1 };
 }
 
 let watchdogTimer: ManagedHandle | null = null;

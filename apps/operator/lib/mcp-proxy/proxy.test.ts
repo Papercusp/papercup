@@ -61,6 +61,8 @@ import {
   DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT,
   staticMcpProxyTargets,
   resolveDefaultMcpProxyTargets,
+  describeMcpProxyTarget,
+  startMcpProxy,
   type McpProxyTarget,
 } from "./proxy";
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from "./budgets.mjs";
@@ -75,6 +77,53 @@ describe("shouldRetry — refused-only + in-window (no double-execution)", () =>
   });
   it("does NOT retry past the window even if still refused", () => {
     expect(shouldRetry(false, 46_000, 45_000)).toBe(false);
+  });
+});
+
+describe("MCP proxy startup log target (WI-10004334)", () => {
+  it("names the pinned PAPERCUSP_MCP_PROXY_TARGET_PORT, not undefined", async () => {
+    const lines: string[] = [];
+    const server = startMcpProxy({
+      listenPort: 0,
+      resolveTargets: () =>
+        resolveDefaultMcpProxyTargets({ PAPERCUSP_MCP_PROXY_TARGET_PORT: "3170" }),
+      retryWindowMs: 90_000,
+      log: (s) => lines.push(s),
+    });
+    try {
+      await new Promise<void>((resolve) => server.once("listening", resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      const listening = lines.find((l) => l.startsWith("listening on"));
+      expect(listening).toMatch(/ → 127\.0\.0\.1:3170 \(retry-on-refused window 90000ms\)$/);
+      expect(listening).not.toContain("undefined");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("names the dev fallback candidate for the unpinned topology", () => {
+    expect(
+      describeMcpProxyTarget({
+        listenPort: 9071,
+        resolveTargets: () => resolveDefaultMcpProxyTargets({}),
+        retryWindowMs: 1,
+      }),
+    ).toBe(
+      `127.0.0.1:${DEFAULT_MCP_PROXY_TARGET_PORT} (fallback 127.0.0.1:${DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT})`,
+    );
+  });
+
+  it("keeps the static targetPort and dynamic operator.json forms", () => {
+    expect(
+      describeMcpProxyTarget({ listenPort: 9071, targetPort: 3070, retryWindowMs: 1 }),
+    ).toBe("127.0.0.1:3070");
+    expect(
+      describeMcpProxyTarget({
+        listenPort: 9071,
+        resolveTarget: () => ({ host: "127.0.0.1", port: 1 }),
+        retryWindowMs: 1,
+      }),
+    ).toBe("dynamic operator.json target");
   });
 });
 

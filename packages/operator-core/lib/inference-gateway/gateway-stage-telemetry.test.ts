@@ -235,6 +235,79 @@ it.each([false, true])('classifies a pre-upstream local 429 as shedding, not an 
   expect(report.stageTelemetry.recent[0].outcome).toBe('shed');
 });
 
+it.each(['downstream-cancel', 'upstream-timeout'] as const)(
+  'distinguishes %s before attributing a failed attempt to its egress proxy',
+  async (cause) => {
+    const logs: { level: string; message: string }[] = [];
+    let entered!: () => void;
+    const attemptStarted = new Promise<void>(resolve => { entered = resolve; });
+    let observed!: () => void;
+    const attemptObserved = new Promise<void>(resolve => { observed = resolve; });
+    let calls = 0;
+    gateway = createInferenceGateway({
+      pool: createFailoverPool([{
+        accountId: 'abort-proxy', token: async () => 'fixture-token',
+        egress: { proxyUrl: 'http://127.0.0.1:3128' },
+      }]),
+      upstreamBase: 'http://upstream.invalid',
+      fetchImpl: async (_url, init) => {
+        if (++calls > 1) return new Response('{}', { status: 200 });
+        entered();
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init!.signal!;
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      upstreamHeadersTimeoutMs: cause === 'upstream-timeout' ? 80 : 5_000,
+      requestAbsorbMs: 0,
+      selfHeal: { enabled: false },
+      log: (level, message) => {
+        logs.push({ level, message });
+        if (message.includes('upstream fetch') || message.includes('downstream cancelled')) observed();
+      },
+    });
+    const port = await gateway.listen(0);
+    const owner = `su-${cause}`;
+    let controller = new AbortController();
+    const request = () => fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST', signal: controller.signal,
+      headers: { 'content-type': 'application/json', 'x-papercusp-owner': owner },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'fixture' }] }),
+    });
+    const pending = request().catch(() => null);
+    await attemptStarted;
+    if (cause === 'downstream-cancel') controller.abort();
+    const response = await pending;
+    await response?.text();
+    await attemptObserved;
+    const stats = gateway.stats();
+    const timeline = stats.requestStages!.recent.find(t => t.ownerId === owner)!;
+    expect(timeline).toBeDefined();
+    if (cause === 'downstream-cancel') {
+      expect(stats.upstreamErrors).toBe(0);
+      expect(stats.egressFailsByAccount['abort-proxy'] ?? 0).toBe(0);
+      expect(stats.edgeThrottleByAccount['abort-proxy']?.cooldownUntil ?? 0).toBe(0);
+      expect(timeline.outcome).toBe('cancelled');
+      expect(logs.some(l => l.level === 'info' && l.message.includes('downstream cancelled')
+        && l.message.includes('code=cancelled') && l.message.includes(`:${timeline.requestId} `))).toBe(true);
+      expect(logs.some(l => l.message.includes('STALLED'))).toBe(false);
+      controller = new AbortController();
+      const recovered = await request();
+      expect(recovered.status).toBe(200);
+      await recovered.text();
+      expect(calls).toBe(2);
+    } else {
+      expect(stats.upstreamErrors).toBeGreaterThan(0);
+      expect(stats.egressFailsByAccount['abort-proxy']).toBeGreaterThan(0);
+      expect(stats.edgeThrottleByAccount['abort-proxy'].cooldownUntil).toBeGreaterThan(Date.now());
+      expect(timeline.outcome).toBe('upstream-error');
+      expect(logs.some(l => l.level === 'error' && l.message.includes('STALLED')
+        && l.message.includes('code=ttfb-timeout') && l.message.includes(`:${timeline.requestId} `))).toBe(true);
+    }
+  },
+);
+
 it('keeps an actual upstream HTTP 429 distinct from pre-upstream shedding', async () => {
   let upstreamCalls = 0;
   upstream = http.createServer((_req, res) => {

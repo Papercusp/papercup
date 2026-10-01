@@ -660,13 +660,16 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
   for (const [key, { row, binding, testPath, phase }] of latest) {
     const base = { specId: row.specId, testPath, bindingId: row.id };
     const { overall, dimensions, staleReasons } = row.currentness;
+    const outcome = (row.details?.adequacy as { outcome?: string } | undefined)?.outcome;
+    // Freshness alone does not make a failed measurement a reusable proof (WI-10004097).
+    const settledFailure = phase === 'settled' && (outcome === 'error' || outcome === 'fail');
     const moved = (row as { serverMeasurement?: { movedPaths?: unknown } }).serverMeasurement?.movedPaths;
     const hasNoStoredTestBinding =
       row.evidenceKind === 'test' &&
       (row.details?.testExecution as { binding?: unknown } | undefined)?.binding === undefined;
     if (dimensions.spec === 'stale') skipped.push({ ...base, reason: 'clause-moved' });
     else if (phase === 'pending') skipped.push({ ...base, reason: 'run-in-flight' });
-    else if (overall === 'current' && (phase === 'settled' || !binding || hasNoStoredTestBinding))
+    else if (overall === 'current' && !settledFailure && (phase === 'settled' || !binding || hasNoStoredTestBinding))
       skipped.push({ ...base, reason: 'current' });
     else if (!binding) {
       const why = (overall === 'unknown' ? row.currentness.unknownReasons : staleReasons).join(',') || overall;
@@ -680,6 +683,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
           }
         : { ...base, reason: 'no-recipe', detail: `${why}: bound by hand, so re-prove via testing:run { evidence } (which stores the recipe)`.slice(0, 240) });
     } else if (
+      (overall === 'current' && settledFailure) ||
       (overall === 'stale' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason))) ||
       // A completed run whose sources moved WHILE it ran is the same drift, observed early.
       (overall !== 'unknown' && phase === 'source-changed' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason)))

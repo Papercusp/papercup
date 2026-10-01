@@ -147,6 +147,11 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError(null, 'error', 'invalid_args: note: Too big')).toBe('caller');
   });
 
+  it('classifies an MCP auth-gate refusal as caller/auth without broadly matching its message', () => {
+    expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_invalid_bearer')).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
+  });
+
   it('classifies a nested tools:invoke invalid_input wrapper as caller, not structural', () => {
     // tools:invoke re-throws target refusals; the wrapper adds `invalid_input:`
     // while outer telemetry can record `handler_error`, so match this exact shape.

@@ -282,3 +282,44 @@ describe('runWedgedIdentitySweepOnce — verdicts', () => {
     expect(escalateWedged).toHaveBeenCalledTimes(1);
   });
 });
+
+// WI-10004803: the default loader streams cursor pages instead of one 1.5 GB result.
+describe('runWedgedIdentitySweepOnce — paged candidates', () => {
+  async function* pages(...batches: Array<CandidateRow[] | Error>): AsyncGenerator<CandidateRow[]> {
+    for (const batch of batches) {
+      if (batch instanceof Error) throw batch;
+      yield batch;
+    }
+  }
+
+  it('classifies every page and counts rows across pages', async () => {
+    const escalateWedged = vi.fn(async () => {});
+    const out = await runWedgedIdentitySweepOnce(deps({
+      loadCandidates: () => pages([row()], [], [row({ ownerId: 'su-wedged', launchSpec: {} }), row()]),
+      escalateWedged,
+    }));
+    expect(out).toMatchObject({
+      verdict: 'wedged',
+      scanned: 3,
+      wedged: [{ ownerId: 'su-wedged', reason: 'receipt-missing', liveness: 'live' }],
+    });
+  });
+
+  it('a page that fails mid-stream fails the sweep closed, even after a wedge was found', async () => {
+    const escalateWedged = vi.fn(async () => {});
+    const escalateNotMeasured = vi.fn(async () => {});
+    const out = await runWedgedIdentitySweepOnce(deps({
+      loadCandidates: () => pages([row({ ownerId: 'su-wedged', launchSpec: {} })], new Error('cursor reset')),
+      escalateWedged,
+      escalateNotMeasured,
+    }));
+    expect(out).toEqual({ verdict: 'not-measured', reason: 'candidate read failed: cursor reset', escalated: 1 });
+    expect(escalateNotMeasured).toHaveBeenCalledTimes(1);
+    expect(escalateWedged).not.toHaveBeenCalled();
+  });
+
+  it('a stream of only empty pages is not-measured, never clean', async () => {
+    const out = await runWedgedIdentitySweepOnce(deps({ loadCandidates: () => pages([], []) }));
+    expect(out).toMatchObject({ verdict: 'not-measured', escalated: 1 });
+  });
+});

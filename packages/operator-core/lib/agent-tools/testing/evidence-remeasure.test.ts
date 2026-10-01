@@ -59,6 +59,23 @@ function row(id: number, opts: {
 const sourceStale = { overall: 'stale' as const, dimensions: { spec: 'current', source: 'stale' }, staleReasons: ['source-stale'] };
 
 describe('planTestEvidenceRemeasure', () => {
+  it.each(['error', 'fail'])('re-selects a current settled %s binding that shadows a stale proof', (outcome) => {
+    const plan = planTestEvidenceRemeasure([
+      row(15972, { currentness: sourceStale }),
+      row(16218, { outcome }),
+      row(15969, { specId: 'S-2' }),
+    ]);
+
+    expect(plan.selected).toHaveLength(1);
+    expect(plan.selected[0]).toMatchObject({
+      bindingId: 16218, binding: recipe('S-1', 'src/subject.test.ts'),
+      staleReasons: [], supersedes: [15972, 16218],
+    });
+    expect(plan.skipped).toEqual([
+      { specId: 'S-2', testPath: 'src/subject.test.ts', bindingId: 15969, reason: 'current' },
+    ]);
+  });
+
   it('recovers an exact hand-bound test recipe without replaying the old outcome or adequacy claims', () => {
     const plan = planTestEvidenceRemeasure([
       row(12, {

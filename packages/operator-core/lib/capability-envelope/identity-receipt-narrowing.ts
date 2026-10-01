@@ -86,6 +86,29 @@ export function narrowIdentityHistory(record: unknown, revisions: readonly unkno
 export function narrowedLaunchSpecSql(sql: Sql, revisions: readonly unknown[] | null): Fragment {
   const want = revisions === null ? null : revisionsParam(revisions);
   if (want === null) return sql`n.launch_spec`;
+  return narrowCaseSql(sql, want);
+}
+
+/**
+ * {@link narrowedLaunchSpecSql} for a reader whose pair differs per ROW, so it
+ * cannot be one bound parameter (WI-10004803: the wedged-identity watchdog
+ * reads every owner's `control_state->activation->applied`). The derived table
+ * `n` carries a second column, `n.applied_pair`: a jsonb object with the pair.
+ * Strict like {@link revisionsParam}: unless BOTH revisions are jsonb strings
+ * the record stays whole, so the narrowing is only applied where it is exact.
+ */
+export function narrowedLaunchSpecToAppliedPairSql(sql: Sql): Fragment {
+  return sql`CASE
+      WHEN jsonb_typeof(n.applied_pair->'specificationRevision') = 'string'
+       AND jsonb_typeof(n.applied_pair->'stateRevision') = 'string'
+      THEN ${narrowCaseSql(sql, sql`jsonb_build_array(n.applied_pair)`)}
+      ELSE n.launch_spec
+    END`;
+}
+
+/** The one copy of the narrowing SQL. `want` is the requested pairs as a JSON
+ * array: a bound text parameter, or a SQL expression evaluating to one. */
+function narrowCaseSql(sql: Sql, want: string | Fragment): Fragment {
   // `::text::jsonb`, never a bare `::jsonb`: a parameter the server types as
   // jsonb is JSON-encoded AGAIN by postgres.js, turning the array into a jsonb
   // string that matches no receipt (the WI-10002717 seeding trap).

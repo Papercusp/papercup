@@ -250,6 +250,23 @@ describe('composeDispatch', () => {
     expect(dispatch.args.safeParse({ ...base, note: 'x'.repeat(601) }).success).toBe(false);
   });
 
+  it('skips the optional presence read for an exact owner id so delivery cannot wait on alias resolution', async () => {
+    const target = 'su-c7a0035f-da52-48f1-88f1-7f939f04c1b7';
+    const { call, calls } = mockCall({
+      'coord:presence': () => { throw new Error('exact ids must not need a roster lookup'); },
+      'plan_items:status': { items: [] },
+      'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+      'coord:send': sendEnv(target, { mode: 'required', targets: [target], woken: 1 }),
+    });
+
+    const result = await composeDispatch({ ...baseArgs, to: target }, call);
+
+    expect(calls.map((entry) => entry.name)).not.toContain('coord:presence');
+    expect(calls.map((entry) => entry.name)).toContain('coord:send');
+    expect(result).toMatchObject({ to: target, sessionState: null, wakeable: null });
+    expectQueuedWake(result);
+  });
+
   it('full dispatch to a PARKED target: assigns lane + delivers note + queues wake without pickup', async () => {
     const { call, calls } = mockCall({
       'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),

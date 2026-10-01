@@ -6524,6 +6524,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const egressKey = context.route.value.egress.key;
 
                 if (error) {
+                  const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+                  // A client disconnect is not evidence that the upstream or its
+                  // egress proxy failed. Keep the kernel's typed cancellation
+                  // separate before touching either failure counter or cooldown.
+                  if (error.code === 'cancelled') {
+                    log('info', `downstream cancelled request=${requestRef} code=cancelled on '${account.accountId}': ${error.message}`);
+                    lastTransportHadProxy = false;
+                    return;
+                  }
                   upstreamErrors++;
                   // The adapter's STATUS discriminates a token failure (503) from a
                   // transport failure (502); a TTFB timeout surfaces as its own code
@@ -6546,10 +6555,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     lastTransportHadProxy = false;
                     return;
                   }
-                  const stalled = error.code === 'ttfb-timeout' || error.code === 'cancelled';
+                  const stalled = error.code === 'ttfb-timeout';
                   log(
                     'error',
-                    `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} on '${account.accountId}': ${error.message}`,
+                    `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} request=${requestRef} code=${error.code} on '${account.accountId}': ${error.message}`,
                   );
                   // SCOPING: only an account WITH an http proxy can have a DEAD
                   // proxy. A no-proxy account that transport-fails is an

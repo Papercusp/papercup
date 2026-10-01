@@ -37,6 +37,7 @@
 import { createRequire } from 'node:module';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
+import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
@@ -264,6 +265,19 @@ async function callTool(
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
 
+function traceEvents(calls: readonly unknown[][]): Array<Record<string, unknown>> {
+  return calls.flatMap((call) => {
+    const line = String(call[0] ?? '');
+    const prefix = '[mcp-request-trace] ';
+    if (!line.startsWith(prefix)) return [];
+    try {
+      return [JSON.parse(line.slice(prefix.length)) as Record<string, unknown>];
+    } catch {
+      return [];
+    }
+  });
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   slowCalls = 0;
@@ -309,6 +323,83 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     // to comply, found no key in the envelope, and fell back to reconciling by hand. Asserting
     // the literal VALUE (not just the phrase above) is what makes that non-recurrable.
     expect(textOf(res)).toContain('idem-deadline-1');
+  });
+
+  it('correlates the forwarded trace id across request start, deadline, and late handler settlement', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+    try {
+      const res = await callTool(
+        'deadlinetest:slow',
+        {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+      );
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain('request_timeout');
+      const beforeSettlement = traceEvents(info.mock.calls);
+      expect(beforeSettlement).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ traceId, toolName: 'deadlinetest:slow', stage: 'request_started' }),
+          expect.objectContaining({ traceId, toolName: 'deadlinetest:slow', stage: 'inner_dispatch_started' }),
+          expect.objectContaining({
+            traceId,
+            toolName: 'deadlinetest:slow',
+            stage: 'deadline',
+            phase: 'inner_dispatch',
+            deadlineMs: TEST_DEADLINE_MS,
+          }),
+        ]),
+      );
+      expect(beforeSettlement.some((event) => event.stage === 'inner_dispatch_settled')).toBe(false);
+
+      await sleep(SLOW_TOOL_MS + 20);
+      expect(traceEvents(info.mock.calls)).toContainEqual(
+        expect.objectContaining({
+          traceId,
+          toolName: 'deadlinetest:slow',
+          stage: 'inner_dispatch_settled',
+          outcome: 'success',
+          afterDeadline: true,
+        }),
+      );
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('marks a delayed workspace acquisition as pre-dispatch and blocks late handler start', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '73f01cc4-b44b-4d15-82f8-28d0d5774c31';
+    const acquisitionDelayMs = TEST_DEADLINE_MS * 4;
+    h.withWorkspaceDelayMs = acquisitionDelayMs;
+    try {
+      const res = await callTool(
+        'deadlinetest:slow',
+        {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+      );
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain('request_timeout');
+      expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+      expect(traceEvents(info.mock.calls)).toContainEqual(
+        expect.objectContaining({
+          traceId,
+          toolName: 'deadlinetest:slow',
+          stage: 'deadline',
+          phase: 'pre_dispatch',
+          deadlineMs: TEST_DEADLINE_MS,
+        }),
+      );
+      expect(traceEvents(info.mock.calls).some((event) => event.stage === 'inner_dispatch_started')).toBe(false);
+
+      // Let the acquisition finish after its caller was answered. The absolute
+      // deadline guard must still prevent entering the tool handler.
+      await sleep(acquisitionDelayMs + 20);
+      expect(slowCalls).toBe(0);
+      expect(traceEvents(info.mock.calls).some((event) => event.stage === 'inner_dispatch_started')).toBe(false);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   // EI-21697542694243148: naming the VALUE is not enough — the message must also name a DOOR
