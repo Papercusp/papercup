@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { servePublicDocs } from '@papercusp/operator-core/lib/public-docs';
 
 const root = resolve(import.meta.dirname, '../../papercusp-docs/dist');
 
 describe('built public manual contract', () => {
+  it('serves every built search resource, including binary formats fetched by JavaScript', async () => {
+    const files = readdirSync(resolve(root, 'pagefind'), { recursive: true })
+      .filter((name): name is string => typeof name === 'string' && statSync(resolve(root, 'pagefind', name)).isFile());
+    expect(files.some((name) => name.endsWith('.pf_index'))).toBe(true);
+    for (const name of files) {
+      const response = await servePublicDocs(new Request(`https://app.papercusp.com/docs/pagefind/${name}`), root);
+      expect(response.status, name).toBe(200);
+      if (/\.pf_(meta|index|fragment)$/.test(name)) expect(response.headers.get('content-type'), name).toBe('application/octet-stream');
+    }
+  });
   it('builds searchable HTML with the public canonical origin', async () => {
     const index = readFileSync(resolve(root, 'index.html'), 'utf8');
     expect(index).toContain('https://app.papercusp.com/docs');

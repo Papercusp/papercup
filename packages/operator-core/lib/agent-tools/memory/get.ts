@@ -113,7 +113,7 @@ export default defineTool({
     const backend = getMemoryBackend();
     const activeWorkspaceId = ctx.principal?.workspaceId;
     const ids = mergeIds(args.id, args.ids);
-    const reply = (body: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] });
+    const reply = (body: Record<string, unknown>) => ({ data: body });
 
     try {
       const avail = await withMemoryToolTimeout(backend.available(), 'memory:get available');

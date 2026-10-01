@@ -894,6 +894,12 @@ export async function evaluateGoalOwnerReport(
   // No active GOAL row means this is ordinary owner-facing prose, even if
   // its headings resemble the GOAL contract. Do not manufacture authority.
   if (!goalId) return { kind: 'none' };
+  const authoredBodyChars = bodyTextLength(msg.body);
+  const overCap = authoredBodyChars !== null && authoredBodyChars > DEFAULT_INBOX_BODY_CAP;
+  const overCapNote = overCap
+    ? ` The body has ${authoredBodyChars} characters, above the ${DEFAULT_INBOX_BODY_CAP}-character inbox cap. ` +
+      'A GOAL owner report must fit in one message so the four-section report is delivered as a unit. Nothing was sent; shorten it and retry.'
+    : '';
   if (!parsed.complete) {
     return {
       kind: 'refused',
@@ -905,12 +911,33 @@ export async function evaluateGoalOwnerReport(
         missing: parsed.missing,
         empty: parsed.empty,
         duplicate: parsed.duplicate,
+        ...(overCap && authoredBodyChars !== null
+          ? { bodyAuthoredChars: authoredBodyChars, bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP }
+          : {}),
         message:
           `GOAL owner report for ${goalId} is incomplete; nothing was sent. ` +
           'Provide exactly one non-empty body section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
           'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value. ' +
           `Missing: ${parsed.missing.join(', ') || 'none'}; empty: ${parsed.empty.join(', ') || 'none'}; ` +
-          `duplicate: ${parsed.duplicate.join(', ') || 'none'}.`,
+          `duplicate: ${parsed.duplicate.join(', ') || 'none'}.` +
+          overCapNote,
+      },
+    };
+  }
+  if (overCap && authoredBodyChars !== null) {
+    return {
+      kind: 'refused',
+      result: {
+        ok: false,
+        to: msg.to,
+        error: 'goal-owner-report-over-cap',
+        goalId,
+        bodyAuthoredChars: authoredBodyChars,
+        bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP,
+        message:
+          `GOAL owner report for ${goalId} is ${authoredBodyChars} characters; its four sections must fit ` +
+          `one ${DEFAULT_INBOX_BODY_CAP}-character inbox message to update the reporting rail as a unit. ` +
+          'Nothing was sent. Shorten the report and retry; put long supporting detail on its work-item.',
       },
     };
   }
@@ -2372,7 +2399,16 @@ async function sendOne(
       : {}),
     ...(dispatchAdvisory ? { dispatchAdvisory } : {}),
     ...(staleBasisStamps.length ? { staleBasis: staleBasisStamps } : {}),
-    ...(goalOwnerReport ? { goalOwnerReport: { status: 'stamped' as const, goalId: goalOwnerReport.goalId } } : {}),
+    ...(goalOwnerReport
+      ? {
+          goalOwnerReport: {
+            status: 'stamped' as const,
+            goalId: goalOwnerReport.goalId,
+            // The watchdog reads this persisted message row's ts as lastReportAt.
+            lastReportAt: env.ts,
+          },
+        }
+      : {}),
     ...(goalOwnerReportWarning ? { goalOwnerReportWarning } : {}),
   };
 }
@@ -2467,10 +2503,17 @@ export default defineTool({
   description:
     'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the required one-line inbox headline, `body` optional detail. Distinct messages: items:[…]. `to` takes ownerIds, ["*"], or ["human"]. `expects` required: ack|answer|action|none. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; authored refs go in `body[].premises`. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
   guidance: {
-    when: 'Share context or ask. `summary` is the required inbox headline; `body` is detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on that section gets readers a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
+    when:
+      'Share context or ask. `summary` is the required inbox headline; `body` is detail. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most ' +
+      DEFAULT_INBOX_BODY_CAP +
+      ' characters; longer reports are refused before sending so a partial chunk cannot leave the reporting rail overdue. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on that section gets readers a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
     argRedirects: sectionOnlyArgRedirects,
     returns:
-      'Per-message {ok, to, msg_id|error} counts. Envelope `ok` is DERIVED from results[].ok, so ANY failed delivery makes it false; `partial:true` and `deliveryFailureWarning` then name which messages failed and why. A body above the ' + DEFAULT_INBOX_BODY_CAP + '-character inbox cap is delivered in full as ordered parts (`chunked[]`; only the final part, `askMsgId`, carries expects/wake/reply-threading); one needing more than ' + COORD_SEND_MAX_CHUNK_PARTS + ' parts is refused. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
+      'Per-message {ok, to, msg_id|error} counts. Envelope `ok` is DERIVED from results[].ok, so ANY failed delivery makes it false; `partial:true` and `deliveryFailureWarning` then name which messages failed and why. A complete active-GOAL owner report above ' +
+      DEFAULT_INBOX_BODY_CAP +
+      ' characters is refused before persistence (`goal-owner-report-over-cap`); generic over-cap bodies are delivered in full as ordered parts (`chunked[]`; only the final part, `askMsgId`, carries expects/wake/reply-threading). A generic body needing more than ' +
+      COORD_SEND_MAX_CHUNK_PARTS +
+      ' parts is refused. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff.',
     seeAlso: [
       'EI-21927749510698309: relaying an owner or fleet-leader directive? Pass relayOf/relayQuote on THIS send, not after — a text claim ("owner said/directive/approved") with neither ships anyway but renders [UNVERIFIED authority claim] to every recipient; re-sending backed does not un-flag the first copy, so a fleet-wide broadcast lands twice.',

@@ -51,10 +51,28 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
     expect(acquire).toBeGreaterThanOrEqual(0);
     expect(firstDump).toBeGreaterThan(acquire);
 
-    const release = stripped.indexOf('release_migration_rendezvous\nreap_own_stragglers');
+    // WI-10004870 split the release in two. A run with no transcript tier due
+    // releases BEFORE oddsmith, exactly as before (oddsmith is another server, so
+    // holding papercusp migrations for it would buy nothing). A run that still has
+    // a transcript tier to dump moves that dump to the end of the run and must
+    // keep the rendezvous until it finishes: it is a papercusp pg_dump like the
+    // others, and a migration must not take its tables mid-dump.
     const oddsmith = stripped.indexOf('ODDSMITH_DISCOVERY=');
-    expect(release).toBeGreaterThan(0);
-    expect(oddsmith).toBeGreaterThan(release);
+    const earlyRelease = stripped.indexOf(
+      'if [ ${#TRANSCRIPT_DUE[@]} -eq 0 ]; then\n  release_migration_rendezvous\n  reap_own_stragglers',
+    );
+    expect(earlyRelease, 'expected the no-transcript-due release').toBeGreaterThan(0);
+    expect(oddsmith).toBeGreaterThan(earlyRelease);
+
+    const transcriptPhase = stripped.slice(stripped.indexOf('if [ ${#TRANSCRIPT_DUE[@]} -gt 0 ]; then'));
+    expect(transcriptPhase.length, 'expected the local-only transcript phase').toBeGreaterThan(0);
+    expect(stripped.indexOf('if [ ${#TRANSCRIPT_DUE[@]} -gt 0 ]; then')).toBeGreaterThan(oddsmith);
+    const transcriptDump = transcriptPhase.indexOf('dump_one "$db" "$db-transcript"');
+    const lateRelease = transcriptPhase.indexOf('release_migration_rendezvous\n  reap_own_stragglers');
+    expect(transcriptDump, 'expected the transcript dump in that phase').toBeGreaterThan(0);
+    expect(lateRelease, 'the rendezvous must be held until the transcript dump is done').toBeGreaterThan(
+      transcriptDump,
+    );
   });
 
   it('keeps the dedicated lock session open until the real release helper closes it', () => {

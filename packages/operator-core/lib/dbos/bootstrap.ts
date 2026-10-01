@@ -324,6 +324,9 @@ async function startDbosOnce(): Promise<void> {
   // host-scoped dedup would lock lifecycle actions out for the whole soak). Registered before
   // launch so a controller restart mid-soak recovers it instead of orphaning a day of samples.
   await import('./workspace-host-soak-workflow');
+  // WI-10004950: standing health for every live hosted host this controller holds authority for
+  // (15-minute schedule). Ungated: a process that controls no host lists nothing and probes nothing.
+  await import('./workspace-host-health-workflow');
   // The director-cadence autoloop workflow is RETIRED (autoloop-pot-operator-
   // rebuild-2026-06-05 P-010 / D-009): it read `.papercusp/director-config.json`,
   // an enablement surface nothing wrote. Scheduled decider fires are the routines

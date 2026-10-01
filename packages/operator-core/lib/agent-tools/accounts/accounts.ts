@@ -244,6 +244,7 @@ export const accountsStatusTool = defineTool({
       ok: z.boolean().optional(),
       accounts: z.unknown().optional(),
       poolVerdict: z.unknown().optional(),
+      billing: z.unknown().optional(),
     })
     .passthrough(),
   async handler(args) {

@@ -14,6 +14,10 @@ const TYPES: Record<string, string> = {
   '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
   '.woff': 'font/woff', '.woff2': 'font/woff2', '.wasm': 'application/wasm',
   '.ico': 'image/x-icon',
+  // Pagefind fetches compressed metadata, indexes and fragments at runtime.
+  '.pf_meta': 'application/octet-stream', '.pf_index': 'application/octet-stream',
+  '.pf_fragment': 'application/octet-stream',
+  '.pagefind': 'application/octet-stream',
 };
 
 export function publicDocsRelativePath(pathname: string): string | null {

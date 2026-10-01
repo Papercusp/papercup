@@ -448,14 +448,40 @@ run_scheduled_command() {
   # Keeping the descriptor only in this supervising shell makes wrapper death
   # release the lock immediately, while normal runs remain serialized for the
   # full child lifetime because this shell waits below.
+  #
+  # EARLY RELEASE (WI-10004870). The child cannot release a lock it does not
+  # hold, so it ASKS: creating $KOPIA_BACKUP_GUARD_RELEASE_PATH tells this shell
+  # that the rest of the child's work no longer needs the shared lock, and the
+  # loop below unlocks fd 9 while it goes on waiting for the child exactly as
+  # before. The hourly db-dump uses it once every enrolled artifact is written:
+  # its last ~25 min (the 101G transcript tier, which .kopiaignore keeps out of
+  # every snapshot) used to hold the lock against the hot sweep for nothing.
+  # The path carries this guard's pid, so a stale request left by a killed
+  # guard can never release a later one. A child that never asks keeps the old
+  # whole-lifetime hold, so every other label is unchanged.
+  release_request_path="${lock_path}.release.$$"
+  rm -f "$release_request_path" 2>/dev/null || true
+  export KOPIA_BACKUP_GUARD_RELEASE_PATH="$release_request_path"
   "$@" 9>&- &
   child_pid=$!
 
   local declined_handoff_logged=0
+  local lock_released_early=0
+  local lock_held_since
+  lock_held_since=$(date +%s)
 
   while kill -0 "$child_pid" 2>/dev/null; do
     sleep "$monitor_interval"
     kill -0 "$child_pid" 2>/dev/null || break
+
+    if [ "$lock_released_early" -eq 0 ] && [ -e "$release_request_path" ]; then
+      flock -u 9
+      lock_released_early=1
+      guard_log "result=released-early child_pid=$child_pid held_sec=$(( $(date +%s) - lock_held_since ))"
+    fi
+    # Nothing below applies to a lock this shell no longer holds: a priority
+    # waiter simply acquires it, so there is nothing left to yield.
+    [ "$lock_released_early" -eq 0 ] || continue
 
     # A wait-mode producer (the daily home snapshot or a protected/manual
     # snapshot) has priority over a hot sweep. Terminate only
@@ -532,6 +558,7 @@ run_scheduled_command() {
 
   wait "$child_pid"
   child_rc=$?
+  rm -f "$release_request_path" 2>/dev/null || true
   if [ -n "$runtime_abort_reason" ]; then
     # The child is reaped; the lock is released when this guard exits.
     write_handoff_note

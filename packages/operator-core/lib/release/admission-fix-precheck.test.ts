@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  admissionPrecheckSetupEnv,
   classifyTestFileRun,
   createCheckpointTreeFixPrecheckRunner,
   dependencyGenerationInfraCode,
@@ -233,6 +234,21 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(calls[0].cwd).toBe('/repo');
     expect(calls[1]).toEqual({ argv: ['node', 'scripts/test-files.mjs', 'lib/red.test.ts'], cwd: '/ckpt-admission-precheck' });
     expect(calls[2].argv[2]).toBe('lib/new.test.ts');
+  });
+
+  it('materializes the pre-check node_modules by hardlink from the immutable generation (WI-10004928)', async () => {
+    const setupEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+    const testEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+    const exec = vi.fn(async (argv: readonly string[], opts: { cwd: string; env?: NodeJS.ProcessEnv }) => {
+      (argv[0] === 'bash' ? setupEnvs : testEnvs).push(opts.env);
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult;
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    await runner({ commit: C, files: ['lib/red.test.ts'] });
+    expect(admissionPrecheckSetupEnv()).toEqual({ DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' });
+    expect(setupEnvs).toEqual([{ DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' }]);
+    // The opt-in is for materialization only. The test processes never see it.
+    expect(testEnvs[0]?.DEPENDENCY_GENERATION_ALLOW_HARDLINK).toBeUndefined();
   });
 
   it('cannot measure a gate-repinned checkout as an admission failure', async () => {

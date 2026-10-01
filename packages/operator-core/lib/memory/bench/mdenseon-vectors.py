@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import resource
 import shutil
+import subprocess
 import time
 
 import numpy as np
@@ -520,6 +521,26 @@ def freeze_boundary_request(directory, out_file):
     print("boundary request frozen", file_sha256(out_file), flush=True)
 
 
+def boundary_gpu_memory(device):
+    """Timestamp device capacity near inference; never infer historical pressure."""
+    if device != "cuda":
+        return {"status": "not-applicable"}
+    measured_at_ns = time.time_ns()
+    try:
+        result = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.total,memory.used,memory.free",
+                                 "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                                timeout=5, check=True)
+        rows = [row.strip().split(",") for row in result.stdout.strip().splitlines()]
+        devices = [{"index": int(row[0]), "totalMiB": float(row[1]),
+                    "usedMiB": float(row[2]), "freeMiB": float(row[3])} for row in rows]
+        if not devices or any(row["freeMiB"] < 0 or row["totalMiB"] <= 0 for row in devices):
+            raise ValueError("invalid GPU memory query")
+        return {"status": "measured", "measuredAtEpochNs": measured_at_ns, "devices": devices}
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
+        return {"status": "unknown", "measuredAtEpochNs": measured_at_ns,
+                "error": {"name": type(error).__name__, "message": str(error)[:1000]}}
+
+
 def boundary_infer(session, inputs, destination, metadata):
     """Persist independent proof BEFORE a candidate can fail; retain its cause."""
     reference_path = destination / (metadata["cell"]["id"] + ".reference.json")
@@ -528,14 +549,27 @@ def boundary_infer(session, inputs, destination, metadata):
     try:
         return session.run(["last_hidden_state"], inputs)[0]
     except Exception as error:
+        device = "cuda" if "CUDAExecutionProvider" in metadata.get("sessionProviders", []) else "cpu"
+        failure_memory = boundary_gpu_memory(device)
         profile = Path(session.end_profiling())
         failure = {**metadata, "status": "inference-failed", "actual8192Completed": False,
+                   "gpuMemoryAfterFailure": failure_memory,
                    "referenceFile": {"path": str(reference_path), "sha256": file_sha256(reference_path)},
                    "error": {"name": type(error).__name__, "message": str(error)},
                    "profile": {"path": str(profile), "sha256": file_sha256(profile)}}
         with (destination / (metadata["cell"]["id"] + ".failure.json")).open("x") as handle:
             json.dump(failure, handle)
         raise
+
+
+def assert_boundary_provider(session, provider, cuda_tf32):
+    """Verify the effective runtime recipe, including precision, before inference."""
+    if not session.get_providers() or session.get_providers()[0] != provider:
+        raise ValueError(f"session silently fell back: {session.get_providers()}")
+    if provider == "CUDAExecutionProvider":
+        effective = session.get_provider_options().get(provider, {}).get("use_tf32")
+        if cuda_tf32 not in ("0", "1") or effective != cuda_tf32:
+            raise ValueError(f"CUDA precision recipe not honored: requested {cuda_tf32}, effective {effective}")
 
 
 def measure_boundaries(request_file, device, out_directory, selected_cell=None, cuda_tf32=None):
@@ -547,6 +581,10 @@ def measure_boundaries(request_file, device, out_directory, selected_cell=None, 
     import onnxruntime as ort
     from transformers import AutoModel
 
+    # CUDA's implicit TF32 default missed the fixed fp32 vector tolerance in
+    # a paired actual-device probe. Keep explicit TF32-on as a distinct arm.
+    if device == "cuda" and cuda_tf32 is None:
+        cuda_tf32 = "0"
     request = validate_boundary_request(json.loads(Path(request_file).read_text()))
     for asset in request["assets"]:
         if Path(asset["path"]).stat().st_size != asset["bytes"] or file_sha256(asset["path"]) != asset["sha256"]:
@@ -564,8 +602,7 @@ def measure_boundaries(request_file, device, out_directory, selected_cell=None, 
     session = ort.InferenceSession(str(Path(request["export"]) / "onnx/model.onnx"),
                                    sess_options=options, providers=providers)
     session.disable_fallback()
-    if session.get_providers()[0] != provider:
-        raise ValueError(f"session silently fell back: {session.get_providers()}")
+    assert_boundary_provider(session, provider, cuda_tf32)
     snapshot = Path(request["snapshot"])
     reference_tokenizer = load_pinned_tokenizer(snapshot)
     actual_tokenizer = load_pinned_tokenizer(Path(request["export"]))
@@ -604,6 +641,7 @@ def measure_boundaries(request_file, device, out_directory, selected_cell=None, 
                     "sessionProviders": session.get_providers(), "providerOptions": session.get_provider_options(),
                     "inputShapeActuallySubmitted": list(inputs["input_ids"].shape), "tokenLengths": lengths,
                     "tokenIdsEqual": True, "inputIds": inputs["input_ids"].tolist(),
+                    "gpuMemoryBeforeInference": boundary_gpu_memory(device),
                     "referenceVectors": expected.tolist(), "referenceMs": reference_ms}
         vectors = normalized_cls(boundary_infer(session, inputs, destination, metadata))
         inference_ms = (time.perf_counter() - actual_start) * 1000

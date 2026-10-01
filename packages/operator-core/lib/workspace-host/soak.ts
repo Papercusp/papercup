@@ -194,23 +194,24 @@ function instanceChecks(
   subject: WorkspaceHostSoakSubject,
   reading: WorkspaceHostSoakInstanceReading,
 ): WorkspaceHostHealthCheck[] {
+  const compute = workspaceHostComputeCheck(reading);
   if (reading.kind === 'unreadable') {
     const detail = `provider read failed: ${reading.detail}`;
     return [
-      { name: 'compute-running', ok: null, detail },
+      compute,
       { name: 'incarnation-stable', ok: null, detail },
       { name: 'image-stable', ok: null, detail },
     ];
   }
   if (reading.kind === 'absent') {
     return [
-      { name: 'compute-running', ok: false, detail: 'instance absent' },
+      compute,
       { name: 'incarnation-stable', ok: false, detail: `instance absent (pinned ${subject.instanceId})` },
       { name: 'image-stable', ok: false, detail: 'instance absent' },
     ];
   }
   return [
-    { name: 'compute-running', ok: reading.status === 'RUNNING', detail: reading.status },
+    compute,
     reading.instanceId === undefined
       ? { name: 'incarnation-stable', ok: null, detail: 'provider returned no instance id' }
       : {
@@ -232,7 +233,20 @@ function instanceChecks(
   ];
 }
 
-function reachCheck(outcome: WorkspaceHostSoakReachOutcome): WorkspaceHostHealthCheck {
+/**
+ * The `compute-running` check for one provider reading. Shared with the standing health pass
+ * (standing-health.ts) so a host's health means the same thing whichever producer wrote it.
+ */
+export function workspaceHostComputeCheck(reading: WorkspaceHostSoakInstanceReading): WorkspaceHostHealthCheck {
+  if (reading.kind === 'unreadable') {
+    return { name: 'compute-running', ok: null, detail: `provider read failed: ${reading.detail}` };
+  }
+  if (reading.kind === 'absent') return { name: 'compute-running', ok: false, detail: 'instance absent' };
+  return { name: 'compute-running', ok: reading.status === 'RUNNING', detail: reading.status };
+}
+
+/** The `controller-reach` check for one reach attempt (shared with standing-health.ts). */
+export function workspaceHostReachCheck(outcome: WorkspaceHostSoakReachOutcome): WorkspaceHostHealthCheck {
   if (outcome.kind === 'reached') return { name: 'controller-reach', ok: true, detail: 'conduit executable' };
   return { name: 'controller-reach', ok: false, detail: `${outcome.kind}: ${outcome.detail}` };
 }
@@ -263,7 +277,7 @@ export async function probeWorkspaceHostSoakSample(
     sequence,
     observedAt,
     pinned: { instanceId: subject.instanceId, image: subject.image },
-    checks: [...instanceChecks(subject, reading), reachCheck(reach)],
+    checks: [...instanceChecks(subject, reading), workspaceHostReachCheck(reach)],
   };
 }
 

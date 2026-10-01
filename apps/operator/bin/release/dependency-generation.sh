@@ -61,7 +61,7 @@ dependency_generation_emit_summary() {
   duration_ms=$((now_ms - started_ms))
   [ "$duration_ms" -ge 0 ] || duration_ms=0
   dependency_generation_log \
-    "SUMMARY schema=1 result=$result source=${source:-unresolved} identity=${identity:-unresolved} predecessor=${predecessor:-none} trees_total=$trees_total trees_reused=$trees_reused trees_copied=$trees_copied trees_removed=$trees_removed total_ms=$duration_ms"
+    "SUMMARY schema=1 result=$result source=${source:-unresolved} identity=${identity:-unresolved} predecessor=${predecessor:-none} trees_total=$trees_total trees_reused=$trees_reused trees_copied=$trees_copied trees_removed=$trees_removed trees_incremental=${DEPENDENCY_GENERATION_TREES_INCREMENTAL:-0} total_ms=$duration_ms"
 }
 
 dependency_generation_sha256() {
@@ -1773,6 +1773,266 @@ dependency_generation_copy_with_progress() {
   return "$rc"
 }
 
+# P-012 (WI-10004927): incremental copy of a CHANGED dependency tree.
+#
+# A changed tree used to be one full `cp -a` from the live checkout into the
+# store. The live tree (ext4) and the store (XFS) are different filesystems, so
+# no reflink is possible and a papercusp root change cost ~21 GiB of IO to carry
+# a few MB of real change. Measured 2026-10-01: 555 of 301,040 files differed
+# between the 06:39 and 12:19 papercusp generations.
+#
+# Instead, reflink-clone the predecessor's copy of the same tree (same store
+# filesystem, metadata only), then replace only the paths whose live source
+# record changed since the predecessor captured it.
+#
+# Soundness. Each generation stores, per tree, the source records it was built
+# from: path, type, mode, uid, gid, size, mtime, inode, ctime and link target,
+# captured BEFORE its copy started. A file is reused only when its live record
+# is byte-identical to the stored one. ctime cannot be set from userspace and
+# moves on every content or metadata change, so an equal (inode, ctime) proves
+# the file is unchanged since that capture, so the predecessor holds its bytes.
+# Size and mtime alone (rsync's quick check) would be unsound: npm extracts
+# package files with a fixed 1985 mtime. Records whose ctime falls within
+# DEPENDENCY_GENERATION_RACY_WINDOW_SEC of their capture are never trusted,
+# because a rewrite in the same clock tick could keep the timestamp. The result
+# is then verified path by path against the live records (type, mode, size,
+# mtime, link target); any difference falls back to the full copy.
+DEPENDENCY_GENERATION_RACY_WINDOW_SEC="${DEPENDENCY_GENERATION_RACY_WINDOW_SEC:-2}"
+DEPENDENCY_GENERATION_TREES_INCREMENTAL=0
+
+dependency_generation_incremental_supported() {
+  [ "${DEPENDENCY_GENERATION_INCREMENTAL_COPY:-1}" = '1' ] || return 1
+  [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] || return 1
+  find . -maxdepth 0 -printf '' >/dev/null 2>&1 || return 1
+  case "$(tar --version 2>/dev/null)" in *'GNU tar'*) ;; *) return 1 ;; esac
+  command -v gzip >/dev/null 2>&1 && command -v comm >/dev/null 2>&1
+}
+
+# Write the C-sorted source records of one dependency tree to $2, pruned exactly
+# like dependency_generation_prune_ephemeral. Exit 2: a path or link target holds
+# a control character, which the line-oriented records cannot carry.
+dependency_generation_source_records() {
+  local root="$1" out="$2" rc=0
+  [ -d "$root" ] || return 1
+  (
+    cd "$root" || exit 1
+    LC_ALL=C find . -xdev -mindepth 1 \
+      \( \( -path ./.cache -o -path ./.package-lock.json \
+        -o -path ./.papercusp-isolated-snapshot \
+        -o \( -type d \( -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
+        -prune \) -o \
+      \( \( -name '*[[:cntrl:]]*' -o -lname '*[[:cntrl:]]*' \) -printf '\001\n' \) -o \
+      -printf '%P\t%y\t%m\t%U\t%G\t%s\t%T@\t%i\t%C@\t%l\n'
+  ) > "$out.unsorted" || rc=1
+  if [ "$rc" -eq 0 ] && LC_ALL=C grep -q $'^\001' "$out.unsorted"; then
+    rc=2
+  fi
+  if [ "$rc" -eq 0 ]; then
+    LC_ALL=C sort -o "$out" "$out.unsorted" || rc=1
+  fi
+  rm -f -- "$out.unsorted"
+  return "$rc"
+}
+
+# The verified view of a record: what a full `cp -a` plus the freeze reproduces.
+# Inode and ctime belong to each copy. Directory size and mtime depend on the
+# filesystem and on pruning. The freeze strips file write bits.
+dependency_generation_records_projection() {
+  LC_ALL=C awk -F '\t' -v OFS='\t' '
+    function frozen(mode,   n, i, d, out) {
+      n = length(mode); out = ""
+      for (i = 1; i <= n; i++) {
+        d = substr(mode, i, 1) + 0
+        if (i > n - 3 && int(d / 2) % 2 == 1) d -= 2
+        out = out d
+      }
+      return out
+    }
+    NF != 10 { bad = 1; exit }
+    $2 == "d" { print $1, $2, $3; next }
+    $2 == "l" { print $1, $2, $10; next }
+    $2 == "f" { print $1, $2, frozen($3), $6, $7; next }
+    { print $1, $2, $3, $6, $7 }
+    END { if (bad) exit 3 }
+  ' "$1"
+}
+
+dependency_generation_records_key() {
+  printf '%s' "$1" | dependency_generation_sha256
+}
+
+# Index line: rel, capture time (ns), key (sha256 of rel), sha256 of the gzip.
+dependency_generation_records_index_line() {
+  local rel="$1" captured_ns="$2" key="$3" gz="$4" digest
+  digest="$(dependency_generation_sha256 < "$gz")" || return 1
+  printf '%s\t%s\t%s\t%s\n' "$rel" "$captured_ns" "$key" "$digest"
+}
+
+dependency_generation_records_store() {
+  local build="$1" rel="$2" records="$3" captured_ns="$4" dir key line
+  dir="$build/.source-records"
+  [[ "$captured_ns" =~ ^[0-9]+$ ]] || return 1
+  mkdir -p "$dir" || return 1
+  key="$(dependency_generation_records_key "$rel")" || return 1
+  gzip -1 -n -c -- "$records" > "$dir/$key.gz" || return 1
+  line="$(dependency_generation_records_index_line "$rel" "$captured_ns" "$key" "$dir/$key.gz")" \
+    || return 1
+  chmod a-w "$dir/$key.gz" 2>/dev/null || true
+  printf '%s\n' "$line" >> "$dir/index"
+}
+
+# Print "<capture ns><TAB><gzip path>" for a tree's stored, intact source records.
+dependency_generation_records_lookup() {
+  local generation="$1" rel="$2" dir line ignored captured_ns key digest
+  dir="$generation/.source-records"
+  [ -f "$dir/index" ] || return 1
+  line="$(awk -F '\t' -v rel="$rel" \
+    '$1 == rel { line = $0 } END { if (line == "") exit 1; print line }' "$dir/index")" \
+    || return 1
+  IFS=$'\t' read -r ignored captured_ns key digest <<< "$line"
+  [[ "$captured_ns" =~ ^[0-9]+$ ]] && [[ "$key" =~ ^[0-9a-f]{64}$ ]] \
+    && [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && [ -f "$dir/$key.gz" ] || return 1
+  [ "$(dependency_generation_records_key "$rel")" = "$key" ] || return 1
+  [ "$(dependency_generation_sha256 < "$dir/$key.gz")" = "$digest" ] || return 1
+  printf '%s\t%s\n' "$captured_ns" "$dir/$key.gz"
+}
+
+# A reused tree is a clone of the predecessor's copy, so the predecessor's
+# records describe it exactly. Carry them forward unchanged.
+dependency_generation_records_carry() {
+  local predecessor="$1" build="$2" rel="$3" found captured_ns gz dir key line
+  found="$(dependency_generation_records_lookup "$predecessor" "$rel" 2>/dev/null)" || return 0
+  captured_ns="${found%%$'\t'*}"
+  gz="${found#*$'\t'}"
+  dir="$build/.source-records"
+  key="${gz##*/}"
+  key="${key%.gz}"
+  mkdir -p "$dir" && cp -- "$gz" "$dir/$key.gz" || return 0
+  line="$(dependency_generation_records_index_line "$rel" "$captured_ns" "$key" "$dir/$key.gz")" \
+    || return 0
+  chmod a-w "$dir/$key.gz" 2>/dev/null || true
+  printf '%s\n' "$line" >> "$dir/index"
+}
+
+# Build $dest as $src from $seed, the predecessor's copy of the same tree.
+# Exit 0: $dest is verified against $live_records. 76/77: the typed copy-lock
+# and headroom exits, which a full copy would hit too. Anything else: $dest is
+# removed and the caller copies the tree in full.
+dependency_generation_copy_incremental() {
+  local src="$1" dest="$2" seed="$3" pred_records="$4" pred_captured_ns="$5"
+  local live_records="$6" work="$7" rc=0 floor kept copied removed copied_bytes
+  rm -rf -- "$work"
+  mkdir -p "$work" || return 1
+  gzip -dc -- "$pred_records" > "$work/predecessor" || return 1
+  floor="$(awk -v ns="$pred_captured_ns" -v w="$DEPENDENCY_GENERATION_RACY_WINDOW_SEC" \
+    'BEGIN { printf "%.6f", ns / 1e9 - w }')" || return 1
+  LC_ALL=C awk -F '\t' -v floor="$floor" '
+    NF != 10 { bad = 1; exit }
+    ($9 + 0) < (floor + 0) { print }
+    END { if (bad) exit 3 }
+  ' "$work/predecessor" > "$work/trusted" || return 1
+  LC_ALL=C comm -12 "$live_records" "$work/trusted" > "$work/kept" || return 1
+  LC_ALL=C comm -23 "$live_records" "$work/trusted" > "$work/changed" || return 1
+  cut -f1 "$work/changed" | tr '\n' '\0' > "$work/copy0" || return 1
+  # A seed path survives only as a reused file, or as a directory that still
+  # exists live; tar then resets the metadata of every changed directory.
+  LC_ALL=C awk -F '\t' -v live="$live_records" -v kept="$work/kept" '
+    FILENAME == live { if ($2 == "d") dir[$1] = 1; next }
+    FILENAME == kept { keep[$1] = 1; next }
+    $2 == "d" { if (!($1 in dir)) print $1; next }
+    !($1 in keep) { print $1 }
+  ' "$live_records" "$work/kept" "$work/predecessor" > "$work/remove" || return 1
+  tr '\n' '\0' < "$work/remove" > "$work/remove0" || return 1
+  kept="$(awk -F '\t' '$2 != "d" { n++ } END { print n + 0 }' "$work/kept")"
+  copied="$(awk -F '\t' '$2 != "d" { n++ } END { print n + 0 }' "$work/changed")"
+  copied_bytes="$(awk -F '\t' '$2 == "f" { s += $6 } END { printf "%.0f\n", s }' "$work/changed")"
+  removed="$(awk 'END { print NR + 0 }' "$work/remove")"
+
+  dependency_generation_acquire_copy_lock "incremental ${dest##*/tree/}" || return $?
+  dependency_generation_check_headroom "$seed" "$dest" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    rm -rf -- "$dest"
+    mkdir -p "$(dirname "$dest")"
+    dependency_generation_copy_with_progress "$seed" "$dest" \
+      "--reflink=${DEPENDENCY_GENERATION_INCREMENTAL_SEED_REFLINK:-always}" || rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    ( cd "$dest" && xargs -0 -r rm -rf -- < "$work/remove0" ) || rc=1
+  fi
+  if [ "$rc" -eq 0 ] && [ -s "$work/copy0" ]; then
+    (
+      set -o pipefail
+      tar -C "$src" --format=posix --no-recursion --null --verbatim-files-from \
+        -T "$work/copy0" -cf - | tar -C "$dest" -xpf -
+    ) || rc=1
+  fi
+  dependency_generation_release_copy_lock
+  if [ "$rc" -eq 0 ]; then
+    if ! dependency_generation_source_records "$dest" "$work/result" \
+      || ! dependency_generation_records_projection "$live_records" > "$work/expected" \
+      || ! dependency_generation_records_projection "$work/result" > "$work/actual" \
+      || ! cmp -s "$work/expected" "$work/actual"; then
+      dependency_generation_log \
+        "incremental copy of ${dest##*/tree/} did not reproduce the live tree"
+      rc=1
+    fi
+  fi
+  if [ "$rc" -ne 0 ]; then
+    [ ! -e "$dest" ] || chmod -R u+w "$dest" 2>/dev/null || true
+    rm -rf -- "$dest"
+    case "$rc" in 76|77) return "$rc" ;; *) return 1 ;; esac
+  fi
+  dependency_generation_log \
+    "INCREMENTAL schema=1 tree=${dest##*/tree/} kept=$kept copied=$copied removed=$removed copied_bytes=$copied_bytes"
+}
+
+# Copy one changed or new tree into the build and store its source records.
+# With a predecessor that recorded the same tree, try the incremental copy
+# first. Otherwise, or after any non-typed incremental failure, copy in full.
+dependency_generation_copy_changed_tree() {
+  local src="$1" dest="$2" build="$3" rel="$4" predecessor="${5:-}"
+  local work="$build/.incremental-work" live="$build/.incremental-live"
+  local captured_ns='' records_rc=1 found='' rc=1 size_ref=''
+  if dependency_generation_incremental_supported; then
+    captured_ns="$(dependency_generation_now_ns)"
+    records_rc=0
+    dependency_generation_source_records "$src" "$live" || records_rc=$?
+  fi
+  if [ -n "$predecessor" ] && [ -d "$predecessor/tree/$rel" ]; then
+    size_ref="$predecessor/tree/$rel"
+    if [ "$records_rc" -eq 0 ]; then
+      found="$(dependency_generation_records_lookup "$predecessor" "$rel" 2>/dev/null || true)"
+    fi
+  fi
+  if [ -n "$found" ]; then
+    dependency_generation_copy_incremental "$src" "$dest" "$predecessor/tree/$rel" \
+      "${found#*$'\t'}" "${found%%$'\t'*}" "$live" "$work" || rc=$?
+    rm -rf -- "$work"
+    case "$rc" in
+      0) DEPENDENCY_GENERATION_TREES_INCREMENTAL=$((DEPENDENCY_GENERATION_TREES_INCREMENTAL + 1)) ;;
+      76|77) rm -f -- "$live"; return "$rc" ;;
+      *)
+        dependency_generation_log "incremental copy unavailable for $rel; copying it in full"
+        rc=1
+        ;;
+    esac
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rc=0
+    if [ -n "$size_ref" ]; then
+      dependency_generation_copy_independent "$src" "$dest" "$size_ref" || rc=$?
+    else
+      dependency_generation_copy_independent "$src" "$dest" || rc=$?
+    fi
+  fi
+  if [ "$rc" -eq 0 ] && [ "$records_rc" -eq 0 ]; then
+    dependency_generation_records_store "$build" "$rel" "$live" "$captured_ns" \
+      || dependency_generation_log "could not store source records for $rel"
+  fi
+  rm -f -- "$live"
+  return "$rc"
+}
+
 dependency_generation_prune_ephemeral() {
   local root="$1"
   [ -d "$root" ] || return 0
@@ -1892,6 +2152,7 @@ dependency_generation_ensure_once() {
   local predecessor_fingerprint record_fingerprint extra reuse_manifest_eligible='false'
   local existing_generation_valid='false' cache_validation_outcome='miss' inflight_rc
   total_started_ms="$(dependency_generation_now_ms)"
+  DEPENDENCY_GENERATION_TREES_INCREMENTAL=0
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
   fi
@@ -2051,14 +2312,16 @@ dependency_generation_ensure_once() {
         dependency_generation_prune_ephemeral "$tree/$rel"
         dependency_generation_record_tree_bytes "$build" "$rel" \
           "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel"
+        dependency_generation_records_carry \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_PATH" "$build" "$rel"
         tree_reused=$((tree_reused + 1))
         dependency_generation_log \
           "reused dependency tree from $predecessor_identity: $rel mode=$DEPENDENCY_GENERATION_MATERIALIZE_MODE"
       else
         dependency_generation_log "copying changed dependency tree: $rel"
         copy_rc=0
-        dependency_generation_copy_independent "$nm" "$tree/$rel" \
-          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel" || copy_rc=$?
+        dependency_generation_copy_changed_tree "$nm" "$tree/$rel" "$build" "$rel" \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_PATH" || copy_rc=$?
         if [ "$copy_rc" -ne 0 ]; then
           dependency_generation_release_selector_lease
           dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
@@ -2083,7 +2346,7 @@ dependency_generation_ensure_once() {
       rel="${nm#"$integration_root"/}"
       dependency_generation_log "copying dependency tree: $rel"
       copy_rc=0
-      dependency_generation_copy_independent "$nm" "$tree/$rel" || copy_rc=$?
+      dependency_generation_copy_changed_tree "$nm" "$tree/$rel" "$build" "$rel" || copy_rc=$?
       if [ "$copy_rc" -ne 0 ]; then
         dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
           "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"

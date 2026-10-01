@@ -661,6 +661,30 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       expect(parseRepairHeadRadius(output.replace("workspaces=1 guards", "workspaces=2 guards"))?.coverageComplete).toBe(false);
       expect(parseRepairHeadRadius("")?.coverageComplete).toBe(false);
     });
+    // WI-10004928 / D-129 (1): the selector now emits an exact file radius ALONGSIDE attached
+    // invariant guards. The consumer must keep the exact files (no widening) and run each guard
+    // as its own leg, with the census still binding the guard count.
+    it("keeps an exact file radius and runs attached invariant guards as separate legs", () => {
+      const output = [
+        "AFFECTED_DERIVATION source=explicit changedPaths=1 workspaces=1 guards=1 tasks=1",
+        `AFFECTED_WS\t${CORE}`,
+        `RELATED_SELECTION ws=${CORE} selected=1 total=5 mode=related reason=ok`,
+        `AFFECTED_WS_CMD\t${CORE}\tnpm run --workspace packages/operator-core test`,
+        `AFFECTED_GUARD\t${CORE}\tlint:example-guard\tnpm run --workspace packages/operator-core lint:example-guard`,
+        "RELATED_AFFECTED_FILES status=selected workspaces=1 files=1",
+        `RELATED_AFFECTED_FILE\t${CORE}\tlib/a.test.ts`,
+      ].join("\n");
+      const radius = parseRepairHeadRadius(output);
+      expect(radius).not.toBeNull();
+      expect(radius!.files).toEqual([{ workspace: CORE, file: "lib/a.test.ts" }]);
+      expect(radius!.gateIds).toEqual([`${CORE} :: lint:example-guard`]);
+      expect(radius!.coverageComplete).toBe(true);
+      expect(radius!.summary).toBe(
+        "1 exact related file(s), 0 widened affected test task(s), 1 guard/task leg(s)",
+      );
+      // A guard the census does not account for is not complete coverage.
+      expect(parseRepairHeadRadius(output.replace("guards=1", "guards=0"))?.coverageComplete).toBe(false);
+    });
   });
 });
 

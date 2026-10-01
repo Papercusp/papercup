@@ -4210,6 +4210,69 @@ sustained wait mechanism, or prove historical app impact. R-8 and P-008
 remain open. Avi's system-wide pause arrived during final verification;
 the worker finished that atomic test and saved state before pausing.
 
+### Current plan-only owner-UPDATE controls — October 1, 17:22Z
+
+Recovered the later resume checkpoint before continuing: Avi's explicit
+16:46:56Z resume superseded the earlier pause. WI-10002830 remained assigned
+to this worker; the source and private-fixture fingerprints above were
+unchanged, so their existing two-test receipt was retained without a rerun.
+
+The current `dev:pg_query` contract accepts EXPLAIN over SELECT only.
+`dev:pg_mutate` dry-run actually executes DML before rollback, so it cannot
+provide a plan-only control. This read instead reused the existing
+`createDedicatedOrgPg` native client through `code:run` / `capability:bash`.
+The native-SQL route explicitly requires server-side timeout verification.
+Task **0mupsli9p1owfl23rpa**, exit 0, extracted the production UPDATE from
+`backfillSessionOwners`; its SQL SHA-256 exactly matches the private captured
+statement `c33700f4…` above. It used EXPLAIN FORMAT JSON without ANALYZE.
+Backend **3564381**, database `papercusp`, reported PostgreSQL **180004**,
+transaction read-only **on**, statement timeout **5s**, lock timeout **1s**,
+and plan-cache mode **auto**. The dedicated client was closed before exit.
+
+The parameter-bound controls selected current non-null stored Claude owners,
+ordered by session ID and owner, then deduplicated by session ID. These are
+constructed current inputs, not recovered parameters from the slow statement.
+All four plans contain ModifyTable/Update, Nested Loop, Function Scan and
+`session_turns_pkey` Index Scan:
+
+| Current planning control | Function Scan estimated rows | Join estimated rows | Driver await time |
+|---|---:|---:|---:|
+| Bound arrays, 1 session | 1 | 10 | 67 ms |
+| Bound arrays, 16 sessions | 16 | 164 | 1 ms |
+| Bound arrays, 179 sessions | 179 | 1,839 | 2 ms |
+| GENERIC_PLAN TRUE, unknown parameters | 10 | 77 | 1 ms |
+
+These are planner estimates and command round trips, not UPDATE execution
+measurements. The full sanitized receipt is
+`/tmp/p008-owner-update-live-planonly-20261001.json`, SHA-256
+`956071317fcb7a50d01902ca1bf25f1e8770f129b8e14abfcb85459cf9b66aab`.
+It preserves input/plan hashes and node metadata without transcript contents
+or parameter values. The whole native read reported 168 ms.
+
+A separate bounded `dev:pg_query` density read repeated that current selection
+and counted its matching rows: **179 sessions / 4,099 turns**, minimum **1**,
+median **13**, maximum **156** turns per session, and **0** owners differing
+from the constructed stored-owner map. The read reported **128 ms**. It is
+an ordered sample, not the Claude population or the historical sweep. The
+zero difference follows this stored-owner control; it does not validate the
+adapter's owner map. It exposes one fixture limitation: the private executed
+control above has one stored turn per synthetic Claude session.
+
+The bounded natural-query assay, task **0mupsr9gu1s6wplbw9d**, exit 0,
+observed no matching active owner UPDATE in its 17:17:20–17:17:25Z read.
+Its separate backend **4082668** verified the same read-only/5s/1s preflight.
+No process CPU/I/O interval was taken, so there is no new per-query mechanism
+evidence. Receipt `/tmp/p008-owner-update-natural-assay-20261001.json`,
+SHA-256 `6173f37013f188bf61975ab4c5b2d83913bc351b83f9b11bf4feb4d844ddc4da`.
+This bounded miss does not establish that ingestion or owner repair stopped.
+
+The current UPDATE planning controls narrow the earlier SELECT-only access
+evidence; they do not recover the executed slow UPDATE plan, sustained waits,
+historical cause or app impact. No shared mutation, runtime restart, index,
+repair-cadence change, acceptance binding or shipment was performed. Next,
+extend the existing private control's turn-density fidelity while preserving
+EOF repair and exact source capture; keep live operational attribution open.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

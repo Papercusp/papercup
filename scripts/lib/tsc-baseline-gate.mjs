@@ -99,6 +99,8 @@ import {
  * @typedef {object} RunTscBaselineGateOptions
  * @property {string} root - cwd the tscCommand runs from (repo root).
  * @property {string} tscCommand - e.g. 'npx tsc -p apps/foo/tsconfig.json --noEmit --incremental false'.
+ * @property {string | null} [preTscCommand] - Optional generated-input preflight. The standard
+ *   declaration generator publishes only explicitly selected modules on a scoped run.
  * @property {string} baselineFile - Absolute path to this project's `.tsc-baseline.json`.
  * @property {string} label - Human label for console output, e.g. 'operator-core'.
  * @property {string[]} argv - `process.argv.slice(2)`.
@@ -2340,22 +2342,28 @@ export function formatUncoveredFilesBanner({
  * declarations.test.ts` already duplicates `BANNER_MARKER` for the identical reason; this
  * follows the same precedent rather than introducing a new one.
  *
- * Fails open (empty array) on any read/parse error — this is a supplementary freshness
- * SIGNAL, not a hard dependency, and a missing/malformed config must never crash the gate.
+ * By default, read/parse errors return an empty array for the supplementary freshness
+ * signal. Publishing callers use strict mode so unreadable enrollment fails the preflight.
  *
  * @param {string} root
+ * @param {{ strict?: boolean }} [options] - Publishing callers must reject unreadable enrollment.
  * @returns {string[]} repo-relative `.d.mts` paths
  */
-export function declarationFilesFromConfig(root) {
+export function declarationFilesFromConfig(root, { strict = false } = {}) {
   try {
     const raw = readFileSync(resolve(root, 'tsconfig.declarations.json'), 'utf8');
     // tsc accepts JSONC (`//` comments) here — strip before parsing, same approach as
     // gen-declarations.ts's own `inputs()`.
     const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
     const parsed = JSON.parse(stripped);
+    if (strict && (!Array.isArray(parsed.files) || parsed.files.length === 0 ||
+      parsed.files.some((file) => typeof file !== 'string' || !file.endsWith('.mjs')))) {
+      throw new Error('tsconfig.declarations.json must name at least one .mjs input');
+    }
     const mjsFiles = Array.isArray(parsed.files) ? parsed.files : [];
     return mjsFiles.map((f) => String(f).replace(/\.mjs$/, '.d.mts'));
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
@@ -3036,15 +3044,35 @@ export async function runTscBaselineGate({
   // Keep this an explicit per-project hook: most gates have no generated-input preflight,
   // and hiding a repo-wide mutation inside the shared policy would be surprising.
   if (preTscCommand) {
+    let command = String(preTscCommand);
     try {
-      execSync(String(preTscCommand), {
-        cwd: root,
-        encoding: 'utf-8',
-        stdio: 'inherit',
-        env: tscChildEnv(),
-      });
-    } catch {
-      console.error(`❌ ${label} typecheck preflight failed: ${preTscCommand}`);
+      // EI-24783793601501800 — a scoped verdict must not publish every peer's
+      // declaration. Reuse the generator's selected-output mode across every
+      // declaration-consuming leg, without changing unrelated custom preflights.
+      if (command.trim() === 'npm run gen:declarations' && explicitFiles !== null) {
+        const selectedInputs = declarationFilesFromConfig(root, { strict: true })
+          .filter((declaration) => {
+            const normalized = declaration.replace(/\\/g, '/').replace(/^\.\//, '');
+            return explicitFiles.has(normalized) ||
+              explicitFiles.has(normalized.replace(/\.d\.mts$/, '.mjs'));
+          })
+          .map((declaration) => declaration.replace(/\.d\.mts$/, '.mjs'));
+        command = selectedInputs.length > 0
+          ? `${command} -- ${shellQuote(`--files=${selectedInputs.join(',')}`)}`
+          : '';
+        if (!command) console.log('gen:declarations: no enrolled modules explicitly selected; no declarations published');
+      }
+      if (command) {
+        execSync(command, {
+          cwd: root,
+          encoding: 'utf-8',
+          stdio: 'inherit',
+          env: tscChildEnv(),
+        });
+      }
+    } catch (error) {
+      console.error(`❌ ${label} typecheck preflight failed: ${command}`);
+      if (error instanceof Error) console.error(error.message);
       // EI-21467670625776948: the preflight compiles generated-declaration INPUTS across the
       // whole repo, so the failure above is routinely a PEER's in-flight file, not the
       // caller's. Zero of the caller's files were typechecked — say so explicitly, because

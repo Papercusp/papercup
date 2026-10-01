@@ -1667,6 +1667,46 @@ describe('immutable dependency generation', () => {
     expect(readFileSync(join(copied, 'pkg/index.js'), 'utf8')).toBe('root-v1\n');
   });
 
+  it('falls back to an independent copy when the hardlink opt-in cannot hardlink (WI-10004928)', () => {
+    // The admission pre-check always opts in to hardlinks. A failing `cp -al`
+    // (EXDEV, EMLINK, …) must degrade to a correct independent copy, never fail
+    // the materialization.
+    const integration = makeIntegration();
+    const result = publish(integration);
+    expect(result.status, result.stderr).toBe(0);
+    const source = join(publishedPath(result.stdout), 'tree/node_modules');
+    const dest = join(integration, 'materialized-fallback');
+    const shim = join(integration, 'cp-shim');
+    const realCp = execFileSync('bash', ['-c', 'command -v cp'], { encoding: 'utf8' }).trim();
+    const wrapper = [
+      'set -euo pipefail',
+      'mkdir -p "$SHIM"',
+      // Refuse only the hardlink form. Every other cp call passes through.
+      `printf '%s\\n' '#!/usr/bin/env bash' 'for a in "$@"; do [ "$a" = -al ] && exit 1; done' 'exec "$REAL_CP" "$@"' > "$SHIM/cp"`,
+      'chmod +x "$SHIM/cp"',
+      'export PATH="$SHIM:$PATH"',
+      'source "$SCRIPT"',
+      'dependency_generation_materialize_tree "$SOURCE" "$DEST"',
+      'printf "mode=%s\\n" "$DEPENDENCY_GENERATION_MATERIALIZE_MODE"',
+    ].join('\n');
+    const fallback = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SCRIPT,
+        SOURCE: source,
+        DEST: dest,
+        SHIM: shim,
+        REAL_CP: realCp,
+        DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1',
+      },
+      encoding: 'utf8',
+    });
+    expect(fallback.status, String(fallback.stderr ?? '')).toBe(0);
+    expect(fallback.stdout).toContain('mode=copy');
+    expect(statSync(join(dest, 'pkg/index.js')).ino).not.toBe(statSync(join(source, 'pkg/index.js')).ino);
+    expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('root-v1\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('does not mutate immutable generation modes during repeated hardlink cleanup', () => {
     const integration = makeIntegration();
     const published = publish(integration);

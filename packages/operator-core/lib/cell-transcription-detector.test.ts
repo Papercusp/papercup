@@ -22,6 +22,7 @@ import { cellTranscriptionHintResolvingCommits, commitResolverRepo, gitResolvesT
 import { execFileSync } from 'node:child_process';
 import { registerBuiltinCells } from './cell-registrations';
 import { getCellUnchecked, __resetCellRegistryForTests } from './cell-registry';
+import { chunkHeaderText } from './agent-tools/coordination/tools/send-chunking';
 
 describe('cell-transcription detector — TRUE positives (the 2026-07-26 shape)', () => {
   it('flags a sha stated as the deployed position', () => {
@@ -242,6 +243,21 @@ describe('EI-24684014950807803 — a hex token that names no commit is not a sha
     });
     expect(calls).toBe(0);
     expect(hint).not.toBeNull();
+  });
+
+  it('does not treat generated coord:send chunk headers as authored commit references', async () => {
+    const groupId = 'abaddeed';
+    const realSha = '8badf00d';
+    const text = `${chunkHeaderText(1, 2, groupId, true)}\n:3070 is serving ${realSha}`;
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      asked.push(token);
+      return true; // Model a short-id collision with a real commit.
+    });
+
+    expect(asked).toEqual([realSha]);
+    expect(hint).toContain(realSha);
+    expect(hint).not.toContain(groupId);
   });
 
   it('resolves against PAPERCUSP_INTEGRATION_ROOT, not the release checkout cwd', () => {

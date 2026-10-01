@@ -18,6 +18,10 @@ Only POSITIVE evidence counts; when /proc cannot answer, the verdict is None
 Hook processes run as descendants of their CLI, so the walk starts at the
 hook's parent. A contiguous chain of agent-CLI processes (Codex's node wrapper
 over its vendor-native binary) counts as ONE CLI.
+
+Per-turn hooks run this directly. Hooks that fire on EVERY tool call read a
+verdict cached per CLI process instead (pc_nested_cli.sh, WI-10004945); on a
+miss that reader runs this file with `--cache <path>` to record the verdict.
 """
 import os
 

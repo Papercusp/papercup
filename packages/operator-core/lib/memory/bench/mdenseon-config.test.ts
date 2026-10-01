@@ -3,6 +3,86 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const bench = fileURLToPath(new URL('.', import.meta.url));
+it('records timed GPU memory in MiB and treats missing or malformed queries as unknown', () => {
+  const result = spawnSync('python3', ['-c', `
+import ast, subprocess, types
+from pathlib import Path
+source = Path('mdenseon-vectors.py'); tree = ast.parse(source.read_text())
+function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'boundary_gpu_memory')
+scope = dict(time=types.SimpleNamespace(time_ns=lambda:123))
+exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), scope)
+seen = []
+def run(args, **kwargs):
+ seen.append((args, kwargs)); return types.SimpleNamespace(stdout='0, 24576, 17000, 7576')
+scope['subprocess'] = types.SimpleNamespace(run=run, SubprocessError=subprocess.SubprocessError)
+memory = scope['boundary_gpu_memory']
+assert memory('cpu') == {'status':'not-applicable'} and not seen
+assert memory('cuda') == dict(status='measured', measuredAtEpochNs=123,
+ devices=[dict(index=0,totalMiB=24576.0,usedMiB=17000.0,freeMiB=7576.0)])
+assert seen[0][0][0]=='nvidia-smi' and seen[0][1]['timeout']==5
+for output in ['', '0, invalid, 1, 2', '0, 24576, 17000, -1']:
+ scope['subprocess'].run = lambda *args, **kwargs: types.SimpleNamespace(stdout=output)
+ assert memory('cuda')['status']=='unknown'
+def unavailable(*args, **kwargs): raise FileNotFoundError('nvidia-smi')
+scope['subprocess'].run = unavailable
+assert memory('cuda')['status']=='unknown'
+print('boundary-memory-evidence-passed')
+`], { cwd: bench, encoding: 'utf8' });
+  expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).toBe('boundary-memory-evidence-passed');
+});
+it('requires the CUDA runtime to acknowledge the declared precision recipe and refuses fallback', () => {
+  const result = spawnSync('python3', ['-c', `
+import ast
+from pathlib import Path
+source = Path('mdenseon-vectors.py'); tree = ast.parse(source.read_text())
+function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'assert_boundary_provider')
+scope = {}; exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), scope)
+class Session:
+ def __init__(self, providers, options): self.providers, self.options = providers, options
+ def get_providers(self): return self.providers
+ def get_provider_options(self): return self.options
+guard = scope['assert_boundary_provider']
+guard(Session(['CUDAExecutionProvider','CPUExecutionProvider'], {'CUDAExecutionProvider':{'use_tf32':'0'}}), 'CUDAExecutionProvider', '0')
+guard(Session(['CUDAExecutionProvider'], {'CUDAExecutionProvider':{'use_tf32':'1'}}), 'CUDAExecutionProvider', '1')
+guard(Session(['CPUExecutionProvider'], {}), 'CPUExecutionProvider', None)
+for session in [Session(['CPUExecutionProvider'], {}),
+                Session(['CUDAExecutionProvider'], {'CUDAExecutionProvider':{'use_tf32':'1'}}),
+                Session(['CUDAExecutionProvider'], {'CUDAExecutionProvider':{}})]:
+ try: guard(session, 'CUDAExecutionProvider', '0')
+ except ValueError: pass
+ else: raise AssertionError('accepted fallback or ignored CUDA precision recipe')
+print('boundary-provider-contract-passed')
+`], { cwd: bench, encoding: 'utf8' });
+  expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).toBe('boundary-provider-contract-passed');
+});
+it('submits explicit full precision for a default CUDA boundary session before loading reference weights', () => {
+  const result = spawnSync('python3', ['-c', `
+import ast, json, sys, tempfile, types
+from pathlib import Path
+source = Path('mdenseon-vectors.py'); tree = ast.parse(source.read_text())
+function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'measure_boundaries')
+scope = dict(Path=Path, json=json, validate_boundary_request=lambda request: request)
+exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), scope)
+class Captured(Exception): pass
+seen = []
+def session(path, sess_options, providers):
+ seen.append(providers); raise Captured()
+sys.modules['onnxruntime'] = types.SimpleNamespace(get_available_providers=lambda:['CUDAExecutionProvider'],
+ SessionOptions=types.SimpleNamespace, InferenceSession=session)
+sys.modules['transformers'] = types.SimpleNamespace(AutoModel=object)
+with tempfile.TemporaryDirectory() as tmp:
+ root = Path(tmp); request = root/'request.json'; request.write_text(json.dumps(dict(assets=[], export='/pinned')))
+ for index, explicit in enumerate([None,'1']):
+  try: scope['measure_boundaries'](request, 'cuda', root/str(index), cuda_tf32=explicit)
+  except Captured: pass
+assert seen == [[('CUDAExecutionProvider', {'use_tf32':'0'})], [('CUDAExecutionProvider', {'use_tf32':'1'})]], seen
+print('boundary-default-precision-passed')
+`], { cwd: bench, encoding: 'utf8' });
+  expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).toBe('boundary-default-precision-passed');
+});
 it('retains independent boundary reference and candidate failure/profile before rethrowing an allocation error', () => {
   const result = spawnSync('python3', ['-c', `
 import ast, hashlib, json, tempfile
@@ -10,11 +90,13 @@ from pathlib import Path
 source = Path('mdenseon-vectors.py')
 tree = ast.parse(source.read_text())
 functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in ['boundary_infer', 'file_sha256']]
-scope = dict(Path=Path, json=json, hashlib=hashlib)
+scope = dict(Path=Path, json=json, hashlib=hashlib,
+             boundary_gpu_memory=lambda device: dict(status='measured', freeMiB=1234, device=device))
 exec(compile(ast.Module(body=functions, type_ignores=[]), str(source), 'exec'), scope)
 with tempfile.TemporaryDirectory() as tmp:
  destination = Path(tmp); profile = destination/'profile.json'; profile.write_text('[]')
  metadata = dict(cell=dict(id='single-full-8192'), tokenLengths=[8192], referenceVectors=[[1.0]],
+                 sessionProviders=['CUDAExecutionProvider'],
                  providerOptions={'CUDAExecutionProvider': {'use_tf32': '1'}}, inputShapeActuallySubmitted=[1,8192])
  class Candidate:
   def run(self, names, inputs):
@@ -29,6 +111,7 @@ with tempfile.TemporaryDirectory() as tmp:
  assert failure['tokenLengths']==[8192] and failure['referenceVectors']==[[1.0]]
  assert failure['profile']['sha256']==hashlib.sha256(b'[]').hexdigest()
  assert failure['error']['name']=='RuntimeError'
+ assert failure['gpuMemoryAfterFailure']==dict(status='measured',freeMiB=1234,device='cuda')
 print('boundary-failure-proof-passed')
 `], { cwd: bench, encoding: 'utf8' });
   expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);

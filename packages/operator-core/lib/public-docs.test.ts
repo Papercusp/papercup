@@ -44,6 +44,16 @@ describe('public manual read boundary', () => {
       expect(await head.text()).toBe('');
     }
   });
+  it.each(['pf_meta', 'pf_index', 'pf_fragment', 'pagefind'])('serves Pagefind binary %s without HTML fallback', async (extension) => {
+    const path = `/docs/pagefind/test.${extension}`;
+    await writeFile(join(root, 'pagefind', `test.${extension}`), new Uint8Array([0, 97, 115, 109]));
+    const response = await servePublicDocs(request(path), root);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/octet-stream');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([0, 97, 115, 109]));
+    const head = await servePublicDocs(request(path, 'HEAD'), root);
+    expect(head.status).toBe(200); expect(await head.text()).toBe('');
+  });
   it('returns genuine missing-page and unavailable-artifact statuses', async () => {
     expect((await servePublicDocs(request('/docs/missing'), root)).status).toBe(404);
     expect((await servePublicDocs(request('/docs'), join(dir, 'absent'))).status).toBe(503);

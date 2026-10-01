@@ -195,7 +195,7 @@ import { resolvePremiseStamps } from '../premise-resolve';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { resolveStaleQuoteStamps, STALE_QUOTE_FIELD } from '../stale-quote-stamp';
 import type { MessageSection } from '../message-fields';
-import { COORD_SEND_MAX_CHUNK_PARTS } from './inbox-content-bounds';
+import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 import { reassembleChunkedBodies } from './send-chunking';
 const staleQuoteM = vi.mocked(resolveStaleQuoteStamps);
 const premiseM = vi.mocked(resolvePremiseStamps);
@@ -2689,7 +2689,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
     expect(getModeSubjectMock).toHaveBeenCalledWith('ws1', 'me', 'goal');
     expect(b.results[0]).toMatchObject({
       ok: true,
-      goalOwnerReport: { status: 'stamped', goalId },
+      goalOwnerReport: { status: 'stamped', goalId, lastReportAt: 't1' },
     });
     const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, any> };
     expect(opts.extra?.goalOwnerReport).toEqual({
@@ -2745,10 +2745,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
     expect(opts.extra?.goalOwnerReportValidation).toMatchObject({ status: 'unknown' });
   });
 
-  describe('an over-cap report is judged WHOLE, never per chunk (EI-23793424529287793)', () => {
-    // Each section alone fits a part; together they exceed the 600-char inbox cap,
-    // so the send is chunked. Per-part judging refused every part that lacked a
-    // sibling's heading and delivered the rest — the orphan fragments the owner saw.
+  describe('active GOAL owner reports fit one inbox message before they can update the rail', () => {
     const longBody = [
       { text: `MOVED: ${'plan placed and fleet live; '.repeat(12)}` },
       { text: `COST: ${'lineage 7d measured 102.78 usd; '.repeat(10)}` },
@@ -2756,21 +2753,23 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
       { text: `KILLED: ${'nothing killed; '.repeat(18)}` },
     ];
 
-    it('delivers a complete report as ordered parts, all ok, stamped once on the final part', async () => {
+    it('refuses a complete over-cap report before any part is persisted', async () => {
       getModeSubjectMock.mockImplementation(async () => goalId);
       try {
         const b = await body({ to: ['human'], summary: 'Goal owner report', expects: 'none', body: longBody });
 
-        const calls = sendM.mock.calls.map((call) => call[1] as { extra?: Record<string, any> });
-        expect(calls.length).toBeGreaterThan(1);
-        expect(b.counts).toEqual({ ok: calls.length, failed: 0 });
-        expect(b.results.every((r: { ok: boolean }) => r.ok)).toBe(true);
-        // Judged once, on the whole message.
+        expect(b.counts).toEqual({ ok: 0, failed: 1 });
+        expect(b.results).toHaveLength(1);
+        expect(b.results[0]).toMatchObject({
+          ok: false,
+          error: 'goal-owner-report-over-cap',
+          goalId,
+          bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP,
+        });
+        expect(b.results[0].bodyAuthoredChars).toBeGreaterThan(DEFAULT_INBOX_BODY_CAP);
+        expect(b.results[0].message).toContain('Nothing was sent');
         expect(getModeSubjectMock).toHaveBeenCalledTimes(1);
-        const stamped = calls.map((c) => c.extra?.goalOwnerReport ?? null);
-        expect(stamped.slice(0, -1).every((s) => s === null)).toBe(true);
-        expect(stamped.at(-1)).toMatchObject({ schemaVersion: 'goal-owner-report-v1', goalId });
-        expect(b.results.at(-1)).toMatchObject({ goalOwnerReport: { status: 'stamped', goalId } });
+        expect(sendM).not.toHaveBeenCalled();
       } finally {
         getModeSubjectMock.mockImplementation(async () => null);
       }
@@ -2793,7 +2792,9 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
           error: 'goal-owner-report-incomplete',
           goalId,
           missing: ['ownerWalled'],
+          bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP,
         });
+        expect(b.results[0].message).toContain(`${DEFAULT_INBOX_BODY_CAP}-character inbox cap`);
       } finally {
         getModeSubjectMock.mockImplementation(async () => null);
       }

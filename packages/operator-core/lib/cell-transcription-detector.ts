@@ -167,6 +167,19 @@ const CONTENT_HASH_VALUE_PREFIX = /\bcontent[- ]?hash\s*(?::|=)?\s*$/i;
 const GIT_BLOB_VALUE_PREFIX =
   /\b(?:git\s+)?blob(?:[-\s]+(?:id|identifier|hash|sha|oid)){0,2}\s*(?:[:=]\s*)?$/i;
 
+/**
+ * coord:send prepends these exact generated lines to over-cap message parts. The
+ * 8-hex group id is a content fingerprint, not an authored pipeline position;
+ * nearby prose such as ":3070 is serving" must not turn it into a cell hit even
+ * when that short id happens to resolve to a Git commit. Mask the whole generated
+ * line while preserving offsets and the surrounding authored text.
+ */
+const GENERATED_COORD_CHUNK_HEADER_LINE = /^⟦part \d+\/\d+ g:[0-9a-f]{8}(?: cont)?⟧\r?$/gm;
+
+function maskGeneratedCoordChunkHeaders(text: string): string {
+  return text.replace(GENERATED_COORD_CHUNK_HEADER_LINE, (header) => ' '.repeat(header.length));
+}
+
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   return CHECKPOINT_VALUE_PREFIX.test(before) || CONTENT_HASH_VALUE_PREFIX.test(before);
@@ -285,7 +298,8 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
   if (typeof text !== 'string' || text.length === 0) return [];
   // Bound the work: a 100KB message body is not worth a full scan, and the scan is
   // on the hot path of every send.
-  const haystack = text.length > 20_000 ? text.slice(0, 20_000) : text;
+  const boundedText = text.length > 20_000 ? text.slice(0, 20_000) : text;
+  const haystack = maskGeneratedCoordChunkHeaders(boundedText);
 
   const out: CellTranscription[] = [];
   const seen = new Set<string>();

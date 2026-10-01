@@ -520,22 +520,37 @@ describe('current-build ingestion on a private background runtime', () => {
         // that adapter's real managed-home layout, including an EOF-only repair,
         // rather than inferring its behavior from Codex launch metadata.
         const claudeCount = 179;
+        // Synthetic density matches the measured ordered sample's aggregate
+        // shape (179 sessions / 4099 turns / min 1 / median 13 / max 156).
+        // This is not the original per-session distribution or heap/cache state.
+        const claudeTurnCounts = [1, ...Array(90).fill(13), ...Array(12).fill(31), ...Array(75).fill(32), 156];
+        const claudeTurns = claudeTurnCounts.reduce((sum, n) => sum + n, 0);
+        assert.equal(claudeTurnCounts.length, claudeCount);
+        assert.equal(claudeTurns, 4099);
+        assert.equal(claudeTurnCounts[89], 13);
         const claudeDay = join(e.PAPERCUSP_HOME, 'session-claude', 'private-claude-owner', 'projects', 'private-cwd');
         await mkdir(claudeDay, { recursive: true });
         for (let i = 0; i < claudeCount; i++) {
           const id = 'private-claude-owner-' + i;
-          await writeFile(join(claudeDay, id + '.jsonl'), JSON.stringify({
-            type: 'user', uuid: id, timestamp: '2026-10-01T00:00:00Z',
-            message: { role: 'user', content: 'Synthetic private Claude owner repair turn ' + i },
-          }) + '\n');
+          await writeFile(join(claudeDay, id + '.jsonl'), Array.from({ length: claudeTurnCounts[i] }, (_, turn) => JSON.stringify({
+            type: 'user', uuid: id + '-turn-' + turn, timestamp: '2026-10-01T00:00:00Z',
+            message: { role: 'user', content: 'Synthetic private Claude owner repair turn ' + i + '/' + turn },
+          })).join('\n') + '\n');
         }
         const claudeUseful = await runSessionIngestOnce();
         assert.equal(claudeUseful.errors, 0, JSON.stringify(claudeUseful));
-        assert.equal(claudeUseful.turnsInserted, claudeCount);
-        assert.equal(claudeUseful.metadataBackfills.find(r => r.sourceKind === 'claude').requested, claudeCount);
+        // The production 4000-turn sweep budget deliberately splits this
+        // 4099-turn fixture. Drain one continuation, rather than raising that
+        // budget or mistaking a valid partial sweep for missing indexed turns.
+        assert.ok(claudeUseful.turnsInserted > 0 && claudeUseful.turnsInserted < claudeTurns);
+        const claudeContinuation = await runSessionIngestOnce();
+        assert.equal(claudeContinuation.errors, 0, JSON.stringify(claudeContinuation));
+        assert.ok(claudeContinuation.turnsInserted > 0);
+        assert.equal(claudeUseful.turnsInserted + claudeContinuation.turnsInserted, claudeTurns);
+        assert.equal(claudeContinuation.metadataBackfills.find(r => r.sourceKind === 'claude').requested, claudeCount);
         const damagedClaude = await sql.unsafe(
           "UPDATE harness_shared.session_turns SET owner = 'stale-private-owner' WHERE source_kind = 'claude'");
-        assert.equal(damagedClaude.count, claudeCount);
+        assert.equal(damagedClaude.count, claudeTurns);
         const claudeNoTail = await runSessionIngestOnce();
         assert.equal(claudeNoTail.errors, 0, JSON.stringify(claudeNoTail));
         assert.equal(claudeNoTail.filesIngested, 0);
@@ -543,14 +558,14 @@ describe('current-build ingestion on a private background runtime', () => {
         assert.equal(claudeNoTail.partsInserted ?? 0, 0);
         const claudeRepair = claudeNoTail.metadataBackfills.find(r => r.sourceKind === 'claude');
         assert.equal(claudeRepair.operation, 'sessionOwners');
-        assert.equal(claudeRepair.updated, claudeCount);
+        assert.equal(claudeRepair.updated, claudeTurns);
         assert.equal(claudeRepair.status, 'completed');
         const captured = ownerQueries.get('claude');
         assert.ok(captured, 'capture the real source UPDATE and bound Claude parameters');
         assert.ok(captured.query.includes('UNNEST('));
         const beforeReplay = await sql.unsafe(
-          "SELECT session_id, owner, xmin::text FROM harness_shared.session_turns WHERE source_kind = 'claude' ORDER BY session_id");
-        assert.equal(beforeReplay.length, claudeCount);
+          "SELECT session_id, turn_idx, owner, xmin::text FROM harness_shared.session_turns WHERE source_kind = 'claude' ORDER BY session_id, turn_idx");
+        assert.equal(beforeReplay.length, claudeTurns);
         assert.ok(beforeReplay.every(row => row.owner === 'private-claude-owner'));
         const ownerUpdatePlans = await sql.begin(async tx => {
           await tx.unsafe("SET LOCAL statement_timeout = '10s'");
@@ -560,7 +575,7 @@ describe('current-build ingestion on a private background runtime', () => {
           assert.equal(cardinality[0].owners, claudeCount);
           await tx.unsafe("UPDATE harness_shared.session_turns SET owner = 'stale-private-owner' WHERE source_kind = 'claude'");
           const plans = [];
-          for (const expectedUpdates of [claudeCount, 0]) {
+          for (const expectedUpdates of [claudeTurns, 0]) {
             const result = await tx.unsafe('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + captured.query, captured.parameters);
             const explained = result[0]['QUERY PLAN'][0];
             const plan = explained.Plan;
@@ -571,7 +586,7 @@ describe('current-build ingestion on a private background runtime', () => {
             // changed owners in private state instead of misreading that field.
             const changed = await tx.unsafe(
               "SELECT count(*)::int AS n FROM harness_shared.session_turns WHERE source_kind = 'claude' AND owner = 'private-claude-owner'");
-            assert.equal(changed[0].n, claudeCount);
+            assert.equal(changed[0].n, claudeTurns);
             const flatten = node => [{
               nodeType: node['Node Type'], relation: node['Relation Name'], index: node['Index Name'],
               rows: node['Actual Rows'], loops: node['Actual Loops'], removedByFilter: node['Rows Removed by Filter'] ?? 0,
@@ -586,12 +601,14 @@ describe('current-build ingestion on a private background runtime', () => {
           return plans;
         });
         const afterReplay = await sql.unsafe(
-          "SELECT session_id, owner, xmin::text FROM harness_shared.session_turns WHERE source_kind = 'claude' ORDER BY session_id");
+          "SELECT session_id, turn_idx, owner, xmin::text FROM harness_shared.session_turns WHERE source_kind = 'claude' ORDER BY session_id, turn_idx");
         assert.deepEqual(afterReplay, beforeReplay, 'EXPLAIN ANALYZE repair and no-op leave no committed mutation');
         const ownerRepairControl = { sourceKind: 'claude', requested: claudeCount,
+          turns: claudeTurns, turnDensity: { min: claudeTurnCounts[0], median: claudeTurnCounts[89], max: claudeTurnCounts.at(-1) },
           sqlHash: createHash('sha256').update(captured.query).digest('hex'),
           parameterHash: createHash('sha256').update(JSON.stringify(captured.parameters)).digest('hex'),
-          useful: claudeUseful, noTail: claudeNoTail, plans: ownerUpdatePlans, rollbackPreserved: true };
+          useful: claudeUseful, continuation: claudeContinuation, noTail: claudeNoTail,
+          plans: ownerUpdatePlans, rollbackPreserved: true };
         if (corpusHash) assert.equal(corpusHash,
           createHash('sha256').update(readFileSync(e.TEST_INGEST_CORPUS_PATH)).digest('hex'));
         assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));

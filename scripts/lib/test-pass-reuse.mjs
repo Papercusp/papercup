@@ -225,25 +225,107 @@ function canonicalJson(value) {
  * @returns {boolean}
  */
 export function rootPackageJsonChangeIsInert(beforeText, afterText) {
+  const names = scriptsOnlyChangedNames(beforeText, afterText);
+  return names !== null && !names.some(isRunnerAffectingScript);
+}
+
+/**
+ * The script names a package.json change added, removed or changed, when that is ALL it changed
+ * (key order ignored). Null when anything else changed, or when either side is not a JSON object
+ * with an object (or absent) `scripts` (fail closed). An empty array means a reorder only.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {string[] | null}
+ */
+export function scriptsOnlyChangedNames(beforeText, afterText) {
   let before;
   let after;
   try {
     before = JSON.parse(beforeText);
     after = JSON.parse(afterText);
   } catch {
-    return false;
+    return null;
   }
   const isObject = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
-  if (!isObject(before) || !isObject(after)) return false;
+  if (!isObject(before) || !isObject(after)) return null;
   const beforeScripts = before.scripts ?? {};
   const afterScripts = after.scripts ?? {};
-  if (!isObject(beforeScripts) || !isObject(afterScripts)) return false;
+  if (!isObject(beforeScripts) || !isObject(afterScripts)) return null;
   const { scripts: _beforeScripts, ...beforeRest } = before;
   const { scripts: _afterScripts, ...afterRest } = after;
-  if (canonicalJson(beforeRest) !== canonicalJson(afterRest)) return false;
+  if (canonicalJson(beforeRest) !== canonicalJson(afterRest)) return null;
+  const changed = [];
   for (const name of new Set([...Object.keys(beforeScripts), ...Object.keys(afterScripts)])) {
-    if (canonicalJson(beforeScripts[name]) === canonicalJson(afterScripts[name])) continue;
+    if (canonicalJson(beforeScripts[name]) !== canonicalJson(afterScripts[name])) changed.push(name);
+  }
+  return changed;
+}
+
+/**
+ * A command that runs npm scripts BY PATTERN (`run-s lint:*`, `npm-run-all --parallel "gen:*"`,
+ * `concurrently "npm:watch-*"`): it can invoke a script whose name it never spells out.
+ */
+const PATTERN_RUN_RE = /(?:\brun-[sp]\b|\bnpm-run-all2?\b|\bconcurrently\b|\bnpm:)[\s\S]*\*/;
+
+/**
+ * gate-test-reuse-yield-2026-10-01 D-009 rule 3: the "can any script invoke this name?" judge
+ * over every script command in a tree (`commands`: superproject and submodules, see
+ * treeScriptCommands in executed-source-map.mjs). The returned judge answers true when `name`
+ * occurs as a substring of any command other than its own definition (`definedIn` + `name`),
+ * and true for EVERY name when any command runs scripts by pattern. Substring matching
+ * over-approximates (`lint` matches `lint:tsc`), which only costs narrowings, never soundness.
+ *
+ * @param {ReadonlyArray<{ rel: string, name: string, command: string }>} commands
+ * @returns {(name: string, definedIn: string) => boolean}
+ */
+export function scriptInvocationJudge(commands) {
+  const patternRun = commands.some((c) => PATTERN_RUN_RE.test(c.command));
+  return (name, definedIn) => {
+    if (patternRun) return true;
+    for (const c of commands) {
+      if (c.rel === definedIn && c.name === name) continue;
+      if (c.command.includes(name)) return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * gate-test-reuse-yield-2026-10-01 D-009: is a change to a WORKSPACE (non-root) package.json
+ * inert for the proofs beneath its directory? True only when it changed nothing but `scripts`
+ * (scriptsOnlyChangedNames), no changed name is runner-affecting (isRunnerAffectingScript), and
+ * no changed name can be invoked by another script: `invokable(name)` must answer exactly
+ * `false` for the name and, for a `pre<x>` / `post<x>` name, for `<x>` (npm runs the hook around
+ * every `npm run <x>`). Any other answer, or a throw, keeps the change a config change.
+ *
+ * Why invocation matters here and not at the root (P-002): a task script can call a sibling
+ * (papercusp-desktop `test` runs `test:config`), or reach another package's scripts
+ * (`npm run test --workspaces`). A test that READS the package.json still records it in
+ * readPaths and is invalidated directly; one that spawns npm is opaque and never reused.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @param {(name: string) => boolean} invokable
+ * @returns {boolean}
+ */
+export function workspacePackageJsonChangeIsInert(beforeText, afterText, invokable) {
+  const names = scriptsOnlyChangedNames(beforeText, afterText);
+  if (names === null) return false;
+  for (const name of names) {
     if (isRunnerAffectingScript(name)) return false;
+    const targets = [name];
+    if (name.startsWith("pre") && name.length > 3) targets.push(name.slice(3));
+    if (name.startsWith("post") && name.length > 4) targets.push(name.slice(4));
+    for (const target of targets) {
+      let callable = true;
+      try {
+        callable = invokable(target) !== false;
+      } catch {
+        callable = true;
+      }
+      if (callable) return false;
+    }
   }
   return true;
 }
@@ -344,12 +426,16 @@ export function tsconfigUnreadByToolchain(rel, toolchainTsconfigs) {
 function invalidates(rel, o) {
   if (o.inputs.has(rel)) return true;
   for (const prefix of o.readDirs) if (rel === prefix.slice(0, -1) || rel.startsWith(prefix)) return true;
+  const base = path.posix.basename(rel);
   // P-002: an inert global change (see rootPackageJsonChangeIsInert) still invalidates a proof
   // that read the file itself (above), but it configures nothing beneath its directory. Without
   // this, the root package.json would still reach EVERY proof through the rule below, because
-  // "." is an ancestor of every executed module.
-  if (o.inert.has(rel)) return false;
-  const base = path.posix.basename(rel);
+  // "." is an ancestor of every executed module. D-009: the same for an inert WORKSPACE
+  // package.json (workspacePackageJsonChangeIsInert), which reaches every proof beneath it.
+  if (o.inert.has(rel)) {
+    if (o.inertWorkspace.has(rel) && o.dirs.has(path.posix.dirname(rel))) o.inertWorkspaceHit = true;
+    return false;
+  }
   if (CONFIG_BASENAME_RE.test(base) && o.dirs.has(path.posix.dirname(rel))) {
     // P-004: a tsconfig the toolchain never reads configures nothing beneath its directory.
     // Without this, an unread ROOT tsconfig would still reach every proof here ("." is an
@@ -391,8 +477,10 @@ function invalidates(rel, o) {
  *        gate-test-reuse-yield-2026-10-01 P-002: asked for each GLOBAL drift path; returning
  *        exactly `true` says that change touches nothing a proof cannot see, so it is not global
  *        and does not reach proofs through the ancestor-config rule (a proof that read the path
- *        itself is still invalidated). Any other result, or a throw, keeps it global. Omitted =
- *        every global path stays global. Implemented over git by gitInertGlobalChange
+ *        itself is still invalidated). Any other result, or a throw, keeps it global. D-009: also
+ *        asked for each WORKSPACE (non-root) package.json drift path; `true` there means it does
+ *        not configure the proofs beneath its directory (summary.inertWorkspaceConfig). Omitted =
+ *        nothing is narrowed. Implemented over git by gitInertGlobalChange
  *        (scripts/lib/executed-source-map.mjs).
  * @param {ReadonlySet<string> | null} [o.testConfigMainProcess] P-003: the test-config source
  *        files the vitest main process can load (isGlobalRunnerInput). A drift path it narrows to
@@ -444,12 +532,23 @@ export function selectReusablePasses({
     // P-004: proofs REUSED (or audited / watched) that an unread drift tsconfig would have
     // invalidated before P-004: as a global root tsconfig, or as an ancestor-directory config.
     tsconfigNarrowed: 0,
+    // D-009: proofs REUSED (or audited / watched) that an inert workspace package.json drift
+    // path would have invalidated before D-009, as an ancestor-directory config.
+    inertWorkspaceConfig: 0,
   };
   const skip = [];
   /** @type {Map<string, "audit" | "expired-clean">} */
   const watch = new Map();
-  /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string>, narrowed: boolean, tsconfigNarrowed: boolean }>} */
+  /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string>, inertWorkspace: Set<string>, narrowed: boolean, tsconfigNarrowed: boolean }>} */
   const driftCache = new Map();
+  const askInert = (rel, sha) => {
+    if (!inertGlobalChange) return false;
+    try {
+      return inertGlobalChange(rel, sha, judgedSha) === true;
+    } catch {
+      return false;
+    }
+  };
   const driftFor = (sha) => {
     if (!driftCache.has(sha)) {
       let drift = null;
@@ -466,6 +565,7 @@ export function selectReusablePasses({
       let narrowed = false;
       let tsconfigNarrowed = false;
       const inert = new Set();
+      const inertWorkspace = new Set();
       if (drift !== null) {
         for (const rel of drift) {
           if (!isGlobalRunnerInput(rel, testConfigMainProcess, toolchainTsconfigs)) {
@@ -475,25 +575,21 @@ export function selectReusablePasses({
               // against readPaths only.
               if (tsconfigUnreadByToolchain(rel, toolchainTsconfigs)) tsconfigNarrowed = true;
               else narrowed = true;
+            } else if (path.posix.basename(rel) === "package.json" && askInert(rel, sha)) {
+              // D-009: a scripts-only workspace manifest edit no script can reach.
+              inert.add(rel);
+              inertWorkspace.add(rel);
             }
             continue;
           }
-          let isInert = false;
-          if (inertGlobalChange) {
-            try {
-              isInert = inertGlobalChange(rel, sha, judgedSha) === true;
-            } catch {
-              isInert = false;
-            }
-          }
-          if (isInert) inert.add(rel);
+          if (askInert(rel, sha)) inert.add(rel);
           else {
             global = true;
             break;
           }
         }
       }
-      driftCache.set(sha, { drift, global, inert, narrowed, tsconfigNarrowed });
+      driftCache.set(sha, { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed });
     }
     return driftCache.get(sha);
   };
@@ -538,7 +634,7 @@ export function selectReusablePasses({
       reject("opaque");
       continue;
     }
-    const { drift, global, inert, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
+    const { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
     if (drift === null) {
       reject("unknownDrift");
       continue;
@@ -552,7 +648,7 @@ export function selectReusablePasses({
       reject("opaque");
       continue;
     }
-    if (inert.size > 0 && !expired) summary.inertGlobal += 1;
+    if (inert.size > inertWorkspace.size && !expired) summary.inertGlobal += 1;
     if (narrowed && !expired) summary.testConfigNarrowed += 1;
     const inputs = new Set([file, ...p.executedModules]);
     const readDirs = [];
@@ -570,7 +666,16 @@ export function selectReusablePasses({
       }
     }
     let changed = false;
-    const check = { inputs, readDirs, dirs, inert, toolchainTsconfigs, unreadTsconfigHit: false };
+    const check = {
+      inputs,
+      readDirs,
+      dirs,
+      inert,
+      inertWorkspace,
+      toolchainTsconfigs,
+      unreadTsconfigHit: false,
+      inertWorkspaceHit: false,
+    };
     for (const rel of drift) {
       if (invalidates(rel, check)) {
         changed = true;
@@ -582,6 +687,7 @@ export function selectReusablePasses({
       continue;
     }
     if ((tsconfigNarrowed || check.unreadTsconfigHit) && !expired) summary.tsconfigNarrowed += 1;
+    if (check.inertWorkspaceHit && !expired) summary.inertWorkspaceConfig += 1;
     if (expired) {
       summary.expiredClean += 1;
       watch.set(file, "expired-clean");

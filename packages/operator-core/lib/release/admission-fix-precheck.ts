@@ -400,6 +400,30 @@ export function classifyTestFileRun(r: ExecResult): { status: FixPrecheckFileSta
   return { status: 'fail', detail: `exit ${r.exitCode}` };
 }
 
+/**
+ * Environment for the pre-check's `setup-release-checkout.sh` call (WI-10004928, D-129).
+ *
+ * The pre-check tree's node_modules is materialized from an immutable dependency
+ * generation. When the generation changes, an independent copy costs ~20 min for
+ * ~22 GB on ext4 (no reflink), on the admission critical path. A hardlink
+ * materialization (`DEPENDENCY_GENERATION_ALLOW_HARDLINK=1`) costs seconds and is
+ * safe for this tree:
+ *  - generation files are frozen `chmod a-w` (0444), and an independent copy keeps
+ *    that mode, so an in-place write already fails in the pre-check today. A
+ *    hardlink adds no new write path into the generation;
+ *  - `cp -al` creates distinct directories, so caches that create new entries
+ *    (vitest's `node_modules/.vite`) stay private to this tree, and the
+ *    generation prunes those cache dirs;
+ *  - the pre-check only runs `scripts/test-files.mjs` (vitest). There are no
+ *    installers or patchers here, which are the writers the copy default guards against.
+ * The shell decides per tree and falls back to an independent copy on a
+ * cross-device root or any `cp -al` failure (dependency-generation.test.ts).
+ * The checkpoint tree itself keeps the copy default.
+ */
+export function admissionPrecheckSetupEnv(): NodeJS.ProcessEnv {
+  return { DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' };
+}
+
 export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunnerOptions): FixPrecheckRunner {
   const exec = opts.exec ?? defaultExec;
   const runLockHeld = opts.runLockHeld ?? ((root: string) => isCheckpointRunLockHeldCheap(root));
@@ -450,7 +474,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         '--node-modules-copy',
         'copy',
       ],
-      { cwd: opts.integrationRoot, timeoutMs: setupTimeoutMs },
+      { cwd: opts.integrationRoot, timeoutMs: setupTimeoutMs, env: admissionPrecheckSetupEnv() },
     );
     if (setup.exitCode !== 0) {
       const infra = dependencyGenerationInfraCode(setup.exitCode, setup.output);

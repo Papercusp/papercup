@@ -88,7 +88,7 @@ export default defineTool({
     const nowMs = Date.now();
     const window = health.resolveRoutingHealthWindow(args, nowMs);
     if ('error' in window) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: window.error }) }] };
+      return { data: { ok: false, error: window.error } };
     }
     const { rows, truncated } = await health.readRoutingHealthRows(
       getOrgPg().sql as unknown as Parameters<typeof health.readRoutingHealthRows>[0],
@@ -97,6 +97,6 @@ export default defineTool({
       new Date(window.untilMs).toISOString(),
     );
     const result = health.routingHealthFromRows(rows, { ...window, nowMs, truncatedByLimit: truncated });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...result }) }] };
+    return { data: { ok: true, ...result } };
   },
 });

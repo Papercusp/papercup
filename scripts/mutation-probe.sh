@@ -1138,6 +1138,14 @@ run_guard() {
       if [ "${TARGET_MODE:-}" = "copy-out" ] && [ -n "${COPY_OUT_ROOT:-}" ] && [ -n "${COPY_OUT_REL:-}" ]; then
         export PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT="$COPY_OUT_ROOT"
       fi
+      # WI-10004952: an in-tree guard mutates the subject IN the checkout, so the
+      # reporter's porcelain snapshot always saw it and every in-tree row landed
+      # worktree_dirty=true, even from a pristine as-committed clone. Name the
+      # subject (absolute) so the reporter exempts exactly that one path; any other
+      # dirt, and a shared-tree origin, still record dirty.
+      if [ "$IN_TREE" -eq 1 ]; then
+        export PAPERCUSP_MUTATION_PROBE_SUBJECT="$FILE"
+      fi
       # See the DIRTY-WINDOW ceiling above. Exported for BOTH phases in in-tree
       # mode and never for the mutant alone: the baseline and the mutant have to
       # go through the same invocation path, or the comparison the whole verdict

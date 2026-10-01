@@ -157,20 +157,46 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }: {
     out: any;
 }): boolean;
 /**
+ * Every package.json in the tree at `sha` (gate-test-reuse-yield-2026-10-01 D-009), superproject
+ * and submodules: gitlinks are followed at the commit the tree pins, recursively, and node_modules
+ * paths are skipped. Returns each manifest's text by repo-relative path, and every script command
+ * in them. Throws on any failure (a sha or pinned submodule commit this clone lacks, a manifest
+ * that is not a JSON object, a non-object `scripts`), because a manifest it cannot read could
+ * invoke any script; the caller treats a throw as "cannot tell".
+ *
+ * @param {{ exec: (file: string, args: string[], opts: object) => string | Buffer, repoRoot: string, sha: string }} o
+ * @returns {{ texts: Map<string, string>, commands: Array<{ rel: string, name: string, command: string }> }}
+ */
+export function treeScriptCommands({ exec, repoRoot, sha }: {
+    exec: (file: string, args: string[], opts: object) => string | Buffer;
+    repoRoot: string;
+    sha: string;
+}): {
+    texts: Map<string, string>;
+    commands: Array<{
+        rel: string;
+        name: string;
+        command: string;
+    }>;
+};
+/**
  * Build selectReusablePasses' `inertGlobalChange` seam over a real git checkout
- * (gate-test-reuse-yield-2026-10-01 P-002, P-005). Two root files can be inert, each read at both
- * shas with `git show`: package.json, judged by rootPackageJsonChangeIsInert, and
+ * (gate-test-reuse-yield-2026-10-01 P-002, P-005, D-009). Two root files can be inert, each read
+ * at both shas with `git show`: package.json, judged by rootPackageJsonChangeIsInert, and
  * package-lock.json, judged by comparing packageLockInstallView (the lockfile's view is computed
- * once per sha, because many proofs share the judged sha and the file is over 1 MB). Every other
+ * once per sha, because many proofs share the judged sha and the file is over 1 MB). D-009: so can
+ * any non-root package.json, judged by workspacePackageJsonChangeIsInert against the script
+ * commands of the whole tree at BOTH shas (treeScriptCommands, once per sha; it also supplies the
+ * manifest texts, so a manifest inside a submodule is read at its pinned commit). Every other
  * path, and any read that fails (a sha missing from this clone, a file absent on one side),
  * answers false, so the change stays global. Results are cached per (path, from, to).
  *
- * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string }} o
+ * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string | Buffer }} o
  * @returns {(rel: string, fromSha: string, toSha: string) => boolean}
  */
 export function gitInertGlobalChange({ repoRoot, exec }: {
     repoRoot: string;
-    exec?: (file: string, args: string[], opts: object) => string;
+    exec?: (file: string, args: string[], opts: object) => string | Buffer;
 }): (rel: string, fromSha: string, toSha: string) => boolean;
 /**
  * One greppable line per workspace selection, so a run that did not narrow is never silent

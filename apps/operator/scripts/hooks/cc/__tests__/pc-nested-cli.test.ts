@@ -420,11 +420,22 @@ describe("per-tool-call hooks skip a nested CLI via the cached verdict (WI-10004
     const expectation = shape === "nested-cli" ? "sends nothing" : "still reports (calibration)";
 
     it(`pretooluse-activity-report: a ${shape} CLI ${expectation}`, async () => {
-      const r = await runHookUnder(shape, "PreToolUse", PRE_ACTIVITY_HOOK, {
-        tool_name: "Bash",
-        tool_use_id: "tu-pre",
-        tool_input: { command: "ls" },
-      });
+      // The pre report is throttled AND de-duplicated per SID through marker files shared
+      // with the post report. Those markers are also su state a nested CLI would otherwise
+      // write (silencing the su's own dispatch reports). A per-shape marker dir and no
+      // throttle make this case measure the guard alone, whatever ran before it.
+      const r = await runHookUnder(
+        shape,
+        "PreToolUse",
+        PRE_ACTIVITY_HOOK,
+        { tool_name: "Bash", tool_use_id: "tu-pre", tool_input: { command: "ls" } },
+        {
+          env: {
+            PAPERCUSP_ACTIVITY_PRE_MIN_INTERVAL_SEC: "0",
+            PAPERCUSP_LOCKS_CACHE_DIR: join(home, `pre-cache-${shape}`),
+          },
+        },
+      );
       expect(r.exitCode).toBe(0);
       expect(r.requests).toHaveLength(shape === "nested-cli" ? 0 : 1);
       if (shape === "nested-cli") {

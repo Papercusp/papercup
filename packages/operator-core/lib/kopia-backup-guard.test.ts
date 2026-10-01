@@ -104,6 +104,10 @@ function run(args: string[], env: NodeJS.ProcessEnv) {
   });
 }
 
+function readLog(path: string): string {
+  return existsSync(path) ? readFileSync(path, 'utf8') : '(no log)';
+}
+
 async function waitForPath(path: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!existsSync(path)) {
@@ -653,6 +657,104 @@ describe('Kopia global backup guard', () => {
     );
 
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
+  it('hands the lock back early when the child asks, and still waits for the child (WI-10004870)', () => {
+    // The hourly db-dump writes its last ~25 min into a tier that .kopiaignore keeps
+    // out of every snapshot, so it asks the guard to drop the shared lock first. The
+    // contract: once asked, a contender gets the lock WHILE the child is still running,
+    // the guard still reports the child's own exit status, and the request file does
+    // not outlive the run (a later guard must never inherit it).
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe -- bash -c ': >"$KOPIA_BACKUP_GUARD_RELEASE_PATH"; for _ in $(seq 1 1000); do [ -e "$1" ] && break; sleep 0.01; done; [ -e "$1" ] && touch "$2"' _ "$CHILD_GO" "$CHILD_DONE" >"$HOLDER_LOG" 2>&1 &
+        holder=$!
+        for _ in $(seq 1 500); do grep -q 'result=released-early' "$HOLDER_LOG" && break; sleep 0.01; done
+        grep -q 'result=released-early' "$HOLDER_LOG" || exit 91
+        "$GUARD" --mode scheduled --label hot -- touch "$CONTENDER_RAN" >"$CONTENDER_LOG" 2>&1
+        contender_rc=$?
+        # The first child must still be running: it only finishes once released below.
+        [ -e "$CHILD_DONE" ] && exit 92
+        touch "$CHILD_GO"
+        wait "$holder"
+        holder_rc=$?
+        leftovers=$(ls "$DIR"/global.lock.release.* 2>/dev/null | wc -l)
+        [ "$contender_rc" -eq 0 ] || exit 93
+        [ -e "$CONTENDER_RAN" ] || exit 94
+        [ "$holder_rc" -eq 0 ] && [ -e "$CHILD_DONE" ] || exit 95
+        [ "$(grep -c 'result=released-early' "$HOLDER_LOG")" -eq 1 ] || exit 96
+        grep -q 'result=finished mode=scheduled rc=0' "$HOLDER_LOG" || exit 97
+        [ "$leftovers" -eq 0 ] || exit 98
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          DIR: dir,
+          CHILD_GO: join(dir, 'child-go'),
+          CHILD_DONE: join(dir, 'child-done'),
+          HOLDER_LOG: join(dir, 'holder.log'),
+          CONTENDER_RAN: join(dir, 'contender-ran'),
+          CONTENDER_LOG: join(dir, 'contender.log'),
+        },
+        timeout: 20_000,
+      },
+    );
+
+    expect(
+      scenario.status,
+      `${scenario.stdout}\n${scenario.stderr}\nholder:\n${readLog(join(dir, 'holder.log'))}\ncontender:\n${readLog(join(dir, 'contender.log'))}`,
+    ).toBe(0);
+  });
+
+  it('keeps the whole-lifetime hold for a child that never asks for early release', () => {
+    // Calibration for the case above: the request channel is exported to EVERY
+    // scheduled child, so a child that ignores it (the hot sweep) must still block a
+    // contender until it exits. Without this, a guard that unlocked unconditionally
+    // would pass the early-release case too.
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe -- bash -c '[ -n "$KOPIA_BACKUP_GUARD_RELEASE_PATH" ] || exit 7; touch "$1"; for _ in $(seq 1 1000); do [ -e "$2" ] && break; sleep 0.01; done' _ "$READY" "$GO" >"$HOLDER_LOG" 2>&1 &
+        holder=$!
+        for _ in $(seq 1 500); do [ -e "$READY" ] && break; sleep 0.01; done
+        [ -e "$READY" ] || exit 91
+        sleep 0.3
+        "$GUARD" --mode scheduled --label hot -- touch "$CONTENDER_RAN" >/dev/null 2>&1
+        contender_rc=$?
+        touch "$GO"
+        wait "$holder"
+        holder_rc=$?
+        [ "$contender_rc" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 92
+        [ ! -e "$CONTENDER_RAN" ] || exit 93
+        [ "$holder_rc" -eq 0 ] || exit 94
+        ! grep -q 'result=released-early' "$HOLDER_LOG" || exit 95
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          READY: join(dir, 'ready'),
+          GO: join(dir, 'go'),
+          HOLDER_LOG: join(dir, 'holder.log'),
+          CONTENDER_RAN: join(dir, 'contender-ran'),
+        },
+        timeout: 20_000,
+      },
+    );
+
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\n${readLog(join(dir, 'holder.log'))}`).toBe(0);
   });
 
   it('waits for the current holder and releases the lock after failure', () => {

@@ -12,9 +12,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const text = (payload: Record<string, unknown>) => ({ data: payload });
 
 const HEX64 = /^[0-9a-fA-F]{64}$/;
 
