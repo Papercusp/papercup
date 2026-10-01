@@ -637,13 +637,14 @@ def record_owner_prompt(prompt, native_session):
         'submittedAtMs': round(now_ms),
     })
 
-CAPTURE_FAILED_NOTICE = (
-    "⚠ OWNER-DIRECTIVE CAPTURE FAILED — this owner turn was NOT recorded as an open "
-    "directive. The operator was unreachable or refused both orders:capture and the "
-    "older orders:capture-pending. The Orientation block will NOT resurface this turn, "
-    "so nothing will remind you a second time: if it carries a directive, record it "
-    "yourself now with orders:record."
-)
+def capture_unconfirmed_notice(source_turn_ref):
+    return (
+        "⚠ OWNER-DIRECTIVE CAPTURE UNCONFIRMED — the hook got no usable receipt, so "
+        "this turn may already be recorded. Do not create another directive with "
+        "orders:record based on this notice alone. Retry orders:capture with the exact "
+        "owner turn and this same sourceTurnRef to recover its existing id or record it "
+        "once (the key is idempotent): " + source_turn_ref
+    )
 
 # directive-ownership-clarity-2026-09-23 D-002: the id is the ONLY way an agent
 # identifies its own directive. Identical text can be open in several sessions at
@@ -693,18 +694,22 @@ def capture_owner_prompt(prompt, native_session):
         'sessionRef': native_session or sid,
         'ownerName': 'owner',
     }
-    # _mcp_call never raises; it returns None for EVERY failure mode (no token, operator
-    # down, transport error, tool refusal, unknown verb). So None is the one signal we
-    # get: try the next verb, and surface it if none landed.
+    # _mcp_call never raises and returns None for every failure mode. A timeout or
+    # reset can happen AFTER recordOwnerDirective committed, so an absent receipt is
+    # not evidence that no row landed. Accept only a usable id from either verb.
     res = None
     for verb in CAPTURE_VERBS:
         res = _mcp_call(verb, args, timeout=1)
-        if res is not None:
+        if isinstance(res, dict) and isinstance(res.get('id'), int):
             break
-    if res is None:
-        return CAPTURE_FAILED_NOTICE
     if not isinstance(res, dict) or not isinstance(res.get('id'), int):
-        return None
+        # recordOwnerDirective is idempotent on (workspace, owner, sourceTurnRef):
+        # if the earlier write committed but its response was lost, the same call
+        # returns that row's id. This is a bounded read-after-write through the
+        # existing capture contract, with no new lookup surface or duplicate row.
+        res = _mcp_call('orders:capture', args, timeout=1)
+    if not isinstance(res, dict) or not isinstance(res.get('id'), int):
+        return capture_unconfirmed_notice(source)
     # directive-ownership-clarity-2026-09-23 P-001 / D-002: ALWAYS tell the session
     # the id of the directive this turn became. Before this, the id was only emitted
     # when a summary was owed, so an agent closing "its" directive had to find it by

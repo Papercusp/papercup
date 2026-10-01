@@ -1628,6 +1628,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/remote-object-state.selftest.sh'], label: 'upload-release.sh remote_state: a multipart object is never accepted on SIZE alone, so a rebuilt-but-same-size artifact cannot be silently kept as already-uploaded (EI-23963309971611146)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh'], label: "offline-installer journey evidence: the operator's home dir and username are redacted in every spelling, incl. the dash-encoded scratch dir, while the guest's /home/tester paths survive (WI-10004119)" },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh'], label: "linux-test-vm ports: a running VM's ports are read from its own qemu argv, each ad-hoc name gets its own slot at boot, and a stopped ad-hoc name fails loudly instead of resolving to another agent's VM (WI-10004354)" },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/private-target-slot-adopt.selftest.sh'], label: 'desktop private Cargo target slots: a dead root is adopted IN PLACE (never moved, so build-script absolute paths still resolve) and a relocated root is reaped, not adopted (WI-10004841)' },
       ],
     },
   ],

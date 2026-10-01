@@ -40,7 +40,13 @@ import {
   withWorkItemDependencyAdmissionTransaction,
   type StoredWorkItemDependencyRow,
 } from './dbos/work-item-deps-store';
-import { isHarnessInScope, primeWorkScopePolicy, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
+import {
+  isHarnessInScope,
+  isPlatformNonPotHarness,
+  primeWorkScopePolicy,
+  recordWorkScopeDecision,
+  workScopeSqlTerms,
+} from './work-scope-policy';
 import type { OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
 
@@ -5501,6 +5507,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // using the SAME WHERE with the scope term NEGATED, so the two are exhaustive by
     // construction and a row can never fall into neither bucket. No policy ⇒ no extra query.
     const heldByScope: Record<string, number> = {};
+    const misHomedByScope: Record<string, number> = {};
     if (scopeMatch) {
       const heldRows = await sql<Array<{ harness_slug: string; held: number }>>`
         SELECT harness_slug, count(*)::int AS held
@@ -5513,6 +5520,12 @@ export async function runWorkItemAdmissionFailOpen(opts: {
          GROUP BY 1
          ORDER BY 1`;
       for (const row of heldRows) heldByScope[row.harness_slug] = Number(row.held) || 0;
+      // WI-10004723 (P-003): a held row in the platform's own non-pot harness (`operator:<ws>`) is
+      // NOT another pot's work deliberately held — it was mis-homed, and holding it hides it
+      // forever. Report it separately so the ledger and the scope ring say so.
+      for (const [harness, count] of Object.entries(heldByScope)) {
+        if (isPlatformNonPotHarness(harness)) misHomedByScope[harness] = count;
+      }
       // Once per harness per process, mirroring the promoter path, so a many-harness tick
       // cannot flood the ledger ring while still making the first occurrence announce itself.
       for (const [harness, count] of Object.entries(heldByScope)) {
@@ -5525,9 +5538,13 @@ export async function runWorkItemAdmissionFailOpen(opts: {
           harness,
           actor: FAIL_OPEN_ACTOR,
           note:
-            `${count} over-age pending work-item(s) NOT admitted — harness outside the workspace ` +
-            `work-scope policy. They stay pending (never deleted) until the policy widens; this ` +
-            `is a deliberate hold, not a missing backstop.`,
+            harness in misHomedByScope
+              ? `MIS-HOMED: ${count} over-age pending work-item(s) in the platform's non-pot harness ` +
+                `${harness}. This is not another pot's work; re-home each to the platform harness ` +
+                `with work_items:rehome { op:'move', harness:'papercusp' }.`
+              : `${count} over-age pending work-item(s) NOT admitted — harness outside the workspace ` +
+                `work-scope policy. They stay pending (never deleted) until the policy widens; this ` +
+                `is a deliberate hold, not a missing backstop.`,
         });
       }
     }
@@ -5577,6 +5594,8 @@ export async function runWorkItemAdmissionFailOpen(opts: {
         // are exactly what no surface recorded before, so the ledger could not answer "was
         // this harness held, or was nothing ever watching it?" after the fact.
         heldByScope,
+        // Subset of heldByScope that sits in a platform non-pot harness: mis-homed, not held.
+        misHomedByScope,
         reviewDebt,
         reviewMoot,
       },

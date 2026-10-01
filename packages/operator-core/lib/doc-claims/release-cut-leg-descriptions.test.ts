@@ -52,8 +52,8 @@ describe('release:cut leg descriptions track their actual producers', () => {
   });
 
   it('pins the named producers to the entrypoints release-local.sh actually invokes', () => {
-    expect(RELEASE_LOCAL).toContain('MAC_PRODUCER="$ROOT/bin/build-mac-cross.sh"');
-    expect(RELEASE_LOCAL).toContain('bash "$MAC_PRODUCER"');
+    expect(RELEASE_LOCAL).toContain('MAC_PRODUCER="$ORCHESTRATOR_HERE/build-mac-cross.sh"');
+    expect(RELEASE_LOCAL).toContain('env "${mac_env[@]}" bash "$MAC_PRODUCER"');
     expect(RELEASE_LOCAL).toContain('WIN_PRODUCER="$ORCHESTRATOR_HERE/build-windows-cross.sh"');
     expect(RELEASE_LOCAL).toContain('"$WIN_TARGET_ENTRYPOINT" "$WIN_PRODUCER"');
   });

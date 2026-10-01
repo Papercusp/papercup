@@ -18,7 +18,7 @@ const HEX = ROOT.slice('sha256:'.length);
 async function put(api: ReturnType<typeof buildApi>, env: ReturnType<typeof makeEnv>['env'], hex: string, body: Buffer, auth = true) {
   return api.request(
     `/artifacts/sha256/${hex}`,
-    { method: 'PUT', headers: auth ? { Authorization: 'Bearer pub' } : {}, body },
+    { method: 'PUT', headers: auth ? { Authorization: 'Bearer pub' } : {}, body: new Uint8Array(body) },
     env,
   );
 }

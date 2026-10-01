@@ -191,7 +191,7 @@ async function publishAndApprove(ctx: Ctx): Promise<{ row: Record<string, unknow
   const hex = releaseRoot.slice('sha256:'.length);
 
   gh(PUBLISHER, A, files);
-  const put = await ctx.api.request(`/artifacts/sha256/${hex}`, { method: 'PUT', headers: { Authorization: 'Bearer t' }, body: bytes }, ctx.env);
+  const put = await ctx.api.request(`/artifacts/sha256/${hex}`, { method: 'PUT', headers: { Authorization: 'Bearer t' }, body: new Uint8Array(bytes) }, ctx.env);
   expect(put.status).toBe(201);
   const published = await ctx.api.request('/listings', { method: 'POST', headers: JSON_AUTH, body: JSON.stringify(listingBody(REF, releaseRoot)) }, ctx.env);
   expect(published.status).toBe(200);
@@ -287,7 +287,7 @@ describe('hostile publisher — publish, approve, then poison the mirror (P-012)
     await fs.mkdir(dirtyDir, { recursive: true });
     for (const [name, text] of Object.entries(recipeFiles(HOSTILE))) await fs.writeFile(join(dirtyDir, name), text);
     gh(PUBLISHER, A, recipeFiles(HOSTILE));
-    const poisoned = await ctx.api.request(`/artifacts/sha256/${hex}`, { method: 'PUT', headers: { Authorization: 'Bearer t' }, body: packSelfDescribingDir(dirtyDir) }, ctx.env);
+    const poisoned = await ctx.api.request(`/artifacts/sha256/${hex}`, { method: 'PUT', headers: { Authorization: 'Bearer t' }, body: new Uint8Array(packSelfDescribingDir(dirtyDir)) }, ctx.env);
     expect(poisoned.status).toBe(422);
     expect(await poisoned.json()).toMatchObject({ error: 'content-address-mismatch' });
 

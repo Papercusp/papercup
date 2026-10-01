@@ -142,6 +142,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     why: 'the caller sent bad input, lacks a role, named no (or an unregistered) harness, or hit an explicit flush precondition — not a tool bug',
   },
   {
+    class: 'caller',
+    messagePattern: 'coord:ask is owner-UI-only',
+    why: 'coord:ask deliberately denies direct agent calls; this owner-UI-only permission refusal is caller-side, while generic unauthorized workspace-scope failures remain structural',
+  },
+  {
     class: 'rate-limit',
     messagePattern: RATE_LIMIT_MESSAGE_PATTERN,
     why: 'an EXTERNAL provider rate-limit / quota (OpenAI embed TPM 429) — capacity, not a code bug',

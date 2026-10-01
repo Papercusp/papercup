@@ -201,6 +201,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'the caller-authored BAR roles fail lifecycle pre-vetting; deterministic readiness refusal is caller input, not a structural tool defect',
   },
+  {
+    n: 3, errorCode: 'unauthorized', status: 'error',
+    message: 'coord:ask is owner-UI-only; agents must use coord:send or coord:message-agent.',
+    expectedClass: 'caller',
+    note: 'agent invocation of an owner-UI-only surface is an expected permission precondition; keep the generic unauthorized workspace-scope error structural (D-007)',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

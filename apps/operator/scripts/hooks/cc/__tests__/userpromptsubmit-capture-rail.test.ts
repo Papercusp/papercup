@@ -72,6 +72,11 @@ let baseUrl = '';
 let calls: ToolCall[] = [];
 /** The stub answers these tools with a rejected result instead of ok. */
 let rejectTools = new Set<string>();
+/** Simulate a committed capture whose HTTP response is lost once. */
+let dropOnceTools = new Set<string>();
+/** Model recordOwnerDirective's unique sourceTurnRef lookup on retry. */
+let persistedCaptures = new Map<string, Record<string, unknown>>();
+let captureTrace: string[] = [];
 /** What a successful capture reports back; `needsSummary` drives the D-004 notice. */
 let captureReply: Record<string, unknown> = { ok: true, id: 1, needsSummary: false };
 
@@ -111,6 +116,9 @@ beforeEach(async () => {
   writeFileSync(join(homeDir, '.papercusp', 'superuser-token'), 'test-token-not-a-real-credential\n');
   calls = [];
   rejectTools = new Set();
+  dropOnceTools = new Set();
+  persistedCaptures = new Map();
+  captureTrace = [];
   captureReply = { ok: true, id: 1, needsSummary: false };
 
   server = createServer((req, res) => {
@@ -130,9 +138,31 @@ beforeEach(async () => {
       }
       calls.push({ name, args });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        rejectTools.has(name) ? rejectedEnvelope('refused by the stub') : okEnvelope(captureReply),
-      );
+      if (rejectTools.has(name)) {
+        res.end(rejectedEnvelope('refused by the stub'));
+        return;
+      }
+      if (CAPTURE_VERBS.has(name)) {
+        const sourceTurnRef = String(args.sourceTurnRef ?? '');
+        let reply = persistedCaptures.get(sourceTurnRef);
+        if (!reply) {
+          reply = { ...captureReply };
+          persistedCaptures.set(sourceTurnRef, reply);
+          captureTrace.push('insert');
+        } else {
+          captureTrace.push('dedupe-read');
+        }
+        if (dropOnceTools.delete(name)) {
+          // The request reached the server and the write is durable; only the
+          // response is lost, reproducing the outcome-unknown transport window.
+          captureTrace.push('response-lost');
+          res.destroy();
+          return;
+        }
+        res.end(okEnvelope(reply));
+        return;
+      }
+      res.end(okEnvelope(captureReply));
     });
   });
   await new Promise<void>((done) => server!.listen(0, '127.0.0.1', done));
@@ -558,16 +588,16 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(ctx).toContain('orders:summarize { id: 7778');
   });
 
-  it('CONTROL: a capture reply without an id adds no directive-id notice (never an invented number)', async () => {
+  it('a capture reply without an id is unconfirmed, never an invented directive id', async () => {
     writeMachineRow();
     captureReply = { ok: true };
     const ctx = contextOf(await runHook({ prompt: 'short directive', session_id: 'native-session-mmm' }));
 
     expect(ctx).not.toContain('YOUR owner directive #');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
   });
 
-  it('a REJECTED capture is loud in additionalContext and still fail-open', async () => {
+  it('a REJECTED capture stays explicitly unconfirmed and fail-open', async () => {
     writeMachineRow();
     rejectTools = new Set(['orders:capture', 'orders:capture-pending']);
     const out = await runHook({
@@ -576,13 +606,42 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     });
     const ctx = contextOf(out);
 
-    // Both verbs WERE attempted — this is what separates "the server said no" from
-    // "the hook never tried", which the failure notice alone cannot distinguish.
-    expect(captureCalls()).toHaveLength(2);
-    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    // Both verbs and one same-key verification retry were attempted. A refusal is
+    // not used to claim that no prior request committed.
+    expect(captureCalls().map((call) => call.name)).toEqual([
+      'orders:capture',
+      'orders:capture-pending',
+      'orders:capture',
+    ]);
+    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
+    expect(ctx).toContain('Do not create another directive with orders:record');
     // Fail-OPEN: the owner's turn is never blocked and the stamp survives.
     expect(out.status).toBe(0);
     expect(ctx).toContain('OWNER (interactive)');
+  });
+
+  it('a committed capture whose response is lost is recovered by the same sourceTurnRef', async () => {
+    writeMachineRow();
+    captureReply = { ok: true, id: 4243, needsSummary: false };
+    dropOnceTools.add('orders:capture');
+    rejectTools.add('orders:capture-pending');
+
+    const ctx = contextOf(
+      await runHook({ prompt: 'resume this owner directive', session_id: 'native-session-lost-response' }),
+    );
+    const captures = captureCalls();
+
+    expect(captures.map((call) => call.name)).toEqual([
+      'orders:capture',
+      'orders:capture-pending',
+      'orders:capture',
+    ]);
+    expect(captures[0]!.args.sourceTurnRef).toBe(captures[1]!.args.sourceTurnRef);
+    expect(captures[1]!.args.sourceTurnRef).toBe(captures[2]!.args.sourceTurnRef);
+    expect(persistedCaptures.size).toBe(1);
+    expect(captureTrace).toEqual(['insert', 'response-lost', 'dedupe-read']);
+    expect(ctx).toContain('YOUR owner directive #4243');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
   });
 });
 
@@ -653,12 +712,13 @@ describe('userpromptsubmit-provenance.sh — dead operator pin falls back to the
     );
     // The stub is the configured proxy and was never contacted.
     expect(calls).toHaveLength(0);
-    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
   });
 
-  it('a pin that ANSWERED with an error is not retried elsewhere, so a write can never apply twice', async () => {
+  it('a pin that ANSWERED with an error stays pinned for same-key verification', async () => {
     writeMachineRow();
     const pinnedVerbs: string[] = [];
+    const pinnedRefs: string[] = [];
     const failing = createServer((req, res) => {
       let body = '';
       req.on('data', (chunk) => {
@@ -666,7 +726,11 @@ describe('userpromptsubmit-provenance.sh — dead operator pin falls back to the
       });
       req.on('end', () => {
         try {
-          pinnedVerbs.push(String(JSON.parse(body)?.params?.name ?? ''));
+          const parsed = JSON.parse(body);
+          pinnedVerbs.push(String(parsed?.params?.name ?? ''));
+          if (parsed?.params?.arguments?.sourceTurnRef) {
+            pinnedRefs.push(String(parsed.params.arguments.sourceTurnRef));
+          }
         } catch {
           pinnedVerbs.push('');
         }
@@ -683,14 +747,17 @@ describe('userpromptsubmit-provenance.sh — dead operator pin falls back to the
           { PAPERCUSP_OPERATOR_URL: pinned, PAPERCUSP_MCP_PROXY_PORT: stubPort() },
         ),
       );
-      // CALIBRATION: the pinned server really was reached (once per capture verb),
-      // so the zero below is a decision not to retry, not a request that never left.
+      // CALIBRATION: the pin received both capture verbs and the bounded
+      // same-key verification retry; the local proxy still received nothing.
       expect(pinnedVerbs.filter((v) => CAPTURE_VERBS.has(v))).toEqual([
         'orders:capture',
         'orders:capture-pending',
+        'orders:capture',
       ]);
+      expect(pinnedRefs).toHaveLength(3);
+      expect(new Set(pinnedRefs).size).toBe(1);
       expect(calls).toHaveLength(0);
-      expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+      expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
       expect(ctx).not.toContain('OPERATOR PIN DEAD');
     } finally {
       await new Promise<void>((done) => failing.close(() => done()));

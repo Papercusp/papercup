@@ -3,7 +3,7 @@ import { StrictMode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
-import Joyride from "react-joyride";
+import { Joyride } from "react-joyride";
 import { Button } from "@/app/harness/Button";
 import { Modal } from "@/app/harness/Modal";
 import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
@@ -49,7 +49,10 @@ describe.each(["driver", "joyride"] as const)("%s on the maintained React/TanSta
     </>;
   }
   function mount() {
-    const root = createRootRoute({ component: () => <main><Outlet /></main> });
+    const root = createRootRoute({
+      component: () => <main><Outlet /></main>,
+      errorComponent: ({ error }) => <p role="alert">Candidate fixture failed: {error.message}</p>,
+    });
     const cloud = createRoute({ getParentRoute: () => root, path: "/cloud", component: Fixture });
     const other = createRoute({ getParentRoute: () => root, path: "/other", component: () => <h1>Other app view</h1> });
     const router = createRouter({ routeTree: root.addChildren([cloud, other]), history: createMemoryHistory({ initialEntries: ["/cloud"] }) });

@@ -224,7 +224,7 @@ async function beginSidecarProcessExecution(params: ExecParams): Promise<Governe
       demand: { cpuWeight: 1 },
       payloadRef: `process:${params.command}`,
       parent,
-      metadata: { processKind: 'sidecar-exec', command: params.command },
+      metadata: sidecarReceiptMetadata(params),
     },
     { owner: params.ownerId?.trim() || params.env?.PAPERCUSP_SID?.trim() || `spawner-sidecar:${process.pid}` },
     governedExecutionRuntime(workspaceId, 'agent-process'),

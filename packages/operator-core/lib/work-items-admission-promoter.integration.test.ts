@@ -3,10 +3,27 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  // undefined ⇒ the real policy (none under VITEST). A test sets it to exercise the work-scope hold.
+  scopeTerms: undefined as { exact: string[]; likePrefixes: string[] } | null | undefined,
+  scopeDecisions: [] as Array<{ harness?: string; verdict: string; note?: string }>,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('./work-scope-policy', async (orig) => {
+  const actual = await orig<typeof import('./work-scope-policy')>();
+  return {
+    ...actual,
+    workScopeSqlTerms: (...args: Parameters<typeof actual.workScopeSqlTerms>) =>
+      h.scopeTerms === undefined ? actual.workScopeSqlTerms(...args) : h.scopeTerms,
+    recordWorkScopeDecision: async (d: Parameters<typeof actual.recordWorkScopeDecision>[0]) => {
+      if (h.scopeTerms === undefined) return actual.recordWorkScopeDecision(d);
+      h.scopeDecisions.push({ harness: d.harness, verdict: d.verdict, note: d.note });
+    },
+  };
 });
 
 const {
@@ -207,6 +224,8 @@ beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs,
     harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
+  h.scopeTerms = undefined;
+  h.scopeDecisions.length = 0;
 });
 
 it('renews request authorization after model work and before any admission mutation', async () => {
@@ -2070,6 +2089,46 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(rows).toEqual([
         { feature_id: 'WI-neighbour-fresh', admission: 'pending' },
         { feature_id: 'WI-neighbour-old', admission: 'unreviewed' },
+      ]);
+    });
+
+    // WI-10004723 (P-003): the work-scope hold must tell a mis-homed platform row apart from another
+    // pot's deliberately held work. Measured 2026-10-01: 14 learning-loop alarms sat 6 days in
+    // `operator:papercusp-workspace`, reported by every tick as a "deliberate hold".
+    it('reports a held row in the platform non-pot harness as mis-homed, not as a deliberate hold', async () => {
+      const platformHome = `operator:${WS}`;
+      h.scopeTerms = { exact: [HARNESS], likePrefixes: [] };
+      await seedItem({ id: 'WI-home', createdAtMs: NOW - 61 * 60_000, vector: null });
+      await seedItem({ id: 'WI-misHomed', createdAtMs: NOW - 61 * 60_000, vector: null, harness: platformHome });
+      await seedItem({ id: 'WI-other-pot', createdAtMs: NOW - 61 * 60_000, vector: null, harness: 'email' });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-mis-homed',
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+      });
+
+      expect(result.autoPromoted).toEqual(['WI-home']);
+      expect(result.heldByScope).toEqual({ email: 1, [platformHome]: 1 });
+      const [run] = await db.sql<Array<{ misHomed: unknown; held: unknown }>>`
+        SELECT detail->'misHomedByScope' AS "misHomed", detail->'heldByScope' AS held
+          FROM harness_shared.admission_runs WHERE id = 'fail-open-mis-homed'`;
+      // Control: `email` is held too, but it is another pot's harness, so it is NOT mis-homed.
+      expect(run).toEqual({ misHomed: { [platformHome]: 1 }, held: { email: 1, [platformHome]: 1 } });
+      const notes = Object.fromEntries(h.scopeDecisions.map((d) => [d.harness, d.note ?? '']));
+      expect(notes[platformHome]).toMatch(/^MIS-HOMED: 1 .*work_items:rehome/);
+      expect(notes.email).toMatch(/deliberate hold/);
+      expect(notes.email).not.toMatch(/MIS-HOMED/);
+      // Neither held row is admitted; both stay pending (never deleted).
+      const held = await db.sql<Array<{ feature_id: string; admission: string }>>`
+        SELECT feature_id, admission FROM harness_shared.work_items
+         WHERE feature_id <> 'WI-home' ORDER BY feature_id`;
+      expect(held).toEqual([
+        { feature_id: 'WI-misHomed', admission: 'pending' },
+        { feature_id: 'WI-other-pot', admission: 'pending' },
       ]);
     });
   });

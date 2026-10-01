@@ -207,6 +207,23 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     ).toBe('caller');
   });
 
+  it('classifies the intentional coord:ask owner-UI-only denial as caller without broadening generic unauthorized', () => {
+    expect(
+      classifyToolError(
+        'unauthorized',
+        'error',
+        'coord:ask is owner-UI-only; agents must use coord:send or coord:message-agent.',
+      ),
+    ).toBe('caller');
+    expect(
+      classifyToolError(
+        'unauthorized',
+        'error',
+        'built-in tool "memory:search" requires a workspace-scoped call — this session has no workspace transaction. Scope the session to a workspace',
+      ),
+    ).toBe('structural');
+  });
+
   it('high-volume NON-structural buckets never leak into the auto-implement (structural) lane', () => {
     // The "floods a lane" failure mode: a timeout / provider-429 / PG-exhaustion /
     // caller-arg shape mis-filed as a deterministic tool bug.
