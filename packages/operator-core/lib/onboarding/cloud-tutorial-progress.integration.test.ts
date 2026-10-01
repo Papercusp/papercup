@@ -8,7 +8,7 @@ import { deriveTenantContext, type VerifiedTenantServerContext } from '@papercus
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
-import { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, createHostedBrowserRoutes } from '../endpoint-route/hosted-browser';
+import { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, createHostedTutorialProgressRoutes } from '../endpoint-route/routes/hosted-tutorial-progress';
 import { createTutorialState, confirmedTutorialSteps } from './cloud-tutorial-lesson';
 import { readTutorialProgress, updateTutorialProgress, TutorialProgressConflict, type TutorialProgressUpdate } from './cloud-tutorial-progress';
 
@@ -49,8 +49,8 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     return { principal: p, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
   }
   function handler(method: 'GET' | 'POST') {
-    return createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: 'control', dependencies: { runTenant } })
-      .routes.find(route => route.path === HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH && route.method === method)!.handler;
+    return createHostedTutorialProgressRoutes({ origin: ORIGIN, controlPlaneWorkspaceId: 'control', runTenant })
+      .find(route => route.method === method)!.handler;
   }
   it('restores UI state in a fresh request/later session without asserting domain completion', async () => {
     const update = change();

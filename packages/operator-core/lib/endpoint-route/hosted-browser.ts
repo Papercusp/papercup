@@ -9,7 +9,7 @@
  * write check, and the query allowlist.
  */
 import { defineTool, type RouteContext, type RouteDefinition } from '@papercusp/agent-mcp';
-import { withTenantContext, type VerifiedTenantServerContext } from '@papercusp/db-org';
+import { withTenantContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { parseLastEventId, sseResponse, type SyncSseEventVocabulary } from '@papercusp/sse';
 import { backfillSince, subscribe, type SyncEvent, type SubscribeHandle } from '../sync-sse';
@@ -48,7 +48,9 @@ import {
 } from '../dbos/workspace-host-provision-workflow';
 import { dbosStarted } from '../dbos/bootstrap';
 import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
-import { readTutorialProgress, updateTutorialProgress, tutorialProgressUpdateSchema, TutorialProgressConflict } from '../onboarding/cloud-tutorial-progress';
+import { createHostedTutorialProgressRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
+import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
+export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
 export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
 export const HOSTED_BROWSER_SSE_PATH = '/hosted/browser/sse' as const;
@@ -59,7 +61,6 @@ export const HOSTED_BROWSER_ACTION_PATH = '/hosted/browser/workspace-hosts/actio
 export const HOSTED_BROWSER_FIRST_WORKSPACE_PATH = '/hosted/browser/onboarding/first-workspace' as const;
 /** Selects the organization's existing workspace for a session that holds none. */
 export const HOSTED_BROWSER_SELECT_WORKSPACE_PATH = '/hosted/browser/onboarding/select-workspace' as const;
-export const HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH = '/hosted/browser/onboarding/tutorial-progress' as const;
 
 export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 
@@ -174,34 +175,10 @@ function exactHttpsOrigin(value: string): string {
   return parsed.origin;
 }
 
-function jsonError(code: string, status: number, extra: Record<string, unknown> = {}): Response {
-  return Response.json(
-    { ok: false, error: code, message: code, ...extra },
-    { status, headers: { 'cache-control': 'no-store' } },
-  );
-}
-
 function noStore(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set('cache-control', 'no-store');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
-
-type HostedPrincipalSelection =
-  | { readonly ok: true; readonly principal: HostedPrincipal }
-  | { readonly ok: false; readonly response: Response };
-
-function selectedHostedPrincipal(ctx: RouteContext, controlPlaneWorkspaceId: string): HostedPrincipalSelection {
-  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) {
-    return { ok: false, response: jsonError('hosted_principal_required', 401) };
-  }
-  if (ctx.principal.workspaceId !== controlPlaneWorkspaceId) {
-    return { ok: false, response: jsonError('control_plane_binding_mismatch', 403) };
-  }
-  if (!ctx.principal.selectedWorkspaceId) {
-    return { ok: false, response: jsonError('workspace_not_selected', 403) };
-  }
-  return { ok: true, principal: ctx.principal };
 }
 
 /**
@@ -221,44 +198,6 @@ function bootstrapHostedPrincipal(ctx: RouteContext, controlPlaneWorkspaceId: st
     return { ok: false, response: jsonError('workspace_already_selected', 409) };
   }
   return { ok: true, principal: ctx.principal };
-}
-
-function tenantContext(principal: HostedPrincipal): VerifiedTenantServerContext {
-  const selectedWorkspaceId = principal.selectedWorkspaceId;
-  if (!selectedWorkspaceId) throw new Error('workspace_not_selected');
-  return {
-    principal: {
-      kind: 'user',
-      profile: 'hosted',
-      authMethod: 'cookie-session',
-      trust: 'verified',
-      slug: principal.userId,
-      workspaceId: principal.workspaceId,
-      userId: principal.userId,
-      activeOrganizationId: principal.activeOrganizationId,
-      selectedWorkspaceId,
-      sessionId: principal.sessionId,
-      sessionVersion: principal.sessionVersion,
-    },
-    selectedWorkspace: { id: selectedWorkspaceId, organizationId: principal.activeOrganizationId },
-  };
-}
-
-function exactOriginOr403(request: Request, origin: string): Response | null {
-  // Unlike the local CSRF helper, hosted cookie writes require an Origin even
-  // for a same-site-looking request. A missing Origin is not proof of browser
-  // intent and must not become a credentialed write escape hatch.
-  return request.headers.get('origin') === origin ? null : jsonError('cross_origin_blocked', 403);
-}
-
-function workspaceHeaderMismatch(
-  request: Request,
-  principal: HostedPrincipal,
-  controlPlaneWorkspaceId: string,
-): Response | null {
-  const supplied = request.headers.get('x-papercusp-workspace')?.trim();
-  if (!supplied || supplied === principal.selectedWorkspaceId || supplied === controlPlaneWorkspaceId) return null;
-  return jsonError('workspace_binding_mismatch', 403);
 }
 
 function parseQueryArgs(request: Request, selectedWorkspaceId: string): Response | null {
@@ -689,33 +628,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     },
   });
 
-  const tutorialProgress = (['GET', 'POST'] as const).map(method => defineTool({
-    method, path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, auth: HOSTED_VIEW_AUTH,
-    cors: { origins: [origin] }, sampleRate: 0,
-    async handler(request, ctx) {
-      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
-      if (!selection.ok) return selection.response;
-      const { principal } = selection;
-      if (!principal.capabilities.has('workspace:view')) return jsonError('permission_missing', 403);
-      const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
-      if (headerError) return headerError;
-      if (method === 'POST') {
-        const csrf = exactOriginOr403(request, origin);
-        if (csrf) return csrf;
-      }
-      const scope = { tenantId: principal.activeOrganizationId, userId: principal.userId, workspaceId: principal.selectedWorkspaceId! };
-      const parsed = method === 'POST' ? tutorialProgressUpdateSchema.safeParse(await request.json().catch(() => null)) : null;
-      if (parsed && !parsed.success) return jsonError('invalid_tutorial_progress', 400);
-      try {
-        const record = await wrapTenantRead(principal, runTenant, tx => parsed?.success
-          ? updateTutorialProgress(tx, scope, parsed.data) : readTutorialProgress(tx, scope));
-        return Response.json({ record }, { headers: { 'cache-control': 'no-store' } });
-      } catch (error) {
-        if (error instanceof TutorialProgressConflict) return Response.json({ error: 'tutorial_progress_conflict', record: error.current }, { status: 409, headers: { 'cache-control': 'no-store' } });
-        return jsonError('tutorial_progress_unavailable', 503);
-      }
-    },
-  }));
+  const tutorialProgress = createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant });
   return {
     routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
