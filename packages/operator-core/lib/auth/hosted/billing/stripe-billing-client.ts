@@ -49,6 +49,8 @@ export interface StripeBillingClient {
   createPortalSession(input: {
     customerId: string;
     returnUrl: string;
+    /** `bpc_…`; absent = Stripe's dashboard default configuration (which must then exist). */
+    configurationId?: string | null;
   }): Promise<StripeBillingCallResult<{ url: string }>>;
 }
 
@@ -113,8 +115,14 @@ export function createStripeBillingClient(input: {
       return { ok: true, sessionId: id, url };
     },
 
-    async createPortalSession({ customerId, returnUrl }) {
-      const posted = await post('/billing_portal/sessions', { customer: customerId, return_url: returnUrl });
+    async createPortalSession({ customerId, returnUrl, configurationId }) {
+      // An explicit portal configuration (created through the API) beats the account's dashboard
+      // default: portal behaviour then lives in injected config, not in un-versioned dashboard state.
+      const posted = await post('/billing_portal/sessions', {
+        customer: customerId,
+        return_url: returnUrl,
+        ...(configurationId ? { configuration: configurationId } : {}),
+      });
       if (!posted.ok) return posted;
       const { url } = posted.body;
       if (typeof url !== 'string' || !url) return malformed(posted.status, 'stripe response carried no portal url');

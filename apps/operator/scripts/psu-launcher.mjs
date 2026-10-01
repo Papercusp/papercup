@@ -1529,6 +1529,49 @@ export function ompResponsesCompatibilityEnv(agent, model, env = process.env) {
   return { [OMP_OPENROUTER_RESPONSES_ENV]: "0" };
 }
 
+function codexModelSpecFromConfigText(configText) {
+  const root = String(configText ?? "").split(/^\s*\[/m, 1)[0];
+  const model = /^model\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/m.exec(root)?.[2];
+  if (!model) return null;
+  const effort = /^model_reasoning_effort\s*=\s*(["'])(low|medium|high|xhigh|max)\1\s*(?:#.*)?$/m.exec(root)?.[2];
+  return resolveCodexModelSelection(`${model}${effort ? `:${effort}` : ""}`, {
+    source: "inherited",
+  }).model;
+}
+
+/**
+ * A visible fresh launch inherits the user's native model configuration before
+ * bootstrap. That choice is not the operator's compiled configured default:
+ * preserving its provenance lets a newer launcher use an older operator
+ * without rejecting or replacing the user's configured model.
+ * Explicit choices and unattended missing-model checks remain authoritative.
+ * Read the machine's native home, not a parent agent's isolated CODEX_HOME.
+ * @param {string} agent
+ * @param {any} args
+ * @param {{ home?: string, readConfig?: (path: string, encoding: string) => string }} [options]
+ * @returns {any}
+ */
+export function inheritFreshCodexConfiguredModel(
+  agent,
+  args,
+  { home = homedir(), readConfig = readFileSync } = {},
+) {
+  if (
+    agent !== "codex" || args.headless || args.picker === false ||
+    (args.modelSource && args.modelSource !== "configured-default") ||
+    (args.model && args.modelSource !== "configured-default")
+  ) return args;
+  let text;
+  try {
+    text = readConfig(join(home, ".codex", "config.toml"), "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return args;
+    throw error;
+  }
+  const configured = codexModelSpecFromConfigText(text);
+  return configured ? { ...args, model: configured, modelSource: "inherited" } : args;
+}
+
 export function modelArgsFor(agent, model) {
   // Low-level argv construction is never itself authorization to choose a
   // model. Fresh visible launchers resolve configured-default explicitly;
@@ -4313,12 +4356,9 @@ export function detectRespawnModelSpec(
     }
     if (modelSource === "configured-default") {
       try {
-        const text = readFileSync(join(codexHome, "config.toml"), "utf8").split(/^\s*\[/m, 1)[0];
-        const model = /^model\s*=\s*"([^"]+)"\s*$/m.exec(text)?.[1];
-        const effort = /^model_reasoning_effort\s*=\s*"(low|medium|high|xhigh|max)"\s*$/m.exec(text)?.[1];
-        const configured = model ? resolveCodexModelSelection(
-          `${model}${effort ? `:${effort}` : ""}`, { source: "inherited" },
-        ).model : null;
+        const configured = codexModelSpecFromConfigText(
+          readFileSync(join(codexHome, "config.toml"), "utf8"),
+        );
         return configured && configured !== inherited ? configured : null;
       } catch {
         return null;
@@ -16016,6 +16056,7 @@ export function sessionPortLaunchAbortError(args, failure, stage) {
 }
 
 async function launchFreshSu(selections, args, { brain = false } = {}) {
+  args = inheritFreshCodexConfiguredModel(selections.agent, args);
   if (
     !(await preflightCodexAutoPool({
       agent: selections.agent,

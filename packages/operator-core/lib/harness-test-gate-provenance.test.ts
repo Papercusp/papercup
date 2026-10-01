@@ -32,6 +32,12 @@ let assertionRows: Array<{
 let testRows: unknown[] = [];
 let throwOnProvenance = false;
 let assertionQueryValues: unknown[] = [];
+// WI-10004463: what the spec-clause lookup returns (the VALs whose CURRENT clause revision is
+// accepted|active). The lifecycle/current-revision filtering is SQL — `specClauseQueries` records
+// the statement text + params so a test can pin that the predicates are present.
+let specGovernedRows: Array<{ val_id: string }> = [];
+let specClauseQueries: Array<{ text: string; vals: unknown[] }> = [];
+let throwOnSpecClause = false;
 
 const sql: SqlTag = Object.assign(
   async (strings: TemplateStringsArray, ...vals: unknown[]) => {
@@ -44,6 +50,11 @@ const sql: SqlTag = Object.assign(
       assertionQueryValues = vals;
       if (!q.includes('plan_slug =')) return assertionRows;
       return assertionRows.filter((row) => row.plan_slug === vals[2]);
+    }
+    if (q.includes('plan_spec_clauses')) {
+      specClauseQueries.push({ text: q, vals });
+      if (throwOnSpecClause) throw new Error('pg down');
+      return specGovernedRows;
     }
     if (q.includes('harness_tests')) return testRows;
     throw new Error(`unexpected query in test: ${q}`);
@@ -81,6 +92,9 @@ beforeEach(() => {
   testRows = [];
   throwOnProvenance = false;
   assertionQueryValues = [];
+  specGovernedRows = [];
+  specClauseQueries = [];
+  throwOnSpecClause = false;
 });
 
 describe('planItemProvenanceFromRow precedence', () => {
@@ -196,5 +210,88 @@ describe('itemTestGate sees stamp-only provenance', () => {
     throwOnProvenance = true;
 
     expect(await itemTestGate('papercusp', 'F-3')).toEqual({ ok: true });
+  });
+});
+
+/**
+ * WI-10004463 — a requires_test VAL that a plan item promoted into an ENFORCEABLE spec clause is
+ * judged by `specTestAdequacyCompletionGate` (current evidence bindings), not by the legacy
+ * `harness_tests` table, which has had no writer since 2026-08-22. Before the fix this gate refused
+ * EVERY new spec-era feature item (zero covering harness_tests rows, forever), forcing a
+ * recordOnly+set_state bypass on each close of plan session-transcript-exact-fuzzy-search P-002..P-004.
+ */
+describe('itemTestGate: spec-governed VALs are judged by the spec-era gate', () => {
+  it('PASSES a feature whose only required VAL is spec-governed, with zero harness_tests rows', async () => {
+    provenanceRows = [STAMPED_ROW];
+    assertionRows = [REQUIRES_TEST_ASSERTION];
+    testRows = []; // the live state: nothing in harness_tests covers anything new
+    specGovernedRows = [{ val_id: 'VAL-1' }];
+
+    expect(await itemTestGate('papercusp', 'F-10')).toEqual({ ok: true });
+  });
+
+  it('still REFUSES a VAL with no enforceable clause, naming ONLY that VAL (the legacy path is intact)', async () => {
+    provenanceRows = [STAMPED_ROW];
+    assertionRows = [
+      REQUIRES_TEST_ASSERTION,
+      { plan_slug: 'some-plan-2026-08-03', val_id: 'VAL-2', item_id: 'P-001', requires_test: true },
+    ];
+    testRows = [];
+    specGovernedRows = [{ val_id: 'VAL-1' }]; // VAL-2 has no enforceable clause
+
+    const result = await itemTestGate('papercusp', 'F-11');
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('VAL-2');
+    expect(result.reason).not.toContain('VAL-1');
+  });
+
+  it('a clause-less VAL is refused exactly as before when the lookup finds no governing clause', async () => {
+    provenanceRows = [STAMPED_ROW];
+    assertionRows = [REQUIRES_TEST_ASSERTION];
+    testRows = [];
+    specGovernedRows = []; // draft / exempt / retired / absent clause ⇒ nothing else judges it
+
+    expect((await itemTestGate('papercusp', 'F-12')).ok).toBe(false);
+  });
+
+  it('scopes the clause lookup to workspace + harness + plan + the required VAL ids, CURRENT revision, accepted|active only', async () => {
+    provenanceRows = [STAMPED_ROW];
+    assertionRows = [REQUIRES_TEST_ASSERTION];
+    specGovernedRows = [{ val_id: 'VAL-1' }];
+
+    await itemTestGate('papercusp', 'F-13');
+
+    expect(specClauseQueries).toHaveLength(1);
+    expect(specClauseQueries[0]!.vals).toEqual([
+      'papercusp-workspace',
+      'papercusp',
+      'some-plan-2026-08-03',
+      ['VAL-1'],
+    ]);
+    // The SQL predicates ARE the semantics (the stub cannot execute them): current revision only,
+    // and only a lifecycle the spec gate actually enforces. Dropping either would silently exempt
+    // VALs that nothing else judges (a superseded revision / a draft clause).
+    const text = specClauseQueries[0]!.text.replace(/\s+/g, ' ');
+    expect(text).toContain('r.revision = c.current_revision');
+    expect(text).toContain("r.lifecycle_status IN ('accepted', 'active')");
+    expect(text).toContain('c.source_val_id = ANY(');
+  });
+
+  it('skips the clause lookup entirely when no VAL requires a test (no extra read on the common path)', async () => {
+    provenanceRows = [STAMPED_ROW];
+    assertionRows = [{ ...REQUIRES_TEST_ASSERTION, requires_test: false }];
+
+    expect(await itemTestGate('papercusp', 'F-14')).toEqual({ ok: true });
+    expect(specClauseQueries).toHaveLength(0);
+  });
+
+  it('FAILS OPEN when the clause lookup throws — a gate bug must never block a completion', async () => {
+    provenanceRows = [STAMPED_ROW];
+    assertionRows = [REQUIRES_TEST_ASSERTION];
+    testRows = [];
+    throwOnSpecClause = true; // documented fail-open rule: a throwing lookup is ok:true, never a refusal
+
+    expect(await itemTestGate('papercusp', 'F-15')).toEqual({ ok: true });
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import type { ScoutLlmCall } from '../scout/types';
 import { buildDreamPassPrompt, parseDreamPassPayload, runDreamPass } from './dream-pass';
 import type { DreamFragment } from './fragment-sampler';
@@ -97,14 +98,14 @@ describe('parseDreamPassPayload', () => {
 });
 
 describe('runDreamPass', () => {
-  it('makes exactly one bounded cheap-model call and returns usage for governor accounting', async () => {
+  it('makes exactly one bounded learning-model call and returns usage for governor accounting', async () => {
     const { llmCall, calls } = fakeLlm({ json: { verdict: 'none' } });
     const result = await runDreamPass({ fragments: PAIR, llmCall });
 
     expect(result).toEqual({
       verdict: 'none',
       usage: {
-        model: 'claude-haiku-4-5',
+        model: LEARNING_MODEL_SPEC,
         costUsd: 0.004,
         inputTokens: 120,
         outputTokens: 24,
@@ -112,7 +113,7 @@ describe('runDreamPass', () => {
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
-      model: 'claude-haiku-4-5',
+      model: LEARNING_MODEL_SPEC,
       responseFormat: 'json',
       maxTokens: 1_024,
     });

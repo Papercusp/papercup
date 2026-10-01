@@ -190,6 +190,7 @@ const DETERMINISTIC_MODEL_FREE_EDGES = [
 const EXPECTED_POLICY_IMPORTERS = [
   'packages/operator-core/lib/ablation/replay-leg.ts',
   'packages/operator-core/lib/ablation/runner.ts',
+  'packages/operator-core/lib/dream/dream-config.ts',
   'packages/operator-core/lib/gym/autoloop-cycle.ts',
   'packages/operator-core/lib/gym/boot-spec.ts',
   'packages/operator-core/lib/gym/judge-scoring.ts',
@@ -321,15 +322,18 @@ describe('canonical learning model policy', () => {
   it('preserves the exact Sol xhigh owner directive without a family alias', () => {
     // Owner-directed [owner 2026-08-27]: Codex limits reset, so learning moved
     // back to the exact Sol xhigh spec after the temporary Opus 5 switch.
-    expect(LEARNING_MODEL_ID).toBe('gpt-5.6-sol');
+    // Owner-directed [owner 2026-09-30, directive #1111]: moved to GPT-6.1 Sol xhigh.
+    expect(LEARNING_MODEL_ID).toBe('gpt-6.1-sol');
     expect(LEARNING_MODEL_EFFORT).toBe('xhigh');
-    expect(LEARNING_MODEL_SPEC).toBe('gpt-5.6-sol:xhigh');
+    expect(LEARNING_MODEL_SPEC).toBe('gpt-6.1-sol:xhigh');
     expect(isCanonicalLearningModel(LEARNING_MODEL_SPEC)).toBe(true);
     // A near-miss family alias and a wrong effort must BOTH still be rejected —
     // that is what "without a family alias" buys, and it has to keep holding
     // across the provider change.
-    expect(isCanonicalLearningModel('gpt-5.6:xhigh')).toBe(false);
-    expect(isCanonicalLearningModel('gpt-5.6-sol:high')).toBe(false);
+    expect(isCanonicalLearningModel('gpt-6.1:xhigh')).toBe(false);
+    expect(isCanonicalLearningModel('gpt-6.1-sol:high')).toBe(false);
+    // The superseded generation must not still read as canonical.
+    expect(isCanonicalLearningModel('gpt-5.6-sol:xhigh')).toBe(false);
     // The temporary fallback must not still read as canonical.
     expect(isCanonicalLearningModel('claude-opus-5:xhigh')).toBe(false);
   });
@@ -486,7 +490,7 @@ describe('optionalModelSpec', () => {
   });
 
   it('trims a real override and passes a NONCANONICAL spec through untouched', () => {
-    expect(optionalModelSpec('  gpt-5.6-sol:xhigh  ', 'promoter')).toBe(LEARNING_MODEL_SPEC);
+    expect(optionalModelSpec('  gpt-6.1-sol:xhigh  ', 'promoter')).toBe(LEARNING_MODEL_SPEC);
     // The whole point of a per-run override is escaping the canonical spec —
     // e.g. routing away from a model whose account is rate-limited or, as on
     // 2026-08-27, unsupported by the backing account. It must NOT be validated

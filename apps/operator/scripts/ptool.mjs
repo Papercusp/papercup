@@ -458,19 +458,40 @@ export function escapeJsonStringControls(text) {
  * An empty stdin stream is equivalent to omitting JSON args, which lets callers
  * use the standard quoting-safe `--json -` shape for zero-argument tools. Files
  * and inline payloads remain strict so an accidentally empty payload still
- * fails loudly. Pure.
+ * fails loudly. MCP tool arguments must decode to an object; refusing JSON
+ * scalars here prevents a double-serialized object from reaching the server as
+ * a string and producing a misleading tool-schema error. Pure.
  */
+class JsonArgsShapeError extends TypeError {
+  constructor(value) {
+    const received = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+    const doubleEncodingHint = typeof value === 'string'
+      ? ' If this is an object encoded as a JSON string, remove the extra JSON.stringify/quoting layer.'
+      : '';
+    super(`tool arguments must decode to a JSON object; received ${received}.${doubleEncodingHint}`);
+    this.name = 'JsonArgsShapeError';
+  }
+}
+
 export function parseJsonInput(text, { emptyAsObject = false } = {}) {
   if (emptyAsObject && String(text).trim() === '') return {};
-  return JSON.parse(escapeJsonStringControls(text));
+  const parsed = JSON.parse(escapeJsonStringControls(text));
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new JsonArgsShapeError(parsed);
+  }
+  return parsed;
 }
 
 export function formatJsonInputError(jsonKind, error) {
   const message = error instanceof Error ? error.message : String(error);
+  const source = `--json${jsonKind === 'inline' ? '' : ` (${jsonKind})`}`;
+  if (error instanceof JsonArgsShapeError) {
+    return `ptool: ${source} must contain an object of tool arguments: ${message}`;
+  }
   const hint = /bad escaped character/i.test(message)
     ? ' Hint: JSON strings must escape literal backslashes by doubling each one; JSON.stringify can build the payload safely.'
     : '';
-  return `ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${message}${hint}`;
+  return `ptool: ${source} is not valid JSON: ${message}${hint}`;
 }
 
 /**
@@ -3005,8 +3026,8 @@ terminates early). For code:run, prefer --script-file or --script - for source
 that contains nested shell commands or quoted strings.
 
 Flags:
-  --json <json> / --args <json>   args object for a direct (non-interactive) call;
-                                   '-' reads the JSON from stdin instead
+  --json <json> / --args <json>   JSON object of args for a direct call;
+                                   '-' reads stdin; JSON strings/arrays are rejected
   --json-file <path>              read the args JSON from a file (quoting-free)
   --projection <json>             dispatch-level result projection (quote-free JSON)
   --script <source>               direct code:run JavaScript source; '-' reads stdin

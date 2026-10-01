@@ -114,6 +114,7 @@ describe('dedicated acceptance judge lifecycle', () => {
 describe('scorecard abort completion receipts', () => {
   it('preserves distinct force-write receipts when outer cancellation follows the nested commit', async () => {
     const committed = new Map<string, unknown>();
+    const attemptIds: string[] = [];
     const runAttempt = async (issueId: string) => {
       const caller = new AbortController();
       const ctx: UnifiedToolContext = {
@@ -129,8 +130,10 @@ describe('scorecard abort completion receipts', () => {
         capabilities: [],
         expose: { mcp: { name: 'scorecards:emit' } },
         idempotent: scorecardEmitTool.idempotent,
-        abortCompletionReceipt: (_args, result, attempt) =>
-          scorecardEmitTool.abortCompletionReceipt?.({} as never, result, attempt),
+        abortCompletionReceipt: (_args, result, attempt) => {
+          attemptIds.push(attempt.callId);
+          return scorecardEmitTool.abortCompletionReceipt?.({} as never, result, attempt);
+        },
         fn: async () => {
           const data = attachScorecardCompletionReceipt({ ok: true, created: true, issueId });
           committed.set(issueId, data);
@@ -151,16 +154,16 @@ describe('scorecard abort completion receipts', () => {
     expect(first.result?._meta?.abortCompletionReceipt).toMatchObject({
       status: 'recorded',
       effectRef: 'EI-forced-first',
-      attemptId: expect.any(String),
+      attemptId: attemptIds[0],
     });
     expect(second.result?._meta?.abortCompletionReceipt).toMatchObject({
       status: 'recorded',
       effectRef: 'EI-forced-second',
-      attemptId: expect.any(String),
+      attemptId: attemptIds[1],
     });
-    expect(first.result?._meta?.abortCompletionReceipt?.attemptId).not.toBe(
-      second.result?._meta?.abortCompletionReceipt?.attemptId,
-    );
+    expect(attemptIds).toHaveLength(2);
+    expect(attemptIds[0]).toEqual(expect.any(String));
+    expect(attemptIds[0]).not.toBe(attemptIds[1]);
   });
 
   it('fails closed through the dispatcher when a committed write lacks its scorecard receipt', async () => {

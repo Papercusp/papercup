@@ -747,6 +747,8 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(startupOutputReady('codex', startingFooter)).toBe(false);
     // A later Ready repaint in the same accumulated buffer does prove readiness.
     expect(startupOutputReady('codex', startingFooter + '\x1b[22;3H' + readyFooter)).toBe(true);
+    // A later Starting repaint revokes an earlier Ready footer in the same buffer.
+    expect(startupOutputReady('codex', readyFooter + '\x1b[22;3H' + startingFooter)).toBe(false);
     // The footer text inside ordinary prose (no status/model segments) is not chrome.
     expect(startupOutputReady('codex', 'the Context 100% left readout')).toBe(false);
   });
@@ -945,6 +947,113 @@ describe('session-port managed seed + native persistence helpers', () => {
       await done;
     }
   }, 20_000);
+
+  it('waits for a Codex Ready footer before sending a resumed launch kickoff', async () => {
+    const ownerId = 'su-codex-resume-ready-itest-' + process.pid + '-' + Math.floor(performance.now());
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "process.stdin.setEncoding('utf8');let swallowing=true,b='';",
+      "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(!line)continue;process.stdout.write('ECHO:'+line+'\\n');}});",
+      "process.stdout.write('psu: launcher banner\\n');",
+      "setTimeout(()=>{process.stdout.write('\\x1b[6n');setTimeout(()=>process.stdout.write('\\x1b[1;1H│ >_ OpenAI Codex (v0.156.1) │\\n│ model: GPT-5.6-Sol high /model to change │\\n› Ask Codex to do anything   Starting · GPT-5.6-Sol high · Context 100% left\\n'),50);},100);",
+      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3H› Ask Codex to do anything   Ready · GPT-5.6-Sol high · Context 100% left\\n');},1200);",
+      'setTimeout(()=>process.exit(0),6000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'resume'],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '3000',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        signalSource: new EventEmitter(),
+        kickoff: 'RESUME-KICKOFF-AFTER-READY',
+        onExit: () => undefined,
+      });
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:RESUME-KICKOFF-AFTER-READY'), { timeout: 5_000 });
+      expect(captured()).not.toContain('SWALLOWED:');
+      const written = await vi.waitFor(() => {
+        const row = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+          .find((event) => event.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 1_000 });
+      expect(written).toMatchObject({
+        label: 'launch kickoff',
+        authorizedBy: 'startup-ready-marker',
+        promptReady: false,
+        startupReady: true,
+      });
+      expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(900);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+    }
+  }, 8_000);
+
+  it('does not spend Codex last-resort input while a resumed TUI still says Starting', async () => {
+    const ownerId = 'su-codex-resume-starting-itest-' + process.pid + '-' + Math.floor(performance.now());
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "process.stdin.setEncoding('utf8');let swallowing=true;",
+      "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);if(swallowing)process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');else process.stdout.write('ECHO:'+JSON.stringify(d)+'\\n');});",
+      "process.stdout.write('psu: launcher banner\\n');",
+      "setTimeout(()=>{process.stdout.write('\\x1b[6n');setTimeout(()=>process.stdout.write('\\x1b[1;1H│ >_ OpenAI Codex (v0.156.1) │\\n│ model: GPT-5.6-Sol high /model to change │\\n› Ask Codex to do anything   Starting · GPT-5.6-Sol high · Context 100% left\\n'),50);},100);",
+      'setTimeout(()=>process.exit(0),1800);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'resume'],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '700',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '60000',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        signalSource: new EventEmitter(),
+        kickoff: 'RESUME-KICKOFF-MUST-WAIT',
+        onExit: () => undefined,
+      });
+      await done;
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      expect(events.some((row) => row.kind === 'startup-turn-written')).toBe(false);
+      expect(captured()).not.toContain('SWALLOWED:');
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+    }
+  }, 6_000);
 
   it('recognizes a Claude composer glyph while rejecting startup noise and recovery-menu rows', () => {
     expect(freshChildPromptReady('claude', '\x1b[2J spinner / loading')).toBe(false);
@@ -2214,6 +2323,7 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
 
         await envelopeInject(sock, {
           mode: 'carry-respawn',
+          ownerId,
           data: `${marker}\nContinue where you left off`,
           systemPromptAddendum: 'deterministic carry',
         });
@@ -2831,6 +2941,66 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
     },
     25_000,
   );
+
+  it('routes a direct :3170 pin through the same-build staging proxy before respawn', async () => {
+    const stagingProxy = createServer((req, res) => {
+      res.writeHead(req.url === '/api/health' ? 200 : 404);
+      res.end('ok');
+    });
+    await new Promise<void>((r) => stagingProxy.listen(0, '127.0.0.1', r));
+    const stagingProxyPort = (stagingProxy.address() as net.AddressInfo).port;
+    const ownerId = `su-stage-pin-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PAPERCUSP_SID: ownerId,
+      TERM: 'xterm-256color',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170',
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: String(stagingProxyPort),
+    };
+    delete env.PAPERCUSP_PSU_REEXEC;
+    delete env.PAPERCUSP_PSU_REEXEC_PPID;
+    delete env.PAPERCUSP_MCP_PROXY;
+    delete env.PAPERCUSP_MCP_STAGING_PROXY;
+    delete env.PAPERCUSP_OPERATOR_URL_PROVENANCE;
+
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env,
+      ownerId,
+      io,
+      bridgeTty: false,
+      hostCodeStalenessFn: () => ({ stale: false }),
+      mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
+      onExit: () => {},
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(captured()).toContain('BOOT:http://127.0.0.1:3170');
+      }, { timeout: 5000 });
+
+      await controlInject(sock, 'recycle', '');
+      await vi.waitFor(() => {
+        expect(captured().split('BOOT:').length - 1).toBe(2);
+      }, { timeout: 5000 });
+
+      const routed = `http://127.0.0.1:${stagingProxyPort}`;
+      expect(captured()).toContain(`BOOT:${routed}`);
+      expect(env.PAPERCUSP_OPERATOR_URL).toBe(routed);
+      expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBeUndefined();
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+      expect(events).toContain('"kind":"operator-pin-routed"');
+      expect(events).toContain('"route":"staging-proxy"');
+
+      await rawInject(sock, 'QUIT\n');
+      await done;
+    } finally {
+      await new Promise<void>((r) => stagingProxy.close(() => r()));
+    }
+  }, 25_000);
 });
 
 describe('RECYCLE re-renders the base persona instead of inheriting it (stale-prompt-render-in-live-sessions-2026-08-02 P-003)', () => {
@@ -3219,6 +3389,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
           ...process.env,
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_PSU_HEADLESS: '0',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',

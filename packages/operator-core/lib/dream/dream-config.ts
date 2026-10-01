@@ -1,3 +1,4 @@
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import { DEFAULT_SCOUT_CRITIC_MODEL } from '../scout/models';
 
 export const DREAM_FRAGMENT_KINDS = ['observation', 'work_item', 'memory', 'stat'] as const;
@@ -80,8 +81,16 @@ export const DEFAULT_DREAM_SAMPLER_CONFIG: Readonly<DreamSamplerConfig> = Object
   maxSimilarity: 0.8,
 });
 
+/**
+ * The dreamer pass runs on the canonical learning model. Owner-directed
+ * [owner 2026-09-30, directive #1111]: every background process — dreaming
+ * included — runs on the learning spec, replacing the REM design's cheap
+ * Haiku dreamer. The dreamer and the reviewer are therefore the same model;
+ * review independence now rests on the separate prompt, the stricter
+ * threshold, and the duplicate check, not on a model difference.
+ */
 export const DEFAULT_DREAM_PASS_CONFIG: Readonly<DreamPassConfig> = Object.freeze({
-  model: 'claude-haiku-4-5',
+  model: LEARNING_MODEL_SPEC,
   maxInsightChars: 600,
   maxOutputTokens: 1_024,
   timeoutMs: 60_000,

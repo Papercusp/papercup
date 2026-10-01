@@ -725,9 +725,11 @@ describe('buildCutArgv — a staging-checkout orchestrator holds the staging-syn
     expect(inner).toContain(`echo "DONE:$?" > ${CUT_DONE}`);
   });
 
-  it('leaves a cut whose orchestrator is not the staging checkout unwrapped', () => {
+  it('omits the staging-sync wrapper but retains the logical cut-slot lock for other orchestrators', () => {
     const inner = innerFor('/ws/papercusp/papercusp-desktop');
-    expect(inner).not.toContain('flock');
+    expect(inner).not.toContain('flock --shared --close');
+    expect(inner).not.toContain(STAGING_SYNC_LOCK);
+    expect(inner).toContain(`exec 9>'/tmp/${CUT_UNIT}.lock'; flock -n 9`);
     expect(inner).toContain(`bash -c 'source "$1" "$2" "$3"'`);
   });
 });

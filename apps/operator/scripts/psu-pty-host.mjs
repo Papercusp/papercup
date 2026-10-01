@@ -5096,12 +5096,21 @@ export function makeScrollbackGuard() {
  * footer while MCP servers are still booting, so only a non-Starting status
  * counts as the composer being installed. */
 const CODEX_STATUS_FOOTER_RE = /([A-Za-z]+)\s*·[^·\n]{0,120}·\s*Context\s+\d{1,3}%\s+left/g;
+function codexStatusFooterState(visible) {
+  const status = [...String(visible ?? '').matchAll(CODEX_STATUS_FOOTER_RE)]
+    .at(-1)?.[1]?.toLowerCase() ?? null;
+  if (status === null) return null;
+  // ANSI cursor motion is stripped from scrollback, so a footer repainted over
+  // existing composer text may be flattened into a token such as "anythingReady".
+  if (status.endsWith('starting')) return 'starting';
+  if (status.endsWith('ready')) return 'ready';
+  return status;
+}
 function codexReadyStatusFooterObserved(visible) {
   // Codex v0.157 can leave the header at `model: loading` even after the
   // session is ready. The footer is the positive, post-model-choice signal;
   // its `Starting` form is painted while MCP startup is still in flight.
-  return [...visible.matchAll(CODEX_STATUS_FOOTER_RE)]
-    .some((match) => /ready$/i.test(match[1]));
+  return codexStatusFooterState(visible) === 'ready';
 }
 export function headlessClaudeKickoffReadiness({
   enabled = false,
@@ -5117,8 +5126,9 @@ export function startupOutputReady(agent, output) {
   const normalized = String(agent ?? '').toLowerCase();
   if (normalized === 'omp') return /\bomp\s+v\d/i.test(visible);
   if (normalized === 'codex') {
-    if (/\d{1,3}%\s*context left/i.test(visible)) return true;
-    return codexReadyStatusFooterObserved(visible);
+    const footerState = codexStatusFooterState(visible);
+    if (footerState !== null) return footerState === 'ready';
+    return /\d{1,3}%\s*context left/i.test(visible);
   }
   if (normalized === 'claude') return freshChildPromptReady(normalized, output);
   return String(output ?? '').length > 0;
@@ -6479,6 +6489,9 @@ export function injectTurn(sock, text, ownerId) {
 
 /**
  * EI-24091823697677465: heal a DEAD loopback operator pin before an in-place respawn.
+ * Direct :3170 pins also route proactively through the same-build staging proxy (:9171),
+ * including explicit pins. The ordinary launcher already applies this rule, but an
+ * in-place carry-respawn reuses this host's environment and bypasses that resolver.
  *
  * The in-place respawn below re-spawns the CLI with THIS host's env, so whatever
  * PAPERCUSP_OPERATOR_URL the session was launched with rides into every successor
@@ -6501,7 +6514,6 @@ export function injectTurn(sock, text, ownerId) {
  */
 export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 3_000 } = {}) {
   try {
-    if (env.PAPERCUSP_OPERATOR_URL_PROVENANCE !== 'psu-launcher') return null;
     const pinned = String(env.PAPERCUSP_OPERATOR_URL || '').trim().replace(/\/+$/, '');
     if (!pinned || env.PAPERCUSP_MCP_PROXY === '0') return null;
     let pinnedUrl;
@@ -6511,6 +6523,39 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
       return null;
     }
     if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(pinnedUrl.hostname)) return null;
+    const stagingProxyPort =
+      Number(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) > 0
+        ? Number(env.PAPERCUSP_MCP_STAGING_PROXY_PORT)
+        : 9171;
+    const isStagingProxy = pinnedUrl.port === String(stagingProxyPort);
+    if (isStagingProxy) return null; // preserve the same-build, fail-closed staging route
+
+    const isDirectStagingPin =
+      ['127.0.0.1', 'localhost'].includes(pinnedUrl.hostname) &&
+      pinnedUrl.port === '3170' &&
+      ['', '/', '/api/mcp'].includes(pinnedUrl.pathname.replace(/\/+$/, '') || '/');
+    if (
+      isDirectStagingPin &&
+      env.PAPERCUSP_MCP_STAGING_PROXY !== '0'
+    ) {
+      const stagingProxy = `http://127.0.0.1:${stagingProxyPort}`;
+      try {
+        const h = await fetchImpl(`${stagingProxy}/api/health`, {
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (h?.ok) {
+          env.PAPERCUSP_OPERATOR_URL = stagingProxy;
+          // Keep the same-build staging route authoritative across later respawns;
+          // the stable :9071 proxy may serve a different build.
+          delete env.PAPERCUSP_OPERATOR_URL_PROVENANCE;
+          return { from: pinned, to: stagingProxy, route: 'staging-proxy' };
+        }
+      } catch {
+        /* preserve the direct staging pin if its same-build proxy is unavailable */
+      }
+    }
+
+    if (env.PAPERCUSP_OPERATOR_URL_PROVENANCE !== 'psu-launcher') return null;
     const proxyPort =
       Number(env.PAPERCUSP_MCP_PROXY_PORT) > 0 ? Number(env.PAPERCUSP_MCP_PROXY_PORT) : 9071;
     if (pinnedUrl.port === String(proxyPort)) return null;
@@ -7514,8 +7559,13 @@ export function hostThroughPty(o) {
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex';
     const startupReadinessProven = () =>
       codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady;
+    const codexStartupExplicitlyStarting = () =>
+      String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
+      codexStatusFooterState(stripAnsi(childStartupOutput)) === 'starting';
     const startupFallbackCanAuthorize = () =>
-      !codexMarkerKickoffRequiresFrame() && childStartupFallbackElapsed();
+      !codexMarkerKickoffRequiresFrame() &&
+      !codexStartupExplicitlyStarting() &&
+      childStartupFallbackElapsed();
     const codexBackendFrameWaitExpired = () => {
       if (!codexMarkerKickoffRequiresFrame() || childBackendFirstFrameAt > 0) return false;
       const waitStartedAt = childBackendTuiStartedAt || childStartupFirstOutputAt;
@@ -7575,6 +7625,13 @@ export function hostThroughPty(o) {
       // eslint-disable-next-line no-constant-condition
       while (true) {
         if (startupMarkerMissing) {
+          // A bounded last resort is for a MISSED readiness marker. It must
+          // not overrule Codex's explicit Starting footer, which says its
+          // composer is still unavailable.
+          if (codexStartupExplicitlyStarting()) {
+            dropReason = 'codex-startup-still-starting';
+            break;
+          }
           if (lastResortSpent) {
             dropReason = 'no-startup-ready-marker-last-resort-failed';
             break;
@@ -10488,7 +10545,11 @@ export function hostThroughPty(o) {
         try {
           const healed = await healOperatorPin(env);
           if (healed) {
-            appendHostEvent(ownerId, 'operator-pin-healed', { ...healed, mode: respawnMode });
+            appendHostEvent(
+              ownerId,
+              healed.route === 'staging-proxy' ? 'operator-pin-routed' : 'operator-pin-healed',
+              { ...healed, mode: respawnMode },
+            );
           }
         } catch {
           /* keep the old pin — the respawn itself matters more */

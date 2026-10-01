@@ -67,6 +67,30 @@ describe('orders:list — ownership on every row', () => {
     expect(body.directives.filter((d) => d.mine).map((d) => d.id)).toEqual([268]);
   });
 
+  it('accepts mine as an input filter and asks the ledger to filter before formatting', async () => {
+    expect(tool.args.safeParse({ mine: true }).success).toBe(true);
+    expect(tool.args.safeParse({ mine: false }).success).toBe(true);
+    h.listOwnerDirectives.mockResolvedValue([row(268, 'su-mine')]);
+
+    const r = (await tool.handler({ mine: true } as never, CTX)) as { content: Array<{ text: string }> };
+    const body = JSON.parse(r.content[0]!.text) as { yours: number[]; directives: Array<{ id: number; mine: boolean }> };
+
+    expect(h.listOwnerDirectives).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'papercusp-workspace',
+      recordedBy: 'su-mine',
+    }));
+    expect(body.yours).toEqual([268]);
+    expect(body.directives).toEqual([expect.objectContaining({ id: 268, mine: true })]);
+  });
+
+  it('mine=false excludes this session through the SQL query', async () => {
+    h.listOwnerDirectives.mockResolvedValue([row(248, 'su-a')]);
+
+    await tool.handler({ mine: false } as never, CTX);
+
+    expect(h.listOwnerDirectives).toHaveBeenCalledWith(expect.objectContaining({ excludeRecordedBy: 'su-mine' }));
+  });
+
   it('D-004(1): a row whose text is open in other sessions carries alsoSentTo + the note; a unique row carries neither', async () => {
     h.listOwnerDirectives.mockResolvedValue([
       { ...row(268, 'su-mine'), otherSessionCopies: 2 },

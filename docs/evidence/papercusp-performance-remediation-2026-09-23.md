@@ -2457,3 +2457,57 @@ attributes about 13% of self time to the task-manager live scan's synchronous
 `projectLiveProcess` → `readProcessMetadata`), filed as EI-24342043796392664.
 GC takes 16% and tool-catalog projection about 7%. Profiles show the old BigInt
 `fnv1a64` gone (the fast version is 2.3%) and `spawn` down from 12–14% to 1–4%.
+
+## P-008 secondary-lead evidence — 2026-10-01
+
+**P-008 remains open.** These receipts advance F11/F12 attribution; they do
+not establish universal R-8 acceptance or final shipment. WI-10002830 owns
+the remaining local investigation. Portal remains the separately owned
+EI-24354725412855158, assigned to fleet leader su-0da9d55e; its failed
+systemd-notify barrier is a measured precursor, with root cause unconfirmed.
+
+| Lead | Evidence and disposition | Remaining limit |
+|---|---|---|
+| Gateway local admission 429 | An unmarked local 429 was classified as `upstream-429` despite zero upstream attempts. The existing `shed` bit now marks all-throttled, metered-never and admission-timeout exits. Actual HTTP regression cases distinguish local shedding from a real upstream 429. The saved 01:29Z canonical matrix passed 268 tests across three files, exit 0, with no skips. | Saved source snapshot at `244f7d127c` plus local tests; no live gateway adoption or current universal acceptance claim. Exact fingerprints and command remain on WI-10002830. |
+| Proxy paired reset messages | `recordInboundClientError` calls `recordInboundSocketReset` and then logs the client error. One socket error therefore produces both categories; a WeakSet deduplicates the reset counter per socket. At source `2dc4a60da4`, the canonical `proxy.test.ts` case `records clientError/socket-reset` passed, exit 0: one client error and one reset, not two independent user failures. | One selected test passed; 322 other cases were excluded and provide no evidence in this run. Existing journal categories cannot identify every failed user action or distinguish every cancellation from an upstream fault. |
+| Migration-readiness/ref-announcement failures | WI-10002822 records the one-shot boot gate as the origin: failure returned before substrate boot, while the once-per-process migration helper could not retry. Its maintained retry path uses `applyPendingMigrationsNow`, preserves the backup boundary, and alarms after prolonged withholding. Stored comment WI-10002822#comment:1143176 reports recovery within three seconds of migration application on September 24. | This reuses a dated, authoritative recovery receipt; no P2P operation or fresh induced outage was performed. Upstream migration-reservation failures and current loaded-build adoption are separate questions. |
+| Ingestion scan/cost | `session-ingest.ts` increments `filesScanned` before the unchanged-byte-offset skip. It counts candidate visits, not files decoded or fully re-read. A fresh chronological sample below confirms useful incremental ingestion alongside long wall times. | The cost remains unresolved. Candidate-count semantics do not explain the long passes, and successful ingestion does not establish acceptable cost. |
+| Historical account polling | A bounded September 23 ledger read identifies the high-volume caller as `pui-2057122`, `spawn_id=palette`, on staging builds, with the last retained high-volume group ending at 19:19:10Z. The separate saved current-hour read contains 60 calls from `loopback/pui-2221762`, also `palette`, on release build `29bf735091`. | This identifies the consumer class, not the exact polling component or a causal contribution to app latency. The historical and current windows differ; they are not a before/after performance comparison. |
+| Broad forensic DO scan | The prior same-database/current-backend positive-control query found no matching active DO scan. The supported `dev:pg_query` surface bounds acquisition and statement execution and accepts a positive control for absence claims. | Absence of that active query does not measure all diagnostic demand or prove the historical scan caused app slowdown. |
+| In-process embedding warning | `ensureEmbedSidecar` emits this warning once per process when no sidecar is configured; the source explicitly supports that configuration. The warning alone is not evidence of resource pressure. | Historical hosted-process configuration and request impact remain unverified. P-006/WI-10002828 retains its own strict memory evidence and contract blocker. |
+| Loop lag / routine shedding | The audit counts remain retained warning-line categories, not independent incidents or a quantified app slowdown. | Current causal disposition still belongs in this investigation; no blanket non-defect claim. |
+
+### Chronological ingestion observation
+
+At 01:49:39Z, a bounded journal read of the actual
+`papercusp-bg-host.service` covered 00:49:39Z onward, with a 200-record cap.
+It returned 26 matching records and parsed 26 ingestion passes. The service
+reported active, PID 697212, start time 01:20:09Z, and canonical working
+directory `papercusp/apps/operator`. The pass records were sorted by timestamp
+before selecting the latest observations. This supersedes the earlier
+reverse-time sample selection in `/tmp/p008-ingest-evidence.json`.
+
+| Pass completed (UTC) | New turns | Decoded files | Candidate visits | Wall ms | Reported errors |
+|---|---:|---:|---:|---:|---:|
+| 01:32:44 | 64 | 77 | 4742 | 11770 | 0 |
+| 01:34:43 | 76 | 86 | 4753 | 4544 | 0 |
+| 01:36:53 | 75 | 85 | 4760 | 13461 | 0 |
+| 01:39:44 | 57 | 70 | 4766 | 69520 | 0 |
+| 01:42:13 | 47 | 78 | 4768 | 76653 | 0 |
+| 01:42:47 | 31 | 74 | 4773 | 8508 | 0 |
+| 01:45:59 | 103 | 81 | 4777 | 84986 | 0 |
+| 01:46:54 | 37 | 79 | 4781 | 14335 | 0 |
+
+The 26 observed passes range from 2993 to 131882ms. These are retrospective
+wall times on changing workloads. Loaded-source identity and a representative
+workload were not frozen, so this is neither a p95 acceptance measurement nor
+evidence for a CPU, memory or candidate-walk cause. Next, attribute discovery,
+metadata reads, offset checks, decoding and database insertion in the existing
+ingestion path before choosing a fix.
+
+Evidence: `/tmp/p008-ingest-sorted-20261001.json`, completed task
+`0muovmcndw26eg4wh5j`; `/tmp/p008-proxy-pair-20261001.log`, canonical test
+receipt at 01:51:51Z; gateway receipts and fingerprints on WI-10002830.
+`tool_invocations.output_size` is conservatively reported as serialized result
+units: its dispatch fallback is `JSON.stringify(r.content).length`, not a
+measured UTF-8 byte count. No resource-pressure cause is inferred from it.

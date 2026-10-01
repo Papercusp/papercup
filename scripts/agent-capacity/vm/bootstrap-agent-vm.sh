@@ -13,6 +13,15 @@
 # Model traffic from real agents reaches the tower's gateway through an SSH reverse tunnel
 # (`gcloud compute ssh <vm> -- -R 8788:127.0.0.1:8788`), so nothing here holds credentials.
 #
+# CACHE_XFS_GB=<n> (optional, the P-005 ramps) first mounts an n-GB XFS volume with reflink
+# at the cache dir, backed by a loop file beside it (CACHE_XFS_IMAGE overrides its path).
+# Every replay starts by copying a 0.6-1.2 GB prepared checkout into replay-work/ with
+# `cp --reflink=auto`. On the image's ext4 boot disk that is a full copy, about 60 GB of
+# writes at N=64, and that IO is not charged to the agent slice being measured. On XFS with
+# reflink, prepared/ and replay-work/ share one filesystem, so each copy is a metadata-only
+# clone. The volume must exist before anything is put in the cache, so a non-empty cache
+# dir that is not already a mount point is refused rather than hidden under the mount.
+#
 # DRY_RUN=1 prints each command as `RUN <argv>` instead of running it (used by the test).
 set -euo pipefail
 
@@ -21,10 +30,29 @@ TASKS=${1:?usage: bootstrap-agent-vm.sh <tasks.json>}
 : "${CODEX_VERSION:?set CODEX_VERSION to the recorded codex version}"
 NODE_VERSION=${NODE_VERSION:-24.18.1}
 CACHE=${AGENT_CAPACITY_CACHE:-$HOME/.cache/agent-capacity}
+CACHE_XFS_GB=${CACHE_XFS_GB:-}
+CACHE_XFS_IMAGE=${CACHE_XFS_IMAGE:-$CACHE.xfs.img}
 
 run() {
   if [ "${DRY_RUN:-0}" = 1 ]; then printf 'RUN %s\n' "$*"; else "$@"; fi
 }
+
+# Validate the volume request before running anything, so a bad request changes nothing.
+mount_cache=0
+if [ -n "$CACHE_XFS_GB" ]; then
+  case "$CACHE_XFS_GB" in
+    '' | *[!0-9]* | 0*) echo "BOOTSTRAP_FAILED CACHE_XFS_GB must be a positive whole number of GB, got '$CACHE_XFS_GB'" >&2; exit 2 ;;
+  esac
+  if mountpoint -q "$CACHE" 2>/dev/null; then
+    fstype=$(stat -f -c %T "$CACHE")
+    [ "$fstype" = xfs ] || { echo "BOOTSTRAP_FAILED $CACHE is already a $fstype mount, want xfs" >&2; exit 2; }
+  elif [ -d "$CACHE" ] && [ -n "$(ls -A "$CACHE")" ]; then
+    echo "BOOTSTRAP_FAILED $CACHE is not empty; CACHE_XFS_GB would hide its contents under the mount. Run the bootstrap before uploading anything to the cache." >&2
+    exit 2
+  else
+    mount_cache=1
+  fi
+fi
 
 # One line per repo: name<TAB>url<TAB>sha<TAB>setup commands joined by \x1f.
 repos() {
@@ -43,9 +71,26 @@ print(' '.join(sorted({p for r in c['repos'].values() for p in r.get('systemPack
 PY
 }
 
+xfs_packages=
+[ -n "$CACHE_XFS_GB" ] && xfs_packages=xfsprogs
 run sudo apt-get update -q
-# shellcheck disable=SC2046 # word-splitting the package list is intended
-run sudo env DEBIAN_FRONTEND=noninteractive apt-get install -yq git curl ca-certificates xz-utils zstd build-essential python3 $(system_packages)
+# shellcheck disable=SC2046,SC2086 # word-splitting the package lists is intended
+run sudo env DEBIAN_FRONTEND=noninteractive apt-get install -yq git curl ca-certificates xz-utils zstd build-essential python3 $xfs_packages $(system_packages)
+
+if [ "$mount_cache" = 1 ]; then
+  run mkdir -p "$CACHE"
+  run fallocate -l "${CACHE_XFS_GB}G" "$CACHE_XFS_IMAGE"
+  run mkfs.xfs -q -m reflink=1 "$CACHE_XFS_IMAGE"
+  run sudo mount -o loop "$CACHE_XFS_IMAGE" "$CACHE"
+  run sudo chown "$(id -u):$(id -g)" "$CACHE"
+fi
+if [ -n "$CACHE_XFS_GB" ] && [ "${DRY_RUN:-0}" != 1 ]; then
+  # Prove the property the ramps depend on, not just the filesystem type.
+  printf x >"$CACHE/.reflink-probe"
+  cp --reflink=always "$CACHE/.reflink-probe" "$CACHE/.reflink-probe.clone" ||
+    { echo "BOOTSTRAP_FAILED $CACHE does not support reflink copies" >&2; exit 5; }
+  rm -f "$CACHE/.reflink-probe" "$CACHE/.reflink-probe.clone"
+fi
 
 run curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz
 run sudo tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1

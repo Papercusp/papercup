@@ -48,6 +48,8 @@ export interface HostedBillingPlan {
 export interface HostedBillingStripe {
   readonly client: StripeBillingClient;
   readonly webhookSecret: string;
+  /** Explicit customer-portal configuration (`bpc_…`); null = the account's dashboard default. */
+  readonly portalConfigurationId?: string | null;
 }
 
 export interface HostedBillingRouteDependencies {
@@ -209,6 +211,7 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       const session = await deps.stripe.client.createPortalSession({
         customerId: customer.stripeCustomerId,
         returnUrl: `${origin}${HOSTED_BILLING_RETURN_PATH}`,
+        configurationId: deps.stripe.portalConfigurationId ?? null,
       });
       if (!session.ok) return jsonError('provider_error', 'Stripe could not open the billing portal.', 502);
       return Response.json({ ok: true, url: session.url });

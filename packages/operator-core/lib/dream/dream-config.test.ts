@@ -112,9 +112,11 @@ describe('resolveDreamSamplerConfig', () => {
 });
 
 describe('resolveDreamPassConfig', () => {
-  it('uses the bounded cheap-model defaults from the REM design', () => {
+  it('uses the bounded defaults on the canonical learning model', () => {
+    // Owner-directed [owner 2026-09-30, directive #1111]: the dreamer moved off
+    // the REM design's cheap Haiku model onto the canonical learning spec.
     expect(DEFAULT_DREAM_PASS_CONFIG).toEqual({
-      model: 'claude-haiku-4-5',
+      model: LEARNING_MODEL_SPEC,
       maxInsightChars: 600,
       maxOutputTokens: 1_024,
       timeoutMs: 60_000,
@@ -123,7 +125,7 @@ describe('resolveDreamPassConfig', () => {
 
   it('trims a model override without mutating the defaults', () => {
     expect(resolveDreamPassConfig({ model: ' custom-model ' }).model).toBe('custom-model');
-    expect(DEFAULT_DREAM_PASS_CONFIG.model).toBe('claude-haiku-4-5');
+    expect(DEFAULT_DREAM_PASS_CONFIG.model).toBe(LEARNING_MODEL_SPEC);
   });
 
   it.each([
@@ -146,7 +148,10 @@ describe('resolveDreamReviewConfig', () => {
       maxOutputTokens: 1_024,
       timeoutMs: 180_000,
     });
-    expect(DEFAULT_DREAM_REVIEW_CONFIG.model).not.toBe(DEFAULT_DREAM_PASS_CONFIG.model);
+    // Owner-directed [owner 2026-09-30, directive #1111]: dreamer and reviewer
+    // now share the canonical learning model; the review stays stricter by
+    // threshold and prompt, not by model.
+    expect(DEFAULT_DREAM_REVIEW_CONFIG.model).toBe(DEFAULT_DREAM_PASS_CONFIG.model);
   });
 
   it('trims overrides without mutating the defaults', () => {

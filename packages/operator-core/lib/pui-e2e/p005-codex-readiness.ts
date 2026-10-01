@@ -1,6 +1,7 @@
 import { posix as posixPath } from 'node:path';
 
 export const CODEX_HOME_SOCKET_PATH_BUDGET_BYTES = 100;
+export const CODEX_GREETING_EXPECTATION = /what can i help you with|how can i help|what would you like to work on/i;
 
 export function codexHomeControlSocketPath(home: string): string {
   return posixPath.join(home, 'app-server-control', 'app-server-control.sock');

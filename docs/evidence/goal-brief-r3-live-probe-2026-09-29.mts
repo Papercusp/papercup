@@ -114,16 +114,28 @@ const chains = clean.map((d) => {
     // the shared completedTurnRef above; here the turn-end must speak about the plan that was delivered.
     (e.e?.rows ?? []).some((r: Row) => r.planSlug === d.planSlug));
   const from = new Date(t(d.completedAt)).toISOString(), to = new Date(t(d.completedAt) + EFFECT_WINDOW_MS).toISOString();
-  const effects = d.planSlug ? rows(`SELECT feature_id, h->>'owner' AS owner, h->>'at' AS at
+  // An effect must be attributable to the brief's recipient: the holder itself, or a fleet the holder launched for the
+  // delivered plan (agent_fleets.owner / last_launch_transaction.launcherOwnerId) and that fleet's leader + members.
+  // Work on the plan by an unrelated fleet's leaseholders is not caused by this brief (measured 2026-10-01: goal
+  // 60d3a8's log-perf items were leased by nonp2p-feature-drain members, WI-10004479), so it is reported, not counted.
+  const holder = lit(d.owner), planLike = d.planSlug ? lit(`%${d.planSlug.slice(0, 24)}%`) : 'NULL';
+  const holderFleets = `SELECT f.fleet_slug, f.leader_owner_id, f.last_launch_transaction AS tx, f.created_at
+      FROM harness_shared.agent_fleets f WHERE f.workspace_id = ${lit(WS)} AND f.fleet_slug ILIKE ${planLike}
+        AND (f.owner = ${holder} OR f.last_launch_transaction->>'launcherOwnerId' = ${holder})`;
+  const attributable = `(SELECT ${holder} UNION SELECT leader_owner_id FROM (${holderFleets}) hf WHERE leader_owner_id IS NOT NULL
+      UNION SELECT jsonb_array_elements_text(coalesce(tx->'openedMemberIds', '[]'::jsonb)) FROM (${holderFleets}) hf)`;
+  const worked = (owned: boolean) => `SELECT feature_id, h->>'owner' AS owner, h->>'at' AS at
       FROM harness_shared.work_items w, LATERAL jsonb_array_elements(coalesce(w.worked_by_history, '[]'::jsonb)) h
-      WHERE w.workspace_id = ${lit(WS)} AND w.source_plan_slug = ${lit(d.planSlug)}
+      WHERE w.workspace_id = ${lit(WS)} AND w.source_plan_slug = ${lit(d.planSlug ?? '')}
         AND (h->>'at')::timestamptz BETWEEN ${lit(from)} AND ${lit(to)}
-      UNION ALL SELECT fleet_slug, leader_owner_id, to_timestamp(created_at / 1000.0)::text FROM harness_shared.agent_fleets
-      WHERE workspace_id = ${lit(WS)} AND to_timestamp(created_at / 1000.0) BETWEEN ${lit(from)} AND ${lit(to)}
-        AND leader_owner_id IS NOT NULL AND fleet_slug ILIKE ${lit(`%${d.planSlug.slice(0, 24)}%`)}`) : [];
+        AND h->>'owner' ${owned ? 'IN' : 'NOT IN'} ${attributable}`;
+  const effects = d.planSlug ? rows(`${worked(true)}
+      UNION ALL SELECT fleet_slug, leader_owner_id, to_timestamp(created_at / 1000.0)::text FROM (${holderFleets}) hf
+      WHERE to_timestamp(created_at / 1000.0) BETWEEN ${lit(from)} AND ${lit(to)} AND leader_owner_id IS NOT NULL`) : [];
+  const foreignWork = d.planSlug ? rows(worked(false)) : [];
   return { source: d.source, owner: d.owner, session: d.session, goalId: d.goalId, planSlug: d.planSlug,
     obligation: `${d.obligationId}@${d.sourceGeneration}`, turnEnd: end ? `activity:${end.id}` : null,
-    effects: effects.slice(0, 5) };
+    effects: effects.slice(0, 5), foreignWorkNotCounted: foreignWork.slice(0, 5) };
 });
 observations.chains = chains;
 const complete = chains.filter((c) => c.turnEnd && c.effects.length > 0);

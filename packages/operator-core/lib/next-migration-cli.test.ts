@@ -26,6 +26,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 // eslint-disable-next-line import/no-relative-packages
 import { armMigration, buildAllocationResult } from '../../../scripts/next-migration.mjs';
 
@@ -37,6 +38,79 @@ function makeSqlDir(): string {
   temporarySqlDirs.push(dir);
   return dir;
 }
+
+async function bundleAllocator(sourceOverride?: string): Promise<string> {
+  const scriptPath = join(REPO_ROOT, 'scripts/next-migration.mjs');
+  const result = await build({
+    stdin: {
+      contents: `import { buildAllocationResult } from ${JSON.stringify(scriptPath)};
+        console.log(buildAllocationResult({ next: 1, filename: '001-test.sql', reservedBy: 'test' }).path);`,
+      resolveDir: REPO_ROOT,
+      loader: 'js',
+    },
+    bundle: true,
+    write: false,
+    format: 'esm',
+    platform: 'node',
+    packages: 'external',
+    define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' },
+    logLevel: 'silent',
+    plugins: [{
+      name: 'allocator-entry-guard-fixture',
+      setup(builder) {
+        // Inline the real entry helper, as bundle-host does. Keep unrelated
+        // allocation/lint dependencies at their source paths for this small fixture.
+        builder.onResolve({ filter: /^@papercusp\/operator-core\/lib\/util\/cli-entry$/ }, () => ({
+          path: join(REPO_ROOT, 'packages/operator-core/lib/util/cli-entry.ts'),
+        }));
+        builder.onResolve({ filter: /^\.\/lib\/|^\.\.\/packages\/operator-core\/lib\/migration-preapply-lint\.ts$/ }, args => ({
+          path: resolve(args.resolveDir, args.path),
+          external: true,
+        }));
+        if (sourceOverride !== undefined) {
+          builder.onLoad({ filter: /\/scripts\/next-migration\.mjs$/ }, () => ({
+            contents: sourceOverride,
+            loader: 'js',
+            resolveDir: dirname(scriptPath),
+          }));
+        }
+      },
+    }],
+  });
+  const bundlePath = join(makeSqlDir(), 'allocator-bundle.mjs');
+  writeFileSync(bundlePath, result.outputFiles[0].text);
+  return bundlePath;
+}
+
+describe('next-migration CLI entry (WI-10004484)', () => {
+  it('imports the allocator in a host bundle without running its CLI main', async () => {
+    const bundlePath = await bundleAllocator();
+    // Invalid argv makes accidental CLI execution fail before any PG access.
+    const result = spawnSync(process.execPath, [bundlePath, '--name', '!!!'], {
+      cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout.trim()).toBe('libs/papercusp/libs/db/sql/001-test.sql.DRAFT');
+  });
+
+  it('detects the original raw entry guard after bundling', async () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/next-migration.mjs'), 'utf8');
+    const unsafeSource = source.replace(
+      'if (isCliEntry(import.meta.url)) await main();',
+      'if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) await main();',
+    );
+    expect(unsafeSource).not.toBe(source);
+    const bundlePath = await bundleAllocator(unsafeSource);
+    const result = spawnSync(process.execPath, [bundlePath, '--name', '!!!'], {
+      cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--name is required and must contain at least one letter or digit/);
+  });
+});
 
 afterEach(() => {
   for (const dir of temporarySqlDirs.splice(0)) rmSync(dir, { recursive: true, force: true });

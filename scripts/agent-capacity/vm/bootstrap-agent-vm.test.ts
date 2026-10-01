@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-const SCRIPT = path.join(__dirname, 'bootstrap-agent-vm.sh');
+// PROBE_SCRIPT lets scripts/mutation-probe.sh point this suite at a mutated copy.
+const SCRIPT = process.env.PROBE_SCRIPT ?? path.join(__dirname, 'bootstrap-agent-vm.sh');
 
 describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
   let root: string;
@@ -48,6 +49,53 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
       `bash -c cd '${prepared}/webapp' && yarn install --frozen-lockfile`,
       `bash -c cd '${prepared}/webapp' && yarn build`,
     ]);
+  });
+
+  it('without CACHE_XFS_GB, leaves the cache on the boot disk (no xfsprogs, no mount)', () => {
+    const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toMatch(/xfsprogs|mkfs\.xfs|mount -o loop|fallocate/);
+  });
+
+  it('with CACHE_XFS_GB, mounts a reflink XFS volume at the cache before anything is cloned into it', () => {
+    const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', CACHE_XFS_GB: '80' });
+    expect(r.status).toBe(0);
+    const runs = r.stdout.trim().split('\n').filter((l) => l.startsWith('RUN ')).map((l) => l.slice(4));
+    const cache = path.join(root, 'cache');
+    const img = `${cache}.xfs.img`;
+    const at = (needle: string) => {
+      const i = runs.findIndex((l) => l.includes(needle));
+      expect(i, needle).toBeGreaterThanOrEqual(0);
+      return i;
+    };
+    expect(runs.find((l) => l.includes('apt-get install'))).toMatch(/ xfsprogs /);
+    const mounted = at(`sudo mount -o loop ${img} ${cache}`);
+    expect(at(`fallocate -l 80G ${img}`)).toBeLessThan(mounted);
+    expect(at(`mkfs.xfs -q -m reflink=1 ${img}`)).toBeLessThan(mounted);
+    expect(at('apt-get install')).toBeLessThan(mounted);
+    // The writable mount must exist before the cache is populated, or the clones land on the
+    // boot disk underneath it and the replays copy instead of reflinking.
+    const owned = at(`sudo chown `);
+    expect(runs[owned]).toMatch(new RegExp(`^sudo chown \\d+:\\d+ ${cache}$`));
+    expect(owned).toBeGreaterThan(mounted);
+    expect(owned).toBeLessThan(at(`mkdir -p ${cache}/prepared`));
+    expect(owned).toBeLessThan(at('git clone'));
+  });
+
+  it.each(['abc', '0', '-5', '1.5'])('refuses CACHE_XFS_GB=%s before running anything', (gb) => {
+    const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', CACHE_XFS_GB: gb });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/BOOTSTRAP_FAILED CACHE_XFS_GB/);
+    expect(r.stdout).not.toMatch(/RUN /);
+  });
+
+  it('refuses to mount over a non-empty cache dir that would be hidden by the mount', () => {
+    const cache = path.join(root, 'cache');
+    mkdirSync(path.join(cache, 'corpus'), { recursive: true });
+    const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', CACHE_XFS_GB: '80' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/is not empty/);
+    expect(r.stdout).not.toMatch(/RUN /);
   });
 
   it('refuses to start without the recorded CLI versions', () => {

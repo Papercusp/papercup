@@ -5,6 +5,7 @@
  * unresolvable / non-Claude sessions must degrade to null, never throw.
  */
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -216,36 +217,36 @@ describe('tokensFromFileSize (EI-6410 compaction-boundary discount)', () => {
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const MB = 1024 * 1024;
 
-  it('a small file stays whole-file/4 (no scan)', () => {
+  it('a small file stays whole-file/4 (no scan)', async () => {
     const p = join(dir, 'small.jsonl');
     writeFileSync(p, 'x'.repeat(40_000));
-    expect(tokensFromFileSize(p)).toBe(10_000);
+    expect(await tokensFromFileSize(p)).toBe(10_000);
   });
 
-  it('counts only bytes AFTER the last raw compaction marker', () => {
+  it('counts only bytes AFTER the last raw compaction marker', async () => {
     const p = join(dir, 'compacted.jsonl');
     // 2MB of pre-compaction history, a compaction-summary entry, 400KB since.
     const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
     writeFileSync(p, 'a'.repeat(2 * MB) + marker + 'b'.repeat(400_000));
-    const tokens = tokensFromFileSize(p)!;
+    const tokens = (await tokensFromFileSize(p))!;
     // ≈ (marker + 400KB)/4 — nowhere near the whole-file 2.4MB/4 ≈ 630k.
     expect(tokens).toBeLessThan(120_000);
     expect(tokens).toBeGreaterThan(90_000);
   });
 
-  it('an ESCAPED text mention of the marker does not reset the count', () => {
+  it('an ESCAPED text mention of the marker does not reset the count', async () => {
     const p = join(dir, 'mention.jsonl');
     const escapedMention = '{"content":"discussing \\"isCompactSummary\\":true in prose"}\n';
     writeFileSync(p, 'a'.repeat(2 * MB) + escapedMention + 'b'.repeat(100_000));
     // No RAW marker anywhere → whole-file count (the conservative old behavior).
-    expect(tokensFromFileSize(p)!).toBeGreaterThan(500_000);
+    expect((await tokensFromFileSize(p))!).toBeGreaterThan(500_000);
   });
 
-  it('missing file → null', () => {
-    expect(tokensFromFileSize(join(dir, 'nope.jsonl'))).toBeNull();
+  it('missing file → null', async () => {
+    expect(await tokensFromFileSize(join(dir, 'nope.jsonl'))).toBeNull();
   });
 
-  it('EI-10434: a marker OUTSIDE the scan window stays BOUNDED at the scan cap — never the raw (unboundedly-growing) whole-file size', () => {
+  it('EI-10434: a marker OUTSIDE the scan window stays BOUNDED at the scan cap — never the raw (unboundedly-growing) whole-file size', async () => {
     const p = join(dir, 'huge-no-marker-in-window.jsonl');
     // A real compaction marker sits near the START of a file that has since
     // grown well past BOUNDARY_SCAN_CAP (8MB) — the LAST-8MB scan window no
@@ -255,7 +256,7 @@ describe('tokensFromFileSize (EI-6410 compaction-boundary discount)', () => {
     // 20.9M/21.17M/24.3M tokens, monotonically growing across the day).
     const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
     writeFileSync(p, marker + 'a'.repeat(12 * MB));
-    const tokens = tokensFromFileSize(p)!;
+    const tokens = (await tokensFromFileSize(p))!;
     // Bounded by the scan window (BOUNDARY_SCAN_CAP=8MB / 4 = 2,097,152 tokens)
     // — NOT the raw ~12MB file's ≈3M-token whole-file reading, and must NEVER
     // be allowed to grow without bound as the file keeps growing (the
@@ -268,7 +269,7 @@ describe('tokensFromFileSize (EI-6410 compaction-boundary discount)', () => {
     // changed. That unbounded climb IS the EI-10434 bug signature.
     const before = tokens;
     appendFileSync(p, 'b'.repeat(5 * MB));
-    const after = tokensFromFileSize(p)!;
+    const after = (await tokensFromFileSize(p))!;
     expect(after).toBeLessThanOrEqual(before + 10_000);
   });
 });
@@ -279,44 +280,58 @@ describe('tokensFromFileSize (WI-3176 base64-image discount)', () => {
   const MB = 1024 * 1024;
   const b64 = (n: number) => 'iVBORw0KGgoAAAANSUhEUg'.repeat(Math.ceil(n / 23)).slice(0, n);
 
-  it('counts an image payload at ~1600 tokens, not byte-weight', () => {
+  it('counts an image payload at ~1600 tokens, not byte-weight', async () => {
     const p = join(dir, 'screenshot.jsonl');
     const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
     // 2MB pre-compaction, then 100KB of text + one 2MB screenshot since.
     const img = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"${b64(2 * MB)}"}}\n`;
     writeFileSync(p, 'a'.repeat(2 * MB) + marker + 'b'.repeat(100_000) + img);
-    const tokens = tokensFromFileSize(p)!;
+    const tokens = (await tokensFromFileSize(p))!;
     // ≈ 100KB/4 + 1600 ≈ 27k — NOT the undiscounted (100KB + 2MB)/4 ≈ 550k.
     expect(tokens).toBeLessThan(40_000);
     expect(tokens).toBeGreaterThan(20_000);
   });
 
-  it('discounts the toolUseResult duplicate ("base64" key) too', () => {
+  it('discounts the toolUseResult duplicate ("base64" key) too', async () => {
     const p = join(dir, 'tooluseresult.jsonl');
     const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
     const dup = `{"toolUseResult":{"type":"image","file":{"base64":"${b64(1 * MB)}","media_type":"image/png"}}}\n`;
     writeFileSync(p, 'a'.repeat(2 * MB) + marker + 'b'.repeat(100_000) + dup);
-    const tokens = tokensFromFileSize(p)!;
+    const tokens = (await tokensFromFileSize(p))!;
     expect(tokens).toBeLessThan(40_000);
   });
 
-  it('a long base64-alphabet run NOT under an image key keeps full weight', () => {
+  it('a long base64-alphabet run NOT under an image key keeps full weight', async () => {
     const p = join(dir, 'hexdump.jsonl');
     const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
     // e.g. a hex dump / minified blob inside ordinary tool-result text.
     writeFileSync(p, 'a'.repeat(2 * MB) + marker + `{"content":"${b64(1 * MB)}"}\n`);
     // Full weight ≈ 1MB/4 ≈ 262k — no discount.
-    expect(tokensFromFileSize(p)!).toBeGreaterThan(250_000);
+    expect((await tokensFromFileSize(p))!).toBeGreaterThan(250_000);
   });
 
-  it('a sub-1MB screenshot-carrying file is scanned (fast path lowered to 256KB)', () => {
+  it('a sub-1MB screenshot-carrying file is scanned (fast path lowered to 256KB)', async () => {
     const p = join(dir, 'small-with-image.jsonl');
     const img = `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"${b64(700_000)}"}}\n`;
     writeFileSync(p, 'b'.repeat(50_000) + img);
-    const tokens = tokensFromFileSize(p)!;
+    const tokens = (await tokensFromFileSize(p))!;
     // Old fast path would have read ~187k (750KB/4) — enough to trip a
     // 200k-window force threshold; discounted it is ~12.5k + 1600.
     expect(tokens).toBeLessThan(30_000);
+  });
+
+  it('uses the injected async filesystem for bounded transcript scans', async () => {
+    const p = join(dir, 'async-io.jsonl');
+    writeFileSync(p, 'x'.repeat(MB));
+    const fileOps = {
+      stat: vi.fn((filePath: string) => fs.promises.stat(filePath)),
+      open: vi.fn((filePath: string, flags: string) => fs.promises.open(filePath, flags)),
+    };
+    const tokens = await tokensFromFileSize(p, fileOps);
+
+    expect(tokens).toBeGreaterThan(0);
+    expect(fileOps.stat).toHaveBeenCalledWith(p);
+    expect(fileOps.open).toHaveBeenCalledWith(p, 'r');
   });
 });
 

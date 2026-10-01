@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CODEX_GREETING_EXPECTATION,
   codexHomeControlSocketPath,
   codexHomeFitsControlSocket,
   codexStartupAction,
@@ -35,8 +36,10 @@ describe('P-005 Codex TUI readiness', () => {
 
   it('counts a task only when its prompt, expected answer, and idle composer are visible', () => {
     const completed = 'The prompt is yours.\n› hi\n• Hi! What can I help you with?\n› Ask Codex to do anything';
-    expect(codexTaskCompleted(completed, 'hi', /what can I help you with/i)).toBe(true);
-    expect(codexTaskCompleted('› Ask Codex to do anything', 'hi', /what can I help you with/i)).toBe(false);
+    const alternateGreeting = '› hi\n• Hi! What would you like to work on?\n› Ask Codex to do anything';
+    expect(codexTaskCompleted(completed, 'hi', CODEX_GREETING_EXPECTATION)).toBe(true);
+    expect(codexTaskCompleted(alternateGreeting, 'hi', CODEX_GREETING_EXPECTATION)).toBe(true);
+    expect(codexTaskCompleted('› Ask Codex to do anything', 'hi', CODEX_GREETING_EXPECTATION)).toBe(false);
     expect(codexTaskCompleted('Agent command center\nNo tasks yet\nn new', 'hi', /what can I help you with/i)).toBe(false);
   });
 });

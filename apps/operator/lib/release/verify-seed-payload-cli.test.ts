@@ -35,7 +35,6 @@ import {
 import type { SeedStoreVerifier } from './seed-payload-integrity-guard.js';
 import { SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
 import { DEFAULT_NEUTRAL_BUILD_HOSTNAME } from './seed-hostname-neutralization.js';
-import { OWNER_NAME_ENV } from './release-content-scrub.js';
 
 /** Control: every store is intact. */
 const alwaysOk: SeedStoreVerifier = async () => ({ ok: true });
@@ -59,16 +58,14 @@ const probing = (over: Partial<Record<keyof Probe, string>> = {}): Probe => ({
   user: () => over.user,
   home: () => over.home,
   hostname: () => over.hostname,
-  gitName: () => over.gitName,
-  gitEmail: () => over.gitEmail,
 });
 
-/** No machine identity; the shared deps fixture still supplies a synthetic owner. */
+/** No machine identity. */
 const NO_IDENTITY = probing();
 
 const deps = (verify: SeedStoreVerifier, over: Partial<VerifySeedPayloadDeps> = {}): VerifySeedPayloadDeps => ({
   verify,
-  env: { [OWNER_NAME_ENV]: 'Zqxwerty Testperson' },
+  env: {},
   probe: NO_IDENTITY,
   releaseLiterals: () => [],
   ...over,
@@ -212,25 +209,23 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
     const writeLeakyFile = async (literal: string = BUILDER_HOME) =>
       writeFile(join(dir, 'presence.json'), JSON.stringify({ path: `${literal}/papercupai-workspace` }), 'utf8');
 
-    it('uses the canonical runtime literal resolver to reject a release-only organization in reused bytes', async () => {
+    it('allows owner name/email values while retaining the canonical machine-only scan (D-112)', async () => {
       const organization = 'zqxorganization';
       await writeManifest();
       await writeFile(join(dir, '000237.log'), Buffer.from(`\0state ${organization.toUpperCase()} state`));
       const env = {
         ...process.env,
-        [OWNER_NAME_ENV]: `Zqxwerty Testperson;${organization}`,
+        PAPERCUSP_RELEASE_OWNER_NAME: `Zqxwerty Testperson;${organization}`,
         PAPERCUSP_RELEASE_OWNER_EMAIL: 'zqx@example.invalid',
       };
-      // Control: the old machine-only verifier misses the same binary bytes.
+      // Both the injected and production resolver paths now ignore owner name/email values.
       expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk, { env })))
         .toBe(EXIT_OK);
       const lines: string[] = [];
       const productionDeps = deps(alwaysOk, { env, releaseLiterals: undefined });
       expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, (line) => lines.push(line), productionDeps))
-        .toBe(EXIT_MISMATCH);
-      expect(lines.join('\n')).toContain('release-literal:');
-      await writeFile(join(dir, '000237.log'), Buffer.from('\0state redacted state'));
-      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, productionDeps)).toBe(EXIT_OK);
+        .toBe(EXIT_OK);
+      expect(lines.join('\n')).not.toContain('release-literal:');
     });
 
     it('keeps the neutral build hostname out of the canonical release scan', async () => {
@@ -290,7 +285,7 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
         { seedDir: dir, origin: 'reuse' },
         silent,
         deps(alwaysOk, {
-          env: { [OWNER_NAME_ENV]: 'Zqxwerty Testperson', [SEED_REAL_HOSTNAME_ENV]: 'buildbox-42' },
+          env: { [SEED_REAL_HOSTNAME_ENV]: 'buildbox-42' },
           probe: probing({ hostname: DEFAULT_NEUTRAL_BUILD_HOSTNAME }),
         }),
       );

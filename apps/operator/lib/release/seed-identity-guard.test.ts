@@ -28,16 +28,15 @@ import {
   type IdentityKey,
   type IdentityLiterals,
 } from './seed-identity-guard.js';
-import { OWNER_NAME_ENV } from './release-content-scrub.js';
 
 const NEUTRAL = 'papercusp-build';
-// The owner name is ASSERTED by whoever runs the release, never read from `git config`
-// (WI-10001835). Synthetic, like every other literal here, and long enough not to be
-// low-entropy so it is hunted in binary fixtures too.
+// Synthetic owner values deliberately supplied to prove D-112 ignores them. They are valid
+// release content now; only the build-box user/home/hostname remain forbidden.
 const FAKE_OWNER = 'Zqxwerty Testperson';
-// Every assertStagedSeedCarriesNoIdentity case needs this: without it the guard fails
-// CLOSED on the owner-name class rather than certifying a seed it cannot see the name in.
-const OWNER_ENV = { [OWNER_NAME_ENV]: FAKE_OWNER };
+const OWNER_ENV = {
+  PAPERCUSP_RELEASE_OWNER_NAME: FAKE_OWNER,
+  PAPERCUSP_RELEASE_OWNER_EMAIL: 'zqx@example.invalid',
+};
 // Synthetic stand-ins for the five real literals, shaped like them but belonging to no one.
 const FAKE_HOST = 'zqx-workstation-77';
 const FAKE_USER = 'zqxoperator';
@@ -98,26 +97,21 @@ describe('literal resolution', () => {
     gitEmail: () => FAKE_EMAIL,
   };
 
-  it('resolves all five keys and never scans for the neutral label itself', () => {
-    const { literals: lits, unknownHostname, unknownOwnerName } = resolveIdentityLiterals({
+  it('resolves only the three build-machine keys and ignores owner/git values (D-112)', () => {
+    const { literals: lits, unknownHostname } = resolveIdentityLiterals({
       env: OWNER_ENV,
       neutralHostname: NEUTRAL,
       probe,
     });
     expect([...lits.keys()].sort()).toEqual([
-      'build-git-email',
-      'build-git-name',
       'build-home-path',
       'build-hostname',
       'build-user-name',
     ]);
     expect(unknownHostname).toBe(false);
-    expect(unknownOwnerName).toBe(false);
-    // THE CONTRACT (WI-10001835): the name is the ASSERTED one, never the git-supplied one.
-    // `probe.gitName` returns FAKE_SHORT_NAME here and is deliberately ignored — this is the
-    // assertion that fails if anyone reconnects `git config user.name` to this class.
-    expect(lits.get('build-git-name')).toBe(FAKE_OWNER);
-    expect(lits.get('build-git-name')).not.toBe(FAKE_SHORT_NAME);
+    expect([...lits.values()]).not.toContain(FAKE_OWNER);
+    expect([...lits.values()]).not.toContain(FAKE_EMAIL);
+    expect([...lits.values()]).not.toContain(FAKE_SHORT_NAME);
 
     // The neutral hostname is the FIX — published in every SST on purpose. Scanning for it
     // would fail every correctly-neutralized cut.
@@ -152,25 +146,20 @@ describe('literal resolution', () => {
     const { literals: lits } = resolveIdentityLiterals({
       env: {},
       neutralHostname: NEUTRAL,
-      probe: { user: () => 'runner', home: () => '/root', hostname: () => 'runner-9', gitName: () => undefined, gitEmail: () => undefined },
+      probe: { user: () => 'runner', home: () => '/root', hostname: () => 'runner-9' },
     });
     expect([...lits.keys()]).toEqual([]);
   });
 
-  // WI-10001835. The PAIRED control for the assertion in the five-keys case above: that one
-  // proves the asserted name is USED, this one proves the git-supplied name is not a
-  // fallback when it is absent. Without both, "resolves to FAKE_OWNER" is also satisfied by
-  // an implementation that merely prefers the env var.
-  it('never falls back to the git-supplied name, and flags the owner class UNKNOWN', () => {
-    const { literals: lits, unknownOwnerName } = resolveIdentityLiterals({
+  it('does not add owner or git identity even when the owner env is absent', () => {
+    const { literals: lits } = resolveIdentityLiterals({
       env: {},
       neutralHostname: NEUTRAL,
       probe,
     });
-    expect(lits.has('build-git-name')).toBe(false);
-    expect(unknownOwnerName).toBe(true);
-    // The email class is deliberately NOT subject to this rule — it is caught by shape.
-    expect(lits.get('build-git-email')).toBe(FAKE_EMAIL);
+    expect([...lits.keys()]).toEqual(['build-user-name', 'build-home-path', 'build-hostname']);
+    expect([...lits.values()]).not.toContain(FAKE_SHORT_NAME);
+    expect([...lits.values()]).not.toContain(FAKE_EMAIL);
   });
 });
 
@@ -204,7 +193,7 @@ describe('judgeSeedIdentity', () => {
   });
 
   it('does NOT hunt a low-entropy literal through binary (that is how a gate gets switched off)', async () => {
-    const lits = literals({ 'build-git-name': FAKE_SHORT_NAME });
+    const lits = literals({ 'release-literal:0': FAKE_SHORT_NAME });
     // Present in binary → deliberately ignored.
     const bin = await stageDir({ 'corestore/db/000009.sst': binaryBody(` ${FAKE_SHORT_NAME} `) });
     expect((await judgeSeedIdentity({ dir: bin, literals: lits })).ok).toBe(true);
@@ -214,7 +203,7 @@ describe('judgeSeedIdentity', () => {
   });
 
   it('honours the word boundary for a short literal in text', async () => {
-    const lits = literals({ 'build-git-name': FAKE_SHORT_NAME });
+    const lits = literals({ 'release-literal:0': FAKE_SHORT_NAME });
     const embedded = await stageDir({ 'a.txt': `${FAKE_SHORT_NAME}zzz and w${FAKE_SHORT_NAME}` });
     expect((await judgeSeedIdentity({ dir: embedded, literals: lits })).ok).toBe(true);
     const standalone = await stageDir({ 'a.txt': `by ${FAKE_SHORT_NAME}.` });
@@ -333,10 +322,8 @@ describe('assertStagedSeedCarriesNoIdentity', () => {
       const v = await assertStagedSeedCarriesNoIdentity({ dir, neutralHostname: NEUTRAL, env: OWNER_ENV, probe });
       expect(v.ok).toBe(true);
       expect(warn).toHaveBeenCalledTimes(1);
-      // 4, not 3: the asserted owner name (OWNER_ENV) now contributes `build-git-name`, which
-      // this probe's `gitName: () => undefined` previously left absent (WI-10001835). Updated
-      // rather than loosened — the exact count is what makes a silently-dropped class visible.
-      expect(String(warn.mock.calls[0]![0])).toMatch(/clean — 2 staged file\(s\) carry none of 4 build-identity/);
+      // Exact count pins D-112's retained boundary: user, home and hostname only.
+      expect(String(warn.mock.calls[0]![0])).toMatch(/clean — 2 staged file\(s\) carry none of 3 build-identity/);
     } finally {
       warn.mockRestore();
     }

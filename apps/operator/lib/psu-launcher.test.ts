@@ -118,6 +118,7 @@ import {
   forkBootstrapFallbackMessage,
   launchTrackedFork,
   freshSuBootstrapBody,
+  inheritFreshCodexConfiguredModel,
   launchesOnSuTier,
   suRoleFor,
   psuLaunchArgvRecord,
@@ -1122,6 +1123,61 @@ describe("Codex retired-model deny wiring (WI-2140343 — the Spark fall-through
 });
 
 describe("Codex missing-model posture", () => {
+  it.each(["system", "auto"])("inherits the native configured model on a fresh %s account launch", (account) => {
+    const args = parseArgs(["--agent=codex", `--account=${account}`]);
+    const readConfig = vi.fn(() => 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n');
+    const inherited = inheritFreshCodexConfiguredModel("codex", args, {
+      home: "/native-home", readConfig,
+    });
+    const body = freshSuBootstrapBody(
+      { agent: "codex", workspace: "papercusp-workspace", harness: null, plan: null },
+      inherited,
+    );
+    expect(readConfig).toHaveBeenCalledWith("/native-home/.codex/config.toml", "utf8");
+    expect(body).toMatchObject({ model: "gpt-6.1-sol:xhigh", model_source: "inherited", account });
+    expect(body.launch_argv).toEqual(expect.arrayContaining([
+      "--model=gpt-6.1-sol:xhigh", "--model-source=inherited", `--account=${account}`,
+    ]));
+    expect(args.modelSource).toBe("configured-default");
+  });
+
+  it("preserves explicit models and unattended selection rather than reading native defaults", () => {
+    const readConfig = vi.fn(() => 'model = "gpt-6.1-sol"\n');
+    for (const flags of [
+      ["--agent=codex", "--model=gpt-6-sol:high"],
+      ["--headless", "--agent=codex", "--model-source=configured-default"],
+      ["--no-picker", "--agent=codex", "--model-source=configured-default"],
+    ]) {
+      const args = parseArgs(flags);
+      expect(inheritFreshCodexConfiguredModel("codex", args, { readConfig })).toBe(args);
+    }
+    expect(readConfig).not.toHaveBeenCalled();
+  });
+
+  it("keeps the policy default when native model configuration is absent", () => {
+    const args = parseArgs(["--agent=codex"]);
+    expect(inheritFreshCodexConfiguredModel("codex", args, { readConfig: () => "" })).toBe(args);
+    expect(inheritFreshCodexConfiguredModel("codex", args, {
+      readConfig: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); },
+    })).toBe(args);
+    expect(() => inheritFreshCodexConfiguredModel("codex", args, {
+      readConfig: () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); },
+    })).toThrow("denied");
+  });
+
+  it("rejects forbidden native models and ignores profile-local overrides", () => {
+    const args = parseArgs(["--agent=codex"]);
+    expect(() => inheritFreshCodexConfiguredModel("codex", args, {
+      readConfig: () => 'model = "gpt-5.3-codex-spark"\n',
+    })).toThrow(/denied/);
+    expect(inheritFreshCodexConfiguredModel("codex", args, {
+      readConfig: () => '[profiles.other]\nmodel = "gpt-6-sol"\n',
+    })).toBe(args);
+    expect(inheritFreshCodexConfiguredModel("codex", args, {
+      readConfig: () => "model = 'gpt-6.1-sol' # native choice\nmodel_reasoning_effort = 'xhigh'\n",
+    })).toMatchObject({ model: "gpt-6.1-sol:xhigh", modelSource: "inherited" });
+  });
+
   it("uses the configured default for a visible picker but fails closed headless or no-picker", () => {
     const interactive = parseArgs([]);
     const body = freshSuBootstrapBody(

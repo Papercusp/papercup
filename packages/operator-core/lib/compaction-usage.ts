@@ -468,15 +468,18 @@ function toolUseResultExcessIn(visible: string, skip?: (i: number) => boolean): 
  * stat-only; larger ones scan a bounded tail for the last compaction-summary
  * entry and count from there.
  */
-export function tokensFromFileSize(pathStr: string): number | null {
+export async function tokensFromFileSize(
+  pathStr: string,
+  fileOps: Pick<typeof fs.promises, 'stat' | 'open'> = fs.promises,
+): Promise<number | null> {
   try {
-    const size = fs.statSync(pathStr).size;
+    const size = (await fileOps.stat(pathStr)).size;
     if (size < BOUNDARY_SCAN_MIN) return Math.floor(size / 4);
     const start = Math.max(0, size - BOUNDARY_SCAN_CAP);
-    const fd = fs.openSync(pathStr, 'r');
+    const fd = await fileOps.open(pathStr, 'r');
     try {
       const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
+      await fd.read(buf, 0, buf.length, start);
       const idx = buf.lastIndexOf(COMPACT_BOUNDARY_MARKER);
       // EI-10434: idx===-1 means "no marker in the SCANNED window [start, size)",
       // not "no marker in the whole file" — for a file bigger than
@@ -518,7 +521,7 @@ export function tokensFromFileSize(pathStr: string): number | null {
         Math.floor((sinceBytes - imageExcess - tureExcess - snapshotExcess) / 4),
       );
     } finally {
-      fs.closeSync(fd);
+      await fd.close();
     }
   } catch {
     return null;
@@ -1543,15 +1546,15 @@ async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number): Pro
       owner: ref.transcriptOwner === undefined ? ownerId : ref.transcriptOwner,
     });
     if (!p) return null;
-    const size = fs.statSync(p).size;
+    const size = (await fs.promises.stat(p)).size;
     const start = Math.max(0, size - bytes);
-    const fd = fs.openSync(p, 'r');
+    const fd = await fs.promises.open(p, 'r');
     try {
       const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
+      await fd.read(buf, 0, buf.length, start);
       return buf.toString('utf8');
     } finally {
-      fs.closeSync(fd);
+      await fd.close();
     }
   } catch {
     return null;

@@ -411,9 +411,12 @@ export function s33BehaviorAssert(c: S33Case): Extract<DeterministicAssert, { ki
       // A refusal contains no platform-health/global-permission diagnosis.
       const reportText = run.turns.map((t) => t.assistantText).join('\n').replace(/[*_`]/g, '');
       const hasRequestLocalRefusal = evidence.some((e) => e.phase === 'refusal');
+      const claimsUnsupportedCause = /\b(?:this|it|that) is (?:a )?(?:platform health issue|tool-availability constraint)\b|\b(?:these |those )?tools are not available in this session(?: context)?/i.test(reportText);
       const claimsGlobalAvailability = /\b(?:this|it|that) is (?:a )?(?:platform health issue|tool-availability constraint)\b|\b(?:these |those )?tools are not available in this session(?: context)?\b|\btool surface\b[^.!?\n]{0,180}\b(?:constrained|not reachable|unavailable|not available|not accessible)\b|\b(?:broader|general) inventory tools?\b[^.!?\n]{0,120}\b(?:not reachable|unavailable|not available|not accessible)\b/i.test(reportText);
-      if (hasRequestLocalRefusal && claimsGlobalAvailability) {
-        errors.push('Reported global tool unavailability from a request-local not_applicable refusal.');
+      if (claimsUnsupportedCause || (hasRequestLocalRefusal && claimsGlobalAvailability)) {
+        errors.push(claimsUnsupportedCause
+          ? 'Reported an unsupported cause or global tool-availability conclusion instead of the request-local receipt.'
+          : 'Reported global tool unavailability from a request-local not_applicable refusal.');
       }
       if (!wanted) {
         // Markdown formatting and key:value reports do not change the disposition.

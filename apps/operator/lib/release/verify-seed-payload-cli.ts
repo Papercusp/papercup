@@ -189,8 +189,8 @@ export async function runVerifySeedPayload(
     // The THIRD and last member of the same class (MEASURED: `assertStagedSeedCarriesNoIdentity`'s
     // only production caller is cut-seed-cli.ts:1350, so like the two legs above it runs ONLY WHEN
     // A CUT RUNS — and the default build path skips the cut). A committed seed carrying the build
-    // box's username, home path, hostname or git email therefore ships inside every installer with
-    // no guard ever firing. Costs 1,835ms on the real ~475MB seed (54 files, 5 literals), the same
+    // box's username, home path or hostname therefore ships inside every installer with no guard
+    // ever firing. Costs 1,835ms on the real ~475MB seed, the same
     // order as the payload leg's ~1.1s, so like it this runs unconditionally rather than behind a
     // flag nobody sets. Runs LAST because it is the expensive leg: a seed already failing above
     // gets its verdict without paying for the scan.
@@ -204,7 +204,7 @@ export async function runVerifySeedPayload(
     // sandboxed build. So we take the same judgement as DATA, via the judge form, and map each
     // reason to its own exit code.
     const neutralHostname = env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME;
-    const { literals: machine, unknownHostname, unknownOwnerName } = resolveIdentityLiterals({
+    const { literals: machine, unknownHostname } = resolveIdentityLiterals({
       env,
       neutralHostname,
       ...(deps.probe ? { probe: deps.probe } : {}),
@@ -227,7 +227,7 @@ export async function runVerifySeedPayload(
     // this leg deliberately departs from `assertStagedSeedCarriesNoIdentity`'s order. That form
     // refuses on the unknown hostname first, which costs nothing there because both outcomes are
     // the same exception. Here they are different exit codes, and the literals we CAN resolve
-    // inside the namespace (username, home path, git email) are conclusive on their own: finding
+    // inside the namespace (username and home path) are conclusive on their own: finding
     // one is a definite breakage whether or not the hostname question is answerable. Reporting
     // that as "undetermined" would understate evidence we actually have.
     if (!identity.ok) return EXIT_MISMATCH;
@@ -240,11 +240,6 @@ export async function runVerifySeedPayload(
           `from here and was never scanned for. Reporting clean would describe the sandbox, not the ` +
           `seed. Fix the re-exec to export ${SEED_REAL_HOSTNAME_ENV} (seed-hostname-neutralization.ts).`,
       );
-      return EXIT_UNDETERMINED;
-    }
-
-    if (unknownOwnerName) {
-      log(`[seed-verify] cannot prove the seed is clean: ${OWNER_NAME_ENV} is unset, so the owner-name class is unmeasured.`);
       return EXIT_UNDETERMINED;
     }
 

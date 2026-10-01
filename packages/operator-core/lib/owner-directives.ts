@@ -437,6 +437,14 @@ export interface ListOwnerDirectivesOpts {
    */
   state?: OwnerDirectiveState | readonly OwnerDirectiveState[];
   /**
+   * Explicit ledger filter by who recorded a directive. Unlike viewerOwnerId,
+   * this does not apply agenda-cleared exclusions; it is safe for orders:list.
+   * Applied in SQL before limit so a matching row cannot be truncated away.
+   */
+  recordedBy?: string;
+  /** Exclude rows recorded by this session; also applied in SQL before limit. */
+  excludeRecordedBy?: string;
+  /**
    * P-008 / D-008: the session this list is being rendered FOR. When given,
    * directives that session has cleared off its own agenda are excluded — for
    * that session only, changing nothing for the addressee or any peer.
@@ -475,6 +483,8 @@ export async function listOwnerDirectives(
       FROM harness_shared.owner_directives
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
        ${opts.open === true ? s`AND dispositioned_at IS NULL` : opts.open === false ? s`AND dispositioned_at IS NOT NULL` : s``}
+       ${opts.recordedBy !== undefined ? s`AND recorded_by = ${opts.recordedBy}` : s``}
+       ${opts.excludeRecordedBy !== undefined ? s`AND recorded_by IS DISTINCT FROM ${opts.excludeRecordedBy}` : s``}
        ${agendaClearedExclusionSql(s, opts.viewerOwnerId)}
        ${
          states && states.length > 0

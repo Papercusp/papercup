@@ -143,6 +143,41 @@ describe('owner-directive lifecycle state: SQL filter vs TS derivation (P-005)',
     expect(ownerDirectiveState(unfiltered[0])).not.toBe('declined');
   });
 
+  it('applies the recordedBy ledger filter before limit', async () => {
+    const filterWorkspace = 'owner-directive-recorded-by-filter-ws';
+    const recordFor = (turnRef: string, recordedBy: string, text: string) => recordOwnerDirective(
+      {
+        workspaceId: filterWorkspace,
+        sessionRef: 'session-recorded-by-filter',
+        sourceTurnRef: turnRef,
+        verbatimText: text,
+        recordedBy,
+        capturedByHook: true,
+      },
+      db.adminSql,
+    );
+    const peerId = (await recordFor('turn-peer', 'su-peer-filter-test', 'peer directive')).id;
+    const mineId = (await recordFor('turn-mine', 'su-mine-filter-test', 'my directive')).id;
+
+    const mine = await listOwnerDirectives({
+      workspaceId: filterWorkspace,
+      recordedBy: 'su-mine-filter-test',
+      limit: 1,
+    }, db.adminSql);
+    expect(mine.map((row) => row.id)).toEqual([mineId]);
+
+    const other = await listOwnerDirectives({
+      workspaceId: filterWorkspace,
+      excludeRecordedBy: 'su-mine-filter-test',
+      limit: 1,
+    }, db.adminSql);
+    expect(other.map((row) => row.id)).toEqual([peerId]);
+
+    // The peer row is older and would take the unfiltered one-row page first.
+    const unfiltered = await listOwnerDirectives({ workspaceId: filterWorkspace, limit: 1 }, db.adminSql);
+    expect(unfiltered.map((row) => row.id)).toEqual([peerId]);
+  });
+
   it('a hook-verified all-agents resume closes only the system-wide pause it explicitly lifts', async () => {
     const supersessionWorkspace = 'owner-directive-resume-supersession-ws';
     const olderPause = await recordOwnerDirective(

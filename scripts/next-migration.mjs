@@ -54,6 +54,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { lstat, open, link, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { ALLOC_ADVISORY_KEY, scanMigrationDirs } from './lib/migration-allocation.mjs';
 import {
@@ -420,6 +421,8 @@ async function main() {
 
 // Guard the CLI entry so a test can `import { buildAllocationResult } from
 // './next-migration.mjs'` without triggering a live PG connection + argv
-// parse as a side effect of the import.
-const isMainModule = process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1]);
-if (isMainModule) await main();
+// parse as a side effect of the import. isCliEntry (not a hand-rolled argv
+// comparison) because agent-tools/db/next_migration.ts imports armCommandFor
+// from here, which puts this file in the bundled operator host graph; isCliEntry
+// is always false inside the bundle, so main() never runs at host boot.
+if (isCliEntry(import.meta.url)) await main();

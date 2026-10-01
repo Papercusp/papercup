@@ -10,6 +10,7 @@
 import { spawn, type IPty } from '@lydell/node-pty';
 import xtermHeadless from '@xterm/headless';
 import {
+  CODEX_GREETING_EXPECTATION,
   codexHomeControlSocketPath,
   codexHomeFitsControlSocket,
   codexStartupAction,
@@ -303,7 +304,7 @@ try {
   log.push({ label: '00-launch', ...boot, exited });
   if (exited) throw new Error(`${cliName} exited during startup; see 00-*.txt`);
 
-  await task('01-greeting', 'hi', 240_000, /what can i help you with|how can i help/i);
+  await task('01-greeting', 'hi', 240_000, CODEX_GREETING_EXPECTATION);
   await task('02-read-explain', 'Read calc.js and explain what it does in two sentences.', 240_000, /calc\.js defines two functions|add\(a,\s*b\)|mul\(a,\s*b\)/i);
   await task('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.', 240_000, /add\(a,\s*b,\s*c\s*=\s*0\)|optional third number/i);
   if (cliName === 'codex' && !/function add\(a, b, c = 0\)/.test(readFileSync(path.join(proj, 'calc.js'), 'utf8'))) {
