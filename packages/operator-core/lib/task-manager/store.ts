@@ -496,7 +496,7 @@ export async function closeTask(
         : false,
     );
   }
-  (effects.emitTerminal ?? emitTaskTerminalEvent)({
+  await (effects.emitTerminal ?? emitTaskTerminalEvent)({
     taskId: closed.task_id,
     workspaceId: closed.workspace_id,
     harnessSlug: closed.harness_slug,

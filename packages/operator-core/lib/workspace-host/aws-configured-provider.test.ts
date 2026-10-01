@@ -15,7 +15,10 @@ import {
   type WorkspaceHostProviderConnection,
   type WorkspaceHostProviderContext,
 } from '@papercusp/deployment-driver';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createConfiguredAwsWorkspaceHostProvider } from './aws-configured-provider';
+import { registerWorkspaceHostProviderFactories } from './provider-factories';
 import { AwsWorkspaceHostProvider } from './aws-provider';
 import type { AwsSdkClientConfig, AwsSdkClientSet } from './aws-sdk-client';
 import type { WorkspaceHostResourceCreatedEvent } from './gcp-provider';
@@ -237,5 +240,63 @@ describe('createConfiguredAwsWorkspaceHostProvider — teardown-obligation obser
       parentResourceId: ACCOUNT,
       resource: { kind: 'disk', providerId: 'vol-1', parentProviderId: ACCOUNT, region: REGION },
     });
+  });
+});
+
+describe('registerWorkspaceHostProviderFactories — the operator startup composition root', () => {
+  const unusedHostedGcpAuth = async (): Promise<never> => {
+    throw new Error('hosted GCP auth is not exercised by an AWS connection');
+  };
+  const observersInto = (created: WorkspaceHostResourceCreatedEvent[]) => (provider: 'gcp' | 'aws') => ({
+    onResourceCreated: (event: WorkspaceHostResourceCreatedEvent) => {
+      if (provider === 'aws') created.push(event);
+    },
+    onResourceDestroyed: () => {},
+  });
+
+  it("AWSP-P-003-aws-resolves: after startup registration an 'aws' connection resolves to the AWS provider instead of an unsupported-provider refusal", () => {
+    // Before registration the registry refuses the target outright.
+    expect(() => resolveWorkspaceHostProvider(connection())).toThrow();
+
+    registerWorkspaceHostProviderFactories({ resolveHostedGcpAuth: unusedHostedGcpAuth, obligationObservers: observersInto([]) });
+
+    const provider = resolveWorkspaceHostProvider(connection());
+    expect(provider).toBeInstanceOf(AwsWorkspaceHostProvider);
+    expect(provider.target).toBe('aws');
+  });
+
+  it('AUTO-BAR-R-1-P-003: the registered aws factory drives the SDK-backed client — a create reaches EC2 as an SDK command and opens an obligation', async () => {
+    const ec2 = fakeEc2();
+    const created: WorkspaceHostResourceCreatedEvent[] = [];
+    registerWorkspaceHostProviderFactories({
+      resolveHostedGcpAuth: unusedHostedGcpAuth,
+      obligationObservers: observersInto(created),
+      awsTransport: {
+        createClients: ec2.createClients,
+        waiter: { maxWaitTimeSec: 0.05, minDelaySec: 0.001, maxDelaySec: 0.002 },
+        now: () => NOW,
+      },
+    });
+
+    const provider = resolveWorkspaceHostProvider(connection());
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'op-startup', idempotencyKey: 'idem-startup', desired: desired() },
+      ctx(),
+    );
+    const result = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] },
+      ctx(),
+    );
+
+    expect(result.state).toBe('applied');
+    expect(ec2.sent).toContain('ec2:CreateVolumeCommand');
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ resource: { kind: 'disk', parentProviderId: ACCOUNT, region: REGION } });
+  });
+
+  it('is the registration path operator startup runs (no inline per-cloud registration left in bootstrap)', () => {
+    const bootstrap = readFileSync(fileURLToPath(new URL('../dbos/bootstrap.ts', import.meta.url)), 'utf8');
+    expect(bootstrap).toContain('registerWorkspaceHostProviderFactories({');
+    expect(bootstrap).not.toMatch(/registerWorkspaceHostProviderFactory\(\s*'(aws|gcp)'/);
   });
 });

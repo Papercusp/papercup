@@ -876,6 +876,23 @@ export async function getNextForBee(args: {
     // (the audit + release below MUST still run), so a throw here is swallowed exactly like
     // every other observability call in this function.
     notifyPlanLaneBlocked(args.onPlanLaneBlocked, blocked, result.workItem.id);
+    const releaseBounced = () =>
+      releaseWorkItem(result.workItem.id, {
+        harness: args.harness,
+        expectedAssignee: args.cupId,
+        announceClaimable: false,
+      });
+    // P-002(b): an acceptance hold routes the item behind the plan's repair task with a
+    // `blocks` edge, and the dependency store REFUSES a new unresolved blocker behind an
+    // ACTIVE (still-claimed) dependant — so release FIRST, then route, then audit the routing
+    // outcome. The lane-block path keeps its audit-then-release order.
+    let acceptanceRouting: string | undefined;
+    if (acceptanceHold) {
+      claimStep('claim-release');
+      await releaseBounced();
+      claimStep('acceptance-repair-route');
+      acceptanceRouting = await acceptanceHold.routeAfterRelease();
+    }
     claimStep('claim-audit');
     await auditClaimAttempt({
       workspaceId: args.workspaceId,
@@ -894,15 +911,14 @@ export async function getNextForBee(args: {
         itemId: blocked.itemId,
         effectiveStatus: blocked.effectiveStatus,
         laneReason: blocked.reason,
+        ...(acceptanceRouting !== undefined ? { acceptanceRouting } : {}),
         family: result.workItem.family,
       },
     });
-    claimStep('claim-release');
-    await releaseWorkItem(result.workItem.id, {
-      harness: args.harness,
-      expectedAssignee: args.cupId,
-      announceClaimable: false,
-    });
+    if (!acceptanceHold) {
+      claimStep('claim-release');
+      await releaseBounced();
+    }
   }
   return null;
 }

@@ -63,7 +63,6 @@ import {
   getFleetHeadcountTarget,
   listFleetsLedBy,
   projectFleetHeadcountState,
-  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type AgentFleetRecord,
   type FleetControlState,
   type FleetLaunchGovernorAction,
@@ -71,6 +70,11 @@ import {
   type FleetLaunchTransaction,
 } from '../../agent-fleets-store';
 import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
+import {
+  countedMemberSet,
+  readFleetMemberSilence,
+  type FleetMemberSilencePartition,
+} from '../fleet_registry/silent-member';
 import {
   ensureFleetLeaderControl,
   resolveFleetLeaderTransitionEventKeys,
@@ -214,6 +218,29 @@ const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
  */
 export const LEADER_BRIEF_READ_CONCURRENCY = 4;
 export const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 3_000;
+
+export type LeaderBriefSilentMembers =
+  | { status: 'measured'; ownerIds: string[]; thresholdMs: number; paused: boolean }
+  | { status: 'unknown'; reason: string };
+
+/**
+ * P-007 / R-17: name the live members the silence rule left out of
+ * `headcount.current`. An unreadable roster or silence leg is `unknown` with a
+ * reason — never an empty list, which would read as "nobody is silent".
+ */
+export function silentMembersSummary(
+  liveMemberIds: readonly string[] | null,
+  partition: FleetMemberSilencePartition | null,
+): LeaderBriefSilentMembers {
+  if (liveMemberIds == null) return { status: 'unknown', reason: 'live roster unreadable' };
+  if (partition == null) return { status: 'unknown', reason: 'execution or await leg unreadable' };
+  return {
+    status: 'measured',
+    ownerIds: [...partition.silent],
+    thresholdMs: partition.thresholdMs,
+    paused: partition.paused,
+  };
+}
 /**
  * Keep optional leader-brief legs below the MCP transport budget. The roster
  * has its own larger, per-leg budget; everything after it is advisory and can
@@ -4052,22 +4079,28 @@ export async function buildLeaderBrief(
   // WI-2034624: `current` is attested from recent agent-origin execution over
   // the canonical live roster — never from the current launch transaction's
   // worker-ready set, which excludes every member a prior transaction or a
-  // carry-respawn created. Deliberately a SEPARATE read from the WI-583276
-  // collapse leg below, on two axes: WINDOW (that one wants a tight window so
-  // silence is noticed fast; this one wants a wide one so a legitimately parked
-  // member is not mistaken for a missing seat) and LEDGER (this one unions the
-  // MCP and native tool ledgers, because `tool_invocations` misses an agent
-  // working through native Bash/Read/Edit entirely). A failed read stays UNKNOWN.
-  const headcountExecutingRead = await withBoundedTimeout(
+  // carry-respawn created. P-007 / R-17: the count goes through the SAME silence
+  // seam as the headcount governor and `fleet:status` (readFleetMemberSilence), so
+  // a member silent past the threshold — heartbeats only, no pending declared
+  // await, fleet not paused — is excluded here exactly as the writer excludes it,
+  // and is NAMED in `summary.silentMembers` instead of vanishing. Deliberately a
+  // SEPARATE read from the WI-583276 collapse leg below (that one keys on
+  // `tool_invocations` alone; this one unions the MCP and native tool ledgers).
+  // A failed read stays UNKNOWN.
+  const headcountSilenceRead = await withBoundedTimeout(
     headcountCurrentResult.value == null
       ? Promise.resolve(null)
-      : executingOwnersSince(headcountCurrentResult.value, FLEET_HEADCOUNT_EXECUTION_WINDOW_MS),
+      : readFleetMemberSilence(headcountCurrentResult.value, {
+          fleetPaused:
+            fleetRecordResult.value == null ? null : fleetRecordResult.value.controlState === 'winding-down',
+        }),
     {
       fallback: null,
       timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
       label: 'leader-brief:headcountExecuting',
     },
   );
+  const headcountExecutingRead = { value: countedMemberSet(headcountSilenceRead.value) };
   // A degraded `getFleet` result is not evidence of a vacant leader seat.
   // Corroborate only positive self-leadership before repairing control; the
   // recovery helper intentionally cannot authorize `takeFleetLeadership`.
@@ -4614,6 +4647,10 @@ export async function buildLeaderBrief(
     // public target stays null so a reusable recipe cannot masquerade as an
     // active headcount commitment. Read failures remain in-band `unknown`.
     headcount,
+    // P-007 / R-17: the live members `headcount.current` left out because they are
+    // silent past the threshold (heartbeats only). Named so a leader can wake or
+    // replace them; `unknown` when either silence leg was unreadable, never `[]`.
+    silentMembers: silentMembersSummary(headcountCurrentResult.value, headcountSilenceRead.value),
     speaking: members.filter((m) => m.verdict === 'speaking').length,
     monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
     waiting: members.filter((m) => m.monitorState === 'waiting').length,

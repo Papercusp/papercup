@@ -12,7 +12,28 @@ const h = vi.hoisted(() => ({
   resolveAgentIdentity: vi.fn(),
   executingOwnersSince: vi.fn(),
   getLoopStatuses: vi.fn(),
+  // P-007 / R-17: pending event_awaits rows for the silence rule's await leg.
+  awaitRows: [] as { subscriber_id: string; event_key: string }[],
 }));
+
+// P-007 / R-17: the headcount `current` read goes through readFleetMemberSilence,
+// whose await leg queries harness_shared.event_awaits. Answer ONLY that query from
+// the fixture; every other query is delegated to the real getOrgPg untouched, so
+// the pre-existing legs behave exactly as before this double existed.
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: (...args: Parameters<typeof actual.getOrgPg>) => {
+      const real = actual.getOrgPg(...args);
+      const sql = (strings: TemplateStringsArray, ...values: unknown[]) =>
+        strings.join('$').includes('harness_shared.event_awaits')
+          ? Promise.resolve(h.awaitRows)
+          : (real.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>)(strings, ...values);
+      return Object.assign(Object.create(real), { sql: Object.assign(sql, real.sql) });
+    },
+  };
+});
 
 vi.mock('../../agent-fleets-store', async () => {
   const actual =

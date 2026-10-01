@@ -1300,9 +1300,6 @@ describe('durable detached snapshot lifecycle', () => {
     type Sql = Parameters<Store['persistRunSnapshot']>[1];
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
     process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
-    // Close-time persistence dynamically imports the mocked DB module. Warm it
-    // first so this lifecycle assertion measures finalization, not cold import.
-    await import('@papercusp/db-org');
     let releaseTerminalSnapshot!: () => void;
     let markTerminalSnapshotStarted!: () => void;
     const terminalSnapshotStarted = new Promise<void>((resolve) => {
@@ -1334,21 +1331,7 @@ describe('durable detached snapshot lifecycle', () => {
     try {
       const snapshot = store.startRun(req({ requestedFiles: ['lib/local-pass.test.ts'] }));
       lastChild._emitClose(0);
-      let terminalStartTimer: ReturnType<typeof setTimeout> | undefined;
-      const terminalStartResult = await Promise.race([
-        terminalSnapshotStarted.then(() => 'started' as const),
-        new Promise<'timeout'>((resolve) => {
-          terminalStartTimer = setTimeout(() => resolve('timeout'), 1_500);
-        }),
-      ]);
-      if (terminalStartTimer) clearTimeout(terminalStartTimer);
-      expect(terminalStartResult, JSON.stringify({
-        local: store.getRun(snapshot.runId),
-        persistCalls: persistSqlMock.mock.calls.map((call) => ({
-          query: call[0]?.join(' ').trim().replace(/\\s+/g, ' ').slice(0, 90),
-          values: call.slice(1, 7),
-        })),
-      })).toBe('started');
+      await terminalSnapshotStarted;
 
       let settled = false;
       const statusRead = store.getRunAsync(snapshot.runId, sql).then((result) => {

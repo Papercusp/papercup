@@ -51,6 +51,14 @@ vi.mock('./plan-item-lane-guard', () => ({
   planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReasonMock(...args),
 }));
 
+// P-002(b): the acceptance-readiness hold is getNextForBee's SECOND post-claim verdict. Mocked
+// at the module boundary (default: not held) so this suite pins the WIRING; without it the real
+// hold reached the mocked lane-guard module, threw, and silently failed open.
+const acceptanceReadinessHoldMock = vi.fn();
+vi.mock('./acceptance-readiness-hold', () => ({
+  acceptanceReadinessHold: (...args: unknown[]) => acceptanceReadinessHoldMock(...args),
+}));
+
 const releaseWorkItemMock = vi.fn(async (..._args: unknown[]) => null);
 vi.mock('../work-items', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../work-items')>()),
@@ -90,6 +98,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     sqlMock.mockReset().mockResolvedValue([]);
     getNextWorkItemMock.mockReset();
     planItemLaneBlockReasonMock.mockReset();
+    acceptanceReadinessHoldMock.mockReset().mockResolvedValue(null);
     releaseWorkItemMock.mockReset().mockResolvedValue(null);
     matchesWorkItemClaimSpecMock.mockReset().mockReturnValue(true);
     recordClaimAttemptMock.mockReset().mockResolvedValue(undefined);

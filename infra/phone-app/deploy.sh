@@ -9,6 +9,8 @@
 #
 #   deploy.sh                  deploy / converge
 #   deploy.sh --hosted         require + persist a public wss:// browser URL
+#   deploy.sh --render-only    validate + prepare config, no services or key minting
+#   deploy.sh --preflight      check public DNS + trusted TLS, no writes or restarts
 #   deploy.sh --rotate-secret  mint a fresh secret and restart both units
 #   deploy.sh --status         report only, change nothing
 set -euo pipefail
@@ -47,13 +49,20 @@ PORTAL_ENV_FILE="$CONF_DIR/portal.env"
 # erases an explicit URL supplied for THIS convergence.
 REQUESTED_LIVEKIT_URL="${PHONE_LIVEKIT_URL:-}"
 REQUESTED_LIVEKIT_PUBLIC_URL="${PHONE_LIVEKIT_PUBLIC_URL:-}"
+MEDIA_KEYS=(PHONE_TURN_DOMAIN PHONE_TURN_CERT_FILE PHONE_TURN_KEY_FILE PHONE_TURN_TLS_PORT)
+declare -A REQUESTED_MEDIA=()
+for key in "${MEDIA_KEYS[@]}"; do
+  [[ ! -v "$key" ]] || REQUESTED_MEDIA[$key]="${!key}"
+done
 
-ROTATE=0; STATUS_ONLY=0; HOSTED=0
+ROTATE=0; STATUS_ONLY=0; HOSTED=0; RENDER_ONLY=0; PREFLIGHT_ONLY=0
 for a in "$@"; do
   case "$a" in
     --rotate-secret) ROTATE=1 ;;
     --status) STATUS_ONLY=1 ;;
     --hosted) HOSTED=1 ;;
+    --render-only) RENDER_ONLY=1 ;;
+    --preflight) PREFLIGHT_ONLY=1 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
@@ -68,12 +77,9 @@ upsert_env_var() {
   [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "invalid env key: $key"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$key contains a newline"
   tmp="$(mktemp "$CONF_DIR/.livekit.env.XXXXXX")"
-  awk -v key="$key" -v value="$value" '
-    BEGIN { found = 0 }
-    $0 ~ ("^" key "=") { if (!found) print key "=" value; found = 1; next }
-    { print }
-    END { if (!found) print key "=" value }
-  ' "$ENV_FILE" > "$tmp"
+  awk -v key="$key" '$0 !~ ("^" key "=") { print }' "$ENV_FILE" > "$tmp"
+  # Persist shell-safe values; cert paths may contain spaces or shell punctuation.
+  printf '%s=%q\n' "$key" "$value" >> "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$ENV_FILE"
 }
@@ -92,8 +98,13 @@ report_status() {
 }
 
 if [[ $STATUS_ONLY == 1 ]]; then report_status; exit 0; fi
+if [[ $RENDER_ONLY == 1 || $PREFLIGHT_ONLY == 1 ]]; then
+  [[ $ROTATE == 0 ]] || die "preparation/preflight cannot rotate credentials"
+  [[ -f "$ENV_FILE" ]] || die "preparation/preflight requires an existing external livekit.env"
+fi
 
 # ---------------------------------------------------------------- preflight
+if [[ $RENDER_ONLY == 0 && $PREFLIGHT_ONLY == 0 ]]; then
 step "Preflight"
 [[ -x "$LK_BIN" ]] || die "livekit-server not found at $LK_BIN"
 say "livekit-server $("$LK_BIN" --version 2>&1 | head -1 | awk '{print $NF}')"
@@ -135,13 +146,15 @@ if ss -ltn 2>/dev/null | grep -qE ':(7880|7881) '; then
   say "note: another project's LiveKit is on 7880/7881 — leaving it strictly alone"
 fi
 
-LAN_IFACE="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')"
+fi
+LAN_IFACE="${PHONE_LAN_IFACE:-$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')}"
 [[ -n "$LAN_IFACE" ]] || die "could not determine the LAN interface from the default route"
+[[ "$LAN_IFACE" =~ ^[a-zA-Z0-9_.:-]+$ ]] || die "invalid LAN interface"
 say "LAN interface: $LAN_IFACE"
 
 # ---------------------------------------------------------------- credentials
 step "Credentials"
-mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"
+if [[ $PREFLIGHT_ONLY == 0 ]]; then mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"; fi
 
 if [[ ! -f "$ENV_FILE" || $ROTATE == 1 ]]; then
   [[ $ROTATE == 1 ]] && say "rotating API secret" || say "minting API key + secret (first run)"
@@ -164,7 +177,7 @@ fi
 set -a; source "$ENV_FILE"; set +a
 [[ -n "${PHONE_LIVEKIT_API_KEY:-}" && -n "${PHONE_LIVEKIT_API_SECRET:-}" ]] \
   || die "$ENV_FILE is missing PHONE_LIVEKIT_API_KEY / PHONE_LIVEKIT_API_SECRET"
-say "api key ${PHONE_LIVEKIT_API_KEY:0:6}… (secret withheld)"
+say "API credentials present (withheld)"
 
 # Internal control and browser signalling are two views of the same media
 # plane. Local installs use loopback for both. Hosted installs keep the worker
@@ -178,14 +191,26 @@ PHONE_LIVEKIT_PUBLIC_URL="${REQUESTED_LIVEKIT_PUBLIC_URL:-${PHONE_LIVEKIT_PUBLIC
 if [[ -n "$PHONE_LIVEKIT_PUBLIC_URL" && ! "$PHONE_LIVEKIT_PUBLIC_URL" =~ ^wss?://[^[:space:]]+$ ]]; then
   die "PHONE_LIVEKIT_PUBLIC_URL must be a ws:// or wss:// URL"
 fi
-if [[ $HOSTED == 1 && ! "$PHONE_LIVEKIT_PUBLIC_URL" =~ ^wss://[^[:space:]]+$ ]]; then
-  die "hosted deployment requires PHONE_LIVEKIT_PUBLIC_URL=wss://...; refusing to publish loopback or mixed-content signalling"
+for key in "${MEDIA_KEYS[@]}"; do
+  [[ ! -v REQUESTED_MEDIA[$key] ]] || printf -v "$key" '%s' "${REQUESTED_MEDIA[$key]}"
+  export "$key"
+done
+export PHONE_LIVEKIT_URL PHONE_LIVEKIT_PUBLIC_URL
+if [[ $PREFLIGHT_ONLY == 1 ]]; then
+  "$NODE_BIN" "$HERE/media-config.mjs" preflight
+  exit $?
 fi
+MEDIA_ARGS=()
+[[ $HOSTED == 0 ]] || MEDIA_ARGS+=(--hosted)
+PHONE_TURN_TLS_CONFIG="$("$NODE_BIN" "$HERE/media-config.mjs" turn-config "${MEDIA_ARGS[@]}")" \
+  || die "public media prerequisites failed; configuration was not changed"
 upsert_env_var "PHONE_LIVEKIT_URL" "$PHONE_LIVEKIT_URL"
 if [[ -n "$PHONE_LIVEKIT_PUBLIC_URL" ]]; then
   upsert_env_var "PHONE_LIVEKIT_PUBLIC_URL" "$PHONE_LIVEKIT_PUBLIC_URL"
 fi
-export PHONE_LIVEKIT_URL PHONE_LIVEKIT_PUBLIC_URL
+for key in "${MEDIA_KEYS[@]}"; do
+  [[ -z "${!key:-}" ]] || upsert_env_var "$key" "${!key}"
+done
 say "internal LiveKit URL: $PHONE_LIVEKIT_URL"
 if [[ -n "$PHONE_LIVEKIT_PUBLIC_URL" ]]; then
   say "browser LiveKit URL: $PHONE_LIVEKIT_PUBLIC_URL"
@@ -199,6 +224,7 @@ render() {
   content="${content//'${PHONE_LIVEKIT_API_KEY}'/$PHONE_LIVEKIT_API_KEY}"
   content="${content//'${PHONE_LIVEKIT_API_SECRET}'/$PHONE_LIVEKIT_API_SECRET}"
   content="${content//'${PHONE_LAN_IFACE}'/$LAN_IFACE}"
+  content="${content//'${PHONE_TURN_TLS_CONFIG}'/$PHONE_TURN_TLS_CONFIG}"
   content="${content//'${PHONE_WORKER_DIR}'/$WORKER_DIR}"
   content="${content//'${PHONE_SIDECAR_DIR}'/$SIDECAR_DIR}"
   content="${content//'${PHONE_NODE_BIN}'/$NODE_BIN}"
@@ -218,6 +244,10 @@ step "Render config"
 render "$HERE/livekit-server.yaml.tmpl" "$CONF_DIR/livekit-server.yaml"
 render "$HERE/livekit-sip.yaml.tmpl"    "$CONF_DIR/livekit-sip.yaml"
 say "rendered livekit-server.yaml + livekit-sip.yaml into $CONF_DIR"
+if [[ $RENDER_ONLY == 1 ]]; then
+  say "configuration prepared only; no runtime, DNS, firewall or audio acceptance claimed"
+  exit 0
+fi
 
 # ---------------------------------------------------------------- units
 step "Install units"

@@ -16,7 +16,6 @@ import {
   releaseFleetLaunchSlot,
   setFleetHeadcountTarget,
   setFleetLaunchTransaction,
-  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
   type FleetHeadcountConfig,
   type FleetHeadcountTarget,
   type FleetHeadcountBasis,
@@ -28,7 +27,6 @@ import {
 } from '../../agent-fleets-store';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
-import { executingOwnersSince } from '../../fleet/assignments';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { isWorkspaceWideLoopStanddownActive } from './release-pause-ttl';
 import {
@@ -41,6 +39,7 @@ import {
   type FreshLaunchExpectedAttestation,
 } from '../../agent-launch-core';
 import killTool from '../../agent-tools/fleet/kill';
+import { countedMemberSet, readFleetMemberSilence } from '../../agent-tools/fleet_registry/silent-member';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
 import {
   goalFleetFamily,
@@ -1019,9 +1018,11 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     const now = Date.now();
     liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
       .filter((id) => id !== fleet.leaderOwnerId);
-    executingMemberIds = await executingOwnersSince(
-      liveMemberIds,
-      FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+    // P-007 / R-17: a member silent past FLEET_MEMBER_SILENCE_THRESHOLD_MS (heartbeats
+    // only) does not count, so its seat is refilled. The governor only reaches this
+    // point for a fleet that is not winding down, hence fleetPaused:false.
+    executingMemberIds = countedMemberSet(
+      await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
     );
 
     // Legacy launch records have no truthful --launched-by correlation. Adopt
@@ -1509,9 +1510,8 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         .filter((id) => id !== launcherOwnerId);
       // Re-attest over the post-launch roster: the members just opened are the
       // ones whose execution the next deficit must account for.
-      executingMemberIds = await executingOwnersSince(
-        liveMemberIds,
-        FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+      executingMemberIds = countedMemberSet(
+        await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
       );
     } catch (error) {
       rosterError = `post-launch live roster read failed: ${error instanceof Error ? error.message : String(error)}`;

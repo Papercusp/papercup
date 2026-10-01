@@ -182,6 +182,53 @@
     },
     "futureRecipeRequirement": "New full runs must pin the repaired source and permit the parent admission client to access Postgres. Historical v4 and diagnostic receipts keep their original source fingerprints."
   },
+  "poolIdleRepair": {
+    "workItem": "WI-10005060",
+    "status": "synthetic causal class verified; real-model diagnostic in progress",
+    "runtime": { "node": "25.9.0", "builtinUndici": "7.24.4" },
+    "pairedControl": "Sequential pooled requests pass a blocked 10.5-second response-completion pause; the original concurrent batch topology reproduces ECONNRESET. The canonical guard joins the failed send, server idle timeout and client error by TCP port.",
+    "historicalLimit": "The original v4 closing actor and source of its nine-second gap were not observed. This reproduces and repairs the failure class; it does not attribute that historical gap to disk or establish its closing actor.",
+    "ruledOut": "Both the installed and actual built-in Undici sources select native timers for keep-alive; their fast timer clock is not the cause established by this test.",
+    "repair": "The collector awaits Promise-valued sample retention and the CLI uses fs.promises.appendFile, retaining evidence before advancing while allowing native idle socket callbacks to progress. Pooling, request counts, server timeouts and retry policy are unchanged.",
+    "focusedPair": { "runId": "3e0874f3-6930-4280-b0ec-181f4dcccb67", "testRunIds": [20436078], "passed": 2, "failed": 0, "skipped": 5 },
+    "fullAffectedVerification": {
+      "originalTimeoutRunId": "652781b2-3f36-4402-b318-29029744d318",
+      "detachedRecoveryRunId": "487f2652-e405-4e8f-a713-b376cc8c91f1",
+      "testRunIds": [20436118, 20436119, 20436121],
+      "filesPassed": 3,
+      "skipCount": "not returned by the detached router",
+      "scopedTypecheck": "requested files clean, zero errors; current-build tsc-service",
+      "provenance": "Saved exact detached command and terminal ledger recovered without launching duplicate tests. Local source edits were uncommitted; the router records named-test-path provenance and does not measure all imported worktree movement."
+    },
+    "sourcePins": {
+      "collectorSha256": "9c1dc085237a3709c652a9a4ebbf1d8d8c3635795e62521c8eafcc12735bc3f0",
+      "evaluatorSha256": "58ec56c40e61799ebf9f05d1ecc481818b607cdba62f46c1a7f17467b937d652",
+      "guardSha256": "5eaa609390644a6a2ce4d96b0876f0cceb67a82874fbd2cb3406b1f5c0d0908c"
+    }
+  },
+  "childLaunchRepair": {
+    "workItem": "EI-24813883590347330",
+    "rootCause": "runPerformanceChild inherited process.execArgv from a stdin/eval parent. The --input-type=module flag is invalid for its file-based TypeScript child, which exited before inference with ERR_INPUT_TYPE_NOT_ALLOWED.",
+    "repair": "Use the benchmark's existing explicit --import tsx file loader instead of inheriting parent eval or test-runner flags.",
+    "guard": "packages/operator-core/lib/memory/bench/sidecar-performance-admission.test.ts",
+    "verification": { "runId": "353b08d4-458d-4d77-8673-81c9058a3694", "testRunIds": [20437752], "passed": 6, "failed": 0, "skipped": 0, "scopedTypecheck": "requested source and guard clean, zero errors", "guardSha256": "f4349bb85ce0d2f95350b4940b356bf2a7e8676c45c075826ae37ba83763c024" },
+    "failedAttempt": {
+      "runId": "performance-transport-mdenseon-v2",
+      "manifestSha256": "ef7c23d5bd544249fc2298a245d678e04c4e22be5866b4b7ccb9189df752176d",
+      "log": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v2/performance-b0-mdenseon.json.log",
+      "inferenceStarted": false
+    }
+  },
+  "repairedTransportDiagnostic": {
+    "runId": "performance-transport-mdenseon-v3",
+    "selectedCell": "performance-b0-mdenseon",
+    "status": "running; parent admission and real child startup observed, query 16x1 completed",
+    "manifest": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-transport-mdenseon-v3.json", "sha256": "0ad5032055882c922af19c553f4fe2a6c9e01511b453b5940c1fae04e5e4d460", "bytes": 111229 },
+    "audit": "cache:validation/mdenseon-performance-WI10004539-20261001/transport-mdenseon-freeze-v3.json",
+    "changedInputs": ["evaluator", "collector"],
+    "preflight": "All selected source/input/artifact hashes, frozen CPU4x1 arm and worker/runtime identity verified before parent admission. Child retains PG prohibition and inherited governed receipt. Original request grid is unchanged.",
+    "modelPerformanceAcceptance": false
+  },
   "limitations": [
     "The precise promise that produced the original unhandled rejection was not reproduced",
     "Synthetic startup and HTTP guards verify the harness; they do not fulfill the real-model five-block performance bar",

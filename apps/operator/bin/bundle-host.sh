@@ -494,7 +494,61 @@ rm -rf "$OUTDIR/sql.old.$$" 2>/dev/null || true
 echo "    ✓ bundled @papercusp/locks DDL matches the tree (highest migration $_locks_sql_max, $_locks_sql_count files)"
 
 # Required workers are shared with packaged desktop and current-build rig.
-bundle_host_workers "$REPO_ROOT" "$OUTDIR" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}" || exit 1
+#
+# WI-10005087: a worker failure gets the SAME two-caller contract as the entry
+# above. Measured 2026-10-01 21:01-21:10Z: the entry built, then esbuild could
+# not bundle snapshot-fold.worker.ts, and this line's bare `|| exit 1` failed
+# ExecStartPre with a good previous snapshot-fold.worker.mjs on disk — bg-host
+# crash-looped for ~9 min (routines, git-sync and DBOS down fleet-wide) even
+# though its drop-in sets PAPERCUSP_BUNDLE_ALLOW_STALE_START=1. The entry's
+# fallback did not cover the workers, so one bad worker edit was an outage.
+#
+# Same rules as the entry: every worker publish is tmp-then-rename, so a failed
+# worker leaves its previous output intact; the marker is written whenever we
+# fall back (staleness is a fact about disk, not about the caller); a supervisor
+# that opted in starts, every other caller fails; and nothing starts when a
+# worker has no previous output to fall back to.
+#
+# ⚠ The fallback leaves a MIXED dist-host: a fresh entry beside an older worker.
+# That is deliberately reported, not refused. The worker message protocols
+# (snapshot-fold-protocol.ts, the sentinel's) carry no version handshake, so a
+# protocol change plus a stale worker is a real skew — but refusing here would
+# not prevent it (the entry's own fallback already yields the opposite mix:
+# measured live at 21:12Z, a 21:08Z entry beside a 20:25Z snapshot-fold worker)
+# and would restore the outage. The marker names the worker, so /api/health
+# reports bundleStale and the skew is one read away rather than invisible.
+WORKER_BUILD_LOG="$OUTDIR/runtime-workers.build-error.log"
+worker_rc=0
+bundle_host_workers "$REPO_ROOT" "$OUTDIR" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}" >"$WORKER_BUILD_LOG" 2>&1 || worker_rc=$?
+cat "$WORKER_BUILD_LOG"
+if [[ $worker_rc -ne 0 ]]; then
+  failed_worker="${BUNDLE_HOST_WORKER_FAILED_SOURCE:-(runtime workers)}"
+  missing_workers=()
+  for worker_output in "${HOST_WORKER_OUTPUTS[@]}"; do
+    [[ -s "$OUTDIR/$worker_output" ]] || missing_workers+=("$worker_output")
+  done
+  if [[ ${#missing_workers[@]} -ne 0 ]]; then
+    echo "ERROR: bundling runtime worker $failed_worker failed and there is NO previous"
+    echo "       output to fall back to (missing: ${missing_workers[*]})."
+    echo "       Refusing to start rather than spawn a missing worker."
+    exit 1
+  fi
+  worker_outfile="$OUTDIR/${BUNDLE_HOST_WORKER_FAILED_OUTPUT:-${HOST_WORKER_OUTPUTS[0]}}"
+  node "$SCRIPT_DIR/write-bundle-stale-marker.mjs" \
+    "$STALE_MARKER" "$failed_worker" "$worker_outfile" "$WORKER_BUILD_LOG" || true
+  echo "🚨 ERROR: bundling runtime worker $failed_worker FAILED — output above; full log: $WORKER_BUILD_LOG"
+  echo "🚨 FALLING BACK to the last-known-good worker already on disk:"
+  echo "🚨   $worker_outfile (built $(date -r "$worker_outfile" -Iseconds 2>/dev/null || echo unknown))"
+  echo "🚨 dist-host/ is STALE CODE: a fresh $ENTRY beside an OLDER worker, NOT the"
+  echo "🚨   current tree. /api/health reports bundleStale. Marker: $STALE_MARKER"
+  if [[ "${PAPERCUSP_BUNDLE_ALLOW_STALE_START:-0}" == "1" ]]; then
+    echo "🚨 The service STARTS on that stale worker, by request"
+    echo "🚨   (PAPERCUSP_BUNDLE_ALLOW_STALE_START=1 — availability over freshness)."
+    exit 0
+  fi
+  echo "🚨 The CALLER FAILS (exit 1): stale bytes must not be reported as a release."
+  exit 1
+fi
 
 # Stamp only after the bundle AND every runtime sibling/asset has published.
 # The helper refuses a dirty tree, a changed HEAD, a missing output, or an

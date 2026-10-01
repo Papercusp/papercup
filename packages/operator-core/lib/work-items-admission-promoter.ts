@@ -16,6 +16,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { z } from 'zod';
+import { isTransientNetworkError } from './loopback-fetch';
 import { activeExternalBlockers } from './external-blockers';
 import { isCompletionRef } from './harness/completion-ref-types';
 import { admissionIdentity } from './harness/improvements/digest';
@@ -1114,6 +1115,31 @@ export type PromoterLlmCall = (input: {
   /** Stable owner identity for gateway attribution of this durable run. */
   ownerId?: string;
 }) => Promise<PromoterLlmResult>;
+
+const PROMOTER_LLM_TRANSIENT_RETRY_BACKOFFS_MS = [1_000, 9_000] as const;
+
+/**
+ * The Codex LLM transport disables its own retry ladder so scheduled batch
+ * callers can own a bounded policy. The promoter is one such caller: retry
+ * only connection-level transient failures, with a 10s total wait that covers
+ * the observed gateway stop/start window without multiplying API/model errors.
+ */
+export async function callPromoterLlmWithTransientRetry<T>(
+  call: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T> {
+  let retry = 0;
+  for (;;) {
+    try {
+      return await call();
+    } catch (error) {
+      const backoffMs = PROMOTER_LLM_TRANSIENT_RETRY_BACKOFFS_MS[retry];
+      if (backoffMs === undefined || !isTransientNetworkError(error)) throw error;
+      await sleep(backoffMs);
+      retry += 1;
+    }
+  }
+}
 
 interface WorkItemRow {
   feature_id: string;
@@ -5160,13 +5186,13 @@ export async function runWorkItemAdmissionPromoter(opts: {
       runModelId = model;
       modelCostUsd = null;
       const prompt = buildPromoterPrompt(pairs);
-      const response = await opts.llmCall({
+      const response = await callPromoterLlmWithTransientRetry(() => opts.llmCall({
         model,
         system: prompt.system,
         messages: [{ role: 'user', content: prompt.user }],
         responseFormat: 'json',
         maxTokens: Math.min(8_000, 500 + pairs.length * 180),
-      });
+      }));
       // Capture usage before parsing. A schema-invalid response still consumed
       // tokens/cost and the failed run must retain that actual evidence.
       tokensIn = response.inputTokens;

@@ -337,25 +337,11 @@ export type FleetHeadcountBasisKind =
   | 'legacy-live-roster-fallback'
   | 'unknown';
 
-/**
- * How far back an agent-origin tool call still attests that a live member seat
- * is productive (WI-2034624 / P-007).
- *
- * Deliberately WIDER than the 30-minute wedge-detection window
- * `agentOriginToolCallOwnersSince` defaults to, because the two windows answer
- * opposite questions and pay opposite costs. Wedge detection wants to notice
- * silence FAST; capacity sizing wants to avoid mistaking a legitimately parked
- * member for a missing one. A member parked on the standard 1800s
- * `events:await` makes no call for a full 30 minutes while productively holding
- * its seat, so a 30-minute sizing window would read it as absent and the
- * governor would spawn a replacement for a seat that is already filled — the
- * exact churn this constant exists to stop. Over-counting costs a fleet that
- * runs slightly light for up to an hour; under-counting costs perpetual
- * relaunch churn that re-burns quota on every boot and worsens the real
- * constraint. Detection of a genuinely wedged member is NOT this signal's job:
- * `fleet:leader-brief`'s WI-583276 alert owns it, on its own tighter window.
- */
-export const FLEET_HEADCOUNT_EXECUTION_WINDOW_MS = 60 * 60_000;
+// How far back a call still attests that a live member seat is productive. The
+// rule that applies it (a pending non-keepalive await also counts) and why it
+// replaced the old 60-minute window live beside the constant.
+import { FLEET_MEMBER_SILENCE_THRESHOLD_MS } from './fleet/member-silence-threshold';
+export { FLEET_MEMBER_SILENCE_THRESHOLD_MS };
 
 /** The exact population behind `FleetHeadcountState.current`.
  *
@@ -582,43 +568,44 @@ function buildFleetHeadcountCountEvidence(
     metricDefinition: 'the population used to size productive fleet capacity',
     populationId:
       basis.kind === 'agent-origin-execution-attested'
-        ? 'live-roster-recent-execution-intersection'
+        ? 'live-roster-non-silent-intersection'
         : 'legacy-live-roster-fallback',
     populationSelector:
       basis.kind === 'agent-origin-execution-attested'
         ? {
             liveSource: 'liveFleetMemberIds(mode=launch)',
             executionSources: ['harness_shared.tool_invocations(call_origin=agent)', 'harness_shared.agent_activity'],
+            waitSource: 'harness_shared.event_awaits(pending, unexpired, excluding coord:inbox-wake keepalive)',
           }
         : { source: 'liveFleetMemberIds', mode: 'launch', legacyFallback: true },
     populationDefinition:
       basis.kind === 'agent-origin-execution-attested'
-        ? 'live non-leader fleet members with recent execution in either authoritative tool ledger'
+        ? 'live non-leader fleet members that are not silent: a call in either tool ledger within the threshold, or parked on a declared await; in a paused fleet every live member'
         : 'legacy fleet live roster used only when no worker-attestation contract exists',
     cutoff:
       basis.kind === 'agent-origin-execution-attested'
         ? {
             kind: 'rolling-window',
             field: 'agent-origin-or-native-tool-activity',
-            durationMs: FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+            durationMs: FLEET_MEMBER_SILENCE_THRESHOLD_MS,
             end: 'measuredAt',
           }
         : { kind: 'none' },
     statusId:
       basis.kind === 'agent-origin-execution-attested'
-        ? 'recently-executing-live-member'
+        ? 'non-silent-live-member'
         : 'legacy-live-roster-member',
     statusDefinition:
       basis.kind === 'agent-origin-execution-attested'
-        ? 'member is live and appears in either execution ledger during the rolling window'
+        ? 'member is live and either appears in an execution ledger during the window or holds a pending declared await; heartbeats alone never qualify'
         : 'member is live in a legacy fleet with no modern worker contract',
     writerId:
       basis.kind === 'agent-origin-execution-attested'
-        ? 'executingOwnersSince+measureFleetProductiveHeadcount'
+        ? 'readFleetMemberSilence+measureFleetProductiveHeadcount'
         : 'measureFleetProductiveHeadcount/legacy-live-roster-fallback',
     zeroMeaning:
       basis.kind === 'agent-origin-execution-attested'
-        ? 'no live members emitted observable execution during the rolling window; this is not a transaction-ready count'
+        ? 'every live member was silent for the threshold (heartbeats only, no declared await); this is not a transaction-ready count'
         : 'the legacy live roster contains no members',
     axis: 'productive',
   });

@@ -316,9 +316,12 @@ export async function runPerformanceChild(input: {
   }, async (context) => {
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       const child = (deps.spawnProcess ?? spawn)(process.execPath,
-        [...process.execArgv, fileURLToPath(new URL('./embedder-eval-cli.ts', import.meta.url)),
+        // The child runs a TS file; parent eval/stdin/Vitest flags are not a
+        // valid file launch context. Use the benchmark's existing tsx loader.
+        ['--import', 'tsx', fileURLToPath(new URL('./embedder-eval-cli.ts', import.meta.url)),
           '--manifest', input.manifestFile, '--manifest-sha256', manifestSha256, '--cell', cell.id,
-          '--legs', `sidecar:${cell.armId}`, '--isolated-sidecar', '--mdenseon-model', input.mdenseonModel, '--out', input.rawOutput],
+          '--legs', `sidecar:${cell.armId}`, '--isolated-sidecar', '--mdenseon-model', input.mdenseonModel,
+          ...(cell.parameters.transportTrace === true ? ['--transport-trace'] : []), '--out', input.rawOutput],
         { stdio: ['ignore', input.logFd, input.logFd], env: { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1',
           PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(context) } });
       child.once('error', reject); child.once('exit', resolve);

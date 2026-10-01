@@ -64,6 +64,13 @@ const item = (id: string, itemIds: string[] | null) => ({
 
 const ctx = { by: 'su-test', workspaceId: 'ws-test' };
 
+/** Hold verdict, then the post-release routing the caller runs; returns the routing note. */
+async function route(wi: ReturnType<typeof item>, deps: Partial<AcceptanceReadinessHoldDeps>): Promise<string> {
+  const block = await acceptanceReadinessHold(wi, ctx, deps);
+  if (!block) throw new Error(`expected ${wi.id} to be held`);
+  return block.routeAfterRelease();
+}
+
 describe('incompleteAcceptanceBarsForItems (pure verdict)', () => {
   it('holds an item bound to a draft (not-accepted), method-less, or check-less BAR (R-3)', () => {
     const snap = snapshot(
@@ -113,7 +120,11 @@ describe('acceptanceReadinessHold (routing)', () => {
     const block = await acceptanceReadinessHold(item('WI-1', ['P-001']), ctx, deps);
     expect(block).toMatchObject({ planSlug: PLAN, itemId: 'P-001', effectiveStatus: 'acceptance-incomplete', staleBlockedHint: null });
     expect(block!.reason).toContain('incomplete acceptance requirement');
-    expect(block!.reason).toContain('held behind repair task EI-REPAIR-1 (filed now)');
+    // The verdict itself has no side effects: routing waits for the caller's release, because
+    // the dependency store refuses a blocker behind a still-claimed (active) dependant.
+    expect(store.findOrFileRepairTask).not.toHaveBeenCalled();
+    expect(store.linkHold).not.toHaveBeenCalled();
+    expect(await block!.routeAfterRelease()).toBe('held behind repair task EI-REPAIR-1 (filed now)');
     expect(store.filed).toHaveLength(1);
     expect(store.filed[0]).toMatchObject({ planSlug: PLAN, harness: 'papercusp', workspaceId: 'ws-test', by: 'su-test' });
     expect([...store.edges]).toEqual(['EI-REPAIR-1->WI-1']);
@@ -122,23 +133,22 @@ describe('acceptanceReadinessHold (routing)', () => {
   it('a second held item in the same plan REUSES the open repair task — no duplicate (R-16)', async () => {
     const snap = snapshot(bar('R-1', [['P-001'], ['P-002']], ['bar_snapshot_method_missing']));
     const { deps, store } = depsFor(snap);
-    await acceptanceReadinessHold(item('WI-1', ['P-001']), ctx, deps);
-    const second = await acceptanceReadinessHold(item('WI-2', ['P-002']), ctx, deps);
-    await acceptanceReadinessHold(item('WI-1', ['P-001']), ctx, deps); // re-bounce of the same item
+    await route(item('WI-1', ['P-001']), deps);
+    const second = await route(item('WI-2', ['P-002']), deps);
+    await route(item('WI-1', ['P-001']), deps); // re-bounce of the same item
     expect(store.filed).toHaveLength(1);
     expect(store.tasks).toHaveLength(1);
-    expect(second!.reason).toContain('held behind repair task EI-REPAIR-1');
-    expect(second!.reason).not.toContain('filed now');
+    expect(second).toBe('held behind repair task EI-REPAIR-1');
     expect([...store.edges].sort()).toEqual(['EI-REPAIR-1->WI-1', 'EI-REPAIR-1->WI-2']);
   });
 
   it('files a FRESH repair task when the previous one closed with the contract still incomplete', async () => {
     const { deps, store } = depsFor(snapshot(bar('R-1', [['P-001']], ['bar_snapshot_check_missing'])));
-    await acceptanceReadinessHold(item('WI-1', ['P-001']), ctx, deps);
+    await route(item('WI-1', ['P-001']), deps);
     store.tasks[0]!.terminal = true;
-    const again = await acceptanceReadinessHold(item('WI-1', ['P-001']), ctx, deps);
+    const again = await route(item('WI-1', ['P-001']), deps);
     expect(store.filed).toHaveLength(2);
-    expect(again!.reason).toContain('EI-REPAIR-2 (filed now)');
+    expect(again).toBe('held behind repair task EI-REPAIR-2 (filed now)');
   });
 
   it('does not hold, file, or link for a complete-contract item, an independent item, or unplanned work (R-18)', async () => {
@@ -177,13 +187,15 @@ describe('acceptanceReadinessHold (routing)', () => {
     };
     const block = await acceptanceReadinessHold(item('WI-1', ['P-001']), ctx, deps);
     expect(block).not.toBeNull();
-    expect(block!.reason).toContain('repair routing failed (lock timeout)');
+    // routeAfterRelease never throws: the failure becomes the audit's routing note.
+    expect(await block!.routeAfterRelease()).toBe('repair routing failed (lock timeout)');
   });
 
   it('reports a refused edge instead of claiming the item is routed', async () => {
     const { deps } = depsFor(snapshot(bar('R-1', [['P-001']], ['bar_snapshot_method_missing'])));
     deps.linkHold = async () => 'cycle';
-    const block = await acceptanceReadinessHold(item('WI-1', ['P-001']), ctx, deps);
-    expect(block!.reason).toContain('but the blocks edge was not written (cycle)');
+    expect(await route(item('WI-1', ['P-001']), deps)).toBe(
+      'repair task EI-REPAIR-1 filed, but the blocks edge was not written (cycle)',
+    );
   });
 });

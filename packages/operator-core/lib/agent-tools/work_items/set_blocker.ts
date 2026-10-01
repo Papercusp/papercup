@@ -24,9 +24,11 @@ import {
   applyExternalBlockerUpdate,
   externalBlockerCapabilityPolicy,
   EXTERNAL_BLOCKER_CAPABILITIES,
+  OWNER_ASK_DEFAULT_ACTIONS,
   readExternalBlockers,
   type ExternalBlockerCapability,
   type ExternalBlockerKind,
+  type OwnerAskDefaultAction,
 } from '../../external-blockers';
 import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
@@ -61,6 +63,7 @@ type BlockerInput = {
   nextVerb?: string;
   defaultIfUnanswered?: string;
   decideBy?: string;
+  defaultAction?: OwnerAskDefaultAction;
   clear?: boolean;
   harness?: string;
   migrateWorkItemRefs?: boolean;
@@ -107,6 +110,7 @@ const fields = {
   nextVerb: z.string().max(300).optional(),
   defaultIfUnanswered: z.string().max(500).optional(),
   decideBy: z.string().max(40).optional(),
+  defaultAction: z.enum(OWNER_ASK_DEFAULT_ACTIONS).optional(),
   clear: z.boolean().optional(),
   harness: z.string().max(80).optional(),
   migrateWorkItemRefs: z
@@ -279,6 +283,7 @@ export default defineTool({
       nextVerb: z.string().max(300).optional(),
       defaultIfUnanswered: z.string().max(500).optional(),
       decideBy: z.string().max(40).optional(),
+      defaultAction: z.enum(OWNER_ASK_DEFAULT_ACTIONS).optional(),
       clear: z.boolean().optional(),
       harness: z.string().max(80).optional(),
       migrateWorkItemRefs: fields.migrateWorkItemRefs,
@@ -357,6 +362,7 @@ export default defineTool({
             nextVerb: args.nextVerb,
             defaultIfUnanswered: args.defaultIfUnanswered,
             decideBy: args.decideBy,
+            defaultAction: args.defaultAction,
             clear: args.clear,
             harness: args.harness,
             migrateWorkItemRefs: args.migrateWorkItemRefs,
@@ -607,6 +613,7 @@ export default defineTool({
             nextVerb: input.nextVerb,
             defaultIfUnanswered: input.defaultIfUnanswered,
             decideBy: input.decideBy,
+            defaultAction: input.defaultAction,
             clear: input.clear,
           },
           identity.ownerId,

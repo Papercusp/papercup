@@ -14,14 +14,14 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import {
+  createFreshPgDb,
+  applyEventSubstrateMigrationsForTest,
+  type FreshPgDb,
+  COORD_SUBSCRIPTION_SUBSTRATE,
+} from '../../test/_pg-helpers';
 import type { TaskReleaseReceiptInput, TaskReleaseReceiptState } from './store';
 import type { TaskTerminalProvenance } from './types';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -74,9 +74,16 @@ async function insertAgentSessionTask(input: {
 beforeAll(async () => {
   db = await createFreshPgDb('task-ledger-store');
   h.sql = db.sql;
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '632-event-key-fire-latch.sql'));
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '696-task-ledger.sql'));
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '700-task-ledger-bash-job-id-idx.sql'));
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'task-manager/store.integration.test.ts',
+    ...COORD_SUBSCRIPTION_SUBSTRATE,
+    extra: [
+      ...COORD_SUBSCRIPTION_SUBSTRATE.extra,
+      '696-task-ledger.sql',
+      '700-task-ledger-bash-job-id-idx.sql',
+      '774-task-ledger-ended-unobserved-state.sql',
+    ],
+  });
   await db.sql`
     CREATE TABLE harness_shared.adv_sessions (
       id bigserial PRIMARY KEY,
@@ -542,7 +549,11 @@ describe('P-012 terminal provenance writer', () => {
     // bridge would import an unrelated module graph after this test has settled.
     // WI-10002569: inject the documented effect seam so late import warnings
     // cannot turn a truthful ledger assertion into a console-warn flake.
-    const emitTerminal = vi.fn();
+    const emittedEvents: string[] = [];
+    const emitTerminal = vi.fn(async (event: { taskId: string }) => {
+      await Promise.resolve();
+      emittedEvents.push(event.taskId);
+    });
     const effects = { emitTerminal };
     const timeout = await liveTask('timeouttask', { memoryMaxBytes: 64 * 1024 * 1024 });
     await store.closeTask('timeouttask', {
@@ -582,6 +593,7 @@ describe('P-012 terminal provenance writer', () => {
       hostoomtask: { state: 'killed', exit_code: 137, exit_reason: 'host-oom' },
     });
     expect(emitTerminal).toHaveBeenCalledTimes(4);
+    expect(emittedEvents).toEqual(['timeouttask', 'exit1task', 'manualtask', 'hostoomtask']);
   });
 
   it('refuses to attach terminal evidence from a different scope identity', async () => {
@@ -615,7 +627,11 @@ describe('persistFailedTaskUnitTerminal fallback collector', () => {
   }
 
   it('reconstructs a missing ledger row, closes it with terminal evidence, then authorizes reset', async () => {
-    const emitTerminal = vi.fn();
+    const emittedEvents: string[] = [];
+    const emitTerminal = vi.fn(async (event: { taskId: string }) => {
+      await Promise.resolve();
+      emittedEvents.push(event.taskId);
+    });
     const result = await store.persistFailedTaskUnitTerminal(
       failedTerminal('pc-recovered1.service'),
       { workspaceId: WS, harnessSlug: 'papercusp' },
@@ -643,6 +659,7 @@ describe('persistFailedTaskUnitTerminal fallback collector', () => {
     });
     expect(row?.detail.recoveredFailedUnit).toMatchObject({ source: 'task-reconcile-fallback' });
     expect(emitTerminal).toHaveBeenCalledOnce();
+    expect(emittedEvents).toEqual(['recovered1']);
   });
 
   it('augments an already-terminal row without rewriting its observed terminal verdict', async () => {

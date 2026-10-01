@@ -134,6 +134,15 @@ const ALLOWLIST: Record<string, Classification> = {
       'presence-tied reader/reaper treats scope_ref as the current holder. Rebinding it would wrongly transfer a ' +
       'display lease (and would corrupt pot/workspace refs), so callers explicitly resolve or re-register the scope.',
   },
+  'trigger_sources.scope_ref': {
+    status: 'exempt',
+    reason:
+      "enterprise-data-sources-2026-10-01 D-010 (migration 1317): the data-source CORPUS-scope reference — a pot " +
+      "slug, non-null iff scope='pot' (trigger_sources_scope_ref_chk) and NULL for scope='personal'|'organization'. " +
+      'It is a configuration selector naming which pot a connector ingests into, never an ownerId/sid; the ' +
+      'personal owner lives in owner_user_id (a human user id). No presence-tied reader/reaper keys on it, and ' +
+      'rebinding it would corrupt the pot ref. Same class as desktop_sessions.scope_ref.',
+  },
   'agent_activity.owner_id': {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',

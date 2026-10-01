@@ -946,34 +946,51 @@ describe('confirmed hive discovery visibility (WI-39255)', () => {
 
   it('fails open when the harness is standalone or hive resolution throws', async () => {
     const { corpus } = buildCorpus();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(
-      filterCorpusForConfirmedHiveScope(
-        corpus,
-        { workspaceId: 'ws-1', harnessSlug: 'standalone' },
-        vi.fn().mockResolvedValue(null),
-      ),
-    ).resolves.toBe(corpus);
-    await expect(
-      filterCorpusForConfirmedHiveScope(
-        corpus,
-        { workspaceId: 'ws-1', harnessSlug: 'member-a' },
-        vi.fn().mockRejectedValue(new Error('registry unavailable')),
-      ),
-    ).resolves.toBe(corpus);
+    try {
+      await expect(
+        filterCorpusForConfirmedHiveScope(
+          corpus,
+          { workspaceId: 'ws-1', harnessSlug: 'standalone' },
+          vi.fn().mockResolvedValue(null),
+        ),
+      ).resolves.toBe(corpus);
+      await expect(
+        filterCorpusForConfirmedHiveScope(
+          corpus,
+          { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+          vi.fn().mockRejectedValue(new Error('registry unavailable')),
+        ),
+      ).resolves.toBe(corpus);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('tools:find hive scope resolution failed: registry unavailable'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('fails open when the Hive-scope registry read exceeds its budget', async () => {
     const { corpus } = buildCorpus();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(
-      filterCorpusForConfirmedHiveScope(
-        corpus,
-        { workspaceId: 'ws-1', harnessSlug: 'member-a' },
-        () => new Promise<string | null>(() => {}),
-        1,
-      ),
-    ).resolves.toBe(corpus);
+    try {
+      await expect(
+        filterCorpusForConfirmedHiveScope(
+          corpus,
+          { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+          () => new Promise<string | null>(() => {}),
+          1,
+        ),
+      ).resolves.toBe(corpus);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('tools:find hive scope resolution exceeded 1ms'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not resolve hive membership for an unscoped caller', async () => {

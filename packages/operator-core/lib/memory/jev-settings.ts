@@ -33,6 +33,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { recordDecisionModelCall } from '../decision-model-ledger';
 import { maskIntegrationKey, readIntegrationKey, writeIntegrationCredentials } from '../integration-credentials';
 import { activeWorkspaceId } from '../workspace-registry';
+import { jevFetch } from './jev-transport';
 
 export const JEV_MODES = ['off', 'shadow', 'on'] as const;
 export type JevMode = (typeof JEV_MODES)[number];
@@ -223,6 +224,9 @@ export function ensureJevDecisionClient(): DecisionClient {
     provider: createJevProvider(),
     resolveKey: readJevApiKey,
     timeoutMs: JEV_MEMORY_TIMEOUT_MS,
+    // P-006 (jev-memory-timeouts-to-zero-2026-10-01): keep the Jev socket open between
+    // calls — the default global fetch reconnected on almost every call.
+    fetch: jevFetch,
     // P-003: every call — answered or inconclusive — lands in decision_model_calls.
     // Fire-and-forget; the client never awaits it and swallows its faults.
     // Pricing is passed so cost_usd is filled in; without it every row's cost is null.

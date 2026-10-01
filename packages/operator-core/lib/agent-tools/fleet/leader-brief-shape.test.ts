@@ -663,7 +663,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     };
 
     expect(out.summary.headcount.countEvidence.productive?.contract.population.id).toBe(
-      'live-roster-recent-execution-intersection',
+      'live-roster-non-silent-intersection',
     );
     expect(out.summary.headcount.countEvidence.liveRoster?.contract.population.id).toBe('fleet-live-launch-roster');
     expect(out.summary.headcount.countEvidence.transactionWorkerReady?.contract.population.id).toBe(

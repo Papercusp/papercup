@@ -13,9 +13,8 @@ import {
   getFleet,
   getFleetHeadcountTarget,
   projectFleetHeadcountState,
-  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
 } from '../../agent-fleets-store';
-import { executingOwnersSince } from '../../fleet/assignments';
+import { countedMemberSet, readFleetMemberSilence } from './silent-member';
 import {
   listFleetRosterDiagnosed,
   splitFleetRosterCounts,
@@ -501,10 +500,11 @@ export default defineTool({
     const headcountExecutingResult = await withBoundedTimeout(
       headcountCurrentResult.value == null
         ? Promise.resolve(null)
-        : executingOwnersSince(
-            headcountCurrentResult.value,
-            FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
-          ),
+        : // P-007 / R-17: the same silence rule the headcount governor applies, so
+          // this read cannot count a seat the writer has decided to refill.
+          readFleetMemberSilence(headcountCurrentResult.value, {
+            fleetPaused: fleet.controlState === 'winding-down',
+          }).then(countedMemberSet),
       {
         fallback: null,
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,

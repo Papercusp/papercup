@@ -28,8 +28,101 @@ vi.mock('./_shared', () => ({
     isError,
   }),
 }));
+// P-007 / R-17: silent-member partition IO legs.
+const silenceMocks = vi.hoisted(() => ({
+  executingOwnersSince: vi.fn(),
+  sql: vi.fn(),
+}));
+vi.mock('../../fleet/assignments', () => ({
+  executingOwnersSince: (...args: unknown[]) => silenceMocks.executingOwnersSince(...args),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: (...args: unknown[]) => silenceMocks.sql(...args) }),
+}));
 
 import tool from './headcount-target';
+import {
+  FLEET_MEMBER_SILENCE_THRESHOLD_MS,
+  partitionSilentFleetMembers,
+  readFleetMemberSilence,
+} from './silent-member';
+
+describe('silent fleet members (P-007 / R-17)', () => {
+  beforeEach(() => {
+    silenceMocks.executingOwnersSince.mockReset();
+    silenceMocks.sql.mockReset();
+  });
+
+  it('uses the 20-minute D-007 threshold', () => {
+    expect(FLEET_MEMBER_SILENCE_THRESHOLD_MS).toBe(20 * 60_000);
+  });
+
+  it('does not count a heartbeat-only member in an unpaused fleet, and names it silent', () => {
+    // `quiet` is live (heartbeating) but made no call inside the threshold and only
+    // holds the inbox-wake keepalive await — that is silence.
+    const partition = partitionSilentFleetMembers({
+      liveMemberIds: ['busy', 'quiet', 'waiting'],
+      recentCallerIds: new Set(['busy']),
+      awaitingKeysByOwner: new Map([
+        ['quiet', ['coord:inbox-wake:quiet']],
+        ['waiting', ['work-item:done:WI-1']],
+      ]),
+      fleetPaused: false,
+    });
+    expect(partition).not.toBeNull();
+    expect(partition!.counted).toEqual(['busy', 'waiting']);
+    expect(partition!.silent).toEqual(['quiet']);
+    expect(partition!.counted).not.toContain('quiet');
+  });
+
+  it('still counts a silent member while the fleet is paused', () => {
+    const partition = partitionSilentFleetMembers({
+      liveMemberIds: ['busy', 'quiet'],
+      recentCallerIds: new Set(['busy']),
+      awaitingKeysByOwner: new Map(),
+      fleetPaused: true,
+    });
+    expect(partition!.counted).toEqual(['busy', 'quiet']);
+    expect(partition!.silent).toEqual([]);
+    expect(partition!.paused).toBe(true);
+  });
+
+  it('answers unknown, not "everyone silent", when a leg is unreadable', () => {
+    expect(partitionSilentFleetMembers({
+      liveMemberIds: ['busy'],
+      recentCallerIds: null,
+      awaitingKeysByOwner: new Map(),
+      fleetPaused: false,
+    })).toBeNull();
+    expect(partitionSilentFleetMembers({
+      liveMemberIds: ['busy'],
+      recentCallerIds: new Set(['busy']),
+      awaitingKeysByOwner: null,
+      fleetPaused: false,
+    })).toBeNull();
+  });
+
+  it('reads calls over the threshold window and pending awaits for the live set', async () => {
+    silenceMocks.executingOwnersSince.mockResolvedValue(new Set(['busy']));
+    silenceMocks.sql.mockResolvedValue([
+      { subscriber_id: 'quiet', event_key: 'coord:inbox-wake:quiet' },
+    ]);
+    const partition = await readFleetMemberSilence(['busy', 'quiet'], { fleetPaused: false });
+    expect(silenceMocks.executingOwnersSince).toHaveBeenCalledWith(
+      ['busy', 'quiet'],
+      FLEET_MEMBER_SILENCE_THRESHOLD_MS,
+    );
+    expect(partition!.counted).toEqual(['busy']);
+    expect(partition!.silent).toEqual(['quiet']);
+  });
+
+  it('skips the IO legs for a paused fleet', async () => {
+    const partition = await readFleetMemberSilence(['quiet'], { fleetPaused: true });
+    expect(silenceMocks.executingOwnersSince).not.toHaveBeenCalled();
+    expect(partition!.counted).toEqual(['quiet']);
+  });
+});
 
 const savedProfile = {
   workspaceId: 'ws-test',

@@ -239,16 +239,31 @@ const DEFAULT_DEPS: AcceptanceReadinessHoldDeps = {
   linkHold: defaultLinkHold,
 };
 
+/** A hold verdict, plus the routing the caller runs once the claim is released. */
+export interface AcceptanceReadinessHold extends PlanItemLaneBlock {
+  /**
+   * Route the held item behind the plan's (found-or-filed) repair task. The caller MUST run
+   * this AFTER releasing the claim: the dependency store refuses a new unresolved `blocks`
+   * edge behind an ACTIVE dependant (work-item-deps-store ACTIVE_DEPENDANT — `taken_by` set
+   * or status wip/in_progress/validating), so linking while the item is still claimed is
+   * always refused and the item would re-bounce on every pull. Never throws; returns a
+   * one-line routing note for the claim audit. If another puller re-claims the item between
+   * the release and the link, its own hold routes it the same way (find-or-file and the edge
+   * are both idempotent).
+   */
+  routeAfterRelease: () => Promise<string>;
+}
+
 /**
  * Whether a just-claimed work-item is bound to an incomplete acceptance requirement. On a
- * hold, routes it behind the plan's (found-or-filed) repair task and returns the block for
- * the caller's existing bounce path; otherwise null.
+ * hold, returns the block for the caller's existing bounce path, with the repair routing
+ * deferred to {@link AcceptanceReadinessHold.routeAfterRelease}; otherwise null.
  */
 export async function acceptanceReadinessHold(
   workItem: AcceptanceHoldWorkItem,
   ctx: { by: string; workspaceId?: string },
   deps: Partial<AcceptanceReadinessHoldDeps> = {},
-): Promise<PlanItemLaneBlock | null> {
+): Promise<AcceptanceReadinessHold | null> {
   const d: AcceptanceReadinessHoldDeps = { ...DEFAULT_DEPS, ...deps };
   let stamp: PlanItemStamp | null;
   let heldBars: HeldAcceptanceBar[];
@@ -266,31 +281,33 @@ export async function acceptanceReadinessHold(
   const planSlug = stamp.plan_slug;
   const itemId = heldBars[0]!.itemIds[0]!;
   const detail = heldBars.map((bar) => `${bar.barKey}: ${bar.codes.join('+')}`).join('; ');
-  let routing: string;
-  try {
-    const repair = await d.findOrFileRepairTask({
-      planSlug,
-      harness: workItem.harness ?? undefined,
-      workspaceId: ctx.workspaceId,
-      heldBars,
-      by: ctx.by,
-    });
-    const linkError = workItem.id
-      ? await d.linkHold({ repairId: repair.id, heldId: workItem.id, harness: workItem.harness ?? undefined, by: ctx.by })
-      : 'held work-item has no id';
-    routing = linkError
-      ? ` — repair task ${repair.id}${repair.filed ? ' filed' : ''}, but the blocks edge was not written (${linkError})`
-      : ` — held behind repair task ${repair.id}${repair.filed ? ' (filed now)' : ''}`;
-  } catch (error) {
-    // The verdict stands even when routing fails: never hand out a confirmed-incomplete
-    // contract. The next claim retries the find-or-file.
-    routing = ` — repair routing failed (${error instanceof Error ? error.message : String(error)})`;
-  }
+  const routeAfterRelease = async (): Promise<string> => {
+    try {
+      const repair = await d.findOrFileRepairTask({
+        planSlug,
+        harness: workItem.harness ?? undefined,
+        workspaceId: ctx.workspaceId,
+        heldBars,
+        by: ctx.by,
+      });
+      const linkError = workItem.id
+        ? await d.linkHold({ repairId: repair.id, heldId: workItem.id, harness: workItem.harness ?? undefined, by: ctx.by })
+        : 'held work-item has no id';
+      return linkError
+        ? `repair task ${repair.id}${repair.filed ? ' filed' : ''}, but the blocks edge was not written (${linkError})`
+        : `held behind repair task ${repair.id}${repair.filed ? ' (filed now)' : ''}`;
+    } catch (error) {
+      // The verdict stands even when routing fails: the claim was already released, so a
+      // confirmed-incomplete contract is never handed out. The next claim retries routing.
+      return `repair routing failed (${error instanceof Error ? error.message : String(error)})`;
+    }
+  };
   return {
-    reason: `plan-item ${planSlug}#${itemId} is bound to an incomplete acceptance requirement (${detail})${routing}`,
+    reason: `plan-item ${planSlug}#${itemId} is bound to an incomplete acceptance requirement (${detail})`,
     planSlug,
     itemId,
     effectiveStatus: 'acceptance-incomplete',
     staleBlockedHint: null,
+    routeAfterRelease,
   };
 }

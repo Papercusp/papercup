@@ -795,3 +795,10 @@ import './account-capacity-reprobe-action';
 // cadence, same deviation reasoning as supervision-reconcile-action. Seeded ACTIVE by
 // seed-hosted-lifecycle-reconcile-routine.ts.
 import './hosted-lifecycle-reconcile-action';
+// WI-10004437: `system:hosted-public-ingress-probe` — the hosted origin's tunnel ingress is
+// hand-maintained outside the repo, and four times a public route family the plane serves fell
+// through to the session-gated portal (WI-10003292, WI-10004436, WI-10005066), each found by hand
+// during an e2e run. This probes every plane route family against the cloudflared config and the
+// live origin and THROWS on a miss (routine-failure watchdog). A bespoke ephemeral (900s) cadence;
+// seeded ACTIVE by seed-hosted-public-ingress-probe-routine.ts.
+import './hosted-public-ingress-probe-action';

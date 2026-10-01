@@ -90,6 +90,11 @@ bundle_host_runtime_siblings() { # <repo root> <out dir>
   done
 }
 
+# On failure, BUNDLE_HOST_WORKER_FAILED_SOURCE / _OUTPUT name the worker that
+# stopped the run (empty for a failure not tied to one worker). Every publish is
+# tmp-then-rename, so a failed worker leaves its previous output byte-intact —
+# bundle-host.sh relies on that to boot a supervisor on last-known-good
+# (WI-10005087). Packaging callers ignore both and stay strict.
 bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
   local -a sources=(
@@ -98,9 +103,13 @@ bundle_host_workers() {
     "$repo_root/libs/generic/rerank/src/local-reranker-worker.script.mjs"
   )
   local index=0
+  BUNDLE_HOST_WORKER_FAILED_SOURCE=""
+  BUNDLE_HOST_WORKER_FAILED_OUTPUT=""
   mkdir -p "$out_dir" || return 1
   for source in "${sources[@]}"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
+    BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
+    BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"
     [ -s "$source" ] || { echo "FATAL: missing runtime worker $source" >&2; return 1; }
     tmp="$out_dir/$output.new.$$"
     cp "$source" "$tmp" && mv -f "$tmp" "$out_dir/$output" || return 1
@@ -110,6 +119,8 @@ bundle_host_workers() {
     "$repo_root/packages/operator-core/lib/event-loop-sentinel.worker.ts" \
     "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
+    BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
+    BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"
     [ -s "$source" ] || { echo "FATAL: missing runtime worker $source" >&2; return 1; }
     tmp="$out_dir/$output.new.$$.mjs"
     if ! npx --yes esbuild@0.25.0 "$source" \
@@ -122,6 +133,8 @@ bundle_host_workers() {
     [ -s "$tmp" ] && mv -f "$tmp" "$out_dir/$output" || return 1
     index=$((index + 1))
   done
+  BUNDLE_HOST_WORKER_FAILED_SOURCE=""
+  BUNDLE_HOST_WORKER_FAILED_OUTPUT=""
   for output in "${HOST_WORKER_OUTPUTS[@]}"; do
     [ -s "$out_dir/$output" ] || { echo "FATAL: missing bundled worker $output" >&2; return 1; }
   done

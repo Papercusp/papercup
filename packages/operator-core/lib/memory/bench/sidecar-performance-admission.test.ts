@@ -12,7 +12,11 @@ import { MemoryAdmissionQueueStore } from '../../resource-governor/memory-admiss
 import { WorkItemAdmissionQueueDriver } from '../../resource-governor/queue';
 
 const dirs: string[] = [];
-afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+const originalExecArgv = [...process.execArgv];
+afterEach(() => {
+  process.execArgv = [...originalExecArgv];
+  vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-admission-')); dirs.push(dir);
   const manifest = measurementManifestFixture(dir), cell = manifest.cells[0], arm = manifest.arms[0];
@@ -38,6 +42,7 @@ function fixture() {
 describe('fresh performance child admission', () => {
   it('admits before spawn, propagates lineage and holds the operation until child exit with actual RSS', async () => {
     const f = fixture(); vi.stubEnv('PAPERCUSP_ADMISSION_CONTEXT', JSON.stringify(f.context));
+    f.input.cell.parameters.transportTrace = true;
     let admit!: () => void;
     const gate = new Promise<void>((resolve) => { admit = resolve; });
     let requested = false;
@@ -55,6 +60,7 @@ describe('fresh performance child admission', () => {
     admit();
     await vi.waitFor(() => expect(f.spawnProcess).toHaveBeenCalledOnce());
     expect((await f.current())?.state).toBe('running');
+    expect(vi.mocked(f.spawnProcess).mock.calls[0][1]).toContain('--transport-trace');
     const env = (vi.mocked(f.spawnProcess).mock.calls[0][2] as SpawnOptions).env!;
     expect(env.PAPERCUSP_FORBID_REAL_PG).toBe('1');
     expect(JSON.parse(env.PAPERCUSP_ADMISSION_CONTEXT!)).toMatchObject({ rootRequestId: f.context.rootRequestId,
@@ -71,6 +77,20 @@ describe('fresh performance child admission', () => {
       .rejects.toThrow();
     expect(f.spawnProcess).not.toHaveBeenCalled();
     expect(await f.current()).toBeUndefined();
+  });
+  it('pins a TypeScript file launch instead of inheriting parent eval flags', async () => {
+    const f = fixture();
+    process.execArgv = ['--input-type=module', '--eval', 'throw new Error("parent eval executed")'];
+    const done = runPerformanceChild(f.input, { governedOperation: f.governedOperation, spawnProcess: f.spawnProcess, workspaceId: 'test' });
+    await vi.waitFor(() => expect(f.spawnProcess).toHaveBeenCalledOnce());
+    const args = vi.mocked(f.spawnProcess).mock.calls[0][1]!;
+    expect(args.slice(0, 2)).toEqual(['--import', 'tsx']);
+    expect(args[2]).toMatch(/embedder-eval-cli\.ts$/);
+    expect(args).not.toContain('--input-type=module');
+    expect(args).not.toContain('--eval');
+    expect(args).not.toContain('throw new Error("parent eval executed")');
+    f.writeReceipt(); f.child.emit('exit', 0);
+    await expect(done).resolves.toBe(0);
   });
   it.each(['spawn', 'exit'] as const)('keeps %s failure inside the governed cancellation boundary', async (failure) => {
     const f = fixture();
