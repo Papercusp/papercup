@@ -1372,6 +1372,28 @@ describe('makeClaudeResumeCompactionRecoveryStateMachine (EI-21540586187946540)'
     expect(machine.observe('\n❯\n')).toMatchObject({ action: 'none', phase: 'timed-out', ready: false });
   });
 
+  it('starts the menu-detection window at first PTY output, not host construction', () => {
+    let clock = 10_000;
+    const machine = makeClaudeResumeCompactionRecoveryStateMachine({
+      now: () => clock,
+      startupMs: 100,
+      recoveryMs: 100,
+    });
+
+    // A child can take longer than startupMs to produce its first frame. That
+    // time is not evidence that the menu failed to appear.
+    clock = 20_000;
+    expect(machine.tick()).toMatchObject({ phase: 'watching', active: true, timedOut: false });
+    expect(machine.observe(MENU)).toMatchObject({
+      action: 'select-summary',
+      phase: 'awaiting-prompt',
+      selectedSummary: true,
+    });
+
+    clock = 20_099;
+    expect(machine.tick()).toMatchObject({ phase: 'awaiting-prompt', timedOut: false });
+  });
+
   it('uses positive environment overrides and ignores invalid recovery windows', () => {
     expect(claudeResumeCompactionStartupMs({ PAPERCUSP_PSU_PTY_RESUME_COMPACTION_STARTUP_MS: '4500' })).toBe(4_500);
     expect(claudeResumeCompactionRecoveryMs({ PAPERCUSP_PSU_PTY_RESUME_COMPACTION_RECOVERY_MS: '7000' })).toBe(7_000);

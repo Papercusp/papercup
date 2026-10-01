@@ -2507,6 +2507,11 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
           ...process.env,
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
+          // This fixture exercises a plain Claude child. A live headless
+          // session enables the onboarding/composer gate and makes this
+          // synthetic backend (which paints no onboarding frames) wait until
+          // its carry budget expires before testing native turn-start proof.
+          PAPERCUSP_PSU_HEADLESS: '0',
           CLAUDE_CONFIG_DIR: claudeConfig,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
