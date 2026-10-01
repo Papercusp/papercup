@@ -1083,9 +1083,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         let markers = usize::from(start > 0) + usize::from(end < titles.len());
         let title_width = title_widths[start..end].iter().sum::<usize>();
         let item_count = end - start + markers;
-        title_width
-            + markers * marker_width
-            + item_count.saturating_sub(1) * divider_width
+        title_width + markers * marker_width + item_count.saturating_sub(1) * divider_width
     };
 
     let mut start = sel;
@@ -8699,10 +8697,7 @@ mod tests {
 
         let text = render(&app, 110, 34);
         let chars: Vec<char> = text.chars().collect();
-        let rows: Vec<String> = chars
-            .chunks(110)
-            .map(|row| row.iter().collect())
-            .collect();
+        let rows: Vec<String> = chars.chunks(110).map(|row| row.iter().collect()).collect();
 
         let top = rows
             .iter()
@@ -8739,8 +8734,14 @@ mod tests {
         let text = render(&app, 110, 34);
         let row: String = text.chars().take(110).collect();
 
-        assert!(row.contains("h:Overview"), "default tab remains visible: {row}");
-        assert!(row.contains("›"), "hidden trailing tabs are indicated: {row}");
+        assert!(
+            row.contains("h:Overview"),
+            "default tab remains visible: {row}"
+        );
+        assert!(
+            row.contains("›"),
+            "hidden trailing tabs are indicated: {row}"
+        );
         assert!(
             !row.contains("7:T") || row.contains("7:Testing"),
             "a tab label must be fully shown or omitted, never clipped: {row}"
