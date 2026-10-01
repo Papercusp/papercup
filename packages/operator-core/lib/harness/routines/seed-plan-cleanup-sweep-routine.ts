@@ -2,7 +2,10 @@
  * Seed the always-on durable plan clean-up sweep (plan-cleanup-system-repair-2026-10-01
  * P-004) — `system:plan-cleanup-sweep` → `plan-cleanup-sweep-action.ts`.
  *
- * DAILY at 09:41:17 UTC. The cadence is derived from coverage, not picked: one fire
+ * DAILY at 09:41:17 HOST-LOCAL time, NOT UTC: `computeNextFireAt` (./cron.ts) evaluates
+ * the crontab in the host process's zone (America/New_York on the dev box, so 13:41:17
+ * UTC under EDT). The hour is an arbitrary off-peak offset; only the daily cadence
+ * matters. The cadence is derived from coverage, not picked: one fire
  * carries at most MAX_RUN_PLANS (200) plans, least-recently-scanned first, and the open
  * population is ~750 plans (2026-10-01), so a daily fire re-scans every open plan about
  * every 4 days. Each fire's deterministic pass is cheap; a resolver (model turns) is
@@ -29,7 +32,7 @@ import { MAX_RUN_PLANS } from '../../plan-cleanup/start-run';
 const SLUG = process.env.PLAN_CLEANUP_SWEEP_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 const NAME = PLAN_CLEANUP_SWEEP;
 const TARGET_ROLE = `system:${NAME}`;
-/** sec min hour dom mon dow — daily at 09:41:17 UTC. See the header for why daily. */
+/** sec min hour dom mon dow — daily at 09:41:17 host-local (not UTC; see the header). */
 const CRON = '17 41 9 * * *';
 
 async function main(): Promise<void> {
