@@ -3,7 +3,7 @@ import { StrictMode, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
-import { FakeEventSource, latestEventSource } from "@/app/_components/chat/fake-event-source.testkit";
+import { FakeEventSource } from "@/app/_components/chat/fake-event-source.testkit";
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_TASK, CLOUD_TUTORIAL_VERSION } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import type { TimelineEntry } from "@/app/harness/AgentThinkingStream";
 import { hostedBrowserApiMarker } from "../hosted-browser-api";
@@ -27,6 +27,15 @@ beforeEach(() => {
   window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker("control");
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }));
+  const rect = { x: 0, y: 0, top: 0, left: 0, width: 700, height: 500, right: 700, bottom: 500, toJSON: () => ({}) };
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(rect);
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(500);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(target: Element) { this.callback([{ target, contentRect: rect, borderBoxSize: [{ inlineSize: 700, blockSize: 500 }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver); }
+    unobserve() {} disconnect() {}
+  });
   Element.prototype.scrollIntoView = vi.fn(); window.scrollTo = vi.fn();
   vi.stubGlobal("fetch", vi.fn(async (input, init) => {
     const url = String(input); const body = init?.body ? JSON.parse(String(init.body)) : {};
@@ -40,9 +49,10 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__PAPERCUSP_HOSTED_BROWSER__; });
 const props = { selectionKey: "selected", connection, workspace, boundWorkspaceId: "customer", configurationValid: true, configurationReviewed: true, controlLoading: false, controlError: null, onCheckAgain: () => {}, onShowStep: () => {} };
 const view = (value: ComponentProps<typeof CloudTutorialCompanion>) => <StrictMode><NuqsTestingAdapter><CloudTutorialCompanion {...value} /></NuqsTestingAdapter></StrictMode>;
+const liveStream = () => FakeEventSource.instances.filter(stream => !stream.closed && stream.url.includes("thinking")).at(-1)!;
 async function answer(outcome: "succeeded" | "failed", prompt = sentPrompt) {
   await act(async () => {
-    const stream = latestEventSource();
+    const stream = liveStream();
     stream.fireOpen();
     stream.fire("backfill", JSON.stringify([
       { kind: "prompt", text: prompt, ts: "2026-10-01T12:00:00.000Z" },
@@ -53,8 +63,10 @@ async function answer(outcome: "succeeded" | "failed", prompt = sentPrompt) {
 }
 async function launch() {
   fireEvent.click(await screen.findByRole("button", { name: "+ New session" }));
-  await waitFor(() => expect(FakeEventSource.instances.some(stream => !stream.closed)).toBe(true));
-  await act(async () => { latestEventSource().fireOpen(); latestEventSource().fire("backfill", "[]"); });
+  await screen.findByRole("button", { name: "Send sample task" });
+  await waitFor(() => expect(liveStream()).toBeTruthy());
+  expect(screen.getByTestId("papercup-chat-transcript").clientHeight).toBeGreaterThan(0);
+  await act(async () => { liveStream().fireOpen(); liveStream().fire("backfill", "[]"); });
   await waitFor(() => expect(screen.getByRole("button", { name: "Send sample task" }).hasAttribute("disabled")).toBe(false));
 }
 describe("authenticated first-agent product journey", () => {

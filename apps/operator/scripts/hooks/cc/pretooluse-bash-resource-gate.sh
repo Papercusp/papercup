@@ -254,6 +254,48 @@ def _session_key():
     return re.sub(r'[^A-Za-z0-9_.-]', '_', str(sid))[:120]
 
 
+# NESTED-CLI POLICY (WI-10004953): this gate acts AS the su for a CLI nested inside it (a
+# `claude -p` from an su's Bash tool, or under a capability:bash job, inherits the su's
+# PAPERCUSP_SID). That is deliberate for ENFORCEMENT, as with the lock hooks: the nested
+# CLI runs commands on the su's behalf, so the su's own exclusive must not gate it and
+# its background jobs are the su's. The one exception is the say-once advisory seen-set
+# below: an advisory shown to the NESTED model was never seen by the su, so recording it
+# under the su's key would suppress that advisory for the su for a day and log a
+# delivery the su never received. The seen-set alone is keyed on the nested CLI's own
+# native session id.
+_ADVISORY_KEY = []
+
+
+def _nested_cli():
+    """The cached nested-CLI verdict (pc_nested_cli.sh); any failure answers False."""
+    try:
+        import subprocess
+        r = subprocess.run(
+            ['bash', os.path.join(hook_dir, 'pc_nested_cli.sh')],
+            env={**os.environ, 'PC_NESTED_CLI_START_PID': str(os.getppid())},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _advisory_session_key():
+    """The say-once seen-set key: the su's key, or the nested CLI's own native session."""
+    if _ADVISORY_KEY:
+        return _ADVISORY_KEY[0]
+    key = _session_key()
+    try:
+        native = payload.get('session_id')
+        if os.environ.get('PAPERCUSP_SID') and isinstance(native, str) and native and _nested_cli():
+            key = re.sub(r'[^A-Za-z0-9_.-]', '_', 'nested-' + native)[:120]
+    except Exception:
+        pass
+    _ADVISORY_KEY.append(key)
+    return key
+
+
 def _advisory_class_key(text):
     """A stable CLASS key for an advisory — deliberately NOT a hash of the text.
 
@@ -348,7 +390,7 @@ def _claim_advisory(key):
     try:
         base = _advisory_seen_dir()
         os.makedirs(base, exist_ok=True)
-        path = os.path.join(base, _session_key())
+        path = os.path.join(base, _advisory_session_key())
         fresh = True  # no seen-set yet, or one old enough to have lapsed
         try:
             if time.time() - os.path.getmtime(path) <= _ADVISORY_SEEN_TTL_SEC:
@@ -380,7 +422,7 @@ def _record_delivery(key):
         arguments = {
             'kind': 'lifecycle',
             'owner': agent_id,
-            'session_id': _session_key(),
+            'session_id': _advisory_session_key(),
             'status': 'advisory',
             'summary': 'advisory delivered (say-once): ' + key,
         }

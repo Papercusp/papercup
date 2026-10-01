@@ -395,6 +395,21 @@ release_migration_rendezvous() {
 
 trap release_migration_rendezvous EXIT
 
+# Ask kopia-backup-guard.sh to hand the host-wide Kopia lock back while this
+# script goes on running (WI-10004870). The guard holds that lock, not this
+# script, so it can only be asked: creating KOPIA_BACKUP_GUARD_RELEASE_PATH does
+# it, and the guard unlocks within one monitor interval while still waiting for
+# us. Call it only once nothing left in the run writes a snapshotted artifact.
+# Outside the guard (a manual run) the variable is unset and this is a no-op.
+release_shared_backup_lock() {
+  [ -n "${KOPIA_BACKUP_GUARD_RELEASE_PATH:-}" ] || return 0
+  if : >"$KOPIA_BACKUP_GUARD_RELEASE_PATH" 2>/dev/null; then
+    log "shared backup lock: early release requested before the local-only transcript tier(s) of: $*"
+  else
+    log "WARNING: could not ask the guard to release the shared backup lock ($KOPIA_BACKUP_GUARD_RELEASE_PATH); it stays held to the end of the run"
+  fi
+}
+
 # Acquire the shared rendezvous on a session that remains open while all of
 # this script's pg_dump children run. A one-shot `psql -c pg_advisory_lock`
 # would release the lock as soon as psql exits, so use a coprocess and keep its
@@ -729,6 +744,9 @@ PC_BACKUP_TRANSCRIPT_TABLES="${PC_BACKUP_TRANSCRIPT_TABLES:-harness_shared.sessi
 TIER_DUMPED=()
 TIER_FAILED=()
 TIER_NOT_DUE=()
+# Tier databases whose transcript tier is due this run. Dumped LAST, after the
+# shared backup lock is handed back (WI-10004870, local-only phase below).
+TRANSCRIPT_DUE=()
 
 # ── Transcript-tier cadence (WI-10004603) ────────────────────────────────────
 # MEASURED 2026-10-01: the hourly run took 2822 / 2999 / 2995 / 3397 s, ~95% of
@@ -850,18 +868,23 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
        && [ "$tx_age" -lt "$PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC" ]; then
       TIER_NOT_DUE+=("$db-transcript")
       log "$db-transcript not due: existing dump is ${tx_age}s old (< ${PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC}s, WI-10004603); kept as-is"
-    elif dump_one "$db" "$db-transcript" "${inc[@]}"; then
-      TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
     else
-      TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
+      # Dumped in the local-only phase at the END of the run, after the shared
+      # backup lock is handed back (WI-10004870) — see TRANSCRIPT_DUE below.
+      TRANSCRIPT_DUE+=("$db")
     fi
   done
 fi
 
 # Let migrations proceed before the final backend sweep/status bookkeeping. The
 # EXIT trap also makes this release happen when any later step aborts.
-release_migration_rendezvous
-reap_own_stragglers   # nothing of ours may outlive this script holding locks
+# A run with a transcript tier still to dump keeps the rendezvous until that
+# dump is done: it is a papercusp pg_dump like the others, and a migration must
+# not take its tables mid-dump. The release after that phase covers this run.
+if [ ${#TRANSCRIPT_DUE[@]} -eq 0 ]; then
+  release_migration_rendezvous
+  reap_own_stragglers   # nothing of ours may outlive this script holding locks
+fi
 
 # ── oddsmith embedded Postgres (TCP 5544) — WI-39502 ────────────────────────
 # The enumeration above CANNOT see this database, by construction: it asks the
@@ -966,6 +989,38 @@ else
     rm -f "$odds_err"
     unset odds_pass
   fi
+fi
+
+# ── Local-only phase: transcript tiers, OUTSIDE the shared backup lock ───────
+# WI-10004870. Every artifact Kopia snapshots is written by now (the state
+# tiers, every undifferentiated database, oddsmith), so what is left is the
+# transcript tier, which .kopiaignore keeps out of every snapshot (WI-2146225).
+# Holding the host-wide Kopia lock for it bought nothing: MEASURED 2026-10-01 it
+# was ~25 min of a 101G dump every ~2.5 h, during which the off-host hot sweep
+# could not start. So the guard is asked to hand the lock back first.
+#
+# What the lock protected does not apply to this phase:
+#   * snapshot consistency — neither papercusp-transcript nor its
+#     papercusp-transcript.tmp work dir (*.tmp) is ever snapshotted;
+#   * I/O contention — the sweep's long phase reads the workspace (NVMe) and
+#     writes the repo on /mnt/data, while this dump writes /mnt/backup (HDD).
+#     They overlap on that disk only during the sweep's ~12 min db-dumps read.
+# What still serializes it is kept: this script's own single-instance lock
+# (pg_dump vs pg_dump) and the migration rendezvous, released only after this
+# phase so no migration takes these tables mid-dump.
+if [ ${#TRANSCRIPT_DUE[@]} -gt 0 ]; then
+  release_shared_backup_lock "${TRANSCRIPT_DUE[*]}"
+  inc=()
+  for t in $PC_BACKUP_TRANSCRIPT_TABLES; do inc+=("--table=$t"); done
+  for db in "${TRANSCRIPT_DUE[@]}"; do
+    if dump_one "$db" "$db-transcript" "${inc[@]}"; then
+      TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
+    else
+      TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
+    fi
+  done
+  release_migration_rendezvous
+  reap_own_stragglers   # nothing of ours may outlive this script holding locks
 fi
 
 ELAPSED=$(( $(date +%s) - START ))

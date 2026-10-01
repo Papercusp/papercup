@@ -866,6 +866,9 @@ export class ObservationEvidenceError extends Error {
   }
 }
 
+const OBSERVATION_EVIDENCE_TRUNCATION_MARKER =
+  /(?:\[TRUNCATED\s+\+\s*(?:\d+|N)\s+chars\b[^\]]*\]|_projection\.cursor\b)/i;
+
 /**
  * Enforce D-002's "MANDATORY evidence per rated criterion": every rating in a
  * structured observation MUST carry non-empty `rating` + `evidence`, and a
@@ -898,6 +901,11 @@ export function validateObservationRatings(obs: StructuredObservation | undefine
       throw new ObservationEvidenceError(
         `observation.ratings['${criterion}'] is missing required evidence — a rubric rating must cite ` +
           'concrete evidence (a metric, a query result, a reference)',
+      );
+    }
+    if (OBSERVATION_EVIDENCE_TRUNCATION_MARKER.test(String(entry.evidence))) {
+      throw new ObservationEvidenceError(
+        `observation.ratings['${criterion}'].evidence contains a projection/truncation marker; recover the full tool result before citing it`,
       );
     }
   }

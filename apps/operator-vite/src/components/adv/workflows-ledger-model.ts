@@ -133,10 +133,19 @@ export function triggerDispatcherState(
  * workflow keeps firing during a pause. Counting it — every un-paused `triggered` ledger
  * row, which includes schedule-only plans — raised a false "event triggers are paused"
  * alarm over plans that were running normally.
+ *
+ * Event-driven is not enough either: the dispatcher drains only `trigger_runs`, and only a
+ * trigger BINDING creates those. A sync-triggered routine (doc-freshness-sweep,
+ * doc-steward-dispatch) also renders as an event trigger, but it fires as a call at the end
+ * of every git-sync and a dispatcher pause never holds it. WI-10004955: one seeded armed
+ * binding read "2 armed workflows" because an armed sweep was counted too. So the test is
+ * an armed trigger that carries a `bindingId`.
  */
 export function dispatcherDependentWorkflows(items: readonly AutomationItem[]): number {
   return items.filter((item) =>
-    item.triggers.some((trigger) => isEventTrigger(trigger) && trigger.armed === true),
+    item.triggers.some(
+      (trigger) => isEventTrigger(trigger) && trigger.bindingId != null && trigger.armed === true,
+    ),
   ).length;
 }
 

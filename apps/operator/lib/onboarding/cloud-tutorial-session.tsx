@@ -107,9 +107,9 @@ function SessionTask({ streamUrl, ownerId, scope, onObservation, onInspect }: {
     </div>
     <div data-tutorial-target="cloud-result" tabIndex={-1}>
       <h3>Inspect your task's answer</h3>
-      <OperatorChat messages={sessionTimelineToChatMessages(correlation?.entries ?? [])} busy={task?.status === "pending"} passive
+      <div style={{ height: 360, minHeight: 240 }}><OperatorChat messages={sessionTimelineToChatMessages(correlation?.entries ?? [])} busy={task?.status === "pending"} passive
         onSend={() => {}} composerDisabled composerDisabledMessage="Use Send sample task above to submit the lesson task."
-        showQuickDraftPrompts={false} agentName="Your workspace agent" emptyStateBody="The correlated answer will appear here after your sample task." />
+        showQuickDraftPrompts={false} agentName="Your workspace agent" emptyStateBody="The correlated answer will appear here after your sample task." /></div>
       <Button disabled={task?.status !== "succeeded" || !task.resultId} onClick={() => { if (task?.status === "succeeded" && task.resultId) onInspect(task); }}>I've inspected this answer</Button>
     </div>
   </>;

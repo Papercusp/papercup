@@ -4273,6 +4273,53 @@ repair-cadence change, acceptance binding or shipment was performed. Next,
 extend the existing private control's turn-density fidelity while preserving
 EOF repair and exact source capture; keep live operational attribution open.
 
+### Private owner-UPDATE turn-density control — October 1, 17:35Z
+
+Extended the same canonical runtime integration fixture with a synthetic
+179-session / 4,099-turn distribution matching the ordered live sample's
+minimum 1, median 13 and maximum 156. It matches those aggregate observations,
+not the original session distribution, heap layout or cache state. The
+production ingestion source and UPDATE statement remained unchanged.
+
+The first two-child run failed `4007 !== 4099`: the fixture incorrectly
+expected one sweep to consume the full corpus. Source
+`MAX_TURNS_PER_TICK=4000` and the per-file budget decrement explain that
+partial sweep. The fixture now verifies a positive continuation completes
+the remaining turns, rather than changing the production budget or reducing
+the final expected population. Both final children ingested **4,007 + 92**
+turns, then repaired **all 4,099 owners at EOF** with no new file bytes.
+The captured parameter arrays still contain **179** sessions and owners;
+affected rows and rollback snapshots are counted by turn, with deterministic
+`session_id, turn_idx` ordering.
+
+The canonical runtime integration passed **2/2, zero skips, exit 0** on
+child HEAD `7575534bcf0076b625f59db41fc8a344e3baaf3e` plus the local fixture
+edit. Child PIDs were **2107259 / 2150508**, Node **v25.9.0**. Each checks
+the exact source fingerprint, real source SQL capture, repair/no-op replay,
+owner/xmin rollback preservation and home/datadir/port teardown. Both
+homes were also absent in the final receipt read. This is source/fixture
+provenance, not an immutable whole-import-graph claim.
+
+Private executed repair/no-op times were **251.246 / 10.261 ms** and
+**1,505.021 / 7.863 ms**. Each replay used ModifyTable/Update, Hash Join,
+Function Scan and `session_turns_pkey` Index Scan; its index scan visited
+4,099 rows even for the no-op. Root shared-read blocks remained **zero**.
+These measurements do not explain the variation between private runs or
+reproduce the live 460,720 ms UPDATE. No resource-pressure cause is inferred.
+
+Command remains the canonical `PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run
+test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`.
+Final log `/tmp/p008-owner-update-density-20261001-r2.log`, SHA-256
+`8bf2bd9c4ff2ef3f1c8d871a6899f45bb90dca88f052c2b856c865d55065eae8`;
+reduced receipts `/tmp/p008-owner-update-density-summary-20261001.json`,
+SHA-256 `0173dad9598281b5f18480dad919575001e6788d56a06628608e8075fe2a79cd`.
+Fixture SHA-256 is
+`9f477fd79049d95749d27d868e8f84166236ae718629ae857b3d2c76fbe4729b`;
+source remains `81276d34…`, captured SQL remains `c33700f4…`.
+Scoped diff checking passed. The larger fixture strengthens current private
+repair coverage; executed live-plan attribution, sustained wait mechanism,
+historical app impact, R-8 acceptance and shipment remain open.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

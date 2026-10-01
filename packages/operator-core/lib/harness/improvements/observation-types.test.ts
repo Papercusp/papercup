@@ -67,6 +67,22 @@ describe('validateObservationRatings — the D-002 mandatory-evidence gate', () 
     ).toThrow(ObservationEvidenceError);
   });
 
+  it('rejects projection-truncation and recovery markers copied into rating evidence', () => {
+    for (const evidence of [
+      '…[TRUNCATED +290 chars — pass payloadTier:"full" for complete output]',
+      'Recover the full tool result with _projection.cursor.args',
+    ]) {
+      expect(() =>
+        validateObservationRatings({
+          rubricRef: 'spec-quality',
+          ratings: {
+            'stable-revision-identity': { rating: 'pass', evidence },
+          },
+        }),
+      ).toThrow(/projection.*marker|marker.*projection/i);
+    }
+  });
+
   it('rejects a blank rating value', () => {
     expect(() => validateObservationRatings({ rubricRef: 'r', ratings: { k: { rating: '', evidence: 'e' } } })).toThrow(
       /rating is required/,

@@ -536,6 +536,24 @@ async function startDbosOnce(): Promise<void> {
     console.warn('[dbos-executor-reaper] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
 
+  // WI-10004954 — a graceful restart must not spend an in-flight workflow's DBOS recovery
+  // budget (every dequeue charges one; boot recovery re-dequeues). On SIGTERM/SIGINT this
+  // executor gives each of its PENDING, deadline-bounded workflows that attempt back.
+  // Crashes still count. Best-effort: a failure leaves the pre-fix behaviour.
+  try {
+    const [{ armGracefulShutdownRecoveryCredit }, { getOrgPg }, { DBOS: DbosForCredit }] =
+      await Promise.all([
+        import('./graceful-shutdown-recovery-credit'),
+        import('@papercusp/db-org'),
+        import('@dbos-inc/dbos-sdk'),
+      ]);
+    const executorId = DbosForCredit.executorID;
+    armGracefulShutdownRecoveryCredit({ sql: getOrgPg().sql, executorId });
+    console.log(`[dbos-graceful-credit] armed for executor ${executorId}`);
+  } catch (e) {
+    console.warn('[dbos-graceful-credit] failed to arm (non-fatal):', e instanceof Error ? e.message : e);
+  }
+
   // EI-455 bug #2 — start the green-checkpoint silent-stall watchdog: a process-
   // level sweep (NOT a DBOS routine, same reason as the reaper) that alarms when an
   // ACTIVE green-checkpoint routine stops firing or stops producing greens. The

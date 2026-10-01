@@ -10,6 +10,7 @@ import {
   nextFutureAutomationAt,
   type BuildAutomationModelInput,
 } from './workflows-model';
+import { dispatcherDependentWorkflows } from './workflows-ledger-model';
 
 const NOW = Date.parse('2026-08-22T20:00:00.000Z');
 
@@ -319,5 +320,58 @@ describe('automations model', () => {
         outcomeState: "failed",
       },
     });
+  });
+});
+
+describe('trigger dispatcher hold count through the real builders (WI-10004955)', () => {
+  // A sync-triggered sweep (SYNC_TRIGGERED_SWEEPS in schedule-inventory.ts) fires as a
+  // function call at the end of every git-sync. It never passes through
+  // `external-trigger-dispatch`, which drains only binding-created trigger_runs, so a
+  // dispatcher pause does not hold it.
+  const syncSweep = () =>
+    routine({
+      name: 'doc-freshness-sweep',
+      group: 'docs',
+      category: 'sync-triggered',
+      cron: null,
+      cadence: null,
+      kind: 'triggered',
+      family: 'docs',
+      armedState: 'armed',
+      triggerLabel: 'after every git-sync',
+      nextFireAt: null,
+    });
+
+  it('counts one held workflow per armed binding target, not per binding', () => {
+    // Two armed bindings, both on plan customer-digest: one workflow is held.
+    const items = buildAutomationItems(fixture());
+    expect(dispatcherDependentWorkflows(items)).toBe(1);
+  });
+
+  it('does not count an armed sync-triggered routine as held by a dispatcher pause', () => {
+    const input = fixture();
+    input.catalog = { ...input.catalog!, routines: [...input.catalog!.routines, syncSweep()] };
+    const items = buildAutomationItems(input);
+    // The routine still renders as an event-driven row; it just is not dispatcher-held.
+    expect(items.find((item) => item.label === 'doc-freshness-sweep')?.triggers[0]).toMatchObject({
+      kind: 'external',
+      armed: true,
+    });
+    expect(dispatcherDependentWorkflows(items)).toBe(1);
+  });
+
+  it('counts an armed blueprint-operation binding as held', () => {
+    const input = fixture();
+    input.external!.bindings = [
+      ...input.external!.bindings,
+      {
+        ...input.external!.bindings[0]!,
+        id: '55555555-5555-4555-8555-555555555555',
+        planHarnessSlug: null,
+        planSlug: null,
+        action: { type: 'blueprint-operation', operationHarnessSlug: 'papercusp', operationId: 'daily-triage' },
+      },
+    ];
+    expect(dispatcherDependentWorkflows(buildAutomationItems(input))).toBe(2);
   });
 });
