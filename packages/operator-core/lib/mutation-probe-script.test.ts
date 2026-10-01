@@ -222,10 +222,32 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
   });
 
   it('preserves a source edit made during copy-out and reports the measured snapshot', () => {
+    // The edit comes from a real OUT-OF-PROCESS peer, never from the guard command. Under the
+    // overlay relocation (EI-24799401310241778) the guard runs in a private mount namespace in
+    // which the subject's own path IS the scratch mutant, so a write from inside the guard lands
+    // in the mutant and never reaches the tree (pinned by the overlay containment test below).
+    // A peer outside the probe writes the host file, which is the edit that must be preserved
+    // under every relocation. The guard holds the mutant phase open until the peer has written.
     const sourceSha = spawnSync('git', ['hash-object', subject], { encoding: 'utf8' }).stdout?.trim();
-    const testCommand = `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf 'peer-edit\\n' > ${JSON.stringify(subject)}; fi; grep -q "^beta$" {}`;
+    const started = join(dir, 'mutant-phase-started');
+    const edited = join(dir, 'peer-edit-written');
+    const peer = spawn(
+      'bash',
+      [
+        '-c',
+        'for i in $(seq 1 200); do [ -f "$1" ] && break; sleep 0.05; done; [ -f "$1" ] && printf "peer-edit\\n" > "$2"; touch "$3"',
+        '_', started, subject, edited,
+      ],
+      { stdio: 'ignore' },
+    );
+    const testCommand = `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then touch ${JSON.stringify(started)}; for i in $(seq 1 200); do [ -f ${JSON.stringify(edited)} ] && break; sleep 0.05; done; fi; grep -q "^beta$" {}`;
 
-    const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', testCommand]);
+    let result: { code: number; out: string };
+    try {
+      result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', testCommand]);
+    } finally {
+      peer.kill('SIGKILL');
+    }
     const currentSha = spawnSync('git', ['hash-object', subject], { encoding: 'utf8' }).stdout?.trim();
 
     expect(result.code).toBe(0);
@@ -917,6 +939,23 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(lines).toContain('baseline=unset');
     expect(lines).toContain(`copy-baseline=${s}`);
     expect(lines).toContain(`mutant=${s}`);
+  });
+
+  it.skipIf(!overlayWorks)("contains a guard's own write to the subject path inside the overlay", () => {
+    // The flip side of binding the mutant over the subject's path: inside the namespace that
+    // path IS the scratch copy, so even a guard that writes to it cannot dirty the tracked file.
+    // Without the overlay the same write would land on the real file, which is why the copy-out
+    // "preserves a source edit" test simulates its peer from OUTSIDE the probe.
+    const { code, out } = runProbeIO([
+      '--file', subject,
+      '--mutate', 's/beta/BETA/',
+      '--test', `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf 'guard-write\\n' > ${JSON.stringify(subject)}; fi; grep -q "^beta$" {}`,
+    ]);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(code).toBe(0);
+    expect(read()).toBe(ORIGINAL);
+    expect(out).not.toContain('external-change-preserved');
   });
 
   it('refuses --relocation under --in-tree, and an unknown relocation value', () => {

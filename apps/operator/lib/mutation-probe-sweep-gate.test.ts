@@ -115,6 +115,10 @@ function runProbe(args: string[], extraEnv: Record<string, string | undefined> =
       // the right scrub rather than "0": pc-heavy tests `= "1"`, and the probe
       // reports via `${PC_HEAVY_BYPASS:-unset}`, which treats empty as unset.
       PC_HEAVY_BYPASS: '',
+      // Same class (WI-10005002): the probe REFUSES --in-tree when this is "1",
+      // so a suite launched from a foreground capability:bash call reported ~16
+      // false reds. The cases that test that refusal set it via extraEnv.
+      PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
       ...extraEnv,
     },
   });
@@ -153,6 +157,8 @@ function runLockedProbe(
     PAPERCUSP_HONO_PORT: '',
     PAPERCUSP_MCP_PROXY_BASE: '',
     PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    // ...process.env above re-adds the launcher's marker after runProbe's scrub (WI-10005002).
+    PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
     ...extraEnv,
   });
   // spawnSync reports null when the child died on a signal; -1 keeps that distinct from every real exit code.
@@ -411,6 +417,12 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).not.toContain('mutant applied:');
   });
 
+  // One --in-tree --sweep-lock-held probe runs the sweep fence TWICE: once before
+  // the (possibly expensive) baseline, so a missing lock fails fast, and again
+  // immediately before mutation, to refresh the lease and catch a lock that
+  // changed while the baseline ran (scripts/mutation-probe.sh; WI-10005000).
+  const SWEEP_FENCE_CALLS = ['coord:presence', 'locks:queue', 'locks:heartbeat'];
+
   it.each(['3070', '9071'])('retries a local :%s transport timeout once through staging :3170', (port) => {
     const primaryUrl = 'http://127.0.0.1:' + port;
     const endpointEnv: Record<string, string> = port === '9071'
@@ -433,8 +445,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    // Only the first fence check meets the injected timeout and recovers through
+    // staging. The fallback is per call, so the second check returns to the primary.
     expect(calls.filter((call) => call.tool === 'coord:presence').map((call) => call.targetUrl))
-      .toEqual([primaryUrl, 'http://127.0.0.1:3170']);
+      .toEqual([primaryUrl, 'http://127.0.0.1:3170', primaryUrl]);
   });
 
   it('retries a timeout through staging when TMPDIR is UNSET (WI-10004679)', () => {
@@ -479,8 +493,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain("verified this session's live file lock");
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    // The first fence check's heartbeat times out and recovers through staging; the
+    // second check's heartbeat goes back to the primary (per-call fallback).
     expect(calls.filter((call) => call.tool === 'locks:heartbeat').map((call) => call.targetUrl))
-      .toEqual(['http://127.0.0.1:3070', 'http://127.0.0.1:3170']);
+      .toEqual(['http://127.0.0.1:3070', 'http://127.0.0.1:3170', 'http://127.0.0.1:3070']);
   });
 
   it('does not reroute authentication or input failures to staging', () => {
@@ -572,9 +588,12 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     // No locks:list: the git-sync lease is not consulted unless opted in (EI-24712906810240170).
-    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
-    expect(calls[1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
-    expect(calls[2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
+    // Both fence checks (pre-baseline and pre-mutation) must verify AND extend the lock.
+    expect(calls.map((call) => call.tool)).toEqual([...SWEEP_FENCE_CALLS, ...SWEEP_FENCE_CALLS]);
+    for (const offset of [0, SWEEP_FENCE_CALLS.length]) {
+      expect(calls[offset + 1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
+      expect(calls[offset + 2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
+    }
     // Every call must send a projection the real dispatch accepts (WI-10002758).
     for (const call of calls) {
       const projection = JSON.parse(call.projection);
@@ -594,7 +613,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(code).toBe(0);
     expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
+    expect(calls.map((call) => call.tool)).toEqual([...SWEEP_FENCE_CALLS, ...SWEEP_FENCE_CALLS]);
     for (const call of calls) {
       expect(call.workspace, call.tool).toBe('probe-workspace');
       expect(call.harness, call.tool).toBe('probe-harness');
