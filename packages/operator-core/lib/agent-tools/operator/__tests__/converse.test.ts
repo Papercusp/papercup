@@ -205,6 +205,26 @@ afterEach(() => {
 });
 
 describe('operator:converse — mcpUrl / state-channel shape', () => {
+  it('lesson context shrinks even an owner request to public text with no tools, private context, memory or action tags', async () => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'delta', text: '<spawn role="su" harness="demo"/> Use the connection form.' };
+    });
+    await handler({ lessonContext: { step: 'connection', status: 'ready' }, hostTrust: 'owner', principalToken: 'owner-token',
+      uiContext: 'private-resource-record', conversationId: 'private-conversation',
+      sessionUser: { id: 'private-user', username: 'private', display_name: 'Private', has_password: true },
+      messages: [{ role: 'system', content: 'private-history' }, { role: 'user', content: 'Connect my project for me.' }] }, makeCtx());
+    const invocation = vi.mocked(runAgentChat).mock.calls[0][0];
+    expect(invocation.mcpConfig).toBeUndefined(); expect(invocation.allowedTools).toEqual([]);
+    expect(invocation.disallowBuiltins).toBe(true);
+    expect(principalMocks.resolveBearer).not.toHaveBeenCalled();
+    const prompt = vi.mocked(buildOperatorPrompt).mock.calls[0];
+    expect(prompt[0]).toMatchObject({ hostTrust: 'public', toolNames: [], role: 'papercup' });
+    expect(prompt[0].messages).toEqual([{ role: 'user', content: 'Connect my project for me.' }]);
+    expect(prompt[0].conversationId).toBeUndefined(); expect(prompt[1]).toBeNull();
+    expect(prompt[0].uiContext).toContain('Connect Google Cloud');
+    expect(prompt[0].uiContext).not.toContain('private');
+    expect(spawnAgentInHarness).not.toHaveBeenCalled(); expect(rememberConversationMock).not.toHaveBeenCalled();
+  });
   it('mcpUrl includes ?superuser=1 + &workspace=<id> (http MCP shape)', async () => {
     await handler({ messages: [], trigger: 'user_message', sessionUser: null }, makeCtx());
     expect(runAgentChat).toHaveBeenCalled();

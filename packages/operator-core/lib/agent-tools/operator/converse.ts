@@ -79,6 +79,7 @@ import {
 } from './converse-prompt';
 import { agentBackendCredentialVerdict } from '../../agent-auth-detect';
 import { brainNoOutputMessage, type BrainAttemptOutcome, type SkippedBrainFailover } from './converse-failure';
+import { tutorialHelpContext, tutorialHelpContextSchema } from '../../onboarding/cloud-tutorial-help';
 
 const MessageSchema = z.object({
   role: z.union([z.literal('user'), z.literal('assistant'), z.literal('system')]),
@@ -150,6 +151,9 @@ export const ArgsSchema = z.object({
    *  mount. Absent ⇒ the public brain runs TOOL-LESS (fail-closed, never on the
    *  owner's credential). Ignored on owner trust. */
   principalToken: z.string().optional(),
+  /** Shrinks this existing brain to public lesson explanation, with no tools,
+   * remembered conversation, or server control-tag effects. */
+  lessonContext: tutorialHelpContextSchema.optional(),
 });
 
 type Args = z.infer<typeof ArgsSchema>;
@@ -287,7 +291,7 @@ export default defineTool({
     tool_call: z.object({ name: z.string(), input: z.unknown() }),
   },
   handler: async (input: Args, ctx) => {
-    const sessionUser: ConverseSessionUser | null = input.sessionUser ?? null;
+    const sessionUser: ConverseSessionUser | null = input.lessonContext ? null : input.sessionUser ?? null;
     // Per-turn phase timing (reply-latency instrumentation, grade-loop
     // 2026-07-16): the IPC converse path never lands in tool_invocations, so
     // this structured log line is the only latency split we have. Grep for
@@ -302,8 +306,8 @@ export default defineTool({
     // backends either have no on-disk session store (anthropic-direct) or
     // are not wired for it (omp/codex). The per-surface backend override is
     // resolved here (and reused below) instead of after the build.
-    const role = input.role ?? 'operator';
-    const hostTrust: ConverseHostTrust = input.hostTrust === 'public' ? 'public' : 'owner';
+    const role = input.lessonContext ? 'papercup' : input.role ?? 'operator';
+    const hostTrust: ConverseHostTrust = input.lessonContext || input.hostTrust === 'public' ? 'public' : 'owner';
     // The role's model + backend, resolved ONCE up front: the backend gates
     // session reuse below (claude-code only), and the papercup pin carries its
     // backend with it (D-007 §3).
@@ -314,7 +318,7 @@ export default defineTool({
       ? await readSystemPrincipal('operator', workspaceId)
       : null;
     let publicPrincipal: Awaited<ReturnType<typeof resolveBearer>> = null;
-    if (hostTrust === 'public' && input.principalToken?.trim()) {
+    if (!input.lessonContext && hostTrust === 'public' && input.principalToken?.trim()) {
       try {
         publicPrincipal = await resolveBearer(input.principalToken.trim());
       } catch {
@@ -339,7 +343,7 @@ export default defineTool({
       hostTrust,
       publicDoorNames: () => capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
     });
-    const operatorTools: readonly string[] = !principalOk || hostedCustomerIdentity
+    const operatorTools: readonly string[] = input.lessonContext || !principalOk || hostedCustomerIdentity
       ? []
       : hostTrust === 'public' && publicPrincipal
         ? selectedOperatorTools.filter((fullName) => {
@@ -361,7 +365,7 @@ export default defineTool({
       { label: `operator:converse ${hostTrust} tool set` },
     );
     const convId =
-      typeof input.conversationId === 'string' && input.conversationId.trim()
+      !input.lessonContext && typeof input.conversationId === 'string' && input.conversationId.trim()
         ? input.conversationId
         : null;
     let sessionReuseOn = false;
@@ -388,7 +392,7 @@ export default defineTool({
     // the persona as a document handed to it (2026-05-21 root cause).
     const { systemPromptText, userPromptText, userPromptTextDelta } = await buildOperatorPrompt(
       {
-        messages: input.messages,
+        messages: input.lessonContext ? input.messages.filter(message => message.role === 'user').slice(-1) : input.messages,
         trigger: input.trigger,
         welcomed_user: input.welcomedUser,
         mayAskActive: input.mayAskActive,
@@ -396,19 +400,19 @@ export default defineTool({
         audienceMode: input.audienceMode,
         surface: input.surface,
         uiClientId: input.uiClientId,
-        conversationId: input.conversationId,
+        conversationId: input.lessonContext ? undefined : input.conversationId,
         // Sentinel re-home seam: 'operator' (default) is unchanged;
         // 'sentinel' loads the Sentinel persona set.
-        role: input.role,
+        role,
         // WI-5071: keep the system prompt byte-stable for session reuse.
         memoryInUser: sessionReuseOn,
         // P-005 (D-007 §2): host trust keys the context sections; the surface's
         // UI context rides along; the catalog advertises THIS turn's toolset.
         hostTrust,
-        uiContext: input.uiContext,
+        uiContext: input.lessonContext ? tutorialHelpContext(input.lessonContext) : input.uiContext,
         toolNames: operatorTools,
       } satisfies OperatorConverseInput,
-      sessionUser,
+      input.lessonContext ? null : sessionUser,
     );
     const buildPromptMs = Date.now() - tTurnStart;
 
@@ -774,7 +778,7 @@ export default defineTool({
     // fold turns that aged out of the verbatim window into the conversation's
     // PG summary so the NEXT turn still remembers them. Single-flighted +
     // threshold-gated inside; no-op without a conversationId.
-    if (input.conversationId) {
+    if (!input.lessonContext && input.conversationId) {
       void (async () => {
         const { maybeCompactConversation } = await import(
           '../../operator-conversation-compaction'
@@ -840,7 +844,8 @@ export default defineTool({
     // child in the harness's real project dir, and records resolution
     // failures as failed nursery rows instead of dropping them.
     try {
-      const parsed = parseOperatorTurn(assembled);
+      // A tutorial answer is text, even if the model emits an action tag.
+      const parsed = parseOperatorTurn(input.lessonContext ? '' : assembled);
       // Sentinel control tags: the SENTINEL never places work itself. It can
       // emit `<handoff>` for buildable work (file-and-nudge to the Mug). Honored
       // ONLY for role==='papercup'; the operator path below ignores it (and the

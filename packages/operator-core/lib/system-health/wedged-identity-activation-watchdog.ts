@@ -381,6 +381,337 @@ export async function runWedgedIdentitySweepOnce(
   return { verdict: 'wedged', scanned, wedged, escalated: 1 };
 }
 
+// ── UNAPPLIED-ACTIVATION CENSUS (WI-10004999) ─────────────────────────────
+//
+// A SECOND class, measured on the same tick. The sweep above finds sessions
+// the gate would REFUSE. This census finds sessions the gate lets through but
+// whose identity activation was never ACKNOWLEDGED: `status` stays at
+// 'desired' or 'prepared' while the session keeps taking turns. Nothing is
+// denied, so nobody notices — but no `applied` activation event is written, so
+// no activation span opens and the session's inference cost reads as
+// unattributed (WI-10004663: fresh launches applied only on turn 2, and a
+// one-turn launch never; Sep 29-30 shadow-statement drop).
+//
+// WHY THE STATUS LABEL IS THE RIGHT INPUT HERE, when DESIGN DECISION 1 above
+// rejects it: that decision is about the gate's stale-artifact question, which
+// the label does not answer. This census asks a different question — "was the
+// latest desired transition acknowledged?" — and the label is exactly that
+// answer: session-activation.ts sets 'applied' ONLY in the apply transition.
+// The label alone still over-reports, so two more conditions gate a finding:
+//
+//   · TURNS, not time. An activation legitimately sits at desired/prepared
+//     until the next turn-start hook applies it (turn 1 on the fixed build,
+//     turn 2 on the pre-WI-10004663 build). A session is flagged only after it
+//     has COMPLETED `UNAPPLIED_ACTIVATION_TURN_THRESHOLD` journaled turns since
+//     its activation last entered desired/prepared — past every legitimate
+//     path. A session that has not taken a turn yet is never flagged.
+//   · A REAL identity change. desired === applied (same spec AND state
+//     revision) is a re-desire of the identity already applied; the span is
+//     already open, so it is not a finding.
+//
+// KNOWN LIMIT: turns are counted from `session_turn_journal`, which is written
+// by the Claude turn-end hook only (measured 2026-10-01: every row
+// source_kind='claude'). A non-Claude session reads 0 turns and is never
+// flagged — a false NEGATIVE, never a false positive.
+
+/** Completed turns, since the activation went unapplied, before it is a finding. */
+export const UNAPPLIED_ACTIVATION_TURN_THRESHOLD = 2;
+
+/** The per-row journal count stops here; the census needs ≥ threshold, not a total. */
+export const UNAPPLIED_TURN_COUNT_CAP = 10;
+
+export interface UnappliedCandidateRow {
+  ownerId: string;
+  /** Raw `control_state->'activation'`. */
+  activation: unknown;
+  /** When the activation last entered desired/prepared; null when no event records it. */
+  unappliedSince: string | null;
+  /** Journaled turns completed after `unappliedSince` (capped). */
+  turnsSince: number;
+}
+
+export interface UnappliedSession {
+  ownerId: string;
+  status: 'desired' | 'prepared';
+  turnsSince: number;
+  unappliedSince: string;
+  liveness: WedgedLiveness;
+}
+
+export type UnappliedClassification =
+  | { unapplied: false }
+  | { unapplied: 'unmeasured' }
+  | { unapplied: true; status: 'desired' | 'prepared'; turnsSince: number; unappliedSince: string };
+
+/** The census's instrument check — see `runUnappliedActivationCensusOnce`. */
+export interface TurnJournalPositiveControl {
+  /** session_briefs rows touched in the last 24h (was the fleet active at all?). */
+  recentBriefs: number;
+  /** session_turn_journal rows written in the last 24h. */
+  recentJournalTurns: number;
+}
+
+export interface UnappliedActivationCensusDeps {
+  loadUnapplied: () => Promise<UnappliedCandidateRow[]>;
+  loadPositiveControl: () => Promise<TurnJournalPositiveControl>;
+  resolveLiveness: (ownerIds: string[]) => Promise<Map<string, WedgedLiveness>>;
+  escalateUnapplied: (unapplied: UnappliedSession[]) => Promise<void>;
+  escalateNotMeasured: (info: { reason: string }) => Promise<void>;
+}
+
+function sameActivationPair(
+  a: { specificationRevision: string; stateRevision: string } | null | undefined,
+  b: { specificationRevision: string; stateRevision: string } | null | undefined,
+): boolean {
+  return !!a && !!b && a.specificationRevision === b.specificationRevision && a.stateRevision === b.stateRevision;
+}
+
+/** Classify ONE census row. Pure. */
+export function classifyUnapplied(
+  row: UnappliedCandidateRow,
+  threshold: number = UNAPPLIED_ACTIVATION_TURN_THRESHOLD,
+): UnappliedClassification {
+  let parsed: ReturnType<typeof normalizeSessionActivation>;
+  try {
+    parsed = normalizeSessionActivation(row.activation);
+  } catch {
+    // Malformed is ungoverned for the kernel, so it is not this census's finding.
+    return { unapplied: false };
+  }
+  if (!parsed || (parsed.status !== 'desired' && parsed.status !== 'prepared')) return { unapplied: false };
+  if (sameActivationPair(parsed.desired, parsed.applied)) return { unapplied: false };
+  // Unapplied, but no event says since WHEN, so its turns cannot be counted.
+  // Reported as a count, never guessed into a finding.
+  if (row.unappliedSince == null) return { unapplied: 'unmeasured' };
+  if (row.turnsSince < threshold) return { unapplied: false };
+  return {
+    unapplied: true,
+    status: parsed.status,
+    turnsSince: row.turnsSince,
+    unappliedSince: row.unappliedSince,
+  };
+}
+
+async function defaultLoadUnapplied(): Promise<UnappliedCandidateRow[]> {
+  const { sql } = getOrgPg();
+  const workspaceId = activeWorkspaceId();
+  // Index-backed per row: events by (workspace_id, owner_id, recorded_at, id);
+  // journal by (owner_id, created_at DESC), capped so a long-lived session
+  // costs at most UNAPPLIED_TURN_COUNT_CAP index entries.
+  const rows = await sql<Array<{
+    owner_id: string;
+    activation: unknown;
+    unapplied_since: Date | string | null;
+    turns_since: string | number | null;
+  }>>`
+    SELECT b.owner_id,
+           b.control_state->'activation' AS activation,
+           u.recorded_at AS unapplied_since,
+           CASE WHEN u.recorded_at IS NULL THEN 0 ELSE (
+             SELECT count(*) FROM (
+               SELECT 1
+                 FROM harness_shared.session_turn_journal j
+                WHERE j.owner_id = b.owner_id
+                  AND j.workspace_id = b.workspace_id
+                  AND j.created_at > u.recorded_at
+                LIMIT ${UNAPPLIED_TURN_COUNT_CAP}
+             ) AS capped
+           ) END AS turns_since
+      FROM harness_shared.session_briefs b
+      LEFT JOIN LATERAL (
+        SELECT ev.recorded_at
+          FROM harness_shared.session_identity_activation_events ev
+         WHERE ev.workspace_id = b.workspace_id
+           AND ev.owner_id = b.owner_id
+           AND ev.phase IN ('desired', 'prepared')
+         ORDER BY ev.recorded_at DESC, ev.id DESC
+         LIMIT 1
+      ) u ON true
+     WHERE b.workspace_id = ${workspaceId}
+       AND b.control_state->'activation'->>'status' IN ('desired', 'prepared')
+  `;
+  return rows.map((r) => ({
+    ownerId: r.owner_id,
+    activation: r.activation,
+    unappliedSince: r.unapplied_since == null ? null : toIsoUtc(r.unapplied_since),
+    turnsSince: Number(r.turns_since ?? 0),
+  }));
+}
+
+/** postgres.js returns timestamptz as a LOCAL-offset string here (measured
+ * 2026-10-01: "2026-10-01 13:47:34.454261-04"); render UTC ISO like every
+ * other Papercusp timestamp, keeping the raw value if it does not parse. */
+function toIsoUtc(value: Date | string): string {
+  const d = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(d.getTime()) ? String(value) : d.toISOString();
+}
+
+async function defaultLoadPositiveControl(): Promise<TurnJournalPositiveControl> {
+  const { sql } = getOrgPg();
+  const workspaceId = activeWorkspaceId();
+  const [row] = await sql<Array<{ recent_briefs: string | number; recent_journal_turns: string | number }>>`
+    SELECT
+      (SELECT count(*) FROM harness_shared.session_briefs
+        WHERE workspace_id = ${workspaceId} AND updated_at > now() - interval '24 hours') AS recent_briefs,
+      (SELECT count(*) FROM harness_shared.session_turn_journal
+        WHERE workspace_id = ${workspaceId} AND created_at > now() - interval '24 hours') AS recent_journal_turns
+  `;
+  return {
+    recentBriefs: Number(row?.recent_briefs ?? 0),
+    recentJournalTurns: Number(row?.recent_journal_turns ?? 0),
+  };
+}
+
+async function defaultEscalateUnapplied(unapplied: UnappliedSession[]): Promise<void> {
+  const n = unapplied.length;
+  const lines = unapplied
+    .map(
+      (u) =>
+        `  · ${u.ownerId} — ${u.status} since ${u.unappliedSince}, ${u.turnsSince}` +
+        `${u.turnsSince >= UNAPPLIED_TURN_COUNT_CAP ? '+' : ''} turns (liveness: ${u.liveness})`,
+    )
+    .sort();
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `${n} live session${n === 1 ? '' : 's'} kept taking turns with an identity activation ` +
+      `that was never applied — inference cost is unattributed`,
+    body:
+      `Each session below has completed at least ${UNAPPLIED_ACTIVATION_TURN_THRESHOLD} turns since its ` +
+      `identity activation last entered desired/prepared, and it is still not applied:\n\n` +
+      `${lines.join('\n')}\n\n` +
+      `CONSEQUENCE: no 'applied' activation event is written, so no activation span opens and ` +
+      `every turn this session spends reads as unattributed inference cost. Nothing is denied, ` +
+      `so the session itself will not notice.\n\n` +
+      `WHAT IT IS NOT: a wedge. The kernel is not refusing these sessions — that class is the ` +
+      `wedged-identity-activation escalation. And it is not a session merely between turns: an ` +
+      `activation applies at the next turn start, which every session below has already passed.\n\n` +
+      `TO DIAGNOSE: read the owner's session_identity_activation_events trail (which door ` +
+      `desired it — launch/restart/control — and whether a prepared ever followed) against ` +
+      `adv_sessions.launch_spec. Prior instance and fix: WI-10004663 (a fresh 'launch' never ` +
+      `applied at turn 1). Census: WI-10004999.`,
+    meta: {
+      dedupKind: 'unapplied-identity-activation',
+      // Keyed on WHICH sessions, like the wedge escalation: a persistent finding
+      // dedups instead of re-alarming hourly; a new session opens a fresh one.
+      subjectSignature: unapplied.map((u) => `${u.ownerId}:${u.status}`).sort().join(','),
+      unappliedCount: n,
+      unapplied: unapplied.map((u) => ({
+        ownerId: u.ownerId,
+        status: u.status,
+        turnsSince: u.turnsSince,
+        unappliedSince: u.unappliedSince,
+        liveness: u.liveness,
+      })),
+    },
+  });
+}
+
+async function defaultEscalateCensusNotMeasured(info: { reason: string }): Promise<void> {
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary: `Unapplied-activation census NOT MEASURED: ${info.reason}`,
+    body:
+      `The unapplied-identity-activation census could not complete, so this is a FAILED ` +
+      `MEASUREMENT — not a clean fleet. Reason: ${info.reason}.\n\n` +
+      `The census counts turns from session_turn_journal. If that journal is not being written, ` +
+      `every session reads 0 turns and the census would report clean forever.`,
+    meta: {
+      dedupKind: 'unapplied-identity-activation-not-measured',
+      subjectSignature: info.reason,
+    },
+  });
+}
+
+function censusDeps(overrides: Partial<UnappliedActivationCensusDeps>): UnappliedActivationCensusDeps {
+  return {
+    loadUnapplied: defaultLoadUnapplied,
+    loadPositiveControl: defaultLoadPositiveControl,
+    resolveLiveness: defaultResolveLiveness,
+    escalateUnapplied: defaultEscalateUnapplied,
+    escalateNotMeasured: defaultEscalateCensusNotMeasured,
+    ...overrides,
+  };
+}
+
+export type UnappliedActivationCensusOutcome =
+  | { verdict: 'clean'; scanned: number; ended: number; unmeasured: number; escalated: 0 }
+  | {
+      verdict: 'unapplied';
+      scanned: number;
+      unapplied: UnappliedSession[];
+      ended: number;
+      unmeasured: number;
+      escalated: 1;
+    }
+  | { verdict: 'not-measured'; reason: string; escalated: 1 };
+
+export async function runUnappliedActivationCensusOnce(
+  overrides: Partial<UnappliedActivationCensusDeps> = {},
+): Promise<UnappliedActivationCensusOutcome> {
+  const deps = censusDeps(overrides);
+
+  let rows: UnappliedCandidateRow[];
+  let control: TurnJournalPositiveControl;
+  try {
+    [rows, control] = await Promise.all([deps.loadUnapplied(), deps.loadPositiveControl()]);
+  } catch (e) {
+    const reason = `census read failed: ${e instanceof Error ? e.message : String(e)}`;
+    await deps.escalateNotMeasured({ reason });
+    return { verdict: 'not-measured', reason, escalated: 1 };
+  }
+
+  // The positive control. Zero unapplied rows is a legitimate clean fleet, so
+  // the row count cannot be the control (unlike the wedge sweep). The
+  // instrument that CAN silently break is the turn counter: a journal that
+  // stopped being written makes every session read 0 turns, which is
+  // indistinguishable from "nobody is stuck". An active fleet (briefs touched
+  // in 24h) with zero journaled turns is that broken instrument.
+  if (control.recentBriefs > 0 && control.recentJournalTurns === 0) {
+    const reason =
+      `${control.recentBriefs} session brief(s) were active in the last 24h but session_turn_journal ` +
+      `recorded 0 turns — the census cannot count turns`;
+    await deps.escalateNotMeasured({ reason });
+    return { verdict: 'not-measured', reason, escalated: 1 };
+  }
+
+  let unmeasured = 0;
+  const confirmed: Array<Omit<UnappliedSession, 'liveness'>> = [];
+  for (const row of rows) {
+    const verdict = classifyUnapplied(row);
+    if (verdict.unapplied === 'unmeasured') unmeasured += 1;
+    else if (verdict.unapplied === true) {
+      confirmed.push({
+        ownerId: row.ownerId,
+        status: verdict.status,
+        turnsSince: verdict.turnsSince,
+        unappliedSince: verdict.unappliedSince,
+      });
+    }
+  }
+
+  const scanned = rows.length;
+  if (confirmed.length === 0) return { verdict: 'clean', scanned, ended: 0, unmeasured, escalated: 0 };
+
+  let liveness: Map<string, WedgedLiveness>;
+  try {
+    liveness = await deps.resolveLiveness(confirmed.map((c) => c.ownerId));
+  } catch {
+    // A failed liveness read must not suppress a confirmed finding.
+    liveness = new Map();
+  }
+
+  const withLiveness = confirmed.map((c) => ({ ...c, liveness: liveness.get(c.ownerId) ?? 'unknown' }));
+  // An ended session cannot be converged; its finding is history, not an alarm.
+  const unapplied = withLiveness.filter((u) => !TERMINAL_STATES.has(u.liveness));
+  const ended = withLiveness.length - unapplied.length;
+
+  if (unapplied.length === 0) return { verdict: 'clean', scanned, ended, unmeasured, escalated: 0 };
+
+  await deps.escalateUnapplied(unapplied);
+  return { verdict: 'unapplied', scanned, unapplied, ended, unmeasured, escalated: 1 };
+}
+
 let watchdogTimer: ManagedHandle | null = null;
 
 export function startWedgedIdentityActivationWatchdog(opts: { intervalMs?: number } = {}): void {
@@ -393,12 +724,18 @@ export function startWedgedIdentityActivationWatchdog(opts: { intervalMs?: numbe
     () => {
       if (sweeping) return;
       sweeping = true;
+      const warn = (what: string) => (e: unknown) => {
+        console.warn(
+          `[wedged-identity-activation-watchdog] ${what} failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      };
+      // Sequential, not parallel: each holds a PG connection, and the wedge
+      // sweep's cursor is the expensive one (WI-10004803). A failure in either
+      // never skips the other.
       void runWedgedIdentitySweepOnce()
-        .catch((e) => {
-          console.warn(
-            `[wedged-identity-activation-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-          );
-        })
+        .catch(warn('sweep'))
+        .then(() => runUnappliedActivationCensusOnce())
+        .catch(warn('unapplied-activation census'))
         .finally(() => {
           sweeping = false;
         });

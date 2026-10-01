@@ -3091,8 +3091,13 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
   it.each([true, false])(
     'a refused pin changes in the respawned child only when managed=%s',
     async (managed) => {
+      // WI-10004944: the heal accepts a replacement proxy only if it serves
+      // /api/mcp (d24b79f750, psu-pty-host.mjs `proxyMcpRouteExists`). A real
+      // Streamable HTTP endpoint answers a GET with 405; a 404 there means "not
+      // an operator" and the heal correctly declines. This fixture 404'd the
+      // route, so the managed case failed deterministically from that commit on.
       const proxy = createServer((req, res) => {
-        res.writeHead(req.url === '/api/health' ? 200 : 404);
+        res.writeHead(req.url === '/api/health' ? 200 : req.url === '/api/mcp' ? 405 : 404);
         res.end('ok');
       });
       await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', r));

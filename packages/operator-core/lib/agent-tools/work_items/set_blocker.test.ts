@@ -73,6 +73,7 @@ describe('work_items:set_blocker', () => {
       ref: 'credential:prod-db',
       summary: 'Provide the production DB credential.',
       nextVerb: 'setup:save_key',
+      defaultIfUnanswered: 'stays parked; the weekly needs-human digest re-surfaces it',
     });
 
     expect(out).toMatchObject({
@@ -419,9 +420,17 @@ describe('work_items:set_blocker', () => {
       ref: 'credential:prod-db',
       summary: 'Provide the production DB credential.',
       nextVerb: 'setup:save_key',
+      defaultIfUnanswered: 'stays parked; the weekly needs-human digest re-surfaces it',
+      decideBy: '2026-10-15T00:00:00Z',
     });
 
     expect(out.ok).toBe(true);
+    expect(out.activeBlockers).toEqual([
+      expect.objectContaining({
+        defaultIfUnanswered: 'stays parked; the weekly needs-human digest re-surfaces it',
+        decideBy: '2026-10-15T00:00:00Z',
+      }),
+    ]);
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
       'WI-1',
       'needs-human',
@@ -457,6 +466,7 @@ describe('work_items:set_blocker', () => {
       ref: 'cloudinary:r2-migration',
       summary: 'Have the external service operator enable the migration endpoint.',
       nextVerb: 'work_items:set_blocker { clear: true } after the endpoint is enabled',
+      defaultIfUnanswered: 'stays parked until the endpoint is enabled',
     });
 
     expect(planItemNeedsHumanContradiction).toHaveBeenCalledWith(item);
@@ -508,6 +518,7 @@ describe('work_items:set_blocker', () => {
       ref: 'cloudinary:r2-migration',
       summary: 'Have the external service operator enable the migration endpoint.',
       nextVerb: 'work_items:set_blocker { clear: true } after the endpoint is enabled',
+      defaultIfUnanswered: 'stays parked until the endpoint is enabled',
     });
 
     expect(planItemNeedsHumanContradiction).toHaveBeenCalledWith(item);
@@ -538,6 +549,111 @@ describe('work_items:set_blocker', () => {
     expect(out.error).toMatch(/structured ask requires both.*summary.*nextVerb/);
     expect(mergeWorkItemPayload).not.toHaveBeenCalled();
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  // Owner-attention ledger (EI-23783029010995961): an owner ask must state what happens if it is never answered.
+  it('refuses a strict human ask that declares no defaultIfUnanswered, and writes nothing', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', payload: {} });
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      capability: 'product-decision',
+      ref: 'decision:pricing',
+      summary: 'Pick the pricing tier to ship.',
+      nextVerb: 'work_items:set_blocker { clear: true } after the owner picks',
+    });
+    expect(out).toMatchObject({ ok: false, id: 'WI-1' });
+    expect(out.error).toMatch(/defaultIfUnanswered.*what the system will do if the owner never answers/s);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('refuses a blank defaultIfUnanswered — whitespace is not a stated outcome', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', payload: {} });
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      capability: 'credential',
+      ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential.',
+      nextVerb: 'setup:save_key',
+      defaultIfUnanswered: '   ',
+    });
+    expect(out).toMatchObject({ ok: false, id: 'WI-1' });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it('lets a re-assert of an existing ask omit the default the record already carries', async () => {
+    const existing = {
+      kind: 'human',
+      capability: 'credential',
+      capabilitySource: 'explicit',
+      ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential.',
+      nextVerb: 'setup:save_key',
+      defaultIfUnanswered: 'stays parked; the weekly needs-human digest re-surfaces it',
+      status: 'active',
+      createdAt: '2026-10-01T08:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-10-01T08:00:00.000Z',
+    };
+    const item = {
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'needs-human',
+      harness: 'papercup',
+      payload: { externalBlockers: [existing] },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+    setWorkItemStateWithAliasInfo.mockResolvedValue({
+      workItem: { ...item, state: 'needs-human' },
+      aliased: false,
+      requestedState: 'needs-human',
+      appliedState: 'needs-human',
+    });
+
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      capability: 'credential',
+      ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential (tightened wording).',
+      nextVerb: 'setup:save_key',
+    });
+    expect(out.ok).toBe(true);
+    expect(out.activeBlockers).toEqual([
+      expect.objectContaining({
+        defaultIfUnanswered: 'stays parked; the weekly needs-human digest re-surfaces it',
+      }),
+    ]);
+  });
+
+  it('refuses an unparseable decideBy before writing the blocker', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', payload: {} });
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      capability: 'credential',
+      ref: 'credential:prod-db',
+      summary: 'Provide the production DB credential.',
+      nextVerb: 'setup:save_key',
+      defaultIfUnanswered: 'stays parked',
+      decideBy: 'next tuesday-ish',
+    });
+    expect(out).toMatchObject({ ok: false, id: 'WI-1' });
+    expect(out.error).toMatch(/decideBy.*not a parseable ISO timestamp/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it('does not demand a default for non-human blockers', async () => {
+    const item = { id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', harness: 'papercup', payload: {} };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+    const out = await one({ id: 'WI-1', kind: 'event', ref: 'release:green', summary: 'wait for green' });
+    expect(out.ok).toBe(true);
+    expect(out.activeBlockers).toEqual([expect.objectContaining({ kind: 'event', ref: 'release:green' })]);
   });
 
   it('accepts a clear-only request and infers the sole active blocker kind', async () => {
@@ -701,6 +817,7 @@ describe('work_items:set_blocker', () => {
       ref: 'credential:prod-db',
       summary: 'Provide the production DB credential.',
       nextVerb: 'setup:save_key',
+      defaultIfUnanswered: 'stays parked; the weekly needs-human digest re-surfaces it',
     });
 
     expect(out).toMatchObject({ ok: false, id: 'WI-1' });
@@ -1018,6 +1135,7 @@ describe('work_items:set_blocker', () => {
       ref: 'live-microphone',
       summary: 'Connect a live microphone for the hardware-only verification.',
       nextVerb: 'work_items:set_blocker { clear: true } after the device is connected',
+      defaultIfUnanswered: 'stays parked until the device is connected',
     });
     expect(out.ok).toBe(true);
     expect(out.autoCleared).toBe(false);

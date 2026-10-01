@@ -555,6 +555,20 @@ function normalizeAcceptanceGraderLog(rawLog: string): string {
  * plan evidence is rendered in the same log, so broad words would create false
  * positives from the material the judge was asked to inspect.
  */
+/**
+ * WI-10004926: parsers for psu-pty-host's startup-turn drop receipt, which
+ * apps/operator/scripts/psu-pty-host.mjs writes ONLY through
+ * `formatStartupTurnDroppedLine`. Both are `$`-anchored on the
+ * `within <N>ms over <N> attempt(s))` tail. The contract is pinned by
+ * apps/operator/lib/psu-pty-host-drop-line-contract.test.ts, which runs every
+ * drop reason through the real formatter into these patterns. Non-global, so
+ * `String#match` is stateless and the constants are safe to share.
+ */
+export const LAUNCHER_QUOTA_KICKOFF_DROP_RE =
+  /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\(submit verification aborted \(quota-blocked\) within \d+ms over \d+ attempt\(s\)\)$/im;
+export const LAUNCHER_KICKOFF_DROP_RE =
+  /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\((?!submit verification aborted \(quota-blocked\))[^\n]{1,240}? within \d+ms over \d+ attempt\(s\)\)$/im;
+
 export function classifyAcceptanceGraderTerminalFailure(
   rawLog: string,
   {
@@ -626,11 +640,7 @@ export function classifyAcceptanceGraderTerminalFailure(
   // host remains kernel-live, the launch dedupes forever, and the audit
   // reservation never settles. Recognize only the host-owned terminal receipt,
   // only for controlled callers, and reuse the existing quota fallback path.
-  const launcherQuotaDrop = allowLauncherQuotaDrop
-    ? normalized.match(
-        /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\(submit verification aborted \(quota-blocked\) within \d+ms over \d+ attempt\(s\)\)$/im,
-      )
-    : null;
+  const launcherQuotaDrop = allowLauncherQuotaDrop ? normalized.match(LAUNCHER_QUOTA_KICKOFF_DROP_RE) : null;
   if (launcherQuotaDrop) {
     return {
       code: 'model_quota_exhausted',
@@ -646,11 +656,7 @@ export function classifyAcceptanceGraderTerminalFailure(
   // EI-24118203560334206). The quota variant is excluded here so it keeps its
   // dedicated code and backoff above, and a log that shows any first-turn
   // progress is never retired on this signal alone.
-  const launcherKickoffDrop = allowLauncherKickoffDrop
-    ? normalized.match(
-        /psu-pty-host:\s+launch kickoff DROPPED for [^\n()]{1,200}\s+\((?!submit verification aborted \(quota-blocked\))[^\n]{1,240}? within \d+ms over \d+ attempt\(s\)\)$/im,
-      )
-    : null;
+  const launcherKickoffDrop = allowLauncherKickoffDrop ? normalized.match(LAUNCHER_KICKOFF_DROP_RE) : null;
   if (launcherKickoffDrop && !hasAcceptanceGraderFirstTurnProgress(normalized)) {
     return {
       code: 'launch_kickoff_dropped',

@@ -76,7 +76,9 @@ export function sourceAuditWakeCopy(meta: SourceAuditCascadeMeta, conversationId
       `${reservationGuidance}\n` +
       `Read the request in conversations:get { id:${JSON.stringify(conversationId)} }. ` +
       `If unable to audit, use consult:decline { conversation_id:${JSON.stringify(conversationId)}, reason:'...' }; ` +
-      `the existing cascade selects the next candidate. Emit the exact audit card to finish; a consult reply does not settle it.`,
+      `the existing cascade selects the next candidate. Emit the exact audit card to finish; a consult reply does not settle it. ` +
+      `A successful emit ALSO closes this consult (closed_answered) — do not reply, and do not call ` +
+      `consult:close, afterward (it will refuse: the consult is no longer open).`,
   };
 }
 

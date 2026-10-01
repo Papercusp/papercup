@@ -3707,6 +3707,53 @@ export function submitVerificationFailureReason(result) {
   return null;
 }
 
+/** WI-10004926: human text for each startup-turn drop reason, printed inside
+ *  the parentheses of the `<label> DROPPED for <owner> (...)` stderr receipt.
+ *  `submit-verification-aborted-<why>` is handled by prefix in
+ *  describeStartupTurnDropReason; any other unmapped reason is still NAMED
+ *  (WI-10004919: an unnamed reason hid a 75s frame-budget drop behind the
+ *  generic text). */
+export const STARTUP_TURN_DROP_REASON_TEXT = Object.freeze({
+  'no-startup-ready-marker-last-resort-failed':
+    'the child never emitted its startup-ready marker AND the last-resort attempt found no prompt',
+  'no-startup-ready-marker': 'the child never emitted its startup-ready marker',
+  'kickoff-marker-echo-unconfirmed': 'the exact Codex kickoff marker never appeared in the composer echo',
+  'submit-verification-exhausted': 'submit verification exhausted without observing output after a resubmit',
+  'fresh-child-owner-input': 'the owner used the fresh child before its carry prompt was submitted',
+  'resume-compaction-timeout':
+    'Claude resume compaction recovery timed out before a standalone composer prompt appeared',
+  'codex-backend-frame-not-observed':
+    'the Codex session frame, a Ready footer or model header, never appeared in its backend-frame budget',
+  'codex-startup-still-starting': 'the Codex footer still read Starting, MCP servers booting, at the kickoff deadline',
+  'never-settled': 'the child never settled to its prompt',
+});
+
+/** @param {string} dropReason @returns {string} */
+export function describeStartupTurnDropReason(dropReason) {
+  const reason = String(dropReason ?? '');
+  if (Object.hasOwn(STARTUP_TURN_DROP_REASON_TEXT, reason)) return STARTUP_TURN_DROP_REASON_TEXT[reason];
+  if (reason.startsWith('submit-verification-aborted-')) {
+    return `submit verification aborted (${reason.slice('submit-verification-aborted-'.length)})`;
+  }
+  return `the child never settled to its prompt [reason ${reason}]`;
+}
+
+/** WI-10004926: the ONE writer of the startup-turn drop receipt.
+ *  packages/operator-core/lib/acceptance-grader.ts parses this exact line with
+ *  `$`-anchored regexes (LAUNCHER_QUOTA_KICKOFF_DROP_RE,
+ *  LAUNCHER_KICKOFF_DROP_RE). Keep the parenthesised tail
+ *  `within <N>ms over <N> attempt(s))` LAST. Anything appended inside or after
+ *  it silently stops grader drop detection;
+ *  apps/operator/lib/psu-pty-host-drop-line-contract.test.ts pins this.
+ *  @param {{ label: string, ownerId: string, dropReason: string, budgetMs: number, attempts: number }} drop
+ *  @returns {string} */
+export function formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }) {
+  return (
+    `psu-pty-host: ${label} DROPPED for ${ownerId} (${describeStartupTurnDropReason(dropReason)} ` +
+    `within ${budgetMs}ms over ${attempts} attempt(s))\n`
+  );
+}
+
 /** WI-1386682 (1): does this pty screen text show Claude Code's OWN
  *  usage-wall copy (weekly or 5-hour)? This is the missing half of
  *  WI-1378748's fix — that item stopped a wake exhaustion from being
@@ -8171,37 +8218,9 @@ export function hostThroughPty(o) {
       budgetMs,
     });
     try {
-      process.stderr.write(
-        `psu-pty-host: ${label} DROPPED for ${ownerId} (${
-          dropReason === 'no-startup-ready-marker-last-resort-failed'
-            ? 'the child never emitted its startup-ready marker AND the last-resort attempt found no prompt'
-            : dropReason === 'no-startup-ready-marker'
-              ? 'the child never emitted its startup-ready marker'
-                : dropReason === 'kickoff-marker-echo-unconfirmed'
-                  ? 'the exact Codex kickoff marker never appeared in the composer echo'
-                  : dropReason === 'submit-verification-exhausted'
-                    ? 'submit verification exhausted without observing output after a resubmit'
-                : dropReason.startsWith('submit-verification-aborted-')
-                  ? `submit verification aborted (${dropReason.slice('submit-verification-aborted-'.length)})`
-                    : dropReason === 'fresh-child-owner-input'
-                      ? 'the owner used the fresh child before its carry prompt was submitted'
-                      : dropReason === 'resume-compaction-timeout'
-                        ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
-                        : dropReason === 'codex-backend-frame-not-observed'
-                          ? 'the Codex session frame, a Ready footer or model header, never appeared in its backend-frame budget'
-                          : dropReason === 'codex-startup-still-starting'
-                            ? 'the Codex footer still read Starting, MCP servers booting, at the kickoff deadline'
-                            : dropReason === 'never-settled'
-                              ? 'the child never settled to its prompt'
-                              // WI-10004919: an unmapped reason must still be named. It used
-                              // to print only the generic text, which hid a 75s frame-budget
-                              // drop behind "within 600000ms". Keep the parenthesised tail
-                              // unchanged: acceptance-grader.ts parses this line with
-                              // `within \d+ms over \d+ attempt\(s\)\)$`.
-                              : `the child never settled to its prompt [reason ${dropReason}]`
-        } ` +
-          `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
-      );
+      // WI-10004926: one formatter, pinned to the acceptance-grader parser by
+      // apps/operator/lib/psu-pty-host-drop-line-contract.test.ts.
+      process.stderr.write(formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }));
     } catch {
       /* never let a diagnostic write break the host */
     }

@@ -914,14 +914,28 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   CURRENT_SNAPSHOT="$SCRATCH/current.snapshot"
   cp -p "$BASE" "$CURRENT_SNAPSHOT" || die "could not freeze the current snapshot"
 
-  GIT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null)" \
-    || die "--against-commit / --against-last-without requires --file to be inside a Git worktree"
+  GIT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>"$SCRATCH/git-root.err")" \
+    || die "--against-commit / --against-last-without requires --file to be inside a Git worktree: $(head -3 "$SCRATCH/git-root.err" 2>/dev/null)"
   case "$FILE" in
     "$GIT_ROOT"/*) REL_FILE="${FILE#"$GIT_ROOT"/}" ;;
     *) die "--file is not inside the Git worktree root: $GIT_ROOT" ;;
   esac
-  git -C "$GIT_ROOT" ls-files --error-unmatch -- "$REL_FILE" >/dev/null 2>&1 \
-    || die "historical mode requires a tracked --file; Git has no path '$REL_FILE' in $GIT_ROOT"
+  # "Tracked" means the path is in HEAD's tree, read from the object store.
+  # Never ask the index here (WI-10004910): git-sync rewrites .git/index on
+  # every sweep, and a half-written index makes `ls-files --error-unmatch`
+  # exit 1 with "did not match" for a tracked path, byte-for-byte the
+  # signature of a genuinely untracked one (a zero-byte index exits 128), so
+  # no exit-code or stderr filter can tell the two apart. Refs and objects are
+  # written atomically, so this read cannot see a half-written state. It is
+  # also the precondition historical mode really has: a staged-but-never-
+  # committed file has no history to compare against.
+  git -C "$GIT_ROOT" --literal-pathspecs ls-tree -z --full-tree --name-only HEAD -- "$REL_FILE" \
+      >"$SCRATCH/head-tree.out" 2>"$SCRATCH/head-tree.err" \
+    || die "git could not read HEAD's tree in $GIT_ROOT, so whether '$REL_FILE' is committed is UNKNOWN (a git read failure, not an untracked file): $(head -3 "$SCRATCH/head-tree.err" 2>/dev/null)"
+  HEAD_ENTRY=""
+  IFS= read -r -d '' HEAD_ENTRY <"$SCRATCH/head-tree.out" || true
+  [ "$HEAD_ENTRY" = "$REL_FILE" ] \
+    || die "historical mode requires a --file committed at HEAD; HEAD's tree has no path '$REL_FILE' in $GIT_ROOT (an untracked or staged-but-uncommitted file has no history to compare against)"
 
   if [ -n "$AGAINST_COMMIT" ]; then
     HISTORICAL_SHA="$(git -C "$GIT_ROOT" rev-parse --verify "${AGAINST_COMMIT}^{commit}" 2>/dev/null)" \

@@ -543,7 +543,7 @@ async function main(): Promise<void> {
     const output = argValue('--out'), reference = argValue('--boundary-reference');
     if (!output || !reference) throw new Error('--qualify-boundaries requires --boundary-reference and --out');
     await qualifyMdenseOnBoundaries(argValue('--qualify-boundaries')!, argValue('--boundary-sha256') ?? '', reference,
-      argValue('--boundary-reference-sha256') ?? '', output);
+      argValue('--boundary-reference-sha256') ?? '', output, argValue('--boundary-cell'));
     return;
   }
   if (argValue('--run-performance')) {

@@ -7,7 +7,7 @@ import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/loca
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
   shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS, buildMdenseOnEmbedder,
   embedExecutionTarget, MDENSEON_MODEL, MDENSEON_REVISION } from '@papercusp/memory';
-import { fingerprintFile } from './measurement-manifest';
+import { fingerprintFile, measurementPackageVersion } from './measurement-manifest';
 
 /** Independent pooling oracle for isolated qualification; production recipes
  * and profiles remain untouched. Padding must not contribute to the mean. */
@@ -73,16 +73,25 @@ export interface NativeBoundaryRow {
   execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
 }
 
+export function nativeBoundaryPopulation(request: NativeBoundaryRequest, selectedCell?: string) {
+  validateNativeBoundaryRequest(request);
+  const population = [...request.cases.map((c) => `single-${c.id}`), ...request.batches.map((b) => b.id)];
+  if (!selectedCell) return { cases: request.cases, diagnosticOnly: false, notChecked: [] as string[] };
+  const item = request.cases.find((c) => `single-${c.id}` === selectedCell);
+  if (!item) throw new Error('native diagnostic requires one declared single-input cell');
+  return { cases: [item], diagnosticOnly: true, notChecked: population.filter((id) => id !== selectedCell) };
+}
+
 /** Recompute fixed gates and stable all-input rankings from the retained raw
  * arrays. A measured loss is an outcome; a missing/fallback row is not proof. */
-export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: NativeBoundaryRow[], device: 'cpu' | 'cuda') {
-  validateNativeBoundaryRequest(request);
-  if (JSON.stringify(rows.map((r) => r.id)) !== JSON.stringify(MDENSEON_BOUNDARY_IDS)) throw new Error('native boundary incomplete population');
+export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: NativeBoundaryRow[], device: 'cpu' | 'cuda', selectedCell?: string) {
+  const selected = nativeBoundaryPopulation(request, selectedCell);
+  if (JSON.stringify(rows.map((r) => r.id)) !== JSON.stringify(selected.cases.map((c) => c.id))) throw new Error('native boundary incomplete population');
   const comparisons = rows.map((row, i) => {
     if (!row.execution.verified || row.execution.device !== device || !row.worker.alive || row.worker.disabled) {
       throw new Error('native boundary unverified device or worker fallback');
     }
-    const length = Math.min(8192, request.cases[i].untruncatedTokens);
+    const length = Math.min(8192, selected.cases[i].untruncatedTokens);
     if (row.inputIds.length !== length || row.referenceInputIds.length !== length
       || [...row.inputIds, ...row.referenceInputIds].some((n) => !Number.isSafeInteger(n) || n < 0)) {
       throw new Error('native boundary invalid inferred token length/ids');
@@ -93,20 +102,24 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
   const ranks = (vectors: number[][]) => vectors.map((q) => vectors.map((d, i) => ({ i, score: q.reduce((s, v, j) => s + v * d[j], 0) }))
     .sort((a, b) => b.score - a.score || a.i - b.i).map((d) => d.i));
   const actualRankings = ranks(rows.map((r) => r.vector)), referenceRankings = ranks(rows.map((r) => r.referenceVector));
-  const rankingsEqual = JSON.stringify(actualRankings) === JSON.stringify(referenceRankings);
-  return { comparisons, actualRankings, referenceRankings, rankingsEqual,
+  const rankingsEqual = selected.diagnosticOnly ? null : JSON.stringify(actualRankings) === JSON.stringify(referenceRankings);
+  const vectorCompatible = comparisons.every((c) => c.passed && c.tokenIdsEqual);
+  return { comparisons, actualRankings, referenceRankings, rankingsEqual, diagnosticOnly: selected.diagnosticOnly,
+    notCheckedCells: selected.notChecked, diagnosticCompatible: selected.diagnosticOnly && vectorCompatible,
     passedFixedVectorGates: comparisons.every((c) => c.passed), tokenIdsEqual: comparisons.every((c) => c.tokenIdsEqual),
-    singlePopulationCompatible: rankingsEqual && comparisons.every((c) => c.passed && c.tokenIdsEqual) };
+    singlePopulationCompatible: !selected.diagnosticOnly && rankingsEqual === true && vectorCompatible };
 }
 
 /** Extend incumbent qualification instead of adding a second executable. The
  * published worker submits one text per inference, including batch requests. */
 export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha: string, referenceDirectory: string,
-  referenceSummarySha: string, outputFile: string): Promise<void> {
+  referenceSummarySha: string, outputFile: string, selectedCell?: string): Promise<void> {
   const hash = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (!/^[a-f0-9]{64}$/.test(expectedSha) || hash(requestFile) !== expectedSha) throw new Error('boundary request SHA mismatch');
   const request = JSON.parse(fs.readFileSync(requestFile, 'utf8')) as NativeBoundaryRequest;
-  validateNativeBoundaryRequest(request);
+  const selected = nativeBoundaryPopulation(request, selectedCell);
+  const tf32Override = process.env.NVIDIA_TF32_OVERRIDE;
+  if (tf32Override !== undefined && tf32Override !== '0') throw new Error('native TF32 diagnostic requires unset or explicit override0');
   const requested = embedRequestedExecution();
   if (!['cpu', 'cuda'].includes(process.env.PAPERCUSP_EMBED_DEVICE ?? '') || requested.source !== 'env'
     || getWorkerState().alive || ORT_SESSION_OPTIONS.intraOpNumThreads !== 4 || ORT_SESSION_OPTIONS.interOpNumThreads !== 1) {
@@ -145,9 +158,14 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
   const sources = await Promise.all(['packages/operator-core/lib/memory/bench/candidate-embedders.ts',
     'packages/operator-core/lib/memory/bench/embedder-eval-cli.ts', 'libs/generic/memory/src/mdenseon-embedder.ts',
     'libs/generic/memory/src/local-embedder-worker.ts', 'libs/generic/memory/src/local-embedder-worker.script.mjs',
-    'libs/generic/memory/src/embed-device.ts'].map((file) => fingerprintFile(path.join(repo, file))));
+    'libs/generic/memory/src/embed-device.ts', 'packages/operator-core/lib/memory/bench/measurement-manifest.ts']
+    .map((file) => fingerprintFile(path.join(repo, file))));
+  const ort = await import('onnxruntime-node');
   const identity = { requestSha256: expectedSha, referenceSummarySha256: referenceSummarySha, device, sources, references,
     execution: { dtype: 'fp32', ...ORT_SESSION_OPTIONS }, nativeTransport: 'shipped-worker-single-text',
+    selectedCell: selectedCell ?? null, precisionEnvironment: { NVIDIA_TF32_OVERRIDE: tf32Override ?? 'unset' },
+    runtimeVersions: { node: process.versions.node, transformers: measurementPackageVersion('@huggingface/transformers'),
+      tokenizers: measurementPackageVersion('tokenizers'), onnxruntimeNode: ort.env.versions.node },
     providerProof: 'worker-session-construction-report', computeKernelProfiling: 'not-exposed-by-shipped-worker',
     tokenIdsProof: 'qualification-process Rust tokenizer; worker uses the same pinned recipe',
     actualWorkerTokenTrace: 'not-exposed-by-shipped-worker' };
@@ -158,8 +176,8 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
     const { Tokenizer } = await import('tokenizers');
     const tokenizer = Tokenizer.fromFile(path.join(request.export, 'tokenizer.json'));
     tokenizer.setTruncation(8192);
-    for (let i = 0; i < request.cases.length; i++) {
-      const item = request.cases[i]; activeCell = `single-${item.id}`;
+    for (const item of selected.cases) {
+      const i = request.cases.findIndex((c) => c.id === item.id); activeCell = `single-${item.id}`;
       const inputIds = (await tokenizer.encode(`${item.kind}: ${item.text}`)).getIds();
       const vector = await buildMdenseOnEmbedder({ kind: item.kind, model: request.export })(item.text);
       const row = { id: item.id, inputIds, vector, ...references[i], execution: embedExecutionTarget(), worker: getWorkerState() };
@@ -168,7 +186,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       console.log('native boundary cell', activeCell, inputIds.length, row.execution.device);
       if (!row.execution.verified || row.execution.device !== device || !row.worker.alive || row.worker.disabled) throw new Error('native boundary device fallback');
     }
-    for (const batch of request.batches) {
+    for (const batch of selected.diagnosticOnly ? [] : request.batches) {
       activeCell = batch.id;
       // This is the same Promise.all of single-text calls as the HTTP sidecar,
       // not proof of a padded ONNX input tensor. Python retains that separate proof.
@@ -185,7 +203,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       fs.writeFileSync(`${output}.${batch.id}.json`, JSON.stringify({ ...identity, ...result }), { flag: 'wx', mode: 0o600 });
       console.log('native boundary request group', batch.id, 'single-text worker', result.passed);
     }
-    const measured = summarizeNativeBoundaries(request, rows, device);
+    const measured = summarizeNativeBoundaries(request, rows, device, selectedCell);
     fs.writeFileSync(output, JSON.stringify({ ...identity, ...measured, batches, notChecked: ['native worker compute-kernel profile', 'native worker input tensor trace',
       'native padded/mixed ONNX tensors: worker accepts one text per call'] }), { flag: 'wx', mode: 0o600 });
   } catch (error) {

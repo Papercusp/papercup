@@ -58,6 +58,8 @@ type BlockerInput = {
   summary?: string;
   evidence?: string;
   nextVerb?: string;
+  defaultIfUnanswered?: string;
+  decideBy?: string;
   clear?: boolean;
   harness?: string;
 };
@@ -101,6 +103,8 @@ const fields = {
   summary: z.string().max(1000).optional(),
   evidence: z.string().max(4000).optional(),
   nextVerb: z.string().max(300).optional(),
+  defaultIfUnanswered: z.string().max(500).optional(),
+  decideBy: z.string().max(40).optional(),
   clear: z.boolean().optional(),
   harness: z.string().max(80).optional(),
 };
@@ -145,6 +149,8 @@ export default defineTool({
       summary: z.string().max(1000).optional(),
       evidence: z.string().max(4000).optional(),
       nextVerb: z.string().max(300).optional(),
+      defaultIfUnanswered: z.string().max(500).optional(),
+      decideBy: z.string().max(40).optional(),
       clear: z.boolean().optional(),
       harness: z.string().max(80).optional(),
       items: z.array(itemSpec).min(1).max(100).optional(),
@@ -211,6 +217,8 @@ export default defineTool({
             summary: args.summary,
             evidence: args.evidence,
             nextVerb: args.nextVerb,
+            defaultIfUnanswered: args.defaultIfUnanswered,
+            decideBy: args.decideBy,
             clear: args.clear,
             harness: args.harness,
           },
@@ -292,6 +300,32 @@ export default defineTool({
             error:
               `work_item '${input.id}' owner-capability blocker rejected — a structured ask requires both ` +
               '`summary` (the concrete question) and `nextVerb` (what action unblocks it).',
+          };
+        }
+        // Owner-attention ledger (EI-23783029010995961): an ask the owner may never
+        // answer must say what the system WILL do in that case, so silence is a
+        // stated outcome instead of an invisible chronic deferral. A plain
+        // re-assertion of an existing ask may omit it when the record already has one.
+        if (strictHumanAsk) {
+          const existingDefault = activeExternalBlockers(workItem.payload).find(
+            (blocker) => blocker.kind === 'human' && blocker.ref === input.ref,
+          )?.defaultIfUnanswered;
+          if (!input.defaultIfUnanswered?.trim() && !existingDefault?.trim()) {
+            return {
+              ok: false as const,
+              id: input.id,
+              error:
+                `work_item '${input.id}' owner-capability blocker rejected — state \`defaultIfUnanswered\`: what the ` +
+                'system will do if the owner never answers (e.g. "stays parked; weekly digest re-surfaces it" or ' +
+                '"proceeds with option A"). Add `decideBy` (ISO timestamp) when that default has a date. Blocker was not written.',
+            };
+          }
+        }
+        if (!input.clear && input.decideBy !== undefined && !Number.isFinite(Date.parse(input.decideBy))) {
+          return {
+            ok: false as const,
+            id: input.id,
+            error: `work_item '${input.id}' decideBy '${input.decideBy}' is not a parseable ISO timestamp. Blocker was not written.`,
           };
         }
         if (strictHumanAsk) {
@@ -400,6 +434,8 @@ export default defineTool({
             summary: input.summary,
             evidence: input.evidence,
             nextVerb: input.nextVerb,
+            defaultIfUnanswered: input.defaultIfUnanswered,
+            decideBy: input.decideBy,
             clear: input.clear,
           },
           identity.ownerId,

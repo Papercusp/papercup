@@ -200,4 +200,30 @@ describe('grading-integrity reservation epoch guidance', () => {
     expect(legacyCopy.body).toContain('Legacy grading-audit route');
     expect(legacyCopy.body).toContain('report the missing epoch and stop');
   });
+
+  // EI-24004666155292652: the brief said "a consult reply does not settle it" but never said the
+  // emit ITSELF closes the consult (closeSourceAuditConsults → closed_answered), so an auditor read
+  // the consult as still open and burned four refusals trying to reply. Both route flavours (epoch
+  // and legacy) must carry the auto-close fact.
+  it('tells the auditor a successful emit auto-closes the consult so it does not try to reply', () => {
+    const legacy = sourceAuditCascadeMetaFromRouting({
+      cascade: { ...SOURCE_AUDIT, reservationReservedAt: undefined },
+    });
+    for (const meta of [SOURCE_AUDIT, legacy!]) {
+      const { body } = sourceAuditWakeCopy(meta, 'conv-source-audit');
+      expect(body).toContain('A successful emit ALSO closes this consult');
+      expect(body).toContain('closed_answered');
+      expect(body).toContain('do not call consult:close');
+    }
+  });
+
+  it('control: the brief fact stays attached to the real settle path (closeSourceAuditConsults → closed_answered)', async () => {
+    // The sentence above is only true while the settle helper really closes the consult. Pin the
+    // claim to its source so the copy cannot outlive the behaviour it describes.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../grading-audit-routing.ts', import.meta.url), 'utf8');
+    const settle = src.slice(src.indexOf('export async function closeSourceAuditConsults'));
+    expect(settle).toContain("SET state = 'closed_answered'");
+    expect(settle).toContain("routing->'cascade'->>'flavor' = 'grading-integrity'");
+  });
 });

@@ -32,6 +32,7 @@ import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { ownerNotificationMessageId } from '../../agent-tools/operator/notify_owner';
 import { readNeedsHumanWorkItems, type NeedsHumanWorkItemRow } from '../../attention/needs-human-work-items-source';
 import { notifyAttentionOnce } from '../../attention-notify';
+import { ownerAskDefaultDisclosure } from '../../external-blockers';
 import { readStructuredOwnerAsk } from '../improvements/agent-review-policy';
 import { readImprovementItems } from '../improvements/read-items';
 import { buildDigest } from '../improvements/digest';
@@ -115,6 +116,9 @@ export function composeStaleNeedsHumanReminder(
     `Asked by: ${askedBy}`,
     `Waiting since: ${changedAt}`,
     ...(ask ? [`Unblocked by: ${ask.unblockedBy}`, `Owner capability: ${ask.askedOf}`] : []),
+    // Owner-attention ledger (EI-23783029010995961): state what happens if this
+    // reminder is ignored, so silence is a disclosed outcome, not a hidden one.
+    ownerAskDefaultDisclosure(row.payload),
     row.harness_slug ? `Harness: ${row.harness_slug}` : null,
   ].filter((line): line is string => Boolean(line));
   return { title, summary, body: body.join('\n'), askedBy, deliveryKey };

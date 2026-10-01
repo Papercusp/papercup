@@ -33,11 +33,14 @@ import {
   packageMapsByName,
   candidateSkipReason,
   exitForDeclaredRun,
+  invokedInjectedMembers,
+  partialInjectionFixtures,
   EXIT_NOT_CHECKED,
   // @ts-expect-error — .mjs guard script, no type declarations by design
 } from '../../../../scripts/check-behavioural-strands.mjs';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -647,5 +650,233 @@ describe('the candidate set includes JavaScript, and declared files are never dr
       expect(proc.status).toBe(EXIT_NOT_CHECKED);
     },
     120_000,
+  );
+});
+
+/**
+ * EI-23824032487848760 — a new call to an OPTIONAL member of an injected Deps bundle strands any
+ * test fixture that builds the bundle PARTIALLY: the fixture never supplies the member, the new
+ * call reaches an uninjected dependency, throws, the catch logs, and vitest-fail-on-console fails
+ * the test. The fixture asserts nothing about the new seam, so no count/order anchor names it,
+ * and (the measured instance, 0205cd785c: standing-goal-boot-arm.test.ts:77 and
+ * goal-liveness-watchdog.test.ts:777) it sits in the SAME workspace as the change.
+ *
+ * The anchor is the PROPERTY — "a function gained an invoker of an optional Deps member" joined
+ * to "an object literal supplies the member's siblings but not the member" — never a spelling of
+ * the call or of the fixture.
+ */
+describe('injected-member trigger: a new call to an optional Deps member strands partial fixtures', () => {
+  /** The incident's shape: factory-built local deps + an optional member called via `(deps.m ?? fb)()`. */
+  const DEPS_TYPE = `
+    export interface WatchdogDeps {
+      now: () => number;
+      escalateGiveUp: (id: string) => Promise<void>;
+      reconcileStrandedLatch?: (id: string) => Promise<void>;
+    }
+  `;
+  const BEFORE = `${DEPS_TYPE}
+    export async function tick(opts: Opts) {
+      const deps = makeDeps(opts);
+      await deps.escalateGiveUp('a');
+    }
+  `;
+  const AFTER = `${DEPS_TYPE}
+    export async function tick(opts: Opts) {
+      const deps = makeDeps(opts);
+      await deps.escalateGiveUp('a');
+      await (deps.reconcileStrandedLatch ?? defaultReconcile)('a');
+    }
+  `;
+
+  const PARTIAL_FIXTURE = `
+    it('arms the watchdog', async () => {
+      const deps = { now: () => 1, escalateGiveUp: vi.fn(async () => {}) };
+      await tick(build(deps));
+    });
+  `;
+  const ADAPTED_FIXTURE = `
+    it('arms the watchdog', async () => {
+      const deps = { now: () => 1, escalateGiveUp: vi.fn(async () => {}), reconcileStrandedLatch: vi.fn(async () => {}) };
+      await tick(build(deps));
+    });
+  `;
+
+  it('names the optional member whose invocation count rose, with its sibling members as the join key', () => {
+    const rows = invokedInjectedMembers(BEFORE, AFTER, 'packages/p/lib/watchdog.ts');
+    expect(rows).toEqual([
+      {
+        member: 'reconcileStrandedLatch',
+        owner: 'WatchdogDeps',
+        source: 'interface',
+        before: 0,
+        after: 1,
+        siblings: ['escalateGiveUp', 'now'],
+      },
+    ]);
+  });
+
+  it('sees through the `(x ?? fallback)()` and `(x || fallback)()` default idioms and non-null / parens', () => {
+    for (const call of [
+      `(deps.reconcileStrandedLatch ?? fb)('a')`,
+      `(deps.reconcileStrandedLatch || fb)('a')`,
+      `deps.reconcileStrandedLatch!('a')`,
+      `(deps.reconcileStrandedLatch as Fn)('a')`,
+      `deps.reconcileStrandedLatch?.('a')`,
+    ]) {
+      const after = `${DEPS_TYPE} export async function tick(o: Opts) { const deps = makeDeps(o); await deps.escalateGiveUp('a'); await ${call}; }`;
+      const rows = invokedInjectedMembers(BEFORE, after, 'w.ts') as Array<{ member: string }>;
+      expect(
+        rows.map((r) => r.member),
+        call,
+      ).toEqual(['reconcileStrandedLatch']);
+    }
+  });
+
+  it('is silent when the invocation count did not rise', () => {
+    expect(invokedInjectedMembers(AFTER, AFTER, 'w.ts')).toEqual([]);
+    // a mere reference (not a call) is not an invoker
+    const refOnly = `${DEPS_TYPE} export function tick(o: Opts) { const deps = makeDeps(o); return deps.reconcileStrandedLatch; }`;
+    expect(invokedInjectedMembers(BEFORE, refOnly, 'w.ts')).toEqual([]);
+  });
+
+  it('does NOT trigger for a REQUIRED member — omitting one is a type error lint:tsc already reports', () => {
+    const required = `
+      export interface WatchdogDeps { now: () => number; escalateGiveUp: (id: string) => Promise<void>; }
+    `;
+    const before = `${required} export async function tick(o: Opts) { const deps = makeDeps(o); await deps.now(); }`;
+    const after = `${required} export async function tick(o: Opts) { const deps = makeDeps(o); await deps.now(); await deps.escalateGiveUp('a'); }`;
+    expect(invokedInjectedMembers(before, after, 'w.ts')).toEqual([]);
+  });
+
+  it('only declares Deps-shaped interfaces: an unrelated optional member is not a trigger', () => {
+    const before = `interface Row { label?: () => string; id: string } export const f = (r: Row) => r.id;`;
+    const after = `interface Row { label?: () => string; id: string } export const f = (r: Row) => r.label?.() ?? r.id;`;
+    expect(invokedInjectedMembers(before, after, 'row.ts')).toEqual([]);
+  });
+
+  it('names a partial fixture and NOT an adapted one — the join is "has the siblings, lacks the member"', () => {
+    const injections = invokedInjectedMembers(BEFORE, AFTER, 'packages/p/lib/watchdog.ts');
+    const texts: Record<string, string> = {
+      'packages/p/lib/stranded.test.ts': PARTIAL_FIXTURE,
+      'packages/p/lib/adapted.test.ts': ADAPTED_FIXTURE,
+      'packages/p/lib/unrelated.test.ts': `it('x', () => { expect({ a: 1, b: 2 }).toEqual({ a: 1, b: 2 }); });`,
+    };
+    const band = partialInjectionFixtures({
+      tests: Object.keys(texts),
+      readFile: (f: string) => texts[f] ?? '',
+      injections,
+    }) as Array<{ file: string; hits: Array<{ member: string; line: number; present: string[] }> }>;
+    expect(band.map((b) => b.file)).toEqual(['packages/p/lib/stranded.test.ts']);
+    expect(band[0].hits).toEqual([
+      { member: 'reconcileStrandedLatch', line: 3, present: ['escalateGiveUp', 'now'] },
+    ]);
+  });
+
+  it('a fixture naming fewer than min(2, siblings) siblings is NOT named (one shared word is not a bundle)', () => {
+    const injections = [
+      { member: 'reconcile', owner: 'XDeps', source: 'interface', before: 0, after: 1, siblings: ['a', 'b', 'c'] },
+    ];
+    const texts: Record<string, string> = {
+      'one.test.ts': `const d = { a: 1 }; use(d);`,
+      'two.test.ts': `const d = { a: 1, b: 2 }; use(d);`,
+    };
+    const band = partialInjectionFixtures({
+      tests: Object.keys(texts),
+      readFile: (f: string) => texts[f] ?? '',
+      injections,
+    }) as Array<{ file: string }>;
+    expect(band.map((b) => b.file)).toEqual(['two.test.ts']);
+  });
+
+  it('matches shorthand and method-form fixture keys, not just `key: value`', () => {
+    const injections = [
+      { member: 'reconcile', owner: 'XDeps', source: 'interface', before: 0, after: 1, siblings: ['now', 'escalate'] },
+    ];
+    const text = `const now = () => 1; const deps = { now, escalate() {} };`;
+    const band = partialInjectionFixtures({
+      tests: ['t.test.ts'],
+      readFile: () => text,
+      injections,
+    }) as Array<{ file: string }>;
+    expect(band.map((b) => b.file)).toEqual(['t.test.ts']);
+  });
+
+  it('an injected PARAMETER receiver whose bundle interface lives in another file is also a trigger', () => {
+    const before = `
+      import type { WatchdogDeps } from './types';
+      export async function tick(deps: WatchdogDeps) { await deps.escalateGiveUp('a'); await deps.now(); }
+    `;
+    const after = `
+      import type { WatchdogDeps } from './types';
+      export async function tick(deps: WatchdogDeps) {
+        await deps.escalateGiveUp('a');
+        await deps.now();
+        await (deps.reconcileStrandedLatch ?? fb)('a');
+      }
+    `;
+    const rows = invokedInjectedMembers(before, after, 'tick.ts') as Array<{
+      member: string;
+      source: string;
+      siblings: string[];
+    }>;
+    expect(rows.map((r) => ({ member: r.member, source: r.source, siblings: r.siblings }))).toEqual([
+      { member: 'reconcileStrandedLatch', source: 'receiver', siblings: ['escalateGiveUp', 'now'] },
+    ]);
+  });
+
+  it(
+    'END TO END: the CLI names the partial fixture in the SAME workspace and exits 0 once it is adapted',
+    () => {
+      // ROOT is derived from the script's own location, so run a COPY inside a throwaway git repo
+      // (node_modules symlinked for `typescript` + the workspace import) — no mutation of this tree.
+      const dir = mkdtempSync(resolve(tmpdir(), 'behavioural-strands-injection-'));
+      try {
+        mkdirSync(resolve(dir, 'scripts'), { recursive: true });
+        cpSync(resolve(REPO_ROOT, 'scripts/check-behavioural-strands.mjs'), resolve(dir, 'scripts/check-behavioural-strands.mjs'));
+        cpSync(resolve(REPO_ROOT, 'scripts/lib'), resolve(dir, 'scripts/lib'), { recursive: true });
+        symlinkSync(resolve(REPO_ROOT, 'node_modules'), resolve(dir, 'node_modules'));
+        mkdirSync(resolve(dir, 'packages/p/lib'), { recursive: true });
+        writeFileSync(resolve(dir, 'package.json'), JSON.stringify({ name: 'tmp-root', private: true }));
+        writeFileSync(resolve(dir, 'packages/p/package.json'), JSON.stringify({ name: '@tmp/p', version: '0.0.0' }));
+        writeFileSync(resolve(dir, '.gitignore'), 'node_modules\n');
+        writeFileSync(resolve(dir, 'packages/p/lib/watchdog.ts'), BEFORE);
+        writeFileSync(resolve(dir, 'packages/p/lib/stranded.test.ts'), `import { tick } from './watchdog';\n${PARTIAL_FIXTURE}`);
+        const git = (...args: string[]) =>
+          spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });
+        git('init', '-q');
+        git('add', '-A');
+        expect(git('commit', '-q', '-m', 'base').status).toBe(0);
+        writeFileSync(resolve(dir, 'packages/p/lib/watchdog.ts'), AFTER);
+
+        const run = () =>
+          spawnSync(process.execPath, [resolve(dir, 'scripts/check-behavioural-strands.mjs'), '--base', 'HEAD', '--json'], {
+            cwd: dir,
+            encoding: 'utf8',
+            timeout: 90_000,
+            maxBuffer: 64 * 1024 * 1024,
+          });
+        const first = run();
+        expect(first.error).toBeUndefined();
+        const report = JSON.parse(first.stdout) as {
+          triggers: Array<{ file: string; injections: Array<{ member: string }> }>;
+          injectionBand: Array<{ file: string }>;
+          tests: string[];
+        };
+        expect(report.triggers.map((t) => t.file)).toEqual(['packages/p/lib/watchdog.ts']);
+        expect(report.triggers[0].injections.map((i) => i.member)).toEqual(['reconcileStrandedLatch']);
+        // The stranded fixture is in the SAME workspace — the cross-workspace band excludes it by design.
+        expect(report.injectionBand.map((b) => b.file)).toEqual(['packages/p/lib/stranded.test.ts']);
+        // An injection-only trigger has no count-assertion band: nothing else is named as noise.
+        expect(report.tests).toEqual([]);
+
+        // Adapt the fixture: the same run now names nothing in the injection band.
+        writeFileSync(resolve(dir, 'packages/p/lib/stranded.test.ts'), `import { tick } from './watchdog';\n${ADAPTED_FIXTURE}`);
+        const second = JSON.parse(run().stdout) as { injectionBand: unknown[] };
+        expect(second.injectionBand).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    180_000,
   );
 });

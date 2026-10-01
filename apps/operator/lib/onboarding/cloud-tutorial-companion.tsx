@@ -7,6 +7,7 @@ import type { TutorialSessionObservation } from "./cloud-tutorial-session";
 import { CloudTutorialGuide } from "./cloud-tutorial-guide";
 import { useCloudTutorialProgress } from "./use-cloud-tutorial-progress";
 const CloudTutorialSession = lazy(async () => ({ default: (await import("./cloud-tutorial-session")).CloudTutorialSession }));
+const CloudTutorialAssistance = lazy(async () => ({ default: (await import("./cloud-tutorial-assistance")).CloudTutorialAssistance }));
 
 export function CloudTutorialCompanion({ selectionKey, connection, workspace, boundWorkspaceId, configurationValid, configurationReviewed, controlLoading, controlError, onCheckAgain, onShowStep }: {
   selectionKey: string; connection: WorkspaceHostConnectionRow | null;
@@ -36,6 +37,8 @@ export function CloudTutorialCompanion({ selectionKey, connection, workspace, bo
     {!state ? <><p role="status">{loading ? "Preparing your lesson…" : "Your Cloud controls remain available while lesson progress is unavailable."}</p>
       {!loading && <Button onClick={retry}>Check lesson again</Button>}</> :
       <CloudTutorialGuide state={state} dispatch={dispatch} onShowStep={onShowStep}
+        assistance={(step, status) => <Suspense fallback={<p>Preparing lesson help. You can continue with the instructions.</p>}><CloudTutorialAssistance
+          key={`${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}:${step.id}`} scope={state.scope} step={step} status={status} onShowStep={() => onShowStep(step.id)} /></Suspense>}
         onCheckAgain={() => { onCheckAgain(); if (notice) retry(); }} />}
     {state && workspaceReady && configurationValid && configurationReviewed && !controlError && <Suspense fallback={<p role="status">Preparing your workspace session controls…</p>}><CloudTutorialSession
       key={`${selectionKey}:${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}`} scope={state.scope}

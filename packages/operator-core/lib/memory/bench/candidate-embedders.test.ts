@@ -10,7 +10,7 @@ vi.mock('@huggingface/transformers', () => ({
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
-  validateNativeBoundaryRequest, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
+  validateNativeBoundaryRequest, nativeBoundaryPopulation, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
   type NativeBoundaryRequest, type NativeBoundaryRow, type CandidateVectors } from './candidate-embedders';
 import { incumbentReferenceFixture } from './fixtures/incumbent-reference';
 
@@ -109,6 +109,21 @@ describe('native mDenseOn boundary evidence', () => {
     expect(result).toMatchObject({ tokenIdsEqual: false, passedFixedVectorGates: false, singlePopulationCompatible: false });
     expect(result.comparisons[0].tokenIdsEqual).toBe(false);
     expect(result.comparisons[1].maximumAbsoluteError).toBe(1);
+  });
+  it('keeps single-cell diagnostics distinct from complete compatibility and uses the selected reference index', () => {
+    const { request, rows } = fixture();
+    const selection = nativeBoundaryPopulation(request, 'single-over-limit');
+    expect(selection.cases.map((c) => c.id)).toEqual(['over-limit']);
+    expect(selection.notChecked).toHaveLength(9);
+    expect(selection.notChecked).toContain('single-full-8192');
+    const result = summarizeNativeBoundaries(request, [rows[7]], 'cpu', 'single-over-limit');
+    expect(result).toMatchObject({ diagnosticOnly: true, diagnosticCompatible: true, singlePopulationCompatible: false, rankingsEqual: null });
+    expect(result.comparisons[0].tokenLength).toBe(8192);
+    expect(() => summarizeNativeBoundaries(request, [rows[7]], 'cpu')).toThrow('incomplete');
+    expect(() => summarizeNativeBoundaries(request, [rows[0]], 'cpu', 'single-over-limit')).toThrow('incomplete');
+    for (const name of ['padded', 'mixed-length', 'unknown']) expect(() => nativeBoundaryPopulation(request, name)).toThrow('one declared');
+    rows[7].vector = [...rows[1].vector];
+    expect(summarizeNativeBoundaries(request, [rows[7]], 'cpu', 'single-over-limit').diagnosticCompatible).toBe(false);
   });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
     const { request, rows } = fixture();

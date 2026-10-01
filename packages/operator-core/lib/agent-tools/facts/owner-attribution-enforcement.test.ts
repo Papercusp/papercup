@@ -24,6 +24,16 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
   return { ...actual, assertFact: h.assertFact };
 });
 vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
+// The provenance stamp's transcript IO (verifyTurnRefs + resolveCurrentTurnStamp) runs
+// under a 3000ms bounded timeout that warns on expiry. Under gate load the real IO
+// crossed it and vitest-fail-on-console failed the test (WI-10004913, gate b8eb76cc).
+// This test asserts the handler's write payload, not transcript lookup, so stub the IO
+// seam: the test is then independent of the timeout budget and of host load.
+vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../turn-provenance/turn-ref')>()),
+  verifyTurnRefs: vi.fn(async () => []),
+  resolveCurrentTurnStamp: vi.fn(async () => null),
+}));
 
 import assertTool from './assert';
 

@@ -48,7 +48,7 @@ import {
 } from '../dbos/workspace-host-provision-workflow';
 import { dbosStarted } from '../dbos/bootstrap';
 import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
-import { createHostedTutorialProgressRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
+import { createHostedTutorialProgressRoutes, createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
@@ -75,6 +75,8 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH, access: 'authenticated' },
   { method: 'GET', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_HELP_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, access: 'authenticated' },
 ] as const;
 
 const HOSTED_VIEW_AUTH = {
@@ -141,6 +143,7 @@ export interface HostedBrowserRouteDependencies {
   readonly firstWorkspace?: HostedFirstWorkspace;
   /** Serializes the rotated hosted session cookie after the new workspace is selected. */
   readonly issueSessionCookie?: (sessionId: string, expiresAt: Date) => string;
+  readonly tutorialAssistance?: TutorialAssistanceDependencies;
 }
 
 export interface HostedBrowserRouteConfiguration {
@@ -629,8 +632,9 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   });
 
   const tutorialProgress = createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant });
+  const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, dependencies: deps.tutorialAssistance });
   return {
-    routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress],
+    routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress, ...tutorialAssistance],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }

@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 
 import {
+  UNAPPLIED_ACTIVATION_TURN_THRESHOLD,
   classifyCandidate,
+  classifyUnapplied,
+  runUnappliedActivationCensusOnce,
   runWedgedIdentitySweepOnce,
   type CandidateRow,
+  type UnappliedActivationCensusDeps,
+  type UnappliedCandidateRow,
   type WedgedIdentitySweepDeps,
   type WedgedLiveness,
 } from './wedged-identity-activation-watchdog';
@@ -321,5 +326,199 @@ describe('runWedgedIdentitySweepOnce — paged candidates', () => {
   it('a stream of only empty pages is not-measured, never clean', async () => {
     const out = await runWedgedIdentitySweepOnce(deps({ loadCandidates: () => pages([], []) }));
     expect(out).toMatchObject({ verdict: 'not-measured', escalated: 1 });
+  });
+});
+
+// ── WI-10004999: the unapplied-activation census ──────────────────────────
+
+type Pair = { specificationRevision: string; stateRevision: string };
+
+/** A persisted activation envelope with an explicit prepared slot. */
+function censusActivation(input: {
+  status: 'desired' | 'prepared' | 'applied';
+  desired: Pair;
+  applied?: Pair | null;
+}) {
+  return {
+    schemaVersion: 1,
+    attribution: ATTRIBUTION,
+    desired: input.desired,
+    prepared: input.status === 'prepared' ? input.desired : null,
+    applied: input.status === 'applied' ? input.desired : (input.applied ?? null),
+    status: input.status,
+  };
+}
+
+// The activation normalizer requires a lowercase sha256 specificationRevision.
+const SPEC_NEW = 'a'.repeat(64);
+const SPEC_OLD = 'b'.repeat(64);
+const NEW: Pair = { specificationRevision: SPEC_NEW, stateRevision: 'state-new' };
+const OLD: Pair = { specificationRevision: SPEC_OLD, stateRevision: 'state-old' };
+
+function censusRow(overrides: Partial<UnappliedCandidateRow> = {}): UnappliedCandidateRow {
+  return {
+    ownerId: 'su-stuck',
+    activation: censusActivation({ status: 'prepared', desired: NEW, applied: null }),
+    unappliedSince: '2026-10-01T17:47:00.000Z',
+    turnsSince: UNAPPLIED_ACTIVATION_TURN_THRESHOLD,
+    ...overrides,
+  };
+}
+
+function censusDeps(overrides: Partial<UnappliedActivationCensusDeps> = {}): UnappliedActivationCensusDeps {
+  return {
+    loadUnapplied: async () => [censusRow()],
+    loadPositiveControl: async () => ({ recentBriefs: 90, recentJournalTurns: 3409 }),
+    resolveLiveness: async (ids) => new Map(ids.map((id) => [id, 'live' as WedgedLiveness])),
+    escalateUnapplied: vi.fn(async () => {}),
+    escalateNotMeasured: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+describe('classifyUnapplied — turns gate the finding, not the status label alone', () => {
+  it('flags a launch that stayed prepared through the threshold of completed turns (WI-10004663 class)', () => {
+    expect(classifyUnapplied(censusRow())).toEqual({
+      unapplied: true,
+      status: 'prepared',
+      turnsSince: UNAPPLIED_ACTIVATION_TURN_THRESHOLD,
+      unappliedSince: '2026-10-01T17:47:00.000Z',
+    });
+  });
+
+  it('does NOT flag a session still inside the legitimate window (applies at the next turn start)', () => {
+    for (let turns = 0; turns < UNAPPLIED_ACTIVATION_TURN_THRESHOLD; turns += 1) {
+      expect(classifyUnapplied(censusRow({ turnsSince: turns }))).toEqual({ unapplied: false });
+    }
+  });
+
+  it('does NOT flag an applied activation however many turns it has taken', () => {
+    const row = censusRow({ activation: censusActivation({ status: 'applied', desired: NEW }), turnsSince: 10 });
+    expect(classifyUnapplied(row)).toEqual({ unapplied: false });
+  });
+
+  it('does NOT flag a re-desire of the identity that is already applied (span already open)', () => {
+    const row = censusRow({
+      activation: censusActivation({ status: 'desired', desired: NEW, applied: NEW }),
+      turnsSince: 10,
+    });
+    expect(classifyUnapplied(row)).toEqual({ unapplied: false });
+  });
+
+  it('flags a same-spec, different-state transition left prepared (measured: su-d5eaa301, 2026-10-01)', () => {
+    const row = censusRow({
+      activation: censusActivation({
+        status: 'prepared',
+        desired: { specificationRevision: SPEC_OLD, stateRevision: 'c'.repeat(64) },
+        applied: OLD,
+      }),
+      turnsSince: 3,
+    });
+    expect(classifyUnapplied(row)).toMatchObject({ unapplied: true, status: 'prepared', turnsSince: 3 });
+  });
+
+  it('flags a desired transition that never reached prepared once it has taken the threshold of turns', () => {
+    const row = censusRow({ activation: censusActivation({ status: 'desired', desired: NEW, applied: OLD }) });
+    expect(classifyUnapplied(row)).toMatchObject({ unapplied: true, status: 'desired' });
+  });
+
+  it('reports an unapplied row with no activation event as UNMEASURED, never as a finding or as clean', () => {
+    expect(classifyUnapplied(censusRow({ unappliedSince: null, turnsSince: 0 }))).toEqual({ unapplied: 'unmeasured' });
+  });
+
+  it('treats a malformed activation as ungoverned, matching the kernel', () => {
+    expect(classifyUnapplied(censusRow({ activation: { status: 'prepared' } }))).toEqual({ unapplied: false });
+  });
+});
+
+describe('runUnappliedActivationCensusOnce — fail-closed', () => {
+  it('escalates NOT MEASURED when the census read throws', async () => {
+    const escalateNotMeasured = vi.fn(async () => {});
+    const escalateUnapplied = vi.fn(async () => {});
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      loadUnapplied: async () => {
+        throw new Error('relation does not exist');
+      },
+      escalateNotMeasured,
+      escalateUnapplied,
+    }));
+    expect(out).toEqual({ verdict: 'not-measured', reason: 'census read failed: relation does not exist', escalated: 1 });
+    expect(escalateNotMeasured).toHaveBeenCalledTimes(1);
+    expect(escalateUnapplied).not.toHaveBeenCalled();
+  });
+
+  it('escalates NOT MEASURED when an active fleet journaled zero turns — the turn counter is broken', async () => {
+    const escalateNotMeasured = vi.fn(async () => {});
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      // No candidates at all: without the control this would read clean.
+      loadUnapplied: async () => [],
+      loadPositiveControl: async () => ({ recentBriefs: 12, recentJournalTurns: 0 }),
+      escalateNotMeasured,
+    }));
+    expect(out).toMatchObject({ verdict: 'not-measured', escalated: 1 });
+    expect(escalateNotMeasured).toHaveBeenCalledTimes(1);
+  });
+
+  it('an idle box (no active briefs, no journal) is clean, not a broken instrument', async () => {
+    const escalateNotMeasured = vi.fn(async () => {});
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      loadUnapplied: async () => [],
+      loadPositiveControl: async () => ({ recentBriefs: 0, recentJournalTurns: 0 }),
+      escalateNotMeasured,
+    }));
+    expect(out).toEqual({ verdict: 'clean', scanned: 0, ended: 0, unmeasured: 0, escalated: 0 });
+    expect(escalateNotMeasured).not.toHaveBeenCalled();
+  });
+
+  it('reports a confirmed finding with liveness unknown when the liveness read throws', async () => {
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      resolveLiveness: async () => {
+        throw new Error('presence down');
+      },
+    }));
+    expect(out).toMatchObject({ verdict: 'unapplied', unapplied: [{ ownerId: 'su-stuck', liveness: 'unknown' }] });
+  });
+});
+
+describe('runUnappliedActivationCensusOnce — verdicts', () => {
+  it('escalates a live stuck session with its status, turns and since', async () => {
+    const escalateUnapplied = vi.fn(async () => {});
+    const out = await runUnappliedActivationCensusOnce(censusDeps({ escalateUnapplied }));
+    const expected = [{
+      ownerId: 'su-stuck',
+      status: 'prepared',
+      turnsSince: UNAPPLIED_ACTIVATION_TURN_THRESHOLD,
+      unappliedSince: '2026-10-01T17:47:00.000Z',
+      liveness: 'live',
+    }];
+    expect(out).toEqual({ verdict: 'unapplied', scanned: 1, unapplied: expected, ended: 0, unmeasured: 0, escalated: 1 });
+    expect(escalateUnapplied).toHaveBeenCalledWith(expected);
+  });
+
+  it('does not alarm on an ended session, but counts it', async () => {
+    const escalateUnapplied = vi.fn(async () => {});
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      resolveLiveness: async (ids) => new Map(ids.map((id) => [id, 'ended' as WedgedLiveness])),
+      escalateUnapplied,
+    }));
+    expect(out).toEqual({ verdict: 'clean', scanned: 1, ended: 1, unmeasured: 0, escalated: 0 });
+    expect(escalateUnapplied).not.toHaveBeenCalled();
+  });
+
+  it('is clean when every unapplied session is still inside its window, and never resolves liveness', async () => {
+    const resolveLiveness = vi.fn(async () => new Map<string, WedgedLiveness>());
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      loadUnapplied: async () => [censusRow({ turnsSince: 0 }), censusRow({ ownerId: 'su-b', turnsSince: 1 })],
+      resolveLiveness,
+    }));
+    expect(out).toEqual({ verdict: 'clean', scanned: 2, ended: 0, unmeasured: 0, escalated: 0 });
+    expect(resolveLiveness).not.toHaveBeenCalled();
+  });
+
+  it('counts unmeasured rows without letting them hide a real finding', async () => {
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      loadUnapplied: async () => [censusRow({ ownerId: 'su-noevent', unappliedSince: null, turnsSince: 0 }), censusRow()],
+    }));
+    expect(out).toMatchObject({ verdict: 'unapplied', unmeasured: 1, unapplied: [{ ownerId: 'su-stuck' }] });
   });
 });

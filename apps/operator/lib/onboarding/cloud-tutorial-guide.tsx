@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/app/harness/Button";
-import { CLOUD_TUTORIAL_STEPS, confirmedTutorialSteps, currentTutorialStep, tutorialStepStatus, type TutorialEvent, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { CLOUD_TUTORIAL_STEPS, confirmedTutorialSteps, currentTutorialStep, tutorialStepStatus, type TutorialEvent, type TutorialState, type LessonStep, type StepStatus } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
 
 const statusCopy = {
@@ -19,10 +19,11 @@ export function CloudTutorialHelpEntry({ onStart }: { onStart: () => void }) {
 
 /** A nonmodal companion to the real product. It never calls a provision,
  * launch, send-task or repair endpoint. Those actions stay with the user. */
-export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, help, voice, reducedMotion = false }: {
+export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, help, voice, assistance, reducedMotion = false }: {
   state: TutorialState; dispatch: (event: TutorialEvent) => void;
   onShowStep?: (step: (typeof CLOUD_TUTORIAL_STEPS)[number]["id"]) => void;
   onCheckAgain?: () => void; help?: ReactNode; voice?: ReactNode; reducedMotion?: boolean;
+  assistance?: (step: LessonStep, status: StepStatus) => ReactNode;
 }) {
   const [reviewIndex, setReviewIndex] = useState<number | null>(null);
   const [highlightStatus, setHighlightStatus] = useState<"waiting" | "missing" | "ready">("waiting");
@@ -85,7 +86,7 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
         {reviewIndex !== null && active && <Button onClick={() => setReviewIndex(reviewIndex < CLOUD_TUTORIAL_STEPS.length - 1 ? reviewIndex + 1 : null)}>Next explanation</Button>}
         <Button onClick={() => action("exit")}>Close guide</Button>
       </div>
-      {active && <>{voice}{help ?? <p>Contextual help is unavailable. You can continue using the instructions above.</p>}</>}
+      {active && displayStatus !== 'blocked' && <>{voice}{step && assistance ? assistance(step, displayStatus) : help ?? <p>Contextual help is unavailable. You can continue using the instructions above.</p>}</>}
     </aside>
     {active && step && <CloudTutorialHighlight target={step.target} active contextKey={`${disposedScope}:${step.id}`} reducedMotion={reducedMotion}
       onStatus={targetStatus => { setHighlightStatus(targetStatus); if (step.id === domainStep?.id) dispatch({ type: "target", scope: state.scope, step: step.id, status: targetStatus }); }} />}

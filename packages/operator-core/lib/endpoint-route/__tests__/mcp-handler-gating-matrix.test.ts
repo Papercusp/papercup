@@ -1915,7 +1915,10 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
     expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
   });
 
-  it('doors the promoted full source when an orient projection misses and fails open', async () => {
+  // EI-23774219620725180: an all-miss on an oversized promoted body no longer fails
+  // open into the full source (which then needed the door to bound it) — it REFUSES
+  // with the key list, so the door never has anything oversized to bound.
+  it('refuses with the key list — never the promoted full source — when an orient projection misses', async () => {
     const res = await callTool(
       'gatingtest:orient_ceiling_projection',
       { projection: { pick: ['notARealOrientField'] } },
@@ -1923,8 +1926,16 @@ describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
       { format: 'json' },
     );
     expect(res.isError).not.toBe(true);
-    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
-    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+    expect(res._meta?.resultProjection).toMatchObject({
+      applied: true,
+      notes: expect.arrayContaining([expect.stringContaining('WITHHELD')]),
+    });
+    expect(textOf(res)).toContain('projection_refused');
+    // 61 root keys: the list is bounded (40) and says how many it elided.
+    expect(textOf(res)).toContain('noise0 (string)');
+    expect(textOf(res)).toContain('… +21 more');
+    expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
+    expect(res._meta?.resultDoor).toBeUndefined();
   });
 });
 
@@ -2076,7 +2087,7 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     expect(spill).not.toContain('SHAPED_CHECKPOINT_MARKER');
   });
 
-  it('bounds an implicit nested projection miss without labeling it explicit full', async () => {
+  it('refuses an implicit nested projection miss with its key list, without labeling it explicit full', async () => {
     const res = await callTool(
       'tools:invoke',
       {
@@ -2092,7 +2103,10 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
       applied: true,
       notes: expect.arrayContaining([expect.stringContaining('pick matched NOTHING')]),
     });
-    expect(res._meta?.resultDoor).toMatchObject({ truncated: true, structural: true });
+    // EI-23774219620725180: the miss is REFUSED with a bounded key list, so the
+    // door has no oversized body left to truncate — and must not be mislabeled.
+    expect(textOf(res)).toContain('projection_refused');
+    expect(res._meta?.resultDoor).toBeUndefined();
     expect(res._meta?.resultDoor).not.toMatchObject({ reason: 'explicit-full-request-overflow' });
   });
 });

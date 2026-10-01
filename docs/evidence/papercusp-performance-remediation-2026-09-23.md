@@ -4401,6 +4401,40 @@ It does not recover the original values, matching-turn distribution or
 executed live access plan. Existing private tests remain dated and passing;
 P-008/R-8 and whole-query/app-impact attribution remain open.
 
+### Current constructed owner-map density — October 1, 19:10Z
+
+Task `0mupwst3q1u0w835ck3`, exit 0, executed a bounded read through the
+existing `createDedicatedOrgPg` seam. The repeatable-read transaction
+verified read-only on, statement timeout 5s and lock timeout 1s; its
+owned client closed. Source SHA-256 remains `81276d34…`.
+
+A freshly constructed PK-ordered map of **2,985 distinct Claude sessions**
+matched **71,345 turns**. The per-session distribution was minimum **1**,
+median **17**, p90 **54** and maximum **406**. The snapshot had **zero
+owner mismatches**, **zero null owners** and **zero unmatched sessions**
+for that constructed map. Selection took 57 ms, the aggregate density
+query 87 ms, and the native receipt spans 181 ms. The aggregate explicitly
+counts joined turn indices and applies `owner IS DISTINCT FROM` the
+constructed owner; sessions and turns are separate populations.
+
+The [canonical receipt](p008-current-owner-density-2026-10-01-fire102.json)
+preserves the executed script, source/selection/density/input hashes,
+identity, results and cleanup. Its durable task log SHA-256 is
+`2e150fd849cfe93f9a745a3540a96b656e2fa729fad5454d548e538d17bee2aa`.
+The direct MCP dry-run was shed before launch with
+`loop_pressure_critical`; the sanctioned same-session `ptool` route
+previewed and launched this one task. No duplicate task was launched.
+
+This current stored-owner map is ordered by session ID and differs from
+the unrecovered natural input values. Zero mismatches are scoped to this
+snapshot, and the 87 ms SELECT does not establish the earlier UPDATE's
+execution cost, cache state or whole-query mechanism. It also does not
+recover its executed plan. The private 179-session/4,099-turn control is
+smaller than this current read; its saved pass remains dated. Existing
+production source/fixture fingerprints are unchanged, so no unchanged
+test matrix was repeated. P-008/R-8, app impact, adoption and shipment
+remain open.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

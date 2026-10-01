@@ -1025,6 +1025,74 @@ describe('mutation-probe.sh — historical source mode', () => {
     expect(out).toMatch(new RegExp(`against_commit=${history.oldSha}`));
   });
 
+  /** One explicit-commit historical run whose guard is caught on the before-fix side. */
+  const explicitHistoricalArgs = (file: string, oldSha: string): string[] => [
+    '--file', file,
+    '--against-commit', oldSha,
+    '--must-be-absent', 'NEW_GUARD',
+    '--positive-control', 'stable-control',
+    '--calibration', 'grep -q "^stable-control$" {}',
+    '--test', 'grep -q "^NEW_GUARD$" {}',
+  ];
+
+  /**
+   * WI-10004910 — the tracked-file precondition used to read the INDEX
+   * (`git ls-files --error-unmatch`). git-sync rewrites .git/index on every
+   * sweep, and a half-written index makes ls-files exit 1 with "did not match"
+   * for a tracked path, identical to a genuinely untracked one (a zero-byte
+   * index exits 128). The probe then refused a tracked file with "Git has no
+   * path". Trackedness now comes from HEAD's tree in the object store.
+   */
+  it('takes trackedness from HEAD, so a half-written or empty index cannot make a tracked --file look untracked (WI-10004910)', () => {
+    const history = makeHistoricalRepo();
+    const full = readFileSync(join(history.repo, '.git', 'index'));
+    const broken: Record<string, Buffer> = {
+      half: full.subarray(0, Math.floor(full.length / 2)),
+      empty: Buffer.alloc(0),
+    };
+    for (const [shape, bytes] of Object.entries(broken)) {
+      const index = join(dir, `${shape}.index`);
+      writeFileSync(index, bytes);
+      const env = { ...process.env, GIT_INDEX_FILE: index };
+      // Calibration: this index really does defeat an index-based check, so the
+      // pass below proves the probe ignores the index, not a harmless fixture.
+      const lsFiles = spawnSync('git', ['-C', history.repo, 'ls-files', '--error-unmatch', '--', 'subject.txt'], {
+        encoding: 'utf8',
+        env,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      });
+      expect(lsFiles.status, `${shape} index must defeat ls-files`).not.toBe(0);
+
+      const { code, out } = runProbeIO(explicitHistoricalArgs(history.file, history.oldSha), env);
+      expect(out, `${shape} index`).not.toMatch(/has no path 'subject\.txt'/);
+      expect(code, `${shape} index: ${out}`).toBe(0);
+      expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+    }
+  });
+
+  it('refuses a staged-but-never-committed --file by naming HEAD, not the index', () => {
+    const history = makeHistoricalRepo();
+    const fresh = join(history.repo, 'fresh.txt');
+    writeFileSync(fresh, 'stable-control\nNEW_GUARD\n');
+    git(history.repo, ['add', 'fresh.txt']);
+    const { code, out } = runProbeIO(explicitHistoricalArgs(fresh, history.oldSha));
+    expect(code).toBe(2);
+    expect(out).toMatch(/requires a --file committed at HEAD; HEAD's tree has no path 'fresh\.txt'/);
+  });
+
+  it('reports an unreadable HEAD tree as a git read failure, never as an untracked file', () => {
+    const history = makeHistoricalRepo();
+    const tree = git(history.repo, ['rev-parse', 'HEAD^{tree}']);
+    const looseTree = join(history.repo, '.git', 'objects', tree.slice(0, 2), tree.slice(2));
+    expect(existsSync(looseTree), 'fixture: HEAD tree must be a loose object').toBe(true);
+    rmSync(looseTree, { force: true });
+    const { code, out } = runProbeIO(explicitHistoricalArgs(history.file, history.oldSha));
+    expect(code).toBe(2);
+    expect(out).toMatch(/git could not read HEAD's tree .* is UNKNOWN \(a git read failure, not an untracked file\): fatal:/);
+    expect(out).not.toMatch(/requires a --file committed at HEAD/);
+  });
+
   /**
    * EI-23362664002917898 — historical mode relocated every snapshot to an
    * EXTENSIONLESS path (`$SCRATCH/snapshot-run-N`). tsx and node decide whether

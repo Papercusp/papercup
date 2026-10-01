@@ -104,10 +104,37 @@ export interface ExternalBlockerRecord {
   updatedAt: string;
   evidence?: string;
   nextVerb?: string;
+  /** Owner-attention ledger (EI-23783029010995961): what the system WILL do if the
+   *  owner never answers this human ask — the load-bearing disclosure that turns
+   *  "waiting forever, silently" into "proceeding as X unless you say otherwise".
+   *  Required by `work_items:set_blocker` for owner-capability asks; legacy rows
+   *  predate it, so it is optional on the record and readers must say "none
+   *  declared" rather than invent one. */
+  defaultIfUnanswered?: string;
+  /** ISO timestamp when {@link defaultIfUnanswered} is intended to take effect. */
+  decideBy?: string;
   clearedAt?: string;
   clearedBy?: string;
   /** Advisory, evidence-bearing condition verdict. Absence means not measured. */
   reachability?: ExternalConditionReachability;
+}
+
+/**
+ * The owner-facing disclosure line for the active human asks on a work-item
+ * payload, or null when it carries none. A row with no declared default is
+ * reported as such — and told plainly that the item stays parked — so the owner
+ * is never left to assume the system will act on its own. Pure.
+ */
+export function ownerAskDefaultDisclosure(payload: unknown): string | null {
+  const human = activeExternalBlockers(payload).filter((blocker) => blocker.kind === 'human');
+  if (human.length === 0) return null;
+  const lines = human.map((blocker) => {
+    const fallback = blocker.defaultIfUnanswered?.trim();
+    const by = blocker.decideBy?.trim();
+    if (!fallback) return 'No default declared — the item stays parked until you answer.';
+    return `Default if unanswered: ${fallback}${by ? ` (decide by ${by})` : ''}`;
+  });
+  return [...new Set(lines)].join('\n');
 }
 
 /** Preserve blocker history while attaching a separately resolved condition verdict. */
@@ -189,6 +216,8 @@ export function updateExternalBlockerHistory(
     summary?: string;
     evidence?: string;
     nextVerb?: string;
+    defaultIfUnanswered?: string;
+    decideBy?: string;
     clear?: boolean;
   },
   actor: string,
@@ -223,6 +252,8 @@ export function updateExternalBlockerHistory(
       updatedAt: now,
       ...(input.evidence ? { evidence: input.evidence } : {}),
       ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
+      ...(input.defaultIfUnanswered?.trim() ? { defaultIfUnanswered: input.defaultIfUnanswered.trim() } : {}),
+      ...(input.decideBy?.trim() ? { decideBy: input.decideBy.trim() } : {}),
     };
     return { blockers, changed: true };
   }
@@ -239,6 +270,8 @@ export function updateExternalBlockerHistory(
     updatedAt: now,
     ...(input.evidence ? { evidence: input.evidence } : {}),
     ...(input.nextVerb ? { nextVerb: input.nextVerb } : {}),
+    ...(input.defaultIfUnanswered?.trim() ? { defaultIfUnanswered: input.defaultIfUnanswered.trim() } : {}),
+    ...(input.decideBy?.trim() ? { decideBy: input.decideBy.trim() } : {}),
   });
   const active = blockers.filter((row) => row.status === 'active');
   const cleared = blockers.filter((row) => row.status === 'cleared').slice(-40);

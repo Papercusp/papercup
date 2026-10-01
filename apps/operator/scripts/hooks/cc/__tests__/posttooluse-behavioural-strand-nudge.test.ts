@@ -35,7 +35,16 @@ const DETECTOR = resolve(ROOT, 'scripts/check-behavioural-strands.mjs');
 type Seam = { seam: string; before: number; after: number };
 type ControlFlow = { seam: string; function: string; reason: string };
 type OutputValue = { property: string; before: string; after: string; reason?: string };
+type Injection = {
+  member: string;
+  owner: string;
+  source: string;
+  before: number;
+  after: number;
+  siblings: string[];
+};
 type Detector = {
+  invokedInjectedMembers: (before: string, after: string, file?: string) => Injection[];
   increasedSeams: (before: string, after: string, file?: string) => Seam[];
   changedSeamControlFlow: (before: string, after: string, file?: string) => ControlFlow[];
   diffOutputValues: (before: string, after: string, file?: string) => OutputValue[];
@@ -48,7 +57,9 @@ type Hook = {
   isCandidateFile: (p: string) => boolean;
   formatNudge: (
     rel: string,
-    seamsOrTriggers: Seam[] | { seams?: Seam[]; controlFlow?: ControlFlow[]; values?: OutputValue[] },
+    seamsOrTriggers:
+      | Seam[]
+      | { seams?: Seam[]; controlFlow?: ControlFlow[]; values?: OutputValue[]; injections?: Injection[] },
     opts?: { baseSha?: string | null; submodule?: string | null },
   ) => string;
   isDirectCliInvocation: (entryPath?: string) => boolean;
@@ -82,6 +93,26 @@ const CONTROL_FLOW_AFTER = `
       if (!spec.satisfiesReadiness) continue;
       if (evidence.ready) break;
     }
+  }
+`;
+// EI-23824032487848760 — the measured shape: a factory-built local deps bundle whose OPTIONAL
+// member gains an invoker. Nothing about a call COUNT on an imported/injected-param seam changes,
+// so only the injected-member trigger sees it.
+const INJECTED_DEPS = `
+  export interface WatchdogDeps {
+    now: () => number;
+    escalateGiveUp: (id: string) => Promise<void>;
+    reconcileStrandedLatch?: (id: string) => Promise<void>;
+  }
+`;
+const INJECTED_BEFORE = `${INJECTED_DEPS}
+  export async function tick(opts) { const deps = makeDeps(opts); await deps.escalateGiveUp('a'); }
+`;
+const INJECTED_AFTER = `${INJECTED_DEPS}
+  export async function tick(opts) {
+    const deps = makeDeps(opts);
+    await deps.escalateGiveUp('a');
+    await (deps.reconcileStrandedLatch ?? fallback)('a');
   }
 `;
 const OUTPUT_BEFORE = 'export function write(rollup){ return { spentCents: rollup.potCents }; }';
@@ -181,6 +212,59 @@ describe('behavioural-strand nudge — fires on the real trap', () => {
     expect(out).toContain('spentCents');
     expect(out).toContain('rollup.potCents');
     expect(out).toContain('toHaveProperty');
+  });
+
+  it('FIRES when an OPTIONAL Deps member gains an invoker, naming the member and its siblings (EI-23824032487848760)', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, INJECTED_BEFORE, INJECTED_AFTER);
+    const out = await hook.nudgeFor(abs, deps);
+    expect(out).not.toBeNull();
+    expect(out).toContain('INJECTED-MEMBER STRAND RISK');
+    expect(out).toContain('reconcileStrandedLatch on WatchdogDeps');
+    expect(out).toContain('invoked 0× → 1×');
+    // The sibling members are the join key the CLI matches partial fixtures on.
+    expect(out).toContain('siblings: escalateGiveUp, now');
+    // It is a same-workspace class, so it must not claim the stranded fixtures are in ANOTHER workspace.
+    expect(out).not.toContain('are in a DIFFERENT one');
+    expect(out).toContain('vitest-fail-on-console');
+    expect(out).toContain('check-behavioural-strands.mjs');
+  });
+
+  it('CONTROL: the same file edited with the member invocation count UNCHANGED produces nothing', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, INJECTED_AFTER, `${INJECTED_AFTER}\n// edited`);
+    expect(await hook.nudgeFor(abs, deps)).toBeNull();
+  });
+
+  it('degrades to silence — not a crash — when the loaded detector predates invokedInjectedMembers', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, INJECTED_BEFORE, INJECTED_AFTER);
+    const real = await loadDetector();
+    const { invokedInjectedMembers: _omitted, ...older } = real;
+    void _omitted;
+    expect(await hook.nudgeFor(abs, { ...deps, loadDetector: async () => older })).toBeNull();
+  });
+
+  it('keeps the other triggers’ wording unchanged when an injection rides along with a call-count increase', async () => {
+    const hook = await loadHook();
+    const out = hook.formatNudge(
+      'a/b.ts',
+      {
+        seams: [{ seam: 's.m', before: 1, after: 2 }],
+        injections: [
+          { member: 'opt', owner: 'XDeps', source: 'interface', before: 0, after: 1, siblings: ['a', 'b'] },
+        ],
+      },
+      { baseSha: 'abc1234' },
+    );
+    expect(out).toContain('SEAM CALL-COUNT INCREASE');
+    expect(out).not.toContain('INJECTED-MEMBER STRAND RISK');
+    // …while the injection is still named, and the cross-workspace explanation still applies.
+    expect(out).toContain('opt on XDeps');
+    expect(out).toContain('ANOTHER workspace');
   });
 });
 

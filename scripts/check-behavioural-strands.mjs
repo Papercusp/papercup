@@ -53,12 +53,37 @@
  * under-naming reports a clean bill for a strand that is really there, which is the whole
  * defect this exists to prevent.
  *
+ * THE INJECTED-MEMBER TRIGGER (EI-23824032487848760). A second strand shape has NO count or
+ * order assertion to anchor on. A function gains a call to an OPTIONAL member of its injected
+ * Deps bundle (`(deps.reconcileStrandedLatch ?? fb)(…)`); a test fixture that builds that bundle
+ * PARTIALLY never supplies the member, so the new call reaches an uninjected dependency, throws,
+ * the catch logs, and vitest-fail-on-console fails the test. The fixture asserts nothing about
+ * the new seam, `tsc` is silent (the member is optional), and — the measured instance,
+ * 0205cd785c — the stranded files (`standing-goal-boot-arm.test.ts:77`,
+ * `goal-liveness-watchdog.test.ts:777`) sit in the SAME workspace as the change, which the
+ * cross-workspace band excludes by design. So this trigger has its own band:
+ *   - `invokedInjectedMembers` — optional members of a Deps-shaped interface (INJECTED_TYPE_NAME_RE)
+ *     whose callee-position invocation count rose (looking through `(x ?? fb)()`, `!`, `as`, `?.`),
+ *     plus `receiver.member` seams on an injected PARAMETER. A REQUIRED member is not a trigger:
+ *     a fixture that omits one is a type error `lint:tsc` already reports.
+ *   - `partialInjectionFixtures` — any reachable test file (changed workspace INCLUDED) holding an
+ *     object literal that names >= min(2, siblings) sibling members of the bundle but NOT the new
+ *     one. The SIBLING members are the stable join key. It over-names on purpose (a literal that
+ *     overrides two members of a `{ ...base }` spread matches too); running the named file is the
+ *     detector. An injection-only trigger skips the count-assertion band — naming every reachable
+ *     count assertion for it would be pure noise. Do not widen seam detection beyond the `??`/`||`
+ *     peel: peers keep filing false positives against this script (EI-24442819396601796,
+ *     EI-24305142907074152, EI-24343822128966827, EI-24661855321504237).
+ *
  *   node scripts/check-behavioural-strands.mjs                  # advisory: name the trigger, the seam, and the command
  *   node scripts/check-behavioural-strands.mjs --run            # RUN the named tests, exit 1 on real failures
  *   node scripts/check-behavioural-strands.mjs --base "$C"      # pin the pre-edit commit (see below)
  *   node scripts/check-behavioural-strands.mjs --files=a.ts,b.ts
  *   node scripts/check-behavioural-strands.mjs --json
  *   node scripts/check-behavioural-strands.mjs --all            # do not clip the named-test list
+ *
+ * `--json` carries the injected-member evidence as `triggers[].injections` and the named
+ * partial fixtures as `injectionBand`; `--run` runs those files with the rest of the set.
  *
  * ⚠ `--base HEAD` DECAYS WITHIN MINUTES ON THIS TREE. git-sync commits the whole working
  * tree on a schedule, so a few minutes after your edit `working tree == HEAD` and the diff
@@ -112,6 +137,14 @@ const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 const DECLARATION_RE = /\.d\.[cm]?ts$/;
 const EXCLUDED_DIR_RE = /(?:^|\/)(?:dist|build|node_modules|coverage|\.next|\.papercusp)\//;
 const EXCLUDED_ROOT_RE = /^(?:papercup-release|papercup-checkpoint)\//;
+/**
+ * Type names that denote an INJECTED collaborator bundle (`GoalHolderRespawnDeps`,
+ * `SearchSource`, …). One definition: it types an injected PARAMETER for the seam walk and it
+ * marks a Deps-shaped INTERFACE whose members a partial test fixture may fail to supply
+ * (EI-23824032487848760).
+ */
+const INJECTED_TYPE_NAME_RE =
+  /(?:Deps?|Dependencies|Context|Ctx|Ports?|Services?|Source|Embedder|Probe|Runner|Fetcher|Transport|Adapter|Client|Repositories?|Store|Database|Gateway|Logger|Clock|Cache|Queue|Scheduler|Publisher|Reader|Writer|Validator|Authorizer|Provider|Api)$/i;
 
 /**
  * Why a repo-relative path is NOT a candidate for this guard, or `null` when it is.
@@ -403,8 +436,6 @@ function seamCallSites(text, fileName = 'file.ts', sourceOverride = null) {
   ]);
   const INJECTED_PARAM_NAME_RE =
     /^(?:deps?|dependencies|ctx|context|ports?|services?|source|embedder|probe|runner|fetcher|transport|adapter|client|repositories?|repo|store|storage|database|db|gateway|logger|clock|cache|queue|scheduler|publisher|writer|reader|validator|authorizer|connector|provider|api)$/i;
-  const INJECTED_TYPE_NAME_RE =
-    /(?:Deps?|Dependencies|Context|Ctx|Ports?|Services?|Source|Embedder|Probe|Runner|Fetcher|Transport|Adapter|Client|Repositories?|Store|Database|Gateway|Logger|Clock|Cache|Queue|Scheduler|Publisher|Reader|Writer|Validator|Authorizer|Provider|Api)$/i;
   const BUILTIN_TYPE_RE =
     /^(?:string|number|boolean|bigint|symbol|String|Number|Boolean|BigInt|Symbol|Buffer|Uint(?:8|8Clamped|16|32|Big64|8|16|32)Array|Int(?:8|16|32|Big64)Array|Float(?:32|64)Array|ArrayBuffer|SharedArrayBuffer|DataView|ReadonlyArray|Array|Date|RegExp|Map|Set|WeakMap|WeakSet|URL|URLSearchParams)(?:\s*<|\s*\[|\s*\||\s*&|$)/i;
 
@@ -572,9 +603,20 @@ function seamCallSites(text, fileName = 'file.ts', sourceOverride = null) {
   };
 
   /** Imported calls and injected dependency/context parameters are seams; local values are not. */
-  const seamKeyFor = (callee) => {
+  const seamDetailsFor = (callee) => {
     if (ts.isNonNullExpression(callee) || ts.isParenthesizedExpression(callee) || ts.isAsExpression(callee)) {
-      return seamKeyFor(callee.expression);
+      return seamDetailsFor(callee.expression);
+    }
+    // `(deps.optionalSeam ?? fallback)(args)` — the optional-seam-with-a-default idiom. The
+    // callee is a BINARY expression, which has no root identifier, so this call was invisible
+    // and a NEW such call reported zero added call sites (EI-23824032487848760). Either operand
+    // may be the injected one.
+    if (
+      ts.isBinaryExpression(callee) &&
+      (callee.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+        callee.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    ) {
+      return seamDetailsFor(callee.left) ?? seamDetailsFor(callee.right);
     }
     const root = rootIdentifier(callee);
     if (!root) return null;
@@ -583,7 +625,10 @@ function seamCallSites(text, fileName = 'file.ts', sourceOverride = null) {
     if (binding.kind === 'parameter' && binding.builtinReceiver) return null;
     const member = terminalMember(callee);
     if (binding.kind === 'parameter' && member && BUILTIN_METHODS.has(member)) return null;
-    return ts.isIdentifier(callee) ? `${root.text}()` : callee.getText(source);
+    return {
+      key: ts.isIdentifier(callee) ? `${root.text}()` : callee.getText(source),
+      kind: binding.kind,
+    };
   };
 
   const visit = (node) => {
@@ -637,8 +682,10 @@ function seamCallSites(text, fileName = 'file.ts', sourceOverride = null) {
     }
 
     if (ts.isCallExpression(node)) {
-      const key = seamKeyFor(node.expression);
-      if (key) callSites.push({ start: node.getStart(source), end: node.getEnd(), seam: key });
+      const details = seamDetailsFor(node.expression);
+      if (details) {
+        callSites.push({ start: node.getStart(source), end: node.getEnd(), seam: details.key, kind: details.kind });
+      }
     }
 
     ts.forEachChild(node, visit);
@@ -674,6 +721,241 @@ export function increasedSeams(beforeText, afterText, fileName = 'file.ts') {
   }
   rows.sort((a, b) => b.after - b.before - (a.after - a.before) || a.seam.localeCompare(b.seam));
   return rows;
+}
+
+// ── the injected-member trigger: a Deps-shaped member gained an invoker (EI-23824032487848760) ──
+//
+// The strand this names is NOT a call-count change. A function gains a call to an OPTIONAL
+// member of its injected Deps bundle; a test fixture that builds that bundle PARTIALLY never
+// supplies the member, the new call reaches an uninjected dependency, throws, and the catch
+// logs — which vitest-fail-on-console turns into a failure. The fixture asserts NOTHING about
+// the new seam, so no call-count/order anchor can name it, and (the measured instance) it sits
+// in the SAME workspace as the change, which the cross-workspace band excludes by design. The
+// stable join key is the SIBLING members: the fixture injects the members that were already
+// there and lacks the new one.
+
+const parseTsx = (text, fileName) => {
+  try {
+    return ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    return null;
+  }
+};
+
+const memberKeyText = (name) =>
+  name && (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name))
+    ? name.text
+    : null;
+
+/**
+ * interface/type-literal name -> (member name -> declared OPTIONAL), for Deps-shaped types
+ * declared in `source`. Optionality is the point: a REQUIRED member a fixture omits is a type
+ * error `lint:tsc` reports, whereas an OPTIONAL one is silently omittable — the strand `tsc`
+ * cannot see.
+ */
+function depsInterfaceMembers(source) {
+  const out = new Map();
+  for (const statement of source.statements) {
+    let name = null;
+    let members = null;
+    if (ts.isInterfaceDeclaration(statement)) {
+      name = statement.name.text;
+      members = statement.members;
+    } else if (ts.isTypeAliasDeclaration(statement) && ts.isTypeLiteralNode(statement.type)) {
+      name = statement.name.text;
+      members = statement.type.members;
+    }
+    if (!name || !members || !INJECTED_TYPE_NAME_RE.test(name)) continue;
+    const names = new Map();
+    for (const member of members) {
+      const text = (ts.isPropertySignature(member) || ts.isMethodSignature(member)) && memberKeyText(member.name);
+      if (text) names.set(text, Boolean(member.questionToken));
+    }
+    if (names.size > 0) out.set(name, names);
+  }
+  return out;
+}
+
+/** `x.m` / `x['m']` -> `m`. */
+function accessedMember(node) {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (ts.isElementAccessExpression(node)) return memberKeyText(node.argumentExpression);
+  return null;
+}
+
+/**
+ * Is `node` the thing a call invokes, looking through the wrappers that do not change WHICH
+ * expression runs: `(x)`, `x!`, `x as T`, and the optional-seam default idiom `(x ?? fb)()`.
+ */
+function isInvokedThroughWrappers(node) {
+  let current = node;
+  for (;;) {
+    const parent = current.parent;
+    if (!parent) return false;
+    if (ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent) || ts.isAsExpression(parent)) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    ) {
+      current = parent;
+      continue;
+    }
+    return ts.isCallExpression(parent) && parent.expression === current;
+  }
+}
+
+function memberInvocationCounts(source, names) {
+  const counts = new Map();
+  const visit = (node) => {
+    const member = accessedMember(node);
+    if (member && names.has(member) && isInvokedThroughWrappers(node)) {
+      counts.set(member, (counts.get(member) ?? 0) + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return counts;
+}
+
+/**
+ * Members of an injected Deps bundle whose INVOCATION count rose between `before` and `after`.
+ *
+ * Two sources, merged by member:
+ *  - `interface`: members declared by a Deps-shaped interface / type literal IN this file, counted
+ *    wherever they are invoked — through a factory-built local (`const deps = makeDeps(o)`, which
+ *    the receiver-based seam walk cannot see) and through `(deps.m ?? fb)(…)`.
+ *  - `receiver`: `param.member` seams on an injected PARAMETER whose call count rose (the bundle's
+ *    interface may live in another file); siblings are the other members called on that receiver.
+ *
+ * Each row carries `siblings` — the members already on the bundle, which is the join key against
+ * partial fixtures. A row with no siblings is dropped: there is nothing to match a fixture on.
+ */
+export function invokedInjectedMembers(beforeText, afterText, fileName = 'file.ts') {
+  const beforeSource = parseTsx(beforeText, fileName);
+  const afterSource = parseTsx(afterText, fileName);
+  if (!beforeSource || !afterSource) return [];
+  const rows = new Map();
+
+  const afterTypes = depsInterfaceMembers(afterSource);
+  const names = new Set();
+  for (const members of [...depsInterfaceMembers(beforeSource).values(), ...afterTypes.values()]) {
+    for (const member of members.keys()) names.add(member);
+  }
+  if (names.size > 0) {
+    const was = memberInvocationCounts(beforeSource, names);
+    for (const [member, count] of memberInvocationCounts(afterSource, names)) {
+      const before = was.get(member) ?? 0;
+      if (count <= before) continue;
+      // Only members declared OPTIONAL: a required one a fixture omits is a `lint:tsc` error.
+      const owners = [...afterTypes].filter(([, members]) => members.get(member) === true);
+      if (owners.length === 0) continue;
+      const siblings = [...new Set(owners.flatMap(([, members]) => [...members.keys()]))]
+        .filter((m) => m !== member)
+        .sort();
+      rows.set(member, { member, owner: owners.map(([n]) => n).join('|'), source: 'interface', before, after: count, siblings });
+    }
+  }
+
+  const receiverCalls = (text, source) => {
+    const byKey = new Map();
+    for (const site of seamCallSites(text, fileName, source)) {
+      if (site.kind !== 'parameter') continue;
+      const key = site.seam.replace(/\?\./g, '.').replace(/!/g, '');
+      if (!key.includes('.') || key.endsWith(')')) continue;
+      byKey.set(key, (byKey.get(key) ?? 0) + 1);
+    }
+    return byKey;
+  };
+  const receiverBefore = receiverCalls(beforeText, beforeSource);
+  const receiverAfter = receiverCalls(afterText, afterSource);
+  for (const [key, count] of receiverAfter) {
+    const before = receiverBefore.get(key) ?? 0;
+    if (count <= before) continue;
+    const cut = key.lastIndexOf('.');
+    const receiver = key.slice(0, cut);
+    const member = key.slice(cut + 1);
+    if (rows.has(member) || !/^[A-Za-z_$][\w$]*$/.test(member)) continue;
+    const siblings = [...receiverAfter.keys()]
+      .filter((k) => k.startsWith(`${receiver}.`) && k !== key && !k.slice(receiver.length + 1).includes('.'))
+      .map((k) => k.slice(receiver.length + 1))
+      .sort();
+    rows.set(member, { member, owner: receiver, source: 'receiver', before, after: count, siblings });
+  }
+
+  return [...rows.values()].filter((row) => row.siblings.length > 0).sort((a, b) => a.member.localeCompare(b.member));
+}
+
+/** Names a fixture object literal supplies: `{ a: 1 }`, `{ a }`, `{ a() {} }`. */
+function objectLiteralKeys(literal) {
+  const keys = new Set();
+  for (const property of literal.properties) {
+    if (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property) || ts.isMethodDeclaration(property)) {
+      const key = memberKeyText(property.name);
+      if (key) keys.add(key);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Test files holding a PARTIAL fixture for an injected member: an object literal that names at
+ * least `min(2, siblings)` sibling members of the bundle but NOT the new member. Searched over
+ * every reachable test file of ANY workspace, the changed one included — the measured stranded
+ * fixtures were beside the change, and `test:affected` cannot be relied on to have run them.
+ *
+ * Over-names on purpose (a literal that overrides two members of a `{ ...base }` spread matches
+ * too): running the named file is the detector, and a clean bill for a real strand is the failure.
+ *
+ * @returns {{ file: string, hits: { member: string, line: number, present: string[] }[] }[]}
+ */
+export function partialInjectionFixtures({ tests, readFile, injections }) {
+  const usable = injections.filter((inj) => inj.siblings.length > 0);
+  if (usable.length === 0) return [];
+  const result = [];
+  for (const file of tests) {
+    const raw = readFile(file);
+    if (!raw || raw.length > MAX_SCAN_BYTES) continue;
+    const candidates = usable.filter((inj) => {
+      const need = Math.min(2, inj.siblings.length);
+      let seen = 0;
+      for (const sibling of inj.siblings) if (raw.includes(sibling) && ++seen >= need) return true;
+      return false;
+    });
+    if (candidates.length === 0) continue;
+    const source = parseTsx(raw, file);
+    if (!source) continue;
+    const best = new Map();
+    const visit = (node) => {
+      if (ts.isObjectLiteralExpression(node)) {
+        const keys = objectLiteralKeys(node);
+        for (const inj of candidates) {
+          if (keys.has(inj.member)) continue;
+          const present = inj.siblings.filter((s) => keys.has(s));
+          if (present.length < Math.min(2, inj.siblings.length)) continue;
+          const prior = best.get(inj.member);
+          if (!prior || present.length > prior.present.length) {
+            best.set(inj.member, {
+              member: inj.member,
+              line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
+              present,
+            });
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    if (best.size > 0) result.push({ file, hits: [...best.values()] });
+  }
+  return result.sort(
+    (a, b) =>
+      Math.max(...b.hits.map((h) => h.present.length)) - Math.max(...a.hits.map((h) => h.present.length)) ||
+      a.file.localeCompare(b.file),
+  );
 }
 
 // ── the semantic trigger: a dependency-bearing call's control-flow path changed ─────────
@@ -1500,6 +1782,7 @@ function formatFindings({
   tests,
   wider,
   narrow,
+  injectionBand = [],
   members,
   valueProperties,
   usedWide,
@@ -1511,8 +1794,11 @@ function formatFindings({
   const hasCallTriggers = triggers.some((t) => (t.seams ?? []).length > 0);
   const hasControlFlowTriggers = triggers.some((t) => (t.controlFlow ?? []).length > 0);
   const hasValueTriggers = triggers.some((t) => (t.values ?? []).length > 0);
+  const hasInjectionTriggers = triggers.some((t) => (t.injections ?? []).length > 0);
   lines.push(
-    (hasCallTriggers || hasControlFlowTriggers) && hasValueTriggers
+    hasInjectionTriggers && !hasCallTriggers && !hasControlFlowTriggers && !hasValueTriggers
+      ? '⚠ INJECTED-MEMBER STRAND RISK — an injected dependency member gained an invoker.'
+      : (hasCallTriggers || hasControlFlowTriggers) && hasValueTriggers
       ? '⚠ BEHAVIOURAL STRAND RISK — a shared seam invocation contract and a writer output value changed.'
       : hasCallTriggers && hasControlFlowTriggers
         ? '⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites and its invocation eligibility changed.'
@@ -1534,8 +1820,23 @@ function formatFindings({
     for (const v of t.values ?? []) {
       lines.push(`    output ${v.property}: ${v.before} -> ${v.after}`);
     }
+    for (const inj of t.injections ?? []) {
+      lines.push(
+        `    injected ${inj.owner}.${inj.member}: ${inj.before} invocation(s) -> ${inj.after} (${inj.siblings.length} sibling member(s) a partial fixture may supply)`,
+      );
+    }
   }
   lines.push('');
+  if (hasInjectionTriggers) {
+    lines.push(
+      'A test fixture that builds that injected bundle PARTIALLY never supplies the new member, so the first run',
+      'that reaches the new call hits an UNINJECTED dependency. The failure channel is often NOT an assertion about',
+      'the call: a throw swallowed into console.warn trips vitest-fail-on-console, so the fixture asserts nothing',
+      'about the seam and no call-count anchor names it (EI-23824032487848760). The proxy is a fixture object',
+      'that supplies SIBLING members of the bundle but NOT the new one — in ANY workspace, the changed one included.',
+      '',
+    );
+  }
   if (hasCallTriggers || hasControlFlowTriggers) {
     lines.push(
       'A downstream test in ANOTHER workspace that mocks this seam and asserts on its call count,',
@@ -1553,8 +1854,13 @@ function formatFindings({
     lines.push('`test:affected` cannot prove that a runtime value contract stayed compatible.');
   }
   lines.push('');
+  const runList = [...new Set([...tests, ...injectionBand.map((entry) => entry.file)])];
   if (tests.length === 0) {
-    lines.push('No downstream call-count/order or output-value assertions reachable from this change. Nothing to run.');
+    lines.push(
+      runList.length === 0
+        ? 'No downstream call-count/order or output-value assertions reachable from this change. Nothing to run.'
+        : 'No downstream call-count/order or output-value assertions reachable from this change.',
+    );
   } else {
     lines.push(
       `Reachable test files in other workspaces asserting on call count/order or changed output values: ${wider.length}` +
@@ -1575,12 +1881,27 @@ function formatFindings({
       lines.push(`  … and ${tests.length - CLIP} more (--all to list them, --json for the full set)`);
     }
     lines.push('');
-    if (!ran) {
-      lines.push('RUN THEM — running them IS the detector for this class; there is no tsc for it:');
-      lines.push(`  node scripts/check-behavioural-strands.mjs --run${usedWide ? ' --wide' : ''}`);
-      lines.push('or, from an agent, the same set through the router:');
-      lines.push(`  testing:run { files: [${tests.slice(0, 3).map((f) => `"${f}"`).join(', ')}${tests.length > 3 ? ', …' : ''}] }`);
+  }
+  if (injectionBand.length > 0) {
+    lines.push(
+      `Partial-injection fixtures (an object literal supplying sibling member(s) of the injected bundle but NOT the new member; any workspace): ${injectionBand.length}`,
+    );
+    for (const entry of injectionBand.slice(0, clipped ? CLIP : injectionBand.length)) {
+      const hit = entry.hits.reduce((a, b) => (b.present.length > a.present.length ? b : a));
+      lines.push(
+        `  ${entry.file}:${hit.line}  (lacks ${hit.member}; supplies ${hit.present.slice(0, 3).join(', ')}${hit.present.length > 3 ? ', …' : ''})`,
+      );
     }
+    if (clipped && injectionBand.length > CLIP) {
+      lines.push(`  … and ${injectionBand.length - CLIP} more (--all to list them, --json for the full set)`);
+    }
+    lines.push('');
+  }
+  if (runList.length > 0 && !ran) {
+    lines.push('RUN THEM — running them IS the detector for this class; there is no tsc for it:');
+    lines.push(`  node scripts/check-behavioural-strands.mjs --run${usedWide ? ' --wide' : ''}`);
+    lines.push('or, from an agent, the same set through the router:');
+    lines.push(`  testing:run { files: [${runList.slice(0, 3).map((f) => `"${f}"`).join(', ')}${runList.length > 3 ? ', …' : ''}] }`);
   }
   if (baseNote) {
     lines.push('');
@@ -1687,8 +2008,9 @@ function main() {
     const seams = increasedSeams(beforeText, afterText, file);
     const controlFlow = changedSeamControlFlow(beforeText, afterText, file);
     const values = diffOutputValues(beforeText, afterText, file);
-    if (seams.length > 0 || controlFlow.length > 0 || values.length > 0) {
-      triggers.push({ file, seams, controlFlow, values });
+    const injections = invokedInjectedMembers(beforeText, afterText, file);
+    if (seams.length > 0 || controlFlow.length > 0 || values.length > 0 || injections.length > 0) {
+      triggers.push({ file, seams, controlFlow, values, injections });
     }
   }
 
@@ -1752,15 +2074,30 @@ function main() {
   const members = seamMemberNames(triggers);
   const valueProperties = outputPropertyNames(triggers);
 
-  const wider = [...reachable]
-    .filter((f) => TEST_RE.test(f))
-    .filter((f) => !changedWorkspaces.has(workspaceOf(f, packageDirs)))
-    .filter(
-      (f) =>
-        hasCountOrOrderAssertion(readFile(f)) ||
-        hasValueAssertion(readFile(f), valueProperties, f),
-    )
-    .sort();
+  // An injection-only trigger (a new invoked Deps member, no call-count/order/value change) has
+  // no count-assertion band: naming every reachable count assertion for it would be pure noise.
+  const needsCountBand = triggers.some(
+    (t) => (t.seams?.length ?? 0) + (t.controlFlow?.length ?? 0) + (t.values?.length ?? 0) > 0,
+  );
+  const wider = needsCountBand
+    ? [...reachable]
+        .filter((f) => TEST_RE.test(f))
+        .filter((f) => !changedWorkspaces.has(workspaceOf(f, packageDirs)))
+        .filter(
+          (f) =>
+            hasCountOrOrderAssertion(readFile(f)) ||
+            hasValueAssertion(readFile(f), valueProperties, f),
+        )
+        .sort()
+    : [];
+  // Partial-injection fixtures: any reachable test file, the changed workspace INCLUDED.
+  const injections = triggers.flatMap((t) => t.injections ?? []);
+  const injectionBand = partialInjectionFixtures({
+    tests: [...reachable].filter((f) => TEST_RE.test(f)).sort(),
+    readFile,
+    injections,
+  });
+  const injectionFiles = injectionBand.map((entry) => entry.file);
 
   const narrow = wider.filter(
     (f) =>
@@ -1776,9 +2113,10 @@ function main() {
   let exit = 0;
   let ran = false;
   let runResult = null;
-  if (wantRun && tests.length > 0) {
+  const runSet = [...new Set([...tests, ...injectionFiles])];
+  if (wantRun && runSet.length > 0) {
     ran = true;
-    const proc = spawnSync('npm', ['run', 'test:file', '--', ...tests], {
+    const proc = spawnSync('npm', ['run', 'test:file', '--', ...runSet], {
       cwd: ROOT,
       encoding: 'utf8',
       stdio: wantJson ? 'pipe' : 'inherit',
@@ -1807,6 +2145,7 @@ function main() {
           tests,
           narrow,
           wider,
+          injectionBand,
           usedWide,
           ran,
           runResult,
@@ -1822,6 +2161,7 @@ function main() {
         tests,
         wider,
         narrow,
+        injectionBand,
         members,
         valueProperties,
         usedWide,

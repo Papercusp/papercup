@@ -170,6 +170,25 @@ describe('stale needs-human reminders (EI-13766)', () => {
     expect(reminder.body).toContain('Unblocked by: setup:save_key');
   });
 
+  it('discloses what happens if the reminder is ignored (owner-attention ledger)', () => {
+    const base = needsHumanRow();
+    const blockers = (base.payload as { externalBlockers: Array<Record<string, unknown>> }).externalBlockers;
+    const declared = composeStaleNeedsHumanReminder(
+      needsHumanRow({
+        payload: {
+          externalBlockers: [
+            { ...blockers[0], defaultIfUnanswered: 'stays parked; re-surfaced weekly', decideBy: '2026-10-15T00:00:00Z' },
+          ],
+        },
+      }),
+      Date.parse('2026-07-10T00:00:00.000Z'),
+    );
+    expect(declared.body).toContain('Default if unanswered: stays parked; re-surfaced weekly (decide by 2026-10-15T00:00:00Z)');
+
+    const legacy = composeStaleNeedsHumanReminder(base, Date.parse('2026-07-10T00:00:00.000Z'));
+    expect(legacy.body).toContain('No default declared — the item stays parked until you answer.');
+  });
+
   it('falls back to taken_by when a legacy row lacks a structured ask', () => {
     const reminder = composeStaleNeedsHumanReminder(needsHumanRow({ payload: {} }));
     expect(reminder.askedBy).toBe('su-fallback');

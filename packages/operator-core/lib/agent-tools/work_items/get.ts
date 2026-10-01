@@ -680,7 +680,7 @@ export default defineTool({
         .max(20)
         .optional()
         .describe(
-          "raw drill-down for the requested work-item(s): pass `id` (one) or `ids` (many) together with these refs. Resolve refs back to their FULL untruncated source records. Take them from a brief's `omission.omittedRefs` (records the budget could only COUNT) or from a clipped record's own `rawRef` — the brief names them precisely so a bounded read is never a dead end. Refs that no longer resolve come back in `unresolved[]`, which is an answer about the history, not an error.",
+          "raw drill-down for the requested work-item(s): pass `id` (one) or `ids` (many) together with these refs. Resolve refs back to their FULL untruncated source records. When combined with `detail:true`, this replaces the bounded `priorAttempts` brief so the response does not mix clipped history with the raw records; make a separate read if you need both views. Take refs from a brief's `omission.omittedRefs` (records the budget could only COUNT) or from a clipped record's own `rawRef` — the brief names them precisely so a bounded read is never a dead end. Refs that no longer resolve come back in `unresolved[]`, which is an answer about the history, not an error.",
         ),
       threadLimit: z
         .number()
@@ -775,7 +775,12 @@ export default defineTool({
     const needsCompletionFreshness = sourceSelectionWants(sourceSelection, 'completionFreshness');
     const needsDeploymentPosition = sourceSelectionWants(sourceSelection, 'deploymentPosition');
     const needsLifecycle = sourceSelectionWants(sourceSelection, 'lifecycle');
-    const needsPriorAttempts = sourceSelectionWants(sourceSelection, 'priorAttempts');
+    // A raw-ref drill-down is the fuller view of this same history. Returning
+    // the bounded brief alongside it duplicates the records and can leave
+    // `textTruncated` markers in an explicit-full result, which makes the
+    // result door correctly refuse to call the spilled response recoverable.
+    const needsPriorAttempts =
+      sourceSelectionWants(sourceSelection, 'priorAttempts') && !args.priorAttemptRefs?.length;
     const needsPriorAttemptResolution = sourceSelectionWants(sourceSelection, 'priorAttemptRefResolution');
     const needsWorkItemDetail = sourceSelectionWants(
       sourceSelection,

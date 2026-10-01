@@ -1299,6 +1299,24 @@ export function submitExhaustionTerminatesHost(label: any): boolean;
  * not proof that the injected turn landed, so it must remain distinguishable
  * from both success and bounded exhaustion. Pure; exported for tests. */
 export function submitVerificationFailureReason(result: any): string | null;
+/** @param {string} dropReason @returns {string} */
+export function describeStartupTurnDropReason(dropReason: string): string;
+/** WI-10004926: the ONE writer of the startup-turn drop receipt.
+ *  packages/operator-core/lib/acceptance-grader.ts parses this exact line with
+ *  `$`-anchored regexes (LAUNCHER_QUOTA_KICKOFF_DROP_RE,
+ *  LAUNCHER_KICKOFF_DROP_RE). Keep the parenthesised tail
+ *  `within <N>ms over <N> attempt(s))` LAST. Anything appended inside or after
+ *  it silently stops grader drop detection;
+ *  apps/operator/lib/psu-pty-host-drop-line-contract.test.ts pins this.
+ *  @param {{ label: string, ownerId: string, dropReason: string, budgetMs: number, attempts: number }} drop
+ *  @returns {string} */
+export function formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }: {
+    label: string;
+    ownerId: string;
+    dropReason: string;
+    budgetMs: number;
+    attempts: number;
+}): string;
 export function makeQuotaBlockStarvationGuard({ thresholdMs, now, onStarvation, }?: {
     thresholdMs?: number | undefined;
     now?: (() => number) | undefined;
@@ -2753,6 +2771,23 @@ export const SHUTDOWN_GRACE_MS: number;
  * already on its way out.
  */
 export const SHUTDOWN_ACK_DELAY_MS: number;
+/** WI-10004926: human text for each startup-turn drop reason, printed inside
+ *  the parentheses of the `<label> DROPPED for <owner> (...)` stderr receipt.
+ *  `submit-verification-aborted-<why>` is handled by prefix in
+ *  describeStartupTurnDropReason; any other unmapped reason is still NAMED
+ *  (WI-10004919: an unnamed reason hid a 75s frame-budget drop behind the
+ *  generic text). */
+export const STARTUP_TURN_DROP_REASON_TEXT: Readonly<{
+    'no-startup-ready-marker-last-resort-failed': "the child never emitted its startup-ready marker AND the last-resort attempt found no prompt";
+    'no-startup-ready-marker': "the child never emitted its startup-ready marker";
+    'kickoff-marker-echo-unconfirmed': "the exact Codex kickoff marker never appeared in the composer echo";
+    'submit-verification-exhausted': "submit verification exhausted without observing output after a resubmit";
+    'fresh-child-owner-input': "the owner used the fresh child before its carry prompt was submitted";
+    'resume-compaction-timeout': "Claude resume compaction recovery timed out before a standalone composer prompt appeared";
+    'codex-backend-frame-not-observed': "the Codex session frame, a Ready footer or model header, never appeared in its backend-frame budget";
+    'codex-startup-still-starting': "the Codex footer still read Starting, MCP servers booting, at the kickoff deadline";
+    'never-settled': "the child never settled to its prompt";
+}>;
 /** Is THIS line a usage advisory rather than a wall? Scoped to the single line
  *  carrying the match so an advisory cannot suppress a real wall elsewhere on the
  *  same screen. Pure; exported for tests. */
