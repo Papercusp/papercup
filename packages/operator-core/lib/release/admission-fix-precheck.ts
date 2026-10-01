@@ -309,11 +309,43 @@ export interface ExecResult {
   durationMs: number;
 }
 
+/**
+ * How long after the direct child EXITS we keep waiting for its stdio to close. A grandchild
+ * that inherited stdout (WI-10004928 part 5: a dependency-generation `cp` under the :3170
+ * runner) keeps 'close' from ever firing, which held the single pre-check slot far past its
+ * setup budget. Past this grace the leftover process group is killed and we resolve anyway.
+ */
+export const EXEC_STDIO_CLOSE_GRACE_MS = 2_000;
+
+/** Signal the child's whole process group (it leads one: spawned detached). */
+function signalGroup(child: { pid?: number; kill: (sig: NodeJS.Signals) => boolean }, sig: NodeJS.Signals): void {
+  if (child.pid) {
+    try {
+      process.kill(-child.pid, sig);
+      return;
+    } catch {
+      // group already gone, or not a group leader — fall through to the direct child
+    }
+  }
+  try {
+    child.kill(sig);
+  } catch {
+    // already exited
+  }
+}
+
 export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (argv, opts) =>
   new Promise<ExecResult>((resolve) => {
     const startedAt = Date.now();
     const [cmd, ...rest] = argv;
-    const child = spawn(cmd, rest, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    // detached ONLY to lead a process group, so a timeout kills grandchildren too; the child
+    // is awaited and never outlives this call (allowlisted in check-no-unenrolled-detached-spawn).
+    const child = spawn(cmd, rest, {
+      cwd: opts.cwd,
+      env: { ...process.env, ...opts.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
     const chunks: string[] = [];
     let size = 0;
     const collect = (buf: Buffer) => {
@@ -325,18 +357,36 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
     child.stdout?.on('data', collect);
     child.stderr?.on('data', collect);
     let timedOut = false;
+    let settled = false;
+    let graceTimer: NodeJS.Timeout | null = null;
+    const finish = (r: Omit<ExecResult, 'durationMs' | 'timedOut'>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
+      resolve({ ...r, timedOut, durationMs: Date.now() - startedAt });
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+      signalGroup(child, 'SIGTERM');
+      setTimeout(() => signalGroup(child, 'SIGKILL'), 5_000).unref();
     }, opts.timeoutMs);
     child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({ exitCode: null, signal: null, timedOut, output: `${chunks.join('')}\n${err.message}`, durationMs: Date.now() - startedAt });
+      finish({ exitCode: null, signal: null, output: `${chunks.join('')}\n${err.message}` });
+    });
+    child.on('exit', (code, signal) => {
+      // The direct child is gone. Normally 'close' follows at once; if a grandchild still holds
+      // the pipes, kill the leftover group and resolve on the exit status instead of hanging.
+      graceTimer = setTimeout(() => {
+        signalGroup(child, 'SIGKILL');
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish({ exitCode: code, signal, output: chunks.join('') });
+      }, EXEC_STDIO_CLOSE_GRACE_MS);
+      graceTimer.unref();
     });
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      resolve({ exitCode: code, signal, timedOut, output: chunks.join(''), durationMs: Date.now() - startedAt });
+      finish({ exitCode: code, signal, output: chunks.join('') });
     });
   });
 
