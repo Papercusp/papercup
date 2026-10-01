@@ -24,7 +24,6 @@ import {
   readFileSync,
   existsSync,
   readdirSync,
-  unlinkSync,
   statSync,
   openSync,
   readSync,
@@ -432,7 +431,7 @@ const defaultReadCmdline: ReadPidCmdline = (pid) => {
   }
 };
 
-/** The verify-identity seam findLiveHost/listLiveHosts accept (default `pidIsPsuHost`).
+/** The verify-identity seam findLiveHost/listLiveHostsAsync accept (default `pidIsPsuHost`).
  *  A test writing `process.pid` as a live-host stand-in injects `() => true`. Local type
  *  (not exported): callers pass an inline `{ verifyIdentity: () => … }`. */
 type VerifyPidIdentity = (pid: number) => boolean;
@@ -578,41 +577,6 @@ export function selfCompactionAvailability(
   return { available: true, reason: null, host };
 }
 
-/**
- * EVERY live psu-pty host on this box (the fleet's interactive sessions), not
- * just one owner's. Same self-validation as findLiveHost (recorded ownerId
- * present, socket exists, pid alive) so a crashed host's leftover file is
- * skipped. Consumers: desktop-window-liveness's ancestry-based on-desktop
- * detection (WI-1586) — the live host pid is the one session handle that cannot
- * rot, unlike the launch-recorded adv_sessions window_id/pid. Best-effort: a
- * missing dir or unreadable file yields fewer hosts, never a throw.
- */
-export function listLiveHosts(
-  dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
-): PsuPtyHost[] {
-  startJanitor();
-  const verify = opts.verifyIdentity ?? pidIsPsuHost;
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.json'));
-  } catch {
-    return []; // no discovery dir yet → no live interactive sessions
-  }
-  const out: PsuPtyHost[] = [];
-  for (const f of files) {
-    try {
-      const h = JSON.parse(readFileSync(join(dir, f), 'utf8')) as PsuPtyHost;
-      // WI-2339 defect #2: same process-identity gate as findLiveHost — a recycled
-      // pid held by an unrelated process must not count as a live interactive host.
-      if (h && h.ownerId && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid) && verify(h.pid)) out.push(h);
-    } catch {
-      /* unreadable / partial write — skip this host */
-    }
-  }
-  return out;
-}
-
 async function pathExistsAsync(p: string): Promise<boolean> {
   try {
     await fsp.access(p);
@@ -623,11 +587,21 @@ async function pathExistsAsync(p: string): Promise<boolean> {
 }
 
 /**
- * {@link listLiveHosts} without blocking the event loop (WI-10004559). Same
- * self-validation, same best-effort contract. The directory scan, the per-host meta
- * read and the socket check all touch the shared psu-pty directory, which can hold a
- * thread in D-state for 20s+ during a journal stall (see {@link readHostEventTailAsync}).
- * Every PERIODIC caller on the operator main thread must use this form.
+ * EVERY live psu-pty host on this box (the fleet's interactive sessions), not
+ * just one owner's. Same self-validation as findLiveHost (recorded ownerId
+ * present, socket exists, pid alive, psu-host identity — WI-2339 defect #2) so a
+ * crashed host's leftover file or a recycled pid is skipped. Consumers include
+ * desktop-window-liveness's ancestry-based on-desktop detection (WI-1586) — the
+ * live host pid is the one session handle that cannot rot. Best-effort: a missing
+ * dir or unreadable file yields fewer hosts, never a throw.
+ *
+ * ASYNC ONLY, by design (WI-10004559, WI-10004587). The directory scan, the per-host
+ * meta read and the socket check all touch the shared psu-pty directory (~3.5k
+ * entries), which holds the calling thread in D-state (wchan iterate_dir) for 20s+
+ * during an ext4 journal stall. On the operator main thread that froze every MCP
+ * request on the worker and got it SIGKILLed by the event-loop sentinel (#1155).
+ * The synchronous `listLiveHosts` was deleted so that a new caller cannot reach for
+ * it; `psu-pty-dir-async-sweeps.test.ts` guards against its return.
  */
 export async function listLiveHostsAsync(
   dir: string = PSU_PTY_DIR,
@@ -655,58 +629,6 @@ export async function listLiveHostsAsync(
   return out;
 }
 
-function safeUnlink(p: string): void {
-  try {
-    if (existsSync(p)) unlinkSync(p);
-  } catch {
-    /* best-effort — a concurrent host cleaning up the same file races harmlessly */
-  }
-}
-
-/**
- * Remove discovery files (+ their sockets) whose host is no longer a live psu session
- * (WI-2510). `pruneDead()` in psu-pty-host.mjs runs ONLY opportunistically — when a NEW
- * host boots on the box, scanning every file — so on a box with no new psu launches for
- * hours, a dead host's `~/.papercusp/psu-pty/<owner>.json` (+ orphaned socket) lingers
- * indefinitely (a slow disk leak; `listLiveHosts` also pays a per-file /proc read as they
- * accumulate). WI-2339 fix B already closed the correctness risk (a stale file can no
- * longer masquerade as a live host, via `pidIsPsuHost`'s cmdline cross-check), so this is
- * pure hygiene — it reuses the EXACT SAME liveness test `findLiveHost`/`listLiveHosts` apply
- * (pid alive + socket exists + `pidIsPsuHost` identity), so it only ever removes a file that
- * already reads as "no live host" to every consumer; a corrupt/unreadable file is pruned too
- * (it can never resolve to a live host either). Returns the count removed, for tests/logging.
- */
-export function pruneDeadDiscoveryFiles(
-  dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
-): number {
-  const verify = opts.verifyIdentity ?? pidIsPsuHost;
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.json'));
-  } catch {
-    return 0; // no discovery dir yet — nothing to prune
-  }
-  let pruned = 0;
-  for (const f of files) {
-    const metaPath = join(dir, f);
-    let h: PsuPtyHost | null = null;
-    try {
-      h = JSON.parse(readFileSync(metaPath, 'utf8')) as PsuPtyHost;
-    } catch {
-      safeUnlink(metaPath); // corrupt/partial write — can never resolve to a live host
-      pruned += 1;
-      continue;
-    }
-    const alive = !!(h && h.sock && existsSync(h.sock) && h.pid && pidAlive(h.pid) && verify(h.pid));
-    if (alive) continue;
-    safeUnlink(metaPath);
-    if (h?.sock) safeUnlink(h.sock);
-    pruned += 1;
-  }
-  return pruned;
-}
-
 async function safeUnlinkAsync(p: string): Promise<void> {
   try {
     await fsp.unlink(p);
@@ -716,8 +638,21 @@ async function safeUnlinkAsync(p: string): Promise<void> {
 }
 
 /**
- * {@link pruneDeadDiscoveryFiles} without blocking the event loop (WI-10004559) —
- * the form the standing janitor runs. Same liveness test, same count semantics.
+ * Remove discovery files (+ their sockets) whose host is no longer a live psu session
+ * (WI-2510). `pruneDead()` in psu-pty-host.mjs runs ONLY opportunistically — when a NEW
+ * host boots on the box, scanning every file — so on a box with no new psu launches for
+ * hours, a dead host's `~/.papercusp/psu-pty/<owner>.json` (+ orphaned socket) lingers
+ * indefinitely (a slow disk leak; `listLiveHostsAsync` also pays a per-file /proc read as they
+ * accumulate). WI-2339 fix B already closed the correctness risk (a stale file can no
+ * longer masquerade as a live host, via `pidIsPsuHost`'s cmdline cross-check), so this is
+ * pure hygiene — it reuses the EXACT SAME liveness test `findLiveHost`/`listLiveHostsAsync` apply
+ * (pid alive + socket exists + `pidIsPsuHost` identity), so it only ever removes a file that
+ * already reads as "no live host" to every consumer; a corrupt/unreadable file is pruned too
+ * (it can never resolve to a live host either). Returns the count removed, for tests/logging.
+ *
+ * ASYNC ONLY (WI-10004559, WI-10004587): the standing janitor runs it on the operator
+ * main thread, and a synchronous scan of the psu-pty directory blocks that thread in
+ * D-state during a journal stall. The synchronous `pruneDeadDiscoveryFiles` was deleted.
  */
 export async function pruneDeadDiscoveryFilesAsync(
   dir: string = PSU_PTY_DIR,
@@ -757,7 +692,7 @@ const _janitorGlobals = globalThis as JanitorGlobals;
 
 /**
  * Arm the standing sweep once (WI-2510), idempotently. Started LAZILY on first real use
- * (`findLiveHost` / `listLiveHosts`) rather than at module-import time — mirrors
+ * (`findLiveHost` / `listLiveHostsAsync`) rather than at module-import time — mirrors
  * `pty-bridge.ts`'s `startReaper()` pattern — so importing this module in isolation (e.g. a
  * unit test exercising `sanitizeKey`/`pidIsPsuHost`) never arms a real background timer;
  * only the operator's actual runtime use of the discovery path (wake delivery, desktop
@@ -824,7 +759,7 @@ export interface InjectHostResult {
  * verdict. Prefer it wherever booking a durable delivery record; `injectIntoHost` remains the
  * boolean-returning wrapper for the ~100 call sites that only branch on success.
  */
-/** Append-only sender-side audit log. `.jsonl`, so `pruneDeadDiscoveryFiles`
+/** Append-only sender-side audit log. `.jsonl`, so `pruneDeadDiscoveryFilesAsync`
  *  (which globs `.json` and unlinks anything that fails to parse as a discovery
  *  record) can never reap it.
  *

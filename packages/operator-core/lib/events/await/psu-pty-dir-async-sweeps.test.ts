@@ -47,8 +47,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as discovery from './psu-pty-discovery';
 import {
-  listLiveHosts,
   listLiveHostsAsync,
   pruneDeadDiscoveryFilesAsync,
   readHostEventTailAsync,
@@ -111,11 +111,22 @@ afterEach(() => {
 });
 
 describe('psu-pty directory sweeps never touch the directory synchronously (WI-10004559)', () => {
-  it('calibration: the sync listLiveHosts IS seen by the spies, and the async form agrees with it', async () => {
-    const sync = listLiveHosts(dir, { verifyIdentity });
+  it('calibration: a synchronous read of the directory IS seen by the spies', async () => {
+    expect(readdirSync(dir).filter((f) => f.endsWith('.json')).length).toBeGreaterThan(0);
     expect(syncCallsUnder(dir).length).toBeGreaterThan(0);
-    expect(sync.map((h) => h.ownerId)).toEqual(['su-live']);
     expect((await listLiveHostsAsync(dir, { verifyIdentity })).map((h) => h.ownerId)).toEqual(['su-live']);
+  });
+
+  it('WI-10004587: the module offers NO synchronous directory lister for a main-thread caller to reach for', () => {
+    // #1155: every sync listLiveHosts caller (session-end hook, idle reaper, desktop liveness,
+    // session-dir-gc, disk census, pty wedge guard) blocked the operator main thread in
+    // D-state (wchan iterate_dir) during journal stalls; the sentinel then SIGKILLed the
+    // worker and every in-flight MCP call on it dropped. The sync forms were deleted so the
+    // compiler refuses a new caller; this pins that they stay deleted.
+    expect(discovery).toHaveProperty('listLiveHostsAsync'); // positive control: the probe reads real exports
+    expect(discovery).toHaveProperty('pruneDeadDiscoveryFilesAsync');
+    expect(discovery).not.toHaveProperty('listLiveHosts');
+    expect(discovery).not.toHaveProperty('pruneDeadDiscoveryFiles');
   });
 
   it('listLiveHostsAsync', async () => {
