@@ -10,10 +10,13 @@
  * watchdog cadence, so it needs no manual step and finishes on its own: nothing
  * mints a legacy-keyed automatic row any more, so the query empties.
  *
- * Scope is deliberately narrow: open, observation-lane rows still in probation
- * that the AUTOMATIC path filed (`payload.toolInvocation`). Promoted rows are
- * accountable issues with their own disposition and are never touched; agent-
- * authored captures carry no `toolInvocation` and are out of scope.
+ * Scope is deliberately narrow. The default (`probation`) pass reads open,
+ * observation-lane rows still in probation that the AUTOMATIC path filed
+ * (`payload.toolInvocation`); agent-authored captures carry no `toolInvocation`
+ * and are out of scope. The `promoted` pass (WI-10004648) additionally folds
+ * pre-D-010 rows that were PROMOTED and then never worked — and only while
+ * they are still unworked (see SignatureFoldScope); a promoted row anyone has
+ * claimed, held or put under review keeps its own disposition.
  *
  * The close mirrors reconcileToolFailurePromotionCollision in capture-core: mark
  * the duplicate with its survivor, then resolve it under a dedicated owner. That
@@ -109,12 +112,6 @@ export function foldRowIntoTally(
 }
 
 /**
- * One bounded fold batch for a workspace. Each group (signature + harness +
- * origin) folds onto its open signature row, or onto its newest legacy row,
- * which is then re-keyed to the signature. A group that fails is left for the
- * next tick and counted in `failedGroups`; it never aborts the others.
- */
-/**
  * Which population one fold pass reads.
  *  - `probation`: observation-lane rows still in probation (the D-010 default).
  *  - `promoted`: legacy per-class rows that were PROMOTED to accountable issues
@@ -158,6 +155,8 @@ const PROMOTED_CANDIDATES_SQL = `
        AND lane IS DISTINCT FROM 'observation'
        AND payload->>'lane' IS DISTINCT FROM 'observation'
        AND payload->'toolFailureProbation'->>'state' = 'promoted'
+       AND payload->'toolFailureProbation'->>'class' IS NOT NULL
+       AND payload->'toolFailureProbation'->'report'->>'toolName' IS NOT NULL
        AND payload->>'watchdogKey' IS NOT NULL
        AND payload->>'watchdogKey' NOT LIKE 'tool-failure-signature:%'
        AND COALESCE(admission, '') <> 'pending'
@@ -172,6 +171,12 @@ const OBSERVATION_SURVIVOR_LANE = `AND payload->>'lane' = 'observation'`;
 const PROMOTED_SURVIVOR_LANE =
   `AND lane IS DISTINCT FROM 'observation' AND payload->>'lane' IS DISTINCT FROM 'observation'`;
 
+/**
+ * One bounded fold batch for a workspace. Each group (signature + harness +
+ * origin) folds onto its open signature row, or onto its newest legacy row,
+ * which is then re-keyed to the signature. A group that fails is left for the
+ * next tick and counted in `failedGroups`; it never aborts the others.
+ */
 export async function foldLegacyToolFailureRows(
   workspaceId: string,
   deps: SignatureFoldDeps = {},

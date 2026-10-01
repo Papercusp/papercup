@@ -46,7 +46,7 @@ function harness(legacyRows: ReturnType<typeof legacy>[], existing: ReturnType<t
 
 /** A pre-D-010 per-class row that was PROMOTED to an accountable issue and never worked. */
 function promoted(id: string, build: string, repeatCount: number, extra: Record<string, unknown> = {},
-  failure: Partial<SuspectedToolFailure> = {}) {
+  failure: Partial<SuspectedToolFailure> = {}): ReturnType<typeof legacy> {
   const row = legacy(id, build, repeatCount, extra, failure);
   const { lane: _lane, toolInvocation: _inv, ...payload } = row.payload;
   return { ...row, payload: { ...payload, toolFailureProbation: {
@@ -132,6 +132,8 @@ describe('foldLegacyToolFailureRows scope=promoted (WI-10004648)', () => {
     for (const predicate of ["status = 'open'", 'taken_by IS NULL', 'claim_hold IS NOT TRUE',
       'needs_owner_action IS NOT TRUE', 'needs_human_review IS NOT TRUE', "lane IS DISTINCT FROM 'observation'",
       "->>'state' = 'promoted'", "COALESCE(admission, '') <> 'pending'",
+      // A row legacySignatureOf cannot read would be re-scanned every tick and could starve foldable ones.
+      "'toolFailureProbation'->>'class' IS NOT NULL", "->'report'->>'toolName' IS NOT NULL",
       "NOT IN ('pending', 'revision-requested')", "NOT LIKE 'tool-failure-signature:%'"]) {
       expect(text).toContain(predicate);
     }
