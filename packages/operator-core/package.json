@@ -22,6 +22,7 @@
     "test:integration:prose-vector-dims": "vitest run --config vitest.integration.config.ts lib/search/prose-vector-dims.integration.test.ts",
     "test:integration:resource-governor-queue": "vitest run --config vitest.integration.config.ts lib/resource-governor/queue.integration.test.ts",
     "test:integration:sessions-read": "vitest run --config vitest.integration.config.ts lib/agent-tools/sessions/read.integration.test.ts",
+    "test:integration:work-items-migration-fixtures": "PAPERCUSP_TEST_RUN_HARNESS=papercusp vitest run --config vitest.integration.config.ts lib/work-items-closed-ts.integration.test.ts lib/work-items-terminal-attribution-preserve.integration.test.ts",
     "test:packaged-runner-unit": "npm --prefix ../../tools/perf-test/wdio run test:unit",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "gen:prompt-projections": "node ../../scripts/check-prompt-projections.mjs --write",

@@ -121,11 +121,15 @@ describe('public target — licensed export', () => {
     // P-004: the public cut carries the desktop shell, minus generated/internal paths.
     for (const p of PUBLIC_DESKTOP_SHIPPED) expect(existsSync(join(out, p)), p).toBe(true);
     for (const p of PUBLIC_DESKTOP_DROPPED) expect(existsSync(join(out, p)), p).toBe(false);
-    // The shell is copied after the shared selection, so it must get the same identity scrub.
+    // The shell is copied after the shared selection and gets the same identity scrub.
+    // p2p-public-release-endgame-2026-09-01#D-112 (owner 2026-10-01) made that scrub
+    // machine-only: the owner's name and email may be published, so an owner-naming file
+    // ships byte-identical to the source. Build-box identity (home path, user, host) is
+    // still scrubbed; that half is pinned in audit-release-bundle-fails-closed.test.ts.
     const rigNotes = readFileSync(join(out, DESKTOP_OWNER_NAMING_FILE), 'utf8');
     expect(rigNotes).toContain('echo ok');
-    expect(rigNotes).not.toContain(FIXTURE_ENV.PAPERCUSP_RELEASE_OWNER_NAME);
-    expect(readFileSync(join(fx.repo, DESKTOP_OWNER_NAMING_FILE), 'utf8')).toContain(FIXTURE_ENV.PAPERCUSP_RELEASE_OWNER_NAME);
+    expect(rigNotes).toBe(readFileSync(join(fx.repo, DESKTOP_OWNER_NAMING_FILE), 'utf8'));
+    expect(rigNotes).toContain(FIXTURE_ENV.PAPERCUSP_RELEASE_OWNER_NAME);
     expect(manifest.submodules.map((s: { path: string }) => s.path)).not.toContain('papercusp-desktop'); // a plain dir in the fixture
     for (const p of DROPPED.filter((d) => !d.startsWith('papercusp-desktop/'))) expect(existsSync(join(out, p)), p).toBe(false);
     expect(readme).toContain('PAPERCUSP_POSTHOG_KEY');

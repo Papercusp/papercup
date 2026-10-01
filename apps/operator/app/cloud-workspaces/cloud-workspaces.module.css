@@ -135,6 +135,17 @@
   min-width: 0;
 }
 
+.withGuide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1300px) {
+  .withGuide { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ── The rail ─────────────────────────────────────────────────────────────── */
 
 .rail {

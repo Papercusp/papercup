@@ -18,6 +18,8 @@ import { AlertTriangle, Cloud, RefreshCw, Trash2 } from "lucide-react";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import { useSyncMutate, useSyncQuery } from "@papercusp/sync";
+import { readHostedBrowserApiMarker } from "@/lib/hosted-browser-api";
+import { CloudTutorialCompanion } from "@/lib/onboarding/cloud-tutorial-companion";
 import { Button } from "@/app/harness/Button";
 import { Modal } from "@/app/harness/Modal";
 import { RadioGroup } from "@/app/harness/RadioGroup";
@@ -529,6 +531,8 @@ export default function CloudWorkspacesPage() {
 
   /* ── Render ─────────────────────────────────────────────────────────────── */
 
+  const hostedTutorial = readHostedBrowserApiMarker();
+
   return (
     <div className={styles.page}>
       <header className={styles.pageHeader}>
@@ -584,6 +588,7 @@ export default function CloudWorkspacesPage() {
         </section>
       ) : null}
 
+      <div className={hostedTutorial ? styles.withGuide : undefined}>
       <div className={styles.shell}>
         <WorkspaceRail
           model={rail}
@@ -669,6 +674,17 @@ export default function CloudWorkspacesPage() {
             />
           ) : null}
         </div>
+      </div>
+
+      {hostedTutorial && <CloudTutorialCompanion
+        selectionKey={`${hostedTutorial.controlPlaneWorkspaceId}:${hostParam ?? ""}`}
+        connection={selectedConnection} controlLoading={control.loading} controlError={control.error}
+        onCheckAgain={() => void control.invalidate?.()}
+        onShowStep={(step) => {
+          void setStepParam(step === "connection" ? "connect" : step === "configuration" ? "configure" : "operate");
+          if (step === "connection") void setConnectTarget("gcp");
+        }}
+      />}
       </div>
 
       <Modal

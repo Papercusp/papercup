@@ -8165,15 +8165,19 @@ export function hostThroughPty(o) {
                       : dropReason === 'resume-compaction-timeout'
                         ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
                         : dropReason === 'codex-backend-frame-not-observed'
-                          ? 'the Codex session frame (Ready footer or model header) was never observed within its backend-frame budget'
+                          ? 'the Codex session frame, a Ready footer or model header, never appeared in its backend-frame budget'
                           : dropReason === 'codex-startup-still-starting'
-                            ? 'the Codex footer still read Starting (MCP servers booting) at the kickoff deadline'
-              : 'the child never settled to its prompt'
+                            ? 'the Codex footer still read Starting, MCP servers booting, at the kickoff deadline'
+                            : dropReason === 'never-settled'
+                              ? 'the child never settled to its prompt'
+                              // WI-10004919: an unmapped reason must still be named. It used
+                              // to print only the generic text, which hid a 75s frame-budget
+                              // drop behind "within 600000ms". Keep the parenthesised tail
+                              // unchanged: acceptance-grader.ts parses this line with
+                              // `within \d+ms over \d+ attempt\(s\)\)$`.
+                              : `the child never settled to its prompt [reason ${dropReason}]`
         } ` +
-          // WI-10004919: always name the machine reason. Unmapped reasons used to
-          // print only the generic text above, which hid a 75s frame-budget drop
-          // behind "within 600000ms".
-          `within ${budgetMs}ms over ${attempts} attempt(s); reason=${dropReason})\n`,
+          `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
       );
     } catch {
       /* never let a diagnostic write break the host */

@@ -386,6 +386,10 @@ describe('P-013 workload A fixture', () => {
       // runner interleaves the arms; P013_REPETITION_OFFSET keeps that order when
       // each repetition runs as its own process.
       const { repetitions, coldSamples, warmSamples, warmups, repetitionOffset, modes, concurrencies } = matrix;
+      // Claim-time recall outcomes are attribution for the claim step (WI-10004402): its
+      // deadline warn is silent under vitest, so count outcomes over the matrix only.
+      const claimRecall = await import('../memory/claim-port');
+      claimRecall._resetClaimRecallOutcomeStatsForTests();
       const trials = await runPairedBenchmark({ control: benchmarkArm('control'),
         candidate: benchmarkArm('candidate') }, {
         warmups, repetitions, warmSamples, coldSamples, concurrencies, modes, repetitionOffset,
@@ -421,6 +425,9 @@ describe('P-013 workload A fixture', () => {
       // Attribution only; gradePairedBenchmark never reads it.
       console.info('P-013 workload A dispatch-step attribution (D-047; no grade)',
         JSON.stringify(attributeDispatchSteps(trials, warmDispatchSteps)));
+      // In-process warm arms only; a cold child's recall runs in its own process.
+      console.info('P-013 workload A claim-recall outcomes (no grade)',
+        JSON.stringify(claimRecall.readClaimRecallOutcomeStats()));
       // Per-phase split, not just the total: the cold cost must be attributed to a
       // D-016 phase (accept / dispatch / terminal / business event) before any
       // fixture decision is taken on it (WI-10002948).

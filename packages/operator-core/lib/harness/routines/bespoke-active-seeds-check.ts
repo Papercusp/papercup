@@ -137,7 +137,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     seedScript: 'seed-episode-scoped-operational-reconcile-routine.ts',
   },
   { name: 'inbox-bulk-resolve', seedScript: 'seed-inbox-bulk-resolve-routine.ts' },
-  { name: 'plan-cleanup-sweep', seedScript: 'seed-plan-cleanup-sweep-routine.ts' },
+  // observation-candidate-acceptance-promotion-2026-09-30 P-008: added with the action.
+  { name: 'intake-triage-drain', seedScript: 'seed-intake-triage-drain-routine.ts' },
+  { name: 'plan-cleanup-sweep',seedScript: 'seed-plan-cleanup-sweep-routine.ts' },
   {
     name: 'frozen-candidate-drift-sweep',
     seedScript: 'seed-frozen-candidate-drift-sweep-routine.ts',

@@ -3616,6 +3616,26 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f.endsWith(".sql.PENDING-CODE-DEPLOY")),
   },
   {
+    // WI-10003236 — applyMigrationsForTest detects a stale fixture list only when these
+    // real-Postgres tests run. Attach both fixtures to migration changes so that detector
+    // runs in the affected pass that introduces a new work-item migration.
+    workspace: "@papercusp/operator-core",
+    script: "test:integration:work-items-migration-fixtures",
+    appliesTo: (f) =>
+      f === "libs/papercusp" ||
+      (f.startsWith(`${MIGRATION_SQL_DIR}/`) &&
+        (f.endsWith(".sql") ||
+          f.endsWith(".sql.DRAFT") ||
+          f.endsWith(".sql.PENDING-CODE-DEPLOY"))) ||
+      f === "packages/operator-core/lib/work-items-closed-ts.integration.test.ts" ||
+      f === "packages/operator-core/lib/work-items-terminal-attribution-preserve.integration.test.ts" ||
+      f === "packages/operator-core/test/_pg-helpers.ts" ||
+      f === "packages/operator-core/test/_work-items-schema.ts" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/vitest.integration.config.ts" ||
+      f === "scripts/affected-tests.mjs",
+  },
+  {
     // WI-10004160 — the federated-column drift guard is the only check that a column added
     // to a federated CDC table is either carried by the federation mapper or declared
     // machine-local. It is an integration test, so the unit-layer operator-core task never

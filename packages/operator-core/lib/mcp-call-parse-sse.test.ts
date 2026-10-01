@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 // papercusp-su MCP client drops (EI-1740 / EI-1750). Root scripts/** route into
 // this workspace for test selection (EI-19346163916263067).
 import {
+  buildUnreachableDiagnostic,
   fetchWithConnectionRecovery,
   isConnectionRefusedError,
   parseSse,
@@ -136,6 +137,35 @@ describe('mcp-call connection recovery', () => {
     expect(
       isConnectionRefusedError(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })),
     ).toBe(false);
+  });
+
+  it('keeps UND_ERR_SOCKET diagnostics uncertain instead of claiming no listener', () => {
+    const diagnostic = buildUnreachableDiagnostic({
+      attempts: [{
+        port: '3271',
+        error: Object.assign(new Error('socket closed'), { code: 'UND_ERR_SOCKET' }),
+      }],
+      configuredPort: '3271',
+      pinned: true,
+    });
+
+    expect(diagnostic).toContain('does not establish that no listener was present');
+    expect(diagnostic).toContain('whether the MCP tool ran');
+    expect(diagnostic).not.toContain('Nothing is listening there');
+  });
+
+  it('says the tool was not invoked only when every connection attempt was refused', () => {
+    const diagnostic = buildUnreachableDiagnostic({
+      attempts: [{
+        port: '3271',
+        error: Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }),
+      }],
+      configuredPort: '3271',
+      pinned: true,
+    });
+
+    expect(diagnostic).toContain('this request did not invoke the tool');
+    expect(diagnostic).not.toContain('whether the MCP tool ran');
   });
 
   it('retries a refused explicit-port connection and returns the eventual response', async () => {

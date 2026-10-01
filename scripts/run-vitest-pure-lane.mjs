@@ -236,4 +236,17 @@ export async function runPureLaneShards({
   return result;
 }
 
-if (isCliEntry(import.meta.url)) process.exitCode = await runPureLaneShards();
+// No top-level await: green-checkpoint.ts reaches this module through
+// pure-lane-proof-capture.mjs, and tsx loads that chain as CJS, which cannot
+// compile a top-level await (every gate run died at load on 2026-10-01).
+if (isCliEntry(import.meta.url)) {
+  runPureLaneShards().then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (e) => {
+      console.error(e?.stack ?? e);
+      process.exitCode = 1;
+    },
+  );
+}

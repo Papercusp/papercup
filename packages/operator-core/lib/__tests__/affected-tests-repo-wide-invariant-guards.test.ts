@@ -962,6 +962,53 @@ describe('affected-tests: prose-vector live-schema guard (EI-20820551755839769)'
 });
 
 /**
+ * WI-10003236 — applyMigrationsForTest catches a stale fixture list only when the
+ * real-Postgres fixture runs. The ordinary operator-core task excludes integration
+ * tests, so route these fixtures from migration changes and the inputs that can detach
+ * their guard.
+ */
+describe('affected-tests: work-item migration fixture guard (WI-10003236)', () => {
+  const SCRIPT = 'test:integration:work-items-migration-fixtures';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+  const MIGRATION_PATH = `${MIGRATION_SQL_DIR}/999-work-items-fixture-probe.sql`;
+  const TRIGGER_PATHS = [
+    MIGRATION_PATH,
+    'libs/papercusp',
+    'packages/operator-core/lib/work-items-closed-ts.integration.test.ts',
+    'packages/operator-core/lib/work-items-terminal-attribution-preserve.integration.test.ts',
+    'packages/operator-core/test/_pg-helpers.ts',
+    'packages/operator-core/test/_work-items-schema.ts',
+    'packages/operator-core/vitest.integration.config.ts',
+    'packages/operator-core/package.json',
+    'scripts/affected-tests.mjs',
+  ];
+
+  it.each(TRIGGER_PATHS)('attaches the fixture integration task for a contract input: %s', (changedPath) => {
+    expect(
+      dryTasks(changedPath),
+      `${changedPath} can stale or detach the work-item migration fixtures; the focused real-Postgres task must run`,
+    ).toContain(TASK);
+  });
+
+  it('does NOT attach for an unrelated operator-core source file', () => {
+    expect(dryTasks('packages/operator-core/lib/rubrics.ts')).not.toContain(TASK);
+  });
+
+  it('keeps the focused script scoped to both fixture tests and the integration config', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const command = pkg.scripts?.[SCRIPT];
+    expect(command, `missing ${HOST_WORKSPACE} script ${SCRIPT}`).toBeTruthy();
+    expect(command).toContain('PAPERCUSP_TEST_RUN_HARNESS=papercusp');
+    expect(command).toContain('vitest.integration.config.ts');
+    expect(command).toContain('lib/work-items-closed-ts.integration.test.ts');
+    expect(command).toContain('lib/work-items-terminal-attribution-preserve.integration.test.ts');
+    expect(command).not.toContain('--passWithNoTests');
+  });
+});
+
+/**
  * WI-10004160 — the federated-column drift guard went unrun for a month (2026-08-29 →
  * 2026-09-30) because it is an integration test and nothing in the local gate selected it;
  * 16 columns on 4 federated tables landed neither carried nor declared machine-local. Both

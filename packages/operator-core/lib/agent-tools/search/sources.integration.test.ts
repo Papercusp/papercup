@@ -28,8 +28,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { SEARCH_SOURCES, compactLiteralToken } from './sources';
+import { SEARCH_SOURCES as DEFAULT_SEARCH_SOURCES, compactLiteralToken } from './sources';
 import type { SearchSource, SearchSourceParams } from '@papercusp/search';
+
+// Reuse the semantic-parity suite's copy-out mutation seam for lexical guards.
+// Unset, every assertion exercises the registered production sources.
+let SEARCH_SOURCES = DEFAULT_SEARCH_SOURCES;
 
 const WS_A = 'ws-A';
 const WS_B = 'ws-B'; // the decoy workspace — its rows must NEVER appear in an A-scoped search
@@ -639,6 +643,11 @@ const params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams => (
 });
 
 beforeAll(async () => {
+  const subject = process.env.PAPERCUSP_SOURCES_SUBJECT;
+  if (subject) {
+    const mod = (await import(subject)) as { SEARCH_SOURCES: typeof DEFAULT_SEARCH_SOURCES };
+    SEARCH_SOURCES = mod.SEARCH_SOURCES;
+  }
   db = await createFreshPgDb('search-sources');
   sql = db.sql;
   await setupSchema(sql);

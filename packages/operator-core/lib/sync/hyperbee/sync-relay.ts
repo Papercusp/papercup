@@ -35,13 +35,20 @@ export function syncRelayThroughOption(keys: readonly Buffer[]): { relayThrough?
 }
 
 /**
- * The relay keys for the sync swarm: the voice relay set (env
- * PAPERCUSP_VOICE_RELAY_KEYS ∪ PG voice_relay.relayKeys). Never throws: a read
- * failure must not block swarm construction, it only loses the fallback.
+ * The reader the shared sync swarm uses: the voice relay set (env
+ * PAPERCUSP_VOICE_RELAY_KEYS ∪ PG voice_relay.relayKeys ∪ the shipped defaults
+ * when `dhtBootstrap` means the public DHT).
  */
-export async function resolveSyncRelayKeys(
-  read: () => Promise<Buffer[]> = getVoiceRelayKeys,
-): Promise<Buffer[]> {
+export function syncRelayKeyReader(dhtBootstrap: readonly unknown[] | undefined): () => Promise<Buffer[]> {
+  return () => getVoiceRelayKeys({ dhtBootstrap });
+}
+
+/**
+ * The relay keys for the sync swarm, from `read` (normally
+ * {@link syncRelayKeyReader}). Never throws: a read failure must not block
+ * swarm construction, it only loses the fallback.
+ */
+export async function resolveSyncRelayKeys(read: () => Promise<Buffer[]>): Promise<Buffer[]> {
   try {
     return await read();
   } catch (e) {

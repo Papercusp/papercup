@@ -697,13 +697,18 @@ export const bulkRunAct = defineTool({
         async execute() {
           // Re-read INSIDE the run-row authority window. A manifest read is
           // advisory; this is the last check before the irreversible effect.
-          const actions = await liveActionsFor(row.itemId);
+          // P-008: an intake-triage row is never an attention-feed member; its
+          // liveness is the source row itself, re-read by the intake executor.
+          const sourceLiveness = args.actionId === INTAKE_APPLY_ACTION_ID && isSourceLivenessRunKind(run.runKind);
+          const actions = sourceLiveness ? null : await liveActionsFor(row.itemId);
           // P-006: applying a RECORDED intake decision is not a card button — its
           // authority is the validated decision on this run row (plus the policy
           // gate above), and the item must still be live.
           if (args.actionId === INTAKE_APPLY_ACTION_ID) {
             if (!row.intakeDecision) throw new Error(`${row.itemId} has no recorded intake decision to apply`);
-            if (!actions) throw new Error(`${row.itemId} is no longer live; its intake decision was not applied`);
+            if (!actions && !sourceLiveness) {
+              throw new Error(`${row.itemId} is no longer live; its intake decision was not applied`);
+            }
             const dispatched = await dispatchAttentionTerminalAction({
               item,
               actionId: args.actionId,

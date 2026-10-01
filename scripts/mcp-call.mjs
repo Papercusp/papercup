@@ -408,6 +408,33 @@ export function isRecoverableAuthorityDenial(raw) {
 }
 
 /**
+ * Describe an exhausted endpoint search without turning every transport error
+ * into a claim that the port had no listener. Only ECONNREFUSED proves the
+ * request could not have reached the MCP handler; resets such as UND_ERR_SOCKET
+ * leave the tool outcome unknown.
+ */
+export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned }) {
+  const renderedAttempts = attempts.map(({ port, error }) => {
+    const reason = error?.cause?.code ?? error?.code ?? error?.message ?? 'unknown error';
+    return `${port} (${reason})`;
+  }).join(', ');
+  const allRefused = attempts.length > 0 && attempts.every(({ error }) => isConnectionRefusedError(error));
+  const outcome = allRefused
+    ? 'Every connection attempt was refused before an MCP request could be sent; this request did not invoke the tool.'
+    : 'At least one failure was not a connection refusal. This does not establish that no listener was present or whether the MCP tool ran; check a write outcome before retrying it.';
+
+  return `mcp-call: could not reach the operator MCP endpoint. Tried port(s): ${renderedAttempts}.\n` +
+    (pinned ? `  Port ${configuredPort} was explicitly pinned with --port, so no fallback was attempted.\n` : '') +
+    `  ${outcome}\n` +
+    `  A healthy operator on a different port may still be serving. Find the live port:\n` +
+    `    ss -ltn | grep -E ':(3070|3170|9071)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
+    `  The resilient MCP proxy usually listens on :9071 and can bridge an operator restart.\n` +
+    `  Confirm the canonical operator is healthy with:\n` +
+    `    curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3070/api/health\n` +
+    `  See EI-20182275617587040 / agent-insights/mcp-client-drop-curl-recovery.`;
+}
+
+/**
  * Build the scoped-superuser query for the recovery transport.
  *
  * `mcp-call` promises JSON on stdout (and vmcall.sh validates that contract),
@@ -629,22 +656,12 @@ async function main() {
       break;
     } catch (err) {
       if (index === 0) configuredPortError = err;
-      attempts.push(`${port} (${err?.cause?.code ?? err?.code ?? err?.message ?? 'unknown error'})`);
+      attempts.push({ port, error: err });
     }
   }
 
   if (!res) {
-    console.error(
-      `mcp-call: could not reach the operator MCP endpoint. Tried port(s): ${attempts.join(', ')}.\n` +
-        (pinned ? `  Port ${configuredPort} was explicitly pinned with --port, so no fallback was attempted.\n` : '') +
-        `  Nothing is listening there — but a HEALTHY operator on a DIFFERENT port is the common\n` +
-        `  case, so do not read this as a dead server. Find the live port:\n` +
-        `    ss -ltn | grep -E ':(3070|3170|9071)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
-        `  The resilient MCP proxy usually listens on :9071 and can bridge an operator restart.\n` +
-        `  Confirm the canonical operator is healthy with:\n` +
-        `    curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3070/api/health\n` +
-        `  See EI-20182275617587040 / agent-insights/mcp-client-drop-curl-recovery.`,
-    );
+    console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
     process.exit(4);
   }
   if (flags.raw) { process.stdout.write(raw); return; }

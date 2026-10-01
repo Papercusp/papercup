@@ -81,6 +81,18 @@ export function isItemSnapshotRunKind(kind: BulkRunKind): boolean {
   return kind !== 'plan-cleanup';
 }
 
+/**
+ * Kinds whose items are NOT attention-feed members, so feed membership cannot be
+ * their liveness check. An intake-triage item is an observation-lane row, and the
+ * feed admits improvement rows only when they are flagged for a human, so a
+ * feed-membership gate would refuse every intake-triage application. Their liveness
+ * is the source row's own state, which `executeIntakeDecision` re-reads under its
+ * row lock (`source-not-found` / `source-terminal` refusals write nothing).
+ */
+export function isSourceLivenessRunKind(kind: BulkRunKind): boolean {
+  return kind === 'intake-triage';
+}
+
 /** The pre-937 rows' kind, and the default everywhere a caller does not say —
  *  which is what keeps every existing inbox call site's behavior unchanged. */
 export const DEFAULT_RUN_KIND: BulkRunKind = 'inbox-resolve';
