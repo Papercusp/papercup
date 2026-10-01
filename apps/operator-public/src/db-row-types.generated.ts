@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: f7e1682e643a177c8d32c7fcb826138c4e51449005f664113a69ac2a49777a59
+ * Migration digest: 1f109d1564f4c946f8ab897af0f5ab5c44f1aabb1697a0b731f04ea1cca3673a
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "f7e1682e643a177c8d32c7fcb826138c4e51449005f664113a69ac2a49777a59";
+  "1f109d1564f4c946f8ab897af0f5ab5c44f1aabb1697a0b731f04ea1cca3673a";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -32,6 +32,7 @@ export const GENERATED_TABLES = [
   "reports",
   "settlement_batch_vouchers",
   "settlement_batches",
+  "transparency_attestations",
   "transparency_live",
   "transparency_statements",
   "treasury_safe_deployment_records",
@@ -400,6 +401,17 @@ export interface SettlementBatchesRow {
   created_at_ms: number;
   updated_at_ms: number;
   finalized_at_ms: number | null;
+}
+
+export interface TransparencyAttestationsRow {
+  workspace_id: string;
+  month: string;
+  document_sha256: string;
+  statement_digest: string;
+  record_json: string;
+  proof_json: string | null;
+  recorded_at_ms: number;
+  proof_at_ms: number | null;
 }
 
 export interface TransparencyLiveRow {

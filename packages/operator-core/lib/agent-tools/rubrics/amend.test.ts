@@ -79,6 +79,7 @@ vi.mock('../../detached-imports', () => ({
 
 import amendTool, { rubricsAmendArgs } from './amend';
 import amendStatusTool from './amend-status';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 type ToolOutput = { content: Array<{ text: string }> };
 const body = async (args: unknown) =>
@@ -103,6 +104,10 @@ const criterion = {
 };
 
 describe('rubrics:amend complete acceptance criteria input', () => {
+  it('stays within the shared P-011 prompt-weight budget', () => {
+    expect(promptWeight(amendTool)).toBeLessThanOrEqual(BUDGET);
+  });
+
   it('keeps the complete tool schema JSON-Schema-representable', () => {
     expect(() => z.toJSONSchema(amendTool.args as never)).not.toThrow();
   });

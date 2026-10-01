@@ -1672,6 +1672,29 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(out).toMatch(/--fake-destructive/);
   });
 
+  it('explains an unlink comment match and safely probes it through fake-destructive', () => {
+    const commentOnlySubject = '# unlink appears only in this comment\nalpha\nbeta\ngamma\n';
+    writeFileSync(subject, commentOnlySubject);
+    const args = [
+      '--file', subject,
+      '--mutate', 's/beta/BETA/',
+      '--test', 'grep -q "^beta$" {}',
+    ];
+
+    const refused = runProbeIO(args);
+    expect(refused.code).toBe(2);
+    expect(refused.out).toMatch(/this is a false positive/i);
+    expect(refused.out).toMatch(/--fake-destructive is the cheap correct answer/i);
+    expect(refused.out).toMatch(/\d+:# unlink appears only in this comment/);
+    expect(read()).toBe(commentOnlySubject);
+
+    const safe = runProbeIO(['--fake-destructive', ...args]);
+    expect(safe.code).toBe(0);
+    expect(safe.out).toMatch(/fake-destructive: shims installed/);
+    expect(safe.out).toMatch(/MUTATION_PROBE_RESULT verdict=caught/);
+    expect(read()).toBe(commentOnlySubject);
+  });
+
   it('warns but allows an unmutated historical source containing rm', () => {
     const repo = join(dir, 'historical-destructive-repo');
     mkdirSync(repo);

@@ -23,6 +23,7 @@ import {
   clampLimit,
   classifyJournalctlFailure,
   collapseConsecutive,
+  defaultUnitCanonicalizer,
   decodeMacPriority,
   decodeMacTimestamp,
   decodeMessage,
@@ -38,8 +39,10 @@ import {
   parseMacLogJson,
   parseJournalJson,
   mergeJournalRecords,
-  readJournal,
+  readJournal as readJournalImpl,
+  type JournalScope,
   type JournalExec,
+  type UnitCanonicalizer,
 } from './journal-read';
 
 /** Build one journalctl `-o json` line. */
@@ -52,6 +55,15 @@ const execReturning = (stdout: string): JournalExec => async () => ({ stdout });
 /** Default probe stub for the cases that are not ABOUT unknown units — without
  *  it an empty-result case would shell out to a real `systemctl`. */
 const noUnknownUnits = async () => [];
+const keepRequestedUnitNames: UnitCanonicalizer = async (units) => units;
+
+// Most cases isolate journal parsing/diagnosis from systemd's external alias lookup.
+const readJournal = (
+  opts: Parameters<typeof readJournalImpl>[0],
+  exec?: Parameters<typeof readJournalImpl>[1],
+  probeUnits?: Parameters<typeof readJournalImpl>[2],
+  resolveWindow?: Parameters<typeof readJournalImpl>[3],
+) => readJournalImpl(opts, exec, probeUnits, resolveWindow, keepRequestedUnitNames);
 
 describe('buildJournalctlArgs', () => {
   it('normalizes compact relative lookbacks while preserving native timestamp grammar', () => {
@@ -568,6 +580,66 @@ describe('readJournal', () => {
       `slice-${calls.length - 1}`,
       `slice-${calls.length}`,
     ]);
+  });
+});
+
+describe('readJournal — canonical systemd unit names', () => {
+  it('queries the systemd Id for an alias instead of returning a false clean zero', async () => {
+    const requestedUnit = 'papercup-bg-host.service';
+    const canonicalUnit = 'papercusp-bg-host.service';
+    const calls: string[][] = [];
+    const runSystemctl = vi.fn(async (_file: string, _args: string[]) => ({
+      stdout: `${canonicalUnit}\n`,
+      stderr: '',
+    }));
+    const exec: JournalExec = async (args) => {
+      calls.push(args);
+      return {
+        stdout: args.includes(canonicalUnit)
+          ? jsonLine({
+            _SYSTEMD_USER_UNIT: canonicalUnit,
+            MESSAGE: 'own_log_compaction completed',
+          })
+          : '',
+      };
+    };
+    const canonicalizeUnits = vi.fn((units: string[], scope: JournalScope) =>
+      defaultUnitCanonicalizer(units, scope, runSystemctl),
+    );
+    const out = await readJournalImpl(
+      { units: [requestedUnit], grep: 'own_log_compaction' },
+      exec,
+      noUnknownUnits,
+      async () => null,
+      canonicalizeUnits,
+    );
+
+    expect(canonicalizeUnits).toHaveBeenCalledWith([requestedUnit], 'user');
+    expect(runSystemctl).toHaveBeenCalledWith(
+      'systemctl',
+      ['--user', 'show', '-p', 'Id', '--value', requestedUnit],
+      { timeout: 3000 },
+    );
+    expect(calls[0]).toContain(canonicalUnit);
+    expect(out.command).toContain(canonicalUnit);
+    expect(out.units).toEqual([requestedUnit]);
+    expect(out.entries.map((entry) => entry.message)).toEqual(['own_log_compaction completed']);
+  });
+
+  it('keeps the requested name when the manager cannot supply a canonical Id', async () => {
+    const runSystemctl = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    await expect(defaultUnitCanonicalizer(['gone.service'], 'user', runSystemctl))
+      .resolves.toEqual(['gone.service']);
+  });
+
+  it('resolves both journal managers when the caller asks for scope all', async () => {
+    const runSystemctl = vi.fn(async (_file: string, args: string[]) => ({
+      stdout: args[0] === '--user' ? 'user-alias.service\n' : 'system-alias.service\n',
+      stderr: '',
+    }));
+    await expect(defaultUnitCanonicalizer(['alias.service'], 'all', runSystemctl))
+      .resolves.toEqual(['user-alias.service', 'system-alias.service']);
+    expect(runSystemctl).toHaveBeenCalledTimes(2);
   });
 });
 

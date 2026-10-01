@@ -33,7 +33,7 @@ export function CloudTutorialHighlight({
     const focus = document.activeElement as HTMLElement | null;
     let current: HTMLElement | null = null;
     let disposed = false;
-    let timeout: ReturnType<typeof window.setTimeout> | undefined;
+    let timeout: number | undefined;
     const waitForTarget = () => {
       window.clearTimeout(timeout);
       statusRef.current?.("waiting");

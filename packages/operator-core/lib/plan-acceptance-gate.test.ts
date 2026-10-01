@@ -1795,6 +1795,27 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
   });
 
+  it.each(['pending', 'failed'] as const)(
+    'rejects a linked meta-vetting card whose grade-the-grader audit is %s',
+    async (state) => {
+      stockScorecards([
+        metaVettingCard({
+          gradingAudit: {
+            state,
+            metaRubricRef: 'grading-integrity',
+            stampedAt: '2026-09-24T03:54:29.339Z',
+          },
+        }),
+      ]);
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+      expect(v.message).toContain('EI-vet');
+      expect(v.message).toContain('grading-audit-unsettled');
+    },
+  );
+
   it('CONTROL (falsifiability, in-test — no tree mutation): the vetting stamp ALONE flips the verdict', async () => {
     // Identical state twice; the only delta is the stamp. If the check were vacuous
     // (or wired to the wrong field), both runs would agree and this control fails.

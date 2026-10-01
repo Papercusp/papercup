@@ -6,11 +6,13 @@ import { describe, expect, it, vi } from 'vitest';
 const store = vi.hoisted(() => ({
   getRunningRun: vi.fn(async (): Promise<{ runId: string; phase: string } | null> => null),
   getActiveRun: vi.fn(async () => ({ runId: 'bulk-review-since-aug', phase: 'review' })),
+  getItemIdsAwaitingOwnerReview: vi.fn(async (): Promise<Set<string>> => new Set()),
 }));
 vi.mock('../../attention/bulk-run-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../attention/bulk-run-store')>()),
   getRunningRun: store.getRunningRun,
   getActiveRun: store.getActiveRun,
+  getItemIdsAwaitingOwnerReview: store.getItemIdsAwaitingOwnerReview,
 }));
 
 import { makeInboxBulkResolveAction, buildInboxBulkResolveSeedItems } from './inbox-bulk-resolve-action';
@@ -78,5 +80,47 @@ describe('inbox bulk resolver durable action', () => {
     expect(seeds).toHaveLength(200);
     expect(seeds[0]).toMatchObject({ itemId: 'item-0' });
     expect(new Set(seeds.map((s) => s.itemId)).size).toBe(200);
+  });
+
+  // WI-10004720 follow-up: with the review gate gone, every fire re-seeded the
+  // SAME head of the feed (13 runs in 3h, 194–200 of each run's 200 items
+  // already in an earlier run). Held ids are skipped BEFORE the cap.
+  it('skips ids already awaiting owner review and seeds the next unreviewed items', () => {
+    const items = Array.from({ length: 205 }, (_, i) => ({ id: `item-${i}`, actions: [{ id: 'ack' }] }));
+    const held = new Set(Array.from({ length: 200 }, (_, i) => `item-${i}`));
+    const seeds = buildInboxBulkResolveSeedItems({ groups: [{ items }] }, 200, held);
+    expect(seeds.map((s) => s.itemId)).toEqual(['item-200', 'item-201', 'item-202', 'item-203', 'item-204']);
+  });
+
+  it('reads held ids through the production wiring for this workspace and kind', async () => {
+    store.getItemIdsAwaitingOwnerReview.mockClear();
+    const action = makeInboxBulkResolveAction({
+      enabled: async () => true,
+      readAttention: async () => ({ groups: [] }),
+      runningRun: async () => null,
+      log: vi.fn(),
+    });
+    await action(ctx);
+    expect(store.getItemIdsAwaitingOwnerReview).toHaveBeenCalledWith('ws-1', 'inbox-resolve');
+  });
+
+  it('skips, and says why, when every action-bearing item already awaits owner review', async () => {
+    const launch = vi.fn();
+    const log = vi.fn();
+    const action = makeInboxBulkResolveAction({
+      enabled: async () => true,
+      readAttention: async () => ({
+        groups: [{ items: [{ id: 'a', actions: [{ id: 'ack' }] }, { id: 'b', actions: [{ id: 'ack' }] }] }],
+      }),
+      runningRun: async () => null,
+      awaitingReview: async () => new Set(['a', 'b']),
+      launch,
+      log,
+    });
+    await action(ctx);
+    expect(launch).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      'skip: no unreviewed action-bearing attention items (2 already await owner review)',
+    );
   });
 });

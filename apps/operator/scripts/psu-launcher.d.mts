@@ -1095,9 +1095,14 @@ export function addClaudeResumeToolReferencesToEnv(session: any, env: any, { hom
  *     carry or exact resume cannot silently reset the owner's reasoning level.
  *   - omp / no transcript / unreadable → null (callers degrade to "unknown").
  * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
+ * `notBeforeMs` limits Codex carry observations to this launcher's lifetime:
+ * an older resumed turn must not override its newly selected model.
+ * @param {any} session
+ * @param {{ home?: string, notBeforeMs?: number | null }} [opts]
  */
-export function lastActiveModelFor(session: any, { home }?: {
-    home?: string | undefined;
+export function lastActiveModelFor(session: any, { home, notBeforeMs }?: {
+    home?: string;
+    notBeforeMs?: number | null;
 }): string | null;
 /**
  * Split a model spec into the parts that mean different things across a
@@ -1164,13 +1169,13 @@ export function modelSpecFromRecycleArgv(args?: any[]): string | null;
  * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
  *          configDir?: string | null, codexHome?: string | null,
  *          advSessionId?: string | number | null, modelSource?: string | null,
- *          includeInherited?: boolean,
+ *          includeInherited?: boolean, notBeforeMs?: number | null,
  *          readLatestCodexRollout?: (root: string) => {id: string} | null,
  *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
- *                                 opts?: { home?: string }) => string | null }} [opts]
+ *                                 opts?: { home?: string, notBeforeMs?: number | null }) => string | null }} [opts]
  * @returns {string | null}
  */
-export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, configDir, codexHome, advSessionId, modelSource, includeInherited, readLatestCodexRollout, readLastActiveModel, }?: {
+export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, configDir, codexHome, advSessionId, modelSource, includeInherited, notBeforeMs, readLatestCodexRollout, readLastActiveModel, }?: {
     ownerId?: string | null;
     agent?: string | null;
     home?: string;
@@ -1179,6 +1184,7 @@ export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, 
     advSessionId?: string | number | null;
     modelSource?: string | null;
     includeInherited?: boolean;
+    notBeforeMs?: number | null;
     readLatestCodexRollout?: (root: string) => {
         id: string;
     } | null;
@@ -1189,6 +1195,7 @@ export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, 
         configDir?: string;
     }, opts?: {
         home?: string;
+        notBeforeMs?: number | null;
     }) => string | null;
 }): string | null;
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */

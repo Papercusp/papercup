@@ -70,7 +70,6 @@ describe.each(["driver", "joyride"] as const)("%s on the maintained React/TanSta
     const [open, setOpen] = useState(false);
     const [saved, setSaved] = useState(false);
     const [target, setTarget] = useState("[data-tutorial-target='late']");
-    const [status, setStatus] = useState("");
     return <>
       <Button onClick={() => setLate(true)}>Mount target</Button>
       <Button onClick={() => setActive(false)}>Exit guide</Button>
@@ -81,7 +80,6 @@ describe.each(["driver", "joyride"] as const)("%s on the maintained React/TanSta
         <Button onClick={() => setSaved(true)}>Save configuration</Button>
       </Modal>
       {saved && <p>Saved by product action</p>}
-      <p role="status">{status}</p>
       {candidate === "driver" ? <DriverCandidate target={target} active={active} /> : <JoyrideCandidate target={target} active={active} />}
     </>;
   }
@@ -213,5 +211,17 @@ describe("Selected nonmodal Joyride highlight lifecycle", () => {
     input.focus();
     expect(fireEvent.keyDown(input, { key: "Tab", cancelable: true })).toBe(false);
     expect(document.activeElement).toBe(input);
+  });
+
+  it("restarts missing-target recovery after a previously ready control unmounts", async () => {
+    vi.useFakeTimers();
+    const status = vi.fn();
+    const view = render(<><span><input data-tutorial-target="removed" /></span><CloudTutorialHighlight target="[data-tutorial-target='removed']" active contextKey="workspace-a" onStatus={status} /></>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(status).toHaveBeenLastCalledWith("ready");
+    view.rerender(<><span /><CloudTutorialHighlight target="[data-tutorial-target='removed']" active contextKey="workspace-a" onStatus={status} /></>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(status).toHaveBeenLastCalledWith("missing");
+    expect(document.querySelector(".react-joyride__overlay")).toBeNull();
   });
 });

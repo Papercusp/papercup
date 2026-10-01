@@ -246,6 +246,39 @@ function harness(fetchImpl: CodexOAuthAdapterOptions['fetch'], overrides: Harnes
   return { options, written, started, prepared, cooled };
 }
 
+it.each(['cancelled', 'ttfb-timeout'] as const)(
+  'attributes a native AbortError from %s before cooling the OAuth egress',
+  async code => {
+    const controller = new AbortController();
+    const failed = vi.fn();
+    let entered!: () => void;
+    const attemptStarted = new Promise<void>(resolve => { entered = resolve; });
+    const { options, cooled } = harness(async (_url, init) => {
+      entered();
+      return new Promise((_resolve, reject) => {
+        const abort = () => reject(new DOMException('fixture aborted', 'AbortError'));
+        if (init.signal.aborted) abort();
+        else init.signal.addEventListener('abort', abort, { once: true });
+      });
+    }, { pin: { accountId: 'chatgpt-a', mode: 'hard' }, extra: { onEgressFailure: failed } });
+    options.request.signal = controller.signal;
+    options.policy = { ...POLICY, ttfbTimeoutMs: code === 'ttfb-timeout' ? 80 : 2_000 };
+    const pending = executeGatewayRequestKernel(options).catch(error => error);
+    await attemptStarted;
+    if (code === 'cancelled') controller.abort();
+    const error = await pending;
+    expect(error).toBeInstanceOf(GatewayRequestKernelError);
+    expect(error.code).toBe(code);
+    if (code === 'cancelled') {
+      expect(cooled).toEqual([]);
+      expect(failed).not.toHaveBeenCalled();
+    } else {
+      expect(cooled).toEqual([{ key: 'chatgpt-a:default', ms: 30_000 }]);
+      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a');
+    }
+  },
+);
+
 describe('codex OAuth kernel adapter — happy path and header discipline', () => {
   it('serves the resolved account, reporting it and the egress key on the metadata', async () => {
     const { options, started, written } = harness(async () => upstream(200, {}, sseBody('data: hi\n\n')));

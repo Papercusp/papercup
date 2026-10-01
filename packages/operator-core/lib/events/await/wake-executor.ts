@@ -963,6 +963,17 @@ type ClaimableDeliveryFreshness = {
   staleIds: string[];
 };
 
+type BlockedBoundDeliveryComponent = {
+  itemId: string;
+  eventIndex: number | null;
+};
+
+type BlockedBoundDeliveryFreshness = {
+  delivery: DeliveryWork;
+  staleOnly: boolean;
+  staleIds: string[];
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1006,8 +1017,8 @@ function deliveryEventPayloadIsTimeout(event: CoalescedDeliveryEvent): boolean {
   return isRecord(event.payload) && event.payload.timeout === true;
 }
 
-/** Rebuild the coalesced headline after stale claimable components are removed. */
-function rebuildCoalescedClaimableDelivery(
+/** Rebuild the coalesced headline after stale components are removed. */
+function rebuildCoalescedDelivery(
   d: DeliveryWork,
   events: CoalescedDeliveryEvent[],
 ): DeliveryWork {
@@ -1137,7 +1148,106 @@ async function revalidateClaimableDelivery(
   }
 
   return {
-    delivery: rebuildCoalescedClaimableDelivery(d, remaining),
+    delivery: rebuildCoalescedDelivery(d, remaining),
+    staleOnly: false,
+    staleIds: [...staleIds],
+  };
+}
+
+/** Find the blocked work-item lifecycle target stamped on an auto-armed wake. */
+function blockedBoundWorkItemId(payload: unknown): string | null {
+  if (!isRecord(payload) || !isRecord(payload.bound_to)) return null;
+  const binding = payload.bound_to;
+  if (binding.kind !== 'work-item-blocked' || typeof binding.ref !== 'string') return null;
+  const ref = binding.ref.trim();
+  return ref || null;
+}
+
+/** Preserve per-event binding provenance when the engine coalesced several wakes. */
+function blockedBoundDeliveryComponents(d: DeliveryWork): BlockedBoundDeliveryComponent[] {
+  if (isRecord(d.payload) && d.payload.coalesced === true && Array.isArray(d.payload.events)) {
+    return d.payload.events.flatMap((raw, eventIndex) => {
+      const itemId = isRecord(raw) ? blockedBoundWorkItemId(raw.payload) : null;
+      return itemId ? [{ itemId, eventIndex }] : [];
+    });
+  }
+  const itemId = blockedBoundWorkItemId(d.payload);
+  return itemId ? [{ itemId, eventIndex: null }] : [];
+}
+
+/**
+ * A fired one-shot may already have a queued delivery by the time its bound
+ * work-item settles, so cancelling the await row alone cannot suppress it.
+ * Re-read that lifecycle target at delivery time and remove only components
+ * whose `work-item-blocked` target is confirmed terminal. Unreadable targets
+ * stay fail-open so a transient store problem cannot swallow a live wake.
+ */
+async function revalidateBlockedBoundDelivery(
+  d: DeliveryWork,
+  lookup: typeof getWorkItem,
+  timeoutMs: number,
+): Promise<BlockedBoundDeliveryFreshness> {
+  const components = blockedBoundDeliveryComponents(d);
+  if (components.length === 0) return { delivery: d, staleOnly: false, staleIds: [] };
+
+  const freshnessById = new Map<string, Promise<boolean | null>>();
+  const staleEventIndexes = new Set<number>();
+  const staleIds = new Set<string>();
+  for (const component of components) {
+    let terminal: boolean | null = null;
+    try {
+      let pending = freshnessById.get(component.itemId);
+      if (!pending) {
+        pending = withWakeTimeout(
+          Promise.resolve().then(() => lookup(component.itemId)),
+          `blocked-bound delivery lookup/${component.itemId}`,
+          Math.max(1, timeoutMs),
+        ).then((item) => (item ? isSettledWorkItemState(item.state) : null));
+        freshnessById.set(component.itemId, pending);
+      }
+      terminal = await pending;
+    } catch {
+      // Unknown reads preserve the original wake, matching the other delivery gates.
+      terminal = null;
+    }
+    if (terminal !== true) continue;
+    staleIds.add(component.itemId);
+    if (component.eventIndex != null) staleEventIndexes.add(component.eventIndex);
+  }
+
+  if (staleIds.size === 0) return { delivery: d, staleOnly: false, staleIds: [] };
+
+  const ids = [...staleIds].join(', ');
+  const coalescedPayload =
+    isRecord(d.payload) && d.payload.coalesced === true && Array.isArray(d.payload.events) ? d.payload : null;
+  if (!coalescedPayload) {
+    return {
+      delivery: {
+        ...d,
+        payload: null,
+        summary: `work-item-blocked wake is stale; bound work-item(s) ${ids} are terminal`,
+      },
+      staleOnly: true,
+      staleIds: [...staleIds],
+    };
+  }
+
+  const events = coalescedPayload.events as unknown[];
+  const remaining = events.filter((_event, index) => !staleEventIndexes.has(index)) as CoalescedDeliveryEvent[];
+  if (remaining.length === 0) {
+    return {
+      delivery: {
+        ...d,
+        payload: null,
+        summary: `work-item-blocked wake is stale; bound work-item(s) ${ids} are terminal`,
+      },
+      staleOnly: true,
+      staleIds: [...staleIds],
+    };
+  }
+
+  return {
+    delivery: rebuildCoalescedDelivery(d, remaining),
     staleOnly: false,
     staleIds: [...staleIds],
   };
@@ -3358,6 +3468,25 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         reason:
           `session ${d.subscriberId} is released from fleet ${released.fleet} ` +
           `(marked ${released.at} by ${released.by}) — end now; queued wake suppressed`,
+      };
+    }
+
+    // EI-24119981583160918: an auto-armed blocked-item await can fire before
+    // its target settles, leaving a delivery queued after the one-shot itself
+    // is no longer cancellable. Revalidate the stamped lifecycle binding before
+    // any wake side effect so a terminal target does not spend a full turn.
+    const blockedBoundFreshness = await revalidateBlockedBoundDelivery(
+      d,
+      getCurrentWorkItem,
+      claimableLookupTimeoutMs,
+    );
+    d = blockedBoundFreshness.delivery;
+    if (blockedBoundFreshness.staleOnly) {
+      return {
+        kind: 'drop',
+        reason:
+          `blocked-item-holder wake is stale because bound work-item(s) ` +
+          `${blockedBoundFreshness.staleIds.join(', ')} are terminal`,
       };
     }
 

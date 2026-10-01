@@ -1019,6 +1019,39 @@ export async function getRunningRun(
   return rows[0] ? mapRun(rows[0]) : null;
 }
 
+/**
+ * Item ids that already sit in a run of `kind` still waiting on the OWNER
+ * (phase `review`), excluding rows the resolver fully auto-resolved — the same
+ * "still owner work" predicate as getPendingReviewItems, widened from one run
+ * to the workspace. A dismissed row in a still-open review counts as held too:
+ * the owner just declined that recommendation, and regenerating it minutes
+ * later is the churn this exists to stop.
+ *
+ * Why: once a `review` run stopped gating the scheduled backstop
+ * (getRunningRun, WI-10004720), every fire re-seeded the SAME top-200 feed
+ * items — 13 runs in 3h on 2026-10-01, 194–200 of each run's 200 items already
+ * in an earlier run, each costing a resolver pass and adding 200 duplicate
+ * recommendations to the owner's review queue. The seeder skips these ids so a
+ * fire moves on to items nobody has looked at yet.
+ */
+export async function getItemIdsAwaitingOwnerReview(
+  workspaceId?: string,
+  kind: BulkRunKind | null = DEFAULT_RUN_KIND,
+): Promise<Set<string>> {
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ item_id: string }[]>`
+    SELECT DISTINCT i.item_id
+      FROM harness_shared.attention_bulk_run_items i
+      JOIN harness_shared.attention_bulk_runs r
+        ON r.workspace_id = i.workspace_id AND r.run_id = i.run_id
+     WHERE r.workspace_id = ${ws} AND r.phase = 'review'
+       AND (${kind ?? null}::text IS NULL OR r.run_kind = ${kind ?? null})
+       AND i.outcome <> 'auto_resolved'
+  `;
+  return new Set(rows.map((row) => row.item_id));
+}
+
 export async function getActiveRun(
   workspaceId?: string,
   kind: BulkRunKind | null = DEFAULT_RUN_KIND,

@@ -28454,7 +28454,7 @@
           "POST"
         ]
       },
-      "description": "Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. A started BAR meaning change needs outside-lineage approval first (guidance.chaining has the steps). Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.",
+      "description": "Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining). The subject Decision, BAR/spec revisions, and rebind commit atomically; prior proof and grades remain history; the shrink guard applies.",
       "capabilities": [
         "coord:write"
       ],
@@ -28481,7 +28481,7 @@
       "guidance": {
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
-        "chaining": "Before adding or meaning-changing a started acceptance BAR, read the subject plan from rubrics:get and its `## Requirements` and `## Design` sections with plans:get. Each changed BAR that remains must appear in Requirements and have a row in `### Bar-to-work map for this plan` mapped to at least one non-dropped P-NNN item; add both entries before calling rubrics:amend. The amendment guard exempts a BAR being removed from the discharge-map check. rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → if approvalRequired, post preview.approval once as a work_items:comment → re-run dryRun with reviewPreviewPost:'thread-post:<that post id>'; the relevance router picks an outside-lineage reviewer → follow review.next → reviewer answers `approve thread-post:<preview-post-id>` → apply with amend { approvalRef:'thread-post:<answer post id>' }. Posts are immutable and resolved by workspace/id, which avoids hash transcription; server checks preview vs applied delta. A payload needs payloadTier (unreadable in some views); a post is visible on every surface. Never pick or message a reviewer yourself. Do not create a counter-sign work-item for approval."
+        "chaining": "Started BAR: read the subject plan's `## Requirements`/`## Design`; map each changed BAR to a non-dropped P-NNN item in `### Bar-to-work map for this plan` (removals exempt). Preview with `dryRun:true`; post `preview.approval` as a `work_items:comment`; retry with `reviewPreviewPost:'thread-post:<preview-id>'` and follow `review.next`. After `approve thread-post:<preview-post-id>`, apply with `approvalRef:'thread-post:<answer-id>'`. The relevance router chooses the outside-lineage reviewer; never pick or message a reviewer yourself; do not create a counter-sign work-item. Posts are immutable workspace/id refs, which avoids hash transcription. Full contract: /internal/docs/agent-insights/unified-requirement-contract."
       }
     },
     {

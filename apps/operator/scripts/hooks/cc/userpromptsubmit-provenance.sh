@@ -40,6 +40,15 @@ if [ -z "${PAPERCUSP_SID:-}" ]; then
   exit 0
 fi
 
+# WI-10004863: a CLI NESTED inside another agent (a `claude -p` from an su's Bash tool or
+# a capability:bash job) inherits the su's PAPERCUSP_SID. Without this its `-p` prompt was
+# captured as an OWNER directive of the su ('say ok' ×12 across 4 sessions) and a mode
+# phrase in it would flip the su's mode. Exit 0 only on POSITIVE nested evidence; any
+# helper failure is non-zero, so the hook classifies exactly as before (fail-open).
+if python3 "$(dirname "$0")/pc_nested_cli.py" >/dev/null 2>&1; then
+  exit 0
+fi
+
 INPUT=$(cat)
 
 # Fail-open backstop: any uncaught crash classifies nothing and allows the turn.

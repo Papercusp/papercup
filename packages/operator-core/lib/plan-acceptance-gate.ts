@@ -39,7 +39,7 @@ import { listScorecards, ratingVerdict } from './scorecards';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { rubricVettingConsultHint } from './consult/selection-policies';
 import {
-  describeGradingAuditDispatchSuppression,
+  getAcceptanceRubricVettingStatus,
   type GradingAuditDispatchSuppression,
 } from './acceptance-rubric-vetting';
 // EI-20249725405239230: the no-claim FACT is single-sourced beside the grader
@@ -1311,45 +1311,33 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         };
       }
       const currentRevision = revisionRead.revision;
-      const metaCards = (
-        await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, subjectRef: rubric.rubricId, limit: 50 })
-      ).filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
-      // The linked critique channel is what makes an attestation a VETTING (a plain
-      // meta-grade without one skipped the external critique the flow exists to
-      // inject). WI-41477: either channel counts — a get_feedback consult, or the
-      // review work-item a launched independent reviewer's comments land on.
-      const vettedCards = metaCards.filter((s) => s.vetting?.consultId || s.vetting?.workItemId);
-      const currentness = vettedCards.map((card) => ({
-        card,
-        verdict: classifyRubricEvidenceCurrentness(
-          {
-            revision: card.vetting?.rubricRevision,
-            criteriaHash: card.vetting?.criteriaHash,
-            meaningRevision: card.vetting?.rubricMeaningRevision,
-          },
-          {
-            revision: currentRevision,
-            criteriaHash: rubric.criteriaHash,
-            meaningRevision: rubric.barContract?.meaningRevision,
-          },
-        ),
-      }));
-      const current = currentness.find((entry) => entry.verdict.state === 'current')?.card;
-      if (!current) {
-        const vettedRevisions = [
-          ...new Set(vettedCards.map((s) => s.vetting?.rubricRevision).filter((v) => v != null)),
-        ];
-        const stale = currentness.some((entry) => entry.verdict.state === 'stale');
-        const unknown = currentness.some((entry) => entry.verdict.state === 'unknown');
+      // Keep the ship-time gate on the same vetting policy as rubrics:get,
+      // scorecards:emit, and bind. Reuse the already-read meta-rubric and revision
+      // so this gate's unreadable-revision refusal remains authoritative.
+      const vettingStatus = await getAcceptanceRubricVettingStatus(rubric, {
+        vettingGateEnabled: true,
+        getRubric: async () => metaRubric,
+        getRubricPlanRevision: async () => currentRevision,
+        listScorecards,
+        ...(opts.readGradingAuditDispatchSuppression
+          ? { readGradingAuditDispatchSuppression: opts.readGradingAuditDispatchSuppression }
+          : {}),
+      });
+      const current = vettingStatus.candidates.find((candidate) => candidate.rejectedBy === null);
+      if (vettingStatus.required && !vettingStatus.satisfied) {
+        const vettedRevisions = vettingStatus.attestedRevisions;
+        const stale = vettingStatus.reason === 'stale-attestation';
         // A subject-less historical meta-card cannot be returned by the
         // subjectRef-filtered read above, but it is still useful diagnostic
         // evidence: it explains how an emitter could believe vetting happened
         // while the gate correctly found no card bound to this rubric. Keep the
         // note explicitly unattributed rather than guessing which rubric the
         // malformed card intended to attest.
-        const unboundMetaCards = (await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, limit: 50 })).filter(
-          (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized && !s.subject,
-        );
+        const unboundMetaCards = stale
+          ? []
+          : (await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, limit: 50 })).filter(
+              (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized && !s.subject,
+            );
         const unboundIds = unboundMetaCards.slice(0, 3).map((s) => s.issueId);
         const unboundDiagnostic =
           unboundIds.length > 0
@@ -1361,33 +1349,23 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 ? ` and a current vetting linkage.`
                 : ` plus vettingConsult:'<consult conversation_id>' (or vettingWorkItem:'<review WI-/EI- id>').`)
             : '';
-        const staleDiagnostic =
-          vettedCards.length > 0
-            ? ` The linked attestation card(s) ${vettedCards
-                .slice(0, 3)
-                .map((s) => s.issueId)
-                .join(', ')} do not cover the current revision.`
-            : '';
-        const pendingAuditCard = metaCards.find((card) => card.gradingAudit?.state === 'pending');
-        const dispatchSuppression = pendingAuditCard && opts.readGradingAuditDispatchSuppression
-          ? await opts.readGradingAuditDispatchSuppression(pendingAuditCard.createdBy).catch(() => null)
-          : null;
-        const suppressionNote = dispatchSuppression
-          ? ` ${describeGradingAuditDispatchSuppression(dispatchSuppression)}`
+        const candidateDiagnostic = vettingStatus.diagnosis
+          ? ` Candidate diagnostics: ${vettingStatus.diagnosis}.`
           : '';
         return {
           satisfied: false,
           code: 'acceptance_rubric_unvetted',
           rubricId: rubric.rubricId,
-          message: (stale || unknown
+          message: (stale
             ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
               `revision ${vettedRevisions.join('/') || '(unrecorded)'} but the rubric identity now in force is ` +
               `revision ${currentRevision ?? '(unrecorded)'}, criteriaHash ${rubric.criteriaHash ?? '(unrecorded)'}. ` +
-              `${unknown ? 'The recorded/live identity is incomplete, so currentness cannot be established' : 'The graded criteria or method changed after vetting'}; the attestation no longer covers what ` +
-              `ships. Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
+              `The graded criteria or method changed after vetting, or the recorded/live identity is incomplete; ` +
+              `the attestation does not establish the current rubric. ` +
+              `Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<consult conversation_id>', ratings:{ <every meta criterion> } }. Citing the SAME ` +
-              `consult is fine when the revision IS the improvement its critique asked for.${staleDiagnostic}`
+              `consult is fine when the revision IS the improvement its critique asked for.${candidateDiagnostic}`
             : `plan '${planSlug}' cannot be marked shipped: its acceptance rubric '${rubric.rubricId}' has not ` +
               `been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric ` +
               `AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external ` +
@@ -1396,19 +1374,15 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
               `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. ` +
               `${unboundDiagnostic ? unboundDiagnostic.slice(1) : ''}` +
-              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).`) + suppressionNote,
-          ...(dispatchSuppression ? { gradingAuditDispatchSuppressed: dispatchSuppression } : {}),
+              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).${candidateDiagnostic}`),
+          ...(vettingStatus.gradingAuditDispatchSuppressed
+            ? { gradingAuditDispatchSuppressed: vettingStatus.gradingAuditDispatchSuppressed }
+            : {}),
         };
       }
-      // The unanswered waiver exists only on the consult channel (a work-item link
-      // with no third-party comment is refused at emit, never waived), so a waived
-      // stamp always carries its consultId.
-      vettingAttestedAt = current.createdAt;
-      if (current.vetting?.unanswered && current.vetting.consultId) {
-        vettedUnderWaiver = {
-          consultId: current.vetting.consultId,
-          ...(current.vetting.unansweredReason ? { reason: current.vetting.unansweredReason } : {}),
-        };
+      if (vettingStatus.required && current) {
+        vettingAttestedAt = current.createdAt;
+        if (vettingStatus.vettedUnderWaiver) vettedUnderWaiver = vettingStatus.vettedUnderWaiver;
       }
     }
   }

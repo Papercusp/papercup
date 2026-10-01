@@ -547,6 +547,13 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           dispatcher: prepared.dispatcher,
         });
       } catch (error) {
+        // Native fetch can reject with a plain AbortError instead of the
+        // kernel's signal reason. Only downstream cancellation clears the
+        // egress attribution; a real TTFB deadline still counts as failure.
+        const abortReason = context.signal.aborted ? context.signal.reason : null;
+        if (abortReason instanceof GatewayRequestKernelError && abortReason.code === 'cancelled') {
+          throw abortReason;
+        }
         // Local terminal admission decisions must not penalize the egress or
         // turn into a retryable upstream failure.
         if (error instanceof GatewayRequestKernelError && !error.retryable) throw error;

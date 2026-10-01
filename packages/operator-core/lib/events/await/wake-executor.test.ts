@@ -790,6 +790,96 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
   });
 });
 
+describe('executeWake — terminal blocked-item lifecycle binding freshness (EI-24119981583160918)', () => {
+  const blockedHolderWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      eventKey: 'work-item:done:WI-10002513',
+      payload: {
+        id: 'WI-10002513',
+        bound_to: { kind: 'work-item-blocked', ref: 'WI-10002520' },
+        armed_because: 'blocked-item-holder auto-arm for WI-10002520',
+      },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  it('drops a queued blocked-holder wake when its bound item is already terminal', async () => {
+    const findPty = vi.fn();
+    const write = vi.fn();
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const getCurrentWorkItem = vi.fn(async (id: string) => ({ id, state: 'done' })) as never;
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentWorkItem,
+    });
+
+    await expect(executeWake(blockedHolderWork(), d)).resolves.toEqual({
+      kind: 'drop',
+      reason: expect.stringContaining('WI-10002520 are terminal'),
+    });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-10002520');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(sendCoordMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps a live bound item on the normal wake ladder', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-live-bound' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async (id: string) => ({ id, state: 'open' })) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    await expect(executeWake(blockedHolderWork(), d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'pty-inject',
+    });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-10002520');
+    expect(write).toHaveBeenCalled();
+  });
+
+  it('removes only terminal-bound components from a coalesced wake', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const stale = blockedHolderWork({ id: 70, createdAt: new Date(1000).toISOString() });
+    const live = work({
+      id: 71,
+      eventKey: 'lock:grant:t-1',
+      summary: 'the lock is still actionable',
+      payload: { ok: true },
+      createdAt: new Date(2000).toISOString(),
+      wakeHandle: advHandle(),
+    });
+    const findPty = vi.fn(() => ({ id: 'pty-coalesced-bound' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async (id: string) => ({ id, state: 'done' })) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    const out = await executeWake({ ...coalesceDeliveries([stale, live]), wakeHandle: advHandle() }, d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-10002520');
+    const injected = String((write.mock.calls[0]?.[1] as Buffer | undefined)?.toString('utf8') ?? '');
+    expect(injected).toContain('lock:grant:t-1');
+    expect(injected).toContain('the lock is still actionable');
+    expect(injected).not.toContain('WI-10002520');
+  });
+
+  it('fails open when the bound target cannot be read', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-fail-open' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async () => null) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    await expect(executeWake(blockedHolderWork(), d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'pty-inject',
+    });
+    expect(findPty).toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
+  });
+});
+
 describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
   const OLD_FLAG = process.env.PAPERCUSP_AMBIENT_CURSOR;
   afterEach(() => {

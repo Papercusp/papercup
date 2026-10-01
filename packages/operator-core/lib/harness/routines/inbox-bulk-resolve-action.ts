@@ -16,6 +16,7 @@ import { bulkAutomationSnapshot } from '../../attention/bulk-dispositions';
 import {
   BulkRunAlreadyActiveError,
   createRun,
+  getItemIdsAwaitingOwnerReview,
   getRunningRun,
   setRunPhase,
   type BulkRunSeedItem,
@@ -39,12 +40,21 @@ interface AttentionFeedItem {
   actions?: unknown;
 }
 
-function seedItems(data: unknown, cap = INBOX_BULK_RESOLVE_CAP): BulkRunSeedItem[] {
+/**
+ * `exclude` holds ids that already await the owner in an open review run. They
+ * are skipped BEFORE the cap, so a fire seeds the next 200 unreviewed items
+ * rather than re-seeding the head of the feed (WI-10004720 follow-up).
+ */
+function seedItems(
+  data: unknown,
+  cap = INBOX_BULK_RESOLVE_CAP,
+  exclude: ReadonlySet<string> = new Set(),
+): BulkRunSeedItem[] {
   const groups = data && typeof data === 'object' && Array.isArray((data as { groups?: unknown }).groups)
     ? (data as { groups: unknown[] }).groups
     : [];
   const out: BulkRunSeedItem[] = [];
-  const seen = new Set<string>();
+  const seen = new Set<string>(exclude);
   for (const group of groups) {
     const items = group && typeof group === 'object' && Array.isArray((group as { items?: unknown }).items)
       ? (group as { items: unknown[] }).items
@@ -81,6 +91,12 @@ export interface InboxBulkResolveActionDeps {
    * (WI-10004720).
    */
   runningRun: (workspaceId: string) => Promise<{ runId: string; phase: string } | null>;
+  /**
+   * Feed ids already waiting on the owner in an open `review` run. Dropping the
+   * review gate (above) without this made every fire re-seed the same 200
+   * items — 13 duplicate runs in 3h (WI-10004720 follow-up).
+   */
+  awaitingReview: (workspaceId: string) => Promise<ReadonlySet<string>>;
   launch: (input: {
     runId: string;
     itemCount: number;
@@ -104,6 +120,7 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
     enabled: () => getFlag(FLAGS.INBOX_BULK_RESOLVE, 'system:inbox-bulk-resolve').catch(() => false),
     readAttention: () => callPlansRead('attention', {}, { uiProjection: false }),
     runningRun: (workspaceId) => getRunningRun(workspaceId, 'inbox-resolve'),
+    awaitingReview: (workspaceId) => getItemIdsAwaitingOwnerReview(workspaceId, 'inbox-resolve'),
     launch: productionLaunch,
     log: (message) => console.log(`[${INBOX_BULK_RESOLVE}] ${message}`),
     ...overrides,
@@ -117,9 +134,14 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       deps.log(`skip: run=${running.runId} is ${running.phase} (single-flight)`);
       return;
     }
-    const items = seedItems(await deps.readAttention());
+    const held = await deps.awaitingReview(ctx.workspaceId);
+    const items = seedItems(await deps.readAttention(), INBOX_BULK_RESOLVE_CAP, held);
     if (items.length === 0) {
-      deps.log('skip: no action-bearing attention items');
+      deps.log(
+        held.size > 0
+          ? `skip: no unreviewed action-bearing attention items (${held.size} already await owner review)`
+          : 'skip: no action-bearing attention items',
+      );
       return;
     }
     const policy = bulkAutomationSnapshot(await readStandingBulkAutomationPolicy(ctx.workspaceId));

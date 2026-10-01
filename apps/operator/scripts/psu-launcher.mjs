@@ -4127,8 +4127,12 @@ const LAST_MODEL_TAIL_BYTES = 256 * 1024;
  *     carry or exact resume cannot silently reset the owner's reasoning level.
  *   - omp / no transcript / unreadable → null (callers degrade to "unknown").
  * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
+ * `notBeforeMs` limits Codex carry observations to this launcher's lifetime:
+ * an older resumed turn must not override its newly selected model.
+ * @param {any} session
+ * @param {{ home?: string, notBeforeMs?: number | null }} [opts]
  */
-export function lastActiveModelFor(session, { home = homedir() } = {}) {
+export function lastActiveModelFor(session, { home = homedir(), notBeforeMs = null } = {}) {
   const file = sessionTranscriptFile(session, { home });
   if (!file) return null;
   const marker =
@@ -4147,6 +4151,10 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
       // carry below. Claude stamps the flag on every record it writes; codex
       // and omp have no sidechains, so the guard is inert for them.
       if (o?.isSidechain === true) return null;
+      if (session.agent === "codex" && Number.isFinite(notBeforeMs)) {
+        const recordedAt = typeof o?.timestamp === "string" ? Date.parse(o.timestamp) : NaN;
+        if (!Number.isFinite(recordedAt) || recordedAt < notBeforeMs) return null;
+      }
       const m =
         session.agent === "codex"
           ? o?.type === "turn_context"
@@ -4326,10 +4334,10 @@ export function modelSpecFromRecycleArgv(args = []) {
  * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
  *          configDir?: string | null, codexHome?: string | null,
  *          advSessionId?: string | number | null, modelSource?: string | null,
- *          includeInherited?: boolean,
+ *          includeInherited?: boolean, notBeforeMs?: number | null,
  *          readLatestCodexRollout?: (root: string) => {id: string} | null,
  *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
- *                                 opts?: { home?: string }) => string | null }} [opts]
+ *                                 opts?: { home?: string, notBeforeMs?: number | null }) => string | null }} [opts]
  * @returns {string | null}
  */
 export function detectRespawnModelSpec(
@@ -4343,6 +4351,7 @@ export function detectRespawnModelSpec(
     advSessionId = null,
     modelSource = null,
     includeInherited = false,
+    notBeforeMs = null,
     readLatestCodexRollout = latestCodexRollout,
     readLastActiveModel = lastActiveModelFor,
   } = {},
@@ -4365,7 +4374,7 @@ export function detectRespawnModelSpec(
       try {
         active = readLastActiveModel(
           { agent: "codex", id: advSessionId, sessionId: latest.id },
-          { home },
+          { home, notBeforeMs },
         );
       } catch {
         // A missing or incomplete rollout must not block the carry.
@@ -11756,6 +11765,9 @@ export function runWrapper(options) {
   applyCodexDiagnosticEnv(env, env.PAPERCUSP_AGENT);
   if (ownerId && usePtyHost({ env })) {
     try {
+      // A restore can immediately carry before its first native turn. Keep its
+      // requested model until a turn from this launcher confirms a user change.
+      const modelObservationNotBeforeMs = Date.now();
       hostThroughPty({
         command: wrapperBin,
         args,
@@ -11792,6 +11804,7 @@ export function runWrapper(options) {
                 codexHome: env.CODEX_HOME || null,
                 advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
+                notBeforeMs: modelObservationNotBeforeMs,
               }),
           }),
         mintCarryRespawnArgs: (a, o = {}) =>
@@ -11806,6 +11819,7 @@ export function runWrapper(options) {
                 codexHome: env.CODEX_HOME || null,
                 advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
+                notBeforeMs: modelObservationNotBeforeMs,
               }),
           }),
         ensureCodexHome: () =>
@@ -11822,6 +11836,7 @@ export function runWrapper(options) {
                 advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
                 includeInherited: true,
+                notBeforeMs: modelObservationNotBeforeMs,
               }),
               routeMode: env[ACCOUNT_ROUTING_MODE_ENV] || null,
               accountId: env.PAPERCUSP_ACCOUNT_ID || null,

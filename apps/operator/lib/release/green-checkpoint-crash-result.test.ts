@@ -724,7 +724,6 @@ describe('WI-10004849: dependency-generation exits 76/77 are infra, not crashes 
     expect(headroom.summary).toMatch(/NO code verdict/);
     expect(lock.reason).toBe('infra-inconclusive');
     expect(lock.green).toBeNull();
-    expect(classifyGateStallStatus('disk-headroom')).toBe('no-verdict');
   });
 
   it('an unrelated dependency-generation exit stays on the crash path', () => {

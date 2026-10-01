@@ -12,6 +12,7 @@ import { journalEntryForMovement, type JournalEntry, type MovementEntryInput } f
 import type { InvariantVerdict } from './reconciliation';
 import type { ReconciliationRunSummary, ReconciliationStatus } from './reconciliation-store';
 import { monthPeriod } from './transparency-report';
+import type { StatementAttestationPush } from './statement-attestation-push';
 import { anchorCovering, latestAnchor, type StatementDrift, type StatementPublish, type TransparencyWorker } from './transparency-publish';
 import { runTransparencyPass } from './transparency-runtime';
 import { verifySignedStatement, type LiveTransparencyPush, type SignedStatement } from './transparency-statement';
@@ -92,6 +93,7 @@ const status = (latestFinal: ReconciliationRunSummary | null, openBreaks: Reconc
 function memoryWorker() {
   const live: LiveTransparencyPush[] = [];
   const statements = new Map<string, SignedStatement>();
+  const attestations: StatementAttestationPush[] = [];
   const worker: TransparencyWorker = {
     async pushLive(push) {
       live.push(push);
@@ -107,8 +109,12 @@ function memoryWorker() {
       statements.set(k, signed);
       return 'created';
     },
+    async publishAttestation(push) {
+      attestations.push(push);
+      return 'created';
+    },
   };
-  return { worker, live, statements };
+  return { worker, live, statements, attestations };
 }
 
 function pass(input: {
@@ -118,11 +124,13 @@ function pass(input: {
   anchors?: readonly StoredAnchor[];
   key?: `0x${string}` | null;
   drifts?: StatementDrift[];
+  attestations?: StatementAttestationPush[];
 }) {
   const drifts = input.drifts ?? [];
   return runTransparencyPass({
     workspaces: [WS],
     worker: input.worker,
+    attestations: async () => input.attestations ?? [],
     now: () => NOW,
     readEntries: async () => input.entries ?? [SEPT_PAY, OCT_PAY],
     readReconciliation: async () => input.st ?? status(CLEAN),

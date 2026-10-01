@@ -50,6 +50,7 @@ const {
   executeBulkRunItemReversal,
   reportOutcomes,
   getPendingReviewItems,
+  getItemIdsAwaitingOwnerReview,
   markItemAccepted,
   markItemDismissed,
   settleRunPhase,
@@ -538,6 +539,38 @@ describe('attention bulk-run store (real PG)', () => {
     expect(done!.finishedAt).toBeTruthy();
     expect((await getRun(run.runId))!.autoResolved).toBe(2);
     expect((await getRun(run.runId))!.skipped).toBe(1);
+  });
+
+  // WI-10004720 follow-up: the scheduled seeder skips these ids, so each fire
+  // seeds items nobody has looked at instead of re-seeding the feed's head.
+  it('reports item ids still awaiting the owner in open review runs of the kind, workspace-scoped', async () => {
+    const held = await createRun({ items: seed('held') });
+    await reportOutcomes({
+      runId: held.runId,
+      outcomes: [
+        { itemId: 'coord-escalation:held-1', outcome: 'recommended', actionId: 'quarantine', rationale: 'needs owner' },
+        { itemId: 'work-item-needs-human:held-2', outcome: 'auto_resolved', actionId: 'answer' },
+        { itemId: 'smoke-fail:held-3', outcome: 'recommended', actionId: 'retry', rationale: 'needs owner' },
+      ],
+    });
+    await unsafeSetRunPhaseForFixtures({ runId: held.runId, phase: 'review' });
+    const dismissed = await markItemDismissed({
+      runId: held.runId,
+      itemId: 'smoke-fail:held-3',
+      note: 'Owner declined this recommendation',
+    });
+    expect(dismissed!.outcome).toBe('dismissed');
+
+    // A finished run holds nothing: its rows are no longer waiting on anyone.
+    const done = await createRun({ items: seed('done') });
+    await unsafeSetRunPhaseForFixtures({ runId: done.runId, phase: 'complete' });
+
+    const ids = await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve');
+    // recommended + owner-dismissed-in-open-review are held; auto_resolved is not.
+    expect([...ids].sort()).toEqual(['coord-escalation:held-1', 'smoke-fail:held-3']);
+
+    expect((await getItemIdsAwaitingOwnerReview(h.ws, 'plan-cleanup')).size).toBe(0);
+    expect((await getItemIdsAwaitingOwnerReview(`${h.ws}-other`, 'inbox-resolve')).size).toBe(0);
   });
 
   it('never settles to complete while an item was never reached', async () => {

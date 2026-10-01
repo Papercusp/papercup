@@ -11911,6 +11911,58 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       }
     });
 
+    it.each([
+      { name: "older turn", timestamp: "2026-10-01T12:55:00.000Z" },
+      { name: "undated turn", timestamp: undefined },
+      { name: "invalid timestamp", timestamp: "not-a-time" },
+    ])("codex: carry ignores pre-launch models from an $name", ({ timestamp }) => {
+      const codexHome = join(home, ".papercusp", "su-codex-homes", "session-46");
+      const file = join(codexHome, "sessions", "2026", "10", "01",
+        `rollout-2026-10-01T12-00-00-${UUID}.jsonl`);
+      writeJsonl(file, [
+        { type: "turn_context", timestamp, payload: { model: "gpt-5.6-sol", effort: "xhigh" } },
+        { type: "response_item", payload: { output: "The restored session appended new metadata." } },
+      ]);
+      writeFileSync(join(codexHome, "config.toml"),
+        'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n[features]\n');
+      writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n");
+      const inherited = ["-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"', "resume", UUID];
+      const opts = {
+        agent: "codex", codexHome, advSessionId: 46, home, modelSource: "explicit",
+        notBeforeMs: Date.parse("2026-10-01T13:01:00.000Z"),
+      };
+      expect(lastActiveModelFor({ agent: "codex", id: 46, sessionId: UUID }, { home }))
+        .toBe("gpt-5.6-sol:xhigh");
+      const selected = detectRespawnModelSpec(inherited, opts);
+      expect(selected).toBeNull();
+      expect(detectRespawnModelSpec(inherited, { ...opts, includeInherited: true }))
+        .toBe("gpt-6.1-sol:xhigh");
+      expect(modelSpecFromRecycleArgv(mintCarryRespawnArgs(inherited, {
+        agent: "codex", codexHome, home, model: selected,
+        systemPromptAddendum: "Continue the checkpointed session.",
+      }).args)).toBe("gpt-6.1-sol:xhigh");
+    });
+
+    it.each([
+      { model: "gpt-5.6-sol", effort: "xhigh" },
+      { model: "gpt-6.1-sol", effort: "medium" },
+    ])("codex: carry honors a post-launch switch to $model:$effort", ({ model, effort }) => {
+      const codexHome = join(home, ".papercusp", "su-codex-homes", "session-47");
+      const file = join(codexHome, "sessions", "2026", "10", "01",
+        `rollout-2026-10-01T12-00-00-${UUID}.jsonl`);
+      writeJsonl(file, [
+        { type: "turn_context", timestamp: "2026-10-01T12:55:00.000Z",
+          payload: { model: "gpt-5.6-sol", effort: "low" } },
+        { type: "turn_context", timestamp: "2026-10-01T13:02:00.000Z", payload: { model, effort } },
+      ]);
+      const selected = detectRespawnModelSpec(
+        ["-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"'],
+        { agent: "codex", codexHome, advSessionId: 47, home, modelSource: "explicit",
+          notBeforeMs: Date.parse("2026-10-01T13:01:00.000Z") },
+      );
+      expect(selected).toBe(`${model}:${effort}`);
+    });
+
     it("codex: reconstructs a model record spanning read chunks, including multibyte text", () => {
       const file = join(home, ".papercusp", "su-codex-homes", "session-45", "sessions",
         "2026", "09", "30", `rollout-2026-09-30T17-00-00-${UUID}.jsonl`);
