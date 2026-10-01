@@ -185,6 +185,7 @@ import {
   describeResumeClaimRefusal,
   announceAdoptedCarryRespawn,
   reportSessionRespawned,
+  reportSessionRespawnedDurably,
   reportSessionPortDelivery,
   reportSessionPortLaunchFailure,
   sessionPortLaunchAbortError,
@@ -13740,14 +13741,15 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
   it("returns the async respawn report so the PTY host can enforce ordering", () => {
     const onRespawn = src.indexOf("onRespawn: (freshId) => {");
-    const report = src.indexOf("return reportSessionRespawned(", onRespawn);
+    // WI-10004917: the durable form, so a report lost to an operator restart is retried.
+    const report = src.indexOf("return reportSessionRespawnedDurably(", onRespawn);
     const callbackEnd = src.indexOf("        },", report);
 
     expect(onRespawn).toBeGreaterThan(-1);
     expect(report).toBeGreaterThan(onRespawn);
     expect(callbackEnd).toBeGreaterThan(report);
-    expect(src.slice(onRespawn, callbackEnd)).not.toContain(
-      "void reportSessionRespawned(",
+    expect(src.slice(onRespawn, callbackEnd)).not.toMatch(
+      /void reportSessionRespawned(Durably)?\(/,
     );
   });
 
@@ -13868,6 +13870,116 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         token: "t",
       }),
     ).resolves.toBe(false);
+  });
+});
+
+describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to an operator restart is retried)", () => {
+  const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
+  const newerId = "2e81d475-d4ee-4ed1-b125-3cceee5dde4e";
+
+  /** A sleep the test releases by hand, one pending delay at a time. */
+  function manualSleep() {
+    const pending: Array<{ ms: number; release: () => void }> = [];
+    const sleepImpl = (ms: number) =>
+      new Promise<void>((resolve) => pending.push({ ms, release: resolve }));
+    const tick = async () => {
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    };
+    return { pending, sleepImpl, tick };
+  }
+
+  it("resolves with the first attempt's verdict and retries in the background until accepted", async () => {
+    const verdicts = [false, false, true];
+    const reportImpl = vi.fn(async () => verdicts.shift() ?? true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(
+      reportSessionRespawnedDurably("42", freshId, {
+        coordOwnerId: "su-owner",
+        reportImpl,
+        retryDelaysMs: [5, 15, 30],
+        sleepImpl,
+      }),
+    ).resolves.toBe(false);
+    expect(reportImpl).toHaveBeenCalledTimes(1);
+    expect(reportImpl).toHaveBeenCalledWith("42", freshId, { coordOwnerId: "su-owner" });
+
+    await tick();
+    expect(pending.map((p) => p.ms)).toEqual([5]);
+    pending.shift()!.release();
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(2);
+    pending.shift()!.release();
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(3);
+    // Accepted: no further delay is scheduled.
+    expect(pending).toHaveLength(0);
+  });
+
+  it("does not retry an accepted first report", async () => {
+    const reportImpl = vi.fn(async () => true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(
+      reportSessionRespawnedDurably("42", freshId, { reportImpl, sleepImpl }),
+    ).resolves.toBe(true);
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(1);
+    expect(pending).toHaveLength(0);
+  });
+
+  it("a newer respawn supersedes an older retry, so a late retry never re-anchors the older id", async () => {
+    const reportImpl = vi.fn(async () => false);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await reportSessionRespawnedDurably("42", freshId, { reportImpl, retryDelaysMs: [5, 15], sleepImpl });
+    await tick();
+    await reportSessionRespawnedDurably("42", newerId, { reportImpl, retryDelaysMs: [5, 15], sleepImpl });
+    await tick();
+    expect(pending).toHaveLength(2);
+    for (const p of pending.splice(0)) p.release();
+    await tick();
+    const reported = reportImpl.mock.calls.map((call) => (call as unknown[])[1]);
+    expect(reported).toEqual([freshId, newerId, newerId]);
+  });
+
+  it("gives up after the last delay and never rejects", async () => {
+    const reportImpl = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(
+      reportSessionRespawnedDurably(null, freshId, {
+        coordOwnerId: "su-owner",
+        reportImpl,
+        retryDelaysMs: [5, 15],
+        sleepImpl,
+      }),
+    ).resolves.toBe(false);
+    for (let i = 0; i < 2; i++) {
+      await tick();
+      pending.shift()!.release();
+    }
+    await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(3);
+    expect(pending).toHaveLength(0);
+  });
+
+  it("no identity key or no native id: no attempt and no retry", async () => {
+    const reportImpl = vi.fn(async () => true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(reportSessionRespawnedDurably(null, freshId, { reportImpl, sleepImpl })).resolves.toBe(false);
+    await expect(reportSessionRespawnedDurably("42", null, { reportImpl, sleepImpl })).resolves.toBe(false);
+    await tick();
+    expect(reportImpl).not.toHaveBeenCalled();
+    expect(pending).toHaveLength(0);
+  });
+
+  it("every launcher re-anchor call site uses the durable form", () => {
+    const src = readFileSync(fileURLToPath(new URL("../scripts/psu-launcher.mjs", import.meta.url)), "utf8");
+    const announce = src.indexOf("export async function announceAdoptedCarryRespawn(");
+    expect(src.slice(announce, announce + 400)).toContain("reportImpl = reportSessionRespawnedDurably,");
+    const callers = [...src.matchAll(/(?:void|return) (reportSessionRespawned\w*)\(/g)].map((m) => m[1]);
+    // Positive control: the scan found the call sites at all.
+    expect(callers.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(callers)).toEqual(new Set(["reportSessionRespawnedDurably"]));
   });
 });
 
