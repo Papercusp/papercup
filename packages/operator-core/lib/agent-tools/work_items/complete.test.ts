@@ -219,7 +219,7 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
     expect(complete.guidance?.when).toContain('each entry exactly once across checked/notChecked/notApplicable');
     expect(complete.guidance?.when).toContain('residue is separate (`[]` or `["none"]` means zero)');
     expect(complete.guidance?.when).toContain('required `assumptions`');
-    expect(complete.guidance?.when).toContain('`completion` owns `testsRun`, `testResult`, `verifiedHow`, and `filesChanged`');
+    expect(complete.guidance?.when).toContain('`testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`');
     expect(complete.guidance?.when).toContain('single-item call also accepts those fields at the argument root as legacy aliases');
     expect(complete.guidance?.when).not.toContain('testFingerprint?');
   });
@@ -6374,7 +6374,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const text = `${description}\n${when}\n${JSON.stringify(completionSchema)}`;
 
       expect(text).toContain('completion.verification');
-      expect(text).toContain('`completion` owns `testsRun`, `testResult`, `verifiedHow`, and `filesChanged`');
+      expect(text).toContain('`testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`');
       expect(text).toContain('single-item call also accepts those fields at the argument root as legacy aliases');
       expect(text).toContain('verification.tests');
       expect(text).toContain('verification.typecheck');

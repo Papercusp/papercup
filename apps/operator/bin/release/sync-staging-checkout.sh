@@ -78,11 +78,16 @@ fi
 _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_DEFAULT="$(git -C "$_HERE" rev-parse --show-toplevel 2>/dev/null || (cd "$_HERE/../../../.." && pwd))"
 INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$_REPO_DEFAULT}"
-STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-staging}"
+LEGACY_STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-staging}"
+STAGING_ROOT="${LEGACY_STAGING_ROOT}.current"
+STAGING_GENERATIONS_ROOT="${LEGACY_STAGING_ROOT}.generations"
 UNIT="${PAPERCUSP_STAGING_UNIT:-papercusp-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"
 STAGING_BUNDLE_SCRIPT="${PAPERCUSP_STAGING_BUNDLE_SCRIPT:-$STAGING_ROOT/apps/operator/bin/bundle-host.sh}"
+STAGING_CANDIDATE_HOME=""
+STAGING_CANDIDATE_ROOT=""
+STAGING_CANDIDATE_PUBLISHED=0
 
 # WI-5710. The port we watch for live client connections — derived from
 # HEALTH_URL so the two can never disagree, overridable for tests.
@@ -94,6 +99,110 @@ STAGING_PORT="${PAPERCUSP_STAGING_PORT:-$(printf '%s' "$HEALTH_URL" | sed -n 's#
 MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
+
+staging_alias_bootstrap() {
+  local tmp
+  mkdir -p "$(dirname "$STAGING_ROOT")" "$STAGING_GENERATIONS_ROOT" || return 1
+  if [[ -L "$STAGING_ROOT" ]]; then
+    if [[ ! -d "$STAGING_ROOT" ]]; then
+      log "FATAL: stable staging alias is broken: $STAGING_ROOT"
+      return 1
+    fi
+    return 0
+  fi
+  if [[ -e "$STAGING_ROOT" ]]; then
+    log "FATAL: stable staging alias path exists as a non-symlink; refusing to replace it: $STAGING_ROOT"
+    return 1
+  fi
+  if [[ -d "$LEGACY_STAGING_ROOT" ]]; then
+    tmp="${STAGING_ROOT}.bootstrap.$$"
+    ln -s "$LEGACY_STAGING_ROOT" "$tmp" || return 1
+    if ! mv -T -- "$tmp" "$STAGING_ROOT"; then
+      rm -f -- "$tmp"
+      return 1
+    fi
+    log "bootstrapped stable staging alias to the existing serving checkout"
+  fi
+}
+
+staging_candidate_bundle_ready() {
+  local candidate_root="$1" candidate_home="$2" expected_sha="$3"
+  local ready_sha
+  ready_sha="$(cat "$candidate_home/.ready" 2>/dev/null || true)"
+  [[ "$ready_sha" == "$expected_sha" ]] &&
+    [[ -s "$candidate_root/apps/operator/dist-host/hono-host.mjs" ]] &&
+    [[ -s "$candidate_root/apps/operator/dist-host/.bundle-fresh.json" ]] &&
+    [[ ! -e "$candidate_root/apps/operator/dist-host/.bundle-stale.json" ]]
+}
+
+publish_staging_generation() {
+  local candidate_root="$1" candidate_home="$2" expected_sha="$3"
+  local tmp="${STAGING_ROOT}.publish.$$"
+  if ! staging_candidate_bundle_ready "$candidate_root" "$candidate_home" "$expected_sha"; then
+    log "FATAL: refusing to publish an incomplete or unbundled staging generation"
+    return 1
+  fi
+  if [[ -e "$STAGING_ROOT" && ! -L "$STAGING_ROOT" ]]; then
+    log "FATAL: stable staging alias became a non-symlink; refusing publication"
+    return 1
+  fi
+  if [[ -e "$tmp" || -L "$tmp" ]]; then
+    log "FATAL: staging publication temp path already exists: $tmp"
+    return 1
+  fi
+  ln -s "$candidate_root" "$tmp" || return 1
+  if ! mv -Tf -- "$tmp" "$STAGING_ROOT"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  STAGING_CANDIDATE_PUBLISHED=1
+  log "published staging generation $candidate_root through stable alias $STAGING_ROOT"
+}
+
+staging_generation_in_use() {
+  local root="$1" proc env_file cwd
+  for proc in /proc/[0-9]*; do
+    env_file="$proc/environ"
+    if [[ -r "$env_file" ]] &&
+      tr '\0' '\n' < "$env_file" 2>/dev/null | grep -Fxq "PAPERCUSP_INTEGRATION_ROOT=$root"; then
+      return 0
+    fi
+    cwd="$(readlink -e "$proc/cwd" 2>/dev/null || true)"
+    if [[ "$cwd" == "$root" || "$cwd" == "$root/"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+prune_staging_generations() {
+  local current_root candidate_root resolved_root candidate_home
+  [[ -d "$STAGING_GENERATIONS_ROOT" ]] || return 0
+  current_root="$(realpath -e "$STAGING_ROOT" 2>/dev/null || true)"
+  while IFS= read -r -d '' candidate_root; do
+    resolved_root="$(realpath -e "$candidate_root" 2>/dev/null || true)"
+    [[ -n "$resolved_root" && "$resolved_root" != "$current_root" ]] || continue
+    if staging_generation_in_use "$resolved_root"; then
+      log "retaining prior staging generation still referenced by a process: $resolved_root"
+      continue
+    fi
+    candidate_home="$(dirname "$resolved_root")"
+    [[ "$(dirname "$candidate_home")" == "$STAGING_GENERATIONS_ROOT" &&
+       "$(basename "$candidate_home")" == .candidate-* ]] || continue
+    git -C "$INTEGRATION_ROOT" worktree remove --force "$resolved_root" >/dev/null 2>&1 || true
+    rm -rf -- "$candidate_home"
+    log "pruned unused staging generation $resolved_root"
+  done < <(find "$STAGING_GENERATIONS_ROOT" -mindepth 2 -maxdepth 2 -type d -name checkout -print0 2>/dev/null)
+}
+
+cleanup_staging_candidate() {
+  if [[ -n "$STAGING_CANDIDATE_HOME" && "$STAGING_CANDIDATE_PUBLISHED" -eq 0 ]]; then
+    [[ ! -d "$STAGING_CANDIDATE_ROOT" ]] ||
+      git -C "$INTEGRATION_ROOT" worktree remove --force "$STAGING_CANDIDATE_ROOT" >/dev/null 2>&1 || true
+    rm -rf -- "$STAGING_CANDIDATE_HOME"
+  fi
+}
+trap cleanup_staging_candidate EXIT
 
 # A sidecar's reviewBy is intentionally fail-closed in the restart preflight,
 # but that only runs when server code needs a restart. This advisory scan runs on

@@ -3760,6 +3760,41 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
   });
 });
 
+describe('personalVaultRefusal — organization-corpus access-control tables (P-014)', () => {
+  it.each([
+    ['permission lists', 'SELECT * FROM harness_shared.document_permission_lists'],
+    ['permission members', 'SELECT provider_user_id FROM harness_shared.document_permission_members'],
+    ['provider identity mappings', 'SELECT user_id FROM provider_identity_mappings'],
+  ])('refuses a read of %s and names the authorized path', (_label, sql) => {
+    expect(personalVaultRefusal(sql)).toMatch(/organization documents corpus/);
+    expect(() => assertSingleReadStatement(sql)).toThrow(/searchOrganizationDocuments/);
+  });
+
+  it('refuses a WRITE that would forge access — mapping a provider identity to yourself', () => {
+    expect(() =>
+      assertSingleWriteStatement(
+        "INSERT INTO harness_shared.provider_identity_mappings (workspace_id, provider, provider_user_id, user_id, mapped_by) VALUES ('w', 'slack', 'U1', gen_random_uuid(), 'me')",
+      ),
+    ).toThrow(/organization documents corpus/);
+  });
+
+  it('keeps the vault message when a statement touches both a vault and an org relation', () => {
+    expect(
+      personalVaultRefusal(
+        'SELECT d.id FROM harness_shared.personal_documents d JOIN harness_shared.document_permission_members m ON m.list_id = d.permission_list_id',
+      ),
+    ).toMatch(/Personal Vault/);
+  });
+
+  // CALIBRATION — schema audits and look-alike identifiers stay allowed.
+  it('allows schema reads that quote the name, and identifiers that only share a prefix', () => {
+    expect(
+      personalVaultRefusal("SELECT * FROM information_schema.columns WHERE table_name = 'provider_identity_mappings'"),
+    ).toBeNull();
+    expect(personalVaultRefusal('SELECT document_permission_lists_count FROM harness_shared.some_table')).toBeNull();
+  });
+});
+
 describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buckets do not sum)', () => {
   // The measured case. This exact shape returned total 96 / bricked 0 / healthy 2,
   // which DOES NOT SUM: 94 rows fell through every FILTER, because an ABSENT jsonb

@@ -25,6 +25,8 @@ import {
   type AwsVolumeObservation,
   type AwsWorkspaceHostSdkClient,
 } from './aws-provider';
+import { cloudResourceKindForDeleteOp, describeCloudResourceDeleteAddress } from './cloud-resource-obligations';
+import type { WorkspaceHostResourceCreatedEvent } from './gcp-provider';
 
 const NOW = '2026-08-22T08:00:00.000Z';
 
@@ -625,5 +627,109 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
     expect(reconciled.state).toBe('unchanged');
     expect('resource' in reconciled && reconciled.resource?.providerId).toBe('i-00000000000000001');
     expect(client.runInstancesCalls).toHaveLength(1);
+  });
+});
+
+// aws-byoc-gcp-parity-2026-10-01 P-003: the AWS provider feeds the same teardown-obligation
+// ledger as GCP. A created EC2 instance / EBS volume must open an obligation addressed for an
+// out-of-band delete, and a confirmed delete must close exactly that row.
+describe('AWS workspace-host provider teardown-obligation observers', () => {
+  function observedProvider(overrides: { onResourceCreated?: (event: WorkspaceHostResourceCreatedEvent) => void } = {}) {
+    const created: WorkspaceHostResourceCreatedEvent[] = [];
+    const destroyed: Array<{ deleteOp: string; providerId: string; workspaceId: string }> = [];
+    const client = new FakeAwsWorkspaceHostSdkClient();
+    const provider = createAwsWorkspaceHostProvider({
+      client,
+      now: () => NOW,
+      onResourceCreated: overrides.onResourceCreated ?? ((event) => void created.push(event)),
+      onResourceDestroyed: (event) =>
+        void destroyed.push({ ...event.resource, workspaceId: event.workspaceId }),
+    });
+    return { client, provider, created, destroyed };
+  }
+
+  async function destroyAll(
+    provider: ReturnType<typeof createAwsWorkspaceHostProvider>,
+    host: WorkspaceHostRef,
+    resources: WorkspaceHostResourceRef[],
+  ): Promise<void> {
+    const destroy = await provider.plan(
+      {
+        action: 'destroy',
+        operationId: 'operation:destroy',
+        idempotencyKey: 'operation:destroy',
+        host,
+        disposition: 'discard',
+        confirmation: { expectedHostId: host.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+      },
+      context(),
+    );
+    for (const step of destroy.steps) {
+      const result = await provider.apply(
+        { planId: destroy.planId, operationId: destroy.operationId, step, knownResources: resources },
+        context(),
+      );
+      expect(result.state).toBe('destroyed');
+    }
+  }
+
+  it('opens one obligation per owned resource, addressed to the connection account and region', async () => {
+    const { client, provider, created } = observedProvider();
+    await provision(client, provider);
+
+    expect(created.map((event) => [event.resource.kind, event.resource.providerId])).toEqual([
+      ['disk', 'vol-1'],
+      ['vm', 'i-00000000000000001'],
+    ]);
+    for (const event of created) {
+      expect(event).toMatchObject({
+        workspaceId: 'workspace-aws-1',
+        hostId: 'host-aws-1',
+        parentResourceId: '123456789012',
+        resource: { parentProviderId: '123456789012', region: 'us-east-1' },
+      });
+      // Every recorded row must be addressable for an out-of-band AWS delete.
+      const addressability = describeCloudResourceDeleteAddress({
+        provider: 'aws',
+        resourceKind: event.resource.kind,
+        resourceId: event.resource.providerId,
+        projectId: event.resource.parentProviderId ?? '',
+        zone: event.resource.zone ?? '',
+        region: event.resource.region ?? '',
+        parentResourceId: event.parentResourceId ?? '',
+        hostId: event.hostId ?? '',
+      });
+      expect(addressability.addressable, JSON.stringify(addressability)).toBe(true);
+    }
+  });
+
+  it('closes each obligation on a confirmed delete with an op that maps back to the recorded kind', async () => {
+    const { client, provider, created, destroyed } = observedProvider();
+    const { host, resources } = await provision(client, provider);
+    await destroyAll(provider, host, resources);
+
+    expect(destroyed).toEqual([
+      { deleteOp: 'terminate-instance', providerId: 'i-00000000000000001', workspaceId: 'workspace-aws-1' },
+      { deleteOp: 'delete-volume', providerId: 'vol-1', workspaceId: 'workspace-aws-1' },
+    ]);
+    const createdKindById = new Map(created.map((event) => [event.resource.providerId, event.resource.kind]));
+    for (const event of destroyed) {
+      expect(cloudResourceKindForDeleteOp(event.deleteOp, 'aws')).toBe(createdKindById.get(event.providerId));
+    }
+  });
+
+  it('fails the step when the obligation producer fails, so a billable resource is never untracked', async () => {
+    const { provider } = observedProvider({
+      onResourceCreated: () => {
+        throw new Error('obligation ledger unavailable');
+      },
+    });
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'provision-1', idempotencyKey: 'provision-1', desired: desired() },
+      context(),
+    );
+    await expect(
+      provider.apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] }, context()),
+    ).rejects.toThrow('obligation ledger unavailable');
   });
 });

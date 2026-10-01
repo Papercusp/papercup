@@ -3683,7 +3683,30 @@ const PERSONAL_VAULT_RELATIONS = [
 ] as const;
 
 /**
- * The refusal message when `rawSql` touches a Personal Vault relation, else null.
+ * Organization-corpus access-control relations (migration 1316, plan
+ * enterprise-data-sources-2026-10-01 P-014). Organization documents themselves
+ * live in `personal_documents` (scope='organization'), which the list above
+ * already fences. These three decide WHO may read them: the source-derived
+ * permission lists, their members, and the owner-configured mapping from a
+ * provider identity (a Slack/Asana user) to a local user. Ad-hoc SQL against
+ * them reads company membership and account linkage without the grant check,
+ * ACL evaluation or disclosure ledger that searchOrganizationDocuments applies,
+ * and a write here forges access outright. Same reasoning as the vault list:
+ * RLS on these tables is inert for agent connections.
+ */
+const ORGANIZATION_CORPUS_RELATIONS = [
+  'document_permission_lists',
+  'document_permission_members',
+  'provider_identity_mappings',
+] as const;
+
+function findFencedRelation(stripped: string, relations: readonly string[]): string | undefined {
+  return relations.find((rel) => new RegExp(`\\b${rel}\\b`, 'i').test(stripped));
+}
+
+/**
+ * The refusal message when `rawSql` touches a Personal Vault or organization-corpus
+ * access-control relation, else null.
  *
  * Deliberately NOT built on {@link extractReferencedTables}: that one is capped at
  * GUARD_MAX_TABLES and only sees FROM/JOIN/UPDATE/INTO, so a fifth-table join or a
@@ -3703,7 +3726,19 @@ const PERSONAL_VAULT_RELATIONS = [
  */
 export function personalVaultRefusal(rawSql: string): string | null {
   const stripped = stripSqlLiteralsAndComments(rawSql);
-  const hit = PERSONAL_VAULT_RELATIONS.find((rel) => new RegExp(`\\b${rel}\\b`, 'i').test(stripped));
+  const orgHit = findFencedRelation(stripped, ORGANIZATION_CORPUS_RELATIONS);
+  const hit = findFencedRelation(stripped, PERSONAL_VAULT_RELATIONS);
+  if (!hit && orgHit) {
+    return (
+      `refused: harness_shared.${orgHit} controls access to the organization documents corpus — ` +
+      'which provider identities may read which company documents, and which local user each ' +
+      'provider identity is mapped to. Ad-hoc SQL is not an authorized path to it: no grant is ' +
+      'checked, no ACL is evaluated and no disclosure is recorded here, and a write would forge ' +
+      'access. Organization documents are read through searchOrganizationDocuments (organization:search), ' +
+      'which requires a live organization grant for your principal. Reading SCHEMA is still fine — ' +
+      `quote the name ('${orgHit}') so it is a literal rather than a table reference.`
+    );
+  }
   if (!hit) return null;
   return (
     `refused: harness_shared.${hit} holds Personal Vault data — the owner's synced mail, ` +

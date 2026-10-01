@@ -191,6 +191,18 @@ async function defaultDuplicateAdmissionCheck(workItemId: string): Promise<boole
   return isWorkItemDuplicateAdmitted(workItemId);
 }
 
+/** WI-10005020: true when the item still has an unsatisfied `blocks` edge. A blocked→open
+ * restore (an external-blocker clear, or the legacy work-item-ref migration) of such a row
+ * would otherwise announce work that no claim can take. */
+type UnresolvedDependencyCheck = (wi: WorkItem) => Promise<boolean>;
+
+/** Lazy for the same documented work-items import cycle as the admission floor. */
+async function defaultUnresolvedDependencyCheck(wi: WorkItem): Promise<boolean> {
+  const { readUnresolvedDepBlockers } = await import('./work-items');
+  if (typeof readUnresolvedDepBlockers !== 'function') return false;
+  return (await readUnresolvedDepBlockers(wi.id, wi.harness ?? undefined)).length > 0;
+}
+
 /** Resolve the plan-lane guard lazily so the lifecycle event module keeps its documented
  * work-items import cycle safe. Claimable events are best-effort notifications; the guard's
  * own fail-open contract is preserved if a plan read is unavailable. */
@@ -245,7 +257,10 @@ const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
 export function emitWorkItemClaimableEvent(
   wi: WorkItem,
   reason: 'created' | 'admitted' | 'released' | 'unblocked' | 'requeued',
-  deps: Pick<SettledEventsDeps, 'emit' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck'> = {},
+  deps: Pick<
+    SettledEventsDeps,
+    'emit' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck' | 'unresolvedDependencyCheck'
+  > = {},
 ): void {
   // D-005: observation-lane rows are captured reflections, not work-queue material. Keep
   // the broad wake on the same floor as scheduler:get_next and fleet placement.
@@ -269,6 +284,16 @@ export function emitWorkItemClaimableEvent(
         return;
       }
       if (!admitted) return;
+      const checkDependencies = deps.unresolvedDependencyCheck ?? defaultUnresolvedDependencyCheck;
+      let dependencyBlocked = false;
+      try {
+        dependencyBlocked = await checkDependencies(wi);
+      } catch (e) {
+        // Parity guard, not a lifecycle floor: a failed read must not strand a genuinely
+        // claimable event; the scheduler's claim floor remains authoritative.
+        failSoft(`claimable-dependency-check for ${wi.id}`, e);
+      }
+      if (dependencyBlocked) return;
       if (mayHavePlanItemLinkage(wi)) {
         const check = deps.planItemLaneBlockReason ?? defaultPlanItemLaneBlockReason;
         let blocked: PlanItemLaneBlock | null = null;
@@ -588,6 +613,9 @@ export interface SettledEventsDeps {
   /** WI-22699169150878155: injectable parity check so claimable lifecycle events do not
    * advertise a row whose linked plan-item lane is blocked/owner-gated/terminal. */
   planItemLaneBlockReason?: PlanItemLaneBlockReason;
+  /** WI-10005020 (D-008 #4b): parity check so a claimable event never advertises a row whose
+   * `blocks` dependency edges are still unsatisfied (the scheduler's claim floor excludes it). */
+  unresolvedDependencyCheck?: UnresolvedDependencyCheck;
   getItem?: typeof getWorkItem;
   listOut?: BlockingEdgeReader['listOut'];
   listIn?: BlockingEdgeReader['listIn'];

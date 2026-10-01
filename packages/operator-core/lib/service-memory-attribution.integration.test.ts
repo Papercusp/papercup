@@ -32,6 +32,80 @@ function readCohortReport(path: string, result: {
   return report;
 }
 
+// queryObjects triggers GC and enumerates survivors. Its aggregate sizes are
+// container entries, not retained bytes; bound inspection and release the CDP
+// handles so the diagnostic cannot become a new retainer itself.
+async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
+  const group = 'p011-retained-' + kind;
+  const startedAt = Date.now();
+  try {
+    const prototype = await client.evaluate(kind === 'map' ? 'Map.prototype' : 'Array.prototype', { objectGroup: group });
+    const objects = await client.send('Runtime.queryObjects', { prototypeObjectId: prototype.result.objectId, objectGroup: group });
+    const result = await client.send('Runtime.callFunctionOn', {
+      objectId: objects.objects.objectId, returnByValue: true,
+      arguments: [{ value: kind }, { value: 2000 }, { value: 200 }],
+      // Literal JS stays independent of the test transform's lexical helpers.
+      functionDeclaration: String.raw`function (type, limit, budgetMs) {
+        const owners = new WeakMap();
+        const register = (value, prefix) => {
+          if (!value || typeof value !== 'object') return;
+          if (value instanceof Map || Array.isArray(value)) { owners.set(value, prefix); return; }
+          // Inspect data properties only: do not invoke application getters.
+          let fields = 0;
+          for (const key in value) {
+            if (fields++ >= 64) break;
+            const child = Object.getOwnPropertyDescriptor(value, key)?.value;
+            if (child instanceof Map || Array.isArray(child)) owners.set(child, prefix + '.' + key);
+          }
+        };
+        const slots = globalThis[Symbol.for('@papercusp/module-singleton.slots')];
+        if (slots instanceof Map) {
+          let count = 0;
+          for (const [key, slot] of slots) {
+            if (count++ >= 256) break;
+            register(slot?.value, String(key));
+          }
+        }
+        register(globalThis[Symbol.for('@papercusp/p011.retainer.fixture')], 'private-fixture');
+        const start = Date.now();
+        const top = [];
+        const owned = [];
+        const mapSize = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
+        let examined = 0, checked = 0, notApplicable = 0, totalEntries = 0;
+        for (const value of this) {
+          if (examined >= limit || Date.now() - start >= budgetMs) break;
+          examined++;
+          let entries;
+          if (type === 'array') {
+            if (!Array.isArray(value)) { notApplicable++; continue; }
+            entries = value.length;
+          } else {
+            // Prototype descendants may lack the builtin's internal slots.
+            try { entries = mapSize.call(value); }
+            catch (error) {
+              if (!(error instanceof TypeError)) throw error;
+              notApplicable++; continue;
+            }
+          }
+          const owner = owners.get(value) ?? null;
+          checked++; totalEntries += entries;
+          top.push({ entries, owner }); top.sort((a, b) => b.entries - a.entries); top.length = Math.min(top.length, 10);
+          if (owner && owned.length < 32) owned.push({ entries, owner });
+        }
+        return { kind: type, population: this.length, checked, notApplicable, notChecked: this.length - examined,
+          totalEntries, top, owned, inspectionMs: Date.now() - start,
+          limits: { objects: limit, inspectionMs: budgetMs, owners: 32, slots: 256, fieldsPerSlot: 64 },
+          definition: 'Surviving container entries; not retained bytes or a complete retainer graph.' };
+      }`,
+    });
+    if (result.exceptionDetails) throw new Error('Retained-container aggregate failed: ' +
+      (result.exceptionDetails.exception?.description ?? result.exceptionDetails.text).slice(0, 500));
+    return { ...result.result.value, elapsedMs: Date.now() - startedAt, intervention: 'queryObjects GC/enumeration' };
+  } finally {
+    await client.send('Runtime.releaseObjectGroup', { objectGroup: group });
+  }
+}
+
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
   it('preserves the complete report when subprocess stdout exceeds its bound', () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-report-preflight-'));
@@ -80,6 +154,26 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       await client.connect();
       const measured = await client.evaluate('({ pid: process.pid, cap: process.env.MALLOC_ARENA_MAX })', { returnByValue: true });
       expect(measured.result.value).toEqual(identity);
+      await client.evaluate("globalThis[Symbol.for('@papercusp/p011.retainer.fixture')] = { map: new Map(Array.from({length: 5}, (_, i) => [i, i])), array: Array(7).fill(1), fakeMap: Object.create(Map.prototype), fakeArray: Object.create(Array.prototype) }");
+      const remoteIds: string[] = [];
+      const observer = { evaluate: client.evaluate, send: async (method: string, args: object) => {
+        const result = await client.send(method, args);
+        if (method === 'Runtime.queryObjects') remoteIds.push(result.objects.objectId);
+        return result;
+      } };
+      try {
+        for (const kind of ['map', 'array'] as const) {
+          const census = await retainedContainerCensus(observer, kind);
+          expect(census.checked).toBeGreaterThan(0);
+          expect(census.checked).toBeLessThanOrEqual(census.limits.objects);
+          expect(census.checked + census.notApplicable + census.notChecked).toBe(census.population);
+          expect(census.notApplicable).toBeGreaterThan(0);
+          expect(census.owned).toContainEqual({ owner: 'private-fixture.' + kind, entries: kind === 'map' ? 5 : 7 });
+        }
+        for (const objectId of remoteIds) {
+          await expect(client.send('Runtime.getProperties', { objectId })).rejects.toThrow('Runtime.getProperties failed');
+        }
+      } finally { await client.evaluate("delete globalThis[Symbol.for('@papercusp/p011.retainer.fixture')]"); }
       console.log('P011_INSPECTOR_PREFLIGHT ' + JSON.stringify({ pid: child.pid, endpoints,
         staleEndpointRejected: true, servingPidBound: true, arenaMax: identity.cap }));
     } finally {
@@ -112,12 +206,13 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const path = require('node:path');
       const postgres = require('postgres');
       const inspectorEndpoints = ${inspectorEndpoints.toString()};
+      const retainedContainerCensus = ${retainedContainerCensus.toString()};
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const e = process.env, base = e.PAPERCUSP_OPERATOR_URL;
       const report = { schemaVersion: 1, plane: 'isolated-current-build-operator-api', incomplete: true,
         buildSha: e.TEST_BUILD_SHA, bundleHash: e.TEST_BUNDLE_HASH, startedAt: new Date().toISOString(),
         workload: { population: 1024, pageLimit: 128, windows: 3, requestsPerWindow: 8, concurrency: 8 },
-        samples: [], windows: [], phases: [], limitations: [
+        samples: [], windows: [], retainedContainers: [], phases: [], limitations: [
           'One owned request-only process; background, production workers and fleet workloads are not measured.',
           'Sampling selfSize is live sampled allocation, not total heap or a retained-state owner.',
           'Completed-result diagnostic bytes are PostgreSQL wire bytes, not HTTP, payload storage or retained heap.',
@@ -294,6 +389,9 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             idleAllocation: allocationSummary(idle.profile), ordinaryAllocation: allocationSummary(ordinary.profile) });
           // A separately labeled post-GC survivor sample distinguishes transient allocation.
           await cdp.send('HeapProfiler.collectGarbage'); await sample('post-gc-' + window);
+          // Keep survivor enumeration outside the ordinary workload windows.
+          report.retainedContainers.push({ window, maps: await retainedContainerCensus(cdp, 'map'),
+            arrays: await retainedContainerCensus(cdp, 'array') }); publish();
         }
         report.incomplete = false; phase('samples-complete');
       })().catch(error => { report.error = String(error); report.hostErrorTail = errors;
@@ -336,6 +434,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(existsSync(report.home)).toBe(false);
       expect(report.windows).toHaveLength(3);
       expect(report.samples).toHaveLength(16);
+      expect(report.retainedContainers).toHaveLength(3);
+      for (const census of report.retainedContainers.flatMap((row: any) => [row.maps, row.arrays])) {
+        expect(census.checked + census.notApplicable + census.notChecked).toBe(census.population);
+        expect(census.checked).toBeLessThanOrEqual(census.limits.objects);
+      }
       expect(report.inspector.pid).toBe(report.pid);
       expect(report.inspector.entry).toBe(bundle);
       for (const sample of report.samples) {

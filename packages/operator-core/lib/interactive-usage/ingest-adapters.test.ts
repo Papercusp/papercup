@@ -105,6 +105,53 @@ describe('parseCodexChunk (P-015)', () => {
     expect(parsed.parserState?.model).toBeUndefined();
   });
 
+  it('recovers managed-carry lineage from the native Codex user-message content shape', () => {
+    const predecessor = '01a0d5cb-6245-7692-a1a5-215c88d10295';
+    const header = codexLine({ type: 'session_meta', payload: { id: 'successor-session' } });
+    const carryMessage = codexLine({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: 'carried context\n⟦codex-carry-lineage predecessor:' + predecessor + '⟧\nrecovery details',
+        }],
+      },
+    });
+    const first = parseCodexChunk(header + turnCtx + carryMessage);
+    expect(first.parserState?.predecessorSessionId).toBe(predecessor);
+
+    const resumed = parseCodexChunk(tokenCount(1000, 600, 40), JSON.parse(JSON.stringify(first.parserState)));
+    expect(resumed.events?.[0]).toMatchObject({
+      requestOrdinal: 1,
+      contextGeneration: 0,
+      predecessorSessionId: predecessor,
+    });
+  });
+
+  it('keeps native fork metadata authoritative when it conflicts with a carry marker', () => {
+    const nativePredecessor = 'native-parent-session';
+    const markerPredecessor = '01a0d5cb-6245-7692-a1a5-215c88d10295';
+    const carryMessage = codexLine({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: '⟦codex-carry-lineage predecessor:' + markerPredecessor + '⟧',
+        }],
+      },
+    });
+    const parsed = parseCodexChunk(
+      codexLine({ type: 'session_meta', payload: { forked_from_id: nativePredecessor } }) +
+      carryMessage + tokenCount(1000, 600, 40),
+    );
+    expect(parsed.parserState?.predecessorSessionId).toBe(nativePredecessor);
+    expect(parsed.events?.[0].predecessorSessionId).toBe(nativePredecessor);
+  });
+
   it('counts startup requests across serialized chunks without counting duplicate/reset notifications', () => {
     const header = codexLine({ type: 'session_meta', payload: { forked_from_id: 'parent' } });
     const first = parseCodexChunk(header + turnCtx + tokenCount(700000, 0, 1));

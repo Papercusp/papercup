@@ -494,6 +494,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'laneless_idle',
     'dormant',
     'spinning',
+    'stalled_item',
     'throttled',
     'repeated_recovery',
     'darkFleetAlert',
@@ -684,6 +685,13 @@ function compactMember(value: unknown): unknown {
     ) ?? {};
   if (source.idleVerdict && typeof source.idleVerdict === 'object') {
     out.idleVerdict = pick(source.idleVerdict, ['cause', 'reason'], 160) ?? source.idleVerdict;
+  }
+  // P-004/R-4: the stalled-item rotation verdict is the actionable fact on this row —
+  // keep its identity, age, ready count and required action under shaping.
+  if (source.stalledItem && typeof source.stalledItem === 'object') {
+    out.stalledItem =
+      pick(source.stalledItem, ['item', 'noAdvanceMin', 'advancedAt', 'readyWaiting', 'requiredAction'], 400) ??
+      source.stalledItem;
   }
   if (source.doing && typeof source.doing === 'object') {
     out.doing = pick(source.doing, ['id', 'title', 'status', 'activity'], 140) ?? source.doing;

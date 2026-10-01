@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-01T20:13:19.689Z",
-  "migrationCountAtGeneration": 1112,
+  "generatedAt": "2026-10-01T20:32:08.323Z",
+  "migrationCountAtGeneration": 1114,
   "indexes": [
     {
       "schema": "audit",
@@ -3223,6 +3223,48 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "doc_sections_pkey",
       "table": "doc_sections",
       "definition": "CREATE UNIQUE INDEX doc_sections_pkey ON harness_shared.doc_sections USING btree (source_key, slug, anchor)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "document_permission_lists_pkey",
+      "table": "document_permission_lists",
+      "definition": "CREATE UNIQUE INDEX document_permission_lists_pkey ON harness_shared.document_permission_lists USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "document_permission_lists_pkey",
+      "table": "document_permission_lists",
+      "definition": "CREATE UNIQUE INDEX document_permission_lists_pkey ON harness_shared.document_permission_lists USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "document_permission_lists_pkey",
+      "table": "document_permission_lists",
+      "definition": "CREATE UNIQUE INDEX document_permission_lists_pkey ON harness_shared.document_permission_lists USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "document_permission_lists_source_ref_key",
+      "table": "document_permission_lists",
+      "definition": "CREATE UNIQUE INDEX document_permission_lists_source_ref_key ON harness_shared.document_permission_lists USING btree (workspace_id, source, source_ref)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "document_permission_members_identity_idx",
+      "table": "document_permission_members",
+      "definition": "CREATE INDEX document_permission_members_identity_idx ON harness_shared.document_permission_members USING btree (workspace_id, provider, provider_user_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "document_permission_members_pkey",
+      "table": "document_permission_members",
+      "definition": "CREATE UNIQUE INDEX document_permission_members_pkey ON harness_shared.document_permission_members USING btree (workspace_id, list_id, provider, provider_user_id)",
       "constraintBacked": true
     },
     {
@@ -7245,6 +7287,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "personal_documents_organization_dedupe",
+      "table": "personal_documents",
+      "definition": "CREATE UNIQUE INDEX personal_documents_organization_dedupe ON harness_shared.personal_documents USING btree (workspace_id, source, dedupe_key) WHERE (scope = 'organization'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "personal_documents_participant_ids_idx",
       "table": "personal_documents",
       "definition": "CREATE INDEX personal_documents_participant_ids_idx ON harness_shared.personal_documents USING gin (participant_ids)",
@@ -7259,10 +7308,24 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "personal_documents_permission_list_idx",
+      "table": "personal_documents",
+      "definition": "CREATE INDEX personal_documents_permission_list_idx ON harness_shared.personal_documents USING btree (workspace_id, permission_list_id) WHERE (scope = 'organization'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "personal_documents_pkey",
       "table": "personal_documents",
-      "definition": "CREATE UNIQUE INDEX personal_documents_pkey ON harness_shared.personal_documents USING btree (workspace_id, user_id, id)",
+      "definition": "CREATE UNIQUE INDEX personal_documents_pkey ON harness_shared.personal_documents USING btree (workspace_id, id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "personal_documents_pot_dedupe",
+      "table": "personal_documents",
+      "definition": "CREATE UNIQUE INDEX personal_documents_pot_dedupe ON harness_shared.personal_documents USING btree (workspace_id, pot_slug, source, dedupe_key) WHERE (scope = 'pot'::text)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -8432,6 +8495,27 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "prompt_compositions",
       "definition": "CREATE UNIQUE INDEX prompt_compositions_pkey ON harness_shared.prompt_compositions USING btree (id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "provider_identity_mappings_live_identity",
+      "table": "provider_identity_mappings",
+      "definition": "CREATE UNIQUE INDEX provider_identity_mappings_live_identity ON harness_shared.provider_identity_mappings USING btree (workspace_id, provider, provider_user_id) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "provider_identity_mappings_pkey",
+      "table": "provider_identity_mappings",
+      "definition": "CREATE UNIQUE INDEX provider_identity_mappings_pkey ON harness_shared.provider_identity_mappings USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "provider_identity_mappings_user_idx",
+      "table": "provider_identity_mappings",
+      "definition": "CREATE INDEX provider_identity_mappings_user_idx ON harness_shared.provider_identity_mappings USING btree (workspace_id, user_id) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -11092,6 +11176,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "user_trust_list",
       "definition": "CREATE INDEX user_trust_list_ws_idx ON harness_shared.user_trust_list USING btree (workspace_id)",
       "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "users_pkey",
+      "table": "users",
+      "definition": "CREATE UNIQUE INDEX users_pkey ON harness_shared.users USING btree (id)",
+      "constraintBacked": true
     },
     {
       "schema": "harness_shared",

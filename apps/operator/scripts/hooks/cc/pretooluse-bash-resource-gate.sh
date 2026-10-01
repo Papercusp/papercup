@@ -5013,13 +5013,27 @@ def _is_tracked_path(canon, rel):
         return False
     try:
         import subprocess
-        return subprocess.run(
+        if subprocess.run(
             ['git', '-C', canon, 'ls-files', '--error-unmatch', '--', rel],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=2,
             check=False,
-        ).returncode == 0
+        ).returncode == 0:
+            return True
+        # WI-10005009: git-sync rewrites .git/index every sweep, and a half-written
+        # index answers "not tracked" for a tracked path, byte-for-byte like an
+        # untracked one. Here that is the UNSAFE direction (a tracked mutation slips
+        # past the gate), so ask HEAD's tree, which cannot be torn, before believing it.
+        head = subprocess.run(
+            ['git', '-C', canon, '--literal-pathspecs', 'ls-tree', '-z',
+             '--name-only', 'HEAD', '--', rel],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        return head.returncode == 0 and len(head.stdout) > 0
     except Exception:
         return False
 

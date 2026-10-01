@@ -6130,6 +6130,82 @@ describe('substitution verdict handling', () => {
     expect(requests.at(-1)?.params?.arguments).not.toHaveProperty('tracked_mutation');
   });
 
+  /**
+   * WI-10005009: git-sync rewrites .git/index on every sweep, and a half-written index
+   * makes `git ls-files --error-unmatch` answer "not tracked" for a TRACKED path,
+   * byte-for-byte like an untracked one. For this classifier that is the unsafe
+   * direction: a tracked `mv` would slip past the GOAL-mode edit refusal with no
+   * `tracked_mutation` bridge. `_is_tracked_path` must fall back to HEAD's tree.
+   */
+  describe('tracked-mutation classifier under a torn index (WI-10005009)', () => {
+    const tornRepo = () => {
+      const dir = mkdtempSync(join(tmpdir(), 'gate-torn-index-'));
+      const git = (...args: string[]) =>
+        execFileSync('git', [
+          '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t',
+          '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args,
+        ], { stdio: 'pipe' });
+      git('init', '-q');
+      writeFileSync(join(dir, 'tracked.ts'), 'export const x = 1;\n');
+      git('add', 'tracked.ts');
+      git('commit', '-q', '-m', 'seed');
+      writeFileSync(join(dir, 'untracked.ts'), 'export const y = 2;\n');
+      const index = join(dir, '.git', 'index');
+      const bytes = readFileSync(index);
+      writeFileSync(index, bytes.subarray(0, Math.floor(bytes.length / 2)));
+      return dir;
+    };
+    const rawIndexSaysTracked = (dir: string, rel: string) =>
+      spawnSync('git', ['-C', dir, 'ls-files', '--error-unmatch', '--', rel], { stdio: 'ignore' })
+        .status === 0;
+    const trackedMutationFlags = () =>
+      readFileSync(requestFile, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { params?: { arguments?: Record<string, unknown> } })
+        .map((r) => r.params?.arguments?.tracked_mutation);
+    const runIn = (dir: string, command: string) => {
+      writeFileSync(requestFile, '');
+      return runGate(bashCmd(command, { cwd: dir }), {
+        PAPERCUSP_OPERATOR_URL: url,
+        PAPERCUSP_CANONICAL_TREE: dir,
+      });
+    };
+
+    it('still bridges a tracked `mv` when the index is half-written', () => {
+      const dir = tornRepo();
+      try {
+        // Calibration: the raw index read really does misreport, so this case is not vacuous.
+        expect(rawIndexSaysTracked(dir, 'tracked.ts')).toBe(false);
+        setReply({
+          decision: 'allow',
+          matched: [],
+          goalModeEditDenyReason: 'GOAL mode: you never implement — route it instead.',
+        });
+        const out = runIn(dir, 'mv tracked.ts /tmp/gate-torn-index-moved.ts');
+        const hook = JSON.parse(out.stdout).hookSpecificOutput;
+        expect(hook.permissionDecision).toBe('deny');
+        expect(hook.permissionDecisionReason).toContain('GOAL mode: you never implement');
+        expect(trackedMutationFlags()).toContain(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not promote an untracked path to a tracked mutation under the same torn index', () => {
+      const dir = tornRepo();
+      try {
+        expect(rawIndexSaysTracked(dir, 'untracked.ts')).toBe(false);
+        setReply({ decision: 'allow', matched: [], goalModeEditDenyReason: null });
+        expectAllow(runIn(dir, 'mv untracked.ts /tmp/gate-torn-index-moved.ts'));
+        expect(trackedMutationFlags()).not.toContain(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('forwards the shell cwd to locks:check_command for cwd-scoped substitution policy', () => {
     const scratch = '/tmp/ei-204040-scratch';
     setReply({ decision: 'allow', matched: [] });

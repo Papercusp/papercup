@@ -884,8 +884,8 @@ export type FleetFeatureCloseOrigin = 'fleetDone' | 'inherited' | 'unknown';
 
 /**
  * Label one feature close (FLEET_METRIC_FEATURE_ORIGIN_RULE). The closing claim is the latest
- * claim at or before the close by a fleet ever-member or by the terminal owner (else the latest
- * claim of any owner). The close is INHERITED when a worker outside the cohort claimed the row
+ * claim at or before the close by a fleet ever-member or by the terminal owner (else the close
+ * itself, made by the terminal owner). The close is INHERITED when a worker outside the cohort claimed the row
  * before that closing claim AND the close followed the closing claim within
  * FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS — a short finish of someone else's work.
  */
@@ -897,15 +897,26 @@ export function classifyFeatureCloseOrigin(
   if (!history || history.length === 0) return 'unknown';
   const closedMs = item.closedAt ? Date.parse(item.closedAt) : Number.NaN;
   if (!Number.isFinite(closedMs)) return 'unknown';
+  // The completion path re-stamps `taken_by`, so the closer's completion entry lands AFTER
+  // closedAt (measured live 2026-10-01: 1,694 of ~1,772 done features, +1ms..+12s) and is
+  // excluded here. That stamp is not evidence of pre-close work: the trigger fires only on
+  // UPDATE OF taken_by, so a creation-time assignee never appears in the history at all.
   const beforeClose = history.filter((entry) => entry.atMs <= closedMs);
   if (beforeClose.length === 0) return 'unknown';
-  let closingIndex = beforeClose.length - 1;
+  let closingIndex = -1;
   for (let i = beforeClose.length - 1; i >= 0; i -= 1) {
     const owner = beforeClose[i].owner;
     if (members.has(owner) || owner === item.terminalOwner) {
       closingIndex = i;
       break;
     }
+  }
+  if (closingIndex < 0) {
+    // Nobody in the cohort and not the closer ever claimed before the close: every recorded
+    // pre-close worker is an outsider, and the closer's own claim is the close itself
+    // (claim-to-close 0). That is an inherited finish. With no known closer, the actor who
+    // finished it is unrecorded, so the origin is unknown rather than guessed.
+    return item.terminalOwner ? 'inherited' : 'unknown';
   }
   const closing = beforeClose[closingIndex];
   const outsiderBefore = beforeClose

@@ -194,6 +194,7 @@ import {
   DEFAULT_LEADER_BLOCKER_STALL_THRESHOLD_HOURS,
   type LeaderBlockerStallView,
 } from '../../leader-blocker-stall-alert';
+import { computeStalledItemRotation, type StalledItemRotation } from './stalled-item-rotation';
 
 // EI-20226510994156306: a 50-member leader brief previously serialized ~66KB
 // before the transport's own result cap. Keep the detailed, verbose rows small;
@@ -852,6 +853,13 @@ export interface LeaderBriefMember {
    *  healthy drain member cycling scheduler:get_next is laneless-idle but not spinning —
    *  get_next is productive). See computeSpinningAlert. */
   spinning?: true;
+  /** P-004/R-4: this member's held item has had no MATERIAL advancement (authored
+   *  checkpoint or state transition since the claim) for STALLED_ITEM_ROTATION_THRESHOLD_MS
+   *  while ready items wait in the fleet claim set. Measures the ITEM, not the worker, so a
+   *  busy member doing status reads is still named. Absent when the fleet is paused, the
+   *  member is inside an instrumented long test, or no ready item waits. See
+   *  stalled-item-rotation.ts. */
+  stalledItem?: StalledItemRotation;
   /** EI-21548894457555139: this member is INSIDE a tool call right now that has been
    *  running longer than LONG_CALL_IN_FLIGHT_MS — it is working, not idle.
    *
@@ -3527,6 +3535,15 @@ export function projectMember(
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
     ...(computeDormantAlert({ ...a, longCallInFlight }, fleetPaused) ? { dormant: true } : {}),
+    ...(() => {
+      const stalledItem = computeStalledItemRotation(
+        { agentId: a.agentId, sessionState: a.sessionState ?? null, claims: a.claims, longCallInFlight },
+        nowMs,
+        claimableCount,
+        fleetPaused,
+      );
+      return stalledItem ? { stalledItem } : {};
+    })(),
     ...(longCallInFlight ? { longCallInFlight } : {}),
     ...(computeSpinningAlert({ ...a, lastToolCallAgeMs, productiveToolCallAgeMs }, fleetPaused)
       ? { spinning: true }
@@ -4643,6 +4660,10 @@ export async function buildLeaderBrief(
     // here (stalled, dead) reads these as healthy. >0 means wake it explicitly and
     // investigate; do not assume the loop will self-correct.
     spinning: members.filter((m) => m.spinning === true).length,
+    // P-004/R-4: members whose held ITEM has not materially advanced past the stall
+    // threshold while ready items wait in the fleet claim set. >0 means require one
+    // accountable action per named member (see each member's `stalledItem.requiredAction`).
+    stalled_item: members.filter((m) => m.stalledItem != null).length,
     // EI-19381528967421062: members whose loop is backed off from a provider wall right
     // now — `active:true`/`sessionState:parked` read identical to a healthy between-wakes
     // member on every OTHER surface. >0 here means those claims are stranded until

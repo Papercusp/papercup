@@ -65,6 +65,14 @@ import {
 } from './leader-brief';
 import leaderBriefTool from './leader-brief';
 import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
+import {
+  computeStalledItemRotation,
+  isInstrumentedLongTestTool,
+  materialAdvanceAnchor,
+  STALLED_ITEM_REQUIRED_ACTION,
+  STALLED_ITEM_ROTATION_THRESHOLD_MS,
+} from './stalled-item-rotation';
+import type { AgentClaim } from '../../fleet/assignments';
 import { computeMemberIdleVerdict } from '../../fleet-member-idle-verdict';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
@@ -3877,5 +3885,164 @@ describe('computeFleetBlockVerdict (P-019/P-012 — which LAYER is blocking the 
     // calibration: the six inputs must actually exercise all five layers, or the
     // read-only assertion above is passing on a set that never reached most of them
     expect(layers).toEqual(new Set(['fleet-paused', 'inference-pool', 'spec-scope', 'claim-floors', 'members']));
+  });
+});
+
+describe('P-004 / R-4 — stalled-item rotation names the held ITEM that has not advanced, not the worker', () => {
+  // feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01. The 0930 incident:
+  // live, BUSY workers sat on week-old items while closeable items waited. Every existing
+  // signal keys on worker activity, so a fresh tool call (status reads, orient, get_next
+  // probes) read them as healthy. These fixtures therefore pair a FRESH tool call with an
+  // item whose own progress clock has not moved.
+  const minAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+
+  function wiClaim(overrides: Partial<AgentClaim> = {}): AgentClaim {
+    return {
+      type: 'work-item',
+      harnessSlug: 'papercusp',
+      planSlug: null,
+      id: 'WI-77',
+      itemKind: 'change',
+      detail: 'week-old item',
+      status: 'wip',
+      acquiredTs: minAgo(45),
+      expiresTs: null,
+      active: true,
+      orphaned: false,
+      stalled: false,
+      lastProgressAt: null,
+      activity: 'alive' as AgentClaim['activity'],
+      rank: null,
+      rankWriter: null,
+      ...overrides,
+    };
+  }
+
+  const busyMember = (claims: AgentClaim[], extra: Partial<DecoratedAgent> = {}) =>
+    baseAgent({
+      agentId: 'su-busy',
+      sessionState: 'live',
+      lastToolCallAt: minAgo(0.5), // busy worker: a tool call 30s ago
+      load: claims.length,
+      claims,
+      ...extra,
+    });
+
+  it('NAMES the item: held 45 min, never checkpointed, worker busy, ready work waiting', () => {
+    const m = projectMember(busyMember([wiClaim()]), NOW, 2, null, false);
+    expect(m.stalledItem).toEqual({
+      item: 'WI-77',
+      itemTitle: 'week-old item',
+      noAdvanceMin: 45,
+      advancedAt: minAgo(45),
+      advanceSignal: 'claim_acquired_at',
+      readyWaiting: 2,
+      requiredAction: STALLED_ITEM_REQUIRED_ACTION,
+    });
+    // the required action offers all four accountable outcomes
+    for (const verb of ['work_items:complete', 'work_items:create', 'work_items:set_blocker', 'work_items:release']) {
+      expect(STALLED_ITEM_REQUIRED_ACTION).toContain(verb);
+    }
+  });
+
+  it('measures from the last authored checkpoint when one exists, and names the OLDEST stalled item', () => {
+    const r = computeStalledItemRotation(
+      {
+        agentId: 'su-busy',
+        sessionState: 'live',
+        claims: [
+          wiClaim({ id: 'WI-A', acquiredTs: minAgo(300), lastProgressAt: minAgo(40) }),
+          wiClaim({ id: 'WI-B', acquiredTs: minAgo(300), lastProgressAt: minAgo(200) }),
+        ],
+      },
+      NOW,
+      3,
+      false,
+    );
+    expect(r?.item).toBe('WI-B');
+    expect(r?.advanceSignal).toBe('last_progress_at');
+    expect(r?.noAdvanceMin).toBe(200);
+  });
+
+  it('does NOT name an item that advanced inside the threshold (checkpoint 10 min ago)', () => {
+    const m = projectMember(
+      busyMember([wiClaim({ acquiredTs: minAgo(300), lastProgressAt: minAgo(10) })]),
+      NOW,
+      2,
+      null,
+      false,
+    );
+    expect(m.stalledItem).toBeUndefined();
+  });
+
+  it('ignores a MECHANICAL (system-written) checkpoint as advancement', () => {
+    const claim = wiClaim({
+      acquiredTs: minAgo(120),
+      lastProgressAt: minAgo(5),
+      claimHealth: {
+        status: 'stale',
+        reasons: [],
+        expected_cadence_ms: 1_800_000,
+        evidence: [{ writer: 'work_items_checkpoint', signal: 'checkpoint_kind', value: 'mechanical' }],
+      } as unknown as AgentClaim['claimHealth'],
+    });
+    expect(materialAdvanceAnchor(claim)?.signal).toBe('claim_acquired_at');
+    const r = computeStalledItemRotation({ agentId: 'su-busy', claims: [claim] }, NOW, 1, false);
+    expect(r?.noAdvanceMin).toBe(120);
+  });
+
+  it('exempts a PAUSED fleet — a quiet member is the compliant response to a stand-down', () => {
+    expect(projectMember(busyMember([wiClaim()]), NOW, 2, null, true).stalledItem).toBeUndefined();
+  });
+
+  it('exempts an INSTRUMENTED LONG TEST in flight', () => {
+    for (const tool of ['testing:run', 'capability:bash', 'build:typecheck', 'release:checkpoint-run']) {
+      expect(isInstrumentedLongTestTool(tool)).toBe(true);
+      const r = computeStalledItemRotation(
+        { agentId: 'su-busy', claims: [wiClaim()], longCallInFlight: { tool, ageSec: 600 } },
+        NOW,
+        2,
+        false,
+      );
+      expect(r).toBeUndefined();
+    }
+    // calibration: a non-test long call (a status read) does NOT exempt it
+    expect(isInstrumentedLongTestTool('work_items:get')).toBe(false);
+    expect(
+      computeStalledItemRotation(
+        { agentId: 'su-busy', claims: [wiClaim()], longCallInFlight: { tool: 'work_items:get', ageSec: 600 } },
+        NOW,
+        2,
+        false,
+      )?.item,
+    ).toBe('WI-77');
+  });
+
+  it('names no one when NO ready work waits (claimable 0) or the count was not read (null)', () => {
+    expect(projectMember(busyMember([wiClaim()]), NOW, 0, null, false).stalledItem).toBeUndefined();
+    expect(projectMember(busyMember([wiClaim()]), NOW, null, null, false).stalledItem).toBeUndefined();
+  });
+
+  it('skips items whose accountable action was already taken (blocked / needs-human) and ended sessions', () => {
+    expect(
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ status: 'blocked' })] }, NOW, 2, false),
+    ).toBeUndefined();
+    expect(
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ status: 'needs-human' })] }, NOW, 2, false),
+    ).toBeUndefined();
+    expect(
+      computeStalledItemRotation({ agentId: 'x', sessionState: 'ended', claims: [wiClaim()] }, NOW, 2, false),
+    ).toBeUndefined();
+    expect(
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ orphaned: true })] }, NOW, 2, false),
+    ).toBeUndefined();
+  });
+
+  it('the threshold boundary is 30 minutes (D-007)', () => {
+    expect(STALLED_ITEM_ROTATION_THRESHOLD_MS).toBe(30 * 60_000);
+    const at = (m: number) =>
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ acquiredTs: minAgo(m) })] }, NOW, 1, false);
+    expect(at(29)).toBeUndefined();
+    expect(at(30)?.noAdvanceMin).toBe(30);
   });
 });

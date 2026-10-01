@@ -394,6 +394,18 @@ describe('P-001 feature-fleet outcomes and paused time (R-1, R-11..R-14)', () =>
     // CONTROL: no outsider ever claimed => fleet-done even on a short finish.
     const ownWork = parseFleetMetricClaimHistory(history([MEMBER, iso(closedMs - 10 * 60 * 1000)]));
     expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, ownWork, members)).toBe('fleetDone');
+    // Live shape (WI-10004936-style rows): the closer never claimed before the close and the
+    // completion path re-stamps taken_by ~2ms AFTER closedAt. Every pre-close worker is an
+    // outsider, so the closer's claim is the close itself => inherited, never fleet-done.
+    const unclaimedFinish = parseFleetMetricClaimHistory(
+      history([OUTSIDER, iso(closedMs - 20 * HOUR)], [MEMBER, iso(closedMs + 2)]),
+    );
+    expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, unclaimedFinish, members)).toBe('inherited');
+    // CONTROL: the same outsider-only history with no recorded closer => unknown, not guessed.
+    expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: null }, unclaimedFinish, members)).toBe('unknown');
+    // CONTROL: only the post-close completion stamp => no pre-close work recorded => unknown.
+    const stampOnly = parseFleetMetricClaimHistory(history([MEMBER, iso(closedMs + 2)]));
+    expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, stampOnly, members)).toBe('unknown');
     // Untimed legacy history is unusable => unknown, never fleet-done.
     expect(parseFleetMetricClaimHistory(['su-legacy-bare-string'])).toBeNull();
     expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, null, members)).toBe('unknown');

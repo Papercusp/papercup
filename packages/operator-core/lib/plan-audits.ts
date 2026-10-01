@@ -47,6 +47,7 @@ import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import { isCommittedAtHead } from './git-trackedness';
 import type { ItemProvenanceDeclaration, StoredItemProvenanceCheck } from './activation-item-provenance';
 import {
   PLAN_ADVISORY_LOCK_NAMESPACE,
@@ -1267,6 +1268,11 @@ export function repoCitationDeps(
             tracked = null;
           }
         }
+        // Both answers above read .git/index. A half-written index (git-sync rewrites it
+        // every sweep) lists a tracked path as absent, byte-for-byte like an untracked one,
+        // which would refuse a valid code citation. Before believing a "no", ask HEAD's
+        // tree, which cannot be torn (WI-10005009). Costs a spawn only on a negative.
+        if (tracked !== true && isCommittedAtHead(repoDir, path.basename(abs)) === true) tracked = true;
       }
       trackedCache.set(abs, tracked);
       return tracked;

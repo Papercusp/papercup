@@ -29,8 +29,19 @@ vi.mock('./work-items-admission', async (importOriginal) => ({
   isWorkItemDuplicateAdmitted: duplicateAdmissionCheck,
 }));
 
+// WI-10005020: the claimable emitter's default dependency check lazily reads
+// `readUnresolvedDepBlockers`; without this partial mock every un-injected emit opens a
+// real PG pool (blocked by the unit-layer guard, then swallowed by the fail-open catch),
+// so those tests would never exercise the satisfied-dependency path they assume.
+const unresolvedDepBlockers = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+vi.mock('./work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./work-items')>()),
+  readUnresolvedDepBlockers: unresolvedDepBlockers,
+}));
+
 beforeEach(() => {
   duplicateAdmissionCheck.mockReset().mockResolvedValue(true);
+  unresolvedDepBlockers.mockReset().mockResolvedValue([]);
 });
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
@@ -711,6 +722,65 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
       key: 'work-item:claimable',
       payload: expect.objectContaining({ id: 'WI-admitted', reason: 'admitted' }),
     });
+  });
+
+  // WI-10005020 (D-008 #4b): a blocked→open restore of a row that still has an unsatisfied
+  // `blocks` edge must not announce work that no claim can take.
+  it('does not announce a row whose blocks dependency edges are unsatisfied', async () => {
+    const emit = typedEmit();
+    const unresolvedDependencyCheck = vi.fn(async () => true);
+    const item = wi({ id: 'WI-edge-blocked', state: 'open', assignee: null });
+    emitWorkItemClaimableEvent(item, 'unblocked', {
+      emit,
+      duplicateAdmissionCheck: async () => true,
+      unresolvedDependencyCheck,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unresolvedDependencyCheck).toHaveBeenCalledWith(item);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('announces a row whose dependency edges are all satisfied', async () => {
+    const emit = typedEmit();
+    emitWorkItemClaimableEvent(wi({ id: 'WI-edge-clear', state: 'open', assignee: null }), 'unblocked', {
+      emit,
+      duplicateAdmissionCheck: async () => true,
+      unresolvedDependencyCheck: async () => false,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:claimable',
+      payload: expect.objectContaining({ id: 'WI-edge-clear', reason: 'unblocked' }),
+    });
+  });
+
+  it('fails open when the dependency read fails (the scheduler floor stays authoritative)', async () => {
+    const emit = typedEmit();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    emitWorkItemClaimableEvent(wi({ id: 'WI-edge-unknown', state: 'open', assignee: null }), 'unblocked', {
+      emit,
+      duplicateAdmissionCheck: async () => true,
+      unresolvedDependencyCheck: async () => {
+        throw new Error('pg unavailable');
+      },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('the default dependency check consults readUnresolvedDepBlockers with the row harness', async () => {
+    const emit = typedEmit();
+    unresolvedDepBlockers.mockResolvedValue([{ blockerId: 'WI-upstream' }]);
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-edge-default', state: 'open', assignee: null, harness: 'papercusp' }),
+      'unblocked',
+      { emit, duplicateAdmissionCheck: async () => true },
+    );
+    await vi.waitFor(() => expect(unresolvedDepBlockers).toHaveBeenCalledWith('WI-edge-default', 'papercusp'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('fires the GLOBAL work-item:claimable key with id/kind/severity/harness/title/state/reason/assignee', async () => {

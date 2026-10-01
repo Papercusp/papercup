@@ -1014,19 +1014,25 @@ async function routinesTickImpl(): Promise<void> {
       // executors race every tick and one must lose quietly), so the classifier stays silent
       // unless the row has been due far longer than any race could explain. Fail-soft and not
       // awaited: an instrument on the fire hot path must never delay or break dispatch.
-      const verdict = classifyClaimSkip(
-        {
-          id: r.id,
-          name: r.name,
-          installSlug: r.installSlug,
-          nextFireAt: r.nextFireAt ?? null,
-          lastFiredAt: r.lastFiredAt ?? null,
-        },
-        Date.now(),
-      );
-      if (verdict.state === 'unclaimable') {
-        console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
-        void recordUnclaimableRoutine(sql, r.id, verdict);
+      // WI-10005062: this instrument threw (a non-Date lastFiredAt) and, unguarded, aborted
+      // the whole tick — every later due routine went undispatched. It must stay fail-soft.
+      try {
+        const verdict = classifyClaimSkip(
+          {
+            id: r.id,
+            name: r.name,
+            installSlug: r.installSlug,
+            nextFireAt: r.nextFireAt ?? null,
+            lastFiredAt: r.lastFiredAt ?? null,
+          },
+          Date.now(),
+        );
+        if (verdict.state === 'unclaimable') {
+          console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
+          void recordUnclaimableRoutine(sql, r.id, verdict);
+        }
+      } catch (e) {
+        console.warn(`[routines-tick] claim-skip classifier failed for '${r.name}' (non-fatal): ${String(e)}`);
       }
       continue;
     }

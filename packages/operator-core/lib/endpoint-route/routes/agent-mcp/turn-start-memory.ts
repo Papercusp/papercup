@@ -55,6 +55,30 @@ type PackageSinkDelivery = {
   receipt: Record<string, unknown> | null;
 };
 
+/**
+ * WI-10005053: the RESPONSE deadline. The hook (hooks/inject/core.mjs) aborts at
+ * its own wall and then prints NOTHING, so a response that misses the wall by any
+ * amount loses every section at once — the ready CTRL line included — and a
+ * control candidate staged for that response can never be proven, which is what
+ * kept in-place identity activations `prepared` for many turns.
+ *
+ * When the hook declares its wall (`wallMs`), the endpoint answers at
+ * `arrivedAt + wallMs - margin` with whatever legs are READY and omits the rest.
+ * An omitted leg is never staged under the delivered token, so it stays pending
+ * and is offered again next turn (at-least-once, never ack-without-print). The
+ * margin covers the post-collection staging writes and the response's trip back.
+ * A hook that sends no wall keeps the old wait-for-every-leg behaviour.
+ */
+const RESPONSE_MARGIN_MS = 300;
+const MISSED_DEADLINE: unique symbol = Symbol('turn-start:missed-response-deadline');
+type MissedDeadline = typeof MISSED_DEADLINE;
+
+/** `arrivedAt + wallMs - margin`, or null when the caller declared no usable wall. */
+export function turnStartRespondBy(arrivedAt: number, wallMs: unknown): number | null {
+  if (typeof wallMs !== 'number' || !Number.isFinite(wallMs) || wallMs <= 0 || wallMs > 60_000) return null;
+  return arrivedAt + wallMs - Math.min(RESPONSE_MARGIN_MS, Math.floor(wallMs / 4));
+}
+
 /*
  * NO LENGTH FLOOR HERE — deliberately (context-injection-audit-2026-07-28 P-035
  * / F-E). A `MIN_PROMPT_CHARS = 40` gate used to skip recall for any prompt
@@ -134,6 +158,7 @@ const turnStartMemory = defineTool({
     } catch {
       return Response.json({ ok: true, text: '' });
     }
+    const respondBy = turnStartRespondBy(arrivedAt, body.wallMs);
     const owner = (body.owner ?? '').trim();
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
@@ -504,9 +529,10 @@ const turnStartMemory = defineTool({
                 // A stale serve answers this turn at once; the rebuild then runs for
                 // the next turn and the hook wall no longer bounds Jev in it.
                 callerWaiting,
-                ...(typeof body.wallMs === 'number' && body.wallMs > 0 && body.wallMs <= 60_000
-                  ? { respondByMs: arrivedAt + body.wallMs }
-                  : {}),
+                // WI-10005053: the same margin-adjusted point the response
+                // itself is cut at, so a build that ran to the raw wall is not
+                // finished only to be omitted from the response anyway.
+                ...(respondBy !== null ? { respondByMs: respondBy } : {}),
                 userId: recallInput.userId,
                 workspaceId,
                 harnessSlugs: harness ? [harness] : [],
@@ -696,13 +722,58 @@ const turnStartMemory = defineTool({
         }
       })();
 
-      const [control, orientation, memory, personal, packages] = await Promise.all([
-        controlPromise,
-        orientationPromise,
-        memoryPromise,
-        personalPromise,
-        packagePromise,
-      ]);
+      // WI-10005053: race every leg against the response deadline (see
+      // RESPONSE_MARGIN_MS). Each leg already catches its own failures, so a leg
+      // left running past the cut can never reject unhandled; its late result is
+      // simply never read, and so never staged under the token sent below.
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadline =
+        respondBy === null
+          ? null
+          : new Promise<MissedDeadline>((resolve) => {
+              deadlineTimer = setTimeout(() => resolve(MISSED_DEADLINE), Math.max(0, respondBy - Date.now()));
+              deadlineTimer.unref?.();
+            });
+      const byDeadline = <T>(leg: Promise<T>): Promise<T | MissedDeadline> =>
+        deadline ? Promise.race([leg, deadline]) : leg;
+      let settled: [
+        ControlDelivery | MissedDeadline,
+        Awaited<typeof orientationPromise> | MissedDeadline,
+        string | MissedDeadline,
+        string | MissedDeadline,
+        PackageSinkDelivery | MissedDeadline,
+      ];
+      try {
+        settled = await Promise.all([
+          byDeadline(controlPromise),
+          byDeadline(orientationPromise),
+          byDeadline(memoryPromise),
+          byDeadline(personalPromise),
+          byDeadline(packagePromise),
+        ]);
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
+      const omitted: string[] = [];
+      const ready = <T>(name: string, value: T | MissedDeadline, fallback: T): T => {
+        if (value !== MISSED_DEADLINE) return value;
+        omitted.push(name);
+        return fallback;
+      };
+      const control = ready<ControlDelivery>('control', settled[0], { text: '' });
+      // An omitted orientation contributes no token: the token its late build
+      // stages under is then never the one delivered, so that pending is
+      // discarded on the next ACK and offered again (read-cursors ackAndRead).
+      const orientation = ready('orientation', settled[1], { block: '', deliveryToken: null });
+      const memory = ready('memory', settled[2], '');
+      const personal = ready('personal', settled[3], '');
+      const packages = ready<PackageSinkDelivery>('packages', settled[4], { classes: [], receipt: null });
+      if (omitted.length > 0) {
+        console.warn(
+          `[turn-start] response deadline: omitted ${omitted.join(',')} ` +
+            `(elapsedMs=${Date.now() - arrivedAt} wallMs=${String(body.wallMs)} client=${String(body.client ?? '')})`,
+        );
+      }
       let deliveryToken = orientation.deliveryToken;
       let orientationBlock = orientation.block;
       if (packages.classes.length > 0) {
@@ -747,6 +818,15 @@ const turnStartMemory = defineTool({
       // after it) → orientation (what you hold and who is waiting on you) →
       // memory (background recall) -> explicitly granted private context.
       // Most-binding first; the private block is visibly separate and last.
+      // WI-10005053: the deadline cannot help a response whose loop was stalled or
+      // whose pre-collection prefix overran — the hook has already given up and
+      // will print nothing. Make that measurable instead of silent.
+      if (typeof body.wallMs === 'number' && Date.now() - arrivedAt > body.wallMs) {
+        console.warn(
+          `[turn-start] responded after the hook wall — nothing will be printed ` +
+            `(elapsedMs=${Date.now() - arrivedAt} wallMs=${body.wallMs} omitted=${omitted.join(',') || 'none'})`,
+        );
+      }
       return Response.json({
         ok: true,
         text: [control.text, orientationBlock, memory, personal].filter(Boolean).join('\n\n'),

@@ -1307,3 +1307,25 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
   });
 });
+
+describe('P-004 / R-4 stalled-item rotation survives shaping', () => {
+  it('keeps the named item, its age, the ready count and the required action, plus the summary count', () => {
+    const requiredAction = 'require ONE accountable action: finish, split, record a real blocker, or release';
+    const out = shapeLeaderBrief({
+      ok: true,
+      summary: { fleet: 'fdr', stalled_item: 1 },
+      members: [{
+        agentId: 'su-busy',
+        stalledItem: {
+          item: 'WI-77', itemTitle: 'week-old item', noAdvanceMin: 45,
+          advancedAt: '2026-07-10T11:15:00.000Z', advanceSignal: 'claim_acquired_at',
+          readyWaiting: 2, requiredAction,
+        },
+      }],
+    }, 'trimmed') as Record<string, any>;
+    expect(out.summary.stalled_item).toBe(1);
+    expect(out.members[0].stalledItem).toMatchObject({
+      item: 'WI-77', noAdvanceMin: 45, advancedAt: '2026-07-10T11:15:00.000Z', readyWaiting: 2, requiredAction,
+    });
+  });
+});
