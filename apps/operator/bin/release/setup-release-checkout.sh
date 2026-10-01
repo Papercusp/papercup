@@ -54,10 +54,13 @@
 #                             [--node-modules-generation-id <v1-sha256>]
 #                             [--node-modules-generation-token <stat-token>]
 #                             [--node-modules-workspace-dir <repo-relative-dir>]...
+#                             [--dependency-generation-root <dir>]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #                             [--source-only]
 #                             [--source-integrity allow-live-tree|object-sourced]
+#                             [--build-spa]
+#   setup-release-checkout.sh -h|--help   print this usage and exit 0 (touches nothing)
 #
 # `--source-integrity object-sourced` (P-008) refuses the one materialization path
 # that reads the integration tree's live working directory instead of git objects
@@ -73,6 +76,17 @@
 #
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
 set -euo pipefail
+
+# EI-24760202132078287: usage discovery must be non-mutating, so it is handled
+# before anything else runs (no helper sourcing, no trap, no git). The text is
+# the header's own `# Usage:` … `# Env overrides:` block, so it cannot drift.
+for _arg in "$@"; do
+  case "$_arg" in
+    -h|--help)
+      sed -n '/^# Usage:/,/^# Env overrides:/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"
+      exit 0 ;;
+  esac
+done
 
 # Default to the checkout this script actually lives in — never one box's path
 # (WI-4419: a hardcoded /home/<user>/… default is wrong on every other machine
@@ -1034,6 +1048,7 @@ sync_one_node_modules() {
   fi
   rm -rf "$tmp" "$old"                 # defensive: clear this run's leftovers (crash-safety)
   mkdir -p "$(dirname "$dest")"
+  dependency_generation_reap_dead_siblings "$dest"   # and dead runs' (WI-10004825)
   case "${NODE_MODULES_COPY_MODE:-hardlink}" in
     hardlink) cp -al "$src" "$tmp" ;;  # fast; source and destination share file data
     copy)
