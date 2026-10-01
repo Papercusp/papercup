@@ -1240,6 +1240,10 @@ export const CC_HOOK_FILES = [
   // directive check. Sourced by bash hooks and run via `bash <path>` by the .mjs one,
   // never exec'd, so 0644. Omit it and those hooks fail open: a nested CLI acts as the su.
   'pc_nested_cli.sh',
+  // WI-10004953: the node entry to that cached verdict, imported by the .mjs hooks
+  // (stop-owner-directive-check, precompact-managed-carry, schedule-wakeup provenance) and
+  // by the inject dispatcher. Imported, never executed, so 0644.
+  'pc_nested_cli.mjs',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
@@ -1248,6 +1252,7 @@ const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
   'mcp_response.py',
   'pc_nested_cli.py',
   'pc_nested_cli.sh',
+  'pc_nested_cli.mjs',
 ]);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
