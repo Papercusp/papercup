@@ -197,6 +197,9 @@ assert('r3-chain-survives-session-boundary', crossing.length > 0,
 residualUnknowns.push('Non-omission of the delivered line is attested by the writer (the receipt is staged only when the rendered block contains the action line); injected briefs are not ingested into session_turn_parts, so it is not independently re-observable here.');
 residualUnknowns.push('Compaction vs cold restart is not distinguished: both start a new native session under the same owner; memory_session_epochs keeps only the latest epoch per session.');
 residualUnknowns.push('Fleet-leader side: fleet:leader-brief tool_invocations carry no generation/receipt, so the leader half of the shared engine is covered by unit/integration layers (bindings 15943/15944), not by this live probe.');
+// su-4f968faa review of D-037 (2026-10-01): the two witnesses corroborate but are not fully independent.
+residualUnknowns.push('The span and transcript witnesses both derive from the launch-time identity (PAPERCUSP_SID names the per-owner session-claude dir and the activation span), so neither can catch a launcher that assigned the wrong identity. Transcript-only rows also rest on host-local files that can be pruned; a pruned file falls back to foreign.');
+const transcriptOnlySessions = Object.entries(identityWitnesses).filter(([, w]) => w.spans.length === 0 && w.transcript.length > 0).map(([s]) => s);
 
 const passed = assertions.filter((a) => a.passed).length;
 process.stdout.write(`${JSON.stringify({
@@ -206,7 +209,7 @@ process.stdout.write(`${JSON.stringify({
   command: [...(COUNTEREXAMPLE ? ['env', `R3_COUNTEREXAMPLE=${COUNTEREXAMPLE}`] : []),
     'npx', 'tsx', 'docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts'],
   exitCode: passed === assertions.length ? 0 : 1, startedAt, finishedAt: new Date().toISOString(),
-  summary: `${passed}/${assertions.length} assertions passed`, assertions,
+  summary: `${passed}/${assertions.length} assertions passed; ${transcriptOnlySessions.length} of ${Object.keys(identityWitnesses).length} sessions resolved by the transcript witness alone`, assertions,
   plan: { slug: 'goal-brief-to-claimed-plan-work-2026-09-23', specIds: ['AUTO-BAR-R-3-P-004', 'AUTO-BAR-R-3-P-007'], specRevision: 4 },
   residualUnknowns, observations,
 }, null, 2)}\n`);
