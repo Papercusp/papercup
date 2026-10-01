@@ -1378,6 +1378,104 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(join(dir, 'wait-ran'))).toBe(true);
   });
 
+  // WI-10004861. Measured 2026-10-01: the hourly dump holds the shared lock 23-62 min
+  // (mostly 42-56) and a sweep must re-hash the ~93 GB it rewrote, so yielding the
+  // moment the dump is due (above) still stopped every sweep: 12 of 14 preemptions
+  // since 2026-09-30 23:50Z were the dump, and the dumps went 18h without an off-host
+  // copy. Between two OVERDUE producers the one whose deadline passed first goes first.
+  function edfScenario(opts: { extensionSec: number; dumpAgeSec: number; hotLoops: number }) {
+    const fx = fixture();
+    const { dir } = fx;
+    const env = {
+      ...fx.env,
+      KOPIA_BACKUP_MAX_DEFER_SEC: '10',
+      KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: String(opts.extensionSec),
+    };
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const dumpBase = Number(readFileSync(seedDeadlineBase(dir, 'db-dump', opts.dumpAgeSec), 'utf8').trim());
+    const hotLog = join(dir, 'hot.log');
+    const dbLog = join(dir, 'db.log');
+    const dbRan = join(dir, 'db-ran');
+    const hotDone = join(dir, 'hot-done');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for _ in $(seq 1 "$3"); do sleep 0.05; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- bash -c 'date +%s.%N >"$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1
+        db_rc=$?
+        wait "$hot"
+        hot_rc=$?
+        echo "db_rc=$db_rc hot_rc=$hot_rc"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          HOT_READY: join(dir, 'hot-ready'),
+          HOT_DONE: hotDone,
+          HOT_LOOPS: String(opts.hotLoops),
+          HOT_LOG: hotLog,
+          DB_LOG: dbLog,
+          DB_RAN: dbRan,
+        },
+        timeout: 30_000,
+      },
+    );
+    const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
+    const dbOut = existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing';
+    return {
+      dir,
+      scenario,
+      hotOut,
+      dbOut,
+      dumpDue: dumpBase + 10,
+      dbRanAt: existsSync(dbRan) ? Number(readFileSync(dbRan, 'utf8').trim()) : Number.NaN,
+      hotDoneAt: existsSync(hotDone) ? Number(readFileSync(hotDone, 'utf8').trim()) : Number.NaN,
+      evidence: `${scenario.stdout}\n${scenario.stderr}\nhot guard:\n${hotOut}\ndb guard:\n${dbOut}`,
+    };
+  }
+
+  it('lets an overdue sweep whose deadline passed FIRST finish before an overdue dump', () => {
+    // The dump is overdue (due 2s ago) and has armed its own floor, but the sweep has
+    // been overdue for hours: the sweep runs to its end, then the dump gets the lock.
+    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 12, hotLoops: 40 });
+
+    expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
+    expect(r.dbOut, r.evidence).toContain('result=waiting reason=staleness-override-lock');
+    const held = r.hotOut.match(
+      /result=holding-against-priority-waiter reason=holder-earlier-deadline waiter=global\.lock\.db-dump\.\d+\.wait waiter_overdue_sec=\d+ holder_overdue_sec=\d+ hold_ends_in_sec=\d+ /g,
+    );
+    expect(held, r.evidence).toHaveLength(1);
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.hotOut, r.evidence).toContain('result=finished mode=scheduled rc=0');
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+    expect(
+      readdirSync(r.dir).filter((name) => /\.(wait|due)$/.test(name)),
+      r.evidence,
+    ).toEqual([]);
+  });
+
+  it('bounds the earliest-deadline hold: the sweep still yields once the dump is overdue by the extension', () => {
+    // A sweep that never finishes must not starve the dump: past its due + extension
+    // the dump preempts even a sweep whose own deadline passed hours earlier.
+    const r = edfScenario({ extensionSec: 3, dumpAgeSec: 11, hotLoops: 400 });
+
+    expect(r.scenario.stdout, r.evidence).toContain(`db_rc=0 hot_rc=${SCHEDULED_DEFER_EXIT}`);
+    const held = r.hotOut.match(/result=holding-against-priority-waiter reason=holder-earlier-deadline /g);
+    expect(held, r.evidence).toHaveLength(1);
+    expect(r.hotOut, r.evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(r.hotOut, r.evidence).toContain('result=escalation-refunded');
+    expect(Number.isNaN(r.hotDoneAt), r.evidence).toBe(true);
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.dumpDue + 3);
+  });
+
   it('keeps the escalation spent when an override cycle ends on its own', () => {
     // Calibration for the refund above: only a handoff refunds. A cycle that ran to
     // its own exit -- here a failing child -- keeps the retry window, exactly as
