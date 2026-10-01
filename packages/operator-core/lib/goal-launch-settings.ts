@@ -87,7 +87,7 @@ import {
   type GoalOwnerReportDraftInput,
 } from './goal-owner-report';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
-import { claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler/claim-spec';
+import { claimSpecFilterAdmitsTarget, claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler/claim-spec';
 // Type-only: the placement compiler reads a closure VERDICT, it never resolves
 // one. Keeping this erased leaves the acceptance gate out of the portfolio
 // read's runtime graph.
@@ -791,6 +791,8 @@ export interface GoalPlanPlacement {
     target: number | null;
     /** Measured positive plan/plan_item targeting, not ownership authority. */
     planScoped?: boolean;
+    /** Some OR arm admits the plan/plan_item (D-033); gates placement, never credits pickup on its own. */
+    planAdmitted?: boolean;
   } | null;
   activeLane: {
     itemId: string;
@@ -1158,6 +1160,10 @@ export function compileGoalPlanPlacement(args: {
     claimSpecFilterPositivelyTargets(claimSpec.spec!.view.filter, 'plan', args.plan.slug) ||
     (args.actionableItemId !== null && claimSpecFilterPositivelyTargets(claimSpec.spec!.view.filter, 'plan_item', args.actionableItemId))
   );
+  const planAdmitted = claimSpec.ok && Boolean(claimSpec.spec) && (
+    claimSpecFilterAdmitsTarget(claimSpec.spec!.view.filter, 'plan', args.plan.slug) ||
+    (args.actionableItemId !== null && claimSpecFilterAdmitsTarget(claimSpec.spec!.view.filter, 'plan_item', args.actionableItemId))
+  );
   const holderIdentityMeasured = Array.isArray(source.goalHolderOwnerIds);
   const goalHolderOwnerIds = portfolioArray(source.goalHolderOwnerIds).map(String);
   const fleet =
@@ -1170,6 +1176,7 @@ export function compileGoalPlanPlacement(args: {
           liveMembers: portfolioNumber(fleetRaw.liveMembers),
             target: fleetRaw.target == null ? null : portfolioNumber(fleetRaw.target),
             planScoped,
+            planAdmitted,
         }
       : null;
   const transactionRaw = portfolioJsonObject(fleetRaw?.launchTransaction);
@@ -1290,7 +1297,7 @@ export function compileGoalPlanPlacement(args: {
     state = 'blocked';
     action = 'reconcile-plan-lane-holder';
     reason = `Verify active, independent leadership for ${fleet.slug}; a GOAL steward or unmeasured holder identity cannot certify delegated execution. Preserve any fleet pause and repair through its existing authority.`;
-  } else if (!planScoped) {
+  } else if (!planAdmitted) {
     state = 'blocked';
     action = 'reconcile-plan-lane-holder';
     reason = `Restore a valid positive plan/plan_item claim filter for ${fleet.slug} before crediting member pickup; do not create a replacement fleet.`;
