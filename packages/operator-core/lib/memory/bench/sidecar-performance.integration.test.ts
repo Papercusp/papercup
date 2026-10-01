@@ -39,10 +39,12 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
         for (let i = 0; i < 4; i++) {
           await sidecarEmbedBatch(url, { model: 'harrier', kind: 'query', texts: ['frozen'], bypassCache: true });
           report.completed++;
-          await new Promise(resolve => setTimeout(resolve, 20));
+          if (i < 3) await new Promise(resolve => setTimeout(resolve, 20));
         }
         report.pauseStartedAt = Date.now();
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6500);
+        // Stay in the response-completion microtask, as the collector's
+        // synchronous sample append does; a timer-phase pause is different.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10500);
         report.pauseEndedAt = Date.now();
         await sidecarEmbedBatch(url, { model: 'harrier', kind: 'query', texts: ['frozen'], bypassCache: true });
         report.completed++;
@@ -72,7 +74,7 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
     const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
     expect(report.error, JSON.stringify(report)).toBeNull();
     expect(report.completed).toBe(5);
-    expect(report.keepAliveTimeout).toBe(61000);
+    expect(report.keepAliveTimeout, JSON.stringify(report)).toBe(61000);
     expect(report.headersTimeout).toBeGreaterThan(report.keepAliveTimeout);
   }, 30000);
   it('retains the actual socket failure cause and frozen request identity in its failure receipt', async () => {
