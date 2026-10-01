@@ -319,7 +319,7 @@ export async function listClosedAskGatesSince(filter: {
       AND kind = 'ask'
       AND closed_at IS NOT NULL
       AND closed_at >= ${filter.sinceIso}
-    ORDER BY closed_at DESC
+    ORDER BY session_pending_gates.closed_at DESC
     LIMIT ${limit}
   `;
   return rows;
