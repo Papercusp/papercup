@@ -1319,8 +1319,10 @@ function CreateAutomationModal({
           ...targetPayload,
           eventPattern: eventPattern.trim(),
           eventFilter: {},
-          maxRuns: null,
-          windowSeconds: 60,
+          // No rate fields, deliberately: stating any (this sent windowSeconds: 60)
+          // displaces the source's own default, which costs a social source its
+          // per-platform coalesce-with-cap policy. Silence lets the route apply that
+          // default, plus the engine's bounded 24h dispatch window (WI-10004920).
         });
         if (!attached.ok || !attached.bindingId) {
           throw new Error(`${createdThisAttempt && plan ? `Plan ${plan.title} was created, but ` : ''}the external binding was not attached. ${attached.message ?? 'The binding id was missing.'}`);
