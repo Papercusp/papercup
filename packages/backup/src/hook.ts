@@ -112,6 +112,9 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   // the schema but omitting its bytea data prevents a transient request-body
   // backlog from making the per-workspace restore dump exceed its watchdog.
   'harness_shared.gateway_payload_blobs',
+  // The same spool's body chunks (D-017, migration 1314): content-defined pieces of
+  // those request bodies, kept only while a manifest row above references them.
+  'harness_shared.gateway_payload_chunks',
   // Session-transcript archive blobs (~3 GB TOAST) + their parent metadata rows
   // (excluded together so a restore sees a clean absence, not dangling refs).
   // This pair dominated the dump — one 279s-mean COPY per snapshot, ~65% of the

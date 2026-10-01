@@ -229,7 +229,13 @@ export function repoRelativeLaneFiles(root, wsAbsDir, include) {
 
 function defaultGit(root, args) {
   try {
-    return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024 * 1024,
+    });
   } catch {
     return null;
   }

@@ -24,6 +24,8 @@ import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-resolve';
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
+import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
+import type { TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { posix, relative } from 'node:path';
 
 interface TestRunRow {
@@ -33,6 +35,9 @@ interface TestRunRow {
   startedAt: Date;
   finishedAt: Date;
   outputTail: string | null;
+  passed: number;
+  failed: number;
+  skipped: number;
 }
 
 function captureReporterSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
@@ -55,7 +60,7 @@ function toWorkspaceRel(absPath: string): string {
 }
 
 async function tryGetPg(): Promise<{
-  sql: (strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>;
+  sql: ((strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>) & { json: (value: unknown) => unknown };
 } | null> {
   try {
     const pg = (await import('postgres')).default;
@@ -71,7 +76,7 @@ async function tryGetPg(): Promise<{
       onnotice: () => {},
     });
     return { sql } as unknown as {
-      sql: (strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>;
+      sql: ((strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>) & { json: (value: unknown) => unknown };
     };
   } catch {
     return null;
@@ -93,15 +98,38 @@ async function insertRow(row: TestRunRow): Promise<void> {
   const source = resolveTestRunSource();
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
+  // Use the same runtime scope precedence as the shared Vitest writer. Without
+  // these columns a real passing run is invisible to scoped evidence binding.
+  // CI deliberately strips the scope variables and keeps its rows unscoped.
+  const harnessSlug = resolveTestRunHarnessSlug();
+  const workspaceId = resolveTestRunWorkspaceId();
+  const executionDetails: TestRunExecutionDetails = {
+    schemaVersion: 1,
+    root: resolveAgentWorkspaceRoot({}),
+    filePath: row.filePath,
+    runGroupId,
+    workspaceId,
+    harnessSlug,
+    testNamePattern: null,
+    testLayer: 'e2e',
+    passed: row.passed,
+    failed: row.failed,
+    skipped: row.skipped,
+    collectionFailed: false,
+    mutationPhase: null,
+    commitSha: commit,
+    // A shared checkout was not proven stable around this browser run.
+    worktreeDirty: true,
+  };
 
   try {
     await Promise.race([
       pg.sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, loop_lag_p95_ms, rss_mb)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, worktree_dirty, execution_details)
         VALUES
           (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
-           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${loopLagP95Ms}, ${rssMb})
+           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${true}, ${pg.sql.json(executionDetails)})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -119,6 +147,9 @@ interface PerFile {
   anyPass: boolean;
   allSkipped: boolean;
   errors: string[];
+  passed: number;
+  failed: number;
+  skipped: number;
 }
 
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
@@ -141,6 +172,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         anyPass: false,
         allSkipped: true,
         errors: [],
+        passed: 0,
+        failed: 0,
+        skipped: 0,
       };
 
       const endMs = (result.startTime?.getTime() ?? Date.now()) + result.duration;
@@ -149,12 +183,14 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
       switch (result.status) {
         case 'passed':
+          existing.passed += 1;
           existing.anyPass = true;
           existing.allSkipped = false;
           break;
         case 'failed':
         case 'timedOut':
         case 'interrupted':
+          existing.failed += 1;
           existing.anyFail = true;
           existing.allSkipped = false;
           for (const e of result.errors ?? []) {
@@ -162,6 +198,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           }
           break;
         case 'skipped':
+          existing.skipped += 1;
           // keep allSkipped flag until something else lands
           break;
       }
@@ -192,6 +229,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               startedAt: new Date(agg.startedAt),
               finishedAt: new Date(agg.finishedAt),
               outputTail,
+              passed: agg.passed,
+              failed: agg.failed,
+              skipped: agg.skipped,
             }),
           );
         } catch {

@@ -987,3 +987,114 @@ describe('portable-identity P-010 package sink', () => {
     expect(store.committed).toEqual([null, null, { version: 1, status: 'fenced', rendered: false }]);
   });
 });
+
+/**
+ * WI-10005053: the hook aborts at its wall and then prints NOTHING, so one slow
+ * leg used to cost the whole response — including a CTRL line that was ready
+ * long before — and left the staged control candidate unprovable, which held
+ * in-place identity activations at `prepared` turn after turn (measured on
+ * su-d5eaa301, 2026-10-01). With a declared wall the endpoint now answers at
+ * `arrivedAt + wallMs - margin` with the ready legs. Real timers: the property
+ * under test IS wall-clock behaviour, and every wait here is well under 1s.
+ */
+describe('response deadline (WI-10005053)', () => {
+  // wallMs 200 → margin min(300, 50) = 50 → the endpoint answers ~150ms in.
+  const WALL_MS = 200;
+  const SLOW_MS = 1_000;
+  // The endpoint answers ~150ms in; a pre-fix endpoint waits >= SLOW_MS. The
+  // bound sits far from both so a loaded CI host cannot flip the verdict.
+  const ANSWERED_BY_MS = 600;
+  const desired = { specificationRevision: 'spec-dl', stateRevision: 'state-dl' };
+  const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    let pending = true;
+    preparePendingControlTransitionMock.mockImplementation(async () =>
+      pending ? { kind: 'stack', generation: 21, state: { activation: { desired } } } : null,
+    );
+    acknowledgeControlTransitionMock.mockImplementation(async () => {
+      pending = false;
+      return true;
+    });
+    renderStackTransitionContextResultMock.mockResolvedValue({ text: 'IDENTITY-LAYER', rendered: true });
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  it('turnStartRespondBy: only a sane declared wall yields a deadline, cut by the margin', async () => {
+    const { turnStartRespondBy } = await import('./turn-start-memory');
+    expect(turnStartRespondBy(1_000, 2_500)).toBe(1_000 + 2_500 - 300);
+    expect(turnStartRespondBy(1_000, WALL_MS)).toBe(1_000 + WALL_MS - 50);
+    for (const bad of [undefined, null, '2500', 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 60_001]) {
+      expect(turnStartRespondBy(1_000, bad)).toBeNull();
+    }
+  });
+
+  it('delivers the ready CTRL at the deadline when orientation is slow, under a token the late orientation never owns', async () => {
+    let orientationSettled = false;
+    buildTurnStartOrientationBlockMock.mockImplementationOnce(() =>
+      after(SLOW_MS, { block: 'LATE-ORIENTATION', deliveryToken: 'late-o' }).finally(() => {
+        orientationSettled = true;
+      }),
+    );
+    const t0 = Date.now();
+    const out = await post({ owner: 'sess-dl', prompt: 'slow orientation', confirmedDelivery: null, wallMs: WALL_MS });
+    const elapsed = Date.now() - t0;
+
+    // The pre-fix endpoint waited the full SLOW_MS here — past the hook's wall.
+    expect(elapsed).toBeLessThan(ANSWERED_BY_MS);
+    expect(out.text).toContain('IDENTITY-LAYER');
+    expect(out.text).not.toContain('LATE-ORIENTATION');
+    expect(out.deliveryToken).toEqual(expect.any(String));
+    expect(out.deliveryToken).not.toBe('late-o');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('omitted orientation'));
+
+    // Let the omitted leg finish; it must not disturb the delivered proof.
+    await vi.waitFor(() => expect(orientationSettled).toBe(true), { timeout: SLOW_MS * 2 });
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    await post({ owner: 'sess-dl', prompt: 'next turn', confirmedDelivery: out.deliveryToken });
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-dl', 'ws-test', 21, undefined, desired);
+  });
+
+  it('never stages a control candidate that missed the deadline, so its later confirmation acknowledges nothing', async () => {
+    preparePendingControlTransitionMock.mockImplementationOnce(() =>
+      after(SLOW_MS, { kind: 'stack', generation: 21, state: { activation: { desired } } }),
+    );
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'ORIENTATION', deliveryToken: 'tok-o' });
+
+    const t0 = Date.now();
+    const out = await post({ owner: 'sess-dl', prompt: 'slow control', confirmedDelivery: null, wallMs: WALL_MS });
+    expect(Date.now() - t0).toBeLessThan(ANSWERED_BY_MS);
+    expect(out.text).toContain('ORIENTATION');
+    expect(out.text).not.toContain('IDENTITY-LAYER');
+    expect(out.deliveryToken).toBe('tok-o');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('omitted control'));
+
+    // The late leg still prepares; nothing may stage it under the sent token.
+    await vi.waitFor(() => expect(markControlTransitionPreparedMock).toHaveBeenCalled(), { timeout: SLOW_MS * 2 });
+    const retry = await post({ owner: 'sess-dl', prompt: 'confirm orientation', confirmedDelivery: out.deliveryToken });
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    // …and the transition is offered again, now that control is fast.
+    expect(retry.text).toContain('IDENTITY-LAYER');
+  });
+
+  it('hands memory the margin-adjusted deadline, not the raw wall', async () => {
+    const t0 = Date.now();
+    await post({ owner: 'sess-dl', prompt: 'memory deadline', wallMs: WALL_MS });
+    const t1 = Date.now();
+    const { respondByMs } = buildMemoryContextBlockMock.mock.calls[0]![0] as { respondByMs?: number };
+    expect(respondByMs).toBeGreaterThanOrEqual(t0 + WALL_MS - 50);
+    expect(respondByMs).toBeLessThanOrEqual(t1 + WALL_MS - 50);
+  });
+
+  it('a hook that declares no wall still waits for every leg (unchanged contract)', async () => {
+    buildTurnStartOrientationBlockMock.mockImplementationOnce(() =>
+      after(300, { block: 'PATIENT-ORIENTATION', deliveryToken: null }),
+    );
+    const out = await post({ owner: 'sess-dl', prompt: 'no wall' });
+    expect(out.text).toContain('PATIENT-ORIENTATION');
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('response deadline'));
+  });
+});

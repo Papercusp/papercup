@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { WorkspaceHostResourceCreatedObserver, WorkspaceHostResourceDestroyedObserver } from './gcp-provider';
 import type {
   WorkspaceHostApplyRequest,
   WorkspaceHostApplyResult,
@@ -200,6 +201,14 @@ export interface AwsWorkspaceHostSdkClient {
 export interface AwsWorkspaceHostProviderOptions {
   client: AwsWorkspaceHostSdkClient;
   now?: () => string;
+  /**
+   * Teardown-obligation producer (same contract as the GCP provider): called once an owned,
+   * metered resource (EC2 instance, EBS volume) is confirmed to exist. Errors propagate and fail
+   * the step, because an untracked billable resource is the defect the ledger exists to prevent.
+   */
+  onResourceCreated?: WorkspaceHostResourceCreatedObserver;
+  /** Teardown-obligation consumer: called once a delete is confirmed by a fresh provider read. */
+  onResourceDestroyed?: WorkspaceHostResourceDestroyedObserver;
 }
 
 export interface AwsWorkspaceHostDesiredProviderSettings {
@@ -232,8 +241,11 @@ type AwsStepInput =
       request: AwsCreateSnapshotInput;
       hostId: string;
     }
-  | { op: 'terminate-instance'; instanceId: string; hostId: string }
-  | { op: 'delete-volume'; volumeId: string; hostId: string };
+  // `resourceName` is the provider id of the resource the step deletes. The provisioning runner
+  // maps every destroy step back to ONE registered provider resource through this field, for
+  // every provider (GCP steps carry the same name), so it is not optional.
+  | { op: 'terminate-instance'; instanceId: string; hostId: string; resourceName: string }
+  | { op: 'delete-volume'; volumeId: string; hostId: string; resourceName: string };
 
 const AWS_INSTANCE_RESOURCE_KIND = 'vm';
 const AWS_VOLUME_RESOURCE_KIND = 'disk';
@@ -412,11 +424,16 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
   readonly capabilities = CAPABILITIES;
   private readonly now: () => string;
 
+  private readonly onResourceCreated?: WorkspaceHostResourceCreatedObserver;
+  private readonly onResourceDestroyed?: WorkspaceHostResourceDestroyedObserver;
+
   constructor(
     private readonly client: AwsWorkspaceHostSdkClient,
-    options: Pick<AwsWorkspaceHostProviderOptions, 'now'> = {},
+    options: Pick<AwsWorkspaceHostProviderOptions, 'now' | 'onResourceCreated' | 'onResourceDestroyed'> = {},
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
+    this.onResourceCreated = options.onResourceCreated;
+    this.onResourceDestroyed = options.onResourceDestroyed;
   }
 
   validateConnection(ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostConnectionValidation> {
@@ -705,6 +722,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           op: 'terminate-instance',
           instanceId: instance.providerId,
           hostId: request.host.hostId,
+          resourceName: instance.providerId,
         } satisfies AwsStepInput,
       });
     }
@@ -717,13 +735,73 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         dependsOn: terminateIds,
         idempotencyKey: `${request.idempotencyKey}:${id}:${volume.providerId}`,
         destructive: true,
-        input: { op: 'delete-volume', volumeId: volume.providerId, hostId: request.host.hostId } satisfies AwsStepInput,
+        input: {
+          op: 'delete-volume',
+          volumeId: volume.providerId,
+          hostId: request.host.hostId,
+          resourceName: volume.providerId,
+        } satisfies AwsStepInput,
       });
     }
     return steps;
   }
 
   async apply(
+    request: WorkspaceHostApplyRequest,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostApplyResult> {
+    return this.report(request, ctx, await this.applyStep(request, ctx));
+  }
+
+  /**
+   * Feed the teardown-obligation ledger from confirmed provider facts, mirroring the GCP
+   * provider's `report()`: a created owned resource opens an obligation (also on a re-run that
+   * finds the client-token twin already present), a provider-read absence closes it.
+   *
+   * The OBSERVER's resource copy carries the connection's account (`parentProviderId`) and region:
+   * the obligation row is addressed for an out-of-band delete from those two fields, and an EC2
+   * instance ref does not record its region. The returned result is left exactly as the step
+   * produced it, so persisted host resources do not change shape.
+   */
+  private async report(
+    request: WorkspaceHostApplyRequest,
+    ctx: WorkspaceHostProviderContext,
+    result: WorkspaceHostApplyResult,
+  ): Promise<WorkspaceHostApplyResult> {
+    const input = stepInput(request.step);
+    const createsOwnedResource = input.op === 'create-data-volume' || input.op === 'run-instance';
+    const owesCreationObligation =
+      createsOwnedResource && (result.state === 'applied' || result.state === 'unchanged');
+    if (this.onResourceCreated && owesCreationObligation && result.resource) {
+      const accountId = ctx.connection.scope?.id ?? '';
+      const region = typeof ctx.connection.provider?.region === 'string' ? ctx.connection.provider.region : undefined;
+      await this.onResourceCreated({
+        resource: {
+          ...result.resource,
+          ...(result.resource.parentProviderId || !accountId ? {} : { parentProviderId: accountId }),
+          ...(result.resource.region || !region ? {} : { region }),
+        },
+        operationId: result.operationId,
+        stepId: result.stepId,
+        workspaceId: ctx.workspaceId,
+        hostId: input.hostId,
+        parentResourceId: accountId,
+      });
+    }
+    if (this.onResourceDestroyed && result.state === 'destroyed' && result.confirmation) {
+      const deleteOp =
+        input.op === 'terminate-instance' || input.op === 'delete-volume' ? input.op : undefined;
+      if (deleteOp) {
+        await this.onResourceDestroyed({
+          resource: { deleteOp, providerId: result.confirmation.providerResourceId },
+          workspaceId: ctx.workspaceId,
+        });
+      }
+    }
+    return result;
+  }
+
+  private async applyStep(
     request: WorkspaceHostApplyRequest,
     ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
@@ -1091,5 +1169,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
 }
 
 export function createAwsWorkspaceHostProvider(options: AwsWorkspaceHostProviderOptions): AwsWorkspaceHostProvider {
-  return new AwsWorkspaceHostProvider(options.client, { now: options.now });
+  return new AwsWorkspaceHostProvider(options.client, {
+    now: options.now,
+    onResourceCreated: options.onResourceCreated,
+    onResourceDestroyed: options.onResourceDestroyed,
+  });
 }

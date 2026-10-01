@@ -61,6 +61,7 @@
 import { z } from 'zod';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import {
   closeSync,
@@ -156,7 +157,8 @@ import {
  * (EI-24100872054224181).
  */
 const PRE_LAUNCH_REFUSALS: ReadonlySet<string> = new Set([
-  'invalid_root', 'ambiguous_workspace_path', 'mutation_probe_active', 'mutation_probe_state_unknown',
+  'invalid_root', 'ambiguous_workspace_path', 'managed_app_path_unresolved',
+  'mutation_probe_active', 'mutation_probe_state_unknown',
 ]);
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
@@ -169,6 +171,52 @@ const MAX_TIMEOUT_MS = 900_000;
 const DETACHED_RECOVERY_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-runs-reporter.ts';
 const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
+
+/** Bounded wall-clock phases returned by testing:run for latency attribution. */
+export interface TestingRunPhaseTimings {
+  preflightMs: number | null;
+  provenanceMs: number | null;
+  preparationMs: number | null;
+  admissionWaitMs: number | null;
+  routerExecutionMs: number | null;
+  ledgerIdReadbackMs: number | null;
+  finalizationMs: number | null;
+  totalHandlerMs: number | null;
+}
+
+function createTestingRunPhaseTimings(): TestingRunPhaseTimings {
+  return {
+    preflightMs: null,
+    provenanceMs: null,
+    preparationMs: null,
+    admissionWaitMs: null,
+    routerExecutionMs: null,
+    ledgerIdReadbackMs: null,
+    finalizationMs: null,
+    totalHandlerMs: null,
+  };
+}
+
+function elapsedTestingRunPhaseMs(startedAt: number): number {
+  return Math.round(Math.max(0, performance.now() - startedAt) * 100) / 100;
+}
+
+function setTestingRunPhaseDuration(
+  timings: TestingRunPhaseTimings | undefined,
+  phase: keyof TestingRunPhaseTimings,
+  startedAt: number,
+): void {
+  if (timings) timings[phase] = elapsedTestingRunPhaseMs(startedAt);
+}
+
+function addTestingRunPhaseDuration(
+  timings: TestingRunPhaseTimings | undefined,
+  phase: 'admissionWaitMs' | 'routerExecutionMs',
+  startedAt: number,
+): void {
+  if (!timings) return;
+  timings[phase] = Math.round(((timings[phase] ?? 0) + elapsedTestingRunPhaseMs(startedAt)) * 100) / 100;
+}
 
 /**
  * A managed Papercusp checkout owns a Vitest reporter that records its run.
@@ -1189,6 +1237,7 @@ export type TestFilesCoreResult =
       error:
         | 'invalid_root'
         | 'ambiguous_workspace_path'
+        | 'managed_app_path_unresolved'
         | 'mutation_probe_active'
         | 'mutation_probe_state_unknown'
         | 'aborted'
@@ -2068,9 +2117,11 @@ function runTestProcess(
   timeoutMs: number,
   signal?: AbortSignal,
   fileCount = 1,
+  phaseTimings?: TestingRunPhaseTimings,
 ): Promise<RouterOutcome> {
   const runGroup = env.PAPERCUSP_TEST_RUN_GROUP ?? 'unattributed';
   const plannedDemand = buildTestProcessDemand({ fileCount });
+  const admissionStartedAt = performance.now();
   return runWithTestProcessDeadline<RouterOutcome>({
     timeoutMs,
     parentSignal: signal,
@@ -2104,8 +2155,17 @@ function runTestProcess(
           settle: (outcome) => classifyTestProcessOutcome(outcome),
         },
         async (admissionContext) => {
+          addTestingRunPhaseDuration(phaseTimings, 'admissionWaitMs', admissionStartedAt);
+          const routerStartedAt = performance.now();
+          let routerTimingRecorded = false;
+          const recordRouterTiming = (): void => {
+            if (routerTimingRecorded) return;
+            routerTimingRecorded = true;
+            addTestingRunPhaseDuration(phaseTimings, 'routerExecutionMs', routerStartedAt);
+          };
           const childTimeoutMs = markAdmissionComplete();
           if (childTimeoutMs <= 0) {
+            recordRouterTiming();
             return {
               code: null,
               signal: null,
@@ -2115,6 +2175,7 @@ function runTestProcess(
             };
           }
           if (childSignal.aborted) {
+            recordRouterTiming();
             return {
               code: null,
               signal: null,
@@ -2168,6 +2229,7 @@ function runTestProcess(
             const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
               if (settled) return;
               settled = true;
+              recordRouterTiming();
               // A host-shutdown handoff returns before the child finishes. Keep
               // both file-backed sinks available to the surviving child. A rare
               // handoff may leave one bounded directory in the namespaced
@@ -2306,6 +2368,7 @@ function runRouter(
   timeoutMs: number,
   signal?: AbortSignal,
   fileCount = 1,
+  phaseTimings?: TestingRunPhaseTimings,
 ): Promise<RouterOutcome> {
   return runTestProcess(
     process.execPath,
@@ -2317,6 +2380,7 @@ function runRouter(
     timeoutMs,
     signal,
     fileCount,
+    phaseTimings,
   );
 }
 
@@ -2329,6 +2393,7 @@ function runDirectVitest(
   timeoutMs: number,
   signal?: AbortSignal,
   fileCount = 1,
+  phaseTimings?: TestingRunPhaseTimings,
 ): Promise<RouterOutcome> {
   return runTestProcess(
     process.platform === 'win32' ? 'npx.cmd' : 'npx',
@@ -2340,6 +2405,7 @@ function runDirectVitest(
     timeoutMs,
     signal,
     fileCount,
+    phaseTimings,
   );
 }
 
@@ -2852,6 +2918,8 @@ export async function runTestFilesCore(opts: {
   runId?: string;
   /** Recursive mixed-root groups defer detached recovery to their outer operation. */
   allowDetachedRecovery?: boolean;
+  /** Optional handler-owned timing accumulator; omitted by internal callers. */
+  phaseTimings?: TestingRunPhaseTimings;
 }): Promise<TestFilesCoreResult> {
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
@@ -3040,6 +3108,7 @@ export async function runTestFilesCore(opts: {
         timeoutMs,
         opts.signal,
         pathResolution.files.length,
+        opts.phaseTimings,
       );
     } else {
       const groups = groupDirectVitestRoutes(pathResolution.files, root);
@@ -3074,6 +3143,7 @@ export async function runTestFilesCore(opts: {
           remaining,
           opts.signal,
           group.files.length,
+          opts.phaseTimings,
         );
         outcomes.push(groupOutcome);
         if (groupOutcome.timedOut || groupOutcome.aborted) break;
@@ -3418,6 +3488,8 @@ export default defineTool({
     ),
   }),
   async handler(args, ctx) {
+    const handlerStartedAt = performance.now();
+    const phaseTimingsMs = createTestingRunPhaseTimings();
     if (args.recoverEvidence) {
       if (args.files || args.changedPaths || args.evidence || args.remeasureEvidence)
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
@@ -3542,15 +3614,19 @@ export default defineTool({
           }
         : null;
     if (evidenceRequest && !evidenceScope) return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
+    setTestingRunPhaseDuration(phaseTimingsMs, 'preflightMs', handlerStartedAt);
     // expensive-verification-loops P-001: a run that outlives the foreground clamp
     // continues detached, and that detached run is the expensive attempt the loop
     // detector counts per work-item. An evidence request names its item explicitly;
     // otherwise use the caller's unambiguous held claim — the same rule capability:bash
     // applies, so one agent's runs link identically through either door.
+    const provenanceStartedAt = performance.now();
     const attemptWorkItemId =
       evidenceRequest?.workItemId ??
       (await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, harnessSlug ?? null)).workItemId ??
       undefined;
+    setTestingRunPhaseDuration(phaseTimingsMs, 'provenanceMs', provenanceStartedAt);
+    const preparationStartedAt = performance.now();
     // P-002 (WI-10004175): the loop gate capability:bash and release:cut apply. Its budget is
     // the REQUESTED one, not the foreground clamp, because the detached run keeps going past
     // the clamp; a run asked for <= SLOW_ATTEMPT_MIN_MS stays free for an audit's quick checks.
@@ -3576,6 +3652,7 @@ export default defineTool({
         return { data: { ok: false, error: 'evidence_preparation_failed', message: String(error) } };
       }
     }
+    setTestingRunPhaseDuration(phaseTimingsMs, 'preparationMs', preparationStartedAt);
     const result = await runTestFilesCore({
       files,
       runId,
@@ -3587,7 +3664,9 @@ export default defineTool({
       ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
+      phaseTimings: phaseTimingsMs,
     });
+    const ledgerReadbackStartedAt = performance.now();
     const testRunIdsReadback =
       shouldResolveHarnessTestRunIds(result) && ctx.workspaceId && ctx.workspaceId !== '*' && harnessSlug
         ? await readHarnessTestRunIdsBounded({
@@ -3598,6 +3677,8 @@ export default defineTool({
             ? { root: result.root, roots: result.roots, byFile: result.byFile }
             : {})
         : null;
+    setTestingRunPhaseDuration(phaseTimingsMs, 'ledgerIdReadbackMs', ledgerReadbackStartedAt);
+    const finalizationStartedAt = performance.now();
     // Evidence needs to distinguish tests intentionally excluded by an explicit
     // name selector from tests that were actually skipped by the suite. Keep the
     // marker internal to the evidence path so the public run payload remains the
@@ -3691,10 +3772,13 @@ export default defineTool({
           }
         : undefined;
     const finalResult = remeasureReport ? { ...surfacedResult, remeasure: remeasureReport } : surfacedResult;
+    setTestingRunPhaseDuration(phaseTimingsMs, 'finalizationMs', finalizationStartedAt);
+    setTestingRunPhaseDuration(phaseTimingsMs, 'totalHandlerMs', handlerStartedAt);
+    const timedFinalResult = { ...finalResult, phaseTimingsMs: { ...phaseTimingsMs } };
     if (result.ok === false && result.error === 'timeout') {
       return {
         data: {
-          ...finalResult,
+          ...timedFinalResult,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
             testingRunTimeoutClampDisclosure(requestedTimeoutMs, timeoutMs) +
@@ -3711,6 +3795,6 @@ export default defineTool({
         },
       };
     }
-    return { data: finalResult };
+    return { data: timedFinalResult };
   },
 });

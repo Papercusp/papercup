@@ -21,6 +21,11 @@ class FakeAudio {
   constructor(public src: string) { audio.push(this); }
 }
 const requests: Array<{ url: string; body: Record<string, unknown>; signal: AbortSignal }> = [];
+const fixtureFetch: typeof fetch = async (url, options) => {
+  if (!String(url).includes('/onboarding/tutorial-')) return Response.json({ enabled: false });
+  const body = JSON.parse(options!.body as string); requests.push({ url: String(url), body, signal: options!.signal! });
+  return String(url).includes('tutorial-speech') ? new Response(new Blob(['audio'], { type: 'audio/wav' })) : Response.json({ answer: 'Use the project permission checks in the connection form.' });
+};
 function Fixture({ workspaceId = scope.workspaceId }: { workspaceId?: string }) {
   const selected = { ...scope, workspaceId };
   const [state, dispatch] = useReducer(tutorialReducer, tutorialReducer(createTutorialState(selected), { type: 'observe', observation: { scope: selected, revision: 1, access: 'allowed' } }));
@@ -34,10 +39,7 @@ beforeEach(() => {
   setVoiceOutputMuted(false);
   setVoicePrefsClient({ ...loadVoicePrefsClient(), ttsEngine: 'openai' }); updateVoiceConfig({ roleVoices: { 'system:operator': 'nova' } });
   vi.stubGlobal('Audio', FakeAudio);
-  vi.stubGlobal('fetch', vi.fn(async (url, options) => {
-    const body = JSON.parse(options.body); requests.push({ url: String(url), body, signal: options.signal });
-    return String(url).includes('tutorial-speech') ? new Response(new Blob(['audio'], { type: 'audio/wav' })) : Response.json({ answer: 'Use the project permission checks in the connection form.' });
-  }));
+  vi.stubGlobal('fetch', vi.fn(fixtureFetch));
   vi.stubGlobal('URL', class extends URL { static createObjectURL() { return 'blob:lesson-audio'; } static revokeObjectURL() {} });
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -69,7 +71,11 @@ describe('Guide output-only voice lifecycle', () => {
   });
   it('cancels both help and late speech when its workspace view is removed', async () => {
     let resolveSpeech!: (r: Response) => void;
-    vi.mocked(fetch).mockImplementationOnce((_url, options) => { requests.push({ url: String(_url), body: JSON.parse(options!.body as string), signal: options!.signal! }); return new Promise(resolve => { resolveSpeech = resolve; }); });
+    let held = false;
+    vi.mocked(fetch).mockImplementation((_url, options) => {
+      if (held || !String(_url).includes('tutorial-speech')) return fixtureFetch(_url, options);
+      held = true; requests.push({ url: String(_url), body: JSON.parse(options!.body as string), signal: options!.signal! }); return new Promise(resolve => { resolveSpeech = resolve; });
+    });
     const view = render(<Fixture />); await waitFor(() => expect(requests.length).toBe(1));
     view.unmount(); expect(requests[0].signal.aborted).toBe(true);
     await act(async () => resolveSpeech(new Response(new Blob(['late'])))); expect(audio).toHaveLength(0);
@@ -77,7 +83,11 @@ describe('Guide output-only voice lifecycle', () => {
     expect(requests.at(-1)!.body.expectedScope).toMatchObject({ workspaceId: 'workspace-b' });
   });
   it('leaves deterministic controls usable during TTS outage and blocked autoplay', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 503 })); render(<Fixture />);
+    let failed = false;
+    vi.mocked(fetch).mockImplementation((url, options) => {
+      if (failed || !String(url).includes('tutorial-speech')) return fixtureFetch(url, options);
+      failed = true; return Promise.resolve(new Response('', { status: 503 }));
+    }); render(<Fixture />);
     await screen.findByText(/Speech could not be played/);
     rejectPlayback = true;
     fireEvent.click(screen.getByRole('button', { name: 'Replay speech' }));
@@ -87,12 +97,14 @@ describe('Guide output-only voice lifecycle', () => {
   });
   it('does not synthesize or capture when output was already muted', async () => {
     setVoiceOutputMuted(true); render(<Fixture />);
-    expect(screen.getByText('Guide speech is muted.')).toBeTruthy(); expect(fetch).not.toHaveBeenCalled();
+    expect(screen.getByText('Guide speech is muted.')).toBeTruthy();
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('tutorial-speech'))).toHaveLength(0);
   });
   it('times out slow help, keeps lesson controls usable and ignores a late answer', async () => {
     render(<Fixture />); await waitFor(() => expect(audio.length).toBe(1));
     let resolveHelp!: (response: Response) => void;
-    vi.mocked(fetch).mockImplementationOnce((_url, options) => {
+    vi.mocked(fetch).mockImplementation((_url, options) => {
+      if (!String(_url).includes('tutorial-help')) return fixtureFetch(_url, options);
       requests.push({ url: String(_url), body: JSON.parse(options!.body as string), signal: options!.signal! });
       return new Promise(resolve => { resolveHelp = resolve; });
     });

@@ -90,7 +90,7 @@ describe('D-131 repair auto-verify', () => {
       .toMatchObject({ status: 'skipped', reason: 'already-verifying' });
     expect(started.launch).not.toHaveBeenCalled();
 
-    const judged = queueAt({ convergenceRounds: [{ head: HEAD1 }] as FrozenCandidateRepairQueue['convergenceRounds'] });
+    const judged = queueAt({ convergenceRounds: [{ head: HEAD1 }] as unknown as FrozenCandidateRepairQueue['convergenceRounds'] });
     expect(decideRepairAutoVerify({ candidate: CAND, repairHead: HEAD1 }, { status: 'value', queue: judged }, false))
       .toMatchObject({ reason: 'already-verifying' });
 

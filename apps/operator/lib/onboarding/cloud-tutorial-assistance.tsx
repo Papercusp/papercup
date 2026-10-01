@@ -5,6 +5,7 @@ import { OperatorChat } from "@/app/_components/OperatorChat";
 import type { ChatMessage } from "@/app/_components/chat/chat-types";
 import { createVoiceOutputPlayback, isVoiceOutputMuted, setVoiceOutputMuted } from "@/app/_components/voice/voice-mode";
 import type { LessonStep, StepStatus, TutorialScope } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { recordTutorialHelpRequest } from './cloud-tutorial-analytics';
 
 /** Mounted only for the displayed authorized lesson. No product mutators or
  * controller dispatch are available to this chat or its model output. */
@@ -36,6 +37,7 @@ export function CloudTutorialAssistance({ scope, step, status, onShowStep }: {
   }, [playback]);
   const ask = async (question: string) => {
     if (pending.current || !question.trim()) return;
+    recordTutorialHelpRequest(step.id, status);
     const controller = new AbortController(); pending.current = controller;
     const timeout = setTimeout(() => { controller.abort(); if (pending.current === controller) { pending.current = null; setBusy(false); setError('AI help is taking too long. You can continue with the lesson instructions.'); } }, 15_000);
     helpTimeout.current = timeout;

@@ -468,7 +468,10 @@ function concurrencyBlockedRefusal(concurrency: {
       `claim cap reached: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
       `concurrent claim(s) — release or complete one before claiming another; ` +
       `held: ${concurrency.heldIds.join(', ')}. (The claim lane itself was NOT evaluated — this is ` +
-      `not a statement about lane contents.)`,
+      `not a statement about lane contents.) A parked or externally-blocked claim STILL counts ` +
+      `(EI-11796: declaring a blocker does not buy a slot). To hold more than one lane at once the ` +
+      `LEADER raises your cap with scheduler:set_claim_spec { limits: { maxConcurrentClaims: N } } — ` +
+      `do not work around it, and do not release a parked item you still own just to pull other work.`,
     diagnosis: {
       concurrencyBlocked: true,
       activeClaims: concurrency.activeClaims,

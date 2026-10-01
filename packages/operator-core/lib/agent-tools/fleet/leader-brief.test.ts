@@ -379,7 +379,8 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
     expect(build).toHaveBeenCalledWith(
       resolution,
       items,
-      expect.objectContaining({ sourceCapExhausted: false, assignee: 'su-leader' }),
+      // P-001: the workspace scope reaches the builder, else feature/paused reads go unknown.
+      expect.objectContaining({ sourceCapExhausted: false, assignee: 'su-leader', workspaceId: 'ws' }),
     );
   });
 

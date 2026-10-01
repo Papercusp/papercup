@@ -7,8 +7,12 @@ import {
   assertCompleteGatewayRequestTimeline,
   classifyGatewayTelemetryOutcome,
   assessStartupCacheSharing,
+  assessStartupPrefixCohorts,
   parseStartupCacheEvidenceLine,
+  parseStartupPrefixRowLine,
+  splitAtSystemReminders,
   type StartupCacheEvidence,
+  type StartupPrefixRow,
 } from './request-stage-telemetry';
 
 describe('bounded upstream HTTP write observations', () => {
@@ -213,6 +217,71 @@ describe('ten-agent startup sharing evidence (R-10)', () => {
     });
     expect(assessStartupCacheSharing(rows).componentGroups).toBe(4);
     expect(JSON.stringify(assessStartupCacheSharing(rows))).not.toContain('volatile');
+  });
+});
+
+describe('R-10 startup PREFIX cohorts from the journal layout (D-077)', () => {
+  const hash = (seed: string) => ({ sha16: seed.padEnd(16, '0').slice(0, 16), bytes: 100 });
+  const startup = (index: number, over: Partial<StartupPrefixRow> = {}, messages = 2, toolsCount = 88): StartupPrefixRow => ({
+    ownerId: `su-owner-${index}`, authorizationScope: 'acct-a', model: 'claude-test', transport: 'bearer-http',
+    tools: { sha256: 'b'.repeat(64), bytes: 433464, hashedBytes: 433464 },
+    layout: {
+      tools: { count: toolsCount, deferred: 74 },
+      // blocks 0..2 are the stable, breakpointed prefix; block 3 is per-owner (after the last breakpoint)
+      system: { form: 'blocks', blockCount: 4, blocks: [hash('aa'), hash('bb'), hash('cc'), hash(`own${index}`)] },
+      messages: { count: messages, first: { role: 'user', blockCount: 1, hash: hash(`m${index}`), blocks: [hash(`m${index}`)] } },
+      markers: [{ section: 'system', index: 1, block: null, ttl: '1h' }, { section: 'system', index: 2, block: null, ttl: '1h' },
+        { section: 'messages', index: messages - 1, block: 0, ttl: '1h' }],
+      truncated: false,
+    },
+    startedAt: index * 1000, inputTokens: 2, cacheReadTokens: index === 0 ? 0 : 71027, cacheWriteTokens: index === 0 ? 133000 : 62667,
+    outcome: 'ok', ...over,
+  });
+  const cohort = (n = 10) => Array.from({ length: n }, (_, i) => startup(i));
+
+  it('sizes ten same-form startups as ONE cohort even though every owner has a different last system block and first message', () => {
+    const result = assessStartupPrefixCohorts(cohort());
+    expect(result).toMatchObject({ startups: 10, unkeyed: 0, cohortCount: 1, largestCohortOwners: 10,
+      verdict: 'cohort-present', sharingVerified: false });
+    expect(result.cohorts[0].laterStarterReadFraction).toBeCloseTo(71027 / (2 + 71027 + 62667), 5);
+    // The retired key (whole-instructions hash) would split these: the per-owner block makes each unique.
+    expect(new Set(cohort().map((row) => row.layout!.system.blocks[3].sha16)).size).toBe(10);
+  });
+
+  it('counts only true startups: mid-conversation rows and tool-less preflights are excluded, not folded in', () => {
+    const rows = [...cohort(9), startup(9, {}, 40), startup(10, {}, 2, 0), startup(11, { outcome: 'cancelled' })];
+    expect(assessStartupPrefixCohorts(rows)).toMatchObject({ startups: 9, largestCohortOwners: 9, verdict: 'cohort-too-small' });
+  });
+
+  it('splits cohorts on model, scope, tools hash and any stable system block', () => {
+    const split = (change: (row: StartupPrefixRow) => StartupPrefixRow) =>
+      assessStartupPrefixCohorts(cohort().map((row, i) => (i < 5 ? row : change(row)))).cohortCount;
+    expect(split((row) => ({ ...row, model: 'other' }))).toBe(2);
+    expect(split((row) => ({ ...row, authorizationScope: 'acct-b' }))).toBe(2);
+    expect(split((row) => ({ ...row, tools: { ...row.tools!, sha256: 'c'.repeat(64) } }))).toBe(2);
+    expect(split((row) => ({ ...row, layout: { ...row.layout!, system: { ...row.layout!.system,
+      blocks: [hash('zz'), ...row.layout!.system.blocks.slice(1)] } } }))).toBe(2);
+  });
+
+  it('reports rows it cannot key as unkeyed (no system breakpoint, truncated tools hash) and ignores layout-less rows', () => {
+    const noMarker = startup(20, { layout: { ...startup(20).layout!, markers: [] } });
+    const partialTools = startup(21, { tools: { sha256: 'b'.repeat(64), bytes: 433464, hashedBytes: 65536 } });
+    const legacy = startup(22, { layout: null });
+    expect(assessStartupPrefixCohorts([noMarker, partialTools, legacy])).toMatchObject({
+      rows: 3, startups: 2, unkeyed: 2, cohortCount: 0, largestCohortOwners: 0, verdict: 'cohort-too-small' });
+  });
+
+  it('parses a journal line into a cohort row and rejects an ownerless or foreign line', () => {
+    const base = startup(1);
+    const line = `startup-cache-evidence/v1 ${JSON.stringify({ schema: 'startup-cache-evidence/v1', requestId: 1,
+      ownerId: base.ownerId, transport: 'bearer-http', model: base.model, authorizationScope: base.authorizationScope,
+      tools: base.tools, instructions: null, layout: base.layout, startedAt: 5, inputTokens: 2, cacheReadTokens: 7,
+      cacheWriteTokens: 9, outcome: 'ok' })}`;
+    expect(parseStartupPrefixRowLine(line)).toMatchObject({ ownerId: 'su-owner-1', startedAt: 5, cacheReadTokens: 7, outcome: 'ok' });
+    expect(parseStartupPrefixRowLine(line)!.layout!.system.blocks).toHaveLength(4);
+    expect(parseStartupPrefixRowLine(line.replace('"layout":', '"layout":{"junk":1},"x":'))!.layout).toBeNull();
+    expect(parseStartupPrefixRowLine(line.replace(`"ownerId":"${base.ownerId}"`, '"ownerId":""'))).toBeNull();
+    expect(parseStartupPrefixRowLine('unrelated journal line')).toBeNull();
   });
 });
 
@@ -425,6 +494,124 @@ describe('GatewayRequestTelemetry', () => {
     // Garbage and foreign lines are rejected, not coerced.
     for (const bad of ['', 'startup-cache-evidence/v1 {not json', 'startup-cache-evidence/v1 {"schema":"other"}',
       'unrelated journal line']) expect(parseStartupCacheEvidenceLine(bad)).toBeNull();
+  });
+
+  it('journals a content-free per-section LAYOUT so a startup cohort can show which span is shared (D-077)', () => {
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const system = (marker: boolean) => [
+      { type: 'text', text: 'claude-code-base-prefix-secret' },
+      { type: 'text', text: 'role-instructions-secret', ...(marker ? { cache_control: { type: 'ephemeral', ttl: '1h' } } : {}) },
+    ];
+    const run = (ownerId: string, firstUser: string, marker = true) => {
+      const span = telemetry.begin({ ownerId, provider: 'claude', protocol: 'anthropic-messages', transport: 'oauth-http' });
+      span.setCacheShape(Buffer.from(JSON.stringify({
+        model: 'claude-x', system: system(marker),
+        tools: [{ name: 'a-secret-tool' }, { name: 'b-secret-tool', defer_loading: true },
+          { name: 'c-secret-tool', cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: firstUser, cache_control: { type: 'ephemeral', ttl: '5m' } }] },
+          { role: 'assistant', content: 'later turn' }],
+      })));
+      span.recordCacheUsage(10, 0, 90);
+      span.finish('ok', 200);
+    };
+    run('su-a', 'frozen brief secret A');
+    run('su-b', 'frozen brief secret B');
+    run('su-c', 'frozen brief secret A', false);
+    run('su-a', 'second request of an owner already seen');
+    // One line per owner start; the repeat request pays and journals nothing.
+    expect(lines).toHaveLength(3);
+    expect(lines.join('\n')).not.toMatch(/secret|later turn|already seen/);
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
+    const layouts = lines.map((line) => JSON.parse(line.slice(line.indexOf('{'))).layout);
+    expect(layouts[0]).toMatchObject({
+      tools: { count: 3, deferred: 1 },
+      system: { form: 'blocks', blockCount: 2 },
+      messages: { count: 2, first: { role: 'user', blockCount: 1 } },
+      truncated: false,
+    });
+    expect(layouts[0].markers).toEqual([
+      { section: 'tools', index: 2, block: null, ttl: 'default' },
+      { section: 'system', index: 1, block: null, ttl: '1h' },
+      { section: 'messages', index: 0, block: 0, ttl: '5m' },
+    ]);
+    // The shared span is visible: identical system blocks across owners ...
+    expect(layouts[0].system.blocks).toEqual(layouts[1].system.blocks);
+    // ... a different first message is visible as the unshared per-task write ...
+    expect(layouts[0].messages.first.hash.sha16).not.toBe(layouts[1].messages.first.hash.sha16);
+    // ... and moving or removing a breakpoint never changes a content hash (cache_control is stripped).
+    expect(layouts[2].system.blocks).toEqual(layouts[0].system.blocks);
+    expect(layouts[2].messages.first.hash.sha16).toBe(layouts[0].messages.first.hash.sha16);
+    expect(layouts[2].markers.map((m: { section: string }) => m.section)).toEqual(['tools', 'messages']);
+    // Steady-state traffic is not measured: only an owner's first request computes a layout.
+    expect(telemetry.snapshot().recent.map((t) => t.cache.layout === null)).toEqual([false, false, false, true]);
+  });
+
+  it('cuts message 0 at <system-reminder> boundaries so a shared leading span inside ONE block is locatable (WI-10005042)', () => {
+    expect(splitAtSystemReminders('no reminder here')).toEqual(['no reminder here']);
+    expect(splitAtSystemReminders('<system-reminder>a</system-reminder>')).toEqual(['<system-reminder>a</system-reminder>']);
+    const joined = ['lead', '<system-reminder>one</system-reminder>', '<system-reminder>two</system-reminder>', 'tail'].join('');
+    const parts = splitAtSystemReminders(joined);
+    expect(parts).toEqual(['lead', '<system-reminder>one</system-reminder>', '<system-reminder>two</system-reminder>tail']);
+    expect(parts.join('')).toBe(joined); // lossless: hashing the parts covers every byte once
+    // Bounded: the Nth segment absorbs the remainder, never dropping bytes.
+    const many = Array.from({ length: 25 }, (_, i) => `<system-reminder>${i}</system-reminder>`).join('');
+    const bounded = splitAtSystemReminders(many, 4);
+    expect(bounded).toHaveLength(4);
+    expect(bounded.join('')).toBe(many);
+
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const reminder = (n: string) => `<system-reminder>${n}</system-reminder>`;
+    const run = (ownerId: string, perOwner: string, content?: unknown) => {
+      const span = telemetry.begin({ ownerId, provider: 'claude', protocol: 'anthropic-messages', transport: 'oauth-http' });
+      span.setCacheShape(Buffer.from(JSON.stringify({
+        model: 'claude-x', system: [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral', ttl: '1h' } }],
+        tools: [{ name: 't' }],
+        messages: [{ role: 'user', content: content ?? [{ type: 'text', text: reminder('shared claude.md') + reminder('shared skills') + reminder(perOwner) }] }],
+      })));
+      span.recordCacheUsage(2, 0, 100);
+      span.finish('ok', 200);
+    };
+    run('su-a', 'carry A');
+    run('su-b', 'carry B');
+    run('su-c', 'x', 'plain string first message');
+    const [a, b, c] = lines.map((line) => JSON.parse(line.slice(line.indexOf('{'))).layout.messages.first);
+    expect(a.segments).toMatchObject({ block: 0, parts: expect.any(Array) });
+    expect(a.segments.parts).toHaveLength(3);
+    // Two owners share the leading segments and differ only in the last one: the splittable shared prefix.
+    expect(a.segments.parts.slice(0, 2)).toEqual(b.segments.parts.slice(0, 2));
+    expect(a.segments.parts[2].sha16).not.toBe(b.segments.parts[2].sha16);
+    // The whole-message hash differs, which is why a single block can never be a partial cache hit.
+    expect(a.hash.sha16).not.toBe(b.hash.sha16);
+    expect(c.segments ?? null).toBeNull(); // no reminder cut -> no extra bytes in the journal row
+    expect(lines.join('\n')).not.toMatch(/shared claude|carry A|carry B|plain string/);
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
+  });
+
+  it('bounds the layout: marker and system-block overflow is flagged, non-Anthropic and empty bodies stay null', () => {
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const begin = (ownerId: string, protocol: 'anthropic-messages' | 'openai-responses') =>
+      telemetry.begin({ ownerId, provider: protocol === 'openai-responses' ? 'codex' : 'claude', protocol });
+    const over = begin('su-over', 'anthropic-messages');
+    over.setCacheShape(Buffer.from(JSON.stringify({
+      system: Array.from({ length: 12 }, (_, i) => ({ type: 'text', text: `block-${i}`, cache_control: { type: 'ephemeral' } })),
+      messages: [{ role: 'user', content: 'hi' }] })));
+    over.finish('ok', 200);
+    const codex = begin('su-codex', 'openai-responses');
+    codex.setCacheShape(Buffer.from(JSON.stringify({ instructions: 'x', input: 'y' })));
+    codex.finish('ok', 200);
+    const empty = begin('su-empty', 'anthropic-messages');
+    empty.setCacheShape(Buffer.from(JSON.stringify({ model: 'claude-x' })));
+    empty.finish('ok', 200);
+    const [overRow, codexRow, emptyRow] = telemetry.snapshot().recent;
+    expect(overRow.cache.layout).toMatchObject({ truncated: true, system: { blockCount: 12 } });
+    expect(overRow.cache.layout!.system.blocks).toHaveLength(8);
+    expect(overRow.cache.layout!.markers).toHaveLength(8);
+    expect(codexRow.cache.layout).toBeNull();
+    expect(emptyRow.cache.layout).toBeNull();
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
   });
 
   it('a throwing durable sink never fails a completed request', () => {

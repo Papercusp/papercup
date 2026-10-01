@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/app/harness/Button";
 import { CLOUD_TUTORIAL_STEPS, confirmedTutorialSteps, currentTutorialStep, tutorialStepStatus, type TutorialEvent, type TutorialState, type LessonStep, type StepStatus } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
+import { createTutorialAnalytics } from "./cloud-tutorial-analytics";
 
 const statusCopy = {
   loading: "Preparing your lesson…", ready: "Use the highlighted control in the app.",
@@ -44,13 +45,16 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
   const status = tutorialStepStatus(state);
   const displayStatus = reviewIndex !== null && highlightStatus === "missing" ? "missing-target" : status;
   const active = state.disposition === "active";
+  const analytics = useRef<ReturnType<typeof createTutorialAnalytics> | null>(null);
+  analytics.current ??= createTutorialAnalytics();
+  useEffect(() => { analytics.current!.update(state, step?.id); }, [state, step?.id]);
   useEffect(() => {
     if (!active) { pendingFocus.current = null; return; }
     if (highlightStatus !== "ready" || pendingFocus.current !== step?.id) return;
     const target = document.querySelector<HTMLElement>(step.target);
     if (target) { target.scrollIntoView({ behavior: reducedMotion ? "instant" : "smooth", block: "center" }); target.focus({ preventScroll: true }); pendingFocus.current = null; }
   }, [active, highlightStatus, step, reducedMotion]);
-  const replay = () => { setReviewIndex(0); dispatch({ type: "action", action: "replay" }); };
+  const replay = () => { analytics.current!.action('replay', CLOUD_TUTORIAL_STEPS[0].id); setReviewIndex(0); dispatch({ type: "action", action: "replay" }); };
   const action = (name: "pause" | "resume" | "skip" | "exit") => {
     dispatch({ type: "action", action: name });
     if (name === "exit" && trigger.current?.isConnected) trigger.current.focus({ preventScroll: true });
@@ -78,7 +82,7 @@ export function CloudTutorialGuide({ state, dispatch, onCheckAgain, onShowStep, 
           if (target) { target.scrollIntoView({ behavior: reducedMotion ? "instant" : "smooth", block: "center" }); target.focus({ preventScroll: true }); pendingFocus.current = null; }
           else { setHighlightStatus("missing"); dispatch({ type: "target", scope: state.scope, step: step.id, status: "missing" }); }
         }}>Show me</Button>}
-        {active && status !== "complete" && <Button onClick={() => { dispatch({ type: "action", action: "check-again" }); onCheckAgain?.(); }}>Check again</Button>}
+        {active && status !== "complete" && <Button onClick={() => { analytics.current!.action('check_again', step?.id); dispatch({ type: "action", action: "check-again" }); onCheckAgain?.(); }}>Check again</Button>}
         {active && <Button onClick={() => action("pause")}>Pause</Button>}
         {state.disposition === "paused" && <Button onClick={() => action("resume")}>Resume guide</Button>}
         {state.disposition !== "skipped" && <Button onClick={() => action("skip")}>Skip lesson</Button>}

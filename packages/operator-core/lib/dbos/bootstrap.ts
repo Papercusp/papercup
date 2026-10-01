@@ -304,6 +304,7 @@ async function startDbosOnce(): Promise<void> {
   const { registerWorkspaceHostProviderFactory } = await import('@papercusp/deployment-driver');
   const { createConfiguredGcpWorkspaceHostProvider } = await import('../workspace-host/gcp-provider');
   const { resolveHostedGcpAuth } = await import('../workspace-host/hosted-gcp-auth');
+  const { createConfiguredAwsWorkspaceHostProvider } = await import('../workspace-host/aws-configured-provider');
   // WI-10001672: bind the teardown-obligation ledger's PRODUCING half here. Without this the
   // sweep in periodic-workflows runs over a table nothing writes to and reports "no outstanding
   // obligations" for a project full of live metered resources — absence that reads as an
@@ -316,13 +317,14 @@ async function startDbosOnce(): Promise<void> {
     import('../workspace-host/cloud-resource-obligations'),
     import('@papercusp/db-org'),
   ]);
-  registerWorkspaceHostProviderFactory('gcp', (connection) => {
-    // The CONSUMING half. Bound at the same composition root as its producing twin below:
-    // without it `closeCloudResourceObligation` has zero production callers, every row stays
-    // teardown_owed forever, and the sweep escalates on phantoms — which makes a REAL leak
-    // indistinguishable from a torn-down one (EI-23459044188861686).
+  // The CONSUMING half. Bound at the same composition root as its producing twin: without it
+  // `closeCloudResourceObligation` has zero production callers, every row stays teardown_owed
+  // forever, and the sweep escalates on phantoms — which makes a REAL leak indistinguishable from
+  // a torn-down one (EI-23459044188861686). Shared by every cloud provider factory below.
+  const obligationObservers = (provider: 'gcp' | 'aws') => {
     const closeObligation = createCloudResourceObligationCloseObserver({
       sql: getOrgPg().sql,
+      provider,
       onUnmatched: (event) => {
         // Loud on purpose: a confirmed destroy that matched no open obligation means the
         // create-side kind and the delete-side kind have drifted apart, and a silent
@@ -338,17 +340,29 @@ async function startDbosOnce(): Promise<void> {
         );
       },
     });
-    return createConfiguredGcpWorkspaceHostProvider(connection, {
-      resolveHostedAuth: resolveHostedGcpAuth,
-      onResourceCreated: createCloudResourceObligationObserver({ sql: getOrgPg().sql }),
+    return {
+      onResourceCreated: createCloudResourceObligationObserver({ sql: getOrgPg().sql, provider }),
       // Adapted to the provider's fire-and-forget observer contract: the close observer returns
       // { closed } so callers and tests can assert on it, while the provider deliberately does
       // not consume a result from an observer.
-      onResourceDestroyed: async (event) => {
+      onResourceDestroyed: async (event: Parameters<typeof closeObligation>[0]) => {
         await closeObligation(event);
       },
-    });
-  });
+    };
+  };
+  registerWorkspaceHostProviderFactory('gcp', (connection) =>
+    createConfiguredGcpWorkspaceHostProvider(connection, {
+      resolveHostedAuth: resolveHostedGcpAuth,
+      ...obligationObservers('gcp'),
+    }),
+  );
+  // aws-byoc-gcp-parity-2026-10-01 P-003: the AWS twin, with the same obligation observers so an
+  // EC2 instance or EBS volume is tracked from creation to provider-confirmed absence. Hosted
+  // ExternalId / OIDC resolvers are not bound yet, so the factory refuses a hosted AWS connection
+  // with a named error instead of failing mid-operation; local profile / assume-role sources work.
+  registerWorkspaceHostProviderFactory('aws', (connection) =>
+    createConfiguredAwsWorkspaceHostProvider(connection, obligationObservers('aws')),
+  );
   await import('./workspace-host-provision-workflow');
   // D-391: the day-long workspace-host soak runs on its OWN queue (the provisioning queue's
   // host-scoped dedup would lock lifecycle actions out for the whole soak). Registered before

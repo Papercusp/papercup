@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import type { FilterNode } from '../../scheduler/claim-spec';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -34,6 +35,7 @@ const { currentIntakeSourceRevision, executeIntakeDecision } = await import('../
 const { parseIntakeDecision } = await import('../../attention/bulk-dispositions');
 const { setWorkItemState } = await import('../../work-items');
 const { readWorkItemReadinessProjection } = await import('../../work-items-admission-promoter');
+const { readIssueClaimability } = await import('../../scheduler/get-next');
 const {
   IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS,
   createImplementationReadiness,
@@ -140,6 +142,15 @@ async function claims(id: string, assignee: string, workspaceId: string): Promis
   return (await row(id)).taken_by === assignee;
 }
 
+/** The scheduler's self-select read, scoped to one row. */
+async function selfSelectable(id: string, workspaceId: string, harness: string): Promise<boolean> {
+  const filter: FilterNode = { field: 'id', op: 'in', value: [id] };
+  const read = await readIssueClaimability(filter, {
+    harness, workspaceId, states: ['open'], assignee: WORKER, client: db.adminSql,
+  }, { limit: 10 });
+  return read.rows.some((r) => r.id === id);
+}
+
 async function verifiedCompletions(workspaceId: string, harnessSlug: string): Promise<number> {
   const projection = await readWorkItemReadinessProjection({ workspaceId, harnessSlug, sql: db.adminSql });
   if (!projection.presentation) throw new Error('readiness projection returned no presentation block');
@@ -161,7 +172,9 @@ describe('R-12 observation → candidate → accepted work → verified completi
     });
     const { workspace_id: ws, harness_slug: harness } = await row(obs.id);
     expect(await stage(obs.id)).toBe('observation');
-    expect(await claims(obs.id, WORKER, ws)).toBe(false);
+    // R-1 gates self-selection; a by-id claim of an observation is a deliberate escape hatch
+    // (work-items-observation-lane-exclusion.integration.test.ts), so it is not asserted here.
+    expect(await selfSelectable(obs.id, ws, harness)).toBe(false);
 
     // 2a. Reviewer independence: the filer cannot accept its own report.
     const selfReview = await decide(obs.id, { disposition: 'promote', reason: 'r', workKind: 'fix', acceptance: ACCEPTANCE }, FILER);

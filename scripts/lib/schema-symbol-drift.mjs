@@ -281,7 +281,14 @@ export function createSchemaDriftJudge({ readAtSha, readJudged, constructionSmok
  * @returns {string}
  */
 export function gitReadAtSha(exec, repoDir, sha, rel) {
-  const opts = { cwd: repoDir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 };
+  const opts = {
+    cwd: repoDir,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: 30_000,
+    killSignal: "SIGKILL",
+  };
   const parts = rel.split("/");
   for (let i = 1; i < parts.length; i += 1) {
     const prefix = parts.slice(0, i).join("/");

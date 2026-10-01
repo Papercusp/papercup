@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-01T19:32:55.173Z",
-  "migrationCountAtGeneration": 1109,
+  "generatedAt": "2026-10-01T20:13:19.689Z",
+  "migrationCountAtGeneration": 1112,
   "indexes": [
     {
       "schema": "audit",
@@ -3916,6 +3916,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "gateway_payload_blobs_pkey",
       "table": "gateway_payload_blobs",
       "definition": "CREATE UNIQUE INDEX gateway_payload_blobs_pkey ON harness_shared.gateway_payload_blobs USING btree (workspace_id, blob_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "gateway_payload_chunks_pkey",
+      "table": "gateway_payload_chunks",
+      "definition": "CREATE UNIQUE INDEX gateway_payload_chunks_pkey ON harness_shared.gateway_payload_chunks USING btree (workspace_id, chunk_hash)",
       "constraintBacked": true
     },
     {

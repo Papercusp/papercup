@@ -59,6 +59,7 @@ import runTool, {
   selectTestFileRoot,
   shouldResolveHarnessTestRunIds,
   shouldIngestVitestLedgerInProcess,
+  type TestingRunPhaseTimings,
   TEST_RUN_ID_READBACK_TIMEOUT_MS,
 } from '../run';
 import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
@@ -121,6 +122,7 @@ interface RunResult {
   durationMs?: number | null;
   testRunIds?: number[];
   byFile?: Record<string, unknown>;
+  phaseTimingsMs?: TestingRunPhaseTimings;
 }
 
 async function body(p: ReturnType<typeof call>): Promise<RunResult> {
@@ -1083,6 +1085,18 @@ describe('testing:run (integration)', () => {
     );
 
     expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.phaseTimingsMs).toEqual({
+      preflightMs: expect.any(Number),
+      provenanceMs: expect.any(Number),
+      preparationMs: expect.any(Number),
+      admissionWaitMs: expect.any(Number),
+      routerExecutionMs: expect.any(Number),
+      ledgerIdReadbackMs: expect.any(Number),
+      finalizationMs: expect.any(Number),
+      totalHandlerMs: expect.any(Number),
+    });
+    const phaseTimings = out.phaseTimingsMs!;
+    expect(Object.values(phaseTimings).every((duration) => typeof duration === 'number' && duration >= 0)).toBe(true);
     if (typeof out.runId !== 'string') {
       throw new Error(`testing:run omitted runId: ${JSON.stringify(out)}`);
     }

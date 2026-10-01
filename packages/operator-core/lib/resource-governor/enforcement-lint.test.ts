@@ -268,25 +268,22 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
-  it('limits the completion metadata disposition to the reviewed bounded Git probe', () => {
+  it('keeps completion free of resource starts now that its Git probe lives in git-trackedness.ts', () => {
+    // The bounded `git ls-files` trackedness probe moved out of complete.ts into
+    // packages/operator-core/lib/git-trackedness.ts (2026-10-01), so its exact-call
+    // bypass row described nothing and the registry validator reported it stale. The row
+    // is retired; this pins the replacement contract: complete.ts starts nothing, has no
+    // row to hide behind, and a start added back there is a finding again.
     const path = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
     const source = readFileSync(ROOT + path, 'utf8');
     const finding = `${path}:resource-start-outside-admission`;
-    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(BYPASS_REGISTRY.has(`${path}::resource-start-outside-admission`)).toBe(false);
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
     expect(scanInventory([[path, source]])).not.toContain(finding);
     expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
-    expect(scanInventory([[path, source + "\nconst childStart = spawn; childStart('worker', []);"]])).toContain(finding);
-    for (const [before, after] of [
-      ["'ls-files'", "'checkout'"],
-      ['timeout: 5_000', 'timeout: 0'],
-      ["killSignal: 'SIGKILL'", "killSignal: 'SIGTERM'"],
-      ["stdio: ['ignore', 'ignore', 'ignore']", "stdio: ['ignore', 'pipe', 'pipe']"],
-    ]) {
-      expect(source).toContain(before);
-      const mutant = source.replace(before, after);
-      expect(mutant).not.toBe(source);
-      expect(scanInventory([[path, mutant]])).toContain(finding);
-    }
+    expect(
+      scanInventory([[path, source + "\nexecFileSync('git', ['ls-files', '--error-unmatch', '--', p]);"]]),
+    ).toContain(finding);
   });
 
   it('executes the real blocking CLI over the tracked tree', () => {

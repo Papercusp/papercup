@@ -243,6 +243,8 @@ export interface LeaderBriefFleetMetricsDeps {
       issueOccurrences: IssueOccurrenceCounts | PromiseLike<IssueOccurrenceCounts>;
       sourceCapExhausted: boolean;
       assignee?: string;
+      /** P-001: scopes the feature-close claim history and fleet pause reads. */
+      workspaceId?: string | null;
     },
   ): Promise<FleetMetricsResult>;
 }
@@ -323,6 +325,7 @@ export async function readLeaderBriefFleetMetrics(
       issueOccurrences,
       sourceCapExhausted: items.length >= WORK_ITEMS_MAX_LIMIT,
       assignee: input.assignee,
+      workspaceId: input.workspaceId,
     });
   } catch (error) {
     return leaderBriefFleetMetricsUnavailable({

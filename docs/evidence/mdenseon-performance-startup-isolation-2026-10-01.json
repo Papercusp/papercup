@@ -54,7 +54,8 @@
   },
   "slowAttemptAudit": [
     {"attempt": "v1", "defect": "Candidate-only builder map rejected incumbent HTTP requests", "fix": "Shared three-arm builder map plus driver population preflight", "guard": "Real HTTP/client admission of all three arms"},
-    {"attempt": "v2", "defect": "Unneeded operator database startup during local CLI measurement", "fix": "Lazy optional OpenAI import and database prohibition in performance children", "guard": "Fresh subprocess with unavailable Postgres and zero-connection invariant"}
+    {"attempt": "v2", "defect": "Unneeded operator database startup during local CLI measurement", "fix": "Lazy optional OpenAI import and database prohibition in performance children", "guard": "Fresh subprocess with unavailable Postgres and zero-connection invariant"},
+    {"attempt": "v3", "defect": "The collector discarded the nested fetch cause and frozen request identity", "fix": "Preserve both in the immutable failure receipt; EI-24788155955494594 committed done", "guard": "Real loopback socket-reset regression asserts UND_ERR_SOCKET and exact request identity", "originalTransportCause": "unknown", "testHead": "5c5dcc6ae8", "focusedTestsPassed": 12, "focusedFilesPassed": 3}
   ],
   "replacementRecipe": {
     "runId": "performance-cpu-v3",
@@ -71,9 +72,78 @@
     "fixedThresholdsChanged": false,
     "modelAdoptionAuthorized": false
   },
+  "resumedPerformanceRecipe": {
+    "runId": "performance-cpu-v4",
+    "status": "failed exit 1; one complete cell, one transport failure; no five-block performance acceptance",
+    "durableTaskId": "0mupymysdyf12r7nnrd",
+    "manifest": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v4.json",
+      "sha256": "1d32378329e3632b12a466282689cb07e2ca719dc9bb7f9095ebcfd0a1e0c5ee",
+      "bytes": 111182
+    },
+    "freezeAudit": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-v4-freeze-audit.json",
+      "sha256": "c9ba5196862685f8396075fb6a19c6e68f330d4765eb6012b97384895c1ede75",
+      "bytes": 3847
+    },
+    "changedInputs": ["evaluator", "loader", "collector"],
+    "performanceCells": 15,
+    "freshProcessBlocks": 5,
+    "requestSha256": "c8b94379d002efce7ceaf5fa145af41994cc03023434b7562c7088c7d17234e1",
+    "requestContract": {"warmSamples": 128, "rounds": 4, "batches": [1, 4, 16], "concurrency": [1, 4], "cachedSamples": 16, "serverConcurrency": 4},
+    "preflight": "Verified every selected input, model artifact and worker/runtime identity using existing manifest and arm validators; only the three named source pins changed from v3.",
+    "failureEvidence": "Nested transport causes and frozen request identity are retained; the driver does not enable the optional transport trace.",
+    "priorEvidence": "Original v2 successful cells, v3 failure, and cadence/trace diagnostics remain separate immutable evidence; none is rebound to this manifest.",
+    "fixedThresholdsChanged": false,
+    "modelAdoptionAuthorized": false
+  },
+  "resumedPerformanceOutcome": {
+    "finishedAt": "2026-10-01T20:12:19.992Z",
+    "exitCode": 1,
+    "completeCell": {
+      "id": "performance-b0-harrier",
+      "samples": 412,
+      "gridGroups": 12,
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v4/performance-b0-harrier.json",
+      "sha256": "6cba53c89b01c669675741030a5fb594e0033b1cd8283c4ec4b0321439966008"
+    },
+    "failedCell": {
+      "id": "performance-b0-mdenseon",
+      "completedResponseSamples": 172,
+      "phase": "batch-query-16x1",
+      "sequence": 172,
+      "errorCode": "ECONNRESET",
+      "gapAfterPreviousFullResponseMs": 9028.710170827515,
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v4/performance-b0-mdenseon.json.failure.json",
+      "sha256": "44d7b9d14d4e0790b74703c2ea7302b4d08b1037b4a881e0e6fe48012c7ec93b",
+      "samplePath": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v4/performance-b0-mdenseon.json.samples.jsonl",
+      "sampleSha256": "d2c090a3fc067e0fbc66a717c52a34b3583ba9ead681386e9d9a667deb5f4495",
+      "cause": "unknown; reset and response gap do not identify the closing actor",
+      "ownedDiagnosis": "WI-10005060"
+    },
+    "fullMatrixRetry": false,
+    "performanceComplete": false
+  },
+  "transportDiagnostic": {
+    "runId": "performance-transport-mdenseon-v1",
+    "selectedCell": "performance-b0-mdenseon",
+    "durableTaskId": "0mupz8qotdtt4lx1sre",
+    "manifest": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-transport-mdenseon-v1.json",
+      "sha256": "9213b7f7919940e42b853f5b98e75649ed8ba6e6761ca612c672af9187120e64"
+    },
+    "freezeAudit": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/transport-mdenseon-freeze-v1.json",
+      "sha256": "3eacb124937ef409a79aa6dbdd6d99f2dff287fb8ea147b29c2243d8332db733"
+    },
+    "method": "Existing CLI --transport-trace observer joins client sends to server idle/close lifecycle by TCP ports; same source, model, requests, CPU and thread recipe as v4.",
+    "performanceComplete": false,
+    "limitation": "One diagnostic cell is not five-block performance evidence; a passing trace cannot prove the cause of a historical reset."
+  },
   "limitations": [
     "The precise promise that produced the original unhandled rejection was not reproduced",
     "Synthetic startup and HTTP guards verify the harness; they do not fulfill the real-model five-block performance bar",
+    "The cause of the original actual Harrier transport reset remains unknown; the later passing trace diagnostic does not establish that cause",
     "GPU inference has not been claimed",
     "No production model, index, account or live release-gate operation was performed"
   ]

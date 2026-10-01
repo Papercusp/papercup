@@ -2596,12 +2596,57 @@ dependency_generation_sweep_exact_scratch() {
 # Shared by the exact-ref builder and `--predict-ref`, so the admit-time prediction and
 # the gate's build can never disagree about what is buildable.
 DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
+DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT=''
+DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
+
+# A frozen repair can retain an older installed graph after staging moves on.
+# Compare against published ancestors as well as live inputs, using the same
+# equivalence proof and immutable selector validation. Never infer a donor from
+# directory names or publish a selector merely because a generation exists.
+dependency_generation_find_equivalent_prewarm() {
+  local integration_root="$1" ref="$2" scratch="$3" generation_root="$4" helper="$5"
+  local revision source_ref source_input source_manifest verdict rc basis
+  local -a history_paths=(':(glob)**/package-lock.json' ':(glob)**/npm-shrinkwrap.json' ':(glob)**/patches/*.patch' '.gitmodules')
+  while IFS= read -r revision; do
+    [ -n "$revision" ] && history_paths+=("$revision")
+  done < <(git -C "$integration_root" config --blob "$ref:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{ print $2 }' || true)
+  basis="$scratch/.papercusp/prewarm-inputs"
+  while IFS= read -r revision; do
+    source_ref="$(git -C "$integration_root" rev-parse --verify "$revision^" 2>/dev/null)" || continue
+    mkdir -p "$basis" || return 1
+    source_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$source_ref" '' "$basis" 2>/dev/null | LC_ALL=C sort)" || { rm -rf -- "$basis"; continue; }
+    source_input="$(dependency_generation_input_fingerprint "$basis")" || return 1
+    if [ ! -f "$generation_root/.inputs/$source_input" ]; then
+      rm -rf -- "$basis"
+      continue
+    fi
+    printf '%s\n' "$source_manifest" > "$scratch/.basis-inputs" || return 1
+    rc=0
+    verdict="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
+      --ref-root "$scratch" --ref-manifest "$scratch/.ref-inputs" \
+      --live-root "$basis" --live-manifest "$scratch/.basis-inputs")" || rc=$?
+    rm -rf -- "$basis"
+    rm -f -- "$scratch/.basis-inputs"
+    [ "$rc" -eq 3 ] && continue
+    [ "$rc" -eq 0 ] || return 1
+    dependency_generation_select_input_fingerprint "$source_input" "$generation_root" || return $?
+    DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
+    DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT="$source_input"
+    DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
+    dependency_generation_log "exact-ref build: install-equivalent prewarmed generation $DEPENDENCY_GENERATION_ID from ancestor $source_ref"
+    return 0
+  done < <(git -C "$integration_root" log --first-parent --format=%H --max-count=32 "$ref" -- "${history_paths[@]}")
+  return 74
+}
 
 dependency_generation_stage_exact_ref_inputs() {
   local integration_root="$1" ref="$2" exact_input="$3"
+  local generation_root="${4:-$integration_root/.papercusp/dependency-generations}"
   local parent scratch have ref_manifest live_manifest verdict rc
   local helper="${DEPENDENCY_GENERATION_LOCK_EQUIVALENCE:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-equivalence.mjs}"
   DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
+  DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT="$integration_root"
+  DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
   parent="$(dependency_generation_exact_scratch_parent "$integration_root")"
   mkdir -p "$parent" || return 1
   dependency_generation_sweep_exact_scratch "$parent"
@@ -2633,8 +2678,16 @@ dependency_generation_stage_exact_ref_inputs() {
       --ref-root "$scratch" --ref-manifest "$scratch/.ref-inputs" \
       --live-root "$integration_root" --live-manifest "$scratch/.live-inputs"
   )" || rc=$?
-  rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
   DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
+  if [ "$rc" -eq 3 ]; then
+    local cached_rc=0
+    dependency_generation_find_equivalent_prewarm "$integration_root" "$ref" "$scratch" "$generation_root" "$helper" || cached_rc=$?
+    rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
+    [ "$cached_rc" -eq 0 ] && return 0
+    [ "$cached_rc" -eq 74 ] || return "$cached_rc"
+  else
+    rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
+  fi
   [ "$rc" -eq 3 ] && return 74
   [ "$rc" -eq 0 ] || {
     dependency_generation_log "FATAL: dependency-lock-equivalence failed rc=$rc for ref $ref"
@@ -2647,10 +2700,11 @@ dependency_generation_stage_exact_ref_inputs() {
 # trees (a typed miss that names why); any other non-zero = the build itself failed.
 dependency_generation_prepare_exact_ref_root() {
   local integration_root="$1" ref="$2" exact_input="$3"
+  local generation_root="${4:-$integration_root/.papercusp/dependency-generations}"
   local scratch verdict rc line drop trees=0
   rc=0
   dependency_generation_stage_exact_ref_inputs \
-    "$integration_root" "$ref" "$exact_input" || rc=$?
+    "$integration_root" "$ref" "$exact_input" "$generation_root" || rc=$?
   scratch="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
   verdict="$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT"
   if [ "$rc" -eq 74 ]; then
@@ -2663,17 +2717,37 @@ dependency_generation_prepare_exact_ref_root() {
   fi
   [ "$rc" -eq 0 ] || return "$rc"
 
-  # 4. Hardlink the live trees (metadata only; the ordinary ensure copies from here).
+  # Identical installed content needs only another exact-input selector. Keep
+  # the existing immutable generation rather than copying its trees again.
+  if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] && [ -z "$verdict" ]; then
+    printf '%s\n' "$scratch"
+    return 0
+  fi
+
+  # Retention may remove a cached donor while we walk it. Revalidate its
+  # selected token under the publication lock and lease it until every file
+  # has its own scratch hardlink; the scratch then owns those bytes itself.
+  if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ]; then
+    dependency_generation_acquire_selector_lease \
+      "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+  fi
+
+  # 4. Hardlink the installed trees (metadata only; ensure copies from here).
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    drop="${line#"$integration_root"/}"
-    mkdir -p "$scratch/$(dirname "$drop")" || return 1
+    drop="${line#"$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT"/}"
+    mkdir -p "$scratch/$(dirname "$drop")" || {
+      dependency_generation_release_selector_lease
+      return 1
+    }
     cp -al -- "$line" "$scratch/$drop" || {
+      dependency_generation_release_selector_lease
       dependency_generation_log "FATAL: cannot hardlink $drop into the exact-ref scratch root (same filesystem required)"
       return 1
     }
     trees=$((trees + 1))
-  done < <(dependency_generation_enumerate_node_modules "$integration_root")
+  done < <(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT")
+  dependency_generation_release_selector_lease
 
   # 5. Drop the live-only workspace links the ref's lock does not have.
   while IFS=$'\t' read -r line drop; do
@@ -2790,7 +2864,7 @@ dependency_generation_main() {
       predict_verdict='live-match'
     else
       dependency_generation_stage_exact_ref_inputs \
-        "$integration_root" "$predict_ref" "$exact_input" || predict_rc=$?
+        "$integration_root" "$predict_ref" "$exact_input" "$generation_root" || predict_rc=$?
       dependency_generation_cleanup_exact_scratch
       case "$predict_rc" in
         0) predict_verdict='buildable' ;;
@@ -2864,8 +2938,25 @@ dependency_generation_main() {
       dependency_generation_log \
         "exact ref $ensure_ref inputs $exact_input differ from the live tree's $live_input; building from the ref's own lockfiles"
       dependency_generation_prepare_exact_ref_root \
-        "$integration_root" "$ensure_ref" "$exact_input" || return $?
+        "$integration_root" "$ensure_ref" "$exact_input" "$generation_root" || return $?
       build_root="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
+      if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] && [ -z "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" ]; then
+        dependency_generation_select_input_fingerprint "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" "$generation_root" || return $?
+        DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
+        dependency_generation_acquire_selector_lease \
+          "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+        dependency_generation_publish_input_selector "$generation_root" "$exact_input" || {
+          rc=$?
+          dependency_generation_release_selector_lease
+          return "$rc"
+        }
+        dependency_generation_release_selector_lease
+        dependency_generation_cleanup_exact_scratch
+        printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
+          "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+          "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" "$DEPENDENCY_GENERATION_PATH"
+        return 0
+      fi
     fi
   fi
   dependency_generation_configure_workspace_dirs \

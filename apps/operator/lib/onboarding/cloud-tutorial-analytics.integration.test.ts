@@ -1,0 +1,75 @@
+// @vitest-environment jsdom
+import { createElement, useReducer } from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createTutorialState, tutorialReducer } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
+const sdk = vi.hoisted(() => ({ init: vi.fn(), capture: vi.fn(), identify: vi.fn(), startSessionRecording: vi.fn(), stopSessionRecording: vi.fn() }));
+vi.mock('posthog-js', () => ({ default: sdk }));
+vi.mock('./cloud-tutorial-adapter', () => ({ CloudTutorialHighlight: () => null }));
+let enabled = false;
+beforeEach(() => {
+  vi.resetModules(); for (const mock of Object.values(sdk)) mock.mockReset(); enabled = false;
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ enabled, host: 'https://telemetry.invalid', project_key: 'public-key', distinct_id: 'anonymous-install' })));
+});
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+const scope = { tenantId: 'private-tenant', userId: 'private-user', workspaceId: 'private-workspace' };
+async function mountGuide() {
+  const { PostHogProvider } = await import('@/app/_components/PostHogProvider');
+  const { CloudTutorialGuide } = await import('./cloud-tutorial-guide');
+  function Fixture() {
+    const [state, dispatch] = useReducer(tutorialReducer, tutorialReducer(createTutorialState(scope), { type: 'observe', observation: { scope, revision: 1, access: 'allowed', attempt: { step: 'connection', status: 'failed' } } }));
+    return createElement(PostHogProvider, null, createElement('div', null,
+      createElement('button', { onClick: () => dispatch({ type: 'observe', observation: { scope, revision: 2, access: 'allowed', connection: { id: 'private-connection', provider: 'gcp', validated: true } } }) }, 'Confirm product connection'),
+      createElement(CloudTutorialGuide, { state, dispatch })));
+  }
+  return render(createElement(Fixture));
+}
+describe('Guide uses the existing PostHog consent boundary', () => {
+  it('sends no tutorial events or SDK initialization while telemetry is disabled, and keeps the Guide usable', async () => {
+    await mountGuide(); fireEvent.click(screen.getByRole('button', { name: 'Confirm product connection' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(sdk.init).not.toHaveBeenCalled(); expect(sdk.capture).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' })); expect(screen.getByText('Your lesson is paused.')).toBeTruthy();
+    expect(sdk.capture).not.toHaveBeenCalled();
+  });
+  it('records real confirmation and recovery when enabled, without private data or changing session replay', async () => {
+    enabled = true; await mountGuide(); await waitFor(() => expect(sdk.capture).toHaveBeenCalled());
+    expect(sdk.capture.mock.calls.some(([, p]) => p.action === 'step_confirmed')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm product connection' }));
+    await waitFor(() => expect(sdk.capture.mock.calls.some(([, p]) => p.action === 'step_confirmed' && p.step === 'connection')).toBe(true));
+    expect(sdk.capture.mock.calls.some(([, p]) => p.action === 'recovery')).toBe(true);
+    expect(sdk.init).toHaveBeenCalledOnce(); expect(sdk.init.mock.calls[0][1].disable_session_recording).toBe(true);
+    expect(sdk.startSessionRecording).not.toHaveBeenCalled(); expect(sdk.stopSessionRecording).not.toHaveBeenCalled();
+    for (const value of [...Object.values(scope), 'private-connection']) expect(JSON.stringify(sdk.capture.mock.calls)).not.toContain(value);
+  });
+  it('rechecks opt-out after initialization and never queues events for a later opt-in', async () => {
+    enabled = true; await mountGuide(); await waitFor(() => expect(sdk.capture).toHaveBeenCalled());
+    const { captureBrowserTelemetry } = await import('@/app/_components/PostHogProvider');
+    enabled = false; sdk.capture.mockClear(); await captureBrowserTelemetry('cloud_tutorial', { action: 'help_requested' });
+    expect(sdk.capture).not.toHaveBeenCalled(); enabled = true;
+    await captureBrowserTelemetry('cloud_tutorial', { action: 'pause' });
+    expect(sdk.capture.mock.calls).toEqual([['cloud_tutorial', { action: 'pause' }]]);
+  });
+  it('keeps pause and product progress working during config or SDK failures', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('config offline')); await mountGuide();
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' })); expect(screen.getByText('Your lesson is paused.')).toBeTruthy();
+    enabled = true; vi.mocked(fetch).mockImplementation(async () => Response.json({ enabled: true, host: 'https://telemetry.invalid', project_key: 'public-key' }));
+    sdk.capture.mockImplementation(() => { throw new Error('capture offline'); });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume guide' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm product connection' }));
+    await waitFor(() => expect(screen.getByText('1 of 6 steps confirmed')).toBeTruthy());
+    await act(async () => { await Promise.resolve(); });
+    expect(sdk.capture).toHaveBeenCalled();
+  });
+  it('records help requests with only fixed lesson metadata', async () => {
+    enabled = true; const { recordTutorialHelpRequest } = await import('./cloud-tutorial-analytics');
+    recordTutorialHelpRequest('connection', 'ready');
+    await waitFor(() => expect(sdk.capture).toHaveBeenCalledWith('cloud_tutorial', { lesson_id: 'first-cloud-agent', lesson_version: 1, action: 'help_requested', step: 'connection', status: 'ready' }));
+  });
+  it('does not initialize the provider after its pending consent read outlives the mount', async () => {
+    let resolve!: (response: Response) => void; vi.mocked(fetch).mockImplementation(() => new Promise(r => { resolve = r; }));
+    const { PostHogProvider } = await import('@/app/_components/PostHogProvider'); const view = render(createElement(PostHogProvider, null, 'Child'));
+    view.unmount(); await act(async () => resolve(Response.json({ enabled: true, host: 'https://telemetry.invalid', project_key: 'public-key' })));
+    expect(sdk.init).not.toHaveBeenCalled();
+  });
+});

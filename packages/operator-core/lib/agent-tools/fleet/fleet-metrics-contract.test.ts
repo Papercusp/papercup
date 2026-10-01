@@ -7,9 +7,19 @@ import {
   FLEET_METRIC_UNITS,
   FLEET_METRIC_WRITERS,
   FLEET_METRICS_SCHEMA_VERSION,
+  FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS,
+  fleetFeatureOutcomesSchema,
   fleetMetricsResultSchema,
+  fleetPausedTimeSchema,
   type FleetMetricsResult,
 } from './fleet-metrics-contract';
+import type { WorkItem } from '../../work-items';
+import {
+  buildFleetFeatureOutcomes,
+  classifyFeatureCloseOrigin,
+  computeFleetPausedTime,
+  parseFleetMetricClaimHistory,
+} from '../work_items/burn_down';
 
 function currentSpecExample(): FleetMetricsResult {
   return {
@@ -321,5 +331,225 @@ describe('fleet metrics v1 contract', () => {
       appliedTo: 'all-counted-items',
     };
     expect(fleetMetricsResultSchema.safeParse(example).success).toBe(false);
+  });
+});
+
+describe('P-001 feature-fleet outcomes and paused time (R-1, R-11..R-14)', () => {
+  const MEMBER = 'su-member-a';
+  const OUTSIDER = 'su-prior-fleet';
+  const HOUR = 60 * 60 * 1000;
+  const members = new Set([MEMBER]);
+  const window = { startAt: '2026-10-01T10:00:00.000Z', endAt: '2026-10-01T14:00:00.000Z' };
+  const closedAt = '2026-10-01T12:00:00.000Z';
+  const closedMs = Date.parse(closedAt);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const history = (...entries: Array<[string, string]>) => entries.map(([owner, at]) => ({ owner, at }));
+  const noHistory = async () => new Map<string, unknown>();
+
+  function item(overrides: Partial<WorkItem> & { id: string }): WorkItem {
+    return {
+      kind: 'feature',
+      family: 'feature',
+      state: 'done',
+      closedAt,
+      terminalOwner: MEMBER,
+      completionAuthority: 'committed',
+      ...overrides,
+    } as unknown as WorkItem;
+  }
+
+  it('R-1 wrong-family CONTROL: task and bug closes are supporting, never feature outcomes', async () => {
+    const outcomes = await buildFleetFeatureOutcomes({
+      featureCloses: [item({ id: 'WI-1' })],
+      supportingCloses: [
+        item({ id: 'EI-2', kind: 'task', family: 'issue' }),
+        item({ id: 'EI-3', kind: 'bug', family: 'issue' }),
+      ],
+      members,
+      workspaceId: 'ws',
+      harness: 'papercusp',
+      readHistory: async () => new Map([['WI-1', history([MEMBER, iso(closedMs - 5 * HOUR)])]]),
+    });
+    if (outcomes.status !== 'measured') throw new Error(`expected measured, got ${outcomes.status}`);
+    expect(outcomes.closes.lifecycleTerminal).toBe(1);
+    expect(outcomes.supporting).toMatchObject({ tasks: 1, bugs: 1, other: 0, total: 2, countedInFeatureOutcomes: false });
+    expect(fleetFeatureOutcomesSchema.safeParse(outcomes).success).toBe(true);
+    const folded = { ...outcomes, supporting: { ...outcomes.supporting, countedInFeatureOutcomes: true } };
+    expect(fleetFeatureOutcomesSchema.safeParse(folded).success).toBe(false);
+  });
+
+  it('R-11 inherited finish: prior outsider work plus a short claim-to-close is inherited', async () => {
+    const shortFinish = parseFleetMetricClaimHistory(
+      history([OUTSIDER, iso(closedMs - 20 * HOUR)], [MEMBER, iso(closedMs - 30 * 60 * 1000)]),
+    );
+    expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, shortFinish, members)).toBe('inherited');
+    // CONTROL: same prior outsider, but the fleet worked it past the threshold => fleet-done.
+    const longRun = parseFleetMetricClaimHistory(
+      history(
+        [OUTSIDER, iso(closedMs - 20 * HOUR)],
+        [MEMBER, iso(closedMs - FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS - 60_000)],
+      ),
+    );
+    expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, longRun, members)).toBe('fleetDone');
+    // CONTROL: no outsider ever claimed => fleet-done even on a short finish.
+    const ownWork = parseFleetMetricClaimHistory(history([MEMBER, iso(closedMs - 10 * 60 * 1000)]));
+    expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, ownWork, members)).toBe('fleetDone');
+    // Untimed legacy history is unusable => unknown, never fleet-done.
+    expect(parseFleetMetricClaimHistory(['su-legacy-bare-string'])).toBeNull();
+    expect(classifyFeatureCloseOrigin({ closedAt, terminalOwner: MEMBER }, null, members)).toBe('unknown');
+
+    const outcomes = await buildFleetFeatureOutcomes({
+      featureCloses: [item({ id: 'WI-1' }), item({ id: 'WI-2' })],
+      supportingCloses: [],
+      members,
+      workspaceId: 'ws',
+      harness: 'papercusp',
+      readHistory: async () =>
+        new Map([['WI-1', history([OUTSIDER, iso(closedMs - 20 * HOUR)], [MEMBER, iso(closedMs - 30 * 60 * 1000)])]]),
+    });
+    expect(outcomes).toMatchObject({ status: 'measured', origin: { fleetDone: 0, inherited: 1, unknown: 1 } });
+  });
+
+  it('R-13 genuine zero is a measured zero; unreadable history and shipped are unknown', async () => {
+    const zero = await buildFleetFeatureOutcomes({
+      featureCloses: [],
+      supportingCloses: [],
+      members,
+      workspaceId: null,
+      harness: 'papercusp',
+      readHistory: async () => {
+        throw new Error('must not read history for an empty cohort');
+      },
+    });
+    expect(zero).toMatchObject({ status: 'measured', closes: { lifecycleTerminal: 0, counted: 0 } });
+    expect(zero.status === 'measured' && zero.shipped.status).toBe('unknown');
+    const noWorkspace = await buildFleetFeatureOutcomes({
+      featureCloses: [item({ id: 'WI-1' })],
+      supportingCloses: [],
+      members,
+      workspaceId: null,
+      harness: 'papercusp',
+      readHistory: noHistory,
+    });
+    expect(noWorkspace.status).toBe('unknown');
+    const failedRead = await buildFleetFeatureOutcomes({
+      featureCloses: [item({ id: 'WI-1' })],
+      supportingCloses: [],
+      members,
+      workspaceId: 'ws',
+      harness: 'papercusp',
+      readHistory: async () => {
+        throw new Error('pool exhausted');
+      },
+    });
+    expect(failedRead).toMatchObject({ status: 'unknown', reason: expect.stringContaining('pool exhausted') });
+    expect(fleetFeatureOutcomesSchema.safeParse(failedRead).success).toBe(true);
+  });
+
+  it('R-14 proposed-versus-committed: a proposed close is counted apart from committed closes', async () => {
+    const outcomes = await buildFleetFeatureOutcomes({
+      featureCloses: [
+        item({ id: 'WI-1', completionAuthority: 'committed' }),
+        item({ id: 'WI-2', completionAuthority: 'proposed' }),
+        item({ id: 'WI-3', completionAuthority: 'pending_human' }),
+      ],
+      supportingCloses: [],
+      members,
+      workspaceId: 'ws',
+      harness: 'papercusp',
+      readHistory: noHistory,
+    });
+    expect(outcomes).toMatchObject({
+      status: 'measured',
+      closes: { lifecycleTerminal: 3, committed: 1, proposed: 1, pendingHuman: 1, counted: 1 },
+    });
+  });
+
+  it('R-12 paused interval: working time excludes recorded pauses, clipped to the window', () => {
+    const paused = computeFleetPausedTime(
+      {
+        events: [
+          { tool: 'fleet:wind-down', at: '2026-10-01T09:30:00.000Z' },
+          { tool: 'fleet:resume', at: '2026-10-01T10:30:00.000Z' },
+          { tool: 'fleet:pause', at: '2026-10-01T11:00:00.000Z' },
+          { tool: 'fleet:resume', at: '2026-10-01T12:00:00.000Z' },
+        ],
+        current: { controlState: 'active', controlAt: null },
+      },
+      window,
+    );
+    expect(paused).toMatchObject({
+      status: 'measured',
+      windowMs: 4 * HOUR,
+      pausedMs: 1.5 * HOUR,
+      workingMs: 2.5 * HOUR,
+      intervalCount: 2,
+      openAtGeneratedAt: false,
+    });
+    expect(fleetPausedTimeSchema.safeParse(paused).success).toBe(true);
+    // CONTROL: working time that swallows the pause fails the contract.
+    if (paused.status !== 'measured') throw new Error('expected measured');
+    expect(fleetPausedTimeSchema.safeParse({ ...paused, workingMs: paused.windowMs }).success).toBe(false);
+    // Still paused at generation time: the open interval runs to the window end.
+    const open = computeFleetPausedTime(
+      { events: [], current: { controlState: 'paused', controlAt: '2026-10-01T13:00:00.000Z' } },
+      window,
+    );
+    expect(open).toMatchObject({ status: 'measured', pausedMs: HOUR, workingMs: 3 * HOUR, openAtGeneratedAt: true });
+  });
+
+  it('R-13 an unpaired resume inside the window is unknown, never zero paused time', () => {
+    const unpaired = computeFleetPausedTime(
+      { events: [{ tool: 'fleet:resume', at: '2026-10-01T12:00:00.000Z' }], current: { controlState: 'active', controlAt: null } },
+      window,
+    );
+    expect(unpaired.status).toBe('unknown');
+    expect(fleetPausedTimeSchema.safeParse(unpaired).success).toBe(true);
+    // A resume before the window opens hides nothing inside it.
+    const early = computeFleetPausedTime({ events: [{ tool: 'fleet:resume', at: '2026-10-01T09:00:00.000Z' }], current: null }, window);
+    expect(early).toMatchObject({ status: 'measured', pausedMs: 0 });
+  });
+
+  it('R-12 a pause closed by the registry (refused resume) ends at control_at, not the window end', () => {
+    // Live shape (p004-behavior-feedback, 2026-10-01): pause ok, fleet:resume REFUSED, flag active.
+    const closedByFlag = computeFleetPausedTime(
+      {
+        events: [{ tool: 'fleet:pause', at: '2026-10-01T11:00:00.000Z' }],
+        current: { controlState: 'active', controlAt: '2026-10-01T11:15:00.000Z' },
+      },
+      window,
+    );
+    expect(closedByFlag).toMatchObject({ status: 'measured', pausedMs: 15 * 60 * 1000, openAtGeneratedAt: false });
+    // CONTROL: active with no usable closing time is unknown, never "paused to the end".
+    const noCloseTime = computeFleetPausedTime(
+      { events: [{ tool: 'fleet:pause', at: '2026-10-01T11:00:00.000Z' }], current: { controlState: 'active', controlAt: null } },
+      window,
+    );
+    expect(noCloseTime.status).toBe('unknown');
+  });
+
+  it('the snapshot carries both blocks and rejects an origin that does not partition the closes', async () => {
+    const outcomes = await buildFleetFeatureOutcomes({
+      featureCloses: [item({ id: 'WI-1' })],
+      supportingCloses: [],
+      members,
+      workspaceId: 'ws',
+      harness: 'papercusp',
+      readHistory: noHistory,
+    });
+    const example = currentSpecExample();
+    if (!example.ok) throw new Error('fixture must be a snapshot');
+    const withBlocks = {
+      ...example,
+      snapshot: {
+        ...example.snapshot,
+        featureOutcomes: outcomes,
+        pausedTime: computeFleetPausedTime({ events: [], current: null }, example.snapshot.scope.window),
+      },
+    };
+    expect(fleetMetricsResultSchema.safeParse(withBlocks).success).toBe(true);
+    if (outcomes.status !== 'measured') throw new Error('expected measured');
+    const broken = { ...outcomes, origin: { ...outcomes.origin, fleetDone: outcomes.origin.fleetDone + 1 } };
+    expect(fleetFeatureOutcomesSchema.safeParse(broken).success).toBe(false);
   });
 });

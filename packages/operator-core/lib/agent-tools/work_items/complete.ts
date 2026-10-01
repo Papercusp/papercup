@@ -315,10 +315,10 @@ const completionSpec = z
     'Structured completion record; its fields and types are published in this schema. ' +
       // The three wrong-key literals are spelled in full ON PURPOSE: complete.test.ts
       // asserts each one, and they are what a caller greps for after a strict-key refusal.
-      '`completion.verification` is strict: put test/typecheck/diff details in `testsRun`/`testResult`, ' +
-      'not `verification.tests`, `verification.typecheck`, or `verification.diff`. Put structured evidence under ' +
-      '`completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` ' +
-      'and `coordNotes` at the completion level, not inside `verification`. ' +
+      '`completion` owns `testsRun`, `testResult`, `verifiedHow`, and `filesChanged`; `completion.verification` ' +
+      'is for structured coverage. The single-item call also accepts those fields at the argument root as ' +
+      'legacy aliases. Do not put test/typecheck/diff details under the strict `completion.verification`; keep ' +
+      '`deferred`/`coordNotes` at completion level, not inside `verification`. ' +
       // The two live-mode ARTIFACT requirements are enforced at close time and are stated
       // nowhere else; `verifiedHow`'s own describe defines the labels but not these floors.
       "For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in " +
@@ -5324,7 +5324,7 @@ const workItemsCompleteTool = defineTool({
   description:
     'Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys); deliberate record-only calls pass `recordOnly:true`. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, terminal `state` (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys). Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (nested placement is auto-hoisted); read `outputPayload` back at `work_items:get` → `results[].workItem.payload.out` with `payloadTier:"full"`, not inside `completion`. Universal claims require `completion.verification.coverage` to partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `filesDeleted` for removals, not `filesChanged`; use `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, terminal `state` (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys). Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (nested placement is auto-hoisted); read `outputPayload` back at `work_items:get` → `results[].workItem.payload.out` with `payloadTier:"full"`, not inside `completion`. Universal claims require `completion.verification.coverage` to partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` at completion level, not inside `verification`; `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` belong at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Put coverage under `completion.verification`, not test/typecheck/diff fields; use `filesDeleted` for removals, not `filesChanged`; use `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',

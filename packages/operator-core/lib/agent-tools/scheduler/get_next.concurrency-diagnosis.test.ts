@@ -116,6 +116,13 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
     expect(b.ok).toBe(false);
     expect(b.error).toMatch(/claim cap reached: you already hold 1\/1 concurrent claim\(s\)/);
     expect(b.error).toMatch(/held: EI-10058/);
+    // EI-23739078854372403: the refusal must name the sanctioned LEADER-owned lever and the
+    // EI-11796 rule that a parked/blocked claim still counts, so a member told to "pull other
+    // lane work while blocked" learns why it cannot and what would let it — instead of reading
+    // a bare wall and releasing a parked item it still owns (the single-fixer failure mode).
+    expect(b.error).toMatch(/scheduler:set_claim_spec \{ limits: \{ maxConcurrentClaims: N \} \}/);
+    expect(b.error).toMatch(/LEADER raises your cap/);
+    expect(b.error).toMatch(/parked or externally-blocked claim STILL counts/);
     expect(b.diagnosis).toMatchObject({
       concurrencyBlocked: true,
       activeClaims: 1,

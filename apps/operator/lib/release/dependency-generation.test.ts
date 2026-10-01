@@ -1028,6 +1028,125 @@ describe('immutable dependency generation', () => {
     ) as Record<'schema' | 'ref' | 'input' | 'live' | 'verdict' | 'links', string>;
   };
 
+  it('WI-10004151: reuses an equivalent prewarmed ancestor after live dependencies move on', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    commitFixture(integration, 'installed baseline');
+    const baseline = publish(integration);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const selector = join(generationRoot, '.inputs', publishedInputFingerprint(baseline.stdout));
+    const selectorBytes = readFileSync(selector);
+    const candidateLock = JSON.parse(lockWith(PKG));
+    candidateLock.packages[''].dependencies = { pkg: '1.0.0' };
+    writeFileSync(join(integration, 'package-lock.json'), `${JSON.stringify(candidateLock)}\n`);
+    const candidate = commitFixture(integration, 'declaration-only lock change');
+    const input = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+    }));
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'live-v2\n');
+    // Same live tree and candidate: only the validated donor changes.
+    rmSync(selector);
+    expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('refused');
+    writeFileSync(selector, selectorBytes);
+    const prediction = predictRef(integration, candidate);
+    expect(prediction.status, prediction.stderr).toBe(0);
+    expect(predictionOf(prediction.stdout).verdict).toBe('buildable');
+    expect(existsSync(join(generationRoot, '.inputs', input))).toBe(false);
+    const built = ensureRef(integration, candidate);
+    expect(built.status, built.stderr).toBe(0);
+    expect(publishedInputFingerprint(built.stdout)).toBe(input);
+    expect(publishedIdentity(built.stdout)).toBe(publishedIdentity(baseline.stdout));
+    expect(readFileSync(join(publishedPath(built.stdout), 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    expect(readFileSync(join(integration, 'node_modules/pkg/index.js'), 'utf8')).toBe('live-v2\n');
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+    const leaseRoot = join(generationRoot, '.leases');
+    expect(existsSync(leaseRoot) ? readdirSync(leaseRoot) : []).toEqual([]);
+    expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10004151: leases a cached donor while copying and removes only its extra workspace link', () => {
+    const integration = makeIntegration();
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({
+        ...PKG,
+        'node_modules/@papercusp/extra': { resolved: 'packages/b', link: true },
+      }),
+    );
+    mkdirSync(join(integration, 'node_modules/@papercusp'), { recursive: true });
+    symlinkSync('../../packages/b', join(integration, 'node_modules/@papercusp/extra'));
+    commitFixture(integration, 'installed baseline with workspace link');
+    const baseline = publish(integration);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const donor = publishedPath(baseline.stdout);
+    const donorIdentity = publishedIdentity(baseline.stdout);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'remove workspace link');
+    const input = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({ 'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' } }),
+    );
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'live-v2\n');
+    const prediction = predictRef(integration, candidate);
+    expect(prediction.status, prediction.stderr).toBe(0);
+    expect(predictionOf(prediction.stdout)).toMatchObject({ verdict: 'buildable', links: '1' });
+
+    const shim = join(dirname(integration), 'donor-copy-bin');
+    mkdirSync(shim);
+    writeFileSync(join(shim, 'cp'), `#!/bin/bash
+if [ "$1" = '-al' ]; then
+  lease_found=''
+  for lease in "$TEST_DONOR_LEASE_ROOT"/*; do
+    if [ -f "$lease" ] && grep -q -F "identity=$TEST_DONOR_ID" "$lease"; then
+      lease_found=1
+    fi
+  done
+  [ -n "$lease_found" ] || { echo 'cached donor copied without a retention lease' >&2; exit 99; }
+fi
+exec /bin/cp "$@"
+`, { mode: 0o755 });
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const built = ensureRef(integration, candidate, {
+      PATH: `${shim}:${process.env.PATH}`,
+      TEST_DONOR_LEASE_ROOT: join(generationRoot, '.leases'),
+      TEST_DONOR_ID: donorIdentity,
+    });
+    expect(built.status, built.stderr).toBe(0);
+    expect(publishedInputFingerprint(built.stdout)).toBe(input);
+    expect(publishedIdentity(built.stdout)).not.toBe(donorIdentity);
+    expect(readFileSync(join(publishedPath(built.stdout), 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    expect(existsSync(join(publishedPath(built.stdout), 'tree/node_modules/@papercusp/extra'))).toBe(false);
+    expect(readlinkSync(join(donor, 'tree/node_modules/@papercusp/extra'))).toBe('../../packages/b');
+    expect(readFileSync(join(integration, 'node_modules/pkg/index.js'), 'utf8')).toBe('live-v2\n');
+    expect(statSync(join(donor, 'tree/node_modules/pkg/index.js')).mode & 0o222).toBe(0);
+    const leaseRoot = join(generationRoot, '.leases');
+    expect(existsSync(leaseRoot) ? readdirSync(leaseRoot) : []).toEqual([]);
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10004151: an incompatible prewarmed ancestor cannot satisfy a new installed version', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    commitFixture(integration, 'installed baseline');
+    expect(publish(integration).status).toBe(0);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+    }));
+    const candidate = commitFixture(integration, 'requires a new package version');
+    const input = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '3.0.0' },
+    }));
+    const result = ensureRef(integration, candidate);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('not install-equivalent');
+    expect(existsSync(join(integration, '.papercusp/dependency-generations/.inputs', input))).toBe(false);
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-10004151: --predict-ref names live-match, buildable, then prewarmed, agreeing with --ensure-ref', () => {
     const integration = makeIntegration();
     writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
