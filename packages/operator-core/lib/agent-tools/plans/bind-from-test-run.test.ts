@@ -1,9 +1,11 @@
 /** P-044 (RSR-P-044-A): deriving a proof binding from a recorded test run — pure derivation + scope rules. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  asCommittedTestPath,
   deriveBindingFromTestRun,
   deriveSubjectSourcePaths,
   expandTestRunBinding,
@@ -342,6 +344,118 @@ describe('recorded test paths across worktrees', () => {
     expect(await recordedTestPath(canonical, { root: nested, file_path: TEST }, async () => { throw new Error('missing'); })).toBeNull();
     expect(await recordedTestPath(canonical, { root: nested, file_path: `../${TEST}` }, git)).toBeNull();
     expect(await recordedTestPath(canonical, { root: nested, file_path: `${canonical}/${TEST}` }, git)).toBeNull();
+  });
+});
+
+describe('WI-10004898: a clean run in a deleted disposable clone binds by commit content', () => {
+  // Real git, because the whole claim is about repository identity: the clone the run
+  // executed in is gone by bind time, so only the harness repo's own objects can vouch.
+  let harness = '';
+  let superCommit = '';
+  let subCommit = '';
+  const SUB = 'libs/generic/search';
+  const g = (cwd: string, ...args: string[]) =>
+    execFileSync(
+      'git',
+      ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+  const goneClone = (sha: string) => `/tmp/papercusp-lint-as-committed-${sha.slice(0, 10)}-gone${process.pid}`;
+  const cleanRow = (over: Partial<TestRunEvidenceRow> = {}) =>
+    run({ file_path: 'pkg/lib/x.test.ts', commit_sha: superCommit, worktree_dirty: false, root: goneClone(superCommit), ...over });
+  const binder = (row: TestRunEvidenceRow): TestRunBindingDeps => ({
+    loadRun: async () => row,
+    adoptRun: async () => true,
+    resolveRoot: async () => harness,
+  });
+
+  beforeAll(async () => {
+    harness = await mkdtemp(path.join(tmpdir(), 'bind-as-committed-'));
+    const sub = path.join(harness, SUB);
+    await mkdir(path.join(sub, 'src'), { recursive: true });
+    await writeFile(path.join(sub, 'src/s.ts'), 'export const s = 1;\n');
+    await writeFile(path.join(sub, 'src/s.test.ts'), "import { s } from './s';\nvoid s;\n");
+    g(sub, 'init', '-q');
+    g(sub, 'add', '-A');
+    g(sub, 'commit', '-qm', 'sub');
+    subCommit = g(sub, 'rev-parse', 'HEAD');
+    await mkdir(path.join(harness, 'pkg/lib'), { recursive: true });
+    await writeFile(path.join(harness, 'pkg/lib/x.ts'), 'export const x = 1;\n');
+    await writeFile(path.join(harness, 'pkg/lib/x.test.ts'), "import { x } from './x';\nvoid x;\n");
+    g(harness, 'init', '-q');
+    // `add` of an embedded repository records a 160000 gitlink pinned at subCommit.
+    g(harness, 'add', 'pkg', SUB);
+    g(harness, 'commit', '-qm', 'super');
+    superCommit = g(harness, 'rev-parse', 'HEAD');
+  });
+
+  afterAll(async () => {
+    await rm(harness, { recursive: true, force: true });
+  });
+
+  it('maps a superproject clone run, and a submodule clone run under its submodule prefix', async () => {
+    expect(await asCommittedTestPath(harness, cleanRow())).toEqual({
+      testPath: 'pkg/lib/x.test.ts', repoPrefix: '', commitSha: superCommit,
+    });
+    const subRow = cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit });
+    expect(await asCommittedTestPath(harness, subRow)).toEqual({
+      testPath: `${SUB}/src/s.test.ts`, repoPrefix: SUB, commitSha: subCommit,
+    });
+  });
+
+  it('never maps a dirty, commit-less, foreign-commit, absent-file or plain-directory run', async () => {
+    expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: true }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: null }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ commit_sha: null }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ commit_sha: 'f'.repeat(40) }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ file_path: 'pkg/lib/missing.test.ts' }))).toBeNull();
+    expect(await asCommittedTestPath(harness, cleanRow({ file_path: '../escape.test.ts' }))).toBeNull();
+    // `pkg` is a plain directory of the superproject, not a repository root: re-anchoring
+    // `lib/x.test.ts` under it would invent a path the run never named.
+    expect(await asCommittedTestPath(harness, cleanRow({ root: `${goneClone(superCommit)}/pkg`, file_path: 'lib/x.test.ts' }))).toBeNull();
+  });
+
+  it('binds through expandTestRunBinding, records the mapping, and verifies content across a pinned gitlink', async () => {
+    const row = cleanRow();
+    const bound = await expandTestRunBinding(input({ sourcePaths: ['pkg/lib/x.ts', `${SUB}/src/s.ts`] }), SCOPE, binder(row));
+    expect(bound).toMatchObject({ ok: true });
+    if (!bound.ok) return;
+    expect(bound.binding.evidenceRef).toBe('pkg/lib/x.test.ts');
+    expect(bound.binding.details.testRun).toMatchObject({
+      recordedRoot: row.root,
+      asCommitted: { commitSha: superCommit, repoPrefix: '', contentVerified: true },
+    });
+    const subRow = cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit });
+    expect(await expandTestRunBinding(input(), SCOPE, binder(subRow))).toMatchObject({
+      ok: true,
+      binding: { evidenceRef: `${SUB}/src/s.test.ts`, measurement: { sourcePaths: [`${SUB}/src/s.ts`] } },
+    });
+  });
+
+  it('refuses when a measured file here no longer matches the commit the clone ran', async () => {
+    const file = path.join(harness, 'pkg/lib/x.ts');
+    await writeFile(file, 'export const x = 2;\n');
+    try {
+      const refused = await expandTestRunBinding(input(), SCOPE, binder(cleanRow()));
+      expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
+      expect(refused.ok ? '' : refused.message).toContain('pkg/lib/x.ts differs from its content at');
+      const outside = await expandTestRunBinding(
+        input({ sourcePaths: ['pkg/lib/x.ts'] }),
+        SCOPE,
+        binder(cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit })),
+      );
+      expect(outside).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
+      expect(outside.ok ? '' : outside.message).toContain(`lies outside the run's repository ${SUB}`);
+    } finally {
+      await writeFile(file, 'export const x = 1;\n');
+    }
+    expect(await expandTestRunBinding(input(), SCOPE, binder(cleanRow()))).toMatchObject({ ok: true });
+  });
+
+  it('still refuses an unmappable clean run, naming the commit it checked', async () => {
+    const refused = await expandTestRunBinding(input(), SCOPE, binder(cleanRow({ commit_sha: 'e'.repeat(40) })));
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
+    expect(refused.ok ? '' : refused.message).toContain(`Its clean commit ${'e'.repeat(12)} does not contain that file`);
   });
 });
 

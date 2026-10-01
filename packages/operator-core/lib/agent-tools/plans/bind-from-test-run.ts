@@ -40,6 +40,7 @@
  */
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import { recordedTestLayer, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { withWorkspace } from '@papercusp/db-org';
@@ -133,7 +134,8 @@ export type TestRunBindingError =
   | 'test_run_canonical_path_source_unsupported'
   | 'test_run_canonical_path_mismatch'
   | 'source_paths_underivable'
-  | 'run_contradicts_declared_adequacy';
+  | 'run_contradicts_declared_adequacy'
+  | 'test_run_as_committed_content_mismatch';
 
 function executionDetails(raw: unknown): Record<string, unknown> {
   // The column is jsonb, but the reporter has written it both as an object and as a
@@ -234,6 +236,129 @@ export async function recordedTestPath(
     // Missing historical checkout or unverifiable repository identity is unknown, never a filename match.
   }
   return null;
+}
+
+/** WI-10004898: where a clean disposable-clone run maps back to in the harness checkout. */
+export interface AsCommittedMapping {
+  /** Harness-root-relative test path. */
+  testPath: string;
+  /** '' = the harness repository itself; otherwise the submodule checkout the run's commit belongs to. */
+  repoPrefix: string;
+  commitSha: string;
+}
+
+const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+const MAX_SUBMODULE_PREFIX_SEGMENTS = 8;
+const MAX_GITLINK_DEPTH = 4;
+
+async function sameDirectory(a: string, b: string): Promise<boolean> {
+  try {
+    return (await realpath(a)) === (await realpath(b));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * WI-10004898: map a CLEAN run recorded in a disposable clone (`lint:as-committed`) back to
+ * this checkout by CONTENT, not location. A clean run at commit X executed exactly X's tree
+ * wherever the clone lived, so it is this repository's run at X when X is an object of the
+ * harness repository — or of the submodule checkout that a trailing segment run of the
+ * recorded root names (`<clone>/libs/generic/search` → `libs/generic/search`) — and X contains
+ * the recorded file. Nothing is read from the clone: it is normally deleted by bind time.
+ * Dirty or commit-less runs never qualify, because what they executed is unknowable.
+ */
+export async function asCommittedTestPath(
+  root: string,
+  row: Pick<TestRunEvidenceRow, 'root' | 'file_path' | 'commit_sha' | 'worktree_dirty'>,
+  git: GitRunner = defaultGitRunner,
+): Promise<AsCommittedMapping | null> {
+  const commitSha = row.commit_sha;
+  if (row.worktree_dirty !== false || !commitSha || !FULL_SHA_RE.test(commitSha)) return null;
+  if (!row.root || !isAbsolute(row.root) || !row.file_path) return null;
+  const inClone = repoRelativeTestPath(row.root, resolve(row.root, row.file_path));
+  if (!inClone) return null;
+  const segments = resolve(row.root).split(sep).filter(Boolean);
+  const prefixes = [''];
+  for (let k = 1; k <= Math.min(segments.length, MAX_SUBMODULE_PREFIX_SEGMENTS); k += 1) {
+    prefixes.push(segments.slice(-k).join('/'));
+  }
+  for (const repoPrefix of prefixes) {
+    const repo = repoPrefix ? resolve(root, repoPrefix) : resolve(root);
+    try {
+      // A prefix must name a repository ROOT (a submodule checkout), never a plain directory
+      // of the superproject — that would re-anchor the file under the wrong path.
+      const top = (await git(repo, ['rev-parse', '--show-toplevel'])).trim();
+      if (!(await sameDirectory(top, repo))) continue;
+      await git(repo, ['cat-file', '-e', `${commitSha}:${inClone}`]);
+      return { testPath: repoPrefix ? `${repoPrefix}/${inClone}` : inClone, repoPrefix, commitSha };
+    } catch {
+      // Not a repository here, or X / the file is not in it: try the next candidate.
+    }
+  }
+  return null;
+}
+
+/** Resolve `rel` at `commit` in `repo`, descending through any submodule gitlink the commit pins. */
+async function blobAtCommit(
+  repo: string,
+  commit: string,
+  rel: string,
+  git: GitRunner,
+  depth = 0,
+): Promise<{ blob: string; repo: string; rel: string } | null> {
+  try {
+    const blob = (await git(repo, ['rev-parse', '--verify', '--quiet', `${commit}:${rel}`])).trim();
+    if (blob) return { blob, repo, rel };
+  } catch {
+    // Absent at this commit, or inside a submodule the commit pins: look for the gitlink.
+  }
+  if (depth >= MAX_GITLINK_DEPTH) return null;
+  const parts = rel.split('/');
+  for (let i = parts.length - 1; i >= 1; i -= 1) {
+    const dir = parts.slice(0, i).join('/');
+    let entry = '';
+    try {
+      entry = (await git(repo, ['ls-tree', commit, '--', dir])).trim();
+    } catch {
+      return null;
+    }
+    const gitlink = /^160000 commit ([0-9a-f]{40})\t/.exec(entry);
+    if (gitlink) return blobAtCommit(resolve(repo, dir), gitlink[1]!, parts.slice(i).join('/'), git, depth + 1);
+    if (entry) return null; // the directory is a real tree at this commit, and `rel` is not in it
+  }
+  return null;
+}
+
+/**
+ * The binding fingerprints THIS checkout's files, so a disposable-clone run may lend its
+ * outcome only when every measured path here is byte-identical to the commit it ran at —
+ * otherwise the stored fingerprint would describe code the run never executed.
+ */
+async function verifyAsCommittedContent(
+  root: string,
+  mapping: AsCommittedMapping,
+  paths: readonly string[],
+  git: GitRunner,
+): Promise<{ ok: true } | { ok: false; path: string; reason: string }> {
+  const repo = mapping.repoPrefix ? resolve(root, mapping.repoPrefix) : resolve(root);
+  const at = mapping.commitSha.slice(0, 12);
+  for (const path of paths) {
+    if (mapping.repoPrefix && !path.startsWith(`${mapping.repoPrefix}/`)) {
+      return { ok: false, path, reason: `lies outside the run's repository ${mapping.repoPrefix}` };
+    }
+    const rel = mapping.repoPrefix ? path.slice(mapping.repoPrefix.length + 1) : path;
+    const committed = await blobAtCommit(repo, mapping.commitSha, rel, git);
+    if (!committed) return { ok: false, path, reason: `is absent at ${at}` };
+    let current = '';
+    try {
+      current = (await git(committed.repo, ['hash-object', '--', committed.rel])).trim();
+    } catch {
+      return { ok: false, path, reason: 'is unreadable in this checkout' };
+    }
+    if (current !== committed.blob) return { ok: false, path, reason: `differs from its content at ${at}` };
+  }
+  return { ok: true };
 }
 
 interface RunFacts {
@@ -555,20 +680,50 @@ export async function expandTestRunBinding(
       };
     }
   }
+  // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
+  let asCommitted: AsCommittedMapping | null = null;
+  if (!testPath && !input.canonicalTestPath) {
+    asCommitted = await asCommittedTestPath(root, row, deps.git);
+    testPath = asCommitted?.testPath ?? null;
+  }
   if (!testPath) {
+    const cleanCommit = row.worktree_dirty === false && row.commit_sha ? row.commit_sha.slice(0, 12) : null;
     return {
       ok: false,
       error: 'test_run_file_outside_root',
       testRunId,
-      message: `test-run ${testRunId} file ${JSON.stringify(row.file_path)} at recorded root ${JSON.stringify(row.root)} cannot be mapped to this harness checkout (${root}).`,
+      message:
+        `test-run ${testRunId} file ${JSON.stringify(row.file_path)} at recorded root ${JSON.stringify(row.root)} cannot be mapped to this harness checkout (${root}).` +
+        (cleanCommit
+          ? ` Its clean commit ${cleanCommit} does not contain that file in this repository or in a submodule named by the recorded root.`
+          : ''),
     };
   }
   const result = deriveBindingFromTestRun(input, { ...row, file_path: testPath }, root, attribution);
+  if (result.ok && asCommitted) {
+    const { testPaths, sourcePaths } = result.binding.measurement;
+    const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
+    const content = await verifyAsCommittedContent(root, asCommitted, measured, deps.git ?? defaultGitRunner);
+    if (!content.ok) {
+      return {
+        ok: false,
+        error: 'test_run_as_committed_content_mismatch',
+        testRunId,
+        message:
+          `test-run ${testRunId} ran clean at ${asCommitted.commitSha.slice(0, 12)} in a disposable clone, but ${content.path} ` +
+          `${content.reason} in this checkout, so the binding's fingerprint would not describe the code that ran. ` +
+          'Re-run the test as-committed at a commit this checkout matches and bind that run.',
+      };
+    }
+  }
   if (result.ok) {
     Object.assign(result.binding.details.testRun as Record<string, unknown>, {
       recordedRoot: row.root ?? null,
       recordedFilePath: row.file_path,
       ...(input.canonicalTestPath ? { canonicalTestPathOverride: input.canonicalTestPath } : {}),
+      ...(asCommitted
+        ? { asCommitted: { commitSha: asCommitted.commitSha, repoPrefix: asCommitted.repoPrefix, contentVerified: true } }
+        : {}),
     });
   }
   return result;

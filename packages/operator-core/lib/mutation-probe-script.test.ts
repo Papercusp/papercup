@@ -713,6 +713,28 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     expect(code).toBe(0);
   });
 
+  it('WI-10004898: names the ORIGIN checkout to every copy-out guard so its test_runs rows can be measured against it', () => {
+    // The mirror has no .git, so the test_runs reporter cannot prove a mirror run
+    // clean from the mirror. It snapshots PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT
+    // instead; every phase, mutant included, must receive the origin's git root.
+    const { repo, subject } = makeLocationalRepo();
+    const log = join(dir, 'origin-root.log');
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
+      '--test',
+      `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "\${PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT:-unset}" >> ${JSON.stringify(log)}; node {} | grep -qx 'OK sib=SIB root=ROOT-MARKER'`,
+    ]);
+    expect(out).toMatch(/verdict=caught/);
+    expect(code).toBe(0);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    const phases = new Map(lines.map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+    expect(phases.get('mutant')).toBe(realpathSync(repo));
+    for (const line of lines) expect(line.endsWith('=unset')).toBe(false);
+  });
+
   it('mirrors the worktree WITHOUT .git, so a git-consulting subject fails loudly instead of reading a wholly dirty tree', () => {
     // A symlinked .git would make every tracked path look to Git like a
     // symlink where a blob belongs — the mirror would report the entire repo

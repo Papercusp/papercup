@@ -1128,6 +1128,16 @@ run_guard() {
       # the caller's environment.
       export PAPERCUSP_MUTATION_PROBE=1
       export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
+      # WI-10004898: a copy-out guard records from the .git-less mirror, so the
+      # test_runs reporter could never prove the run clean (every row landed
+      # commit=NULL, worktree_dirty=true, which spec freshness rates unknown).
+      # Name the ORIGIN checkout so the reporter snapshots that instead: the
+      # mirror is the origin's files plus this probe's own scratch subject. A
+      # shared-tree origin is still dirty; a clean clone of one commit (for
+      # example a `lint:as-committed --keep` tree) now records that commit, clean.
+      if [ "${TARGET_MODE:-}" = "copy-out" ] && [ -n "${COPY_OUT_ROOT:-}" ] && [ -n "${COPY_OUT_REL:-}" ]; then
+        export PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT="$COPY_OUT_ROOT"
+      fi
       # See the DIRTY-WINDOW ceiling above. Exported for BOTH phases in in-tree
       # mode and never for the mutant alone: the baseline and the mutant have to
       # go through the same invocation path, or the comparison the whole verdict
