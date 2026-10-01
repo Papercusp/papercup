@@ -11,6 +11,12 @@
  * A silent no-op would read exactly like "the tool returned everything", which
  * is precisely the misattribution D-042 forbids.
  *
+ * ONE deliberate exception to pass-through: a `pick` that matches NOTHING on a
+ * body larger than PICK_MISS_FAIL_OPEN_MAX_CHARS is REFUSED with a bounded key
+ * list rather than failing open into the full body (EI-23774219620725180) — the
+ * caller used `projection` to AVOID that cost, and the corrected path is what
+ * they need, not the body. Still loud, still never an empty `{}`.
+ *
  * Operator semantics track the coreutils they stand in for (uniq collapses only
  * ADJACENT runs; cut passes non-delimited lines through unless -s; grep emits
  * `--` between non-contiguous context groups) so that a rewrite of a real corpus

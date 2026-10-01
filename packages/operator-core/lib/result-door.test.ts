@@ -889,7 +889,12 @@ describe('applyResultDoor', () => {
     });
     expect(original.length).toBeGreaterThan(BUDGET_CHARS);
 
-    const parsed = parseProjection({ pick: ['results[].missing'] });
+    // A PARTIAL miss keeps the oversized body (the matched path still returns every
+    // row) while carrying a degraded warning — the combination this test needs. An
+    // ALL-miss no longer qualifies: EI-23774219620725180 made that case REFUSE with
+    // a bounded key list instead of failing open into the full body, so it never
+    // reaches structural bounding at all (covered in result-projection/apply.test.ts).
+    const parsed = parseProjection({ pick: ['results[].id', 'results[].detail', 'results[].missing'] });
     if (!parsed.ok) throw new Error(parsed.error);
     const projected = applyResultProjection(
       { content: [{ type: 'text' as const, text: original }] },
@@ -898,7 +903,7 @@ describe('applyResultDoor', () => {
     );
     const projectedWarning = (projected.content[0] as { text: string }).text;
     expect(projectedWarning).toMatch(/^⚠/);
-    expect(projectedWarning).toContain('matched NOTHING');
+    expect(projectedWarning).toContain('matched nothing');
 
     const doored = applyResultDoor(projected, {
       toolName: 'work_items:list',
@@ -920,7 +925,7 @@ describe('applyResultDoor', () => {
     };
     expect(bounded._projection.truncated).toBe(true);
     expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
-    expect(readSpill('ws-1', 'work_items:list', RUN_ID)).toContain('matched NOTHING');
+    expect(readSpill('ws-1', 'work_items:list', RUN_ID)).toContain('matched nothing');
   });
 
   it('CONTROL: a clean projection footer remains spill-only during structural bounding', () => {
