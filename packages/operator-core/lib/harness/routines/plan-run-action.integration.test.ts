@@ -25,7 +25,7 @@ import { blueprintOperationAcceptanceSubjectRef, cancelBlueprintOperation, getBl
 import { seedContentHash } from '../../cupboard/rubric-store';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
-import { handlePlanRun, runScheduledPlanFire } from './plan-run-action';
+import { handlePlanRun, resetManualTokenCounterForTests, runScheduledPlanFire } from './plan-run-action';
 import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
 import { observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
 import { recordAdvSession } from '../../adv-sessions';
@@ -1073,6 +1073,54 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       SELECT trigger FROM harness_shared.plan_runs
        WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE} ORDER BY id`;
     expect(runs.map((r) => r.trigger)).toEqual(['scheduled', 'manual', 'manual']);
+  });
+
+  it('WI-10005127: two PROCESSES drawing the same manual millisecond mint two distinct runs, never one replayed run', async () => {
+    // The manual token is Date.now() behind a PER-PROCESS monotonic counter. Two processes
+    // (cluster workers, separate cold children) can draw the same millisecond. Pin the clock and
+    // reset the counter between the fires to stand in for the second process. Before the fix the
+    // second fire read the first fire's instance as a "replay", returned the SAME run id (its own
+    // run silently lost) and re-entered promotion of that run — concurrently, in P-013 B.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-06-16T09:00:00.000Z'));
+    try {
+      resetManualTokenCounterForTests();
+      const first = await runScheduledPlanFire(sql, {
+        installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+      });
+      expect(first!.started).toBe(true);
+      expect(first!.replayed).toBe(false);
+      // Settle it so the default concurrency='skip' policy cannot be what refuses the second fire.
+      await sql`UPDATE harness_shared.plan_runs SET status = 'done' WHERE id = ${first!.runId}`;
+
+      resetManualTokenCounterForTests();
+      const second = await runScheduledPlanFire(sql, {
+        installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+      });
+      expect(second!.started).toBe(true);
+      expect(second!.replayed).toBe(false);
+      expect(second!.runId).not.toBe(first!.runId);
+      expect(second!.instanceSlug).not.toBe(first!.instanceSlug);
+
+      const runs = await sql<{ trigger: string; instance_plan_slug: string }[]>`
+        SELECT trigger, instance_plan_slug FROM harness_shared.plan_runs
+         WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE} ORDER BY id`;
+      expect(runs).toEqual([
+        { trigger: 'manual', instance_plan_slug: first!.instanceSlug },
+        { trigger: 'manual', instance_plan_slug: second!.instanceSlug },
+      ]);
+      // Each run owns its own work-items: one per open plan item, none shared or doubled.
+      const perRun = await sql<{ run: string; n: number; items: number }[]>`
+        SELECT payload->'plan_run'->>'runId' AS run, count(*)::int AS n,
+               count(DISTINCT (source_plan_item_ids)[1])::int AS items
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${WS}
+           AND payload->'plan_run'->>'runId' IN (${String(first!.runId)}, ${String(second!.runId)})
+         GROUP BY 1 ORDER BY 1`;
+      expect(perRun).toHaveLength(2);
+      for (const row of perRun) expect(row.n).toBe(row.items);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('mints DISTINCT runs across fires (run_seq increments, fresh work_items)', async () => {

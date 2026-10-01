@@ -87,7 +87,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
   await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
@@ -99,7 +99,7 @@ beforeEach(async () => {
             ${`---\nslug: ${PLAN}\n---\n# Triage event`}, 'trigger-plan-v1',
             ${JSON.stringify([{ id: 'P-001', text: 'Handle trigger payload', status: 'todo' }])}::text::jsonb)`;
   const sources = await sql<Array<{ id: string }>>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'gmail', 'connected') RETURNING id`;
   sourceId = sources[0].id;
   const bindings = await sql<Array<{ id: string }>>`
@@ -1421,7 +1421,7 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
 
   async function seedSocialChain(): Promise<{ triggerRunId: string; bindingId: string }> {
     const sources = await sql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, cursor)
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status, cursor)
       VALUES (${WS}, 'bluesky', 'connected', ${JSON.stringify({ seq: 4821 })}::text::jsonb)
       RETURNING id`;
     const bindings = await sql<Array<{ id: string }>>`

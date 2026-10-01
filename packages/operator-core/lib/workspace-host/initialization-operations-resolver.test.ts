@@ -222,7 +222,7 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
 
   it('refuses a target with no adapter instead of silently falling back', () => {
     expect(() =>
-      resolveWorkspaceHostInitializationOperations(desired({ target: 'aws' } as never), controller, incarnation),
+      resolveWorkspaceHostInitializationOperations(desired({ target: 'azure' } as never), controller, incarnation),
     ).toThrow(UnsupportedWorkspaceHostInitializationTargetError);
 
     expect(() =>

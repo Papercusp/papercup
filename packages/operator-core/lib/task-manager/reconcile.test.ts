@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { reconcile, summarizeReconcile, scopeUnitOf, type ScannedProcess } from './reconcile';
 import { classifyScope } from './scope-class';
-import type { TaskRow, TaskState } from './types';
+import { serviceUnitForTask, type TaskRow, type TaskState } from './types';
 
 const NOW = Date.parse('2026-07-27T12:00:00.000Z');
 const OLD = new Date(NOW - 10 * 60_000).toISOString();
@@ -72,6 +72,21 @@ describe('reconcile — alive matching', () => {
     );
     expect(r.alive).toHaveLength(1);
     expect(r.alive[0]).toMatchObject({ taskId: 'aaa111', pid: 100, pidsSeen: 3, matchedBy: 'scope' });
+    expect(r.stranded).toHaveLength(0);
+    expect(r.unaccounted).toHaveLength(0);
+  });
+
+  it('keeps release-cut work alive under its task service while build processes are nested', () => {
+    const unit = serviceUnitForTask('aaa111');
+    const servicePath = `${OUR_SLICE}/papercusp-deploy.slice/${unit}`;
+    const nestedBuildPath = `${servicePath}/papercusp-cut-build.scope`;
+    const r = reconcile(
+      [row({ taskId: 'aaa111', class: 'deploy', scopeUnit: unit })],
+      [proc({ pid: 100, cgroupPath: servicePath }), proc({ pid: 231, cgroupPath: nestedBuildPath })],
+      { now: NOW },
+    );
+    expect(r.alive).toHaveLength(1);
+    expect(r.alive[0]).toMatchObject({ taskId: 'aaa111', pid: 100, pidsSeen: 2, matchedBy: 'scope' });
     expect(r.stranded).toHaveLength(0);
     expect(r.unaccounted).toHaveLength(0);
   });

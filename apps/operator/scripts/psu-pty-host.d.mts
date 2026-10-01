@@ -649,71 +649,63 @@ export function redactSnapshotArgv(argv: any, { maxArgs, maxChars }?: {
  * servers from worker threads, so the main thread's list alone is empty
  * (measured on a live Codex: 156 threads, main-thread children empty, three
  * worker threads holding all of them). */
-export function collectCodexStuckProcessTree(rootPid: any, { readFile, readDir, maxDepth, maxProcs, }?: {
-    readFile?: typeof readFileSync | undefined;
-    readDir?: typeof readdirSync | undefined;
-    maxDepth?: number | undefined;
-    maxProcs?: number | undefined;
+/** @typedef {(path: string, encoding: 'utf8') => string | Buffer} SnapshotReadFile */
+/** @typedef {(path: string) => ReadonlyArray<unknown>} SnapshotReadDir */
+/** @typedef {(path: string, maxBytes: number) => ({ text: string, size: number, truncatedHead: boolean } | null)} SnapshotReadTail */
+/** @typedef {{ path: string, present: false } | { path: string, present: true, bytes: number, totalLinesInTail: number, lastTs: string | null, tail: string[] }} CodexTuiLogTail */
+/**
+ * @param {number | undefined} rootPid
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, maxDepth?: number, maxProcs?: number }} [options]
+ */
+export function collectCodexStuckProcessTree(rootPid: number | undefined, { readFile, readDir, maxDepth, maxProcs, }?: {
+    readFile?: SnapshotReadFile;
+    readDir?: SnapshotReadDir;
+    maxDepth?: number;
+    maxProcs?: number;
 }): {
     procs: any[];
     truncated: boolean;
 };
-/** Last `maxBytes` of a file as utf8 text, or null when it cannot be read. */
-export function readFileTail(path: any, maxBytes: any): {
+/** Last `maxBytes` of a file as utf8 text, or null when it cannot be read.
+ * @param {string} path
+ * @param {number} maxBytes
+ * @returns {{ text: string, size: number, truncatedHead: boolean } | null}
+ */
+export function readFileTail(path: string, maxBytes: number): {
     text: string;
     size: number;
     truncatedHead: boolean;
 } | null;
 /** The tail of the CURRENT child's codex-tui.log, which covers only this
- * child's startup because Codex starts the file fresh at launch. */
-export function readCodexTuiLogTail(codexHome: any, { readTail, maxLines, maxLineChars, maxBytes, }?: {
-    readTail?: typeof readFileTail | undefined;
-    maxLines?: number | undefined;
-    maxLineChars?: number | undefined;
-    maxBytes?: number | undefined;
-}): {
-    path: string;
-    present: boolean;
-    bytes?: undefined;
-    totalLinesInTail?: undefined;
-    lastTs?: undefined;
-    tail?: undefined;
-} | {
-    path: string;
-    present: boolean;
-    bytes: number;
-    totalLinesInTail: number;
-    lastTs: string | null;
-    tail: string[];
-} | null;
-/** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`. */
+ * child's startup because Codex starts the file fresh at launch.
+ * @param {string | undefined} codexHome
+ * @param {{ readTail?: SnapshotReadTail, maxLines?: number, maxLineChars?: number, maxBytes?: number }} [options]
+ * @returns {CodexTuiLogTail | null}
+ */
+export function readCodexTuiLogTail(codexHome: string | undefined, { readTail, maxLines, maxLineChars, maxBytes, }?: {
+    readTail?: SnapshotReadTail;
+    maxLines?: number;
+    maxLineChars?: number;
+    maxBytes?: number;
+}): CodexTuiLogTail | null;
+/** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readTail?: SnapshotReadTail }} [options]
+ */
 export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readTail, }?: {
-    platform?: NodeJS.Platform | undefined;
-    readFile?: typeof readFileSync | undefined;
-    readDir?: typeof readdirSync | undefined;
-    readTail?: typeof readFileTail | undefined;
+    rootPid?: number;
+    codexHome?: string;
+    platform?: string;
+    readFile?: SnapshotReadFile;
+    readDir?: SnapshotReadDir;
+    readTail?: SnapshotReadTail;
 }): {
-    rootPid: any;
+    rootPid: number | null | undefined;
     procs: any[];
     procsTruncated: boolean;
-    log: {
-        path: string;
-        present: boolean;
-        bytes?: undefined;
-        totalLinesInTail?: undefined;
-        lastTs?: undefined;
-        tail?: undefined;
-    } | {
-        path: string;
-        present: boolean;
-        bytes: number;
-        totalLinesInTail: number;
-        lastTs: string | null;
-        tail: string[];
-    } | null;
+    log: CodexTuiLogTail | null;
     error?: undefined;
 } | {
-    rootPid: any;
+    rootPid: number | null | undefined;
     error: {
         errorCode?: string | undefined;
         errorName: string;
@@ -3067,6 +3059,24 @@ export type KickoffMarkerAnchor = {
     markerEndOffset: number | null;
     scannedEndOffset: number | null;
 };
+export type SnapshotReadFile = (path: string, encoding: "utf8") => string | Buffer;
+export type SnapshotReadDir = (path: string) => ReadonlyArray<unknown>;
+export type SnapshotReadTail = (path: string, maxBytes: number) => ({
+    text: string;
+    size: number;
+    truncatedHead: boolean;
+} | null);
+export type CodexTuiLogTail = {
+    path: string;
+    present: false;
+} | {
+    path: string;
+    present: true;
+    bytes: number;
+    totalLinesInTail: number;
+    lastTs: string | null;
+    tail: string[];
+};
 /**
  * Environment fragments injected by launchers and tests need not carry every
  * ambient key that an application framework merges into NodeJS.ProcessEnv.
@@ -3083,5 +3093,4 @@ export type EnvironmentMap = Record<string, string | undefined>;
  */
 export type TurnRowVerdict = "turn-completed" | "turn-started" | "ignore";
 import { readFileSync } from 'node:fs';
-import { readdirSync } from 'node:fs';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

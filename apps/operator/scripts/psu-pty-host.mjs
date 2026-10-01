@@ -2178,6 +2178,15 @@ function readProcText(readFile, path) {
  * servers from worker threads, so the main thread's list alone is empty
  * (measured on a live Codex: 156 threads, main-thread children empty, three
  * worker threads holding all of them). */
+/** @typedef {(path: string, encoding: 'utf8') => string | Buffer} SnapshotReadFile */
+/** @typedef {(path: string) => ReadonlyArray<unknown>} SnapshotReadDir */
+/** @typedef {(path: string, maxBytes: number) => ({ text: string, size: number, truncatedHead: boolean } | null)} SnapshotReadTail */
+/** @typedef {{ path: string, present: false } | { path: string, present: true, bytes: number, totalLinesInTail: number, lastTs: string | null, tail: string[] }} CodexTuiLogTail */
+
+/**
+ * @param {number | undefined} rootPid
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, maxDepth?: number, maxProcs?: number }} [options]
+ */
 export function collectCodexStuckProcessTree(rootPid, {
   readFile = readFileSync,
   readDir = readdirSync,
@@ -2239,7 +2248,11 @@ export function collectCodexStuckProcessTree(rootPid, {
   return { procs, truncated };
 }
 
-/** Last `maxBytes` of a file as utf8 text, or null when it cannot be read. */
+/** Last `maxBytes` of a file as utf8 text, or null when it cannot be read.
+ * @param {string} path
+ * @param {number} maxBytes
+ * @returns {{ text: string, size: number, truncatedHead: boolean } | null}
+ */
 export function readFileTail(path, maxBytes) {
   let fd;
   try {
@@ -2265,7 +2278,11 @@ export function readFileTail(path, maxBytes) {
 const CODEX_LOG_TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/;
 
 /** The tail of the CURRENT child's codex-tui.log, which covers only this
- * child's startup because Codex starts the file fresh at launch. */
+ * child's startup because Codex starts the file fresh at launch.
+ * @param {string | undefined} codexHome
+ * @param {{ readTail?: SnapshotReadTail, maxLines?: number, maxLineChars?: number, maxBytes?: number }} [options]
+ * @returns {CodexTuiLogTail | null}
+ */
 export function readCodexTuiLogTail(codexHome, {
   readTail = readFileTail,
   maxLines = 30,
@@ -2284,7 +2301,9 @@ export function readCodexTuiLogTail(codexHome, {
   return { path, present: true, bytes: raw.size, totalLinesInTail: lines.length, lastTs, tail };
 }
 
-/** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`. */
+/** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readTail?: SnapshotReadTail }} [options]
+ */
 export function collectCodexStartingStuckSnapshot({
   rootPid,
   codexHome,

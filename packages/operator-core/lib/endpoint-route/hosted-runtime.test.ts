@@ -83,6 +83,10 @@ describe('hosted runtime composition', () => {
       ['POST', '/api/hosted/browser/workspace-hosts/connection'],
       ['POST', '/api/hosted/browser/workspace-hosts/provision'],
       ['POST', '/api/hosted/browser/workspace-hosts/action'],
+      ['GET', '/api/hosted/browser/onboarding/tutorial-progress'],
+      ['POST', '/api/hosted/browser/onboarding/tutorial-progress'],
+      ['POST', '/api/hosted/browser/onboarding/tutorial-help'],
+      ['POST', '/api/hosted/browser/onboarding/tutorial-speech'],
     ] as const) {
       expect((await plane.app.request(path, { method })).status).toBe(401);
     }

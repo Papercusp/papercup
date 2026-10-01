@@ -4069,16 +4069,19 @@ describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
     '/proc/300/task': ['300'],
     '/proc/301/task': ['301'],
   };
-  const readFile = (path: string) => {
+  type TreeOptions = NonNullable<Parameters<typeof collectCodexStuckProcessTree>[1]>;
+  type FakeReadFile = NonNullable<TreeOptions['readFile']>;
+  type FakeReadDir = NonNullable<TreeOptions['readDir']>;
+  const readFile = ((path: string) => {
     const value = proc[path];
     if (value === undefined) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
     return value;
-  };
-  const readDir = (path: string) => {
+  }) as unknown as FakeReadFile;
+  const readDir = ((path: string) => {
     const value = tasks[path];
     if (!value) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
     return value;
-  };
+  }) as unknown as FakeReadDir;
 
   it('walks children of EVERY thread and records state, wait channel and a redacted command', () => {
     const { procs, truncated } = collectCodexStuckProcessTree(100, { readFile, readDir });
@@ -4095,9 +4098,9 @@ describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
   it('CONTROL: a main-thread-only child walk misses the MCP servers entirely', () => {
     // Without the per-thread listing the walk falls back to task/PID/children,
     // which is empty for Codex: the subprocesses we need are invisible.
-    const mainThreadOnly = (path: string) => {
+    const mainThreadOnly = ((path: string) => {
       throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
-    };
+    }) as unknown as FakeReadDir;
     const { procs } = collectCodexStuckProcessTree(100, { readFile, readDir: mainThreadOnly });
     expect(procs.map((p: { pid: number }) => p.pid)).toEqual([100, 200]);
   });
@@ -4118,6 +4121,7 @@ describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
     ].join('\n');
     const readTail = vi.fn((_path: string, _maxBytes: number) => ({ text, size: 900_000, truncatedHead: true }));
     const log = readCodexTuiLogTail('/homes/session-1', { readTail, maxLines: 2 });
+    if (!log?.present) throw new Error('expected a present log tail');
     expect(readTail).toHaveBeenCalledWith('/homes/session-1/log/codex-tui.log', 64 * 1024);
     expect(log).toMatchObject({ present: true, bytes: 900_000, totalLinesInTail: 3, lastTs: '2026-10-01T22:42:26.000000Z' });
     expect(log.tail).toHaveLength(2);

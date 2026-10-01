@@ -98,15 +98,21 @@ function packageExportTarget(pkg: WorkspacePackage, subpath: string): string | u
     const exportsMap = exportsField as Record<string, unknown>;
     const exact = exportTarget(exportsMap[key]);
     if (exact) return exact;
-    for (const [pattern, value] of Object.entries(exportsMap)) {
+    // Node matches the longest base before '*', then the longest pattern.
+    // Declaration order must not let ./lib/* shadow ./lib/*.mjs.
+    const patterns = Object.entries(exportsMap)
+      .filter(([pattern]) => pattern.includes('*'))
+      .sort(([a], [b]) => b.indexOf('*') - a.indexOf('*') || b.length - a.length);
+    for (const [pattern, value] of patterns) {
       const star = pattern.indexOf('*');
       if (star < 0) continue;
       const prefix = pattern.slice(0, star);
       const suffix = pattern.slice(star + 1);
-      if (!key.startsWith(prefix) || !key.endsWith(suffix)) continue;
+      if (key.length < prefix.length + suffix.length || !key.startsWith(prefix) || !key.endsWith(suffix)) continue;
       const wildcard = key.slice(prefix.length, key.length - suffix.length);
       const target = exportTarget(value);
-      if (target) return target.replaceAll('*', wildcard);
+      // A matched null/unsupported target cannot fall through to a broader export.
+      return target?.replaceAll('*', wildcard);
     }
     if (!subpath && !Object.keys(exportsMap).some((candidate) => candidate.startsWith('.'))) {
       return exportTarget(exportsMap);

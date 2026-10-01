@@ -65,6 +65,8 @@
  */
 
 import type { CoverageResult, BashSubstitutionPair } from '../types';
+// P-006: dependency-free so the PreToolUse hook that loads this registry stays light.
+import { GRAPH_FAILURE_FALLBACK_GUIDANCE } from '../../code-intelligence/graph-fallback-guidance';
 
 /**
  * The backing-index liveness finding, recorded as DATA rather than prose. The
@@ -412,7 +414,8 @@ export const gitnexusDefinitionLookup: BashSubstitutionPair = {
   ),
   toolName: 'gitnexus.context',
   advisoryText:
-    'gitnexus.context { name, kind } answers "where is this defined" from the code graph: the symbol\'s file location PLUS its categorized callers and callees, and ranked candidates when the name is ambiguous — not just the one line grep would print. Add include_content: true for the full body. NOTE it is a DOT-namespaced plugin tool (gitnexus.context), not the usual server:verb form.',
+    'gitnexus.context { name, kind } answers "where is this defined" from the code graph: the symbol\'s file location PLUS its categorized callers and callees, and ranked candidates when the name is ambiguous — not just the one line grep would print. Add include_content: true for the full body. NOTE it is a DOT-namespaced plugin tool (gitnexus.context), not the usual server:verb form. ' +
+    GRAPH_FAILURE_FALLBACK_GUIDANCE,
   routing: {
     want: 'to find where a symbol is DEFINED (and who calls it)',
     use: '`gitnexus.context { name: "managedSetInterval", kind: "Function" }`',

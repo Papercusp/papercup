@@ -49,6 +49,9 @@ import {
   writeSync,
   readFileSync,
   readlinkSync,
+  openSync,
+  readSync,
+  closeSync,
   mkdirSync,
   readdirSync,
   renameSync,
@@ -75,6 +78,9 @@ import {
   parseCpuPressureSomeAvg60,
   parseProcDirectoryFd,
   parseProcStat,
+  parseProcSyscallTarget,
+  decodeProcPath,
+  AT_FDCWD,
   type MainThreadActivity,
 } from './proc-thread-cpu.ts';
 // EXPLICIT `.ts` EXTENSION IS LOAD-BEARING — do not "tidy" it away.
@@ -229,6 +235,58 @@ function readMainThreadDirectoryWait(wchan: string | null): Record<string, strin
   }
 }
 
+/** Read a NUL-terminated path at `ptr` in this process's own memory, without crossing a page. */
+function readOwnMemoryPath(ptr: number): string | null {
+  const len = Math.min(512, 4096 - (ptr % 4096));
+  const buf = new Uint8Array(len);
+  let fd: number | null = null;
+  try {
+    fd = openSync(`/proc/${pid}/mem`, 'r');
+    return decodeProcPath(buf, readSync(fd, buf, 0, len, ptr));
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) try { closeSync(fd); } catch { /* best effort */ }
+  }
+}
+
+/**
+ * Name the syscall and FILE behind a D-state main-thread stall (WI-10004754).
+ *
+ * The wait channel alone (`open_last_lookups`, `lookup_slow`,
+ * `jbd2_log_do_checkpoint`) says where the kernel waits, not which call or
+ * file, so four D-state stalls on :3170 on 2026-10-01 (one escalated to a
+ * WEDGE SIGKILL) could not be traced to code. The main thread's syscall line
+ * can: an fd argument resolves through `/proc/<pid>/fd`, a path argument is a
+ * pointer the worker reads from this same process's memory (relative paths are
+ * anchored at their dirfd or the cwd). Re-reading the syscall line afterwards
+ * drops the result if the thread moved on mid-probe, so the kill record never
+ * carries a stale path. Fields: `mainThreadSyscall`, `mainThreadBlockedPath`.
+ */
+function readMainThreadSyscallWait(): Record<string, string> {
+  try {
+    const raw = readFileSync(`/proc/${pid}/task/${pid}/syscall`, 'utf8');
+    const target = parseProcSyscallTarget(raw, process.arch);
+    if (!target) return {};
+    let path: string | null = null;
+    if (target.fd != null) {
+      path = readlinkSync(`/proc/${pid}/fd/${target.fd}`);
+    } else if (target.pathPtr != null) {
+      path = readOwnMemoryPath(target.pathPtr);
+      if (path && !path.startsWith('/') && target.dirFd != null) {
+        const base = readlinkSync(target.dirFd === AT_FDCWD ? `/proc/${pid}/cwd` : `/proc/${pid}/fd/${target.dirFd}`);
+        path = `${base}/${path}`;
+      }
+    }
+    if (readFileSync(`/proc/${pid}/task/${pid}/syscall`, 'utf8') !== raw) return {};
+    const out: Record<string, string> = { mainThreadSyscall: target.name };
+    if (path) out.mainThreadBlockedPath = path.slice(0, 240);
+    return out;
+  } catch {
+    return {}; // transient syscall/fd race, non-Linux, or unreadable procfs
+  }
+}
+
 /**
  * Name the main thread's live children, for the synchronous-subprocess case.
  *
@@ -298,6 +356,7 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
   if (wchan) out.mainThreadWchan = wchan;
   if (cpuPsiSome60 != null) out.mainThreadCpuPsiSome60 = cpuPsiSome60;
   Object.assign(out, readMainThreadDirectoryWait(wchan));
+  if (now?.state === 'D') Object.assign(out, readMainThreadSyscallWait());
   const activity: MainThreadActivity = {
     cpuKind: verdict.kind,
     state: now?.state ?? null,

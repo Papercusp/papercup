@@ -52,6 +52,7 @@ const m = vi.hoisted(() => ({
         },
   ),
   listHarnessesFor: vi.fn(async (_ws: string) => [{ slug: 'papercup' }, { slug: 'other-pot' }]),
+  harnessExistsInWorkspace: vi.fn(async (_ws: string, harness: string) => ['papercup', 'other-pot'].includes(harness)),
   listWorkItems: vi.fn(async (_f: unknown) => [
     { id: 'WI-1', kind: 'feature', family: 'feature', harness: 'papercup', title: 'needs human feat', summary: '', state: 'needs-human', assignee: null, assignedBy: null, severity: null, parent: null, payload: null, createdAt: '', updatedAt: '' },
     { id: 'WI-2', kind: 'feature', family: 'feature', harness: 'papercup', title: 'running feat', summary: '', state: 'todo', assignee: null, assignedBy: null, severity: null, parent: null, payload: null, createdAt: '', updatedAt: '' },
@@ -77,8 +78,18 @@ vi.mock('../../operator-conversations', () => ({
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-e4' }));
-vi.mock('../../agent-tools/plans/source', () => ({ listPlanRows: m.listPlanRows, readPlanBySlug: m.readPlanBySlug }));
-vi.mock('../../device-harnesses', () => ({ listHarnessesFor: m.listHarnessesFor }));
+vi.mock('../../agent-tools/plans/source', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-tools/plans/source')>()),
+  listPlanRows: m.listPlanRows,
+  listPlanIndexRows: m.listPlanRows,
+  listPlanIndexRowsForWorkspace: m.listPlanRows,
+  readPlanBySlug: m.readPlanBySlug,
+}));
+vi.mock('../../device-harnesses', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../device-harnesses')>()),
+  listHarnessesFor: m.listHarnessesFor,
+  harnessExistsInWorkspace: m.harnessExistsInWorkspace,
+}));
 // GET /device/plans now ALWAYS prepends the operator-home harness to the
 // All-Pots fan-out (deduped) — a papercup→papercusp migration fix (plans.ts:75).
 // Pin it to a slug already in the listHarnessesFor mock so the Set dedups back to
@@ -200,17 +211,37 @@ describe('device/operator/conversation', () => {
 });
 
 describe('device/plans', () => {
-  it('GET /device/plans fans out across pots and summarises item counts', async () => {
+  it('GET /device/plans reads the workspace index once and summarises item counts', async () => {
     const def = routeByPath(devicePlans as RouteDefinition<any>[], 'GET', '/device/plans');
     const res = await def.handler(new Request('http://x.test/api/device/plans'), ctx());
     expect(res.status).toBe(200);
     const body = (await res.json()) as { plans: Array<{ slug: string; itemCounts: Record<string, number>; nowNext: string }> };
-    // operatorHomeHarnessSlug ('papercup', mocked) + listHarnessesFor's 2 pots
-    // (papercup, other-pot) dedupe to 2 slugs; listPlanRows mocked to 1 plan each → 2 plans.
-    expect(m.listHarnessesFor).toHaveBeenCalledWith('ws-e4');
-    expect(body.plans.length).toBe(2);
+    expect(m.listPlanRows).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'ws-e4', includeArchived: false, includeInstances: true, heavyFields: true,
+    });
+    expect(m.listHarnessesFor).not.toHaveBeenCalled();
+    expect(body.plans.length).toBe(1);
     expect(body.plans[0].itemCounts).toEqual({ todo: 1, done: 1 });
     expect(body.plans[0].nowNext).toBe('ship it');
+  });
+
+  it('GET /device/plans scopes a selected harness to the device workspace', async () => {
+    const def = routeByPath(devicePlans as RouteDefinition<any>[], 'GET', '/device/plans');
+    const res = await def.handler(new Request('http://x.test/api/device/plans?harness=papercup'), ctx());
+    expect(res.status).toBe(200);
+    expect(m.harnessExistsInWorkspace).toHaveBeenCalledExactlyOnceWith('ws-e4', 'papercup');
+    expect(m.listPlanRows).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'ws-e4', harnessSlug: 'papercup', includeArchived: false, includeInstances: true, heavyFields: true,
+    });
+  });
+
+  it('GET /device/plans refuses a foreign harness before reading its index', async () => {
+    const def = routeByPath(devicePlans as RouteDefinition<any>[], 'GET', '/device/plans');
+    const res = await def.handler(new Request('http://x.test/api/device/plans?harness=foreign-pot'), ctx());
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'harness_not_in_workspace' });
+    expect(m.harnessExistsInWorkspace).toHaveBeenCalledExactlyOnceWith('ws-e4', 'foreign-pot');
+    expect(m.listPlanRows).not.toHaveBeenCalled();
   });
 
   it('GET /device/plans/:slug returns 404 for a missing plan', async () => {

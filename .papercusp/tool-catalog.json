@@ -3322,7 +3322,7 @@
           "POST"
         ]
       },
-      "description": "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. Fresh plan-bound, per-member-with-briefs, and `successor` launches may omit it. For N members on an existing plan use `fleet:launch-on-plan`. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
+      "description": "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. Fresh plan-bound, per-member-with-briefs, and `successor` launches may omit it. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -3339,7 +3339,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.",
+        "when": "AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Duplicate screening never delays process launch; it governs work-item claims.",
         "notWhen": "To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
         "chaining": "A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent's latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children."
       }
@@ -30086,7 +30086,7 @@
           "POST"
         ]
       },
-      "description": "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. session:'self' reads YOUR OWN current session (pre-compaction turns included). Search-only `query` and `mode` arguments belong to sessions:search and are rejected here. Turn text is returned in 1500-character chunks by default; clipped turns carry text_truncated, text_full_chars, and a readMore continuation (text_offset/text_limit). A turn at the index cap is checked against its archive; source_completeness is 'complete' when recovered and 'unknown' when no trustworthy archive turn is available. NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
+      "description": "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. session:'self' reads YOUR OWN current session (pre-compaction turns included). Search-only `query` and `mode` arguments belong to sessions:search and are rejected here. Turn text is returned in 1500-character chunks by default; clipped turns carry text_truncated, text_full_chars, and a readMore continuation (text_offset/text_limit). A turn at the index cap also reports source_completeness (see returns). NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
       "capabilities": [
         "search:read"
       ],

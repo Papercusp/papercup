@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { spawn, execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, readFileSync, readlinkSync, openSync, readSync, closeSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  AT_FDCWD,
+  decodeProcPath,
+  parseProcSyscallTarget,
   parseProcStat,
   parseProcDirectoryFd,
   parseCpuPressureSomeAvg60,
@@ -61,6 +68,105 @@ describe('parseProcDirectoryFd', () => {
   ])('returns null instead of inventing a directory fd (%s, %s)', (raw, wchan) => {
     expect(parseProcDirectoryFd(raw, wchan)).toBeNull();
   });
+});
+
+describe('parseProcSyscallTarget (WI-10004754)', () => {
+  it('reads an fd syscall: arg0 is the fd', () => {
+    expect(parseProcSyscallTarget('1 0x17 0x7f00aa 0x1000 0x0 0x0 0x0 0x7ffd 0x7f12', 'x64')).toEqual({ nr: 1, name: 'write', fd: 23 });
+    expect(parseProcSyscallTarget('74 0x5 0x0 0x0 0x0 0x0 0x0 0x7ffd 0x7f12', 'x64')).toEqual({ nr: 74, name: 'fsync', fd: 5 });
+  });
+
+  it('reads an *at syscall: arg0 dirfd (AT_FDCWD in either sign extension), arg1 path pointer', () => {
+    for (const dirfd of ['0xffffff9c', '0xffffffffffffff9c']) {
+      expect(parseProcSyscallTarget(`257 ${dirfd} 0x7f3a10002a40 0x80000 0x0 0x0 0x0 0x7ffd 0x7f12`, 'x64')).toEqual({
+        nr: 257, name: 'openat', pathPtr: 0x7f3a10002a40, dirFd: AT_FDCWD,
+      });
+    }
+    expect(parseProcSyscallTarget('262 0x9 0x55aa00 0x7ffd 0x0 0x0 0x0 0x7ffd 0x7f12', 'x64')).toMatchObject({ name: 'newfstatat', dirFd: 9 });
+  });
+
+  it('reads a path0 syscall: arg0 is the path pointer', () => {
+    expect(parseProcSyscallTarget('87 0x55aa10 0x0 0x0 0x0 0x0 0x0 0x7ffd 0x7f12', 'x64')).toEqual({ nr: 87, name: 'unlink', pathPtr: 0x55aa10 });
+  });
+
+  it('is UNKNOWN (null), never a guessed file, for every non-attributable shape', () => {
+    for (const raw of [
+      'running',
+      '-1 0x7ffd 0x7f12', // blocked, not in a syscall
+      '7 0x0 0x0 0x0 0x0 0x0 0x0 0x7ffd 0x7f12', // poll: not a file syscall
+      '257 0x5 0x0 0x80000 0x0 0x0 0x0 0x7ffd 0x7f12', // NULL path pointer
+      '257 0xfffffff0 0x55aa 0x0 0x0 0x0 0x0 0x7ffd 0x7f12', // negative dirfd that is not AT_FDCWD
+      '1 0xffffffff 0x0 0x0 0x0 0x0 0x0 0x7ffd 0x7f12', // fd -1
+      '1 zz 0x0', // malformed argument
+      '',
+    ]) {
+      expect(parseProcSyscallTarget(raw, 'x64'), raw).toBeNull();
+    }
+  });
+
+  it('refuses other architectures: syscall numbers are arch-specific', () => {
+    expect(parseProcSyscallTarget('1 0x17 0x0 0x0 0x0 0x0 0x0 0x7ffd 0x7f12', 'arm64')).toBeNull();
+  });
+});
+
+describe('decodeProcPath', () => {
+  it('decodes up to the NUL, and refuses a read with no NUL (truncated) or an empty string', () => {
+    const enc = new TextEncoder();
+    const bytes = new Uint8Array([...enc.encode('/home/x/.papercusp/a b.json'), 0, 0x41]);
+    expect(decodeProcPath(bytes, bytes.length)).toBe('/home/x/.papercusp/a b.json');
+    expect(decodeProcPath(enc.encode('/no/terminator'), 14)).toBeNull();
+    expect(decodeProcPath(new Uint8Array([0, 0x41]), 2)).toBeNull();
+    expect(decodeProcPath(bytes, 5)).toBeNull(); // the NUL lies past the bytes actually read
+  });
+});
+
+/**
+ * Real-kernel check: the parser must match what Linux actually prints, not only
+ * the hand-written lines above (AT_FDCWD sign extension, hex formatting). A
+ * child `cat` blocks in openat(2) on a FIFO with no writer; as its parent we may
+ * read its /proc/<pid>/{syscall,mem} under Yama ptrace_scope 1, exactly as the
+ * in-process sentinel reads its own.
+ */
+describe.skipIf(process.platform !== 'linux' || process.arch !== 'x64')('parseProcSyscallTarget against a real blocked openat', () => {
+  async function blockedSyscallLine(pid: number): Promise<string> {
+    for (let i = 0; i < 150; i++) {
+      const raw = readFileSync(`/proc/${pid}/syscall`, 'utf8');
+      if (raw.startsWith('257 ')) return raw;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error(`child ${pid} never blocked in openat`);
+  }
+
+  function readPath(pid: number, ptr: number): string | null {
+    const len = Math.min(512, 4096 - (ptr % 4096));
+    const buf = new Uint8Array(len);
+    const fd = openSync(`/proc/${pid}/mem`, 'r');
+    try {
+      return decodeProcPath(buf, readSync(fd, buf, 0, len, ptr));
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  for (const relative of [false, true]) {
+    it(`names the ${relative ? 'relative (cwd-anchored)' : 'absolute'} path the thread is blocked opening`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'proc-syscall-'));
+      const fifo = join(dir, 'blocked fifo');
+      execFileSync('mkfifo', [fifo]);
+      const child = spawn('cat', [relative ? 'blocked fifo' : fifo], { cwd: dir, stdio: 'ignore' });
+      try {
+        const pid = child.pid!;
+        const target = parseProcSyscallTarget(await blockedSyscallLine(pid), process.arch);
+        expect(target).toMatchObject({ name: 'openat', dirFd: AT_FDCWD });
+        const path = readPath(pid, target!.pathPtr!);
+        expect(path).toBe(relative ? 'blocked fifo' : fifo);
+        if (relative) expect(`${readlinkSync(`/proc/${pid}/cwd`)}/${path}`).toBe(fifo);
+      } finally {
+        child.kill('SIGKILL');
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 describe('parseCpuPressureSomeAvg60', () => {

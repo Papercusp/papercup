@@ -133,7 +133,16 @@ describe('evaluatePlanSpecQuality', () => {
       expect(evaluate([...projections(), ...copied]).ratings['item-contract-coverage'].rating).toBe('unknown');
     });
 
-    it.each(['rubricSlug', 'rubricRevision', 'barKey', 'barHash', 'barSetHash', 'evidencePlane'] as const)(
+    it('corroborates identical shared BAR content pinned at different rubric revisions', () => {
+      const shared = projections();
+      shared[1] = { ...shared[1], sourceBar: { ...sourceBar, rubricRevision: 5 } };
+
+      const result = evaluate([...shared, ...contracts()]);
+      expect(result.ratings['item-contract-coverage'].rating).toBe('pass');
+      expect(result.verdict).toBe('pass');
+    });
+
+    it.each(['rubricSlug', 'barKey', 'barHash', 'barSetHash', 'evidencePlane'] as const)(
       'keeps projections with different %s unknown',
       (field) => {
         const shared = projections();
