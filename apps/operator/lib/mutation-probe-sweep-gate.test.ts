@@ -810,6 +810,61 @@ describe('mutation-probe.sh assertion-evidence gate', () => {
     expect(out).toContain('assertion_evidence=cargo-libtest-failed-tests');
   });
 
+  function historicalCargoProbe(failure: string, emptyBaseline = false) {
+    // Build a before-fix object in the suite's throwaway repo; no shared-tree
+    // index, branch, commit or source is changed by this historical fixture.
+    const snapshotRoot = mkdtempSync(join(scratch, 'cargo-history-'));
+    git(snapshotRoot, ['init', '-q']);
+    const snapshotName = 'cargo-history.txt';
+    const snapshot = join(snapshotRoot, snapshotName);
+    writeFileSync(snapshot, 'value = BAD\n');
+    const blob = git(snapshotRoot, ['hash-object', '-w', snapshot]);
+    const tree = spawnSync('git', ['mktree'], {
+      cwd: snapshotRoot, encoding: 'utf8', input: `100644 blob ${blob}\t${snapshotName}\n`,
+    });
+    expect(tree.status, tree.stderr).toBe(0);
+    const commit = spawnSync('git', ['-c', 'user.name=Probe fixture', '-c', 'user.email=probe@example.invalid', 'commit-tree', tree.stdout.trim()], {
+      cwd: snapshotRoot, encoding: 'utf8', input: 'Historical Cargo fixture\n',
+    });
+    expect(commit.status, commit.stderr).toBe(0);
+    git(snapshotRoot, ['update-ref', 'HEAD', commit.stdout.trim()]);
+    // Historical mode requires a committed source at HEAD. Check the fixture
+    // precondition before invoking the script, rather than accepting admission
+    // refusals as evidence about the Cargo classifier.
+    expect(git(snapshotRoot, ['show', `HEAD:${snapshotName}`])).toBe('value = BAD');
+    writeFileSync(snapshot, GOOD);
+    const pass = emptyBaseline ? 'running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n' : cargoPass;
+    const guard = `node -e 'const bad=require("node:fs").readFileSync(process.argv[1],"utf8").includes("BAD"); process.stdout.write(bad ? ${JSON.stringify(failure)} : ${JSON.stringify(pass)}); process.exit(bad ? 101 : 0)' "{}"`;
+    return runProbe([
+      '--file', snapshot, '--against-commit', commit.stdout.trim(),
+      '--must-be-absent', 'GOOD', '--positive-control', 'value =',
+      '--calibration', 'grep -q "value =" "{}"', '--test', guard,
+    ]);
+  }
+
+  it('credits an executed Cargo exit-101 failure in historical mode', () => {
+    const { status, out } = historicalCargoProbe(cargoFail);
+    expect(status, out).toBe(0);
+    expect(out).toContain('mode=historical verdict=caught');
+    expect(out).toContain('historical_exit=101');
+    expect(out).toContain('assertion_evidence=cargo-libtest-failed-tests');
+  });
+
+  it('refuses a Cargo compilation failure in historical mode', () => {
+    const { status, out } = historicalCargoProbe('error: could not compile guard\n');
+    expect(status, out).toBe(2);
+    expect(out).toContain('mode=historical verdict=harness-error');
+    expect(out).toContain('historical_exit=101');
+  });
+
+  it('refuses historical scoring when the current Cargo snapshot selected no tests', () => {
+    const { status, out } = historicalCargoProbe(cargoFail, true);
+    expect(status, out).toBe(2);
+    expect(out).toContain('mode=historical verdict=harness-error');
+    expect(out).toContain('zero_selection=cargo-libtest-zero-passed');
+    expect(out).toContain('historical_exit=-1');
+  });
+
   const setupFailure = [
     // The reporter count below includes the failed setup hook, though no assertion ran.
     'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "FAIL setup hook: Hook timed out in 120000ms\\n"; printf "Tests 2 skipped (2)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed skippedTests=2\\n"; else printf "Tests 1 passed (1)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=0\\n"; fi',
