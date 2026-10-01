@@ -4,7 +4,7 @@
   "item": "P-006",
   "workItem": "WI-10004540",
   "defect": "EI-24794784159846761",
-  "status": "paired TF32 cause, ten CPU cells, six corrected CUDA short cells and padded CUDA diagnostic verified; native and full CUDA acceptance incomplete",
+  "status": "paired TF32 cause, Python CPU tensor boundaries, native CPU single-text boundaries, corrected CUDA short cells and padded CUDA diagnostic verified; full and native CUDA acceptance incomplete",
   "model": "lightonai/mDenseOn",
   "revision": "a5fdb000f7a21da96c3bddde3a782ef777316df3",
   "runtime": { "torch": "2.14.1+cpu", "transformers": "4.57.6", "onnxruntime": "1.23.2", "tokenizers": "0.22.2" },
@@ -515,6 +515,31 @@
     "tests": ["packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "packages/operator-core/lib/memory/bench/embedder-eval-cli.integration.test.ts"],
     "limitation": "Harness qualification only; actual native boundary inference needs its own retained results. Native batch calls use one text per worker inference; they cannot prove a padded native ONNX tensor or compute-kernel profile."
   },
-  "notChecked": ["successful GPU single-full-8192 vector parity", "single-over-limit", "mixed-length", "full-population rankings", "native Node CPU/GPU boundary inference"],
+  "nativeCpu": {
+    "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-boundary-cpu-v1.json",
+    "sha256": "65e361a16d09c22ba15bf2cd1d2a35d9ccad4cc537d6ebaa843ee4f67daaad74",
+    "bytes": 333120,
+    "taskId": "0mupvdoj6b2duqdhh39",
+    "exitCode": 0,
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "retainedIndependentCpuSummarySha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+    "nativeTransport": "shipped-worker-single-text",
+    "providerProof": "worker-session-construction-report",
+    "tokenIdsProof": "qualification-process Rust tokenizer; worker uses the same pinned recipe",
+    "cells": ["short-query", "short-document", "unicode", "code", "whitespace", "empty", "full-8192", "over-limit"],
+    "tokenLengths": [6, 7, 16, 28, 11, 5, 8192, 8192],
+    "minimumCosine": 0.999999741332413,
+    "maximumAbsoluteError": 7.748603820800781e-7,
+    "passedFixedVectorGates": true,
+    "tokenIdsEqual": true,
+    "rankingsEqual": true,
+    "requestGroups": [
+      { "id": "padded", "actualInferenceBatchSize": 1, "passedSingleGroupParity": true, "maximumAbsoluteError": 0 },
+      { "id": "mixed-length", "actualInferenceBatchSize": 1, "passedSingleGroupParity": true, "maximumAbsoluteError": 0 }
+    ],
+    "notCheckedByThisRoute": ["native worker compute-kernel profile", "native worker input tensor trace", "native padded/mixed ONNX tensors: worker accepts one text per call"],
+    "limitation": "Native CPU observations are distinct from the Python actual padded/mixed tensor proof. No claim is made that the shipped worker accepts a batched tensor or exposes actual input tensors/kernel profiles."
+  },
+  "notChecked": ["successful GPU single-full-8192 vector parity", "GPU single-over-limit", "GPU mixed-length tensor", "full-population GPU rankings", "native Node GPU boundary inference", "native worker input/kernel traces"],
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
