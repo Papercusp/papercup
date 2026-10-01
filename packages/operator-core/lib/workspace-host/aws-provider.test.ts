@@ -27,6 +27,7 @@ import {
 } from './aws-provider';
 import { cloudResourceKindForDeleteOp, describeCloudResourceDeleteAddress } from './cloud-resource-obligations';
 import type { WorkspaceHostResourceCreatedEvent } from './gcp-provider';
+import type { AwsWorkspaceHostInventoryRequest, AwsWorkspaceHostInventorySnapshot } from './aws-safety';
 
 const NOW = '2026-08-22T08:00:00.000Z';
 
@@ -299,6 +300,26 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     const observed = { snapshotId, state: 'completed' as const, observedAt: NOW };
     this.snapshots.set(snapshotId, observed);
     return observed;
+  }
+
+  async listManagedResources(request: AwsWorkspaceHostInventoryRequest): Promise<AwsWorkspaceHostInventorySnapshot> {
+    const resource = (kind: 'vm' | 'disk', providerId: string) => ({
+      resource: { target: 'aws', kind, providerId, parentProviderId: request.projectId, region: request.region },
+      labels: {},
+      observedAt: NOW,
+    });
+    return {
+      complete: true,
+      observed: [
+        ...[...this.instances.keys()].map((id) => resource('vm', id)),
+        ...[...this.volumes.keys()].map((id) => resource('disk', id)),
+      ],
+      inventoryEvidence: (['vm', 'disk', 'snapshot'] as const).map((kind) => ({
+        kind,
+        strategy: 'managed-labels' as const,
+        providerEvidenceRef: `fake://${kind}`,
+      })),
+    };
   }
 
   private setInstanceStates(instanceIds: readonly string[], state: AwsEc2InstanceState): void {

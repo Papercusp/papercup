@@ -34,6 +34,11 @@ import {
 } from '@papercusp/deployment-driver';
 import { AWS_WORKSPACE_HOST_TARGET } from './aws-connection';
 import {
+  AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS,
+  type AwsWorkspaceHostInventoryRequest,
+  type AwsWorkspaceHostInventorySnapshot,
+} from './aws-safety';
+import {
   AWS_WORKSPACE_HOST_TRANSPORTS,
   buildAwsWorkspaceHostTransportProfile,
   type AwsWorkspaceHostTransport,
@@ -196,6 +201,12 @@ export interface AwsWorkspaceHostSdkClient {
   createSnapshot(input: AwsCreateSnapshotInput): Promise<AwsCreatedSnapshot>;
   findSnapshotByClientToken(clientToken: string): Promise<AwsSnapshotObservation | undefined>;
   waitForSnapshotCompleted(snapshotId: string, signal?: AbortSignal): Promise<AwsSnapshotObservation>;
+  /**
+   * Controller-independent inventory of one workspace's Papercusp-managed EC2 instances, EBS
+   * volumes and EBS snapshots, by managed-tag filter (aws-byoc-gcp-parity-2026-10-01 P-003).
+   * Feeds `censusAwsWorkspaceHostResources` before and after a destroy.
+   */
+  listManagedResources(request: AwsWorkspaceHostInventoryRequest): Promise<AwsWorkspaceHostInventorySnapshot>;
 }
 
 export interface AwsWorkspaceHostProviderOptions {
@@ -363,9 +374,9 @@ export function awsWorkspaceHostClientToken(idempotencyKey: string): string {
 
 function stableTags(desired: WorkspaceHostDesiredSpec, workspaceId: string): readonly AwsTag[] {
   const labels = new Map<string, string>(Object.entries(desired.labels ?? {}));
-  labels.set('papercusp:host-id', desired.hostId);
-  labels.set('papercusp:managed', 'true');
-  labels.set('papercusp:workspace-id', workspaceId);
+  labels.set(AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId, desired.hostId);
+  labels.set(AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed, 'true');
+  labels.set(AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId, workspaceId);
   return [...labels.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([Key, Value]) => ({ Key, Value }));
@@ -472,6 +483,11 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     return this.client.estimatePrice(desired, ctx.connection);
   }
 
+  /** The managed-resource inventory the provisioning runner's destroy census probes for. */
+  inventoryManagedResources(request: AwsWorkspaceHostInventoryRequest): Promise<AwsWorkspaceHostInventorySnapshot> {
+    return this.client.listManagedResources(request);
+  }
+
   async plan(request: WorkspaceHostPlanRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPlan> {
     if (request.action !== 'provision' && request.host.target !== AWS_WORKSPACE_HOST_TARGET) {
       throw new Error(`AWS provider cannot plan host target '${request.host.target}'`);
@@ -504,9 +520,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       const volume = requireKnownResource(request.host.resources, AWS_VOLUME_RESOURCE_KIND, request.action);
       const tags: readonly AwsTag[] = [
         { Key: 'Name', Value: request.name ?? `${request.host.hostId}-snapshot` },
-        { Key: 'papercusp:host-id', Value: request.host.hostId },
-        { Key: 'papercusp:managed', Value: 'true' },
-        { Key: 'papercusp:workspace-id', Value: ctx.workspaceId },
+        { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId, Value: request.host.hostId },
+        { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed, Value: 'true' },
+        { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId, Value: ctx.workspaceId },
       ];
       return [
         {
@@ -695,9 +711,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
                 {
                   ResourceType: 'snapshot',
                   Tags: [
-                    { Key: 'papercusp:host-id', Value: request.host.hostId },
-                    { Key: 'papercusp:managed', Value: 'true' },
-                    { Key: 'papercusp:workspace-id', Value: ctx.workspaceId },
+                    { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId, Value: request.host.hostId },
+                    { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed, Value: 'true' },
+                    { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId, Value: ctx.workspaceId },
                   ],
                 },
               ],

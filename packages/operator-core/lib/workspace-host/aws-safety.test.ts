@@ -1,0 +1,253 @@
+/**
+ * aws-byoc-gcp-parity-2026-10-01 P-003: the AWS managed-resource inventory (SDK v3 client) and the
+ * AWS census profile over the shared, provider-neutral census in gcp-safety.ts.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import type { WorkspaceHostProviderConnection, WorkspaceHostResourceRef } from '@papercusp/deployment-driver';
+import {
+  AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS,
+  AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS,
+  censusAwsWorkspaceHostResources,
+  type AwsWorkspaceHostResourceCensusInput,
+} from './aws-safety';
+import { createAwsSdkWorkspaceHostClient, type AwsSdkClientConfig, type AwsSdkClientSet } from './aws-sdk-client';
+import { createAwsWorkspaceHostProvider } from './aws-provider';
+import type { ManagedWorkspaceHostResourceObservation } from './gcp-safety';
+
+vi.mock('@aws-sdk/credential-providers', () => {
+  const credentials = () =>
+    vi.fn(() => async () => ({ accessKeyId: 'test-access-key-id', secretAccessKey: 'test-secret', sessionToken: 'test' }));
+  return {
+    fromNodeProviderChain: credentials(),
+    fromIni: credentials(),
+    fromTemporaryCredentials: credentials(),
+    fromWebToken: credentials(),
+  };
+});
+
+const ACCOUNT = '413781344298';
+const REGION = 'us-east-2';
+const WORKSPACE = 'workspace-aws-census';
+const HOST = 'host-aws-census-1';
+const NOW = '2026-10-01T21:00:00.000Z';
+
+function tags(hostId = HOST, workspaceId = WORKSPACE) {
+  return [
+    { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed, Value: 'true' },
+    { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId, Value: hostId },
+    { Key: AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId, Value: workspaceId },
+  ];
+}
+
+function connection(): WorkspaceHostProviderConnection {
+  return {
+    target: 'aws',
+    cloudCredentialRef: { kind: 'cloud', ref: 'aws-local:papercusp-byoc' },
+    scope: { kind: 'account', id: ACCOUNT },
+    provider: {
+      credentialSource: { environment: 'local', method: 'shared-profile', profile: 'papercusp-byoc' },
+      partition: 'aws',
+      region: REGION,
+    },
+  };
+}
+
+/** A paginated EC2 world: two DescribeInstances pages, a terminated instance and a deleted volume. */
+function fakeAws(callerAccount = ACCOUNT) {
+  const sent: { name: string; region: string; input: Record<string, any> }[] = [];
+  const createClients = (config: AwsSdkClientConfig): AwsSdkClientSet => {
+    const client = (service: string) => ({
+      send: async (command: { input: Record<string, any>; constructor: { name: string } }) => {
+        const name = `${service}:${command.constructor.name}`;
+        sent.push({ name, region: config.region, input: command.input });
+        const meta = { $metadata: { requestId: `req-${sent.length}` } };
+        switch (name) {
+          case 'sts:GetCallerIdentityCommand':
+            return { ...meta, Account: callerAccount, Arn: `arn:aws:sts::${callerAccount}:assumed-role/R/s`, UserId: 'AROA:s' };
+          case 'ec2:DescribeInstancesCommand':
+            return command.input.NextToken === 'page-2'
+              ? { ...meta, Reservations: [{ Instances: [{ InstanceId: 'i-stray', State: { Name: 'stopped' }, Tags: tags('host-other') }] }] }
+              : {
+                  ...meta,
+                  NextToken: 'page-2',
+                  Reservations: [
+                    {
+                      Instances: [
+                        { InstanceId: 'i-live', State: { Name: 'running' }, Placement: { AvailabilityZone: 'us-east-2a' }, Tags: tags() },
+                        { InstanceId: 'i-gone', State: { Name: 'terminated' }, Tags: tags() },
+                      ],
+                    },
+                  ],
+                };
+          case 'ec2:DescribeVolumesCommand':
+            return {
+              ...meta,
+              Volumes: [
+                { VolumeId: 'vol-live', State: 'in-use', AvailabilityZone: 'us-east-2a', Tags: tags() },
+                { VolumeId: 'vol-gone', State: 'deleted', Tags: tags() },
+              ],
+            };
+          case 'ec2:DescribeSnapshotsCommand':
+            return { ...meta, Snapshots: [{ SnapshotId: 'snap-1', State: 'completed', Tags: tags() }] };
+          default:
+            throw new Error(`fake AWS does not implement ${name}`);
+        }
+      },
+    });
+    return {
+      ec2: client('ec2'),
+      ssm: client('ssm'),
+      sts: client('sts'),
+      iam: client('iam'),
+      kms: client('kms'),
+      serviceQuotas: client('servicequotas'),
+      pricing: client('pricing'),
+    } as unknown as AwsSdkClientSet;
+  };
+  const client = createAwsSdkWorkspaceHostClient({ connection: connection(), createClients, now: () => NOW });
+  return { sent, client };
+}
+
+function ref(kind: string, providerId: string): WorkspaceHostResourceRef {
+  return { target: 'aws', kind, providerId, parentProviderId: ACCOUNT, region: REGION };
+}
+
+function observation(kind: string, providerId: string, hostId = HOST, workspaceId = WORKSPACE): ManagedWorkspaceHostResourceObservation {
+  return {
+    resource: ref(kind, providerId),
+    labels: Object.fromEntries(tags(hostId, workspaceId).map((tag) => [tag.Key, tag.Value])),
+    observedAt: NOW,
+  };
+}
+
+function evidence() {
+  return AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.map((kind) => ({
+    kind,
+    strategy: 'managed-labels' as const,
+    providerEvidenceRef: `aws://ec2/${ACCOUNT}/${REGION}/${kind}`,
+  }));
+}
+
+function censusInput(overrides: Partial<AwsWorkspaceHostResourceCensusInput> = {}): AwsWorkspaceHostResourceCensusInput {
+  return {
+    hostId: HOST,
+    workspaceId: WORKSPACE,
+    expected: [ref('vm', 'i-live'), ref('disk', 'vol-live')],
+    observed: [observation('vm', 'i-live'), observation('disk', 'vol-live')],
+    inventoryEvidence: evidence(),
+    evaluatedAt: NOW,
+    orphanGraceMs: 60_000,
+    ...overrides,
+  };
+}
+
+describe('AWS managed-resource inventory (SDK v3 client)', () => {
+  it('paginates instances, volumes and self-owned snapshots by the workspace managed tags', async () => {
+    const { sent, client } = fakeAws();
+    const inventory = await client.listManagedResources({ projectId: ACCOUNT, region: REGION, workspaceId: WORKSPACE });
+
+    expect(inventory.complete).toBe(true);
+    expect(inventory.observed.map((entry) => `${entry.resource.kind}:${entry.resource.providerId}`)).toEqual([
+      'vm:i-live',
+      'vm:i-stray',
+      'disk:vol-live',
+      'snapshot:snap-1',
+    ]);
+    expect(inventory.observed[0]).toMatchObject({
+      resource: { target: 'aws', parentProviderId: ACCOUNT, region: REGION, zone: 'us-east-2a' },
+      labels: { [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId]: HOST },
+      observedAt: NOW,
+    });
+    expect(inventory.inventoryEvidence.map((entry) => entry.kind)).toEqual(['vm', 'disk', 'snapshot']);
+
+    const describes = sent.filter((entry) => entry.name.startsWith('ec2:Describe'));
+    expect(describes.every((entry) => entry.region === REGION)).toBe(true);
+    expect(describes.filter((entry) => entry.name === 'ec2:DescribeInstancesCommand').map((entry) => entry.input.NextToken)).toEqual([
+      undefined,
+      'page-2',
+    ]);
+    for (const entry of describes) {
+      expect(entry.input.Filters).toEqual([
+        { Name: 'tag:papercusp:managed', Values: ['true'] },
+        { Name: `tag:papercusp:workspace-id`, Values: [WORKSPACE] },
+      ]);
+    }
+    expect(describes.find((entry) => entry.name === 'ec2:DescribeSnapshotsCommand')!.input.OwnerIds).toEqual(['self']);
+  });
+
+  it('refuses to claim an inventory for an account the credentials do not resolve to', async () => {
+    const { client } = fakeAws('999999999999');
+    await expect(
+      client.listManagedResources({ projectId: ACCOUNT, region: REGION, workspaceId: WORKSPACE }),
+    ).rejects.toThrow('aws_workspace_host_account_mismatch');
+  });
+
+  it('refuses an account other than the one the connection is bound to, and an empty workspace', async () => {
+    const { client } = fakeAws();
+    await expect(
+      client.listManagedResources({ projectId: '111122223333', region: REGION, workspaceId: WORKSPACE }),
+    ).rejects.toThrow('aws_workspace_host_inventory_account_mismatch');
+    await expect(client.listManagedResources({ projectId: ACCOUNT, region: REGION, workspaceId: ' ' })).rejects.toThrow(
+      'aws_workspace_host_inventory_workspace_id_required',
+    );
+  });
+
+  it('is what AwsWorkspaceHostProvider.inventoryManagedResources returns, and feeds a census that finds the stray', async () => {
+    const { client } = fakeAws();
+    const provider = createAwsWorkspaceHostProvider({ client, now: () => NOW });
+    const inventory = await provider.inventoryManagedResources({ projectId: ACCOUNT, region: REGION, workspaceId: WORKSPACE });
+    const census = censusAwsWorkspaceHostResources(
+      censusInput({ observed: inventory.observed, inventoryEvidence: inventory.inventoryEvidence, retained: [ref('snapshot', 'snap-1')] }),
+    );
+    expect(census.untracked).toEqual([]);
+    expect(census.missing).toEqual([]);
+    expect(census.managed.map((entry) => entry.resource.providerId)).toEqual(['i-live', 'vol-live', 'snap-1']);
+    // Without registeredHostResources this is the STRICT workspace-wide census: i-stray carries
+    // another host's tag in the same workspace, so it is surfaced rather than silently ignored.
+    expect(census.labelMismatches.map((entry) => entry.resource.providerId)).toEqual(['i-stray']);
+    expect(census.clean).toBe(false);
+  });
+});
+
+describe('censusAwsWorkspaceHostResources', () => {
+  it('is clean when every expected resource is observed with this host and workspace tags', () => {
+    const census = censusAwsWorkspaceHostResources(censusInput());
+    expect(census.clean).toBe(true);
+    expect(census.inventoryEvidence.map((entry) => entry.kind)).toEqual(['vm', 'disk', 'snapshot']);
+  });
+
+  it('plans an untracked managed volume for confirm-and-delete with a data-disposition precondition', () => {
+    const census = censusAwsWorkspaceHostResources(
+      censusInput({ observed: [observation('vm', 'i-live'), observation('disk', 'vol-live'), observation('disk', 'vol-orphan')] }),
+    );
+    expect(census.clean).toBe(false);
+    expect(census.untracked.map((entry) => entry.resource.providerId)).toEqual(['vol-orphan']);
+    expect(census.reaperPlan[0]).toMatchObject({
+      action: 'confirm-and-delete',
+      state: 'quarantine',
+      requiredLabels: {
+        'papercusp:managed': 'true',
+        'papercusp:host-id': HOST,
+        'papercusp:workspace-id': WORKSPACE,
+      },
+    });
+    expect(census.reaperPlan[0]!.preconditions).toContain('durable-data-disposition');
+  });
+
+  it('reports an expected resource that is gone, and one whose host tag was changed', () => {
+    const census = censusAwsWorkspaceHostResources(
+      censusInput({ observed: [observation('vm', 'i-live', 'host-renamed')] }),
+    );
+    expect(census.missing.map((entry) => entry.providerId)).toEqual(['i-live', 'vol-live']);
+    expect(census.labelMismatches.map((entry) => entry.resource.providerId)).toEqual(['i-live']);
+  });
+
+  it('refuses an incomplete inventory and a resource from another cloud', () => {
+    expect(() => censusAwsWorkspaceHostResources(censusInput({ inventoryEvidence: evidence().slice(0, 2) }))).toThrow(
+      'AWS workspace-host census inventory incomplete: snapshot',
+    );
+    expect(() =>
+      censusAwsWorkspaceHostResources(censusInput({ expected: [{ ...ref('vm', 'i-live'), target: 'gcp' }] })),
+    ).toThrow("census expected[0] must target 'aws'");
+  });
+});

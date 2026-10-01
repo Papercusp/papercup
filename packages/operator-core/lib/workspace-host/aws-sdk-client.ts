@@ -66,6 +66,12 @@ import {
 import { DescribeInstanceInformationCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
+  awsWorkspaceHostManagedFilters,
+  type AwsWorkspaceHostInventoryRequest,
+  type AwsWorkspaceHostInventorySnapshot,
+} from './aws-safety';
+import type { ManagedWorkspaceHostResourceObservation } from './gcp-safety';
+import {
   fromIni,
   fromNodeProviderChain,
   fromTemporaryCredentials,
@@ -1219,6 +1225,91 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       .map((snapshot) => this.snapshotObservation(snapshot))
       .filter((o): o is AwsSnapshotObservation => Boolean(o));
     return observations.find((o) => o.state !== 'error') ?? observations[0];
+  }
+
+  /**
+   * Controller-independent inventory (aws-byoc-gcp-parity-2026-10-01 P-003): every EC2 instance,
+   * EBS volume and self-owned EBS snapshot in the region carrying this workspace's managed tags,
+   * fully paginated. It verifies the credentials resolve to the account it names, because a census
+   * that reads "clean" is only meaningful about the account it actually enumerated. Terminated
+   * instances and deleted volumes are absent (they no longer bill and cannot be deleted again).
+   */
+  async listManagedResources(request: AwsWorkspaceHostInventoryRequest): Promise<AwsWorkspaceHostInventorySnapshot> {
+    const accountId = request.projectId?.trim() ?? '';
+    const region = request.region?.trim() ?? '';
+    const workspaceId = request.workspaceId?.trim() ?? '';
+    if (!accountId) throw new Error('aws_workspace_host_inventory_account_id_required');
+    if (!region) throw new Error('aws_workspace_host_inventory_region_required');
+    if (!workspaceId) throw new Error('aws_workspace_host_inventory_workspace_id_required');
+    if (this.bound.accountId && accountId !== this.bound.accountId) {
+      throw new Error(
+        `aws_workspace_host_inventory_account_mismatch: client is bound to '${this.bound.accountId}', inventory names '${accountId}'`,
+      );
+    }
+    const identity = await this.callerIdentity();
+    if (identity.accountId !== accountId) {
+      throw new Error(
+        `aws_workspace_host_account_mismatch: credentials resolve to account '${identity.accountId}', inventory names '${accountId}'`,
+      );
+    }
+    const ec2 = this.clients(region).ec2;
+    const Filters = awsWorkspaceHostManagedFilters(workspaceId);
+    const readPages = async <T extends { NextToken?: string }>(
+      operation: string,
+      send: (NextToken: string | undefined) => Promise<T>,
+    ): Promise<T[]> => {
+      const pages: T[] = [];
+      const seen = new Set<string>();
+      let token: string | undefined;
+      for (;;) {
+        const page = await this.call(operation, () => send(token));
+        pages.push(page);
+        if (!page.NextToken) return pages;
+        if (seen.has(page.NextToken)) throw new Error(`aws_workspace_host_inventory_pagination_cycle: ${operation}`);
+        seen.add(page.NextToken);
+        token = page.NextToken;
+      }
+    };
+    const [instancePages, volumePages, snapshotPages] = await Promise.all([
+      readPages('describe-instances', (NextToken) => ec2.send(new DescribeInstancesCommand({ Filters, NextToken }))),
+      readPages('describe-volumes', (NextToken) => ec2.send(new DescribeVolumesCommand({ Filters, NextToken }))),
+      readPages('describe-snapshots', (NextToken) =>
+        ec2.send(new DescribeSnapshotsCommand({ OwnerIds: ['self'], Filters, NextToken })),
+      ),
+    ]);
+    const observedAt = this.now();
+    const tagMap = (tags: readonly { Key?: string; Value?: string }[] | undefined): Record<string, string> =>
+      Object.fromEntries((tags ?? []).filter((tag) => tag.Key).map((tag) => [tag.Key!, tag.Value ?? '']));
+    const observed: ManagedWorkspaceHostResourceObservation[] = [];
+    const add = (kind: 'vm' | 'disk' | 'snapshot', providerId: string, zone: string | undefined, tags: Record<string, string>) =>
+      observed.push({
+        resource: { target: 'aws', kind, providerId, parentProviderId: accountId, region, ...(zone ? { zone } : {}) },
+        labels: tags,
+        observedAt,
+      });
+    for (const instance of instancePages.flatMap((page) => (page.Reservations ?? []).flatMap((r) => r.Instances ?? []))) {
+      if (!instance.InstanceId || instance.State?.Name === 'terminated') continue;
+      add('vm', instance.InstanceId, instance.Placement?.AvailabilityZone, tagMap(instance.Tags));
+    }
+    for (const volume of volumePages.flatMap((page) => page.Volumes ?? [])) {
+      if (!volume.VolumeId || volume.State === 'deleted') continue;
+      add('disk', volume.VolumeId, volume.AvailabilityZone, tagMap(volume.Tags));
+    }
+    for (const snapshot of snapshotPages.flatMap((page) => page.Snapshots ?? [])) {
+      if (!snapshot.SnapshotId) continue;
+      add('snapshot', snapshot.SnapshotId, undefined, tagMap(snapshot.Tags));
+    }
+    const filterRef = Filters.map((filter) => `${filter.Name}=${filter.Values.join(',')}`).join('&');
+    const evidenceRef = (operation: string) => `aws://ec2/${accountId}/${region}/${operation}?${filterRef}`;
+    return {
+      complete: true,
+      observed,
+      inventoryEvidence: [
+        { kind: 'vm', strategy: 'managed-labels', providerEvidenceRef: evidenceRef('describe-instances') },
+        { kind: 'disk', strategy: 'managed-labels', providerEvidenceRef: evidenceRef('describe-volumes') },
+        { kind: 'snapshot', strategy: 'managed-labels', providerEvidenceRef: evidenceRef('describe-snapshots') },
+      ],
+    };
   }
 
   async waitForSnapshotCompleted(snapshotId: string, signal?: AbortSignal): Promise<AwsSnapshotObservation> {
