@@ -50,6 +50,14 @@ vi.mock('./harness-core', async () => {
   const actual = await vi.importActual<typeof import('./harness-core')>('./harness-core');
   return { ...actual, resolveProject: async (slug: string) => ({ slug, path: `/tmp/${slug}` }) };
 });
+// WI-10004742 / EI-24400810686776632: the terminal-effect gate reads the operation-worker receipt
+// from adv_sessions + session_briefs, which this fixture never builds, so every write was refused
+// ('blueprint operation effect refused'). The subject is settled-item evidence, not operation
+// claims: stub the read to "no operation worker".
+vi.mock('./blueprint/operation-worker-binding', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) };
+});
 
 const wi = await import('./work-items');
 

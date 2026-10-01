@@ -101,6 +101,13 @@ vi.mock('../agent-tools/plans/source', () => ({
     };
   },
 }));
+// WI-10004742 / EI-24400810686776632: terminal transitions read the operation-worker receipt from
+// adv_sessions + session_briefs, which this fixture never builds, so they were refused closed.
+// The subject is convert-at-pickup, not operation claims: stub the read to "no operation worker".
+vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) };
+});
 
 const convert = await import('./convert');
 const asg = await import('./assignments');
