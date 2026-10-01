@@ -689,6 +689,18 @@ async function routineFireImpl(
         const { sql } = getOrgPg();
         try {
           actionResult = (await entry.fn(systemActionCtx)) ?? undefined;
+          if (actionResult?.replayAbandoned) {
+            // WI-10004472: this recovery replay could not reproduce the step sequence
+            // the original execution recorded. ANY further DBOS operation (the settle
+            // step below, clear-reaper-last-error, a durable spawn) would land on a
+            // function id recorded under a different name and fail the workflow with
+            // DBOSUnexpectedStepError. End the fire here; the next tick redoes it.
+            console.warn(
+              `[routines] system:${action} (routine ${routineId}) recovery replay ABANDONED ` +
+                `(${actionResult.replayAbandoned.reason}) — ending the fire without further steps`,
+            );
+            return;
+          }
           await DBOS.runStep(
             async () => {
               await sql`
