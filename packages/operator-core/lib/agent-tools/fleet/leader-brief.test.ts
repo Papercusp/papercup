@@ -3996,6 +3996,30 @@ describe('P-004 / R-4 — stalled-item rotation names the held ITEM that has not
     expect(projectMember(busyMember([wiClaim()]), NOW, 2, null, true).stalledItem).toBeUndefined();
   });
 
+  // WI-10005110: R-4's third exclusion, measured at the projection the brief actually
+  // renders (projectMember), not only at computeStalledItemRotation. The same member is
+  // named without the in-flight test (control) and is NOT named while one runs; a non-test
+  // long call (a status read) still names it, so the exemption cannot widen silently.
+  it('AUTO-BAR-R-4-P-004: a member past the stall threshold with ready items waiting is not named while an instrumented long test is in flight (control: named without it)', () => {
+    const member = busyMember([wiClaim()]);
+    const control = projectMember(member, NOW, 2, null, false);
+    expect(control.stalledItem?.item).toBe('WI-77');
+    expect(control.stalledItem?.readyWaiting).toBe(2);
+    expect(control.stalledItem?.noAdvanceMin).toBeGreaterThanOrEqual(STALLED_ITEM_ROTATION_THRESHOLD_MS / 60_000);
+
+    for (const tool of ['testing:run', 'capability:bash', 'build:typecheck', 'release:checkpoint-run']) {
+      const inFlight = { tool, ageSec: 1200 };
+      const m = projectMember(member, NOW, 2, null, false, null, null, inFlight);
+      expect(m.stalledItem).toBeUndefined();
+      expect(m.benchSuggestion).toBeUndefined();
+      expect(m.dormant).toBeUndefined();
+      expect(m.longCallInFlight).toEqual(inFlight);
+    }
+
+    const statusRead = projectMember(member, NOW, 2, null, false, null, null, { tool: 'work_items:get', ageSec: 1200 });
+    expect(statusRead.stalledItem?.item).toBe('WI-77');
+  });
+
   it('exempts an INSTRUMENTED LONG TEST in flight', () => {
     for (const tool of ['testing:run', 'capability:bash', 'build:typecheck', 'release:checkpoint-run']) {
       expect(isInstrumentedLongTestTool(tool)).toBe(true);

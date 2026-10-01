@@ -1712,11 +1712,9 @@ const repairInput = (planSlug = HOLD_PLAN): AcceptanceRepairTaskInput => ({
 });
 
 describe('AUTO-BAR-R-3-P-002 — an item bound to an incomplete acceptance contract is held and routed', () => {
-  it.each([
-    ['a draft (not accepted) clause', 'draft', 'bar_snapshot_clause_not_accepted'],
-    ['a clause with no METHOD', 'active', 'bar_snapshot_method_missing'],
-    ['a clause with no runnable check', 'active', 'bar_snapshot_check_missing'],
-  ])('holds a work-item bound to %s', async (_label, lifecycle, code) => {
+  // One case per disjunct of the R-3 falsifier ("a draft, unaccepted or method-less
+  // acceptance requirement"), plus the missing-check code the hold also covers.
+  async function expectHeldAndRouted(lifecycle: string | undefined, code: string) {
     const { deps, filed, edges } = holdDeps(holdSnapshot(holdBar('R-1', [['P-001', lifecycle]], [code])));
     const hold = await acceptanceReadinessHold(holdItem('WI-held', ['P-001']), holdCtx, deps);
 
@@ -1732,6 +1730,24 @@ describe('AUTO-BAR-R-3-P-002 — an item bound to an incomplete acceptance contr
     expect(await hold!.routeAfterRelease()).toBe('held behind repair task EI-REPAIR-1 (filed now)');
     expect(filed[0]).toMatchObject({ planSlug: HOLD_PLAN, heldBars: [{ barKey: 'R-1', codes: [code] }] });
     expect(edges).toEqual(['EI-REPAIR-1->WI-held']);
+  }
+
+  it('draft: holds a work-item bound to a draft clause', async () => {
+    await expectHeldAndRouted('draft', 'bar_snapshot_clause_not_accepted');
+  });
+
+  // The hold trusts the snapshot's acceptance verdict, not the lifecycle label: a mapping
+  // with no recorded lifecycle (an older snapshot) still binds, and is held when unaccepted.
+  it('unaccepted: holds a work-item whose clause the snapshot reports not accepted, with no lifecycle label', async () => {
+    await expectHeldAndRouted(undefined, 'bar_snapshot_clause_not_accepted');
+  });
+
+  it('method-less: holds a work-item bound to an accepted clause with no METHOD', async () => {
+    await expectHeldAndRouted('active', 'bar_snapshot_method_missing');
+  });
+
+  it('check-less: holds a work-item bound to an accepted clause with no runnable check', async () => {
+    await expectHeldAndRouted('active', 'bar_snapshot_check_missing');
   });
 
   it('only the three contract codes hold; proof and grading gaps do not', () => {

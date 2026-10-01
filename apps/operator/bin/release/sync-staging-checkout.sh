@@ -707,9 +707,10 @@ if ! flock -n 9; then
   exit 0
 fi
 
-forward_compat_review_warnings
-
 [ -d "$INTEGRATION_ROOT/.git" ] || { log "FATAL: integration root not a git repo: $INTEGRATION_ROOT"; exit 1; }
+staging_alias_bootstrap || { log "FATAL: could not bootstrap the stable staging alias"; exit 1; }
+
+forward_compat_review_warnings
 
 # Fail BEFORE even the no-op/advance decision: a drifted launch command must be visible on the
 # next timer tick, and it must never reach a restart that replaces a healthy old process with a
@@ -782,45 +783,53 @@ if [ "$restart_required" = 1 ] && [ -z "$PTOOL_BIN" ]; then
   exit 1
 fi
 
+SYNC_ROOT="$(realpath -e "$STAGING_ROOT" 2>/dev/null || printf '%s' "$STAGING_ROOT")"
 if [ "$checkout_needs_advance" = 1 ]; then
-  log "advancing staging checkout ${current:0:8} → ${target:0:8} (${changed_count} changed path(s), restart_required=${restart_required})"
-  PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_ROOT" \
-    bash "$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh" \
-      "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
-      --ref "$BRANCH" --release "$STAGING_ROOT" --node-modules auto --build-spa
+  log "preparing isolated staging candidate for ${target:0:10}"
+  prepare_staging_candidate "$target"
+  SYNC_ROOT="$STAGING_CANDIDATE_ROOT"
 else
   log "isolated checkout already at ${target:0:10}; repairing only the stale running generation"
 fi
 
-# WI-5710 — SPA-only advance: the dist is now refreshed on disk and host-spa.ts
-# serves it per request, so :3170 is ALREADY current. Restarting here would be
-# a ~10-13s outage for zero freshness gain.
+if [ "$restart_required" = 1 ]; then
+  preflight_staging_migrations "$SYNC_ROOT"
+  bundle_script="$STAGING_BUNDLE_SCRIPT"
+  if [[ -n "$STAGING_CANDIDATE_ROOT" ]]; then
+    bundle_script="$STAGING_CANDIDATE_ROOT/apps/operator/bin/bundle-host.sh"
+  fi
+  if [[ ! -f "$bundle_script" ]]; then
+    log "FATAL: staging bundle script not found at $bundle_script"
+    exit 1
+  fi
+  log "prebuilding proof-bound host bundle before publishing or stopping $UNIT"
+  PAPERCUSP_INTEGRATION_ROOT="$SYNC_ROOT" PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$bundle_script"
+  prepare_staging_schema "$SYNC_ROOT"
+fi
+
+if [ "$checkout_needs_advance" = 1 ]; then
+  mark_staging_candidate_ready "$target"
+  require_host_bundle=0
+  if [ "$restart_required" = 1 ]; then
+    require_host_bundle=1
+  fi
+  publish_staging_generation "$STAGING_CANDIDATE_ROOT" "$STAGING_CANDIDATE_HOME" "$target" "$require_host_bundle"
+  if [ "$restart_required" = 0 ]; then
+    prune_staging_generations
+  fi
+fi
+
+# WI-5710 — SPA-only advance: the stable alias now points at the complete
+# candidate dist and host-spa.ts follows that alias per request. Restarting
+# would add a ~10-13s outage for zero server-code freshness gain.
 if [ "$restart_required" = 0 ]; then
-  log "✅ skipping restart — all ${changed_count} changed path(s) are restart-exempt (SPA/docs/tests); the rebuilt SPA is already live on :$STAGING_PORT at ${target:0:8}"
+  log "✅ skipping restart — all ${changed_count} changed path(s) are restart-exempt (SPA/docs/tests); the published SPA is live on :$STAGING_PORT at ${target:0:8}"
   exit 0
 fi
 
-# The checkout and its submodules are complete. Downgrade the single-flight
-# lock to shared before any host bundle read: :3170's ExecStartPre takes a
-# shared lock on this same file, so a peer restart cannot bundle a half-cloned
-# submodule while setup-release-checkout holds the exclusive lock. Keep our
-# shared lock through prebuild/restart so another sync still cannot mutate it.
+# The candidate is complete and published. Downgrade the single-flight lock
+# before systemd ExecStartPre takes the shared lock to verify/reuse the bundle.
 flock -s 9
-
-preflight_staging_migrations
-
-# Build the expensive host graph while the old process is still serving.
-# The staging-only freshness proof lets systemd's later ExecStartPre verify
-# and reuse these exact bytes in milliseconds; any source/output drift falls
-# back to the ordinary full rebuild before start.
-if [[ ! -f "$STAGING_BUNDLE_SCRIPT" ]]; then
-  log "FATAL: staging bundle script not found at $STAGING_BUNDLE_SCRIPT"
-  exit 1
-fi
-log "prebuilding proof-bound host bundle before stopping $UNIT"
-PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$STAGING_BUNDLE_SCRIPT"
-
-prepare_staging_schema
 
 # EI-13221: skip a REDUNDANT restart when $UNIT's current MainPID already came
 # up within the last RECENT_RESTART_GRACE_SEC — most likely a peer's `dev:restart`

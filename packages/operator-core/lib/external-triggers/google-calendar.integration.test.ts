@@ -68,13 +68,19 @@ describe('Google Calendar adapter with the real delivery ledger and Personal Vau
       start: { dateTime: '2026-08-22T12:10:00.000Z' },
       end: { dateTime: '2026-08-22T12:40:00.000Z' },
     };
+    // The adapter reads responses through Gaxios, which parses a body as JSON
+    // only when it is labelled application/json (as real Google responses are).
+    // A bare `new Response(string)` is text/plain, so Gaxios hands back the raw
+    // string and every field read (nextSyncToken included) is undefined.
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
     let call = 0;
     const fetchImpl = vi.fn(async () => {
       call += 1;
-      if (call === 1) return new Response(JSON.stringify({ items: [event], nextSyncToken: 'sync-1' }));
-      if (call === 2) return new Response(JSON.stringify({ items: [event] }));
-      if (call === 3) return new Response(JSON.stringify({ items: [], nextSyncToken: 'sync-2' }));
-      return new Response(JSON.stringify({ items: [event] }));
+      if (call === 1) return json({ items: [event], nextSyncToken: 'sync-1' });
+      if (call === 2) return json({ items: [event] });
+      if (call === 3) return json({ items: [], nextSyncToken: 'sync-2' });
+      return json({ items: [event] });
     }) as unknown as typeof fetch;
     const emit = vi.fn(async (opts: { key: string }) => ({
       ok: true as const,

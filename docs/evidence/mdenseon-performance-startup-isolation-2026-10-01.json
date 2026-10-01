@@ -258,6 +258,17 @@
     "freshProcessBlocks": 5,
     "preflight": "Every selected input and all three arms' model/runtime artifacts were streamed and checked before launch. Parent admission, async retention, explicit child loader and their canonical guards are verified. The audit names each previous failure class and its guard.",
     "sourceCommit": "0ce3904e0d4f04f4d383e39d146d1321e73bd95f",
+    "firstCompletedBlock": {
+      "block": 0,
+      "verifiedHow": "Each completed receipt binds the v5 manifest, owner and cell. Retained JSONL rows equal report.samples after joining by sequence. Each cell has 412 sends, requests and responses, zero client/server errors, 12 grid groups and verified CPU execution.",
+      "cells": [
+        { "id": "performance-b0-harrier", "samples": 412, "rawSha256": "afece85fe8022217bd5b39cb2a890d52c95043d7d6fd6d31d16f8c8479fbfe8d" },
+        { "id": "performance-b0-mdenseon", "samples": 412, "rawSha256": "89096869ec39d7d100c9edaa6802078a8fb3cd32a2da3d86c569a681229404f8" },
+        { "id": "performance-b0-gemma", "samples": 412, "rawSha256": "23960dd93fd660d936bd22c2b943c91cf3db1764acbaec57eac22707b83ea4b8" }
+      ],
+      "rawDirectory": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v5",
+      "fullComparisonComplete": false
+    },
     "fixedThresholdsChanged": false,
     "modelAdoptionAuthorized": false
   },

@@ -417,9 +417,9 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     }
     const receipt = await deps.bind({ ...row.input, testRunId: run?.id ?? null, details });
     let bindingStatus: string = receipt.status;
-    if (phase === 'settled') {
+    if (succeeded(receipt.status) && (phase === 'settled' || phase === 'source-changed')) {
       const retirement = await retirePendingAttemptBindings(row, originRunId, runId, scope,
-        `Settled test evidence for ${row.input.evidenceRef} supersedes older pending rows from this run attempt.`, deps);
+        `Terminal test evidence for ${row.input.evidenceRef} supersedes older pending rows from this run attempt.`, deps);
       collectRetirement(retirement);
       if (retirement.failures.length > 0) bindingStatus = 'retirement-incomplete';
     }

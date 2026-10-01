@@ -592,9 +592,11 @@ describe('test-time evidence continuity', () => {
       root: scope.root, harnessSlug: scope.harnessSlug, workspaceId: scope.workspaceId,
       runGroupId: detached, rows, testNamePattern, commit: 'tested-sha', worktreeDirty: false,
       sql: async (strings, ...values) => {
-        expect(strings.join(' ')).toContain('execution_details');
-        executionDetails = JSON.parse(String(values.at(-1)));
-        return [{ id: 42 }];
+       expect(strings.join(' ')).toContain('execution_details');
+        const detailsParameter = values.at(-1);
+        expect(detailsParameter).toBeTypeOf('object');
+        executionDetails = detailsParameter;
+       return [{ id: 42 }];
       },
     });
     const { bundle } = await pendingRecovery(executionDetails);
@@ -623,6 +625,15 @@ describe('test-time evidence continuity', () => {
     const { bundle } = await pendingRecovery(measured, 'pass', true);
     expect(bundle.rows[0].phase).toBe('source-changed');
     expect(bundle.verificationFingerprint).toBeNull();
+  });
+  it('retires pending predecessors after a source-changed failed recovery without proving currentness', async () => {
+    const failed = { ...measured, passed: 0, failed: 1 };
+    const { d, bundle } = await pendingRecovery(failed, 'fail', true);
+
+    expect(bundle.rows[0]).toMatchObject({ phase: 'source-changed', outcome: 'fail', testRunId: 42 });
+    expect(bundle.verificationFingerprint).toBeNull();
+    expect(bundle.pendingRetirement).toMatchObject({ status: 'complete', retiredCount: 1, bindingIds: [2] });
+    expect(d.retract.mock.calls.map(([options]) => options.bindingId)).toEqual([2]);
   });
 });
 

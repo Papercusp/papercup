@@ -5,6 +5,8 @@ import { runWithWorkspace } from '../../workspace-als';
 import { captureToolInvocationFriction, type ToolInvocationFriction } from './capture-core';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
+const PENDING_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PENDING_RECOVERY_BATCH_SIZE = 100;
 export interface InvocationFrictionRef { id: string; workspaceId: string }
 interface InvocationRow {
   id: string;
@@ -73,12 +75,35 @@ export async function captureInvocationFriction(
 export async function recoverInvocationFriction(
   workspaceId: string,
   deps: { sql?: Sql; capture?: typeof captureToolInvocationFriction } = {},
-): Promise<{ delivered: number; pending: number }> {
+): Promise<{ delivered: number; pending: number; expired: number }> {
   const sql = deps.sql ?? getOrgPg().sql;
+  // Match the repeated-tool-error collector's 24-hour evidence horizon: once a pending
+  // failure is older than that, replaying it can resurrect a signature after reviewers
+  // already dropped its stale report. Expire in bounded batches so old rows cannot starve
+  // recent recovery work.
+  const staleBefore = new Date(Date.now() - PENDING_RECOVERY_MAX_AGE_MS).toISOString();
+  const expiredRows = await sql.unsafe<{ id: string }[]>(`
+    WITH stale AS (
+      SELECT id FROM harness_shared.tool_invocations
+       WHERE workspace_id = $1 AND metadata_json->>'frictionCapture' = 'pending'
+         AND invoked_at < $2::timestamptz
+       ORDER BY invoked_at, id LIMIT ${PENDING_RECOVERY_BATCH_SIZE}
+       FOR UPDATE SKIP LOCKED
+    )
+    UPDATE harness_shared.tool_invocations AS invocation
+       SET metadata_json = COALESCE(invocation.metadata_json, '{}'::jsonb) ||
+         jsonb_build_object('frictionCapture', 'expired', 'frictionExpiredAt', now(),
+           'frictionExpiredReason', 'older-than-24-hours')
+      FROM stale
+     WHERE invocation.workspace_id = $1 AND invocation.id = stale.id
+       AND invocation.metadata_json->>'frictionCapture' = 'pending'
+    RETURNING invocation.id::text AS id`, [workspaceId, staleBefore]);
   const refs = await sql.unsafe<{ id: string }[]>(`
     SELECT id::text FROM harness_shared.tool_invocations
      WHERE workspace_id = $1 AND metadata_json->>'frictionCapture' = 'pending'
-     ORDER BY COALESCE(metadata_json->>'frictionAttemptAt', ''), invoked_at, id LIMIT 100`, [workspaceId]);
+        AND invoked_at >= $2::timestamptz
+      ORDER BY COALESCE(metadata_json->>'frictionAttemptAt', ''), invoked_at, id
+      LIMIT ${PENDING_RECOVERY_BATCH_SIZE}`, [workspaceId, staleBefore]);
   let delivered = 0;
   let failed = 0;
   for (const ref of refs) {
@@ -94,6 +119,6 @@ export async function recoverInvocationFriction(
           AND metadata_json->>'frictionCapture' = 'pending'`, [workspaceId, ref.id, new Date().toISOString()]);
     }
   }
-  if (failed) throw new Error(`Invocation friction recovery: ${failed} failed, ${delivered} delivered; failed rows remain pending`);
-  return { delivered, pending: refs.length - delivered };
+  if (failed) throw new Error(`Invocation friction recovery: ${failed} failed, ${delivered} delivered, ${expiredRows.length} expired; failed rows remain pending`);
+  return { delivered, pending: refs.length - delivered, expired: expiredRows.length };
 }

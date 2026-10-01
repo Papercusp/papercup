@@ -169,6 +169,8 @@ const MAX_TIMEOUT_MS = 900_000;
 // The foreground transport yields below 55s, but measured integration work took 227s
 // before an adjacent unit group and startup. Give detached recovery the full bounded window.
 const DETACHED_RECOVERY_TIMEOUT_MS = MAX_TIMEOUT_MS;
+const DETACHED_RECOVERY_ROUTER_HEADROOM_MS = 30_000;
+const DETACHED_RECOVERY_ROUTER_MAX_TIMEOUT_MS = 120 * 60_000;
 const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-runs-reporter.ts';
 const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
 
@@ -270,7 +272,17 @@ function detachedRunUndurableHint(runId: string): string {
 }
 
 function detachedRecoveryRuntimeMaxSec(timeoutMs?: number): number {
-  return Math.max(1, Math.ceil(Math.max(timeoutMs ?? 0, DETACHED_RECOVERY_TIMEOUT_MS) / 1_000));
+  return Math.max(
+    1,
+    Math.ceil((detachedRecoveryRouterTimeoutMs(timeoutMs) + DETACHED_RECOVERY_ROUTER_HEADROOM_MS) / 1_000),
+  );
+}
+
+function detachedRecoveryRouterTimeoutMs(timeoutMs?: number): number {
+  return Math.min(
+    DETACHED_RECOVERY_ROUTER_MAX_TIMEOUT_MS,
+    Math.max(timeoutMs ?? 0, DETACHED_RECOVERY_TIMEOUT_MS),
+  );
 }
 
 /**
@@ -356,6 +368,7 @@ export function buildDetachedTestRunRequest(opts: {
     ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
   ];
   const env: NodeJS.ProcessEnv = {
+    PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
   };
@@ -483,6 +496,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
   ].join('\n');
   const root = opts.groups[0]?.root ?? resolveAgentWorkspaceRoot({});
   const env: NodeJS.ProcessEnv = {
+    PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
   };
@@ -2907,6 +2921,8 @@ export async function runTestFilesCore(opts: {
   files: string[];
   root: string;
   timeoutMs?: number;
+  /** Original caller budget before the foreground transport clamp, for detached recovery. */
+  recoveryTimeoutMs?: number;
   maxFailures?: number;
   testNamePattern?: string;
   signal?: AbortSignal;
@@ -2929,6 +2945,7 @@ export async function runTestFilesCore(opts: {
   const requestedPaths = normalizeTestFilePaths(opts.files, opts.root);
   const runId = opts.runId ?? randomUUID();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const recoveryTimeoutMs = opts.recoveryTimeoutMs ?? timeoutMs;
 
   if (requestedPaths.ok) {
     const groups = groupTestFilesByCheckout(requestedPaths.files, opts.root);
@@ -2958,7 +2975,7 @@ export async function runTestFilesCore(opts: {
             ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
             ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
             ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
-            timeoutMs,
+            timeoutMs: recoveryTimeoutMs,
           }),
         );
         return {
@@ -3204,7 +3221,7 @@ export async function runTestFilesCore(opts: {
                 ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
                 ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
                 ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
-                timeoutMs,
+                timeoutMs: recoveryTimeoutMs,
               }),
             )
           : undefined;
@@ -3658,6 +3675,7 @@ export default defineTool({
       runId,
       root: rootSelection.root,
       timeoutMs,
+      recoveryTimeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
       signal: ctx.signal,
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
       ...(harnessSlug ? { harnessSlug } : {}),

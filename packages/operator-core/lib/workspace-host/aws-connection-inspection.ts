@@ -101,8 +101,10 @@ function stringField(provider: Record<string, unknown>, key: string): string {
 /** Rebuild the preflight selection from a persisted AWS connection (see `buildAwsWorkspaceHostProviderConnection`). */
 export function awsSelectionFromConnection(connection: WorkspaceHostProviderConnection): AwsWorkspaceHostSelection {
   const provider = (connection.provider ?? {}) as Record<string, unknown>;
+  const accountId = connection.scope?.id;
+  if (!accountId) throw new Error('aws_workspace_host_connection_field_missing:accountId');
   return {
-    accountId: connection.scope.id,
+    accountId,
     partition: stringField(provider, 'partition') as AwsPartition,
     region: stringField(provider, 'region'),
     subnetId: stringField(provider, 'subnetId'),

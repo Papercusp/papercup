@@ -4289,7 +4289,7 @@ export async function defaultPapercuspCollectors(
         // (bulk_dedup's reviewed gate refuses them by design). Same 200/tick bound.
         const foldNote = `${await foldPass('probation')}; ${await foldPass('promoted')}`;
         const result = await recoverInvocationFriction(workspaceId);
-        return { signals: [], note: `friction delivered=${result.delivered}, locked-pending=${result.pending}; ${foldNote}` };
+        return { signals: [], note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}` };
       },
     },
     {

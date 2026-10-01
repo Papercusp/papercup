@@ -178,10 +178,27 @@ describe('R7 private PostgreSQL delivery contract', () => {
     const ref = await seed();
     await expect(captureInvocationFriction(ref, { sql: sql(), capture: async () => { throw new Error('fixture failure'); } })).rejects.toThrow('fixture failure');
     expect((await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations`)[0].metadata_json.frictionCapture).toBe('pending');
-    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture: success })).toEqual({ delivered: 1, pending: 0 });
+    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture: success })).toEqual({ delivered: 1, pending: 0, expired: 0 });
     expect((await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations`)[0].metadata_json)
       .toEqual({ frictionCapture: 'delivered', retained: 'evidence' });
     expect(await captureInvocationFriction(ref, { sql: sql(), capture: success })).toBe(false);
+  });
+
+  it('expires older-than-24-hour pending rows while recovering recent rows', async () => {
+    const stale = await seed();
+    await db.sql`UPDATE harness_shared.tool_invocations
+      SET invoked_at = now() - interval '25 hours'
+      WHERE workspace_id='ws-a' AND id=${stale.id}`;
+    const recent = await seed();
+    const capture = vi.fn(success);
+    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture })).toEqual({ delivered: 1, pending: 0, expired: 1 });
+    const rows = await db.sql`SELECT id::text, metadata_json FROM harness_shared.tool_invocations ORDER BY invoked_at,id`;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].metadata_json).toMatchObject({ frictionCapture: 'expired', frictionExpiredReason: 'older-than-24-hours' });
+    expect(rows[0].metadata_json.frictionExpiredAt).toBeTypeOf('string');
+    expect(rows[1]).toMatchObject({ id: recent.id, metadata_json: { frictionCapture: 'delivered' } });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture })).toEqual({ delivered: 0, pending: 0, expired: 0 });
   });
 
   it('concurrent delivery skips the row lock and never crosses workspace scope', async () => {

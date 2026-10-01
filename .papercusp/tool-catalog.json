@@ -3322,7 +3322,7 @@
           "POST"
         ]
       },
-      "description": "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. For N members on an existing plan use fleet:launch-on-plan. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
+      "description": "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. Fresh plan-bound, per-member-with-briefs, and `successor` launches may omit it. For N members on an existing plan use `fleet:launch-on-plan`. A successful spawn proves only a process opened; read verification before claiming registration, a first turn, or a task claim.",
       "capabilities": [
         "capability:terminal"
       ],

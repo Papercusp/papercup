@@ -1418,7 +1418,7 @@ describe('testing:run (integration)', () => {
       cwd: REPO_ROOT,
       filePath: 'packages/example.test.ts',
       requestedFiles: ['packages/example.test.ts'],
-      runtimeMaxSec: 900,
+      runtimeMaxSec: 930,
     });
     expect(request.args).toEqual([
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),
@@ -1429,6 +1429,7 @@ describe('testing:run (integration)', () => {
     ]);
     expect(request.args.some((arg) => arg.includes('papercusp-testing-run-'))).toBe(false);
     expect(request.env).toEqual({
+      PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
     });
@@ -1470,6 +1471,8 @@ describe('testing:run (integration)', () => {
       testNamePattern: 'selected proof',
       scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
     });
+    expect(request.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe('900000');
+    expect(request.runtimeMaxSec).toBe(930);
     expect(artifact?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.args).toEqual([
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),
@@ -1482,7 +1485,7 @@ describe('testing:run (integration)', () => {
     expect(request.args.some((arg) => arg.includes('admin-test-runs-reporter'))).toBe(false);
   });
 
-  it('gives detached recovery an independent runtime floor beyond the foreground timeout', () => {
+  it('persists the detached router budget and leaves time for its terminal report', () => {
     const foregroundTimeoutMs = 45_000;
     const request = buildDetachedTestRunRequest({
       root: REPO_ROOT,
@@ -1495,14 +1498,33 @@ describe('testing:run (integration)', () => {
     });
 
     // The foreground transport ceiling is about 45s. Detached recovery must
-    // not inherit that wall or it reproduces the SIGTERM/143 failure as soon
-    // as the recovery starts. Measured integration work took 227s before the
-    // adjacent unit group and startup; use the existing 15-minute maximum for
-    // both single-root and mixed-root continuations.
-    expect(request.runtimeMaxSec).toBe(900);
-    expect(mixedRequest.runtimeMaxSec).toBe(900);
+    // not inherit that wall or the router will fall back to its 10-minute default.
+    // The 15-minute per-file budget is persisted on both routes; the outer scope
+    // gets 30 seconds to report its terminal result before it is reaped.
+    expect(request.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe('900000');
+    expect(mixedRequest.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe('900000');
+    expect(request.runtimeMaxSec).toBe(930);
+    expect(mixedRequest.runtimeMaxSec).toBe(930);
     expect(request.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
     expect(mixedRequest.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
+  });
+
+  it('carries the full requested router budget into detached recovery', () => {
+    const timeoutMs = 1_200_000;
+    const request = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/example.test.ts'],
+      timeoutMs,
+    });
+    const mixedRequest = buildDetachedMixedTestRunRequest({
+      groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
+      timeoutMs,
+    });
+
+    expect(request.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe(String(timeoutMs));
+    expect(mixedRequest.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe(String(timeoutMs));
+    expect(request.runtimeMaxSec).toBe(1230);
+    expect(mixedRequest.runtimeMaxSec).toBe(1230);
   });
 
   it('gives every direct Vitest route its own JSON report artifact', async () => {

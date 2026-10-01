@@ -487,6 +487,9 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
         // `.timer` is registered; the Type=oneshot `.service` is deliberately out
         // (see the registry comment + service-health-unit-coverage.test.ts).
         'perf-signals-capture-timer',
+        // EI-24811958626062774 — the job that moves :3170 forward. It ran FATAL for 5+ hours
+        // on 2026-10-01 with nothing watching it; episodic, report-only, 30-min delayed alarm.
+        'staging-sync',
       ].sort(),
     );
   });
@@ -523,12 +526,14 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
     // WI-6149: oddsmith-sidecar joins the report-only set for the SAME reason
     // bg-host is in it — the unit is already Restart=always under systemd, so a
     // registry restart lever would be a second restarter racing systemd's own.
-    expect(reportOnly).toEqual(['bg-host', 'live-federation-gate', 'oddsmith-sidecar'].sort());
+    // EI-24811958626062774: staging-sync is report-only because re-running a failed sync only
+    // repeats the same FATAL; the fault is in the tree or the layout.
+    expect(reportOnly).toEqual(['bg-host', 'live-federation-gate', 'oddsmith-sidecar', 'staging-sync'].sort());
   });
 
   it('combines both filters', () => {
     expect(supervisedProcesses({ layer: 'systemd-user', autoRestart: false }).map((e) => e.name).sort()).toEqual(
-      ['bg-host', 'live-federation-gate', 'oddsmith-sidecar'].sort(),
+      ['bg-host', 'live-federation-gate', 'oddsmith-sidecar', 'staging-sync'].sort(),
     );
   });
 
