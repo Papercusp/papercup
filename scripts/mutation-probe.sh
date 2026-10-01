@@ -45,6 +45,21 @@
 #                             [--sweep-lock-held | --accept-sweep-race]
 #                             [--fake-destructive]
 #                             [--i-know-this-deletes --sandbox-root <dir>]
+#                             [--relocation auto|overlay|mirror]
+#
+# COPY-OUT RELOCATION (--relocation, default auto). How the mutant is shown to
+# the guard without touching the tracked file:
+#   overlay  each post-baseline guard run executes in a private mount namespace
+#            (bwrap) with the mutant bind-mounted over the subject's OWN path, so
+#            every route to it — direct, sibling module, alias, package
+#            specifier — reaches the mutant. Nothing outside the namespace (the
+#            tree, git-sync, peers) ever sees it. Needs bwrap + user namespaces.
+#   mirror   the mutant is written into a symlink mirror of the worktree (flat
+#            scratch copy outside a worktree). A test that reaches the subject
+#            through a SIBLING module can load the ORIGINAL and false-SURVIVE
+#            (EI-24799401310241778); kept for hosts where overlay is unavailable.
+#   auto     overlay when bwrap can bind here, else mirror (logged).
+# Every verdict line names the one used: relocation=overlay|mirror|flat.
 #
 # HISTORICAL MODE — prove a guard catches the version that actually preceded a
 # fix, without guessing that HEAD is still pre-fix (git-sync commits the tree
@@ -145,9 +160,10 @@
 #   Either flag may also be passed proactively for a subject the heuristic does
 #   not flag — they only ever ADD protection.
 #
-#   {} in --test is replaced by the path of the MUTATED COPY (copy-out mode)
-#   or by the tracked path itself (--in-tree mode), so the same --test string
-#   works in both.
+#   {} in --test is replaced by the path the guard must read: the subject's own
+#   path under --in-tree and under the copy-out OVERLAY (where the mutant is
+#   visible there), or the MUTATED COPY's scratch path under the mirror, so the
+#   same --test string works in every mode.
 #
 #   {} is REQUIRED in copy-out mode (without it the test would run against the
 #   untouched original and every mutant would falsely "survive") and OPTIONAL
@@ -269,6 +285,11 @@ HISTORICAL_MODE=0
 DELETES_ACK=0
 FAKE_DESTRUCTIVE=0
 SANDBOX_ROOT=""
+# Copy-out relocation strategy (EI-24799401310241778): auto = overlay when bwrap
+# can bind on this host, else the repo mirror; overlay/mirror force one.
+RELOCATION="auto"
+RELOCATION_USED=""
+OVERLAY_DEST=""
 FAKE_BIN=""
 DESTRUCTIVE_LOG=""
 
@@ -517,6 +538,7 @@ while [ $# -gt 0 ]; do
     --fake-destructive)    FAKE_DESTRUCTIVE=1; shift ;;
     --i-know-this-deletes) DELETES_ACK=1;      shift ;;
     --sandbox-root) SANDBOX_ROOT="${2:-}"; shift 2 || die "--sandbox-root needs a value" ;;
+    --relocation)   RELOCATION="${2:-}";   shift 2 || die "--relocation needs a value" ;;
     # Print the whole header block, bounded by where it actually ends rather
     # than by a hardcoded line number — the previous '2,70p' silently truncated
     # mid-section every time the header grew, which is how --help ends up
@@ -540,6 +562,10 @@ done
 FILE="$(cd "$(dirname "$FILE")" 2>/dev/null && pwd)/$(basename "$FILE")"
 [ -f "$FILE" ] || die "could not resolve --file to an absolute path: $FILE"
 case "$EXPECT" in caught|survived) ;; *) die "--expect must be 'caught' or 'survived'" ;; esac
+case "$RELOCATION" in auto|overlay|mirror) ;; *) die "--relocation must be 'auto', 'overlay' or 'mirror'" ;; esac
+if [ "$RELOCATION" != "auto" ] && [ "$IN_TREE" -eq 1 ]; then
+  die "--relocation only applies to copy-out mode; --in-tree mutates the tracked file in place and relocates nothing"
+fi
 
 if [ -n "$AGAINST_COMMIT" ] || [ -n "$AGAINST_LAST_WITHOUT" ] || [ -n "$MUST_BE_ABSENT" ] || [ -n "$CALIBRATION_CMD" ] || [ "${#POSITIVE_CONTROLS[@]}" -gt 0 ]; then
   HISTORICAL_MODE=1
@@ -548,6 +574,7 @@ fi
 if [ "$HISTORICAL_MODE" -eq 1 ]; then
   [ -z "$MUTATE" ] || die "--mutate cannot be combined with historical mode; historical mode supplies the before-fix snapshot"
   [ "$IN_TREE" -eq 0 ] || die "historical mode is always copy-out; drop --in-tree"
+  [ "$RELOCATION" = "auto" ] || die "--relocation applies to mutation copy-out only; historical mode relocates its frozen snapshots itself"
   [ -z "$SWEEP_ACK" ] || die "--sweep-lock-held / --accept-sweep-race only apply to --in-tree mutation mode"
   [ -n "$AGAINST_COMMIT" ] || [ -n "$AGAINST_LAST_WITHOUT" ] || die "historical mode needs exactly one of --against-commit or --against-last-without"
   [ -z "$AGAINST_COMMIT" ] || [ -z "$AGAINST_LAST_WITHOUT" ] || die "pick exactly one of --against-commit or --against-last-without"
@@ -1146,6 +1173,17 @@ run_guard() {
       if [ "$IN_TREE" -eq 1 ]; then
         export PAPERCUSP_MUTATION_PROBE_SUBJECT="$FILE"
       fi
+      # EI-24799401310241778: every post-baseline run of an OVERLAY probe executes
+      # in a private mount namespace where the scratch copy is bound over the
+      # subject's own path. Inside it the checkout reads exactly like an in-tree
+      # probe's (only the subject differs), so the reporter gets the same
+      # one-path exemption. The baseline stays OUTSIDE: it is the unmutated
+      # reference the whole verdict is measured against.
+      overlay_args=()
+      if [ "${RELOCATION_USED:-}" = "overlay" ] && [ "$phase" != "baseline" ]; then
+        overlay_args=(--bind "$TARGET" "$OVERLAY_DEST")
+        export PAPERCUSP_MUTATION_PROBE_SUBJECT="$FILE"
+      fi
       # See the DIRTY-WINDOW ceiling above. Exported for BOTH phases in in-tree
       # mode and never for the mutant alone: the baseline and the mutant have to
       # go through the same invocation path, or the comparison the whole verdict
@@ -1181,7 +1219,12 @@ run_guard() {
         exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
           bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc \
           --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
+          ${overlay_args[@]+"${overlay_args[@]}"} \
           --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
+      fi
+      if [ "${#overlay_args[@]}" -gt 0 ]; then
+        exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
+          bwrap --dev-bind / / "${overlay_args[@]}" --die-with-parent -- bash -c "$cmd"
       fi
       if [ "${#guard_prefix[@]}" -gt 0 ]; then
         exec "${guard_prefix[@]}" bash -c "$cmd"
@@ -1614,6 +1657,60 @@ if [ "$IN_TREE" = "1" ]; then
   TARGET="$FILE"
 else
   TARGET_MODE="copy-out"
+  # --- copy-out relocation, preferred form: a private mount OVERLAY -----------
+  # (EI-24799401310241778, measured 2026-10-01) The repo mirror below symlinks
+  # every non-subject entry back to the origin. Node and Vite REALPATH a module
+  # before resolving its relative imports, so a SIBLING that is a symlink in the
+  # mirror resolves to the origin tree and its `./subject` import loads the
+  # ORIGINAL file. A test whose assertion path runs through such a sibling then
+  # passes against the mutant: a false SURVIVED. Measured on
+  # inference-gateway/credential-store.ts (reached via request-kernel.ts):
+  # copy-out SURVIVED, the same mutation in-tree CAUGHT. The module-load control
+  # cannot see it, because the test ALSO imports {} directly, so the mirrored
+  # mutant does load; it is just not the copy the assertions exercise.
+  #
+  # Materialising the importers instead does not scale: credential-store.ts
+  # alone has ~8,500 transitive relative importers, and no file set can redirect
+  # a bare package specifier, a path alias or an absolute path.
+  #
+  # The overlay removes the relocation instead of repairing it. Each post-
+  # baseline guard run executes in a private MOUNT NAMESPACE (bwrap) in which the
+  # mutant copy is bind-mounted over the subject's own path. Every route to the
+  # subject — direct, sibling, alias, package specifier, symlinked directory —
+  # reaches the mutant, and siblings, `__dirname` roots and `.git` stay real. The
+  # bind is invisible outside the namespace, so git-sync, peers and the tracked
+  # file never see it: copy-out's no-dirty-window property is unchanged.
+  #
+  # Falls back to the repo mirror when bwrap cannot bind on this host (no user
+  # namespaces), saying so, and every verdict line names the relocation used.
+  if [ "$RELOCATION" != "mirror" ]; then
+    OVERLAY_DEST="$(realpath -e -- "$FILE" 2>/dev/null || true)"
+    mkdir -p "$SCRATCH/overlay" || die "could not create the overlay scratch dir"
+    TARGET="$SCRATCH/overlay/$(basename "$FILE")"
+    cp "$FILE" "$TARGET" || die "could not stage the probe copy"
+    # Positive control, not just "bwrap ran": inside the namespace the subject's
+    # own path must be the SAME inode as the scratch copy, or the bind did not
+    # take and every verdict would be scored against the original.
+    if [ -n "$OVERLAY_DEST" ] && command -v bwrap >/dev/null 2>&1 \
+       && bwrap --dev-bind / / --bind "$TARGET" "$OVERLAY_DEST" --die-with-parent -- \
+            bash -c '[ "$(stat -Lc %d:%i -- "$1")" = "$(stat -Lc %d:%i -- "$2")" ]' _ "$TARGET" "$OVERLAY_DEST" \
+            2>"$SCRATCH/overlay-preflight.err"; then
+      RELOCATION_USED="overlay"
+      log "copy-out: overlay relocation — post-baseline guard runs see the mutant AT $FILE inside a private mount namespace (bwrap); the tracked file and every peer still see the original"
+    else
+      if [ "$RELOCATION" = "overlay" ]; then
+        die "--relocation overlay was requested, but bwrap could not bind the scratch copy over $FILE on this host (user namespaces may be disabled):
+      $(head -3 "$SCRATCH/overlay-preflight.err" 2>/dev/null)
+      Drop --relocation to fall back to the repo mirror, or use the fenced --in-tree tier."
+      fi
+      log "⚠️  overlay relocation unavailable on this host ($(head -1 "$SCRATCH/overlay-preflight.err" 2>/dev/null || echo 'bwrap missing')) — falling back to the repo mirror."
+      log "⚠️  The mirror can report a false SURVIVED when the test reaches the subject through a sibling module (EI-24799401310241778)."
+      rm -f -- "$TARGET"
+      OVERLAY_DEST=""
+    fi
+  fi
+fi
+if [ "$TARGET_MODE" = "copy-out" ] && [ "$RELOCATION_USED" != "overlay" ]; then
   COPY_OUT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
   # A submodule can import hoisted dependencies from its superproject. Preserve
   # that enclosing path hierarchy too; mirroring only the inner Git root makes
@@ -1637,16 +1734,28 @@ else
     build_repo_mirror "$COPY_OUT_ROOT" "$COPY_OUT_REL" "$COPY_OUT_MIRROR" \
       || die "could not build the copy-out repo mirror under $COPY_OUT_MIRROR"
     TARGET="$COPY_OUT_MIRROR/$COPY_OUT_REL"
+    RELOCATION_USED="mirror"
     log "copy-out: relocating into a repo mirror — $COPY_OUT_ROOT symlinked into $COPY_OUT_MIRROR (.git excluded), mutant at its own repo-relative path $COPY_OUT_REL"
   else
     # Not inside a worktree, so there is no repo shape to mirror. Flat
     # relocation, exactly as before — the copy-baseline gate below still
     # refuses a relocation that breaks the subject.
     TARGET="$SCRATCH/$(basename "$FILE")"
+    RELOCATION_USED="flat"
   fi
   cp "$FILE" "$TARGET" || die "could not stage the probe copy"
 fi
-readonly TARGET_MODE
+[ -n "$RELOCATION_USED" ] || RELOCATION_USED="none"
+readonly TARGET_MODE RELOCATION_USED OVERLAY_DEST
+# What {} names in every post-baseline guard run. Under the overlay the mutant is
+# visible AT the subject's own path, so {} stays the real path; a relocated copy
+# is named by its scratch path.
+if [ "$RELOCATION_USED" = "overlay" ]; then
+  GUARD_SUBJECT="$FILE"
+else
+  GUARD_SUBJECT="$TARGET"
+fi
+readonly GUARD_SUBJECT
 
 # A nonzero baseline means the command did not establish a runnable, healthy
 # guard before the mutation. Scoring the mutant's later nonzero exit as
@@ -1716,7 +1825,7 @@ fi
 # not that a mutation was caught (there isn't one yet). In-tree mode never
 # relocates the subject at all, so this check applies to copy-out only.
 if [ "$TARGET_MODE" = "copy-out" ]; then
-  COPY_BASELINE_CMD="${TEST_CMD//\{\}/$TARGET}"
+  COPY_BASELINE_CMD="${TEST_CMD//\{\}/$GUARD_SUBJECT}"
   COPY_BASELINE_LOG="$SCRATCH/copy-baseline.log"
   COPY_BASELINE_RC=0
   if run_guard copy-baseline "unmutated-copy baseline guard" "$COPY_BASELINE_CMD" "$COPY_BASELINE_LOG"; then
@@ -1724,8 +1833,25 @@ if [ "$TARGET_MODE" = "copy-out" ]; then
   else
     COPY_BASELINE_RC=$?
     log "COPY-BASELINE FAILED (guard exited $COPY_BASELINE_RC against the UNMUTATED relocated copy) — refusing to score the mutant"
-    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 copy_baseline_exit=%d\n' \
-      "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$COPY_BASELINE_RC"
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 copy_baseline_exit=%d relocation=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$COPY_BASELINE_RC" "$RELOCATION_USED"
+    if [ "$RELOCATION_USED" = "overlay" ]; then
+      die "the guard failed inside the overlay namespace against an UNMUTATED copy bound over $FILE, even though the SAME guard passed outside it (baseline_exit=$BASELINE_RC, this run's exit=$COPY_BASELINE_RC).
+
+      There is no mutation applied yet, so this is the NAMESPACE, not a caught
+      mutant. The overlay keeps every path, sibling and .git real, so the usual
+      causes are things a private mount namespace changes:
+
+        - the guard needs privilege (sudo / setuid) — no_new_privs blocks it;
+        - the guard writes to the subject path itself (the bound copy is a
+          scratch file, so writes land there, not in the tree);
+        - the guard depends on a process started OUTSIDE the namespace that
+          reads the subject (a long-running server, a systemd service unit).
+
+      Inspect the captured guard output above (copy-baseline phase). FIX:
+      --relocation mirror relocates the copy instead of overlaying it, or run
+      the probe with --in-tree."
+    fi
     die "the guard failed against an UNMUTATED copy relocated to $TARGET, even though the SAME guard passed in-tree (baseline_exit=$BASELINE_RC, this run's exit=$COPY_BASELINE_RC).
 
       This is almost always the RELOCATION breaking the subject, not a caught
@@ -1937,7 +2063,7 @@ fi
 log "mutant applied: ${ORIG_SUM:0:8} -> changed ($TARGET_MODE)"
 
 # --- run the guard against the mutant --------------------------------------
-CMD="${TEST_CMD//\{\}/$TARGET}"
+CMD="${TEST_CMD//\{\}/$GUARD_SUBJECT}"
 run_guard mutant "mutant guard" "$CMD" "$MUTANT_LOG"
 TEST_RC=$?
 
@@ -2010,8 +2136,18 @@ if [ "$TARGET_MODE" = "copy-out" ] && [ "$TEST_RC" -eq 0 ]; then
       cp -- "$SCRATCH/mutant-before-load-check" "$TARGET" \
         || die "cannot restore scratch mutant after module-load control"
       if [ "$LOAD_RC" -eq 0 ] || ! grep -Fq "$LOAD_MARKER" "$LOAD_LOG"; then
-        printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d module_loaded=no\n' \
-          "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC"
+        printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d module_loaded=no relocation=%s\n' \
+          "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$RELOCATION_USED"
+        if [ "$RELOCATION_USED" = "overlay" ]; then
+          die "the mutated module was not loaded by --test: the copy bound over $FILE threw a distinctive marker, but the same guard did not fail with that marker.
+
+      Under the overlay EVERY route to $FILE inside the namespace reaches the
+      copy, so the guard either never loads this module at all, or loads it in
+      a process started OUTSIDE the namespace (a daemon, a systemd service
+      unit, a server the test talks to). A survived verdict would be false.
+      Point --test at a command that loads the subject itself, or use the
+      fenced --in-tree tier."
+        fi
         die "the mutated module was not loaded by --test: the scratch copy threw a distinctive marker, but the same guard did not fail with that marker.
 
       A symlinked test/config in the copy-out mirror may resolve imports against
@@ -2029,6 +2165,12 @@ if [ "$TEST_RC" -eq 1 ]; then
 elif [ "$TEST_RC" -eq 0 ]; then
   VERDICT="survived"
   log "VERDICT: MUTANT SURVIVED (guard exited 0) — the guard does NOT constrain this mutation ✗"
+  if [ "$RELOCATION_USED" = "mirror" ] || [ "$RELOCATION_USED" = "flat" ]; then
+    # EI-24799401310241778: a relocated copy can survive for a reason that is
+    # not the guard's — a sibling that realpaths back to the origin loads the
+    # ORIGINAL subject. The overlay has no such route; say which one ran.
+    log "⚠️  relocation=$RELOCATION_USED: a test that reaches the subject through a SIBLING module (or an alias/package specifier) loads the ORIGINAL file here, so this survival may be the relocation's, not the guard's. Re-run where bwrap can bind (--relocation overlay) or with the fenced --in-tree tier before calling the guard weak."
+  fi
 else
   VERDICT="harness-error"
   log "VERDICT: HARNESS ERROR (guard exited $TEST_RC) — no falsifiability verdict is sound"
@@ -2038,8 +2180,8 @@ fi
 # as evidence. 'ok' means the mutant was confirmed to still be a loadable
 # program, so a caught verdict is about the assertions; 'unchecked*' means no
 # checker applied to this subject and the caught verdict carries that caveat.
-printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s\n' \
-  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE"
+printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s relocation=%s\n' \
+  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE" "$RELOCATION_USED"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
 [ "$VERDICT" = "$EXPECT" ] || exit 1
