@@ -209,9 +209,161 @@ const SHELL_MUTATION_WORDS = new Set([
   'stop',
 ]);
 
-function hasOption(tokens: readonly string[], options: readonly string[]): boolean {
-  return tokens.some((token) => options.some((option) => token === option || token.startsWith(`${option}=`)));
+/**
+ * What a command's option parser can do that makes it more than an observation. The callers are
+ * replay and dry-run safety, so every ambiguity resolves toward "writes".
+ *
+ * This replaces an exact-token denylist (`token === '-o' || token.startsWith('-o=')`) that could
+ * not see an attached short argument (`sort -o/tmp/x`), a short cluster (`fuser -km`, `strace -fo`),
+ * or a GNU getopt_long abbreviation (`sort --out=`, `dmesg --cl`) — WI-10005111, the same hole
+ * WI-10005084 closed for `sed`.
+ */
+interface WritingOptionSpec {
+  /** Short option letters that write or execute when they appear anywhere in a cluster (`-ro`). */
+  readonly shortWriting?: string;
+  /**
+   * Short option letters that take an argument. getopt gives such a letter the REST of its cluster
+   * (`-to` is `-t o`, not `-t -o`), or the next token when nothing follows, so the walk stops there.
+   * A letter that also writes belongs in BOTH sets — the writing check runs first.
+   */
+  readonly shortWithArg?: string;
+  /**
+   * Short option letters whose argument is OPTIONAL and therefore only ever the rest of the cluster
+   * (`date -Iseconds`, `git status -uno`): the walk stops there but the next token stays an operand.
+   */
+  readonly shortOptionalArg?: string;
+  /**
+   * Full long option names (with the `--`) that write or execute. A `--name[=value]` token whose
+   * name is any PREFIX of one counts as that option: getopt_long accepts every unique
+   * abbreviation, and an ambiguous one is a usage error that does nothing, so over-matching is safe.
+   */
+  readonly longWriting?: readonly string[];
+  /** Long options whose argument is the NEXT token (`--date STRING`), so it is not read as an operand. */
+  readonly longWithArg?: readonly string[];
+  /** Operands (non-option words) that make the command write: `date MMDDhhmm`, `uniq in out`, `hostname NAME`. */
+  readonly operandsWrite?: (operands: readonly string[]) => boolean;
 }
+
+/**
+ * Walk a command's tokens the way getopt does and report whether any option the spec lists as
+ * writing is present. Dependency-free on purpose: this module is shared with the always-up MCP proxy.
+ */
+function hasWritingOption(tokens: readonly string[], spec: WritingOptionSpec): boolean {
+  const shortWriting = spec.shortWriting ?? '';
+  const shortWithArg = spec.shortWithArg ?? '';
+  const shortOptionalArg = spec.shortOptionalArg ?? '';
+  const longWriting = spec.longWriting ?? [];
+  const longWithArg = spec.longWithArg ?? [];
+  const operands: string[] = [];
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (token === '--') {
+      operands.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (token === '-' || !token.startsWith('-')) {
+      operands.push(token);
+      continue;
+    }
+    if (token.startsWith('--')) {
+      const equals = token.indexOf('=');
+      const name = equals === -1 ? token : token.slice(0, equals);
+      if (longWriting.some((option) => option.startsWith(name))) return true;
+      if (equals === -1 && longWithArg.some((option) => option.startsWith(name))) i += 1;
+      continue;
+    }
+    for (let c = 1; c < token.length; c += 1) {
+      const flag = token[c]!;
+      if (shortWriting.includes(flag)) return true;
+      if (shortWithArg.includes(flag)) {
+        if (c === token.length - 1) i += 1;
+        break;
+      }
+      if (shortOptionalArg.includes(flag)) break;
+    }
+  }
+  return spec.operandsWrite?.(operands) ?? false;
+}
+
+/** Options (per each command's man page) that write a file, change system state, or run another program. */
+const WRITING_OPTIONS: Readonly<Record<string, WritingOptionSpec>> = {
+  // -C/-c clear the ring buffer, -D/-E switch console logging, -n sets the console level.
+  dmesg: {
+    shortWriting: 'CcDEn',
+    shortWithArg: 'FfKlns',
+    longWriting: ['--clear', '--read-clear', '--console-off', '--console-on', '--console-level'],
+  },
+  // -s / --set sets the clock — and so does a bare `MMDDhhmm[[CC]YY][.ss]` operand.
+  date: {
+    shortWriting: 's',
+    shortWithArg: 'dfrs',
+    shortOptionalArg: 'I',
+    longWriting: ['--set'],
+    longWithArg: ['--date', '--file', '--reference', '--rfc-3339', '--resolution'],
+    operandsWrite: (operands) => operands.some((operand) => !operand.startsWith('+')),
+  },
+  fuser: { shortWriting: 'k', shortWithArg: 'n', longWriting: ['--kill'], longWithArg: ['--namespace'] },
+  // --pre and --hostname-bin execute the named program.
+  rg: { longWriting: ['--pre', '--hostname-bin'] },
+  // -K kills sockets; -D / --diag dumps raw socket data to a file.
+  ss: { shortWriting: 'KD', shortWithArg: 'ADFfN', longWriting: ['--kill', '--diag'] },
+  // -o / --output name the output file; --compress-program executes a program.
+  sort: {
+    shortWriting: 'o',
+    shortWithArg: 'koSTt',
+    longWriting: ['--output', '--compress-program'],
+    longWithArg: ['--key', '--field-separator', '--buffer-size', '--temporary-directory'],
+  },
+  // -C / --compile writes a magic.mgc file.
+  file: { shortWriting: 'C', shortWithArg: 'fFmeP', longWriting: ['--compile'] },
+  journalctl: {
+    longWriting: [
+      '--flush',
+      '--relinquish-var',
+      '--smart-relinquish-var',
+      '--rotate',
+      '--sync',
+      '--vacuum-size',
+      '--vacuum-time',
+      '--vacuum-files',
+      '--setup-keys',
+      '--update-catalog',
+    ],
+  },
+  // `hostname NAME` and `-F`/`-b` set the hostname.
+  hostname: { shortWriting: 'Fb', longWriting: ['--file', '--boot'], operandsWrite: (operands) => operands.length > 0 },
+  // `uniq INPUT OUTPUT`: the second operand is a file that gets written.
+  uniq: {
+    shortWithArg: 'fsw',
+    longWithArg: ['--skip-fields', '--skip-chars', '--check-chars'],
+    operandsWrite: (operands) => operands.length > 1,
+  },
+};
+
+const GIT_WRITING_OPTIONS: WritingOptionSpec = {
+  shortWriting: 'cCdDfmMo',
+  // Attached-argument options (`-n5`, `-Sfoo`, `-uno`): the rest of the cluster is data, not flags.
+  shortWithArg: 'USGLOnlB',
+  shortOptionalArg: 'u',
+  longWriting: [
+    '--copy',
+    '--delete',
+    '--edit-description',
+    '--exec-path',
+    '--move',
+    '--output',
+    // `git branch` rewrites config without naming a branch operand.
+    '--set-upstream-to',
+    '--set-upstream',
+    '--unset-upstream',
+  ],
+};
+
+const STRACE_WRITING_OPTIONS: WritingOptionSpec = {
+  shortWriting: 'o',
+  shortWithArg: 'abeEIoOpPsSuUX',
+  longWriting: ['--output', '--kill-on-exit'],
+};
 
 function firstNonOption(tokens: readonly string[], start = 1): string | undefined {
   for (let i = start; i < tokens.length; i += 1) {
@@ -234,21 +386,7 @@ function classifiesIpRead(tokens: readonly string[]): boolean {
 }
 
 function classifiesGitRead(tokens: readonly string[]): boolean {
-  const dangerousFlags = [
-    '-c',
-    '-C',
-    '-d',
-    '-D',
-    '-f',
-    '-m',
-    '-M',
-    '--copy',
-    '--delete',
-    '--edit-description',
-    '--exec-path',
-    '--move',
-  ];
-  if (hasOption(tokens, dangerousFlags) || hasOption(tokens, ['-o', '--output'])) return false;
+  if (hasWritingOption(tokens, GIT_WRITING_OPTIONS)) return false;
   const subcommand = firstNonOption(tokens)?.toLowerCase();
   if (!subcommand) return false;
   if (subcommand === 'branch') {
@@ -275,7 +413,7 @@ function classifiesGitRead(tokens: readonly string[]): boolean {
 
 function classifiesStraceRead(tokens: readonly string[]): boolean {
   if (
-    hasOption(tokens, ['-o', '--output', '--kill-on-exit']) ||
+    hasWritingOption(tokens, STRACE_WRITING_OPTIONS) ||
     tokens.some((token) => /(?:inject|fault|signal|syscall|daemon|detach-on|kill)/i.test(token))
   ) {
     return false;
@@ -500,17 +638,9 @@ export function classifiesSimpleRead(tokens: readonly string[], depth = 0): bool
     return new Set(['info', 'inspect', 'ps', 'stats', 'version']).has(firstNonOption(tokens)?.toLowerCase() ?? '');
   }
   if (!READ_ONLY_COMMANDS.has(base)) return false;
-  if (base === 'dmesg' && hasOption(tokens, ['--clear', '-C'])) return false;
-  if (base === 'date' && hasOption(tokens, ['-s', '--set'])) return false;
-  if (base === 'fuser' && hasOption(tokens, ['-k', '--kill'])) return false;
-  if (base === 'journalctl' && tokens.some((token) => /^--(?:flush|relinquish-var|rotate|sync|vacuum)/.test(token))) {
-    return false;
-  }
-  if (base === 'rg' && hasOption(tokens, ['--pre'])) return false;
-  if (base === 'sed' && !sedIsObservational(tokens)) return false;
-  if (base === 'ss' && hasOption(tokens, ['-K', '--kill'])) return false;
-  if (base === 'sort' && hasOption(tokens, ['-o', '--output'])) return false;
-  return true;
+  if (base === 'sed') return sedIsObservational(tokens);
+  const writing = WRITING_OPTIONS[base];
+  return writing === undefined || !hasWritingOption(tokens, writing);
 }
 
 /**

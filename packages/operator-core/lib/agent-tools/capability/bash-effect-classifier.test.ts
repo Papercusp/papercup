@@ -258,4 +258,114 @@ describe('capability:bash sed replay safety (WI-10005084)', () => {
   });
 });
 
+/**
+ * WI-10005111 — the same hole as sed, on every other command whose option parser can write. The
+ * guards used to be an exact-token denylist (`token === '-o'`), so an attached short argument, a
+ * short cluster and a GNU getopt_long abbreviation all fell through to "read" and a retry or
+ * dry-run would have executed the write. Every form below was measured as READ before the fix.
+ */
+describe('capability:bash write-capable options replay safety (WI-10005111)', () => {
+  it.each([
+    // The ten forms measured as READ in the filing.
+    ['sort: attached short argument', 'sort -o/tmp/x f'],
+    ['sort: output inside a short cluster', 'sort -ro/tmp/x f'],
+    ['sort: abbreviated --output with a value', 'sort --out=/tmp/x f'],
+    ['sort: abbreviated --output', 'sort --o /tmp/x f'],
+    ['rg: abbreviated --pre', 'rg --pr=cmd x'],
+    ['date: attached -s argument', 'date -s2020-01-01'],
+    ['date: abbreviated --set', 'date --s=2020-01-01'],
+    ['dmesg: abbreviated --clear', 'dmesg --cl'],
+    ['fuser: kill inside a short cluster', 'fuser -km 22/tcp'],
+    ['fuser: abbreviated --kill', 'fuser --ki 22/tcp'],
+    // The exact spellings the old denylist knew must keep working.
+    ['sort: -o', 'sort -o /tmp/x f'],
+    ['sort: --output=', 'sort --output=/tmp/x f'],
+    ['rg: --pre', 'rg --pre cmd x'],
+    ['date: -s', 'date -s 2020-01-01'],
+    ['dmesg: -C', 'dmesg -C'],
+    ['fuser: -k', 'fuser -k 22/tcp'],
+    // Census of the rest of the read-only set against each command's man page.
+    ['sort: --compress-program executes a program', 'sort --compress-program=sh f'],
+    ['rg: --hostname-bin executes a program', 'rg --hostname-bin=cmd x'],
+    ['date: a bare MMDDhhmm operand sets the clock', 'date 100122002026'],
+    ['date: -u does not hide an operand', 'date -u 100122002026'],
+    ['dmesg: -c clears the ring buffer', 'dmesg -c'],
+    ['dmesg: -c inside a cluster', 'dmesg -Tc'],
+    ['dmesg: -n sets the console level', 'dmesg -n 1'],
+    ['dmesg: abbreviated --console-level', 'dmesg --console-l=1'],
+    ['dmesg: -D switches console logging off', 'dmesg -D'],
+    ['ss: kill inside a cluster', 'ss -tK'],
+    ['ss: -D dumps socket data to a file', 'ss -D /tmp/x'],
+    ['ss: abbreviated --diag', 'ss --di=/tmp/x'],
+    ['file: -C writes magic.mgc', 'file -C -m magic'],
+    ['file: abbreviated --compile', 'file --comp -m magic'],
+    ['journalctl: abbreviated --vacuum-size', 'journalctl --vacuum-s=1G'],
+    ['journalctl: abbreviated --rotate', 'journalctl --rot'],
+    ['journalctl: --smart-relinquish-var', 'journalctl --smart-relinquish-var'],
+    ['journalctl: --setup-keys', 'journalctl --setup-keys'],
+    ['journalctl: --update-catalog', 'journalctl --update-catalog'],
+    ['hostname: a NAME operand sets the hostname', 'hostname newname'],
+    ['hostname: -F reads the name from a file', 'hostname -F /etc/hostname'],
+    ['uniq: the second operand is an output file', 'uniq in out'],
+    ['strace: output inside a cluster', 'strace -fo /tmp/out -p 123'],
+    ['strace: attached -o argument', 'strace -o/tmp/out -p 123'],
+    ['strace: abbreviated --output', 'strace --out=/tmp/out -p 123'],
+    ['git: --set-upstream-to rewrites config', 'git branch --set-upstream-to=origin/main'],
+    ['git: --unset-upstream rewrites config', 'git branch --unset-upstream'],
+    ['git: abbreviated --edit-description', 'git branch --edit'],
+    ['git: abbreviated --output', 'git diff --out=/tmp/x'],
+    ['git: attached global config', 'git -ccore.pager=sh log'],
+    ['git: attached global directory', 'git -C/tmp log'],
+    ['a write option in a later pipeline segment', 'cat f | sort -o/tmp/x'],
+  ])('keeps %s classified as write', (_label, command) => {
+    expect(classifyCapabilityBashEffect({ command })).toBe('write');
+  });
+
+  it.each([
+    ['sort: reverse', 'sort -r f'],
+    ['sort: separator argument that spells an output letter', 'sort -to f'],
+    ['sort: key and separator', 'sort -t, -k2,2 -n f'],
+    ['sort: a file literally named -o after --', 'sort -- -o'],
+    ['rg: plain search', 'rg foo f'],
+    ['rg: --pretty is not --pre', 'rg --pretty foo f'],
+    ['rg: --pre-glob is not --pre', "rg --pre-glob '*.gz' foo f"],
+    ['date: bare', 'date'],
+    ['date: format operand', 'date +%s'],
+    ['date: utc', 'date -u'],
+    ['date: -d takes the next token as its argument', 'date -d 20260101'],
+    ['date: attached -d argument', 'date -dyesterday +%F'],
+    ['date: attached optional -I argument', 'date -Iseconds'],
+    ['date: long --date with a separate argument', 'date --date 20260101 +%F'],
+    ['date: reference file', 'date -r f'],
+    ['dmesg: bare', 'dmesg'],
+    ['dmesg: human-readable follow', 'dmesg -wH'],
+    ['dmesg: level filter', 'dmesg -l err'],
+    ['dmesg: --color is not --clear', 'dmesg --color=always --ctime'],
+    ['fuser: plain query', 'fuser 22/tcp'],
+    ['fuser: namespace and verbose', 'fuser -v -n tcp 22'],
+    ['ss: listening sockets', 'ss -ltnp'],
+    ['ss: no header, established', 'ss -Htan state established'],
+    ['file: plain', 'file -b f'],
+    ['file: magic file argument', 'file -m magic f'],
+    ['journalctl: unit window', 'journalctl -u svc --since=today -n 50 --no-pager'],
+    ['journalctl: --system and --user are not --sync', 'journalctl --system --user -o cat'],
+    ['hostname: bare', 'hostname'],
+    ['hostname: fqdn', 'hostname -f'],
+    ['uniq: count', 'uniq -c f'],
+    ['uniq: skip-fields takes the next token', 'uniq -f 1 f'],
+    ['uniq: attached skip-fields', 'uniq -f1 f'],
+    ['uniq: stdin through a pipe', 'sort f | uniq -c'],
+    ['strace: bounded attach', 'timeout 5s strace -f -p 123'],
+    ['strace: attached -e argument is not an output option', 'timeout 5s strace -f -etrace=openat -p 123'],
+    ['git: untracked-files mode is an attached optional argument', 'git status -uno'],
+    ['git: attached count', 'git log -n5 --format=%H'],
+    ['git: pickaxe string attached', 'git log -Sfoo --oneline'],
+    ['git: stat of the index', 'git diff --stat --cached'],
+    ['git: current branch', 'git branch --show-current'],
+    ['git: verbose branch list', 'git branch -vv'],
+  ])('keeps %s classified as read', (_label, command) => {
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+  });
+});
+
 void bashTool;
