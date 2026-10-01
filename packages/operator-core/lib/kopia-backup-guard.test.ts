@@ -1476,7 +1476,94 @@ describe('Kopia managed entrypoint contract', () => {
     // ...but it did not send the producer back to wait.
     expect(dbOut).not.toContain('result=waiting reason=priority-on-pressure');
     expect(dbOut).toContain('result=finished mode=scheduled rc=0');
+    // WI-10004741: the yielding sweep stamped a handoff note and the producer consumed it.
+    expect(dbOut).toMatch(/result=admitted-after-handoff .* handoff_note_age_sec=\d+ /);
+    expect(existsSync(`${env.KOPIA_BACKUP_LOCK_PATH}.handoff`)).toBe(false);
   });
+
+  // WI-10004741. Measured 2026-10-01 09:05Z: the db-dump waited 1154s behind the daily
+  // home snapshot (a holder that never yields), then received the lock from the hot sweep
+  // that had been stopped for it 5s earlier, and still released the lock to re-wait on
+  // pressure. A long TOTAL wait must not make that handoff look stale: the releasing
+  // holder's note decides. Without a note the reading really is stale, and the producer
+  // re-waits as before (the control below).
+  function longWaitBehindHolder(withNote: boolean) {
+    const fx = fixture();
+    const { dir } = fx;
+    // handoff_fresh_sec = monitor 0.05 + grace 1 + 5 = 6s. No child is TERM'd here,
+    // so the shortened grace cannot race a trap (see the fixture's grace note).
+    const env = {
+      ...fx.env,
+      KOPIA_BACKUP_STOP_GRACE_SEC: '1',
+      KOPIA_BACKUP_PRIORITY_PRESSURE_WAIT_MAX_SEC: '1',
+    };
+    seedDeadlineBase(dir, 'db-dump', 2_003);
+    const ioHigh = join(dir, 'io.high');
+    pressureFile(ioHigh, 15.4);
+    const dbLog = join(dir, 'db.log');
+    const dbRan = join(dir, 'db-ran');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        (
+          exec 9>>"$KOPIA_BACKUP_LOCK_PATH"
+          flock 9
+          touch "$HOLDER_READY"
+          sleep 7.5
+          cp "$IO_HIGH" "$KOPIA_BACKUP_IO_PSI_PATH"
+          if [ "$WITH_NOTE" = 1 ]; then date +%s >"$KOPIA_BACKUP_LOCK_PATH.handoff"; fi
+        ) &
+        holder=$!
+        for _ in $(seq 1 200); do [ -e "$HOLDER_READY" ] && break; sleep 0.01; done
+        [ -e "$HOLDER_READY" ] || exit 91
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- touch "$DB_RAN" >"$DB_LOG" 2>&1
+        db_rc=$?
+        wait "$holder"
+        exit "$db_rc"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          HOLDER_READY: join(dir, 'holder-ready'),
+          IO_HIGH: ioHigh,
+          WITH_NOTE: withNote ? '1' : '0',
+          DB_LOG: dbLog,
+          DB_RAN: dbRan,
+        },
+        timeout: 25_000,
+      },
+    );
+    const dbOut = existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing';
+    return { scenario, dbOut, ran: existsSync(dbRan), notePath: `${env.KOPIA_BACKUP_LOCK_PATH}.handoff` };
+  }
+
+  it('keeps a lock handed over after a long wait behind a non-yielding holder when the handoff note is fresh', () => {
+    const { scenario, dbOut, ran, notePath } = longWaitBehindHolder(true);
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\ndb guard:\n${dbOut}`).toBe(0);
+    const admitted = dbOut.match(
+      /result=admitted-after-handoff reason=io-pressure full_avg10=15\.40 limit=10 lock_waited_sec=(\d+) handoff_note_age_sec=(\d+) /,
+    );
+    expect(admitted, dbOut).not.toBeNull();
+    // The total wait really was past the freshness window; only the note kept the lock.
+    expect(Number(admitted![1])).toBeGreaterThan(6);
+    expect(Number(admitted![2])).toBeLessThanOrEqual(6);
+    expect(dbOut).not.toContain('result=waiting reason=priority-on-pressure');
+    expect(ran).toBe(true);
+    expect(existsSync(notePath)).toBe(false);
+  }, 30_000);
+
+  it('re-waits on pressure after a long wait when the holder left no handoff note', () => {
+    const { scenario, dbOut, ran } = longWaitBehindHolder(false);
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\ndb guard:\n${dbOut}`).toBe(SCHEDULED_DEFER_EXIT);
+    expect(dbOut).not.toContain('result=admitted-after-handoff');
+    expect(dbOut).toContain('result=waiting reason=priority-on-pressure io-pressure full_avg10=15.40');
+    expect(ran).toBe(false);
+  }, 30_000);
 
   it('does not retire an escalated run on the same pressure that admitted it', () => {
     const { dir, env } = fixture(23.84);

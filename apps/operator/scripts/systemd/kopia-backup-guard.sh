@@ -242,6 +242,27 @@ cleanup_priority_request() {
   [ -z "$priority_request_path" ] || rm -f "$priority_request_path" 2>/dev/null || true
 }
 
+# A restart-safe holder that YIELDS to a priority waiter stamps this note just
+# before it releases the lock, and the next acquirer consumes it (WI-10004741).
+# The acquirer judges the handoff by the note's age, not by its own total lock
+# wait: a waiter can spend most of that wait behind a holder that never yields
+# (the daily home snapshot runs 18-106 min) and still receive the lock from a
+# sweep that was stopped for it seconds ago. Measured 2026-10-01 09:05Z: the
+# db-dump waited 1154s, the overdue hot sweep took the lock and yielded to it 5s
+# later, and the dump then released the lock to re-wait on pressure.
+handoff_note_path="${lock_path}.handoff"
+write_handoff_note() {
+  printf '%s\n' "$(date +%s)" >"$handoff_note_path" 2>/dev/null || true
+}
+# Print the note's age in seconds and consume it; fail when there is none.
+take_handoff_note() {
+  local stamped
+  stamped=$(cat "$handoff_note_path" 2>/dev/null) || return 1
+  rm -f "$handoff_note_path" 2>/dev/null || true
+  is_number "$stamped" || return 1
+  printf '%d' "$(( $(date +%s) - stamped ))"
+}
+
 # A blocking waiter must be able to hand the shared lock back from a long hot
 # sweep. POSIX flock does not promise that a waiter will outrank a holder's
 # next work, and a single multi-hour `kopia snapshot create` otherwise leaves
@@ -409,6 +430,8 @@ run_scheduled_command() {
   wait "$child_pid"
   child_rc=$?
   if [ -n "$runtime_abort_reason" ]; then
+    # The child is reaped; the lock is released when this guard exits.
+    write_handoff_note
     guard_log "result=deferred-during-run reason=$runtime_abort_reason child_rc=$child_rc"
     # The escalation retry exists so a backup that FAILS for a non-pressure reason
     # cannot override pressure on every tick forever. A cycle that yielded to a
@@ -435,11 +458,17 @@ run_scheduled_command() {
 # handoff_fresh_sec.
 lock_handoff_requested=0
 lock_waited_sec=0
+handoff_note_age=
 acquire_scheduled_lock() {
   local lock_wait_started
   lock_handoff_requested=0
   lock_waited_sec=0
-  flock -n 9 && return 0
+  handoff_note_age=
+  if flock -n 9; then
+    # No request was registered, so no sweep yielded for this cycle: drop any note.
+    rm -f "$handoff_note_path" 2>/dev/null || true
+    return 0
+  fi
   if [ "$pressure_escalated" = 1 ]; then
     register_priority_request
     guard_log "result=waiting reason=staleness-override-lock $staleness_override_reason"
@@ -454,6 +483,7 @@ acquire_scheduled_lock() {
   lock_wait_started=$(date +%s)
   flock 9 || exit "$scheduled_defer_exit"
   lock_waited_sec=$(( $(date +%s) - lock_wait_started ))
+  handoff_note_age=$(take_handoff_note) || handoff_note_age=
   cleanup_priority_request
 }
 
@@ -612,8 +642,12 @@ if [ "$mode" = scheduled ]; then
     # The lock came through a handoff seconds after admission cleared: keep it
     # (see handoff_fresh_sec). The cgroup caps bound this run exactly as they
     # bound an admitted-despite-pressure one.
-    if [ "$lock_handoff_requested" = 1 ] && [ "$lock_waited_sec" -le "$handoff_fresh_sec" ]; then
-      guard_log "result=admitted-after-handoff reason=$admission_block_reason lock_waited_sec=$lock_waited_sec $staleness_override_reason"
+    # A long total wait still counts when the lock came from a sweep that yielded
+    # for it moments ago (the handoff note, see write_handoff_note).
+    if [ "$lock_handoff_requested" = 1 ] &&
+      { [ "$lock_waited_sec" -le "$handoff_fresh_sec" ] ||
+        { [ -n "$handoff_note_age" ] && [ "$handoff_note_age" -le "$handoff_fresh_sec" ]; }; }; then
+      guard_log "result=admitted-after-handoff reason=$admission_block_reason lock_waited_sec=$lock_waited_sec handoff_note_age_sec=${handoff_note_age:-none} $staleness_override_reason"
       break
     fi
     # Priority producer: pressure DELAYS this cycle and may not cancel it. Never
@@ -633,6 +667,8 @@ else
   register_priority_request
   guard_log "result=waiting reason=lock"
   flock 9 || exit 75
+  # A note left by a sweep that yielded to this wait-mode producer is spent here.
+  rm -f "$handoff_note_path" 2>/dev/null || true
   cleanup_priority_request
 fi
 
