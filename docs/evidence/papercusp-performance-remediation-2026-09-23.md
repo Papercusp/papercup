@@ -2511,3 +2511,58 @@ receipt at 01:51:51Z; gateway receipts and fingerprints on WI-10002830.
 `tool_invocations.output_size` is conservatively reported as serialized result
 units: its dispatch fallback is `JSON.stringify(r.content).length`, not a
 measured UTF-8 byte count. No resource-pressure cause is inferred from it.
+
+### Ingestion phase attribution instrumentation — 02:19Z
+
+The existing `runSessionIngestOnce` stats now carry exclusive monotonic wall-time
+buckets for setup, historical backfills, discovery/stat, state loading, candidate
+metadata, decoding, per-file writes, metadata repair, chats, and other bookkeeping.
+These include awaited and scheduling time; they are not CPU or connection-acquisition
+measurements. Failed async operations retain their elapsed time. The existing
+periodic-workflow log includes the bounded phase object and reports completed
+no-progress sweeps lasting at least five seconds, closing the prior detector gap
+where slow unchanged-file work could be invisible. Skipped sweeps remain suppressed.
+
+The canonical five-file run at local source HEAD `37bc2d4c32` plus these edits passed
+57 tests, with no skips, exit 0. It covers phase partitioning with deterministic
+filesystem/query costs, unchanged-byte skips with metadata repair, failed-write
+timing without offset advancement, sweep-latch release, slow-empty logging,
+faithful-parts-only logging, and the existing parser/metadata/walker/yield guards.
+This is source correctness evidence, not a production latency result.
+
+Command: `PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-phases.test.ts packages/operator-core/lib/search/session-ingest.test.ts packages/operator-core/lib/search/session-ingest-adv-metadata.test.ts packages/operator-core/lib/search/session-ingest-walker.test.ts packages/operator-core/lib/search/session-ingest-yield.test.ts`.
+Receipt: `/tmp/p008-ingest-phase-matrix-20261001.log`, started 02:18:35.867Z.
+Source SHA-256: `session-ingest.ts` =
+`a63bb35bca2738b33f62084917b9c3fa3b522ca21d37946000ae8786449529a3`;
+test = `37a5bedc387b77b6b201a076f8ffcb5e348eee7725ddbd0a3f9073af6694839d`;
+`periodic-workflows.ts` = `832d8450193ba0b3c48576319091996f536747da8c5392dc5010b005abe69854`.
+Scoped diff-check passed. The separate `npm run lint:tsc` failed on seven regressed
+files outside these edited paths; its receipt is
+`/tmp/p008-ingest-phase-typecheck-20261001.log`. No whole-tree typecheck pass is claimed.
+
+The current-build route read names an isolated bg-host assertion via
+`node scripts/with-test-pg.mjs --isolated-runtime -- <current-build background assertion>`:
+disposable migrated DB, HOME/keychain/workspace/ports, stripped runtime credentials,
+private-state-write and teardown proof. It still requires a concrete background
+assertion. The same read reports bg-host build `244f7d127c` from runtime-vintage,
+with `containsChange:false`; the observed PID remains 697212. The new phase data has
+not been measured on a loaded runtime. No shared-host restart or live adoption is claimed.
+
+A bounded 01:45:08–02:10:08Z preflight retained 67 matching journal records (cap 160)
+from that service. Its 02:09:18Z pass ingested 57 turns and 655 parts from 84 decoded
+files after 4846 candidate visits, taking 28810ms with zero reported errors.
+The existing profile `loop-saturation-1790820554533-pid697212-p95_52ms.cpuprofile`
+overlaps that pass: 301 samples cover 2984.296ms, with 30.316ms of sample weight
+having a `runSessionIngestOnce` ancestor in the loaded `dist-host/hono-host.mjs`.
+Async continuations and unsampled periods are not attributed by that ancestry test;
+this is neither an upper bound on ingestion CPU nor an explanation of the full
+pass duration. The retained window also contains acquire-plus-SELECT1 shed messages
+and delayed-recorder-rotation messages. Those labels do not establish database,
+memory, CPU, or ingestion causality.
+
+Evidence: `/tmp/p008-ingest-phase-preflight-20261001.json` (task
+`0muowcorpcbsv2fcmr0`, completed exit 0),
+`/tmp/p008-ingest-profile-attribution-20261001.json`, and the profile path above.
+**P-008 remains open and unaccepted.** Next: exercise the maintained isolated
+background route with a pinned workload and explicit cleanup, then compare its
+phase costs before choosing a performance fix.

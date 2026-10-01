@@ -8,6 +8,7 @@ import { listKnowledgePackCandidates } from '../../knowledge-packs/candidates';
 // the { count, candidates } envelope (self-improvement-consume-edges P-032 / B-11).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../knowledge-packs/candidates', () => ({ listKnowledgePackCandidates: vi.fn() }));
+vi.mock('../../workspace-registry', () => ({ resolveConcreteWorkspaceId: vi.fn((explicit, principal) => explicit ?? principal ?? 'ws-active') }));
 
 const mockFlag = vi.mocked(getFlag);
 const mockList = vi.mocked(listKnowledgePackCandidates);
@@ -36,15 +37,19 @@ describe('knowledge_packs:candidates tool', () => {
 
   it('defaults the status to "pending" (the review queue), no limit key', async () => {
     await callTool({});
-    expect(mockList).toHaveBeenCalledWith({ status: 'pending' });
+    expect(mockList).toHaveBeenCalledWith({ status: 'pending', workspaceId: 'ws-active' });
   });
 
   it('forwards an explicit status + limit', async () => {
     await callTool({ status: 'adopted', limit: 5 });
-    expect(mockList).toHaveBeenCalledWith({ status: 'adopted', limit: 5 });
+    expect(mockList).toHaveBeenCalledWith({ status: 'adopted', limit: 5, workspaceId: 'ws-active' });
   });
 
   it('returns { ok, count, candidates }', async () => {
     expect(body(await callTool({}))).toMatchObject({ ok: true, count: 2 });
+  });
+  it('scopes identity review to the principal workspace', async () => {
+    await callTool({ identityId: 'local-identity' }, { principal: { workspaceId: 'ws-other' } });
+    expect(mockList).toHaveBeenCalledWith({ status: 'pending', workspaceId: 'ws-other', identityId: 'local-identity' });
   });
 });

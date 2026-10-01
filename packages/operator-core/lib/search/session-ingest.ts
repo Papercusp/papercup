@@ -231,7 +231,21 @@ export interface IngestStats {
   /** First few error messages of the sweep — diagnosis without log spam. */
   errorSample?: string[];
   durationMs: number;
+  /** Exclusive wall-time buckets, including await/scheduling time, not CPU time.
+   * `other` covers sweep bookkeeping outside the measured operations. */
+  phaseMs?: Record<'setup' | 'history' | 'discovery' | 'state' | 'metadata' | 'decode' | 'writes' | 'metadataBackfill' | 'chats' | 'other', number>;
   skipped?: string;
+}
+
+/** Keep slow, empty sweeps observable as well as useful or failed sweeps. */
+export function sessionIngestLogLine(stats: IngestStats): string | null {
+  const parts = stats.partsInserted ?? 0;
+  if (stats.skipped || (stats.turnsInserted === 0 && parts === 0 && stats.errors === 0 && stats.durationMs < 5000)) {
+    return null;
+  }
+  return `[session-ingest] +${stats.turnsInserted} turn(s) +${parts} part(s) from ${stats.filesIngested} file(s) ` +
+    `+ ${stats.chatsIngested} chat turn(s) (${stats.filesScanned} scanned, ${stats.errors} error(s), ${stats.durationMs}ms)` +
+    (stats.phaseMs ? ` phases=${JSON.stringify(stats.phaseMs)}` : '');
 }
 
 /** Injected boilerplate prefixes that would pollute recall — not real speech. */
@@ -2710,18 +2724,29 @@ export function getLastSessionIngestStats(): IngestStats | null {
 
 /** One bounded ingest sweep across every adapter. Never throws. */
 export async function runSessionIngestOnce(): Promise<IngestStats> {
-  const started = Date.now();
+  const started = performance.now();
   const stats: IngestStats = {
     filesScanned: 0, filesIngested: 0, turnsInserted: 0, chatsIngested: 0, countBackfillFiles: 0,
     partsBackfillFiles: 0,
     errors: 0, durationMs: 0,
   };
   if (__sweep.running) return { ...stats, skipped: 'already_running' };
+  const phaseMs: NonNullable<IngestStats['phaseMs']> = {
+    setup: 0, history: 0, discovery: 0, state: 0, metadata: 0,
+    decode: 0, writes: 0, metadataBackfill: 0, chats: 0, other: 0,
+  };
+  // Measure at existing operation boundaries: no new timer or per-file async hop.
+  // finally retains the cost of failed work without changing its error contract.
+  async function measure<T>(phase: keyof typeof phaseMs, work: () => Promise<T>): Promise<T> {
+    const began = performance.now();
+    try { return await work(); }
+    finally { phaseMs[phase] += performance.now() - began; }
+  }
   __sweep.running = true;
   try {
     let enabled = true;
     try {
-      enabled = await getFlag(FLAGS.SESSION_SEARCH, 'system:session-ingest');
+      enabled = await measure('setup', () => getFlag(FLAGS.SESSION_SEARCH, 'system:session-ingest'));
     } catch {
       /* fail-open: flag default is ON */
     }
@@ -2729,13 +2754,13 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
 
     const { sql } = getOrgPg();
     try {
-      stats.partsBackfillFiles = await backfillHistoricalParts(sql);
+      stats.partsBackfillFiles = await measure('history', () => backfillHistoricalParts(sql));
     } catch (err) {
       stats.errors += 1;
       console.warn(`[session-ingest] historical parts backfill skipped (non-fatal): ${(err as Error).message}`);
     }
     try {
-      stats.countBackfillFiles = await backfillHistoricalCounts(sql);
+      stats.countBackfillFiles = await measure('history', () => backfillHistoricalCounts(sql));
     } catch (err) {
       stats.errors += 1;
       console.warn(`[session-ingest] historical count backfill skipped (non-fatal): ${(err as Error).message}`);
@@ -2760,7 +2785,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     // sweep, never the ingest (same contract as writeUsageRollup).
     let substitutionRows: SubstitutionRow[] = [];
     try {
-      substitutionRows = await getSubstitutionRows(activeWorkspaceId());
+      substitutionRows = await measure('setup', () => getSubstitutionRows(activeWorkspaceId()));
     } catch (err) {
       stats.errors += 1;
       console.warn(`[session-ingest] substitution registry read failed (buckets skipped): ${(err as Error).message}`);
@@ -2770,7 +2795,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       if (budget.turns <= 0) break;
       let candidates: Array<{ path: string; size: number; mtimeMs: number }> = [];
       try {
-        candidates = await listCandidateFiles(adapter, sinceMs);
+        candidates = await measure('discovery', () => listCandidateFiles(adapter, sinceMs));
       } catch (err) {
         stats.errors += 1;
         console.warn(`[session-ingest] ${adapter.sourceKind} enumerate failed: ${(err as Error).message}`);
@@ -2781,7 +2806,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       // Bulk-load this adapter's ingest state ONCE — a per-file SELECT at ~23k
       // candidate files was minutes of serial round-trips (perf anti-pattern
       // A1: per-item queries in a loop; observed live 2026-07-05).
-      const stateRows = await sql<Array<{
+      const stateRows = await measure('state', () => sql<Array<{
         file_path: string; byte_offset: string | number; turn_count: number; part_count: number | null;
         prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
         counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
@@ -2791,7 +2816,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
                counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
-      `;
+      `);
       const stateMap = new Map<string, IngestState>(
         stateRows.map((r) => [r.file_path, {
           byte_offset: Number(r.byte_offset),
@@ -2815,7 +2840,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           .map((candidate) => adapter.meta(candidate.path).advSessionId)
           .filter((id): id is number => id != null);
         try {
-          ompOwnersByAdvSession = await loadOmpSessionOwners(sql, managedIds);
+          ompOwnersByAdvSession = await measure('state', () => loadOmpSessionOwners(sql, managedIds));
         } catch (err) {
           stats.errors += 1;
           if ((stats.errorSample ??= []).length < 3) {
@@ -2827,6 +2852,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
         if (budget.turns <= 0 || filesThisAdapter >= MAX_FILES_PER_TICK) break;
         stats.filesScanned += 1;
         try {
+          const metadataStarted = performance.now();
           const st = stateMap.get(cand.path) ?? { ...EMPTY_STATE };
           const meta = adapter.meta(cand.path);
           const owner = meta.owner ?? (
@@ -2845,13 +2871,14 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
               codexMetadataBackfill.set(codexMeta.advSessionId, codexMeta);
             }
           }
+          phaseMs.metadata += performance.now() - metadataStarted;
           if (cand.size <= st.byte_offset) continue; // nothing new
           filesThisAdapter += 1;
           const { turns, parts, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId, usage } =
-            await readNewLines(
+            await measure('decode', () => readNewLines(
               cand.path, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id, adapter.usageOf,
               substitutionRows, adapter.parseParts,
-            );
+            ));
           if (newOffset === st.byte_offset) continue;
           const rows: TurnRow[] = turns.map((t, i) => ({
             workspace_id: 'default',
@@ -2866,23 +2893,23 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             text: t.text,
             prompt_hash: t.promptHash ?? null,
           }));
-          stats.turnsInserted += await insertTurns(sql, rows);
+          stats.turnsInserted += await measure('writes', () => insertTurns(sql, rows));
           // P-001 faithful parts — best-effort by contract (see insertParts):
           // a parts failure costs the render pane its fidelity for this window,
           // never the recall index and never the offset.
           try {
-            stats.partsInserted = (stats.partsInserted ?? 0) + await insertParts(sql, partRowsFrom(parts, {
+            stats.partsInserted = (stats.partsInserted ?? 0) + await measure('writes', () => insertParts(sql, partRowsFrom(parts, {
               sourceKind: adapter.sourceKind,
               sessionId: meta.sessionId,
               owner,
               partCount: st.part_count,
-            }));
+            })));
           } catch (err) {
             if ((stats.errorSample ??= []).length < 3) {
               stats.errorSample.push(`parts ${meta.sessionId}: ${(err as Error).message.slice(0, 160)}`);
             }
           }
-          await writeState(sql, adapter.sourceKind, cand.path, {
+          await measure('writes', () => writeState(sql, adapter.sourceKind, cand.path, {
             byte_offset: newOffset,
             turn_count: st.turn_count + turns.length,
             part_count: st.part_count + parts.length,
@@ -2895,11 +2922,11 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             counts_backfilled_at: new Date().toISOString(),
             sessionId: meta.sessionId,
             mtimeMs: cand.mtimeMs,
-          });
+          }));
           // P-002 — deliberately AFTER writeState and independently caught: the
           // substitution metric must never fail, retry, or wedge an ingest.
           try {
-            await writeUsageRollup(sql, adapter.sourceKind, meta.sessionId, usage);
+            await measure('writes', () => writeUsageRollup(sql, adapter.sourceKind, meta.sessionId, usage));
           } catch (err) {
             if ((stats.errorSample ??= []).length < 3) {
               stats.errorSample.push(`usage-rollup ${meta.sessionId}: ${(err as Error).message.slice(0, 160)}`);
@@ -2916,18 +2943,18 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           // turn_count on a transient failure would restart turn_idx at 0 and
           // silently drop every subsequent turn to ON CONFLICT DO NOTHING.
           try {
-            await sql`
+            await measure('writes', () => sql`
               UPDATE harness_shared.session_ingest_state
                  SET last_error = ${(err as Error).message.slice(0, 300)}, updated_at = now()
                WHERE source_kind = ${adapter.sourceKind} AND file_path = ${cand.path}
-            `;
+            `);
           } catch { /* bookkeeping best-effort */ }
         }
       }
-      await backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill);
+      await measure('metadataBackfill', () => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill));
       if (adapter.sourceKind === 'codex') {
         try {
-          await backfillCodexAdvSessions(sql, codexMetadataBackfill);
+          await measure('metadataBackfill', () => backfillCodexAdvSessions(sql, codexMetadataBackfill));
         } catch (err) {
           stats.errors += 1;
           if ((stats.errorSample ??= []).length < 3) {
@@ -2939,14 +2966,19 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
 
     if (budget.turns > 0) {
       try {
-        stats.chatsIngested = await syncAgentChats(sql, budget);
+        stats.chatsIngested = await measure('chats', () => syncAgentChats(sql, budget));
       } catch (err) {
         stats.errors += 1;
         console.warn(`[session-ingest] agent_chat sync failed: ${(err as Error).message}`);
       }
     }
 
-    stats.durationMs = Date.now() - started;
+    const durationMs = performance.now() - started;
+    phaseMs.other = Math.max(0, durationMs - Object.values(phaseMs).reduce((sum, ms) => sum + ms, 0));
+    stats.phaseMs = Object.fromEntries(
+      Object.entries(phaseMs).map(([phase, ms]) => [phase, Math.round(ms * 10) / 10]),
+    ) as typeof phaseMs;
+    stats.durationMs = Math.round(durationMs);
     __sweep.last = stats;
     return stats;
   } finally {

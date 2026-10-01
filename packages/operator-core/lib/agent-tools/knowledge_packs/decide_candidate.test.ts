@@ -3,6 +3,7 @@ import decideTool from './decide_candidate';
 import { getFlag } from '@papercusp/flags/server';
 import { decideKnowledgePackCandidate } from '../../knowledge-packs/candidates';
 import { getSessionUserOrDefault } from '../../auth';
+import { proposeIdentityMemory } from '../../knowledge-packs/identity-learning';
 
 // PG-free unit: the decide core has its own suite; this pins the TOOL — flag
 // gate, the by=session-user wiring, the bulk { ok, results, counts } envelope,
@@ -16,6 +17,7 @@ vi.mock('../../workspace-registry', () => ({
 }));
 vi.mock('../../knowledge-packs/candidates', () => ({ decideKnowledgePackCandidate: vi.fn() }));
 vi.mock('../../auth', () => ({ getSessionUserOrDefault: vi.fn() }));
+vi.mock('../../knowledge-packs/identity-learning', () => ({ proposeIdentityMemory: vi.fn(async () => ({ ok: true, staged: true, id: 'proposal' })) }));
 
 const mockFlag = vi.mocked(getFlag);
 const mockDecide = vi.mocked(decideKnowledgePackCandidate);
@@ -31,11 +33,19 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 const body = (r: { data?: any; content?: Array<{ text: string }> }) => (r.data ?? JSON.parse(r.content![0].text));
 
 describe('knowledge_packs:decide_candidate tool (bulk keyed-array)', () => {
+  it('proposes only through the explicit write operation with server-derived writer/workspace', async () => {
+    mockFlag.mockResolvedValue(true);
+    const result = body(await callTool({ action: 'propose', memoryId: 'memory', identityId: 'identity' }, {
+      uiClientId: 'writer', principal: { workspaceId: 'ws-writer' },
+    }));
+    expect(result).toMatchObject({ ok: true, staged: true, id: 'proposal' });
+    expect(proposeIdentityMemory).toHaveBeenCalledWith({ memoryId: 'memory', identityId: 'identity', packId: undefined, ownerId: 'writer', workspaceId: 'ws-writer' });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
     mockUser.mockResolvedValue({ id: 'owner-1' } as Awaited<ReturnType<typeof getSessionUserOrDefault>>);
-    mockDecide.mockResolvedValue({ ok: true, action: 'adopt', packVersion: '1.1.0' } as unknown as Awaited<
+    mockDecide.mockResolvedValue({ ok: true, action: 'adopt', packId: 'fleet-lessons', packVersion: '1.1.0' } as unknown as Awaited<
       ReturnType<typeof decideKnowledgePackCandidate>
     >);
   });

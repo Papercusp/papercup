@@ -2,8 +2,11 @@
 Description=Papercusp Postgres backup — hourly (EI-10733)
 
 [Timer]
-# Hourly. Runs db-backup.sh (pg_dump -Fd -j); the 2026-09-24 host run lasted
+# Hourly at :10. Runs db-backup.sh (pg_dump -Fd -j); the 2026-09-24 host run lasted
 # 36m13s, so this worker can approach the one-hour timer interval.
+# D-007 phases the non-restart-safe priority dump after the :00/:30 Kopia
+# schedule. The first required dump-source capture measured 7m15s; :10 leaves
+# at least 9m25s before the earliest dump waiter can stop that hot snapshot.
 #
 # WHY OnCalendar+Persistent, not OnUnitInactiveSec (EI-10733 follow-up,
 # su-a1a71 2026-07-14): OnUnitInactiveSec measures from the service's last
@@ -20,7 +23,7 @@ Description=Papercusp Postgres backup — hourly (EI-10733)
 # again as soon as it becomes inactive. Keep the timer target short so a long
 # dump cannot hold the calendar timer active; the dispatcher queues this worker
 # with --no-block. DeferReactivation= is only available in systemd 257+.
-OnCalendar=hourly
+OnCalendar=*-*-* *:10:00
 Persistent=true
 RandomizedDelaySec=90
 AccuracySec=1min

@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-010 live Anthropic gateway subscription, billing, and registration guide",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "startedAt": "2026-10-01T02:10:58.284Z",
+  "finishedAt": "2026-10-01T02:19:45.000Z",
+  "exitCode": 0,
+  "summary": "R-32 subscription HTTP200 and R-33 real included billing verified on restarted gateway; R-34 PG-authored registration guide read and updated. Console API-key probe rejected401; no API-credit spend/funding claimed. Credential prerequisite assigned as WI-10004490; temporary account removed and gateway hot-reloaded.",
+  "assertions": [
+    {
+      "id": "r32-subscription-http200-after-restart",
+      "passed": true,
+      "evidence": "Gateway processStartedAt=1790819730329 (2026-10-01T01:55:30.329Z), build2dc4a60da4 contains gateway.ts change per dev:pipeline_position. POST/v1/messages at2026-10-01T02:10:58.284Z returned200; stream had message_start and message_stop. Request req_011CfahsQnnDA1NusbRhncDQ, served aviynw6."
+    },
+    {
+      "id": "r33-billing-from-real-response",
+      "passed": true,
+      "evidence": "Same response unified status allowed_warning, overage-status rejected, overage-disabled-reason org_level_disabled. Immediate/stats read from same process had billing.byAccount.aviynw6 state included,authMode oauth,meteredNow false. Included allowance remains usable with disabled overage."
+    },
+    {
+      "id": "r34-registration-guide",
+      "passed": true,
+      "evidence": "docs:author overwrite returned ok:true, anchored:true,status:fresh for agent-insights/anthropic-usage-credits-and-api-key-accounts.mdx. Guide covers apikey:credentials/env/file, included-first overflow, never policy, auth/credit walls, billing stats, exact setup:save_key key/value command, registration and gateway:reload; stores live result and prerequisite WI-10004490."
+    }
+  ],
+  "execution": {
+    "subscription": {
+      "method": "POST",
+      "url": "http://127.0.0.1:8788/v1/messages",
+      "headers": {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "authorization": "Bearer papercusp-gateway",
+        "x-papercusp-owner": "su-ca9e07df-e2dc-4d79-be13-495fbf51749f"
+      },
+      "body": {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 8,
+        "messages": [
+          {
+            "role": "user",
+            "content": "Reply with OK."
+          }
+        ],
+        "stream": true
+      },
+      "startedAt": "2026-10-01T02:10:58.284Z",
+      "finishedAt": "2026-10-01T02:10:58.915Z",
+      "status": 200,
+      "messageStart": true,
+      "messageStop": true,
+      "requestId": "req_011CfahsQnnDA1NusbRhncDQ",
+      "routedAccount": "aviynw6",
+      "billingHeaders": {
+        "anthropic-ratelimit-unified-status": "allowed_warning",
+        "anthropic-ratelimit-unified-overage-status": "rejected",
+        "anthropic-ratelimit-unified-overage-disabled-reason": "org_level_disabled",
+        "anthropic-ratelimit-unified-representative-claim": "seven_day"
+      },
+      "stats": {
+        "processStartedAt": 1790819730329,
+        "account": "aviynw6",
+        "billingState": "included",
+        "authMode": "oauth",
+        "meteredNow": false
+      }
+    },
+    "apiKeyPrerequisite": {
+      "registeredId": "anthropic-console-credits",
+      "credentialRef": "apikey:credentials",
+      "keyPresent": true,
+      "secretExposed": false,
+      "pin": "hard",
+      "startedAt": "2026-10-01T02:14:31.900Z",
+      "finishedAt": "2026-10-01T02:14:32.189Z",
+      "status": 401,
+      "error": {
+        "type": "authentication_error",
+        "message": "invalid x-api-key"
+      },
+      "requestId": "req_011Cfai99wWUr6DukNu8ytMk",
+      "billingState": "api-credits",
+      "authMode": "api-key",
+      "servedRequests": 0,
+      "fundingVerified": false,
+      "successfulApiSpendVerified": false,
+      "cleanup": "accounts:remove returned removed:true; gateway:reload changed:true,version:3 returned original8 OAuth accounts.",
+      "followup": "WI-10004490",
+      "assignee": "su-0da9d55e-30de-4a57-9380-8c81a7e3c99d"
+    },
+    "doc": {
+      "slug": "agent-insights/anthropic-usage-credits-and-api-key-accounts",
+      "path": "apps/operator-docs/src/content/docs/agent-insights/anthropic-usage-credits-and-api-key-accounts.mdx"
+    }
+  },
+  "replication": [
+    "Read dev:pipeline_position for gateway.ts and confirm gateway containsChange before verification. Use existing dev:restart target gateway only if it needs changed code; do not repeat a successful restart.",
+    "POST the recorded small subscription body through :8788 with the actual caller owner id, then inspect returned x-papercusp-routed-account and real unified billing headers.",
+    "Read :8788/stats and require matching processStartedAt plus billing.byAccount[servedId] present with correct state.",
+    "Read docs:get {harness:'engineering',slugs:['agent-insights/anthropic-usage-credits-and-api-key-accounts'],source:true} and require exact registration/credential guidance.",
+    "API-credit verification is a separate external prerequisite: valid funded Console credential, hard-pinned bounded request HTTP200, then served api-credits tally. Current evidence only proves401 rejection."
+  ],
+  "limitations": [
+    "API-key was rejected; successful Console API-credit spend and funding not verified.",
+    "This evidence concerns the actual gateway service, not release-operator promotion or the shared release gate."
+  ]
+}

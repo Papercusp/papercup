@@ -165,7 +165,8 @@ describe('knowledge-pack candidates (real PG, migration 239)', () => {
       'utf8',
     );
     expect(md).toContain('coordinates destructive shared actions');
-    expect(md).toContain('sig-adopt'); // provenance footer
+    expect(md).toContain('adopted from the fleet candidate queue');
+    expect(md).not.toContain('sig-adopt'); // internal signatures stay in the ledger
 
     const [row] = (await listKnowledgePackCandidates({ status: 'adopted' })).filter(
       (r) => r.id === staged.id,
@@ -269,7 +270,13 @@ describe('knowledge-pack candidates (real PG, migration 239)', () => {
 
       const result = await autoAdoptPendingCandidates(
         { packsRoot, workspaceId: WS },
-        { review: async () => ({ verdict: 'pass', reason: 'no conflict (test stub)' }) },
+        { review: async () => ({
+          verdict: 'pass', reason: 'no conflict (test stub)',
+          distilled: {
+            title: 'Coordinate before mutating shared resources',
+            text: 'Find how this project coordinates destructive shared actions; acquire that before mutating.',
+          },
+        }) },
       );
       expect(result.adopted).toBeGreaterThanOrEqual(1);
 
@@ -280,6 +287,9 @@ describe('knowledge-pack candidates (real PG, migration 239)', () => {
         packId: FLEET_LESSONS_PACK_ID,
       });
       expect(row?.decisionNote).toContain('no conflict (test stub)');
+      const adoptedText = await fs.readFile(join(packsRoot, FLEET_LESSONS_PACK_ID, row!.packItemId! + '.md'), 'utf8');
+      expect(adoptedText).toContain('coordinates destructive shared actions');
+      expect(adoptedText).not.toContain('6b29d5e853eb');
     });
 
     it('auto-dismisses a failing candidate, recording the verdict as the decision note', async () => {

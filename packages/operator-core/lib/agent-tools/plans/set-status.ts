@@ -825,11 +825,35 @@ export function flipStatusInBody(
     String.raw`^(\s*[-*]\s+\*\*\s*` + itemId.replace(/-/g, '\\-') + String.raw`\s*\*\*\s+\x60)([a-z-]+)(\x60\s+.*)$`,
     'm',
   );
-  // Search the fence-masked body so a `- **P-NNN**` line inside a
-  // worked-example code fence is never targeted. Match index is valid
-  // against the real body (maskFences preserves length); the item line
-  // is outside any fence, so captured groups equal the real text.
-  const m = re.exec(maskFences(body));
+
+  // `## Now` can contain a presentation line like `- **P-001** `done` ...`
+  // before the real phase item. It is intentionally excluded from
+  // parsePlan().items and from the derived index, but a document-wide first
+  // regex match would edit it and leave the actual item unchanged. Resolve the
+  // same canonical occurrence the index writer sees (last parsed occurrence for
+  // duplicate ids), then use its physical line. Keep the legacy raw-line
+  // fallback for bodies without a parser-recognized phase item.
+  const matchingItems = parsePlan(body).items.filter((item) => item.id === itemId);
+  const parsedItem = matchingItems[matchingItems.length - 1];
+  const lines = body.split('\n');
+  const maskedLines = maskFences(body).split('\n');
+
+  // parsePlan() numbers lines in the body after frontmatter. Translate that to
+  // the original source line so the exact canonical row is edited in place.
+  let frontmatterLineOffset = 0;
+  if (body.startsWith('---')) {
+    const close = body.indexOf('\n---', 3);
+    if (close !== -1) {
+      const afterClose = body.indexOf('\n', close + 4);
+      if (afterClose !== -1) {
+        frontmatterLineOffset = (body.slice(0, afterClose + 1).match(/\n/g) ?? []).length;
+      }
+    }
+  }
+  const lineIndex = parsedItem
+    ? frontmatterLineOffset + parsedItem.lineNumber - 1
+    : maskedLines.findIndex((line) => re.test(line));
+  const m = lineIndex >= 0 && lineIndex < maskedLines.length ? re.exec(maskedLines[lineIndex] ?? '') : null;
   if (!m) return { newBody: body, found: false, oldStatus: null };
 
   const oldStatus = m[2] ?? '';
@@ -851,11 +875,11 @@ export function flipStatusInBody(
   const newLine = `${m[1] ?? ''}${newStatus}${rest}`;
   // Index-based splice rather than body.replace(re, newLine): a string
   // replacement argument would interpret dollar-sign substitution
-  // sequences in the item text as patterns, and body.replace would
-  // re-scan the real body and could hit a fenced match first. m.index
-  // and m[0].length come from the masked body but are valid against
-  // the real body since maskFences preserves length.
-  const newBody = body.slice(0, m.index) + newLine + body.slice(m.index + m[0].length);
+  // sequences in the item text as patterns. The selected physical line came
+  // from the fence-masked body, which preserves length. Preserve CRLF input.
+  const trailingCarriageReturn = lines[lineIndex]!.endsWith('\r') ? '\r' : '';
+  lines[lineIndex] = `${newLine}${trailingCarriageReturn}`;
+  const newBody = lines.join('\n');
   return { newBody, found: true, oldStatus };
 }
 

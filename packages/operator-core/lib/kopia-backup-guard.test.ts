@@ -778,7 +778,15 @@ describe('Kopia managed entrypoint contract', () => {
     expect(timer).toContain('OnCalendar=*:0/30');
     expect(timer).toContain('Unit=papercusp-nonblocking-trigger@kopia-snapshots.service');
     expect(timer).not.toContain('Unit=kopia-snapshots.service');
-    expect(dbTimer).toContain('OnCalendar=hourly');
+    // D-007: the :10 dump preserves a measured source-first window after the
+    // :00 hot run, while the required dump source remains first in each sweep.
+    expect(dbTimer).toMatch(/^OnCalendar=\*-\*-\* \*:10:00$/m);
+    const requiredSourceBlock = hotScript.match(/REQUIRED_SOURCES=\(\n([\s\S]*?)\n  \)/)?.[1] ?? '';
+    const firstRequiredSource = requiredSourceBlock
+      .split('\n')
+      .find((line) => line.trim() !== '')
+      ?.trim();
+    expect(firstRequiredSource).toBe('"${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"');
     expect(dbTimer).toContain('Unit=papercusp-nonblocking-trigger@papercusp-db-backup.service');
     expect(dbTimer).not.toContain('Unit=papercusp-db-backup.service');
     expect(nonblockingTrigger).toContain('Type=oneshot');

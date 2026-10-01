@@ -17,6 +17,7 @@ import {
   shouldFirePlanItemDone,
   type HolderInfo,
 } from './set-status';
+import { deriveIndexFromContent } from './derive-index';
 
 // EI-22377738415938641: the `plan-item:done` EDGE gate. Reported as "the event can precede
 // the durable status transition"; the ledger disproves that (one fire, 560ms AFTER the
@@ -459,6 +460,30 @@ describe('flipStatusInBody', () => {
     expect(out.found).toBe(true);
     expect(out.oldStatus).toBe('wip');
     expect(out.newBody).toContain('`needs-human`');
+  });
+
+  it('targets the parsed phase item when ## Now has an earlier P-NNN summary line', () => {
+    const body = [
+      '---',
+      'title: t',
+      'slug: t',
+      'status: shipped',
+      '---',
+      '',
+      '## Now',
+      '- **P-001** `done` summary placeholder',
+      '',
+      '## Phase — Now',
+      '- **P-001** `todo` the actual work item',
+    ].join('\n');
+
+    const out = flipStatusInBody(body, 'P-001', 'done');
+
+    expect(out.found).toBe(true);
+    expect(out.oldStatus).toBe('todo');
+    expect(out.newBody).toContain('- **P-001** `done` summary placeholder');
+    expect(out.newBody).toContain('- **P-001** `done` the actual work item');
+    expect(deriveIndexFromContent(out.newBody).items.find((item) => item.id === 'P-001')?.status).toBe('done');
   });
 
   describe('note handling (EI-384)', () => {
