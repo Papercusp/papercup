@@ -368,6 +368,11 @@ export interface NewHarnessInput {
   // (the Worker never writes 0 on a failure path).
   authority_unresolved?: number | null;
   authority_unresolved_cause?: string | null;
+  // Optional provenance badge (migration 041 / P-010). 'attestation' ONLY when a
+  // Sigstore build attestation from the reusable cupboard-actions workflow was
+  // verified against the Worker's own pin; 'worker' (the default) otherwise.
+  // A label on a row the Worker already pinned and scanned — never a substitute.
+  verified_by?: 'worker' | 'attestation';
   created_at: number;
 }
 
@@ -391,9 +396,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           release_signature, release_manifest, identity_surface, release_published_at,
           pinned_commit_sha, pinned_tree_digest, pinned_at,
           authority_unresolved, authority_unresolved_cause,
+          verified_by,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -446,6 +452,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.pinned_at ?? null,
       h.authority_unresolved ?? null,
       h.authority_unresolved_cause ?? null,
+      h.verified_by ?? 'worker',
       h.created_at,
       h.created_at,
     )

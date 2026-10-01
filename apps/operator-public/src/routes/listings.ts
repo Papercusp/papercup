@@ -62,6 +62,7 @@ import {
 } from '../auth.ts';
 import { checkAndRecordUserPublishHourly, checkIpListPerMinute, RateLimitError } from '../ratelimit.ts';
 import { isSelfDescribingKind, pinListingContent, type ContentPin } from '../content-pin.ts';
+import { resolveVerifiedBy } from '../attestation.ts';
 
 interface PublishBody {
   listing_kind?: string;             // migration 004; defaults to 'harness'
@@ -1066,6 +1067,19 @@ function registerListingEndpoints(
       // claim); null on every other kind.
       authority_unresolved: pin?.recipeAuthority ? (pin.recipeAuthority.unresolved ? 1 : 0) : null,
       authority_unresolved_cause: pin?.recipeAuthority?.cause ?? null,
+      // P-010 (R-6): the optional provenance badge. Asked ONLY after the Worker has pinned
+      // and scanned the bytes above, and only for a pinned (self-describing) listing — the
+      // attestation binds the `<ref>/` tree digest the Worker computed, never the client's
+      // claim. Any failure (no attestation, bad bundle, GitHub down) stores 'worker'; an
+      // attestation is never a precondition for publishing.
+      verified_by: pin
+        ? await resolveVerifiedBy({
+            repo: `${body.github_owner}/${body.github_name}`,
+            treeDigest: pin.treeDigest,
+            commitSha: pin.commitSha,
+            token: extractBearer(c.req.raw),
+          })
+        : 'worker',
       created_at: now,
     });
     // SPEC-P-004@2: a new SHA is a new VERSION, and the previously approved one
