@@ -8,6 +8,7 @@ import {
 import {
   POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
   POST_GO_RELEASE_CANARY_SCHEMA,
+  postGoReleaseCanaryMinimum,
   validatePostGoReleaseCanary,
   type PostGoReleaseCanaryInput,
 } from './post-go-release-canary';
@@ -93,6 +94,8 @@ function validInput(): PostGoReleaseCanaryInput {
   return {
     schemaVersion: POST_GO_RELEASE_CANARY_SCHEMA,
     candidateSha: CANDIDATE,
+    // A release with no owner ruling: the 72h default applies.
+    releaseVersion: '0.0.29-alpha',
     independentGo: {
       decision: 'GO',
       candidateSha: CANDIDATE,
@@ -265,8 +268,58 @@ describe('post-GO public-release canary readiness', () => {
     const input = validInput();
     input.canary.finishedAt = '2026-08-13T20:00:00.001Z';
     expect(validatePostGoReleaseCanary(input).errors).toContain(
-      'owner-freeze chaos cannot execute before the 72-hour canary finishes',
+      'owner-freeze chaos cannot execute before the canary soak finishes',
     );
+  });
+
+  describe('release-scoped soak minimum (endgame D-128)', () => {
+    /** Shift the whole post-canary sequence so the soak is exactly `hours` long. */
+    function soakOf(hours: number, releaseVersion: string): PostGoReleaseCanaryInput {
+      const input = validInput();
+      input.releaseVersion = releaseVersion;
+      const shift = (72 - hours) * 3_600_000;
+      const back = (iso: string) => new Date(Date.parse(iso) - shift).toISOString();
+      input.canary.finishedAt = back(input.canary.finishedAt);
+      input.canary.observations = input.canary.observations.slice(0, hours + 1);
+      const chaos = input.ownerFreezeChaos;
+      chaos.window = { startedAt: back(chaos.window.startedAt), finishedAt: back(chaos.window.finishedAt) };
+      return input;
+    }
+
+    it('maps 0.0.28-alpha to 24h with its decision ref, and every other release to the 72h default', () => {
+      expect(postGoReleaseCanaryMinimum('0.0.28-alpha')).toEqual({
+        minimumDurationMs: 24 * 3_600_000,
+        decisionRef: 'p2p-public-release-endgame-2026-09-01#D-128',
+      });
+      for (const other of ['0.0.29-alpha', '0.0.28', '0.0.28-alpha.1', '', 'toString', undefined]) {
+        expect(postGoReleaseCanaryMinimum(other)).toEqual({
+          minimumDurationMs: POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
+          decisionRef: null,
+        });
+      }
+      expect(POST_GO_RELEASE_CANARY_MIN_DURATION_MS).toBe(72 * 3_600_000);
+    });
+
+    it('rejects a 24h soak for a release without an owner ruling', () => {
+      const verdict = validatePostGoReleaseCanary(soakOf(24, '0.0.29-alpha'));
+      expect(verdict.errors).toContain('canary must run for an actual minimum of 72 hours');
+    });
+
+    it('rejects a 0.0.28-alpha soak one hour short of 24h, naming the ruling', () => {
+      const input = soakOf(24, '0.0.28-alpha');
+      input.canary.finishedAt = new Date(Date.parse(input.canary.finishedAt) - 1).toISOString();
+      expect(validatePostGoReleaseCanary(input).errors).toContain(
+        'canary must run for an actual minimum of 24 hours (0.0.28-alpha, p2p-public-release-endgame-2026-09-01#D-128)',
+      );
+    });
+
+    it('requires a well-formed releaseVersion', () => {
+      const input = validInput();
+      input.releaseVersion = 'latest';
+      expect(validatePostGoReleaseCanary(input).errors).toContain(
+        'releaseVersion must name the shipping release (e.g. 0.0.28-alpha)',
+      );
+    });
   });
 
   it('rejects narrative freeze claims when the Phase G authority evidence is invalid', () => {

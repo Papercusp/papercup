@@ -1,0 +1,199 @@
+/**
+ * resource-atomic-semaphore — one-round-trip shared-semaphore operations
+ * (locks sql/030; papercusp-log-performance-remediation-2026-09-23 P-014(e),
+ * WI-10004964).
+ *
+ * The host-wide optional-memory admission used to hold the domain-global
+ * exclusive advisory key across ~10 client round trips per operation, so the
+ * semaphore serialized against itself (measured 2026-10-01: 543k waits at a
+ * 35ms mean). The atomic ops take the shared domain gate + an exclusive
+ * per-resource key inside ONE statement. These tests pin the properties the
+ * change must keep (capacity, writer priority, drain completion, expiry
+ * reporting) and the two it adds: a domain-global holder still blocks them,
+ * and a different resource's key does not.
+ *
+ * Live papercusp_su (or the throwaway one under scripts/with-test-pg.mjs); a
+ * unique resource name + coordination domain per run keeps state isolated.
+ */
+
+import { describe, it, expect } from 'vitest';
+import {
+  ensureBootstrap,
+  getTxPool,
+  tryAcquireResource,
+  upsertResource,
+  acquireSharedResourceAtomic,
+  heartbeatSharedResourceAtomic,
+  releaseSharedResourceAtomic,
+  SU_LOCKS_FEATURE_KEY,
+} from '../su-lock-store';
+import { inWorkspaceTxn } from '../in-workspace-txn';
+
+async function dbLive(): Promise<boolean> {
+  try {
+    await getTxPool()`SELECT 1`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let seq = 0;
+const unique = (prefix: string) => `${prefix}-${Date.now()}-${process.pid}-${seq++}`;
+
+async function registered(ws: string, maxHolders: number | null): Promise<string> {
+  const resource = unique('atomic-sem');
+  await inWorkspaceTxn(ws, 'admin', (tx) =>
+    upsertResource(tx, { resource, description: 'atomic semaphore test', max_holders: maxHolders }),
+  );
+  return resource;
+}
+
+const acquire = (ws: string, resource: string, owner: string, lockTimeoutMs?: number) =>
+  acquireSharedResourceAtomic({
+    coordinationDomain: ws,
+    resource,
+    owner,
+    ownerLabel: `atomic:${owner}`,
+    reason: 'atomic semaphore test',
+    ttlSec: 60,
+    lockTimeoutMs,
+  });
+
+/** Hold `key` (within SU_LOCKS_FEATURE_KEY) in an open transaction until the
+ *  returned release() is called. */
+async function holdAdvisoryKey(key: string): Promise<{ release: () => Promise<void> }> {
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  let held!: () => void;
+  const isHeld = new Promise<void>((resolve) => (held = resolve));
+  const txn = getTxPool().begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(${SU_LOCKS_FEATURE_KEY}::int, hashtext(${key}))`;
+    held();
+    await gate;
+  });
+  await isHeld;
+  return {
+    release: async () => {
+      open();
+      await txn;
+    },
+  };
+}
+
+describe('one-round-trip shared semaphore (locks sql/030, P-014(e))', async () => {
+  const live = await dbLive();
+
+  it.skipIf(!live)('never admits more than max_holders under concurrent atomic acquires', async () => {
+    await ensureBootstrap();
+    const ws = unique('atomic-ws');
+    const res = await registered(ws, 2);
+
+    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => acquire(ws, res, `o${i}`)));
+    const grantedIdx = results.flatMap((r, i) => (r.ok ? [i] : []));
+    expect(grantedIdx).toHaveLength(2);
+    expect(results.filter((r) => !r.ok && r.reason === 'at_capacity')).toHaveLength(10);
+    const [rows] = await getTxPool()<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM agent_resource_locks
+       WHERE coordination_domain = ${ws} AND resource = ${res} AND expires_ts > clock_timestamp()`;
+    expect(rows.n).toBe(2);
+
+    // A holder's refresh does not consume a fresh slot.
+    const holder = `o${grantedIdx[0]}`;
+    expect((await acquire(ws, res, holder)).ok).toBe(true);
+
+    // An atomic release frees the slot for a newcomer.
+    const first = results[grantedIdx[0]];
+    if (!first.ok) throw new Error('unreachable');
+    expect(
+      await releaseSharedResourceAtomic({ coordinationDomain: ws, resource: res, owner: holder, lockId: first.lock_id }),
+    ).toEqual({ released: 1, expired: false });
+    expect((await acquire(ws, res, 'late')).ok).toBe(true);
+  });
+
+  it.skipIf(!live)('keeps writer priority, lets an incumbent renew, and completes the drain on release', async () => {
+    await ensureBootstrap();
+    const ws = unique('atomic-ws');
+    const res = await registered(ws, null);
+
+    const incumbent = await acquire(ws, res, 'incumbent');
+    expect(incumbent.ok).toBe(true);
+    if (!incumbent.ok) return;
+
+    const writer = await inWorkspaceTxn(ws, 'writer', (tx) =>
+      tryAcquireResource(tx, {
+        coordinationDomain: ws,
+        resource: res,
+        mode: 'exclusive',
+        owner: 'writer',
+        ownerLabel: 'writer',
+        reason: 'atomic semaphore test',
+        ttlSec: 60,
+      }),
+    );
+    expect(writer.ok && writer.status).toBe('draining');
+
+    expect(await acquire(ws, res, 'newcomer')).toEqual({ ok: false, reason: 'exclusive_pending' });
+    expect((await acquire(ws, res, 'incumbent')).ok).toBe(true); // EI-23229103052811419
+
+    await releaseSharedResourceAtomic({ coordinationDomain: ws, resource: res, owner: 'incumbent', lockId: incumbent.lock_id });
+    const [row] = await getTxPool()<Array<{ status: string; fence_seq: number }>>`
+      SELECT status, fence_seq::int AS fence_seq FROM agent_resource_locks
+       WHERE coordination_domain = ${ws} AND resource = ${res} AND owner = 'writer'`;
+    expect(row.status).toBe('held');
+    expect(row.fence_seq).toBeGreaterThan(0);
+  });
+
+  it.skipIf(!live)('reports an expired lease on release and refuses to heartbeat it', async () => {
+    await ensureBootstrap();
+    const ws = unique('atomic-ws');
+    const res = await registered(ws, 2);
+    const a = await acquire(ws, res, 'a');
+    const b = await acquire(ws, res, 'b');
+    if (!a.ok || !b.ok) throw new Error('setup acquire failed');
+    await getTxPool()`
+      UPDATE agent_resource_locks SET expires_ts = clock_timestamp() - interval '1 second'
+       WHERE coordination_domain = ${ws} AND resource = ${res}`;
+
+    expect(await releaseSharedResourceAtomic({ coordinationDomain: ws, resource: res, owner: 'a', lockId: a.lock_id })).toEqual({
+      released: 0,
+      expired: true,
+    });
+    expect(
+      (await heartbeatSharedResourceAtomic({ coordinationDomain: ws, resource: res, owner: 'b', lockId: b.lock_id, ttlSec: 60 }))
+        .extended,
+    ).toBe(false);
+
+    const fresh = await acquire(ws, res, 'c');
+    if (!fresh.ok) throw new Error('fresh acquire refused');
+    const beat = await heartbeatSharedResourceAtomic({ coordinationDomain: ws, resource: res, owner: 'c', lockId: fresh.lock_id, ttlSec: 60 });
+    expect(beat.extended).toBe(true);
+    expect(beat.expires_ts!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it.skipIf(!live)('waits for a domain-global holder but not for another resource key', async () => {
+    await ensureBootstrap();
+    const ws = unique('atomic-ws');
+    const res = await registered(ws, 2);
+    const other = await registered(ws, 2);
+
+    // Rolling compatibility: an operation holding the exclusive domain key (the
+    // inWorkspaceTxn scope with no paths, including older processes) blocks.
+    const domainHolder = await holdAdvisoryKey(`su:${ws}`);
+    try {
+      await expect(acquire(ws, res, 'blocked', 200)).rejects.toMatchObject({ code: '55P03' });
+    } finally {
+      await domainHolder.release();
+    }
+
+    // Per-resource independence: holding one resource's key blocks only it.
+    const resourceHolder = await holdAdvisoryKey(`su-resource:${ws}:${res}`);
+    try {
+      expect((await acquire(ws, other, 'free', 200)).ok).toBe(true);
+      await expect(acquire(ws, res, 'blocked', 200)).rejects.toMatchObject({ code: '55P03' });
+    } finally {
+      await resourceHolder.release();
+    }
+    expect((await acquire(ws, res, 'after', 200)).ok).toBe(true);
+  });
+});

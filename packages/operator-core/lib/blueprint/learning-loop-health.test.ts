@@ -87,15 +87,36 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     expect(scout.activitySource).toBe('scout_ticks');
   });
 
-  it('marks Scout stale when routine fire is fresh but newer than scout_ticks by the grace window', () => {
+  it('lets a fresh Scout fire finish when the previous tick is older than the activity grace', () => {
+    const firedAt = NOW - 30_000;
+    const lastActivityAt = firedAt - 31.4 * 60_000;
     const [scout] = computeLearningLoopHealth(
       [LOOPS[1]],
-      [sRow('scout', { lastFiredAt: new Date(NOW).toISOString() })],
+      [sRow('scout', { lastFiredAt: new Date(firedAt).toISOString() })],
       {
         nowMs: NOW,
         staleAfterDays: 1,
         activityByBlueprintId: {
-          scout: { lastActivityAt: new Date(NOW - 20 * 60_000).toISOString(), source: 'scout_ticks' },
+          scout: { lastActivityAt: new Date(lastActivityAt).toISOString(), source: 'scout_ticks' },
+        },
+        activityLagGraceMs: 30 * 60_000,
+      },
+    );
+
+    expect(scout.status).toBe('firing');
+    expect(scout.daysSinceFire).toBe(0);
+    expect(scout.daysSinceActivity).toBe(0);
+  });
+
+  it('marks Scout stale when a fire remains without activity past the grace', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: new Date(NOW - 20 * 60_000).toISOString() })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 1,
+        activityByBlueprintId: {
+          scout: { lastActivityAt: new Date(NOW - 40 * 60_000).toISOString(), source: 'scout_ticks' },
         },
         activityLagGraceMs: 5 * 60_000,
       },

@@ -33,10 +33,37 @@ vi.mock('./fleet/assignments', async (original) => {
 });
 
 const { getAllPlanItemCoverage } = await import('./plan-item-coverage');
-type Phase = { sql: string; wallMs: number; rows: number; ok: boolean; error?: string };
+type Phase = { sql: string; parameters?: unknown[]; wallMs: number; rows: number; ok: boolean; error?: string };
 let phases: Phase[] = [];
 let root: postgres.Sql | undefined;
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const confidenceMethod = { metric: 'per-window p95 reader wallMs, candidate minus control',
+  method: 'percentile bootstrap of the mean paired difference', confidence: 0.95,
+  seed: 0x10004889, resamples: 10_000, minimumCompletePairs: 10 };
+function comparison(samples: any[], concurrency: number) {
+  const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1];
+  const differences: number[] = [];
+  for (const window of [...new Set(samples.filter(s => s.concurrency === concurrency).map(s => s.window))]) {
+    const outcomes = (arm: string) => samples.filter(s => s.concurrency === concurrency && s.window === window && s.arm === arm)
+      .flatMap(s => s.batch);
+    const control = outcomes('control'), candidate = outcomes('candidate');
+    if (control.length && control.length === candidate.length && [...control, ...candidate].every(s => s.ok))
+      differences.push(p95(candidate.map(s => s.wallMs)) - p95(control.map(s => s.wallMs)));
+  }
+  if (differences.length < confidenceMethod.minimumCompletePairs) return { differences, interval: null };
+  let state = confidenceMethod.seed;
+  const random = () => {
+    state = (state + 0x6D2B79F5) | 0;
+    let t = Math.imul(state ^ state >>> 15, 1 | state);
+    t ^= t + Math.imul(t ^ t >>> 7, 61 | t);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+  const means = Array.from({ length: confidenceMethod.resamples }, () =>
+    differences.reduce(sum => sum + differences[Math.floor(random() * differences.length)], 0) / differences.length)
+    .sort((a, b) => a - b);
+  return { differences, interval: [means[250], means[9749]],
+    meanDifference: differences.reduce((a, b) => a + b, 0) / differences.length };
+}
 
 // Preserve postgres-js Builder/Query identity so parameterised nested fragments
 // still compose normally. Observe the actual lazy execution boundary, not when
@@ -51,7 +78,8 @@ function observed(sql: postgres.Sql): postgres.Sql {
       return originalThen((result: any) => {
         if (!recorded) {
           recorded = true;
-          phases.push({ sql: result.statement?.string ?? query.strings?.join('?') ?? 'unknown',
+          phases.push({ sql: result.statement?.string ?? query.statement?.string ?? query.strings?.join('?') ?? 'unknown',
+            parameters: query.parameters,
             wallMs: performance.now() - started, rows: result.length, ok: true });
         }
         return resolve?.(result);
@@ -80,6 +108,27 @@ function normalized(map: Awaited<ReturnType<typeof getAllPlanItemCoverage>>, pla
       links: [...value.links].sort((a, b) => a.workItemId.localeCompare(b.workItemId) || a.rel.localeCompare(b.rel)),
       workers: [...value.workers].sort(),
     }]).sort(([a], [b]) => String(a).localeCompare(String(b)));
+}
+
+// Keep enough evidence to distinguish field disagreement from a moving live
+// input. Values such as human intent remain private; only paths/types/hashes
+// enter the report, with an explicit bound and total mismatch count.
+function changedFields(expected: unknown, actual: unknown) {
+  const fields: { path: string; expectedType: string; actualType: string; expectedHash: string; actualHash: string }[] = [];
+  let count = 0;
+  const hash = (value: unknown) => digest({ type: typeof value, value });
+  const walk = (a: any, b: any, path: string) => {
+    if (hash(a) === hash(b)) return;
+    if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+      for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) walk(a[key], b[key], path + '.' + key);
+      return;
+    }
+    count++;
+    if (fields.length < 32) fields.push({ path, expectedType: typeof a, actualType: typeof b,
+      expectedHash: hash(a), actualHash: hash(b) });
+  };
+  walk(expected, actual, 'selectedCoverage');
+  return { count, fields, truncated: count > fields.length };
 }
 
 afterAll(async () => { await root?.end({ timeout: 5 }); });
@@ -122,10 +171,32 @@ describe('matched plan coverage phase benchmark', () => {
     const fingerprints = Object.fromEntries(['plan-item-coverage.ts','fleet/assignments.ts']
       .map(path => [path, createHash('sha256').update(readFileSync(new URL(path, import.meta.url))).digest('hex')]));
     const startedAt = new Date().toISOString();
+    const sourceSha = execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+    const testFingerprint = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
     let identity: any;
     let serving: any;
     let preflightError: string | undefined;
     let expected: ReturnType<typeof normalized> = [];
+    const explain: Record<string, unknown> = {};
+    const progress = { expectedReads: 4 * windows * requests, completedReads: 0, completedArms: 0 };
+    const report = () => ({ schemaVersion: 2, workItem: 'WI-10004889', startedAt, endedAt: new Date().toISOString(),
+      mode: live ? 'live-read-only' : 'private-PG', host: hostname(), plan, identity, serving, fingerprints,
+      incomplete: true, ...(preflightError ? { error: preflightError } : {}), progress: { ...progress },
+      sourceSha, testFingerprint, confidenceMethod,
+      control: 'full production coverage then exact plan selection', candidate: 'production planSlug restriction',
+      profiles: { concurrency: [1,8], windows, requestsPerSideWindow: requests,
+        cache: 'no coverage result cache; PostgreSQL cache uncontrolled and shared',
+        connection: 'one read-only repeatable-read connection on both sides' },
+      populationHash: digest(expected), samples, explain,
+      comparisons: [1,8].map(concurrency => ({ concurrency, ...comparison(samples, concurrency) })),
+      limitations: ['SQL wall includes queue/transfer/decoding; not database CPU or isolated JSON extraction.',
+        'Shared PostgreSQL cache is not a cold-cache benchmark.',
+        'This is the production reader on frozen live data, not HTTP end-to-end timing.'],
+    });
+    const persist = (complete = false) => {
+      if (process.env.PAPERCUSP_P010_REPORT) writeFileSync(process.env.PAPERCUSP_P010_REPORT,
+        JSON.stringify({ ...report(), incomplete: !complete }) + '\n');
+    };
     try {
     if (live) {
       const response = await fetch('http://127.0.0.1:3170/api/health', { signal: AbortSignal.timeout(5000) });
@@ -151,6 +222,7 @@ describe('matched plan coverage phase benchmark', () => {
       h.sql = observed(tx as unknown as postgres.Sql);
       expected = normalized(await getAllPlanItemCoverage(), plan);
       expect(expected.length).toBeGreaterThan(0);
+      persist();
       for (const concurrency of [1, 8]) {
         for (let window = 0; window < windows; window++) {
           const arms = window % 2 === 0 ? ['control','candidate'] : ['candidate','control'];
@@ -166,17 +238,33 @@ describe('matched plan coverage phase benchmark', () => {
                   const equal = digest(result) === digest(expected);
                   return { index: offset + index, ok: equal, wallMs: performance.now() - t0,
                     resultHash: digest(result), totalCoverageRefs: coverage.size, selectedRefs: result.length,
-                    ...(equal ? {} : { error: 'exact coverage differs from frozen control' }) };
+                    ...(equal ? {} : { error: 'exact coverage differs from frozen control',
+                      changedFields: changedFields(expected, result) }) };
                 } catch (error) {
                   return { index: offset + index, ok: false, wallMs: performance.now() - t0,
                     error: error instanceof Error ? error.message : String(error) };
                 }
               }));
               samples.push({ concurrency, window, arm, batch, phases: phases.slice(phaseStart).map(p => ({
-                ...p, sql: undefined, sqlHash: digest(p.sql),
+                ...p, sql: undefined, parameters: undefined, sqlHash: digest(p.sql),
                 kind: /work_item_id[\s\S]*FROM harness_shared\.work_items/.test(p.sql) ? 'stamp' : 'other',
               })) });
+              progress.completedReads += batch.length;
             }
+            progress.completedArms++;
+            // Explain the actual generated stamp statement, never a separately
+            // reconstructed query. Parameters remain in memory, outside reports.
+            if (!explain[arm]) {
+              const stamp = phases.find(p => /work_item_id[\s\S]*FROM harness_shared\.work_items/.test(p.sql)
+                && (arm === 'candidate' ? (p.parameters?.length ?? 0) > 0 : (p.parameters?.length ?? 0) === 0));
+              expect(stamp).toBeDefined();
+              const result = await tx.unsafe('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + stamp!.sql,
+                stamp!.parameters as any[]);
+              explain[arm] = { sqlHash: digest(stamp!.sql), plan: result[0]['QUERY PLAN'] };
+            }
+            persist();
+            console.log(JSON.stringify({ kind: 'P010_PROGRESS', concurrency, window, arm, ...progress }));
+            expect(samples.flatMap(s => s.batch).filter(s => !s.ok)).toEqual([]);
           }
         }
       }
@@ -192,20 +280,7 @@ describe('matched plan coverage phase benchmark', () => {
       // replace a failed window or manufacture a completed comparison.
       preflightError = error instanceof Error ? error.message : String(error);
     }
-    const report = { schemaVersion: 1, workItem: 'WI-10004889', startedAt, endedAt: new Date().toISOString(),
-      mode: live ? 'live-read-only' : 'private-PG', host: hostname(), plan, identity, serving, fingerprints,
-      ...(preflightError ? { incomplete: true, error: preflightError } : {}),
-      sourceSha: execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
-      control: 'full production coverage then exact plan selection', candidate: 'production planSlug restriction',
-      profiles: { concurrency: [1,8], windows, requestsPerSideWindow: requests,
-        cache: 'no coverage result cache; PostgreSQL cache uncontrolled and shared',
-        connection: 'one read-only repeatable-read connection on both sides' },
-      populationHash: digest(expected), samples,
-      limitations: ['SQL wall includes queue/transfer/decoding; not database CPU or isolated JSON extraction.',
-        'Shared PostgreSQL cache is not a cold-cache benchmark.',
-        'This is the production reader on frozen live data, not HTTP end-to-end timing.'],
-    };
-    if (process.env.PAPERCUSP_P010_REPORT) writeFileSync(process.env.PAPERCUSP_P010_REPORT, JSON.stringify(report) + '\n');
+    persist();
     expect(preflightError).toBeUndefined();
     const outcomes = samples.flatMap(s => s.batch);
     expect(outcomes.filter(s => !s.ok)).toEqual([]);
@@ -213,7 +288,10 @@ describe('matched plan coverage phase benchmark', () => {
       .flatMap(s => s.phases).filter(p => p.kind === 'stamp').reduce((sum, p) => sum + p.rows, 0);
     expect(stampRows('candidate')).toBeGreaterThan(0);
     expect(stampRows('candidate')).toBeLessThan(stampRows('control'));
-    console.log(JSON.stringify({ mode: report.mode, samples: outcomes.length, failures: outcomes.filter(s => !s.ok).length,
+    expect(progress.completedReads).toBe(progress.expectedReads);
+    expect(Object.keys(explain).sort()).toEqual(['candidate','control']);
+    persist(true);
+    console.log(JSON.stringify({ mode: report().mode, samples: outcomes.length, failures: outcomes.filter(s => !s.ok).length,
       selectedRefs: expected!.length, stampRows: { control: stampRows('control'), candidate: stampRows('candidate') } }));
-  }, 3_600_000);
+  }, live ? 7_100_000 : 120_000);
 });

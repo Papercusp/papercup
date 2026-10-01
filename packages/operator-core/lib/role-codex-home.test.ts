@@ -105,6 +105,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'pretooluse-control-bytes-content-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-generated-file-edit-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'userpromptsubmit-provenance.sh'), '#!/usr/bin/env bash\n');
   return dir;
 }
 
@@ -1486,6 +1487,12 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     );
   }
 
+  function provenanceEntries(hooks: any) {
+    return (hooks.hooks.UserPromptSubmit ?? []).filter((e: { hooks: { command: string }[] }) =>
+      e.hooks.some((hook) => hook.command.includes('userpromptsubmit-provenance.sh')),
+    );
+  }
+
   it('registers BOTH ports through the ONE shared dispatcher, with the right --client/--event', async () => {
     await installFakeHooks();
     installFakeDispatcher();
@@ -1503,6 +1510,12 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     expect(turnStart).toHaveLength(1);
     expect(turnStart[0].hooks[0].command).toContain('--client=codex');
     expect(turnStart[0].hooks[0].command).toContain('--event=UserPromptSubmit');
+
+    const provenance = provenanceEntries(hooks);
+    expect(provenance).toHaveLength(1);
+    expect(provenance[0].matcher).toBe('.*');
+    expect(provenance[0].hooks[0].command).toContain("PAPERCUSP_SID='role-inject-40'");
+    expect(provenance[0].hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
 
     // mid-turn ← PostToolUse. PER CALL on codex (it has no batch event, D-002 §5).
     const midTurn = injectEntries(hooks, 'PostToolUse');
@@ -1538,8 +1551,8 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     }
   });
 
-  it('registers NOTHING when the dispatcher is not installed — never a hook pointing at a missing file', async () => {
-    await installFakeHooks(); // cc hooks present, dispatcher deliberately absent
+  it('omits the dispatcher when it is absent while keeping installed owner-provenance capture', async () => {
+    await installFakeHooks(); // provenance hook present; dispatcher deliberately absent
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({
       sessionKey: 42,
@@ -1548,10 +1561,11 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
       sid: 'role-inject-42',
     });
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
-    // The key is OMITTED entirely, not present-but-empty: "is turn-start
-    // registered on this home?" must be answerable by reading hooks.json.
-    expect(hooks.hooks.UserPromptSubmit).toBeUndefined();
+    // The dispatcher is omitted rather than pointing to a missing path, while
+    // the separately installed owner-provenance hook remains registered.
     expect(injectEntries(hooks, 'PostToolUse')).toHaveLength(0);
+    expect(injectEntries(hooks, 'UserPromptSubmit')).toHaveLength(0);
+    expect(provenanceEntries(hooks)).toHaveLength(1);
     // ...and the pre-existing lock/activity hooks are UNAFFECTED.
     expect(JSON.stringify(hooks)).toContain('pretooluse-locks-acquire.sh');
   });

@@ -209,7 +209,7 @@ export async function recordLlmScenarioTestRun(
       VALUES
         (${row.filePath}, 'llm-test', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt},
          ${row.outputTail}, ${runGroupId}, ${resolveTestRunSource()}, ${branch ?? null}, ${after.commit ?? null},
-         ${harnessSlug}, ${workspaceId}, ${worktreeDirty}, ${JSON.stringify(row.executionDetails)}::jsonb)
+         ${harnessSlug}, ${workspaceId}, ${worktreeDirty}, ${row.executionDetails as never}::jsonb)
       RETURNING id
     `) as unknown as Array<{ id: string | number }>;
     const id = inserted[0]?.id;

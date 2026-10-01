@@ -363,7 +363,11 @@ describe('task lifecycle handlers', () => {
       expect(values[8]).toBe('local');
       expect(values[11]).toBe('papercusp');
       expect(values[12]).toBe('papercusp-workspace');
-      const executionDetails = JSON.parse(String(values.at(-1)));
+      // EI-24799048791133095: the jsonb param must be the OBJECT. A pre-stringified
+      // value is double-encoded by postgres-js's default serializer into a jsonb
+      // STRING scalar, and every `execution_details->>'key'` read returns NULL.
+      const executionDetails = values.at(-1);
+      expect(typeof executionDetails).toBe('object');
       expect(executionDetails).toMatchObject({
         schemaVersion: 1,
         root: '/tmp',
@@ -670,7 +674,8 @@ describe('durable detached snapshot lifecycle', () => {
       expect(writes[0]![7]).toBe(snapshot.runId);
       expect(writes[0]![10]).toBe(options.legacy ? null : 'launch-sha');
       expect(writes[0]![15]).toBe(true);
-      expect(JSON.parse(String(writes[0]!.at(-1)))).toMatchObject({
+      expect(typeof writes[0]!.at(-1)).toBe('object');
+      expect(writes[0]!.at(-1)).toMatchObject({
         root: '/tmp', passed: options.failure ? 0 : 1, skipped: 1, testNamePattern: 'saved assertion', worktreeDirty: true,
       });
       await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });

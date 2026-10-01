@@ -22,8 +22,45 @@ import {
 } from './post-go-canary-observations';
 
 export const POST_GO_RELEASE_CANARY_SCHEMA = 'hive-git-post-go-release-canary/v1' as const;
+/** Default P-501 soak minimum for every release without an owner ruling. */
 export const POST_GO_RELEASE_CANARY_MIN_DURATION_MS = 72 * 60 * 60 * 1_000;
 export const POST_GO_RELEASE_PLAN_ITEMS = ['P-501', 'P-502', 'P-503'] as const;
+
+/**
+ * Release-scoped soak minimums, each backed by a recorded owner ruling.
+ * Endgame D-128: 0.0.28-alpha soaks for 24h; later releases fall back to the
+ * 72h default unless the owner rules again. Keep this keyed by exact release
+ * version: a global edit would silently shorten every later soak.
+ */
+export const POST_GO_RELEASE_CANARY_DURATION_OVERRIDES: Readonly<
+  Record<string, { minimumDurationMs: number; decisionRef: string }>
+> = Object.freeze({
+  '0.0.28-alpha': {
+    minimumDurationMs: 24 * 60 * 60 * 1_000,
+    decisionRef: 'p2p-public-release-endgame-2026-09-01#D-128',
+  },
+});
+
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/** The soak minimum that applies to `releaseVersion`, with its authority. */
+export function postGoReleaseCanaryMinimum(releaseVersion: unknown): {
+  minimumDurationMs: number;
+  decisionRef: string | null;
+} {
+  const override =
+    typeof releaseVersion === 'string' &&
+    Object.prototype.hasOwnProperty.call(POST_GO_RELEASE_CANARY_DURATION_OVERRIDES, releaseVersion)
+      ? POST_GO_RELEASE_CANARY_DURATION_OVERRIDES[releaseVersion]
+      : undefined;
+  return override
+    ? { minimumDurationMs: override.minimumDurationMs, decisionRef: override.decisionRef }
+    : { minimumDurationMs: POST_GO_RELEASE_CANARY_MIN_DURATION_MS, decisionRef: null };
+}
+
+function formatHours(ms: number): string {
+  return String(Math.round((ms / 3_600_000) * 100) / 100);
+}
 
 const GIT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const OWNER_ID = /^[A-Za-z0-9._:@-]{3,160}$/;
@@ -31,6 +68,11 @@ const OWNER_ID = /^[A-Za-z0-9._:@-]{3,160}$/;
 export type PostGoReleaseCanaryInput = {
   schemaVersion: typeof POST_GO_RELEASE_CANARY_SCHEMA;
   candidateSha: string;
+  /**
+   * The release this candidate ships as (e.g. "0.0.28-alpha"). It selects the
+   * soak minimum from POST_GO_RELEASE_CANARY_DURATION_OVERRIDES (default 72h).
+   */
+  releaseVersion: string;
   independentGo: {
     decision: 'GO';
     candidateSha: string;
@@ -78,8 +120,11 @@ export type PostGoReleaseCanaryVerdict = {
     status: 'ready-for-default-mode-decision';
     planItems: typeof POST_GO_RELEASE_PLAN_ITEMS;
     independentGoApprovedAt: string;
+    releaseVersion: string;
     canaryDurationMs: number;
-    minimumDurationMs: typeof POST_GO_RELEASE_CANARY_MIN_DURATION_MS;
+    minimumDurationMs: number;
+    /** The owner ruling that set a non-default minimum; null for the 72h default. */
+    minimumDurationDecisionRef: string | null;
     canaryHive: string;
     canaryObservationCount: number;
     ownerFreezeVerified: true;
@@ -108,6 +153,13 @@ export function validatePostGoReleaseCanary(
     `schemaVersion must be ${POST_GO_RELEASE_CANARY_SCHEMA}`,
   );
   pushError(errors, GIT_OID.test(candidateSha), 'candidateSha must be a 40- or 64-hex Git OID');
+  const releaseVersion = input?.releaseVersion ?? '';
+  pushError(
+    errors,
+    typeof releaseVersion === 'string' && RELEASE_VERSION.test(releaseVersion),
+    'releaseVersion must name the shipping release (e.g. 0.0.28-alpha)',
+  );
+  const minimum = postGoReleaseCanaryMinimum(releaseVersion);
 
   const go = input?.independentGo;
   pushError(errors, go?.decision === 'GO', 'independentGo.decision must be GO');
@@ -155,10 +207,11 @@ export function validatePostGoReleaseCanary(
   pushError(
     errors,
     Number.isFinite(canaryDurationMs) &&
-      canaryDurationMs >= POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
-    'canary must run for an actual minimum of 72 hours',
+      canaryDurationMs >= minimum.minimumDurationMs,
+    `canary must run for an actual minimum of ${formatHours(minimum.minimumDurationMs)} hours` +
+      (minimum.decisionRef ? ` (${releaseVersion}, ${minimum.decisionRef})` : ''),
   );
-  // Duration alone would pass a 72h window full of divergence escalations and
+  // Duration alone would pass a full-length window full of divergence escalations and
   // STALLED pages (WI-10002545): every P-501 predicate must hold throughout.
   errors.push(
     ...validatePostGoCanaryEvidence(
@@ -188,7 +241,7 @@ export function validatePostGoReleaseCanary(
     Number.isFinite(canaryFinishedAt) &&
       Number.isFinite(chaosStartedAt) &&
       chaosStartedAt >= canaryFinishedAt,
-    'owner-freeze chaos cannot execute before the 72-hour canary finishes',
+    'owner-freeze chaos cannot execute before the canary soak finishes',
   );
   const phaseI = chaos?.phaseI;
   const phaseIStartedAt = timestamp(phaseI?.window?.startedAt);
@@ -294,8 +347,10 @@ export function validatePostGoReleaseCanary(
       status: 'ready-for-default-mode-decision',
       planItems: POST_GO_RELEASE_PLAN_ITEMS,
       independentGoApprovedAt: go.approvedAt,
+      releaseVersion,
       canaryDurationMs,
-      minimumDurationMs: POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
+      minimumDurationMs: minimum.minimumDurationMs,
+      minimumDurationDecisionRef: minimum.decisionRef,
       canaryHive: input.canary.hive,
       canaryObservationCount: input.canary.observations.length,
       ownerFreezeVerified: true,

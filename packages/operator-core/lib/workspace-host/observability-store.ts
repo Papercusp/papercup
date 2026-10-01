@@ -625,6 +625,24 @@ export async function updateWorkspaceHostLifecycleState(input: {
             WHEN ${recoverability !== null} THEN ${recoverability?.updatedAt ?? input.observedAt ?? new Date().toISOString()}
             ELSE recoverability_updated_at
           END,
+          -- WI-10004969: reaching 'absent' under a destroy operation means the host converged on
+          -- that operation's desired revision. Without this, every destroyed host stayed at
+          -- observed_revision < desired_revision forever and release.cleanup's convergence
+          -- predicate could never pass. Same GREATEST rule as recordWorkspaceHostObservation.
+          observed_revision = CASE
+            WHEN ${input.state} <> 'absent' OR ${input.operationId ?? null}::text IS NULL THEN observed_revision
+            ELSE GREATEST(
+              observed_revision,
+              COALESCE((
+                SELECT operation.desired_revision
+                FROM harness_shared.workspace_host_operations operation
+                WHERE operation.workspace_id = ${input.workspaceId}
+                  AND operation.id = ${input.operationId ?? null}
+                  AND operation.host_id = ${input.hostId}
+                  AND operation.action = 'destroy'
+              ), observed_revision)
+            )
+          END,
           updated_at = now()
       WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
     `;

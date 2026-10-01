@@ -10,6 +10,7 @@
     ".": "./lib/index.ts",
     "./lib/*": "./lib/*.ts",
     "./lib/*.ts": "./lib/*.ts",
+    "./lib/*.mjs": "./lib/*.mjs",
     "./package.json": "./package.json"
   },
   "scripts": {

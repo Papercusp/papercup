@@ -513,7 +513,8 @@ export function kickoffPositionalArgs(res: any, args: any): any[];
  * buildConsoleOneliner and breaks the shell (the gnome-terminal exit-2 the
  * docs-agent hit), whereas an env value is exported via a correctly-escaped
  * `export K=…` in the oneliner prelude and arrives intact (multiline / embedded
- * quotes included). Pure — exported for tests.
+ * quotes included). Large free-form prompts use a private, single-use file;
+ * consume its environment pointer before launching the backend. Exported for tests.
  */
 export function resolveKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
 /**

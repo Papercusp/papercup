@@ -153,8 +153,52 @@ function procCpuMicros(pid) {
   }
 }
 
-function processTreePids(rootPid) {
-  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) return [rootPid];
+/**
+ * Above this many pids the per-pid children walk stops paying for itself (measured 2026-10-01:
+ * 390-620 ms on 1,600-3,850-pid churning trees, more than the host-wide scan), so the walk
+ * hands over to the scan.  Test trees are a handful of pids.
+ */
+export const GOVERNED_PROCESS_TREE_WALK_PID_CAP = 512;
+
+/**
+ * Children of one pid from its threads' `/proc/<pid>/task/<tid>/children` files.  Returns
+ * null when the kernel lacks CONFIG_PROC_CHILDREN, so the caller falls back to the scan;
+ * an exited pid reads as childless, exactly as the scan would see it.
+ */
+function procChildPids(pid) {
+  let tids;
+  try {
+    tids = readdirSync(`/proc/${pid}/task`);
+  } catch {
+    return [];
+  }
+  const children = [];
+  for (const tid of tids) {
+    let text;
+    try {
+      text = readFileSync(`/proc/${pid}/task/${tid}/children`, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT' && tid === String(pid)) {
+        // The leader's task dir exists for as long as the pid does, so ENOENT on its children
+        // file means the file is unsupported, unless the pid exited in between.
+        try {
+          readdirSync(`/proc/${pid}/task`);
+        } catch {
+          return children;
+        }
+        return null;
+      }
+      continue; // A thread exited between readdir and read.
+    }
+    for (const token of text.split(/\s+/)) {
+      if (/^\d+$/.test(token)) children.push(Number(token));
+    }
+  }
+  return children;
+}
+
+/** The host-wide scan: one /proc/<pid>/status read per pid on the box, then a PPid join. */
+function scanProcessTreePids(rootPid) {
   const children = new Map();
   let entries;
   try {
@@ -181,6 +225,48 @@ function processTreePids(rootPid) {
     }
   }
   return result;
+}
+
+/** Breadth-first walk of ONE tree through its children files; null hands over to the scan. */
+function walkProcessTreePids(rootPid, pidCap, readChildren) {
+  const result = [rootPid];
+  const seen = new Set(result);
+  for (let index = 0; index < result.length; index += 1) {
+    const children = readChildren(result[index]);
+    if (children == null) return null;
+    for (const pid of children) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      result.push(pid);
+    }
+    if (result.length > pidCap) return null;
+  }
+  return result;
+}
+
+/**
+ * The pids of one process tree, root first, and how they were found.  WI-10004924: the scan reads
+ * /proc/<pid>/status for every pid on the host (~9.5k here, ~310 ms CPU per call) to find a few
+ * descendants, and the 250 ms sampler re-ran it back to back, burning ~0.5 core per test run.  The
+ * walk reads only the tree (0.3 ms on a 6-pid tree).  The scan stays as the fallback when the
+ * kernel lacks per-task children files or the tree outgrows the walk.  `method: 'scan'` forces it.
+ */
+export function resolveGovernedProcessTree(
+  rootPid,
+  { method = 'auto', pidCap = GOVERNED_PROCESS_TREE_WALK_PID_CAP, readChildren = procChildPids } = {},
+) {
+  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) {
+    return { pids: [rootPid], method: 'none' };
+  }
+  if (method !== 'scan') {
+    const walked = walkProcessTreePids(rootPid, pidCap, readChildren);
+    if (walked != null) return { pids: walked, method: 'walk' };
+  }
+  return { pids: scanProcessTreePids(rootPid), method: 'scan' };
+}
+
+function processTreePids(rootPid) {
+  return resolveGovernedProcessTree(rootPid).pids;
 }
 
 /** Fail-soft aggregate resource snapshot for one child process tree. */

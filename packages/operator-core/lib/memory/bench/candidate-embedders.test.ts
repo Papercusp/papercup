@@ -9,7 +9,9 @@ vi.mock('@huggingface/transformers', () => ({
   AutoTokenizer: { from_pretrained: mocks.loadTokenizer },
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences, type CandidateVectors } from './candidate-embedders';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
+  validateNativeBoundaryRequest, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
+  type NativeBoundaryRequest, type NativeBoundaryRow, type CandidateVectors } from './candidate-embedders';
 import { incumbentReferenceFixture } from './fixtures/incumbent-reference';
 
 describe('incumbent reference qualification', () => {
@@ -66,6 +68,72 @@ describe('incumbent reference qualification', () => {
 });
 
 afterEach(() => vi.resetAllMocks());
+
+describe('native mDenseOn boundary evidence', () => {
+  function fixture() {
+    const request: NativeBoundaryRequest = { formatVersion: 1, model: 'lightonai/mDenseOn', revision: 'a5fdb000f7a21da96c3bddde3a782ef777316df3',
+      export: '/private/export', snapshot: '/private/snapshot', execution: { dtype: 'fp32', intraOpThreads: 4, interOpThreads: 1, maxLength: 8192 },
+      thresholds: { minimumCosine: 0.99999, maximumAbsoluteError: 3e-5, ranking: 'exact' },
+      assets: [{ path: '/private/export/onnx/model.onnx', bytes: 1, sha256: 'a'.repeat(64) }],
+      cases: MDENSEON_BOUNDARY_IDS.map((id, i) => ({ id, kind: i % 2 ? 'document' : 'query', text: id,
+        untruncatedTokens: i === 6 ? 8192 : i === 7 ? 8256 : 6 + i })),
+      batches: [{ id: 'padded', caseIds: ['short-query', 'unicode', 'code', 'whitespace', 'empty'] },
+        { id: 'mixed-length', caseIds: ['short-query', 'full-8192'] }] };
+    const rows: NativeBoundaryRow[] = request.cases.map((c, i) => {
+      const vector = Array.from({ length: 768 }, (_, d) => Number(d === Math.min(i, 6)));
+      const tokens = Array(Math.min(8192, c.untruncatedTokens)).fill(i);
+      return { id: c.id, inputIds: tokens, referenceInputIds: [...tokens], vector, referenceVector: [...vector],
+        execution: { device: 'cpu', verified: true }, worker: { alive: true, disabled: false } };
+    });
+    return { request, rows };
+  }
+  it('keeps the 8192/over-limit population and stable near-tie ranking gates', () => {
+    const { request, rows } = fixture();
+    const result = summarizeNativeBoundaries(request, rows, 'cpu');
+    expect(result.singlePopulationCompatible).toBe(true);
+    expect(result.comparisons.slice(-2).map((c) => c.tokenLength)).toEqual([8192, 8192]);
+    expect(result.actualRankings[6].slice(0, 2)).toEqual([6, 7]);
+    // Near ties can reorder while all vectors meet the fixed cosine/error gates.
+    rows[6].vector = [...rows[6].vector]; rows[6].vector[0] = 0.00001;
+    rows[7].vector = [...rows[7].vector]; rows[7].vector[0] = -0.00001;
+    const changed = summarizeNativeBoundaries(request, rows, 'cpu');
+    expect(changed.passedFixedVectorGates).toBe(true);
+    expect(changed.rankingsEqual).toBe(false);
+    expect(changed.singlePopulationCompatible).toBe(false);
+  });
+  it('records actual token and numerical losses without trusting PASS metadata', () => {
+    const { request, rows } = fixture();
+    rows[0].inputIds[0]++;
+    rows[1].vector = [...rows[2].vector];
+    const result = summarizeNativeBoundaries(request, rows, 'cpu');
+    expect(result).toMatchObject({ tokenIdsEqual: false, passedFixedVectorGates: false, singlePopulationCompatible: false });
+    expect(result.comparisons[0].tokenIdsEqual).toBe(false);
+    expect(result.comparisons[1].maximumAbsoluteError).toBe(1);
+  });
+  it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
+    const { request, rows } = fixture();
+    if (failure === 'partial') rows.pop();
+    if (failure === 'fallback') rows[0].execution.device = 'cuda';
+    if (failure === 'unverified') rows[0].execution.verified = false;
+    if (failure === 'disabled') rows[0].worker.disabled = true;
+    if (failure === 'nonfinite') rows[0].vector[0] = NaN;
+    if (failure === 'truncation') rows[7].inputIds.push(2);
+    expect(() => summarizeNativeBoundaries(request, rows, 'cpu')).toThrow();
+  });
+  it.each(['maxLength', 'relaxedCosine', 'relaxedError', 'batch', 'fullLength'])('rejects %s contract drift', (failure) => {
+    const { request } = fixture();
+    if (failure === 'maxLength') request.execution.maxLength = 512;
+    if (failure === 'relaxedCosine') request.thresholds.minimumCosine = 0.99;
+    if (failure === 'relaxedError') request.thresholds.maximumAbsoluteError = 0.001;
+    if (failure === 'batch') request.batches.pop();
+    if (failure === 'fullLength') request.cases[6].untruncatedTokens = 512;
+    expect(() => validateNativeBoundaryRequest(request)).toThrow();
+  });
+  it('rejects an unpinned request before opening references or model weights', async () => {
+    await expect(qualifyMdenseOnBoundaries('/absent.json', 'invalid', '/absent', 'invalid', '/private/out.json')).rejects.toThrow('SHA mismatch');
+    expect(mocks.loadModel).not.toHaveBeenCalled(); expect(mocks.loadTokenizer).not.toHaveBeenCalled();
+  });
+});
 
 describe('Perplexity publisher ONNX contract', () => {
   it('selects pooled int8 output, sends raw texts, pins weights, and reuses the loaded graph', async () => {

@@ -110,7 +110,7 @@ import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
 import { compareLegs, compareSourceGroupedLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, summarizeIncumbentReferenceFiles, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, qualifyMdenseOnBoundaries, summarizeIncumbentReferenceFiles, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
   assertCandidateArm, failMeasurementCell, loadIndependentMeasurementInputs, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
@@ -539,6 +539,13 @@ function scoreLeg(
 }
 
 async function main(): Promise<void> {
+  if (argValue('--qualify-boundaries')) {
+    const output = argValue('--out'), reference = argValue('--boundary-reference');
+    if (!output || !reference) throw new Error('--qualify-boundaries requires --boundary-reference and --out');
+    await qualifyMdenseOnBoundaries(argValue('--qualify-boundaries')!, argValue('--boundary-sha256') ?? '', reference,
+      argValue('--boundary-reference-sha256') ?? '', output);
+    return;
+  }
   if (argValue('--run-performance')) {
     const model = argValue('--mdenseon-model'), driver = argValue('--driver-out');
     if (!model || !driver) throw new Error('--run-performance requires --mdenseon-model and --driver-out');

@@ -5,7 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
-  shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+  shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS, buildMdenseOnEmbedder,
+  embedExecutionTarget, MDENSEON_MODEL, MDENSEON_REVISION } from '@papercusp/memory';
+import { fingerprintFile } from './measurement-manifest';
 
 /** Independent pooling oracle for isolated qualification; production recipes
  * and profiles remain untouched. Padding must not contribute to the mean. */
@@ -32,6 +34,164 @@ export const INCUMBENT_REFERENCE_CASES = [
 
 export const CORRECTED_GEMMA_REFERENCE_ID = 'gemma-corrected-rust-768@benchmark-v1';
 export const REFERENCE_PARITY_LIMITS = { minimumCosine: 0.99999, maximumAbsoluteError: 3e-5 } as const;
+
+export const MDENSEON_BOUNDARY_IDS = ['short-query', 'short-document', 'unicode', 'code', 'whitespace', 'empty', 'full-8192', 'over-limit'] as const;
+export interface NativeBoundaryRequest {
+  formatVersion: number; model: string; revision: string; export: string; snapshot: string;
+  execution: { dtype: string; intraOpThreads: number; interOpThreads: number; maxLength: number };
+  thresholds: { minimumCosine: number; maximumAbsoluteError: number; ranking: string };
+  assets: { path: string; sha256: string; bytes: number }[];
+  cases: { id: string; kind: 'query' | 'document'; text: string; untruncatedTokens: number }[];
+  batches: { id: string; caseIds: string[] }[];
+}
+
+/** Consume the same frozen Python boundary inputs without rebinding its old
+ * helper source pin to current source. This runner executes the shipped worker. */
+export function validateNativeBoundaryRequest(request: NativeBoundaryRequest): void {
+  if (request.formatVersion !== 1 || request.model !== MDENSEON_MODEL || request.revision !== MDENSEON_REVISION
+    || !path.isAbsolute(request.export) || !path.isAbsolute(request.snapshot)
+    || request.execution.dtype !== 'fp32' || request.execution.maxLength !== 8192
+    || request.execution.intraOpThreads !== 4 || request.execution.interOpThreads !== 1
+    || request.thresholds.minimumCosine !== REFERENCE_PARITY_LIMITS.minimumCosine
+    || request.thresholds.maximumAbsoluteError !== REFERENCE_PARITY_LIMITS.maximumAbsoluteError
+    || request.thresholds.ranking !== 'exact') throw new Error('native boundary fixed contract mismatch');
+  if (JSON.stringify(request.cases.map((c) => c.id)) !== JSON.stringify(MDENSEON_BOUNDARY_IDS)
+    || request.cases.some((c) => !['query', 'document'].includes(c.kind) || typeof c.text !== 'string'
+      || !Number.isInteger(c.untruncatedTokens) || c.untruncatedTokens < 2)
+    || request.cases[6].untruncatedTokens !== 8192 || request.cases[7].untruncatedTokens <= 8192) {
+    throw new Error('native boundary input population/token contract mismatch');
+  }
+  const batches = [{ id: 'padded', caseIds: ['short-query', 'unicode', 'code', 'whitespace', 'empty'] },
+    { id: 'mixed-length', caseIds: ['short-query', 'full-8192'] }];
+  if (JSON.stringify(request.batches) !== JSON.stringify(batches)) throw new Error('native boundary batch contract mismatch');
+  if (!request.assets.length || request.assets.some((a) => !path.isAbsolute(a.path) || !/^[a-f0-9]{64}$/.test(a.sha256)
+    || !Number.isInteger(a.bytes) || a.bytes < 1)) throw new Error('native boundary asset pin mismatch');
+}
+
+export interface NativeBoundaryRow {
+  id: string; inputIds: number[]; referenceInputIds: number[]; vector: number[]; referenceVector: number[];
+  execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
+}
+
+/** Recompute fixed gates and stable all-input rankings from the retained raw
+ * arrays. A measured loss is an outcome; a missing/fallback row is not proof. */
+export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: NativeBoundaryRow[], device: 'cpu' | 'cuda') {
+  validateNativeBoundaryRequest(request);
+  if (JSON.stringify(rows.map((r) => r.id)) !== JSON.stringify(MDENSEON_BOUNDARY_IDS)) throw new Error('native boundary incomplete population');
+  const comparisons = rows.map((row, i) => {
+    if (!row.execution.verified || row.execution.device !== device || !row.worker.alive || row.worker.disabled) {
+      throw new Error('native boundary unverified device or worker fallback');
+    }
+    const length = Math.min(8192, request.cases[i].untruncatedTokens);
+    if (row.inputIds.length !== length || row.referenceInputIds.length !== length
+      || [...row.inputIds, ...row.referenceInputIds].some((n) => !Number.isSafeInteger(n) || n < 0)) {
+      throw new Error('native boundary invalid inferred token length/ids');
+    }
+    return { id: row.id, tokenLength: length, tokenIdsEqual: JSON.stringify(row.inputIds) === JSON.stringify(row.referenceInputIds),
+      ...referenceVectorComparison(row.vector, row.referenceVector, 768) };
+  });
+  const ranks = (vectors: number[][]) => vectors.map((q) => vectors.map((d, i) => ({ i, score: q.reduce((s, v, j) => s + v * d[j], 0) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i).map((d) => d.i));
+  const actualRankings = ranks(rows.map((r) => r.vector)), referenceRankings = ranks(rows.map((r) => r.referenceVector));
+  const rankingsEqual = JSON.stringify(actualRankings) === JSON.stringify(referenceRankings);
+  return { comparisons, actualRankings, referenceRankings, rankingsEqual,
+    passedFixedVectorGates: comparisons.every((c) => c.passed), tokenIdsEqual: comparisons.every((c) => c.tokenIdsEqual),
+    singlePopulationCompatible: rankingsEqual && comparisons.every((c) => c.passed && c.tokenIdsEqual) };
+}
+
+/** Extend incumbent qualification instead of adding a second executable. The
+ * published worker submits one text per inference, including batch requests. */
+export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha: string, referenceDirectory: string,
+  referenceSummarySha: string, outputFile: string): Promise<void> {
+  const hash = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (!/^[a-f0-9]{64}$/.test(expectedSha) || hash(requestFile) !== expectedSha) throw new Error('boundary request SHA mismatch');
+  const request = JSON.parse(fs.readFileSync(requestFile, 'utf8')) as NativeBoundaryRequest;
+  validateNativeBoundaryRequest(request);
+  const requested = embedRequestedExecution();
+  if (!['cpu', 'cuda'].includes(process.env.PAPERCUSP_EMBED_DEVICE ?? '') || requested.source !== 'env'
+    || getWorkerState().alive || ORT_SESSION_OPTIONS.intraOpNumThreads !== 4 || ORT_SESSION_OPTIONS.interOpNumThreads !== 1) {
+    throw new Error('native boundary requires explicit device and fresh pinned worker');
+  }
+  const device = process.env.PAPERCUSP_EMBED_DEVICE as 'cpu' | 'cuda';
+  if (requested.device !== device) throw new Error('native boundary requested device mismatch');
+  const output = path.resolve(outputFile), repo = path.resolve(import.meta.dirname, '../../../../..');
+  const parent = fs.realpathSync(path.dirname(output));
+  if (parent === repo || parent.startsWith(`${repo}${path.sep}`)) throw new Error('raw boundary output must stay private outside repository');
+  const summaryPath = path.join(referenceDirectory, 'summary.json');
+  if (!/^[a-f0-9]{64}$/.test(referenceSummarySha) || hash(summaryPath) !== referenceSummarySha) throw new Error('boundary reference summary SHA mismatch');
+  const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  const population = [...MDENSEON_BOUNDARY_IDS.map((id) => `single-${id}`), 'padded', 'mixed-length'];
+  if (summary.requestSha256 !== expectedSha || summary.diagnosticOnly !== false || summary.fullPopulationCompatible !== true
+    || JSON.stringify(summary.cells) !== JSON.stringify(population) || summary.notChecked.length !== 0
+    || summary.deviceRecipe !== 'python-ort-cpu-fp32-tf32-default' || hash(summary.profile.path) !== summary.profile.sha256) {
+    throw new Error('boundary reference population/identity mismatch');
+  }
+  const references = request.cases.map((c) => {
+    const file = path.join(referenceDirectory, `single-${c.id}.json`), ref = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (ref.requestSha256 !== expectedSha || ref.cell.id !== `single-${c.id}` || JSON.stringify(ref.cell.caseIds) !== JSON.stringify([c.id])
+      || ref.referenceVectors.length !== 1 || ref.inputIds.length !== 1 || ref.tokenIdsEqual !== true
+      || ref.inputIds[0].length !== Math.min(8192, c.untruncatedTokens)) throw new Error('boundary retained reference cell mismatch');
+    assertVector(ref.referenceVectors[0], 768, 'boundary reference');
+    return { file, sha256: hash(file), referenceInputIds: ref.inputIds[0] as number[], referenceVector: ref.referenceVectors[0] as number[] };
+  });
+  const exportAssets = request.assets.filter((a) => a.path.startsWith(`${request.export}${path.sep}`));
+  for (const name of ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'export-manifest.json', 'onnx/model.onnx']) {
+    if (!exportAssets.some((a) => a.path === path.join(request.export, name))) throw new Error('native boundary export pin missing');
+  }
+  for (const asset of exportAssets) {
+    const actual = await fingerprintFile(asset.path);
+    if (actual.sha256 !== asset.sha256 || actual.bytes !== asset.bytes) throw new Error('native boundary export asset drift');
+  }
+  const sources = await Promise.all(['packages/operator-core/lib/memory/bench/candidate-embedders.ts',
+    'packages/operator-core/lib/memory/bench/embedder-eval-cli.ts', 'libs/generic/memory/src/mdenseon-embedder.ts',
+    'libs/generic/memory/src/local-embedder-worker.ts', 'libs/generic/memory/src/local-embedder-worker.script.mjs',
+    'libs/generic/memory/src/embed-device.ts'].map((file) => fingerprintFile(path.join(repo, file))));
+  const identity = { requestSha256: expectedSha, referenceSummarySha256: referenceSummarySha, device, sources, references,
+    execution: { dtype: 'fp32', ...ORT_SESSION_OPTIONS }, nativeTransport: 'shipped-worker-single-text',
+    providerProof: 'worker-session-construction-report', computeKernelProfiling: 'not-exposed-by-shipped-worker' };
+  fs.writeFileSync(`${output}.request.json`, JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
+  const rows: NativeBoundaryRow[] = [], batches: unknown[] = [];
+  let activeCell = 'tokenizer-load';
+  try {
+    const { Tokenizer } = await import('tokenizers');
+    const tokenizer = Tokenizer.fromFile(path.join(request.export, 'tokenizer.json'));
+    tokenizer.setTruncation(8192);
+    for (let i = 0; i < request.cases.length; i++) {
+      const item = request.cases[i]; activeCell = `single-${item.id}`;
+      const inputIds = (await tokenizer.encode(`${item.kind}: ${item.text}`)).getIds();
+      const vector = await buildMdenseOnEmbedder({ kind: item.kind, model: request.export })(item.text);
+      const row = { id: item.id, inputIds, vector, ...references[i], execution: embedExecutionTarget(), worker: getWorkerState() };
+      rows.push(row);
+      fs.writeFileSync(`${output}.${activeCell}.json`, JSON.stringify({ ...identity, ...row }), { flag: 'wx', mode: 0o600 });
+      console.log('native boundary cell', activeCell, inputIds.length, row.execution.device);
+      if (!row.execution.verified || row.execution.device !== device || !row.worker.alive || row.worker.disabled) throw new Error('native boundary device fallback');
+    }
+    for (const batch of request.batches) {
+      activeCell = batch.id;
+      // This is the same Promise.all of single-text calls as the HTTP sidecar,
+      // not proof of a padded ONNX input tensor. Python retains that separate proof.
+      const vectors = await Promise.all(batch.caseIds.map((id) => {
+        const item = request.cases.find((c) => c.id === id)!;
+        return buildMdenseOnEmbedder({ kind: item.kind, model: request.export })(item.text);
+      }));
+      const comparisons = vectors.map((vector, i) => ({ id: batch.caseIds[i],
+        ...referenceVectorComparison(vector, rows.find((r) => r.id === batch.caseIds[i])!.vector, 768) }));
+      const result = { id: batch.id, submittedCaseIds: batch.caseIds, actualInferenceBatchSize: 1, vectors, comparisons,
+        execution: embedExecutionTarget(), worker: getWorkerState(), passed: comparisons.every((c) => c.passed) };
+      if (!result.execution.verified || result.execution.device !== device || !result.worker.alive || result.worker.disabled) throw new Error('native boundary batch fallback');
+      batches.push(result);
+      fs.writeFileSync(`${output}.${batch.id}.json`, JSON.stringify({ ...identity, ...result }), { flag: 'wx', mode: 0o600 });
+      console.log('native boundary request group', batch.id, 'single-text worker', result.passed);
+    }
+    const measured = summarizeNativeBoundaries(request, rows, device);
+    fs.writeFileSync(output, JSON.stringify({ ...identity, ...measured, batches, notChecked: ['native worker compute-kernel profile',
+      'native padded/mixed ONNX tensors: worker accepts one text per call'] }), { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    fs.writeFileSync(`${output}.failure.json`, JSON.stringify({ ...identity, activeCell, completedSingles: rows.map((r) => r.id),
+      completedBatches: batches, error: String(error), execution: embedExecutionTarget(), worker: getWorkerState() }), { flag: 'wx', mode: 0o600 });
+    throw error;
+  } finally { await shutdownLocalEmbedder(); }
+}
 
 type ReferenceCase = { id: string; kind: 'query' | 'document'; text: string; promptedText: string;
   inputIds: number[]; attentionMask: number[]; vector: number[]; shippedVector?: number[] };

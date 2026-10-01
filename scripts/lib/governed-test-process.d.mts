@@ -20,6 +20,21 @@ export function buildGovernedProcessDemand(options?: {}): {
     diskBytes: number;
     fileDescriptors: number;
 };
+/**
+ * The pids of one process tree, root first, and how they were found.  WI-10004924: the scan reads
+ * /proc/<pid>/status for every pid on the host (~9.5k here, ~310 ms CPU per call) to find a few
+ * descendants, and the 250 ms sampler re-ran it back to back, burning ~0.5 core per test run.  The
+ * walk reads only the tree (0.3 ms on a 6-pid tree).  The scan stays as the fallback when the
+ * kernel lacks per-task children files or the tree outgrows the walk.  `method: 'scan'` forces it.
+ */
+export function resolveGovernedProcessTree(rootPid: any, { method, pidCap, readChildren }?: {
+    method?: string | undefined;
+    pidCap?: number | undefined;
+    readChildren?: typeof procChildPids | undefined;
+}): {
+    pids: any[];
+    method: string;
+};
 /** Fail-soft aggregate resource snapshot for one child process tree. */
 export function readGovernedProcessResourceSnapshot(pid: any): {
     cpuMicros: number | null;
@@ -95,3 +110,10 @@ export const GOVERNED_TEST_PROCESS_SAMPLE_INTERVAL_MS: 250;
 export const GOVERNED_PROCESS_TREE_WALK_PID_CAP: 512;
 /** Emitted on every retry so fleet-wide DB contention stays VISIBLE. */
 export const GOVERNED_ADMISSION_RETRY_MARKER: "GOVERNED_ADMISSION_RETRY";
+/**
+ * Children of one pid from its threads' `/proc/<pid>/task/<tid>/children` files.  Returns
+ * null when the kernel lacks CONFIG_PROC_CHILDREN, so the caller falls back to the scan;
+ * an exited pid reads as childless, exactly as the scan would see it.
+ */
+declare function procChildPids(pid: any): number[] | null;
+export {};

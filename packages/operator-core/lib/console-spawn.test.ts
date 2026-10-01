@@ -39,6 +39,7 @@ import {
   type DesktopEnvProbes,
 } from './console-spawn';
 import type { ConsoleEnvelope } from './console-launcher';
+import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from './agent-kickoff/prompt-transport.mjs';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 
@@ -795,6 +796,23 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect((r as { code: number }).code).toBe(502);
     expect((r as { error: string }).error).toMatch(/died at boot/i);
   });
+
+  it('keeps a large kickoff out of both headless shell argv and inherited env', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7789));
+    const prompt = 'Full independent review — preserve every condition.\n'.repeat(6000);
+    const result = await spawnHeadless({
+      envelope: { ...envelope, env: { ...envelope.env, PAPERCUSP_KICKOFF_PROMPT: prompt } },
+      label: 'large-kickoff',
+      logDir: null,
+      ...noSystemdRun,
+    });
+    expect(result.status).toBe('ok');
+    const [, argv, options] = spawnMock.mock.calls[0];
+    expect(argv.every((arg: string) => Buffer.byteLength(arg) < 32 * 1024)).toBe(true);
+    expect(options.env.PAPERCUSP_KICKOFF_PROMPT).toBeUndefined();
+    expect(argv.join(' ')).not.toContain('Full independent review');
+    expect(consumeKickoffPromptFile(options.env[KICKOFF_PROMPT_FILE_ENV])).toBe(prompt);
+  }, 10_000);
 
   it('EI-9748: installs a TERM trap ahead of the greeting so a cgroup-restart kill logs a diagnostic instead of dying silently', async () => {
     spawnMock.mockImplementation(() => fakeChild(7778));

@@ -154,7 +154,7 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot): P
         VALUES
           (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
            ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty},
-           ${JSON.stringify(playwrightExecutionDetails(row, { root: resolveAgentWorkspaceRoot({}), runGroupId, workspaceId, harnessSlug, commitSha: commit }))}::jsonb)
+           ${playwrightExecutionDetails(row, { root: resolveAgentWorkspaceRoot({}), runGroupId, workspaceId, harnessSlug, commitSha: commit }) as never}::jsonb)
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {

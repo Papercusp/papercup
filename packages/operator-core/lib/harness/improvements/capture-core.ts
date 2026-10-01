@@ -910,8 +910,9 @@ function captureOccurrenceEvidence(
   };
 }
 
-/** Record the report before returning its admission verdict. The ledger is
- * diagnostic evidence, so an unavailable recorder never changes admission. */
+/** Record the report and expose whether the ledger retained it. Most coalesces
+ * also persist the incoming content on the canonical row; occurrence-only paths
+ * must fall through to a fresh row when this append fails. */
 async function appendCaptureOccurrence(
   deps: CaptureDeps,
   input: CaptureImprovementInput,
@@ -922,8 +923,8 @@ async function appendCaptureOccurrence(
   dedupCoverage: DedupCoverage,
   canonicalHarness: string | null = harnessFromScope(input.scope),
   queueAdmission?: IssueAdmissionPressure,
-): Promise<void> {
-  await (deps.recordIssueOccurrence ?? recordIssueOccurrence)({
+): Promise<boolean> {
+  const recorded = await (deps.recordIssueOccurrence ?? recordIssueOccurrence)({
     canonicalId,
     ...(canonicalHarness ? { canonicalHarness } : {}),
     reporter: input.createdBy ?? null,
@@ -933,6 +934,7 @@ async function appendCaptureOccurrence(
     evidence: captureOccurrenceEvidence(input, possibleDuplicates, dedupCoverage, queueAdmission),
     admissionIdentity: identity,
   }).catch(() => null);
+  return recorded != null;
 }
 
 /**
@@ -2696,7 +2698,7 @@ export async function captureImprovement(
       });
       if (decision.action === 'coalesce' && decision.canonical) {
         const canonicalIssue = candidateById.get(decision.canonical.id);
-        await appendCaptureOccurrence(
+        const occurrenceRecorded = await appendCaptureOccurrence(
           deps,
           input,
           identity,
@@ -2707,22 +2709,26 @@ export async function captureImprovement(
           harnessFromScope(canonicalIssue?.scope),
           queueAdmission,
         );
-        return {
-          ok: true,
-          created: false,
-          reason: 'coalesced',
-          kind: canonicalIssue?.kind as 'bug' | 'change' | undefined,
-          improvementKind: input.kind,
-          ...(canonicalIssue ? { issue: canonicalIssue } : {}),
-          possibleDuplicates,
-          dedupCoverage,
-          admissionIdentity: identity,
-          queueAdmission,
-          ...(alreadyDecided.length ? { alreadyDecided } : {}),
-          hint:
-            `Low-diversity admission burst: preserved this report as an occurrence on ${decision.canonical.id}; ` +
-            'no new scheduler row was created.',
-        };
+        if (occurrenceRecorded) {
+          return {
+            ok: true,
+            created: false,
+            reason: 'coalesced',
+            kind: canonicalIssue?.kind as 'bug' | 'change' | undefined,
+            improvementKind: input.kind,
+            ...(canonicalIssue ? { issue: canonicalIssue } : {}),
+            possibleDuplicates,
+            dedupCoverage,
+            admissionIdentity: identity,
+            queueAdmission,
+            ...(alreadyDecided.length ? { alreadyDecided } : {}),
+            hint:
+              `Low-diversity admission burst: preserved this report as an occurrence on ${decision.canonical.id}; ` +
+              'no new scheduler row was created.',
+          };
+        }
+        // The occurrence is the only copy of this report on the coalesced path.
+        // If it did not persist, fall through and mint the canonical row below.
       }
     }
   }
@@ -2937,7 +2943,7 @@ export async function captureImprovement(
         // so the reading is APPENDED (the occurrence below carries the full
         // title/body) and the survivor's own text is left alone. One wrong guess
         // must not be able to erase another agent's account of a problem.
-        await appendCaptureOccurrence(
+        const occurrenceRecorded = await appendCaptureOccurrence(
           deps,
           input,
           identity,
@@ -2947,31 +2953,32 @@ export async function captureImprovement(
           dedupCoverage,
           harnessFromScope(merged.scope),
         );
-        return {
-          ok: true,
-          created: false,
-          reason: 'coalesced',
-          coalescedOnto: buildCoalesceEffect({
-            finalIssue: merged,
-            prior,
-            input,
-            repeatCount,
-            bodyPersisted: false,
-            textDisposition: 'append-only',
-            fold: derived.fold,
-          }),
-          kind: merged.kind as 'bug' | 'change',
-          improvementKind: input.kind,
-          issue: merged,
-          topics,
-          possibleDuplicates,
-          dedupCoverage,
-          ...(alreadyDecided.length ? { alreadyDecided } : {}),
-        };
+        if (occurrenceRecorded) {
+          return {
+            ok: true,
+            created: false,
+            reason: 'coalesced',
+            coalescedOnto: buildCoalesceEffect({
+              finalIssue: merged,
+              prior,
+              input,
+              repeatCount,
+              bodyPersisted: false,
+              textDisposition: 'append-only',
+              fold: derived.fold,
+            }),
+            kind: merged.kind as 'bug' | 'change',
+            improvementKind: input.kind,
+            issue: merged,
+            topics,
+            possibleDuplicates,
+            dedupCoverage,
+            ...(alreadyDecided.length ? { alreadyDecided } : {}),
+          };
+        }
       }
-      // The merge failed. Fall THROUGH to the mint below rather than returning an
-      // error: a fold is an optimization, and losing the filing to protect it
-      // would be exactly the silencing D-042 forbids.
+      // A failed merge or occurrence append leaves the incoming title/body without
+      // a durable home. Fall through and mint the observation below.
     } else if (derived?.fold.verdict === 'soft' && derived.prior) {
       // Recorded now, applied after the row exists — the link needs both ids.
       softFold = { fold: derived.fold, prior: derived.prior };

@@ -16,7 +16,7 @@ export function prepareKickoffEnvironment(env) {
   if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') <= INLINE_KICKOFF_MAX_BYTES) return env;
   const root = tmpdir();
   mkdirSync(root, { recursive: true });
-  const directory = mkdtempSync(join(root, PREFIX));
+  const directory = realpathSync(mkdtempSync(join(root, PREFIX)));
   const path = join(directory, FILENAME);
   try {
     chmodSync(directory, 0o700);
@@ -27,7 +27,10 @@ export function prepareKickoffEnvironment(env) {
   }
   // The consumer removes it immediately. Bound debris from a launch that never
   // reaches PSU without racing the launcher's admission/boot window.
-  const timer = setTimeout(() => rmSync(directory, { recursive: true, force: true }), CLEANUP_MS);
+  const timer = setTimeout(() => {
+    try { rmSync(directory, { recursive: true, force: true }); }
+    catch (error) { console.warn('kickoff transport cleanup failed:', error); }
+  }, CLEANUP_MS);
   timer.unref?.();
   const next = { ...env, [KICKOFF_PROMPT_FILE_ENV]: path };
   delete next.PAPERCUSP_KICKOFF_PROMPT;

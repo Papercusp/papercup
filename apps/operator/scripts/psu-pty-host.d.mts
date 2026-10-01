@@ -1849,7 +1849,7 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({ enabled, startu
     isTimedOut: () => boolean;
     recoveryStarted: () => boolean;
     status: () => {
-        startedAt: number;
+        startedAt: any;
         detectionExpiresAt: any;
         recoveryExpiresAt: any;
         bufferedChars: number;

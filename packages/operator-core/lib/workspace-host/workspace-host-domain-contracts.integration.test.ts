@@ -482,12 +482,14 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
     const [row] = await db.adminSql<{
       desired_state: string;
       observed_state: string;
+      desired_revision: number | string;
+      observed_revision: number | string;
       recoverability_kind: string;
       recoverability_label: string;
       recoverability_updated_at: Date;
     }[]>`
-      SELECT desired_state, observed_state, recoverability_kind, recoverability_label,
-             recoverability_updated_at
+      SELECT desired_state, observed_state, desired_revision, observed_revision,
+             recoverability_kind, recoverability_label, recoverability_updated_at
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
     `;
@@ -497,6 +499,10 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       recoverability_kind: 'snapshot',
       recoverability_label: recoverability.label,
     });
+    // WI-10004969: the destroy converged on its operation's revision, so release.cleanup's
+    // absent-and-converged predicate (observed_revision === desired_revision) can pass.
+    expect(Number(row?.desired_revision)).toBe(2);
+    expect(Number(row?.observed_revision)).toBe(2);
     expect(row?.recoverability_updated_at.toISOString()).toBe(recoverability.updatedAt);
     await expect(readWorkspaceHostDestroyTarget(workspaceId, hostId)).resolves.toMatchObject({
       id: hostId,

@@ -367,7 +367,10 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
     expect(brief).toContain('known-present same-kind unaccounted control from the unfiltered census');
     expect(brief).toContain('live.ownedTruncated=false');
-    expect(brief).toContain('live.unaccountedPids matching the listed PIDs');
+    expect(brief).toContain('live.unaccountedCount matching live.unaccountedGroups.length');
+    expect(brief).toContain('live.unaccountedPidCount matching the listed PIDs');
+    expect(brief).not.toContain('live.unaccounted matching');
+    expect(brief).not.toContain('live.unaccountedPids matching');
     expect(brief).toContain('usage_usec changed between its timestamps');
     expect(brief).toContain('unknown is not dead');
     expect(brief).toContain('cgroup.procs containing only 0 means at least one task is in the cgroup but hidden from that PID namespace');
@@ -557,7 +560,7 @@ describe('runLifecycleJudgementSweep', () => {
 
   it('changes the launch key only when the one-hour interval changes', () => {
     const current = lifecycleJudgeIntervalKey('ws-1', NOW);
-    expect(current).toMatch(/^process-lifecycle-judge:v2:ws-1:/);
+    expect(current).toMatch(/^process-lifecycle-judge:v3:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });

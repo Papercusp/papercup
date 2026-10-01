@@ -172,6 +172,54 @@ beforeEach(() => {
 // =============================================================================
 // search:fulltext
 // =============================================================================
+describe('search:fulltext — invocation stage attribution', () => {
+  it('distinguishes slow retrieval from reranking in invocation metadata', async () => {
+    const tool = (await import('./fulltext')).default;
+    const rerank = await import('./rerank');
+    const metadata = vi.fn();
+    let now = 20;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const page = vi.spyOn(rerank, 'rerankPageHead').mockImplementationOnce(async () => {
+      now += 25;
+      return [];
+    });
+    runFullTextSearch.mockImplementationOnce(async () => {
+      now += 3000;
+      return ftResult;
+    });
+    try {
+      await tool.handler({ query: 'memory admission', scope: ['session_turn'] } as never, CTX({ metadata }) as never);
+      expect(metadata.mock.lastCall?.[0].searchFulltextRead).toEqual({
+        schemaVersion: 'fulltext-read-v1',
+        unit: 'ms',
+        timing: 'wall-time-sequential-stages',
+        elapsedMs: 3025,
+        stages: [
+          { name: 'filters', elapsedMs: 0, status: 'ok' },
+          { name: 'retrieval', elapsedMs: 3000, status: 'ok' },
+          { name: 'rerank', elapsedMs: 25, status: 'ok' },
+        ],
+      });
+      expect(page).toHaveBeenCalledOnce();
+    } finally {
+      page.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  it('preserves a retrieval failure and records its failed stage', async () => {
+    const tool = (await import('./fulltext')).default;
+    const metadata = vi.fn();
+    const failure = new Error('retrieval unavailable');
+    runFullTextSearch.mockRejectedValueOnce(failure);
+    await expect(tool.handler({ query: 'memory admission' } as never, CTX({ metadata }) as never)).rejects.toBe(failure);
+    expect(metadata.mock.lastCall?.[0].searchFulltextRead.stages).toEqual([
+      { name: 'filters', elapsedMs: expect.any(Number), status: 'ok' },
+      { name: 'retrieval', elapsedMs: expect.any(Number), status: 'error' },
+    ]);
+  });
+});
+
 describe('search:fulltext — scope normalization', () => {
   it('no scope → the 4 default sources, in canonical order', async () => {
     const tool = (await import('./fulltext')).default;

@@ -230,10 +230,19 @@ export function computeLearningLoopHealth(
       const unproven = !Number.isNaN(firedMs) && (Number.isNaN(activityMs) || activityMs < firedMs);
       if (unproven && opts.nowMs - firedMs > grace) status = 'stale';
     } else if (active && activity) {
-      if (Number.isNaN(activityMs) || opts.nowMs - activityMs > staleMs) status = 'stale';
-      else if (!Number.isNaN(firedMs) && firedMs - activityMs > (opts.activityLagGraceMs ?? DEFAULT_ACTIVITY_LAG_GRACE_MS)) {
-        status = 'stale';
-      }
+      const activityGraceMs = opts.activityLagGraceMs ?? DEFAULT_ACTIVITY_LAG_GRACE_MS;
+      const fireAgeMs = opts.nowMs - firedMs;
+      const activityIsStale = Number.isNaN(activityMs) || opts.nowMs - activityMs > staleMs;
+      // last_fired_at is stamped when the scheduler CLAIMS the routine, before
+      // the handler writes its domain activity. A fresh fire therefore gets its
+      // full grace before we compare it with the previous tick. Age-based stale
+      // activity remains an independent signal; only this fire-to-tick gap waits.
+      const fireIsUnproven =
+        !Number.isNaN(firedMs) &&
+        !Number.isNaN(activityMs) &&
+        firedMs - activityMs > activityGraceMs &&
+        fireAgeMs > activityGraceMs;
+      if (activityIsStale || fireIsUnproven) status = 'stale';
     }
 
     // EI-19370236916382521: only meaningful for `should-be-on-but-dark` — a re-affirmed

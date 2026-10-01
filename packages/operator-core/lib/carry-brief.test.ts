@@ -2502,6 +2502,9 @@ describe('readDeferredWorkItems — session-authored/commented unheld work', () 
     expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
     expect(calls[0]!.text).toContain('wi.taken_by IS NULL');
     expect(calls[0]!.text).toContain('wi.status IS NULL OR wi.status <> ALL');
+    // WI-10004968: BOTH candidate branches (authored + commented) must exclude
+    // observation-lane reflection rows, or they render as unclaimed work.
+    expect(calls[0]!.text.match(/wi\.lane IS DISTINCT FROM 'observation'/g)).toHaveLength(2);
     expect(calls[0]!.text).toContain('created_at >=');
     expect(calls[0]!.params).toContain('ws-test');
     expect(calls[0]!.params).toContain('su-abc');

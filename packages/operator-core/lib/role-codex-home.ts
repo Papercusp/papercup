@@ -537,13 +537,12 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * hook's stdin carries { prompt, cwd, session_id, turn_id, model, ... }.
  * The turn-start port is therefore REACHABLE on codex via THIS file.
  *
- * TURN PROVENANCE (turn-provenance-owner-vs-agent-2026-07-11 P-004): that plan
- * concluded codex sessions must run LAYER-1 ONLY (envelope tagged
- * operator-side, never ledger-VERIFIED) because the classification hook had
- * nowhere to attach. The premise above is refuted, so codex layer-2 provenance
- * is now UNBLOCKED — but it is NOT implemented here (out of scope for this
- * plan; the classification hook is a separate script). Do not read the
- * injection registration below as provenance parity.
+ * TURN PROVENANCE + OWNER-DIRECTIVE CAPTURE: Codex's UserPromptSubmit hook
+ * carries the same prompt/session/turn identity the shared provenance script
+ * needs. Register that script beside the context-injection dispatcher below;
+ * it verifies Papercusp's nonce ledger, stamps the turn, and captures only an
+ * interactive owner prompt. Keep both entries behind the session identity and
+ * the provenance script's installed-file check.
  *
  * ⚠ TRUST IS SILENT (D-004, measured): an UNTRUSTED codex hook does not fire
  * and does not warn — no error, no log line, exit 0, session otherwise normal.
@@ -737,6 +736,18 @@ export function writeCodexLockHooks(
   // §5 explains why the frozen array interface absorbs that).
   const injectDispatcher = join(homedir(), '.papercusp', 'hooks', 'inject', 'index.mjs');
   const userPromptSubmit: CodexHook[] = [];
+  const provenance = join(dir, 'userpromptsubmit-provenance.sh');
+  if (opts.injectSid && existsSync(provenance)) {
+    userPromptSubmit.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex ${provenance}`,
+        },
+      ],
+    });
+  }
   if (opts.injectSid && existsSync(injectDispatcher)) {
     const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;
     userPromptSubmit.push({

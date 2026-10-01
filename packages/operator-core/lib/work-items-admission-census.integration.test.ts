@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
+import { createHash } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -8,7 +9,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { runWorkItemAdmissionCensus } = await import('./work-items-admission-census');
+const {
+  runWorkItemAdmissionCensus,
+  parseAdmissionCensusResume,
+  ADMISSION_CENSUS_RESUME_MAX_AGE_MS,
+  ADMISSION_CENSUS_RESUME_SCHEMA,
+} = await import('./work-items-admission-census');
 
 const WS = 'default';
 const HARNESS = 'h1';
@@ -577,4 +583,192 @@ describe('runWorkItemAdmissionCensus lock_not_available retry (WI-10004951, real
     expect(waits).toEqual([5, 7]);
     expect(await runStatus('census-lock-exhausted')).toBe('failed');
   }, 60_000);
+});
+
+/**
+ * WI-10004965 — a census interrupted part-way resumes from its finished chunks.
+ *
+ * Measured 2026-10-01: a production census took ~17 min and bg-host restarted every
+ * ~10-13 min, so census-0 of one bulk-dedup fire restarted from chunk 0 four times
+ * (17:14, 17:26, 17:37, 17:47Z) and the pass never left census.
+ *
+ * The interruption is simulated with a trigger that raises while chunk 1 writes
+ * (seed order: a=pos1 -> chunk 0, b=pos2 -> chunk 1, c=pos3 -> chunk 0; chunk 1 is
+ * the only one writing an edge with a = 'b'). A hard kill never reaches the catch
+ * block, so `killed()` then resets the row to the 'running' state a dead process
+ * leaves behind. Whether chunk 0 was re-scanned is read from its edges'
+ * `computed_at`: every scan upserts with `clock_timestamp()`, so a re-scan moves it.
+ */
+describe('runWorkItemAdmissionCensus resume after interruption (WI-10004965, real Postgres)', () => {
+  const base = { workspaceId: WS, harnessSlug: HARNESS, chunkCount: 2, targetTokens: 100, ghostFraction: 0.5 };
+
+  async function armCrashOnChunk1(): Promise<void> {
+    await db.sql.unsafe(`
+      CREATE OR REPLACE FUNCTION crash_admission_census_chunk()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.a = 'b' THEN RAISE EXCEPTION 'simulated bg-host restart'; END IF;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER admission_census_crash
+        BEFORE INSERT ON harness_shared.dedup_edges
+        FOR EACH ROW EXECUTE FUNCTION crash_admission_census_chunk();
+    `);
+  }
+
+  async function disarmCrash(): Promise<void> {
+    await db.sql.unsafe(`
+      DROP TRIGGER IF EXISTS admission_census_crash ON harness_shared.dedup_edges;
+      DROP FUNCTION IF EXISTS crash_admission_census_chunk();
+    `);
+  }
+
+  async function interruptedAttempt(runId: string, nowMs: number): Promise<void> {
+    await armCrashOnChunk1();
+    try {
+      await expect(
+        runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId, now: () => nowMs }),
+      ).rejects.toThrow(/simulated bg-host restart/);
+    } finally {
+      await disarmCrash();
+    }
+  }
+
+  async function killed(runId: string): Promise<void> {
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET finished_at = NULL,
+             detail = jsonb_set(detail, '{status}', '"running"')
+       WHERE id = ${runId}`;
+  }
+
+  async function edge(a: string, b: string): Promise<{ run_id: string; at: string } | undefined> {
+    const rows = await db.sql<Array<{ run_id: string; at: string }>>`
+      SELECT run_id, computed_at::text AS at FROM harness_shared.dedup_edges
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND a = ${a} AND b = ${b}`;
+    return rows[0];
+  }
+
+  async function runRow(runId: string): Promise<{ started_at: string; detail: Record<string, unknown> }> {
+    const rows = await db.sql<Array<{ started_at: Date; detail: Record<string, unknown> }>>`
+      SELECT started_at, detail FROM harness_shared.admission_runs WHERE id = ${runId}`;
+    return { started_at: rows[0]!.started_at.toISOString(), detail: rows[0]!.detail };
+  }
+
+  it('skips the finished chunk, keeps the first start, and scans items filed after the pin', async () => {
+    await seed();
+    await interruptedAttempt('resume-1', 5_000);
+    const interrupted = await runRow('resume-1');
+    const pin = interrupted.detail.resume as { chunks: Record<string, unknown>; pinnedEmbeddedIds: string[]; censusBefore: number };
+    expect(Object.keys(pin.chunks)).toEqual(['0']);
+    expect(pin.pinnedEmbeddedIds).toEqual(['a', 'b', 'c']);
+    expect(pin.censusBefore).toBe(0);
+    await killed('resume-1');
+    const chunk0Edges = [await edge('a', 'b'), await edge('a', 'c')];
+    expect(chunk0Edges.every((e) => e?.run_id === 'resume-1')).toBe(true);
+
+    // Filed between the attempts: sorts after every pinned id, so a live re-read
+    // would have shifted nothing here, but it is not in the pin at all.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         created_ts, embedding, embedding_mode)
+      VALUES (${WS}, ${HARNESS}, 'e', 'Alpha echo', '', 'open', NULL, '{}'::jsonb, 2,
+              '[0.995,0.09,0]'::vector, 'gemma')`;
+
+    const resumed = await runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'resume-1', now: () => 9_000 });
+
+    // Chunk 0 was NOT re-scanned: its edges keep the first attempt's computed_at.
+    expect([await edge('a', 'b'), await edge('a', 'c')]).toEqual(chunk0Edges);
+    // Chunk 1 ran on resume, and the delta scan covered the new item.
+    expect((await edge('b', 'c'))?.run_id).toBe('resume-1');
+    expect((await edge('a', 'e'))?.run_id).toBe('resume-1');
+    expect(resumed.chunkCoverage).toEqual([2, 1]);
+    expect(resumed.embeddedItems).toBe(4);
+    expect(resumed.corpusSize).toBe(5);
+    expect(resumed.memberRows).toBe(5);
+    // censusBefore is the first attempt's reading, taken before any edge existed.
+    expect(resumed.censusBefore).toBe(0);
+
+    const done = await runRow('resume-1');
+    expect(done.started_at).toBe(new Date(5_000).toISOString());
+    expect(done.detail.status).toBe('complete');
+    expect(done.detail.resume).toEqual({
+      attempts: 2,
+      resumedChunks: 1,
+      pinnedEmbeddedItems: 3,
+      deltaAnchors: 1,
+      anchorsMissingEmbedding: 0,
+      discarded: null,
+    });
+  }, 60_000);
+
+  it('CONTROL: without the checkpoint the same re-run re-scans chunk 0 (computed_at moves)', async () => {
+    await seed();
+    await interruptedAttempt('resume-control', 5_000);
+    await killed('resume-control');
+    const before = await edge('a', 'b');
+    await db.sql`
+      UPDATE harness_shared.admission_runs SET detail = detail - 'resume' WHERE id = ${'resume-control'}`;
+
+    const rerun = await runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'resume-control', now: () => 9_000 });
+
+    expect((await edge('a', 'b'))?.at).not.toBe(before?.at);
+    expect(rerun.censusBefore).toBeGreaterThanOrEqual(1);
+    expect((await runRow('resume-control')).detail.resume).toMatchObject({ attempts: 1, resumedChunks: 0 });
+  }, 60_000);
+
+  it('resumes a failed attempt in which a pinned item later lost its embedding, without a coverage error', async () => {
+    await seed();
+    await interruptedAttempt('resume-lost', 5_000);
+    // 'b' is the only anchor of the unfinished chunk 1. Under the old live
+    // row_number partition, losing it shifted 'c' into chunk 1 as well.
+    await db.sql`
+      UPDATE harness_shared.work_items SET embedding = NULL, embedding_mode = NULL
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'b'`;
+
+    const resumed = await runWorkItemAdmissionCensus({ ...base, sql: db.sql, runId: 'resume-lost', now: () => 9_000 });
+
+    expect(resumed.chunkCoverage).toEqual([2, 0]);
+    expect(resumed.embeddedItems).toBe(2);
+    expect((await runRow('resume-lost')).detail.resume).toMatchObject({
+      attempts: 2,
+      resumedChunks: 1,
+      anchorsMissingEmbedding: 1,
+    });
+  }, 60_000);
+
+  it('refuses to resume a complete run, a different chunking, or a pin past its age bound', () => {
+    const pin = {
+      schemaVersion: ADMISSION_CENSUS_RESUME_SCHEMA,
+      chunkCount: 2,
+      edgeFloor: 0.85,
+      componentFloor: 0.9,
+      profileId: null,
+      pinnedEmbeddedIds: ['a', 'b'],
+      // The module's rule: sha256 over the ids joined by U+0001.
+      pinnedFingerprint: createHash('sha256').update('a\u0001b').digest('hex'),
+      censusBefore: 0,
+      attempts: 1,
+      // '7' is out of range for chunkCount 2 and malformed; both must be dropped.
+      chunks: { '0': { positions: 1, present: 1, anchors: 1, edges: 0, hard: 0 }, '7': { positions: 1 } },
+    };
+    const row = (status: string, startedMs = 0) => ({ started_at: new Date(startedMs), detail: { status, resume: pin } });
+
+    const ok = parseAdmissionCensusResume(row('running'), { chunkCount: 2, nowMs: 1_000 });
+    expect(ok?.pin.chunks).toEqual({ '0': { positions: 1, present: 1, anchors: 1, edges: 0, hard: 0 } });
+    expect(parseAdmissionCensusResume(row('failed'), { chunkCount: 2, nowMs: 1_000 })).not.toBeNull();
+    expect(parseAdmissionCensusResume(row('complete'), { chunkCount: 2, nowMs: 1_000 })).toBeNull();
+    expect(parseAdmissionCensusResume(row('running'), { chunkCount: 4, nowMs: 1_000 })).toBeNull();
+    expect(
+      parseAdmissionCensusResume(row('running'), { chunkCount: 2, nowMs: ADMISSION_CENSUS_RESUME_MAX_AGE_MS + 1 }),
+    ).toBeNull();
+    expect(
+      parseAdmissionCensusResume(
+        { started_at: new Date(0), detail: { status: 'running', resume: { ...pin, pinnedFingerprint: 'tampered' } } },
+        { chunkCount: 2, nowMs: 1_000 },
+      ),
+    ).toBeNull();
+  });
 });

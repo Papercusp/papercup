@@ -20,6 +20,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { PSU_REQUEST_TIMEOUT_MS } from "./mcp-proxy/budgets.mjs";
+import { KICKOFF_PROMPT_FILE_ENV, prepareKickoffEnvironment } from "../../../packages/operator-core/lib/agent-kickoff/prompt-transport.mjs";
 import { resolvePtoolOperatorBase } from "../scripts/ptool.mjs";
 import {
   CODEX_SAFE_DEFAULT_MODEL,
@@ -1357,6 +1358,16 @@ describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
 // relies on (a free-form question rides PAPERCUSP_KICKOFF_PROMPT, not a --kickoff arg,
 // so it survives buildConsoleOneliner's greeting escaping instead of breaking the shell).
 describe("resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)", () => {
+  it("consumes a large file-backed kickoff once and clears the inherited pointer", () => {
+    const text = "Full review: quotes '$' and Unicode ☎\n".repeat(6000);
+    const env = prepareKickoffEnvironment({ PAPERCUSP_KICKOFF_PROMPT: text });
+    const path = env[KICKOFF_PROMPT_FILE_ENV];
+    const args = parseArgs(["--no-picker", "--agent=claude"]);
+    expect(resolveKickoffText(args, env)).toBe(text);
+    expect(env[KICKOFF_PROMPT_FILE_ENV]).toBeUndefined();
+    expect(existsSync(path)).toBe(false);
+    expect(resolveKickoffText(args, env)).toBeNull();
+  });
   it("falls back to PAPERCUSP_KICKOFF_PROMPT when no --kickoff flag was parsed", () => {
     const args = parseArgs([
       "--no-picker",

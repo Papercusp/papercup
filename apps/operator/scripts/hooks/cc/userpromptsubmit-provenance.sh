@@ -639,9 +639,14 @@ def record_owner_prompt(prompt, native_session):
     unreachable operator must never block UserPromptSubmit."""
     if not isinstance(native_session, str) or not native_session.strip():
         return
+    # The same policy-bearing hook now runs from Codex's per-session
+    # UserPromptSubmit registration as well as Claude's settings.json entry.
+    # Codex's hook event supplies the native session_id, so preserve its actual
+    # source kind for transcript ingestion instead of labeling it as Claude.
+    source_kind = 'codex' if os.environ.get('PAPERCUSP_AGENT') == 'codex' else 'claude'
     _mcp_call('sessions:record-prompt-origin', {
         'sessionId': native_session.strip(),
-        'sourceKind': 'claude',
+        'sourceKind': source_kind,
         'promptHash': sha256_hex(prompt),
         'submittedAtMs': round(now_ms),
     })
@@ -679,7 +684,7 @@ SUMMARY_NEEDED_NOTICE = (
 CAPTURE_VERBS = ('orders:capture', 'orders:capture-pending')
 
 
-def capture_owner_prompt(prompt, native_session):
+def capture_owner_prompt(prompt, native_session, native_turn=None):
     """Best-effort capture of an owner turn as an OPEN directive.
 
     Returns None when there was nothing to capture (or the server returned no id),
@@ -693,10 +698,15 @@ def capture_owner_prompt(prompt, native_session):
     """
     if not isinstance(prompt, str) or not prompt.strip():
         return None
-    # Claude does not expose a stable turn id on every hook payload. The session,
-    # payload hash, and submit timestamp give retries a useful provenance pointer;
-    # the server's partial unique index makes a same-ref retry idempotent.
-    source = f"{native_session or sid}:{sha256_hex(prompt)}"
+    # Codex supplies a stable native turn id, so include it in the idempotency
+    # key: identical prompts from distinct Codex turns must still create distinct
+    # directives. Claude does not expose a stable turn id on every payload, so
+    # retain its session+payload-hash fallback.
+    turn_id = native_turn.strip() if isinstance(native_turn, str) else ''
+    if turn_id:
+        source = f"{native_session or sid}:{turn_id}:{sha256_hex(prompt)}"
+    else:
+        source = f"{native_session or sid}:{sha256_hex(prompt)}"
     args = {
         'verbatim': prompt[:16000],
         'sourceTurnRef': source,
@@ -840,11 +850,13 @@ else:
         # This branch — and ONLY this branch — is a genuine human turn, so it is
         # the only place a mode grant may be honoured automatically.
         try:
-            record_owner_prompt(prompt, data.get('session_id') or data.get('sessionId'))
+            native_session = data.get('session_id') or data.get('sessionId')
+            native_turn = data.get('turn_id') or data.get('turnId')
+            record_owner_prompt(prompt, native_session)
         except Exception:
             pass  # fail-open: persistence is advisory to the prompt path
         try:
-            _cap_note = capture_owner_prompt(prompt, data.get('session_id') or data.get('sessionId'))
+            _cap_note = capture_owner_prompt(prompt, native_session, native_turn)
         except Exception as _cap_exc:
             # fail-OPEN (the turn still proceeds) but never fail-SILENT.
             _cap_note = CAPTURE_FAILED_NOTICE + f" [{type(_cap_exc).__name__}]"

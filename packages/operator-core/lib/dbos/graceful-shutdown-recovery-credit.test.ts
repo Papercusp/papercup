@@ -22,8 +22,9 @@ import {
 const require = createRequire(import.meta.url);
 
 function sdkSource(file: string): string {
-  const pkgDir = dirname(require.resolve('@dbos-inc/dbos-sdk/package.json'));
-  return readFileSync(join(pkgDir, 'dist', 'src', file), 'utf8');
+  // The SDK's `exports` map hides package.json; its main entry lives in dist/src.
+  const srcDir = dirname(require.resolve('@dbos-inc/dbos-sdk'));
+  return readFileSync(join(srcDir, file), 'utf8');
 }
 
 describe('DBOS SDK recovery-attempt semantics the credit depends on', () => {
@@ -58,9 +59,8 @@ function fakeProc(): EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn
   return em;
 }
 
-const flush = async (): Promise<void> => {
-  for (let i = 0; i < 5; i++) await Promise.resolve();
-};
+/** A macrotask boundary: every microtask the credit chain queued has run by then. */
+const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 afterEach(() => {
   vi.useRealTimers();

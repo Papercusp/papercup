@@ -275,8 +275,25 @@ export default defineTool({
         scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
       });
       liveTick = tick;
+      // Keep scalar totals distinct from the group arrays below. Unsuffixed
+      // names such as `unaccounted` are easy for consumers to treat as lists,
+      // then silently turn into [] through an Array.isArray fallback.
+      const summary = tick.summary;
       const liveSummary = {
-        ...tick.summary,
+        aliveCount: summary.alive,
+        strandedCount: summary.stranded,
+        endedUnobservedCount: summary.endedUnobserved,
+        unaccountedCount: summary.unaccounted,
+        unaccountedPidCount: summary.unaccountedPids,
+        abandonedWindowCount: summary.abandonedWindow,
+        abandonedWindowPidCount: summary.abandonedWindowPids,
+        consoleWindowCount: summary.consoleWindow,
+        consoleWindowPidCount: summary.consoleWindowPids,
+        verifierScopeCount: summary.verifierScope,
+        verifierScopePidCount: summary.verifierScopePids,
+        foreignCount: summary.foreign,
+        overdueCount: summary.overdue,
+        tooYoungCount: summary.tooYoung,
         degraded: tick.degraded,
         degradedReason: tick.degradedReason,
         // Keep scan bounds visible on filtered reads too; an exact group list can

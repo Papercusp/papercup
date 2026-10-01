@@ -4971,7 +4971,10 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
   const clock = typeof now === 'function' ? now : () => Date.now();
   const detectionWindowMs = positiveNumber(startupMs, CLAUDE_RESUME_COMPACTION_STARTUP_MS);
   const recoveryWindowMs = positiveNumber(recoveryMs, CLAUDE_RESUME_COMPACTION_RECOVERY_MS);
-  const startedAt = clock();
+  // Host setup can precede the child's first PTY frame by an unbounded amount
+  // under startup delay. Start the bounded menu-detection window with observed
+  // child output, so a late first frame still gets inspected before expiry.
+  let detectionStartedAt = null;
   let phase = enabled ? 'watching' : 'disabled';
   let recoveryStartedAt = 0;
   let observed = '';
@@ -4992,7 +4995,11 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
   });
 
   const expireIfNeeded = (at = clock()) => {
-    if (phase === 'watching' && at - startedAt >= detectionWindowMs) {
+    if (
+      phase === 'watching' &&
+      detectionStartedAt !== null &&
+      at - detectionStartedAt >= detectionWindowMs
+    ) {
       phase = 'watch-expired';
       observed = '';
       return snapshot('expired');
@@ -5006,6 +5013,7 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
   };
 
   const observe = (chunk, at = clock()) => {
+    if (phase === 'watching' && detectionStartedAt === null) detectionStartedAt = at;
     const expiration = expireIfNeeded(at);
     if (expiration.action === 'expired') return expiration;
     if (phase === 'disabled' || phase === 'watch-expired' || phase === 'ready' || phase === 'timed-out') {

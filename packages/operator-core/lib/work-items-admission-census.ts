@@ -748,6 +748,103 @@ export async function withCensusStatementTimeout<T>(
   })) as T;
 }
 
+/**
+ * WI-10004965: a census interrupted part-way (a bg-host restart kills the routine
+ * fire; DBOS recovery re-runs the census with the SAME runId) resumes from the
+ * edge-scan chunks it already finished instead of starting over.
+ *
+ * Measured 2026-10-01: a full census took 17m03s, while bg-host restarted every
+ * ~10-13 min (agents loading fixes plus su-loopback auto-activate). census-0 of one
+ * bulk-dedup fire restarted from chunk 0 at 17:14, 17:26, 17:37 and 17:47, so the
+ * pass never left census.
+ *
+ * What is pinned, and why: the edge scan partitions anchors by POSITION in the
+ * embedded-id list. If that list were re-read live on resume, one newly filed item
+ * would shift every later position and the finished chunks would no longer cover the
+ * anchors they claim to. So the first attempt pins the list on its run row, and
+ * every resume scans the remaining chunks over the same list. Items filed after
+ * the pin are covered by one delta scan (new ids x the live corpus). Everything
+ * after the edge scan (plan, counts, shard map) uses the live corpus, as before.
+ *
+ * The pin lives in `admission_runs.detail.resume` only while the run is unfinished;
+ * the completion write replaces `detail` and drops it.
+ */
+export const ADMISSION_CENSUS_RESUME_SCHEMA = 'work-item-admission-census-resume-v1';
+/** A pin older than this is discarded; a routine fire's own timeout is 24h. */
+export const ADMISSION_CENSUS_RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export interface AdmissionCensusChunkCheckpoint {
+  /** Pinned positions assigned to this chunk. */
+  positions: number;
+  /** Of those, rows that still had an embedding at scan time. */
+  present: number;
+  /** Of those, rows the scan actually anchored (embedding AND profile match). */
+  anchors: number;
+  edges: number;
+  hard: number;
+}
+
+export interface AdmissionCensusResumePin {
+  schemaVersion: typeof ADMISSION_CENSUS_RESUME_SCHEMA;
+  chunkCount: number;
+  edgeFloor: number;
+  componentFloor: number;
+  profileId: string | null;
+  pinnedEmbeddedIds: string[];
+  pinnedFingerprint: string;
+  censusBefore: number;
+  attempts: number;
+  chunks: Record<string, AdmissionCensusChunkCheckpoint>;
+}
+
+function pinFingerprint(ids: readonly string[]): string {
+  return createHash('sha256').update(ids.join('\u0001')).digest('hex');
+}
+
+function isChunkCheckpoint(value: unknown): value is AdmissionCensusChunkCheckpoint {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return ['positions', 'present', 'anchors', 'edges', 'hard'].every(
+    (key) => Number.isInteger(v[key]) && (v[key] as number) >= 0,
+  );
+}
+
+/**
+ * Decide whether an existing run row can be resumed. Pure: every refusal returns
+ * null, which means "start fresh", never an error. Only an UNFINISHED ('running')
+ * or 'failed' attempt with an intact pin for the same chunking and floors resumes;
+ * a 'complete' row (e.g. a stage's result census being re-read) never does.
+ */
+export function parseAdmissionCensusResume(
+  row: { started_at: string | Date; detail: unknown } | undefined,
+  expected: { chunkCount: number; nowMs: number },
+): { startedAt: string; pin: AdmissionCensusResumePin } | null {
+  if (!row || !row.detail || typeof row.detail !== 'object') return null;
+  const detail = row.detail as { status?: unknown; resume?: unknown };
+  if (detail.status !== 'running' && detail.status !== 'failed') return null;
+  const pin = detail.resume as Partial<AdmissionCensusResumePin> | undefined;
+  if (!pin || pin.schemaVersion !== ADMISSION_CENSUS_RESUME_SCHEMA) return null;
+  if (pin.chunkCount !== expected.chunkCount) return null;
+  if (pin.edgeFloor !== ADMISSION_EDGE_FLOOR || pin.componentFloor !== ADMISSION_COMPONENT_FLOOR) return null;
+  if (!Array.isArray(pin.pinnedEmbeddedIds) || !pin.pinnedEmbeddedIds.every((id) => typeof id === 'string')) return null;
+  if (pin.pinnedFingerprint !== pinFingerprint(pin.pinnedEmbeddedIds)) return null;
+  if (!Number.isInteger(pin.censusBefore) || !Number.isInteger(pin.attempts)) return null;
+  if (!pin.chunks || typeof pin.chunks !== 'object') return null;
+  const startedMs = new Date(row.started_at).getTime();
+  if (!Number.isFinite(startedMs) || expected.nowMs - startedMs > ADMISSION_CENSUS_RESUME_MAX_AGE_MS) return null;
+  const chunks: Record<string, AdmissionCensusChunkCheckpoint> = {};
+  for (const [key, value] of Object.entries(pin.chunks)) {
+    const index = Number(key);
+    if (Number.isInteger(index) && index >= 0 && index < expected.chunkCount && isChunkCheckpoint(value)) {
+      chunks[String(index)] = value;
+    }
+  }
+  return {
+    startedAt: new Date(startedMs).toISOString(),
+    pin: { ...(pin as AdmissionCensusResumePin), profileId: pin.profileId ?? null, chunks },
+  };
+}
+
 async function scanEdgeChunk(
   sql: OrgSql,
   opts: AdmissionCensusRunOptions,
@@ -757,25 +854,38 @@ async function scanEdgeChunk(
   embeddedIds: readonly string[],
   chunkIndex: number,
   chunkCount: number,
-): Promise<{ anchors: number; edges: number; hard: number }> {
+): Promise<AdmissionCensusChunkCheckpoint> {
   // WI-1194246: runs under the census's declared statement_timeout. It MUST be
   // SET LOCAL, never a session-level `SET`: this can run on a SHARED pool
   // checkout, so a session-level set would leak the bound onto whatever ran
   // next on the same connection — silently un-capping an unrelated caller.
   // SET LOCAL reverts at COMMIT. The body is a single statement, so the
   // wrapper does not change atomicity.
+  //
+  // WI-10004965: an anchor's chunk is its POSITION in `embeddedIds` (the pinned
+  // list), not a row_number over whichever rows currently qualify. A pinned item
+  // that lost its embedding between attempts would otherwise shift every later
+  // row into a different chunk, and a resumed census would skip anchors that no
+  // finished chunk ever scanned.
   const rows = await withCensusStatementTimeout(sql, opts, (tx) =>
-    tx<Array<{ anchors: number; edges: number; hard: number }>>`
-    WITH corpus AS MATERIALIZED (
+    tx<Array<{ positions: number; present: number; anchors: number; edges: number; hard: number }>>`
+    WITH pinned AS MATERIALIZED (
+      SELECT p.id, p.rn
+        FROM unnest(${embeddedIds}::text[]) WITH ORDINALITY AS p(id, rn)
+    ), slot AS MATERIALIZED (
+      SELECT id FROM pinned
+       WHERE mod((rn - 1)::int, ${chunkCount}) = ${chunkIndex}
+    ), corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
              COALESCE(wi.title, '') AS title,
              wi.embedding,
-             row_number() OVER (ORDER BY wi.feature_id) AS rn
-        FROM harness_shared.work_items wi
-       WHERE wi.workspace_id = ${opts.workspaceId}
+             p.rn
+        FROM pinned p
+        JOIN harness_shared.work_items wi
+          ON wi.workspace_id = ${opts.workspaceId}
          AND wi.harness_slug = ${opts.harnessSlug}
-         AND wi.feature_id = ANY(${embeddedIds}::text[])
-         AND wi.embedding IS NOT NULL
+         AND wi.feature_id = p.id
+       WHERE wi.embedding IS NOT NULL
          AND ${proseProfilePredicateSql(tx, selection, 'wi.embedding_profile', 'wi.embedding_mode')}
     ), anchors AS MATERIALIZED (
       SELECT * FROM corpus
@@ -787,6 +897,76 @@ async function scanEdgeChunk(
              similarity(a.title, b.title)::real AS trgm
         FROM anchors a
         JOIN corpus b ON a.id < b.id
+    ), written AS (
+      INSERT INTO harness_shared.dedup_edges
+        (workspace_id, harness_slug, a, b, cos, trgm, run_id, computed_at)
+      SELECT ${opts.workspaceId}, ${opts.harnessSlug}, a, b, cos, trgm, ${runId}, clock_timestamp()
+        FROM pairs
+       WHERE cos >= ${ADMISSION_EDGE_FLOOR}
+      ON CONFLICT (workspace_id, harness_slug, a, b) DO UPDATE SET
+        cos = EXCLUDED.cos,
+        trgm = EXCLUDED.trgm,
+        run_id = EXCLUDED.run_id,
+        computed_at = EXCLUDED.computed_at
+      RETURNING cos
+    )
+    SELECT (SELECT count(*)::int FROM slot) AS positions,
+           (SELECT count(*)::int
+              FROM slot s
+              JOIN harness_shared.work_items wi
+                ON wi.workspace_id = ${opts.workspaceId}
+               AND wi.harness_slug = ${opts.harnessSlug}
+               AND wi.feature_id = s.id
+             WHERE wi.embedding IS NOT NULL) AS present,
+           (SELECT count(*)::int FROM anchors) AS anchors,
+           count(*)::int AS edges,
+           count(*) FILTER (WHERE cos >= ${ADMISSION_COMPONENT_FLOOR})::int AS hard
+      FROM written`);
+  return {
+    positions: Number(rows[0]?.positions ?? 0),
+    present: Number(rows[0]?.present ?? 0),
+    anchors: Number(rows[0]?.anchors ?? 0),
+    edges: Number(rows[0]?.edges ?? 0),
+    hard: Number(rows[0]?.hard ?? 0),
+  };
+}
+
+/**
+ * WI-10004965: on a resumed census, scan the embedded items filed AFTER the pin
+ * against the whole live embedded corpus, so the resumed census covers every pair
+ * a fresh one would. Pairs between two new items are written once (a < b); every
+ * edge is stored canonically (a < b), matching scanEdgeChunk.
+ */
+async function scanDeltaEdges(
+  sql: OrgSql,
+  opts: AdmissionCensusRunOptions,
+  runId: string,
+  selection: ProseProfileSelection,
+  deltaIds: readonly string[],
+  liveEmbeddedIds: readonly string[],
+): Promise<{ anchors: number; edges: number; hard: number }> {
+  const rows = await withCensusStatementTimeout(sql, opts, (tx) =>
+    tx<Array<{ anchors: number; edges: number; hard: number }>>`
+    WITH corpus AS MATERIALIZED (
+      SELECT wi.feature_id AS id,
+             COALESCE(wi.title, '') AS title,
+             wi.embedding,
+             (wi.feature_id = ANY(${deltaIds}::text[])) AS is_delta
+        FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${opts.workspaceId}
+         AND wi.harness_slug = ${opts.harnessSlug}
+         AND wi.feature_id = ANY(${liveEmbeddedIds}::text[])
+         AND wi.embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(tx, selection, 'wi.embedding_profile', 'wi.embedding_mode')}
+    ), anchors AS MATERIALIZED (
+      SELECT * FROM corpus WHERE is_delta
+    ), pairs AS MATERIALIZED (
+      SELECT LEAST(a.id, b.id) AS a,
+             GREATEST(a.id, b.id) AS b,
+             (1 - (a.embedding <=> b.embedding))::real AS cos,
+             similarity(a.title, b.title)::real AS trgm
+        FROM anchors a
+        JOIN corpus b ON a.id <> b.id AND (NOT b.is_delta OR a.id < b.id)
     ), written AS (
       INSERT INTO harness_shared.dedup_edges
         (workspace_id, harness_slug, a, b, cos, trgm, run_id, computed_at)
@@ -1029,7 +1209,6 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
   const startedMs = now();
-  const startedAt = new Date(startedMs).toISOString();
   const runId = opts.runId ?? `admission-census-${startedMs}-${randomUUID().slice(0, 8)}`;
   const chunkCount = Math.max(1, Math.floor(opts.chunkCount ?? DEFAULT_EDGE_SCAN_CHUNKS));
   const config = {
@@ -1055,6 +1234,29 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
           ...(opts.sleep ? { sleep: opts.sleep } : {}),
         });
 
+  // WI-10004965: an interrupted earlier attempt of this runId leaves its pin and
+  // finished chunks on the run row. Inside a caller's transaction an interruption
+  // rolls the row back too, so only an autocommit census can be resumed.
+  const resumable = !opts.withinTransaction;
+  const prior =
+    resumable && opts.runId
+      ? parseAdmissionCensusResume(
+          (
+            await lockRetry(() => sql<Array<{ started_at: Date; detail: unknown }>>`
+              SELECT started_at, detail
+                FROM harness_shared.admission_runs
+               WHERE id = ${runId}
+                 AND workspace_id = ${opts.workspaceId}
+                 AND harness_slug = ${opts.harnessSlug}`)
+          )[0],
+          { chunkCount, nowMs: startedMs },
+        )
+      : null;
+  // A resumed attempt keeps the FIRST attempt's start: removeStaleEdges must not
+  // treat edges written by other runs during the earlier attempts as stale, and
+  // the bulk-dedup in-flight window is measured from it.
+  let startedAt = prior?.startedAt ?? new Date(startedMs).toISOString();
+
   await lockRetry(() => sql`
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
@@ -1073,6 +1275,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
                 failureReason: null,
                 blockedReason: null,
               } satisfies AdmissionRunOutcome,
+              ...(prior ? { resume: prior.pin } : {}),
             })}::text::jsonb)
     ON CONFLICT (id) DO UPDATE SET
       workspace_id = EXCLUDED.workspace_id,
@@ -1108,9 +1311,40 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         corpus.map((item) => `${item.id}\u0000${item.hasEmbedding ? item.embeddingProfile : 'text-only'}`).join('\u0001'),
       )
       .digest('hex');
+
+    // WI-10004965: reuse the earlier attempt's pin only for the same embedding
+    // profile; a profile change invalidates every finished chunk, so start over.
+    let resumeDiscarded: string | null = null;
+    let pin: AdmissionCensusResumePin | null = null;
+    if (prior && prior.pin.profileId === profileId) {
+      pin = { ...prior.pin, attempts: prior.pin.attempts + 1 };
+    } else if (prior) {
+      resumeDiscarded = `embedding profile changed: ${prior.pin.profileId ?? 'none'} -> ${profileId ?? 'none'}`;
+      startedAt = new Date(startedMs).toISOString();
+    }
+    // censusBefore is the count BEFORE this census refreshed any edge, so a resumed
+    // attempt reports the first attempt's reading, not one taken mid-refresh.
+    const censusBefore = pin ? pin.censusBefore : await lockRetry(() => readUnadjudicatedCensus(sql, opts, corpusIds));
+    if (!pin) {
+      pin = {
+        schemaVersion: ADMISSION_CENSUS_RESUME_SCHEMA,
+        chunkCount,
+        edgeFloor: ADMISSION_EDGE_FLOOR,
+        componentFloor: ADMISSION_COMPONENT_FLOOR,
+        profileId,
+        pinnedEmbeddedIds: embeddedIds,
+        pinnedFingerprint: pinFingerprint(embeddedIds),
+        censusBefore,
+        attempts: 1,
+        chunks: {},
+      };
+    }
+    const activePin = pin;
+    const pinnedIds = activePin.pinnedEmbeddedIds;
     await lockRetry(() => sql`
       UPDATE harness_shared.admission_runs
          SET batch_size = ${corpus.length},
+             started_at = ${startedAt}::timestamptz,
              detail = detail || ${JSON.stringify({
                snapshot: {
                  fingerprint: snapshotFingerprint,
@@ -1118,28 +1352,62 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
                  embeddedItems: embeddedIds.length,
                  missingEmbeddingItems: missingEmbeddingIds.length,
                },
+               ...(resumable ? { resume: activePin } : {}),
              })}::text::jsonb
        WHERE id = ${runId}`);
-    const censusBefore = await lockRetry(() => readUnadjudicatedCensus(sql, opts, corpusIds));
 
-    const chunkCoverage: number[] = [];
+    const chunkResults: AdmissionCensusChunkCheckpoint[] = [];
+    let resumedChunks = 0;
+    let deltaAnchors = 0;
+    let anchorsMissingEmbedding = 0;
     let scannedEdgeWrites = 0;
     let scannedHardEdges = 0;
     if (mode && selection) {
       for (let i = 0; i < chunkCount; i += 1) {
+        const saved = activePin.chunks[String(i)];
+        if (saved) {
+          chunkResults.push(saved);
+          resumedChunks += 1;
+          continue;
+        }
         const result = await lockRetry(() =>
-          scanEdgeChunk(sql, opts, runId, mode, selection, embeddedIds, i, chunkCount),
+          scanEdgeChunk(sql, opts, runId, mode, selection, pinnedIds, i, chunkCount),
         );
-        chunkCoverage.push(result.anchors);
-        scannedEdgeWrites += result.edges;
-        scannedHardEdges += result.hard;
+        chunkResults.push(result);
+        if (resumable) {
+          // Checkpoint AFTER the chunk's edges committed. A kill between the two
+          // statements re-scans this one chunk; its upserts are idempotent.
+          await lockRetry(() => sql`
+            UPDATE harness_shared.admission_runs
+               SET detail = jsonb_set(detail, ${['resume', 'chunks', String(i)]}::text[],
+                                      ${JSON.stringify(result)}::text::jsonb, true)
+             WHERE id = ${runId}`);
+        }
       }
-      const covered = chunkCoverage.reduce((sum, n) => sum + n, 0);
-      if (covered !== embedded.length) {
-        throw new Error(`edge-scan coverage mismatch: chunks=${covered}, embedded=${embedded.length}`);
+      const total = (key: keyof AdmissionCensusChunkCheckpoint) => chunkResults.reduce((sum, r) => sum + r[key], 0);
+      scannedEdgeWrites = total('edges');
+      scannedHardEdges = total('hard');
+      if (total('positions') !== pinnedIds.length) {
+        throw new Error(`edge-scan coverage mismatch: positions=${total('positions')}, pinned=${pinnedIds.length}`);
+      }
+      // Every pinned row that still carries an embedding must have been anchored.
+      // A gap here means the profile predicate silently excluded embedded rows.
+      if (total('anchors') !== total('present')) {
+        throw new Error(`edge-scan coverage mismatch: chunks=${total('anchors')}, embedded=${total('present')}`);
+      }
+      // A pinned item that lost its embedding after the pin is not an error.
+      anchorsMissingEmbedding = total('positions') - total('present');
+      const pinnedSet = new Set(pinnedIds);
+      const deltaIds = embeddedIds.filter((id) => !pinnedSet.has(id));
+      if (deltaIds.length > 0) {
+        const delta = await lockRetry(() => scanDeltaEdges(sql, opts, runId, selection, deltaIds, embeddedIds));
+        deltaAnchors = delta.anchors;
+        scannedEdgeWrites += delta.edges;
+        scannedHardEdges += delta.hard;
       }
       await lockRetry(() => removeStaleEdges(sql, opts, runId, startedAt, embeddedIds));
     }
+    const chunkCoverage = chunkResults.map((r) => r.anchors);
 
     const lexical = lexicalHardEdges(corpus);
     const [cosine, textContext, adjudicatedPairs] = await Promise.all([
@@ -1203,6 +1471,16 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         maxGhostTokens: Math.max(0, ...plan.shards.map((shard) => shard.ghostTokens)),
       },
       projection: plan.projection,
+      // WI-10004965: how this census was assembled across attempts. The pinned id
+      // list itself is dropped here (this write replaces `detail`).
+      resume: {
+        attempts: activePin.attempts,
+        resumedChunks,
+        pinnedEmbeddedItems: pinnedIds.length,
+        deltaAnchors,
+        anchorsMissingEmbedding,
+        discarded: resumeDiscarded,
+      },
       coverageAssertion: {
         expected: corpus.length,
         memberRows: plan.memberRows,

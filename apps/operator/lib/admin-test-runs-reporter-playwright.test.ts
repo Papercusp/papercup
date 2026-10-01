@@ -76,7 +76,10 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     // The persisted execution_details must parse through the SAME reader the
     // acceptance-bar layer check uses, and must say e2e — otherwise no Playwright
     // run can ever satisfy a BAR clause whose requiredTestLayers includes e2e.
-    const stored = JSON.parse(String(values.at(-1)));
+    // EI-24799048791133095: the jsonb param is the OBJECT, never pre-stringified
+    // text (postgres-js would encode that twice into a jsonb STRING scalar).
+    const stored = values.at(-1);
+    expect(typeof stored).toBe('object');
     expect(parseTestRunExecutionDetails(stored)).toBeDefined();
     expect(recordedTestLayer(stored)).toBe('e2e');
     expect(stored).toMatchObject({

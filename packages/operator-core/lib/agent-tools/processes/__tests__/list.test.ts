@@ -616,7 +616,22 @@ describe('processes:list structured output', () => {
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
     vi.mocked(listTasks).mockResolvedValueOnce([]);
     vi.mocked(reconcileTick).mockResolvedValueOnce({
-      summary: { unaccounted: 1, unaccountedPids: 2 },
+      summary: {
+        alive: 2,
+        stranded: 3,
+        endedUnobserved: 4,
+        unaccounted: 1,
+        unaccountedPids: 2,
+        abandonedWindow: 5,
+        abandonedWindowPids: 6,
+        consoleWindow: 7,
+        consoleWindowPids: 8,
+        verifierScope: 9,
+        verifierScopePids: 10,
+        foreign: 11,
+        overdue: 12,
+        tooYoung: 13,
+      },
       result: {
         unaccounted: [
           {
@@ -671,15 +686,56 @@ describe('processes:list structured output', () => {
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const structured = dispatched.result?.structuredContent as {
       live: {
+        aliveCount: number;
+        strandedCount: number;
+        endedUnobservedCount: number;
+        unaccountedCount: number;
+        unaccountedPidCount: number;
+        abandonedWindowCount: number;
+        abandonedWindowPidCount: number;
+        consoleWindowCount: number;
+        consoleWindowPidCount: number;
+        verifierScopeCount: number;
+        verifierScopePidCount: number;
+        foreignCount: number;
+        overdueCount: number;
+        tooYoungCount: number;
         unaccountedGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
         verifierGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
       };
     };
+    expect(structured.live).toMatchObject({
+      aliveCount: 2,
+      strandedCount: 3,
+      endedUnobservedCount: 4,
+      unaccountedCount: 1,
+      unaccountedPidCount: 2,
+      abandonedWindowCount: 5,
+      abandonedWindowPidCount: 6,
+      consoleWindowCount: 7,
+      consoleWindowPidCount: 8,
+      verifierScopeCount: 9,
+      verifierScopePidCount: 10,
+      foreignCount: 11,
+      overdueCount: 12,
+      tooYoungCount: 13,
+    });
+    for (const ambiguousCountKey of [
+      'alive', 'stranded', 'endedUnobserved', 'unaccounted', 'unaccountedPids',
+      'abandonedWindow', 'abandonedWindowPids', 'consoleWindow', 'consoleWindowPids',
+      'verifierScope', 'verifierScopePids', 'foreign', 'overdue', 'tooYoung',
+    ]) {
+      expect(structured.live).not.toHaveProperty(ambiguousCountKey);
+    }
     expect(structured.live.unaccountedGroups[0]).toMatchObject({
       scopeUnit: 'pc-orphan123.scope',
       cgroupPath: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope',
       pids: [11, 12],
     });
+    expect(structured.live.unaccountedGroups).toHaveLength(structured.live.unaccountedCount);
+    expect(structured.live.unaccountedPidCount).toBe(
+      structured.live.unaccountedGroups.reduce((count, group) => count + group.pids.length, 0),
+    );
     expect(structured.live.verifierGroups).toEqual([
       expect.objectContaining({
         scopeUnit: 'papercup-tauri-verify-90-3416089-tauri-1.scope',

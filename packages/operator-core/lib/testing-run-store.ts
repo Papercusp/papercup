@@ -2537,7 +2537,7 @@ async function persistHarnessTestRunsInternal(
           VALUES
             (${row.filePath}, ${row.framework ?? 'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
              ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty},
-             ${executionDetails ? JSON.stringify(executionDetails) : null})
+             ${executionDetails ?? null})
           RETURNING id
         `,
       );

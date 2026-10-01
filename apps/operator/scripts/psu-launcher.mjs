@@ -2344,11 +2344,17 @@ export function kickoffPositionalArgs(res, args) {
  * buildConsoleOneliner and breaks the shell (the gnome-terminal exit-2 the
  * docs-agent hit), whereas an env value is exported via a correctly-escaped
  * `export K=…` in the oneliner prelude and arrives intact (multiline / embedded
- * quotes included). Pure — exported for tests.
+ * quotes included). Large free-form prompts use a private, single-use file;
+ * consume its environment pointer before launching the backend. Exported for tests.
  */
 export function resolveKickoffText(args, env = process.env) {
-  return args?.kickoffPromptText || env?.PAPERCUSP_KICKOFF_PROMPT ||
-    consumeKickoffPromptFile(env?.[KICKOFF_PROMPT_FILE_ENV]) || null;
+  const inline = args?.kickoffPromptText || env?.PAPERCUSP_KICKOFF_PROMPT;
+  if (inline) return inline;
+  const path = env?.[KICKOFF_PROMPT_FILE_ENV];
+  if (!path) return null;
+  const text = consumeKickoffPromptFile(path);
+  delete env[KICKOFF_PROMPT_FILE_ENV];
+  return text || null;
 }
 
 /**

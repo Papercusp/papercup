@@ -844,6 +844,9 @@ export async function readDeferredWorkItems(
            AND wi.item_kind IN ('bug', 'change', 'task')
            AND NULLIF(wi.payload #>> '{_ei,created_by}', '') = ${ownerId}
            AND wi.created_ts >= ${Math.floor(sessionStartedAtMs)}
+           -- WI-10004968: observation-lane rows are turn-end reflections
+           -- (e.g. a loop:checkpoint insight), never claimable work.
+           AND wi.lane IS DISTINCT FROM 'observation'
            AND (
              wi.taken_by IS NULL
              OR btrim(wi.taken_by) = ''
@@ -879,6 +882,7 @@ export async function readDeferredWorkItems(
          WHERE post.workspace_id = ${ws}
            AND post.author_id = ${ownerId}
            AND post.created_at >= to_timestamp(${sessionStartedAtMs}::double precision / 1000.0)
+           AND wi.lane IS DISTINCT FROM 'observation'
            AND (
              wi.taken_by IS NULL
              OR btrim(wi.taken_by) = ''

@@ -59,6 +59,17 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
   };
 }
 
+function occurrenceReceipt(input: RecordIssueOccurrenceInput, occurrenceId: number) {
+  return {
+    occurrenceId,
+    workspaceId: 'ws',
+    canonicalHarness: input.canonicalHarness ?? 'papercusp',
+    canonicalId: input.canonicalId,
+    reportKind: input.reportKind,
+    occurredAt: '2026-10-01T00:00:00.000Z',
+  };
+}
+
 function deps(
   opts: { found?: EngineerIssue[]; setCheckpoint?: CaptureDeps['setCheckpoint'] } = {},
 ): CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } {
@@ -71,7 +82,7 @@ function deps(
     setCheckpoint: opts.setCheckpoint,
     recordIssueOccurrence: async (input) => {
       occurrences.push(input);
-      return null;
+      return occurrenceReceipt(input, occurrences.length);
     },
     createIssue: async (input) => {
       created.push(input);
@@ -1966,6 +1977,53 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     ]);
   });
 
+  it.each(['null', 'throw'] as const)(
+    'P-005 mints a canonical filing when occurrence recording %s',
+    async (failure) => {
+      setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: false });
+      try {
+        const worded = existing({ id: 'EI-57', title: 'similar queue admission failure' });
+        const base = deps({ found: [] });
+        const d = semDeps(base, { hard: [], soft: [{ id: 'EI-57', similarity: 0.91 }] }, [worded]);
+        d.readIssueAdmissionPressure = async () =>
+          assessIssueAdmissionPressure({
+            rawOccurrences: 455,
+            duplicateOccurrences: 455,
+            canonicalStock: 2_494,
+            canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
+            emitterCounts: [430, 5, 5, 5, 5, 5],
+          });
+        const recordIssueOccurrence = vi.fn(async (_input: RecordIssueOccurrenceInput) => {
+          if (failure === 'throw') throw new Error('occurrence insert failed');
+          return null;
+        });
+        d.recordIssueOccurrence = recordIssueOccurrence;
+
+        const report = {
+          title: 'differently worded queue admission failure',
+          body: 'This report detail must survive an unavailable occurrence ledger.',
+          kind: 'bug' as const,
+          scope: 'harness:papercusp',
+        };
+        const res = await captureImprovement(report, d);
+
+        expect(res).toMatchObject({ ok: true, created: true, issue: { id: 'EI-100' } });
+        expect(base.created).toHaveLength(1);
+        expect(base.created[0]).toMatchObject({
+          title: report.title,
+          body: report.body,
+          kind: 'bug',
+        });
+        expect(recordIssueOccurrence.mock.calls.map(([call]) => call.reportKind)).toEqual([
+          'coalesced',
+          'canonical-created',
+        ]);
+      } finally {
+        setFlagOverridesForTest(null);
+      }
+    },
+  );
+
   it('P-005 direct-evidence tool failures ignore keyless soft siblings during a burst', async () => {
     const unrelated = existing({
       id: 'EI-24441622330454419',
@@ -3484,6 +3542,42 @@ describe('captureImprovement — derived-identity fold for agent filings (P-013 
       expect(res.created).toBe(true);
       expect(d.created).toHaveLength(1);
     });
+
+    it.each(['null', 'throw'] as const)(
+      'mints the incoming report when occurrence recording %s',
+      async (failure) => {
+        setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+        try {
+          const d = foldDeps({});
+          const recordIssueOccurrence = vi.fn(async (_input: RecordIssueOccurrenceInput) => {
+            if (failure === 'throw') throw new Error('occurrence insert failed');
+            return null;
+          });
+          d.recordIssueOccurrence = recordIssueOccurrence;
+          const report = {
+            ...repeatFiling,
+            body: 'The complete second report exists only in its occurrence record before this fallback.',
+          };
+
+          const res = await captureImprovement(report, d);
+
+          expect(res).toMatchObject({ ok: true, created: true, issue: { id: 'EI-100' } });
+          expect(d.created).toHaveLength(1);
+          expect(d.created[0]).toMatchObject({
+            title: report.title,
+            body: report.body,
+            payload: expect.objectContaining({ lane: 'observation' }),
+          });
+          expect(d.merges).toHaveLength(1);
+          expect(recordIssueOccurrence.mock.calls.map(([call]) => call.reportKind)).toEqual([
+            'coalesced',
+            'canonical-created',
+          ]);
+        } finally {
+          setFlagOverridesForTest(null);
+        }
+      },
+    );
   });
 
   describe('SOFT verdict — both rows survive, linked', () => {

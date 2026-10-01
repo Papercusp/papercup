@@ -1,3 +1,4 @@
+import { spawn, spawnSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 
 // The bridge is intentionally a plain-Node `.mjs` module so both repository
@@ -8,7 +9,9 @@ import {
   createGovernedProcessDemandSampler,
   governedProcessIdempotencyKey,
   isRetryableAdmissionFailure,
+  resolveGovernedProcessTree,
   runGovernedTestProcess,
+  GOVERNED_PROCESS_TREE_WALK_PID_CAP,
   GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES,
   GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS,
   GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES,
@@ -514,5 +517,70 @@ describe('governed admission retry (WI-1410919)', () => {
     const b: Record<string, unknown> = { name: 'B', cause: a };
     a.cause = b;
     expect(isRetryableAdmissionFailure(a)).toBe(false);
+  });
+});
+
+/**
+ * WI-10004924 — the sampler finds one tree by walking its children files instead of reading
+ * /proc/<pid>/status for every pid on the host.  The host-wide scan is the oracle: on a live,
+ * static tree the walk must return the same pids, grandchildren included.
+ */
+describe.skipIf(process.platform !== 'linux')('process-tree discovery (WI-10004924)', () => {
+  const sorted = (pids: number[]) => [...pids].sort((x, y) => x - y);
+
+  async function withLiveTree(body: (rootPid: number) => void) {
+    // root sh -> sleep, and root sh -> subshell -> sleep (the grandchild).
+    const child = spawn('sh', ['-c', 'sleep 30 & (sleep 30; true) & wait'], { stdio: 'ignore' });
+    const rootPid = child.pid!;
+    try {
+      const deadline = Date.now() + 5_000;
+      while (resolveGovernedProcessTree(rootPid, { method: 'scan' }).pids.length < 4 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      body(rootPid);
+    } finally {
+      for (const pid of resolveGovernedProcessTree(rootPid, { method: 'scan' }).pids.reverse()) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }
+
+  it('walks the tree, grandchild included, and matches the host-wide scan', async () => {
+    await withLiveTree((rootPid) => {
+      const scan = resolveGovernedProcessTree(rootPid, { method: 'scan' });
+      const walk = resolveGovernedProcessTree(rootPid);
+      expect(scan.method).toBe('scan');
+      expect(walk.method).toBe('walk');
+      expect(scan.pids).toHaveLength(4);
+      expect(sorted(walk.pids)).toEqual(sorted(scan.pids));
+      expect(walk.pids[0]).toBe(rootPid);
+    });
+  });
+
+  it('falls back to the scan when the kernel has no children files', async () => {
+    await withLiveTree((rootPid) => {
+      const fallback = resolveGovernedProcessTree(rootPid, { readChildren: () => null });
+      expect(fallback.method).toBe('scan');
+      expect(sorted(fallback.pids)).toEqual(sorted(resolveGovernedProcessTree(rootPid, { method: 'scan' }).pids));
+    });
+  });
+
+  it('hands a tree larger than the pid cap to the scan', async () => {
+    await withLiveTree((rootPid) => {
+      const capped = resolveGovernedProcessTree(rootPid, { pidCap: 2 });
+      expect(capped.method).toBe('scan');
+      expect(capped.pids).toHaveLength(4);
+    });
+    expect(GOVERNED_PROCESS_TREE_WALK_PID_CAP).toBeGreaterThanOrEqual(64);
+  });
+
+  it('treats an exited root as a childless tree, like the scan does', () => {
+    const exited = spawnSync('true').pid!;
+    expect(resolveGovernedProcessTree(exited)).toEqual({ pids: [exited], method: 'walk' });
+    expect(resolveGovernedProcessTree(exited, { method: 'scan' }).pids).toEqual([exited]);
   });
 });

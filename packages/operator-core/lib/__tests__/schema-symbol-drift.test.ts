@@ -4,9 +4,18 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import {
+// The subject module is overridable (SCHEMA_SYMBOL_DRIFT_SUBJECT = an absolute path to a copy) so
+// scripts/mutation-probe.sh can run this suite against a mutated copy without touching the shared
+// tree. Unset, it is the real module.
+type DriftSubject = typeof import('../../../../scripts/lib/schema-symbol-drift.mjs');
+const driftSubjectOverride = process.env.SCHEMA_SYMBOL_DRIFT_SUBJECT;
+const driftSubject: DriftSubject = driftSubjectOverride
+  ? await import(pathToFileURL(driftSubjectOverride).href)
+  : await import('../../../../scripts/lib/schema-symbol-drift.mjs');
+const {
   GENERATED_SCHEMA_FILES,
   changedSchemaSymbols,
   createSchemaDriftJudge,
@@ -14,7 +23,7 @@ import {
   exportBlocks,
   gitReadAtSha,
   moduleSchemaUse,
-} from '../../../../scripts/lib/schema-symbol-drift.mjs';
+} = driftSubject;
 import {
   TEST_REUSE_MAX_AGE_MS_DEFAULT,
   formatTestReuseLine,

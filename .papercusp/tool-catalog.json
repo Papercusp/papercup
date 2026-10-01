@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 936,
+  "count": 937,
   "tools": [
     {
       "name": "ablation:report",
@@ -33123,6 +33123,44 @@
         "when": "You are blocked on a peer/dependency work item (its completion, unblock, or any transition) — arm this and end your turn instead of re-reading work_items:get.",
         "notWhen": "Just inspecting an item once — work_items:get. Waiting on a PLAN item (P-NNN) — plan-item:await. Ambient interest in a topic — watch:create { targetKind:\"topic\", wake:false }.",
         "chaining": "work-item:await { id: \"WI-123\", state: \"done\" } → end turn → on wake the item has settled; continue."
+      }
+    },
+    {
+      "name": "work_items:acceptance_adoption",
+      "http": {
+        "path": "/api/agent-tools/work_items/acceptance_adoption",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Legacy implementation-acceptance adoption. op:report dry-runs one bounded pre-cutover cohort (eligible vs protected rows, fingerprinted); op:apply enrols exactly that report's still-unchanged, unprotected rows; op:revert restores them; op:canary runs the four current-build acceptance checks on this runtime and records a receipt; op:cutover-check says whether a proposed enforcement cutover has a passed canary receipt. apply/revert/canary need confirm:true.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Adopting pre-cutover bug/change/task rows into implementation acceptance, or proving the current build before the enforcement cutover moves.",
+        "notWhen": "Reviewing one item — that is the agent-review intake path. Counting stages — that is work_items:list / the readiness projection.",
+        "chaining": "op:report → read eligible/protected → op:apply { reportRunId, confirm:true } within an hour → op:revert { applyRunId, confirm:true } if wrong. op:canary { confirm:true } → op:cutover-check { proposedCutover }."
       }
     },
     {
