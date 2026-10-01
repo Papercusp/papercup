@@ -290,6 +290,14 @@ describe('mutationProbeRefusal narrowing', () => {
       probe('packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts'))).resolves.toBeNull();
   });
 
+  it('does not mistake a hex fixture containing db for a reference to db.ts', async () => {
+    const dir = checkout({ ...base,
+      'src/merkle-log.ts': "export const vectors = ['ddb89be4', '0f8a309157f0daa35dc5b87e'];\n",
+      'tests/merkle-log.test.ts': "import { vectors } from '../src/merkle-log';\nexport default vectors;\n" });
+    await expect(mutationProbeRefusal(dir, ['tests/merkle-log.test.ts'],
+      probe('apps/operator-public/src/db.ts'))).resolves.toBeNull();
+  });
+
   it('still fences a statically concatenated complete probed filename', async () => {
     const dir = checkout({ ...base,
       'src/loader.ts': "export const target = 'routes/adv/' + 'sessions' + '.ts';\n",

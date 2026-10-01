@@ -431,7 +431,8 @@ async function readReportRecoveryTask(
        AND task_ledger.cwd = ${scope.root}
        AND (task_ledger.harness_slug = ${scope.harnessSlug} OR task_ledger.harness_slug IS NULL)
        AND task_ledger.class = 'test-run' AND task_ledger.launched_by = 'testing-run-store'
-       AND task_ledger.detail->>'kind' = 'vitest' AND task_ledger.state = 'exited'
+       AND task_ledger.detail->>'kind' = 'vitest'
+       AND task_ledger.state IN ('exited', 'ended_unobserved')
      LIMIT 2
   `);
   // Ambiguous launch identity and unavailable task reads cannot authorize ingestion.
@@ -879,8 +880,13 @@ async function reconcilePersistedReportArtifact(
   const noVerdict = snapshot.status === 'error' && snapshot.exitCode === null
     && snapshot.output.includes('[detached-recovery]') && snapshot.output.includes('no test verdict was observed');
   const closed = snapshot.status === 'pass' || snapshot.status === 'fail';
-  if ((snapshot.status !== 'running' && !noVerdict && !closed) || row.task_state !== 'exited'
-    || typeof row.task_exit_code !== 'number' || epochMs(row.task_ended_at ?? null) === null) return snapshot;
+  // The task manager independently confirms ended_unobserved scopes are gone,
+  // but has no process exit code. A complete reporter can still supply the test
+  // verdict; it must never turn an unknown process exit into an observed one.
+  const unobservedExit = row.task_state === 'ended_unobserved' && row.task_exit_code === null;
+  const observedExit = row.task_state === 'exited' && typeof row.task_exit_code === 'number';
+  if ((snapshot.status !== 'running' && !noVerdict && !closed) || (!observedExit && !unobservedExit)
+    || epochMs(row.task_ended_at ?? null) === null) return snapshot;
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
   try {
@@ -912,12 +918,14 @@ async function reconcilePersistedReportArtifact(
       const ledger = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
       const verdict = ledger && deriveDetachedRunLedgerRecovery(snapshot.runId, ledger);
       if (!verdict) throw new Error('detached_report_no_verdict');
-      if ((verdict.status !== 'pass' && verdict.status !== 'fail') || verdict.exitCode !== row.task_exit_code) {
+      if ((verdict.status !== 'pass' && verdict.status !== 'fail')
+        || (observedExit && verdict.exitCode !== row.task_exit_code)) {
         throw new Error('detached_report_process_verdict_mismatch');
       }
       const reconciled = await persistReconciledSnapshot(snapshot, {
-        ...snapshot, status: verdict.status, exitCode: verdict.exitCode, finishedAt: verdict.finishedAt,
-        output: snapshot.output + '\n[detached-recovery] recovered completed saved Vitest report.\n',
+        ...snapshot, status: verdict.status, exitCode: row.task_exit_code!, finishedAt: verdict.finishedAt,
+        output: snapshot.output + '\n[detached-recovery] recovered completed saved Vitest report.'
+          + (unobservedExit ? ' The process exit code was not observed.' : '') + '\n',
       }, scopedSql);
       if (reconciled === snapshot) throw new Error('detached_report_snapshot_race');
       return reconciled;

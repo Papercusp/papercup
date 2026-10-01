@@ -29,14 +29,27 @@ vi.mock('../../memory/backend', () => ({
     }
   },
 }));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness-registry')>()),
+  loadHarnessRegistry: vi.fn(),
+}));
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
+  getFlag: vi.fn(async () => true),
+}));
 
 import get from './get';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { getFlag } from '@papercusp/flags/server';
 import type { MemoryEntry } from '../../memory/backend';
 
 type Out = { ok: boolean; reason?: string; results: Array<{ id: string; memory: string; metadata?: Record<string, unknown> }>; missing: string[] };
-const run = async (args: { id?: string; ids?: string[] }): Promise<Out> => {
-  const res = (await (get as unknown as { handler: (a: unknown, c: unknown) => Promise<unknown> }).handler(args, {})) as {
+const run = async (
+  args: { id?: string; ids?: string[] },
+  ctx: unknown = { principal: { workspaceId: 'ws-test' }, harnessSlug: '*' },
+): Promise<Out> => {
+  const res = (await (get as unknown as { handler: (a: unknown, c: unknown) => Promise<unknown> }).handler(args, ctx)) as {
     content: Array<{ text: string }>;
   };
   return JSON.parse(res.content[0]!.text) as Out;
@@ -54,7 +67,19 @@ function backendWith(rows: Record<string, MemoryEntry | null>, opts: { available
   return getSpy;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(loadHarnessRegistry).mockResolvedValue({
+    projects: [
+      { slug: 'pot-a', harness_kind: 'hive' },
+      { slug: 'papercusp', hive_slug: 'pot-a' },
+      { slug: 'other-hive', harness_kind: 'hive' },
+      { slug: 'other-member', hive_slug: 'other-hive' },
+      { slug: 'standalone' },
+    ],
+  } as Awaited<ReturnType<typeof loadHarnessRegistry>>);
+  vi.mocked(getFlag).mockResolvedValue(true);
+});
 
 describe('memory:get', () => {
   it('reads one id and returns the shared wire row with kind folded into metadata', async () => {
@@ -79,6 +104,50 @@ describe('memory:get', () => {
     expect(out.results).toEqual([]);
     expect(out.missing).toEqual(['theirs', 'ghost']);
     expect(JSON.stringify(out)).not.toContain('text of theirs');
+  });
+
+  it('ISOLATION: shared rows must belong to the workspace and the session hive subtree', async () => {
+    backendWith({
+      currentHarness: entry('currentHarness', 'harness:papercusp'),
+      hiveHomeHarness: entry('hiveHomeHarness', 'harness:pot-a'),
+      currentHive: entry('currentHive', 'hive:pot-a'),
+      siblingHarness: entry('siblingHarness', 'harness:other-member'),
+      siblingHive: entry('siblingHive', 'hive:other-hive'),
+      outsideHarness: entry('outsideHarness', 'harness:outside-workspace'),
+      outsideHive: entry('outsideHive', 'hive:outside-workspace'),
+    });
+
+    const out = await run(
+      { ids: ['currentHarness', 'hiveHomeHarness', 'currentHive', 'siblingHarness', 'siblingHive', 'outsideHarness', 'outsideHive'] },
+      { principal: { workspaceId: 'ws-test' }, harnessSlug: 'papercusp' },
+    );
+
+    expect(out.results.map((row) => row.id)).toEqual(['currentHarness', 'hiveHomeHarness', 'currentHive']);
+    expect(out.missing).toEqual(['siblingHarness', 'siblingHive', 'outsideHarness', 'outsideHive']);
+  });
+
+  it('ISOLATION: user project rows are workspace-scoped while owner-tier facts follow the user', async () => {
+    backendWith({
+      currentProject: entry('currentProject', 'user-1', { kind: 'project', metadata: { workspace_id: 'ws-test' } }),
+      foreignProject: entry('foreignProject', 'user-1', { kind: 'project', metadata: { workspace_id: 'ws-other' } }),
+      ownerFact: entry('ownerFact', 'user-1', { kind: 'user', metadata: { workspace_id: 'ws-other' } }),
+      legacyProject: entry('legacyProject', 'user-1', { kind: 'project', metadata: {} }),
+    });
+
+    const out = await run({ ids: ['currentProject', 'foreignProject', 'ownerFact', 'legacyProject'] });
+
+    expect(out.results.map((row) => row.id)).toEqual(['currentProject', 'ownerFact', 'legacyProject']);
+    expect(out.missing).toEqual(['foreignProject']);
+  });
+
+  it('fails closed for shared pools when workspace membership cannot be loaded', async () => {
+    vi.mocked(loadHarnessRegistry).mockRejectedValueOnce(new Error('registry unavailable'));
+    backendWith({ foreign: entry('foreign', 'harness:outside-workspace') });
+
+    const out = await run({ id: 'foreign' });
+
+    expect(out.results).toEqual([]);
+    expect(out.missing).toEqual(['foreign']);
   });
 
   it('degraded-never-silent: down store, mid-flight unavailability and timeout all return the ok:false envelope', async () => {

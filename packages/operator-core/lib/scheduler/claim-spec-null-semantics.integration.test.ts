@@ -30,7 +30,12 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  applyEventSubstrateMigrationsForTest,
+  COORD_SUBSCRIPTION_SUBSTRATE,
+  createFreshPgDb,
+  type FreshPgDb,
+} from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -176,11 +181,7 @@ beforeAll(async () => {
   // by 1257): same coordination extras as get-next and work-items-release-request.
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'scheduler/claim-spec-null-semantics.integration.test.ts',
-    extra: [
-      '123-coordination-substrate.sql',
-      '602-work-item-follow-blockers.sql',
-      '1257-coord-entity-subscriptions-allow-muted.sql',
-    ],
+    ...COORD_SUBSCRIPTION_SUBSTRATE,
   });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);

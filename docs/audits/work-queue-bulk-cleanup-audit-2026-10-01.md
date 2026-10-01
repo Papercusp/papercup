@@ -1,5 +1,25 @@
 # Work-queue bulk cleanup audit (2026-10-01)
 
+> **Corrections (2026-10-01, same session, after re-reading the writers):**
+>
+> 1. **Plans cleanup is not blocked by its review runs.** `createRun` gates on `getRunningRun`
+>    (`pending`/`running` only), and so does migration 915's single-flight index. Only the
+>    **inbox-resolve** scheduled action gates on `getActiveRun`, which counts `review`
+>    (`inbox-bulk-resolve-action.ts`). Plans cleanup is dead because its recurring sweep never
+>    fires: template `plan-cleanup-recurring-sweep-2026-09-01` is a draft. That is tracked as
+>    WI-10004728 in plan `plan-cleanup-system-repair-2026-10-01`. So dismissing the two
+>    plan-cleanup review runs closes stale review lists but does not restart Plans cleanup.
+> 2. **Fail-open does cover every harness.** The production fail-open runs at
+>    `scope:'workspace'`. The `heldByScope` rows are held deliberately by the workspace
+>    work-scope policy (`enforce`, `allowHarnesses: [papercusp, portal]`).
+>    - 9 of the 23 held rows belong to other pots (`sb-devboard-hive`, `hello-world-3-pot`,
+>      `recipe-app`), and the policy holds those on purpose.
+>    - The real defect is the other 14. They are papercusp learning-loop bugs that were homed
+>      to `operator:papercusp-workspace` in a single burst (2026-09-25 20:37:06–07Z), and that
+>      harness is outside the allow-list.
+>
+>    WI-10004723 is re-scoped to that defect. Mechanism 5 below is superseded.
+
 **Question** [owner 2026-10-01, directive #1172]: "Is the work queue bulk cleanup feature working well? Give it a thorough audit"
 **Audit work-item:** WI-10004704. This was a read-only audit: nothing in the subject was changed.
 
@@ -43,7 +63,7 @@ The admission gate is running. The cleanup is not:
 | Durable-park audit (daily) | Reconcile claims, leases and parks (D-023) | 41 complete. Last run 07:50Z today. One row is stuck `running` | Running |
 | Daily plan-schedule | Recurring lane P-023 | Every run clones the **shipped** plan. All 19 items start `done`, and the run is superseded within about 7 s. 21 runs so far, no work done | No-op |
 | Inbox resolver (`inbox-resolve`) | 15-minute backstop plus a weekly sweep | 9 runs ever, all on 2026-08-24. Every run since is blocked by run `bulk-ef1590f9`, which has sat in `review` since 08-24 | Dead (silent) |
-| Plans cleanup (`plan-cleanup`) | Weekly sweep | Last run 2026-09-06. Blocked by 2 runs sitting in `review` | Dead (silent) |
+| Plans cleanup (`plan-cleanup`) | Weekly sweep | Last run 2026-09-06. ~~Blocked by 2 runs sitting in `review`~~ **Corrected 2026-10-01 (see Corrections):** the review runs do not block it; the recurring sweep never fires (WI-10004728) | Dead (silent) |
 
 ## Mechanisms: the loops that keep it broken
 

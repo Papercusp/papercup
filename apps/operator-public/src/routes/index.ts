@@ -16,6 +16,7 @@ import { meteredUsageRoute } from './metered-usage.ts';
 import { settlementsRoute } from './settlements.ts';
 import { treasuryRoute } from './treasury.ts';
 import { reconciliationRoute } from './reconciliation.ts';
+import { transparencyRoute } from './transparency.ts';
 import type { SafeTreasuryAdapter } from '../treasury-adapter.ts';
 import type { PaymentChannelFundingAdapter } from '@papercusp/operator-core/lib/p2p/channel-funding.ts';
 import type { EvmSettlementFacilitator } from '@papercusp/operator-core/lib/p2p/evm-settlement.ts';
@@ -99,6 +100,7 @@ export function buildApi(
   // the treasury door above reads, and reads back credits + DAO transfers.
   // HMAC-signed, not bearer-authenticated: the caller is a machine.
   api.route('/', reconciliationRoute());
+  api.route('/', transparencyRoute());
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);

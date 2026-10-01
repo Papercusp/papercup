@@ -63,6 +63,7 @@ const DDL = `
     updated_ts bigint,
     embedding vector(3),
     embedding_mode text,
+    embedding_profile text,
     admission text,
     admitted_at timestamptz,
     admitted_by text,

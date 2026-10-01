@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "portable-identity-packages R-9: the release operator on :3070 serves the accepted portable identity implementation (deployed f52b2457ba, 2026-10-01)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "deployed",
+  "evidenceRuntime": "release-operator",
+  "plan": "portable-identity-packages-2026-09-26",
+  "workItem": "WI-10003330",
+  "specs": [
+    "AUTO-BAR-R-9-P-017"
+  ],
+  "observer": "su-415552e6-9f99-46c7-b29c-3a757e67cc62",
+  "outcome": "passed",
+  "command": [
+    "npx tsx docs/evidence/portable-identity-packages-r9-deployed-2026-10-01.mts",
+    "curl -s http://127.0.0.1:3070/api/health; git rev-parse <deployed>:packages/operator-core/lib/blueprint/compile-packages.ts",
+    "git rev-parse <deployed|staging>:<each of the plan sourcePaths> (inside libs/generic/memory for its paths)",
+    "release:deploy { op:\"status\" }, git reflog main, ~/.papercusp/live-fed-gate/verdicts.jsonl record for the deployed commit",
+    "identities:preview { id:\"blueprint-operation-worker\", potSlug:\"papercusp\" } on :3070"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T10:04:38.794Z",
+  "finishedAt": "2026-10-01T10:04:44.823Z",
+  "deployedSha": "f52b2457ba5907070230db84820b17a410cb66d4",
+  "healthSha": "f52b2457ba",
+  "summary": "Deployed-plane check for R-9 (falsifier markers deployed-revision and green-promotion). 4/4 assertions passed. The current-independent-acceptance marker is enforced at ship time by plans:set-plan-status (independent grading before shipped); this artifact does not claim it.",
+  "assertions": [
+    {
+      "id": "deployed-revision",
+      "passed": true,
+      "evidence": ":3070 /api/health sha f52b2457ba = commit f52b2457ba5907070230db84820b17a410cb66d4; main = 163b61ef84387e929bc53a500bf4c9861e242408 (main promoted again since); main reflog entry for the deployed commit: f52b2457ba main@{2026-10-01T03:03:49-04:00}: branch: Reset to f52b2457ba5907070230db84820b17a410cb66d4. packages/operator-core/lib/blueprint/compile-packages.ts blob at the deployed commit = 01df184c56dd18839005bcdeb233af5b638a6b22, at main = 01df184c56dd18839005bcdeb233af5b638a6b22 (accepted blob 01df184c56dd18839005bcdeb233af5b638a6b22: equal)."
+    },
+    {
+      "id": "plan-source-containment",
+      "passed": true,
+      "evidence": "68 distinct sourcePaths of the plan's live AUTO-BAR bindings, deployed commit vs staging (libs/generic/memory compared inside the submodule at gitlinks b301f060a6 vs 5100d345b9): 56 identical, 12 differ, 0 unresolved. Every differing path carries only staging-side additions from other work: core.mjs (WI-10004485 memory filter wait); embedder-dims.ts (mdenseon candidate + cls pooling); control-anchor.ts (WI-10004663 launch consumption); orient.ts (orientation work, no identity-package lines); blueprint-release.ts (releaseBurnKnobs export, agent-economy-flywheel P-015); identity-listing-surface.ts (burnKnobs, agent-economy-flywheel P-015); predicate-watch.ts (predicate-watch additions, no identity-package lines); role-launch-spec.ts (assertIdentityActivationFunded, agent-economy-flywheel P-016); claim-spec-store.ts (EI-23227815561098131 pool isolation); claim-spec.ts (claimSpecFilterAdmitsTarget export, WI-10004710 goal placement planScoped); prose-vector-dims.ts (shared-vector-search-libraries P-001); turn-start-orientation.ts (EI-21308269358666878 wording + orientation work)."
+    },
+    {
+      "id": "green-promotion",
+      "passed": true,
+      "evidence": "main reflog: f52b2457ba main@{2026-10-01T03:03:49-04:00}: branch: Reset to f52b2457ba5907070230db84820b17a410cb66d4. release:deploy status: state live-certification-required; gate.green true, consecutiveReds 0; freeze-and-converge none. Live certification of the deployed commit (verdict bank): GREEN at 2026-10-01T09:21:41Z, target f52b2457ba5907070230db84820b17a410cb66d4, content-matrix=PASS from-repo=PASS from-repo-witness=SKIPPED local-matrix=SKIPPED build=OK, source_head f52b2457ba dirty 0; auto-deploy terminal exit 0 at 2026-10-01T09:58:47Z. Shipped via release-trigger auto-deploy, no deploy-cli --force."
+    },
+    {
+      "id": "deployed-identity-surface",
+      "passed": true,
+      "evidence": "identities:preview { id:'blueprint-operation-worker', potSlug:'papercusp' } on :3070 (build f52b2457ba) returned ok:true with sections ok, identityId, potSlug, validation, declared, injection, consent, lifecycle."
+    }
+  ]
+}

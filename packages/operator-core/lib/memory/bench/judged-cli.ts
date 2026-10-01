@@ -35,6 +35,7 @@ if (process.argv.includes('--label-cohort')) {
   const snapshot = argValue('--snapshot'), out = argValue('--label-out');
   if (!snapshot || !out) throw new Error('--label-cohort requires --snapshot and --label-out');
   const receipt = await collectIndependentCohort({ snapshot, out, llm: llmCall,
+    ...(argValue('--reuse-authors-from') ? { reuseAuthorsFrom: argValue('--reuse-authors-from') } : {}),
     ...(argValue('--targets-per-partition') ? { targetsPerPartition: Number(argValue('--targets-per-partition')) } : {}),
     log: (message) => console.log(new Date().toISOString(), message) });
   console.log(JSON.stringify(receipt)); process.exit(0);

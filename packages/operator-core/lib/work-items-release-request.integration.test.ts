@@ -19,7 +19,12 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import {
+  applyEventSubstrateMigrationsForTest,
+  COORD_SUBSCRIPTION_SUBSTRATE,
+  createFreshPgDb,
+  type FreshPgDb,
+} from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 
 // releaseWorkItem's no-live-recipient fallback records the event in the durable
@@ -117,20 +122,7 @@ beforeAll(async () => {
   // silently missing fire.
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'work-items-release-request.integration.test.ts',
-    extra: [
-      '123-coordination-substrate.sql',
-      '602-work-item-follow-blockers.sql',
-      '1257-coord-entity-subscriptions-allow-muted.sql',
-    ],
-    knownInapplicable: [
-      {
-        file: '149-coord-threads-federation.sql',
-        reason:
-          'attaches federation outbox triggers to coord_threads/coord_thread_posts that call ' +
-          'harness_shared.capture_substrate_outbox(), created by 108-substrate-capture-reconcile ' +
-          'alongside tables this fixture does not build; release never writes coord threads',
-      },
-    ],
+    ...COORD_SUBSCRIPTION_SUBSTRATE,
   });
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(POTS_DDL);

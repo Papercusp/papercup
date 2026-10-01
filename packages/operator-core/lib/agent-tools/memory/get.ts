@@ -23,15 +23,59 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { getMemoryBackend, MemoryUnavailableError, type MemoryEntry } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { getSessionUserOrDefault } from '../../auth';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { hiveScopeKey, narrowHarnessSlugsToSessionHive, potSlugsForHarnesses } from '../../memory/hive-scope';
+import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
+import { systemDistinctId } from '../../flag-distinct-id';
 import { toWireRow } from './search';
 
-/** Pools memory:list serves on request besides the caller's own user pool. */
-function isReadableScope(scope: string | undefined, userId: string): boolean {
-  if (!scope) return false;
-  return scope === userId || scope.startsWith('harness:') || scope.startsWith('hive:');
+/**
+ * Resolve only the harness and hive pools visible to this session's workspace.
+ * A by-id backend lookup is global, so the returned row must be checked against
+ * the same registry-derived pool set as workspace memory recall before it is sent.
+ */
+async function workspaceReadableScopes(
+  workspaceId: string | undefined,
+  sessionHarness: string | null | undefined,
+): Promise<ReadonlySet<string>> {
+  if (!workspaceId) return new Set();
+  try {
+    const registry = await loadHarnessRegistry(workspaceId);
+    let harnessSlugs = registry.projects.map((project) => project.slug);
+    try {
+      if (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, systemDistinctId())) {
+        harnessSlugs = narrowHarnessSlugsToSessionHive(registry.projects, harnessSlugs, sessionHarness);
+      }
+    } catch {
+      // Match memory:search's existing fail-open behavior for a flag-service outage.
+    }
+    return new Set([
+      ...harnessSlugs.map((slug) => `harness:${slug}`),
+      ...potSlugsForHarnesses(registry.projects, harnessSlugs).map(hiveScopeKey),
+    ]);
+  } catch {
+    // Without the workspace registry, fail closed for shared pools. User-pool
+    // rows remain independently checked below.
+    return new Set();
+  }
+}
+
+function isReadableRow(
+  row: MemoryEntry,
+  userId: string,
+  activeWorkspaceId: string | undefined,
+  workspaceScopedRecall: boolean,
+  workspaceScopes: ReadonlySet<string>,
+): boolean {
+  if (row.scope === userId) {
+    return !workspaceScopedRecall || keepUserPoolHitForWorkspace(row, activeWorkspaceId);
+  }
+  return workspaceScopes.has(row.scope);
 }
 
 function mergeIds(id: string | undefined, ids: string[] | undefined): string[] {
@@ -64,9 +108,10 @@ export default defineTool({
       ids: z.array(z.string().min(1)).min(1).max(50).optional().describe('memory ids to read (1–50)'),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, { message: 'pass `id` (one) or `ids` (many)' }),
-  async handler(args) {
+  async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
     const backend = getMemoryBackend();
+    const activeWorkspaceId = ctx.principal?.workspaceId;
     const ids = mergeIds(args.id, args.ids);
     const reply = (body: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] });
 
@@ -75,10 +120,18 @@ export default defineTool({
       if (!avail.ok) return reply({ ok: false, reason: avail.reason, results: [], missing: [] });
 
       const rows = await Promise.all(ids.map((id) => withMemoryToolTimeout(backend.get(id), 'memory:get get')));
+      const hasSharedPoolRows = rows.some((row) => row && row.scope !== user.id);
+      const hasUserPoolRows = rows.some((row) => row?.scope === user.id);
+      const [sharedScopes, workspaceScopedRecall] = await Promise.all([
+        hasSharedPoolRows
+          ? workspaceReadableScopes(activeWorkspaceId, ctx.harnessSlug)
+          : Promise.resolve(new Set<string>() as ReadonlySet<string>),
+        hasUserPoolRows ? isMemoryWorkspaceScopedRecallOn() : Promise.resolve(false),
+      ]);
       const results: ReturnType<typeof toWireRow>[] = [];
       const missing: string[] = [];
       rows.forEach((row, i) => {
-        if (row && isReadableScope(row.scope, user.id)) results.push(toWireRow(row));
+        if (row && isReadableRow(row, user.id, activeWorkspaceId, workspaceScopedRecall, sharedScopes)) results.push(toWireRow(row));
         else missing.push(ids[i]!);
       });
       return reply({ ok: true, results, missing });

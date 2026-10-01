@@ -24,7 +24,12 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  applyEventSubstrateMigrationsForTest,
+  COORD_SUBSCRIPTION_SUBSTRATE,
+  createFreshPgDb,
+  type FreshPgDb,
+} from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -139,11 +144,7 @@ beforeAll(async () => {
   // 1257), so apply the same coordination extras as work-items-release-request.
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'scheduler/get-next.integration.test.ts',
-    extra: [
-      '123-coordination-substrate.sql',
-      '602-work-item-follow-blockers.sql',
-      '1257-coord-entity-subscriptions-allow-muted.sql',
-    ],
+    ...COORD_SUBSCRIPTION_SUBSTRATE,
   });
   // The claim path records the latest coordination-post id in the claimed row's
   // payload.  This focused fixture exercises real claims but does not bootstrap the

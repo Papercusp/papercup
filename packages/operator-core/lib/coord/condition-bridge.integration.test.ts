@@ -134,6 +134,16 @@ vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
 const bridge = await import('./condition-bridge');
 const { findConditionObject, linkWorkItemToCondition } = await import('./condition-object');
 const { createWorkItem, setWorkItemState } = await import('../work-items');
+// WARM the mocked receipt module before any test can race its FIRST import.
+// work-items.ts reaches it through a lazy `await import(...)` on every terminal
+// transition, and Vitest's module runner hands a module that is still EVALUATING
+// to a concurrent importer as its partial exports. The 8-way stand-down race
+// below was the first importer: 6 of 7 losers got the half-evaluated ORIGINAL
+// (not the stub), ran the real receipt read, and died in its TDZ — leaving 6
+// duplicates open (WI-10004742). Node's own ESM loader waits for evaluation, so
+// this is a test-runner artifact; importing once here makes every later import a
+// cache hit on the finished mock.
+await import('../blueprint/operation-worker-binding');
 
 let db: FreshPgDb;
 let savedWsEnv: string | undefined;
@@ -261,7 +271,11 @@ describe('P-002 partial unique index — the singleton, under real concurrency',
     const stoodDown = await db.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM harness_shared.work_items
        WHERE feature_id <> ${winner} AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])`;
-    expect(stoodDown[0].n).toBe(N - 1);
+    // Name the refusal when a stand-down fails: the count alone cannot say WHY a
+    // duplicate was left open (WI-10004742 spent a run reconstructing it).
+    const leftOpen = results.filter((r) => r.duplicateLeftOpen).map((r) => `${r.duplicateLeftOpen}: ${r.duplicateLeftOpenError}`);
+    expect(stoodDown[0].n, `stand-downs that failed:\n${leftOpen.join('\n')}`).toBe(N - 1);
+    expect(leftOpen).toEqual([]);
     const open = await db.sql<{ n: number }[]>`
       SELECT count(*)::int AS n FROM harness_shared.work_items
        WHERE status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])`;

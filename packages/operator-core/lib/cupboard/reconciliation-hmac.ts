@@ -96,6 +96,11 @@ export const RECONCILIATION_INPUTS_PATH = '/commerce/treasury/reconciliation-inp
  */
 export const LEDGER_CHAIN_LINKS_PATH = '/commerce/ledger-chain/links';
 
+/** P-044 (D-028 §3): the operator's hourly live transparency report (signed PUT). */
+export const TRANSPARENCY_LIVE_PATH = '/commerce/transparency/live';
+/** P-044 (D-028 §4): a signed monthly statement (signed PUT; immutable once stored). */
+export const TRANSPARENCY_STATEMENT_PATH = '/commerce/transparency/statement';
+
 /** A gate older than this pauses transfers: a reconciliation that stopped reporting must not leave them running. */
 export const TRANSFER_GATE_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 

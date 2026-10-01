@@ -118,6 +118,8 @@ export interface AcquireResult {
    * {@link CONDITION_BRIDGE_ACTOR} for how this failed silently for real.
    */
   duplicateLeftOpen?: string;
+  /** Why the stand-down settle of {@link duplicateLeftOpen} failed (the refusal's message). */
+  duplicateLeftOpenError?: string;
   /**
    * Set when nothing was written, and WHY:
    *   • `not-actionable`      — the key is not opted in.
@@ -535,6 +537,8 @@ export interface ReleaseResult {
    * to see why, instead of inferring it from `settled: false`.
    */
   settleSkipped?: 'not-bridge-minted';
+  /** Set when `settle` was attempted and REFUSED: the refusal's message (`settled` is false). */
+  settleError?: string;
 }
 
 /**
@@ -616,7 +620,13 @@ export async function releaseConditionOwner(
      WHERE condition_key = ${key}
        AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})`;
 
-  return { conditionKey: key, released: current.workItem, settled, ...(settleSkipped ? { settleSkipped } : {}) };
+  return {
+    conditionKey: key,
+    released: current.workItem,
+    settled,
+    ...(settleSkipped ? { settleSkipped } : {}),
+    ...(settleError ? { settleError } : {}),
+  };
 }
 
 /**

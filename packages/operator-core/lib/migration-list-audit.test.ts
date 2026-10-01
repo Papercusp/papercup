@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   auditMigrationList,
+  COORD_SUBSCRIPTION_SUBSTRATE,
   EVENT_SUBSTRATE_MIGRATIONS,
   EVENT_SUBSTRATE_RUNTIME_TABLES,
   formatStaleMigrationList,
@@ -331,6 +332,38 @@ describe('EVENT_SUBSTRATE_MIGRATIONS', () => {
 
   it('is already in apply order', () => {
     expect(mergeMigrationLists(EVENT_SUBSTRATE_MIGRATIONS)).toEqual([...EVENT_SUBSTRATE_MIGRATIONS]);
+  });
+});
+
+// WI-10004742. The coordination-subscription preset is audited the same way, with
+// the event substrate it is always applied on top of: a new migration widening
+// coord_entity_subscriptions fails here by name instead of in three fixtures.
+describe('COORD_SUBSCRIPTION_SUBSTRATE', () => {
+  it('covers every structural migration on its runtime table, with only acknowledged gaps', () => {
+    const all = readAllMigrations();
+    const files = new Set(all.map(([file]) => file));
+    const declared = mergeMigrationLists(EVENT_SUBSTRATE_MIGRATIONS, COORD_SUBSCRIPTION_SUBSTRATE.extra);
+    for (const file of declared) expect(files.has(file), file).toBe(true);
+    for (const { file } of COORD_SUBSCRIPTION_SUBSTRATE.knownInapplicable) expect(files.has(file), file).toBe(true);
+
+    const audit = auditMigrationList(declared, all, [
+      ...EVENT_SUBSTRATE_RUNTIME_TABLES,
+      ...COORD_SUBSCRIPTION_SUBSTRATE.runtimeTables,
+    ]);
+    const acknowledged = new Set(COORD_SUBSCRIPTION_SUBSTRATE.knownInapplicable.map((k) => k.file));
+    expect(audit.runtimeMissing).toEqual([]);
+    expect(audit.runtimeStale.filter((m) => !acknowledged.has(m.migration))).toEqual([]);
+    expect(audit.missing.filter((m) => !acknowledged.has(m.file))).toEqual([]);
+  });
+
+  it('acknowledges only migrations the audit actually reports, so a stale waiver cannot accumulate', () => {
+    const declared = mergeMigrationLists(EVENT_SUBSTRATE_MIGRATIONS, COORD_SUBSCRIPTION_SUBSTRATE.extra);
+    const audit = auditMigrationList(declared, readAllMigrations(), [
+      ...EVENT_SUBSTRATE_RUNTIME_TABLES,
+      ...COORD_SUBSCRIPTION_SUBSTRATE.runtimeTables,
+    ]);
+    const reported = new Set([...audit.missing.map((m) => m.file), ...audit.runtimeStale.map((m) => m.migration)]);
+    for (const { file } of COORD_SUBSCRIPTION_SUBSTRATE.knownInapplicable) expect(reported.has(file), file).toBe(true);
   });
 });
 

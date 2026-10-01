@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { candidateSourcePartition } from './candidate-hybrid-bench';
+import { hashJson } from './measurement-manifest';
 
 import { deriveRubricVersion, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import type { LlmCallFn } from '@papercusp/testing-shell/llm';
@@ -31,6 +32,7 @@ import {
   deriveBlindConsensus,
   BLIND_COHORT_CONTRACT,
   collectIndependentCohort,
+  parseBlindChunkVotes,
   type JudgedQueryOutcome,
 } from './judged';
 import type { BackendCtx } from './run-bench';
@@ -72,39 +74,43 @@ describe('independent blind label consensus', () => {
 });
 
 describe('blind label collection through the injected stateless transport', () => {
-  it('retains separate raw calls, labels from full-chunk consensus and exact-input recovery guards', async () => {
+  function fixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'blind-cohort-test-'));
+    const seed = 'blind-test';
+    const sourceFor = (partition: 'calibration' | 'test') => {
+      for (let i = 0; i < 1000; i++) if (candidateSourcePartition(`session:s${i}`, seed) === partition) return `s${i}`;
+      throw new Error('test source not found');
+    };
+    const entries = ['calibration', 'test'].map((partition) => {
+      const sourceSession = sourceFor(partition as 'calibration' | 'test');
+      return { key: sourceSession, text: `frozen source ${sourceSession}`, kind: 'fact', metadata: {
+        cluster: `session:${sourceSession}`, sourceSession, sourceAttribution: 'session', partition,
+      } };
+    });
+    const snapshot = path.join(root, 'snapshot.json');
+    fs.writeFileSync(snapshot, JSON.stringify({ formatVersion: 1, seed, snapshotAt: '2026-01-01T00:00:00.000Z',
+      suites: { memory: { entries }, prose: { entries } } }));
+    let calls = 0;
+    const llm: LlmCallFn = async (opts) => {
+      calls++; expect(opts.ownerId).toBeTruthy(); expect(opts.model).toBe(BLIND_COHORT_CONTRACT.model);
+      const input = JSON.parse(opts.messages[0].content);
+      const json = input.questions ? { votes: input.questions.map((q: { index: number; query: string }) => ({
+        q: q.index, d: q.query.endsWith('hard-negative') ? []
+          : input.sources.filter((s: { index: number; text: string }) => q.query.includes(`target=${s.text.split(' ').at(-1)};`)).map((s: { index: number }) => s.index),
+        a: false,
+      })) } : { queries: ['exact-identifier', 'lexical-gap', 'session-start-intent', 'hard-negative'].map((cls) => ({
+        class: cls, query: `target=${input.sources[0].key}; fixture question ${cls}`,
+      })) };
+      return { text: JSON.stringify(json), json, inputTokens: 1, outputTokens: 1, costUsd: 0, raw: null };
+    };
+    return { root, snapshot, llm, get calls() { return calls; } };
+  }
+  it('retains separate raw calls, labels from full-chunk consensus and exact-input recovery guards', async () => {
+    const f = fixture(), { root, snapshot, llm } = f;
     try {
-      const seed = 'blind-test';
-      const sourceFor = (partition: 'calibration' | 'test') => {
-        for (let i = 0; i < 1000; i++) if (candidateSourcePartition(`session:s${i}`, seed) === partition) return `s${i}`;
-        throw new Error('test source not found');
-      };
-      const entries = ['calibration', 'test'].map((partition) => {
-        const sourceSession = sourceFor(partition as 'calibration' | 'test');
-        return { key: sourceSession, text: `frozen source ${sourceSession}`, kind: 'fact', metadata: {
-          cluster: `session:${sourceSession}`, sourceSession, sourceAttribution: 'session', partition,
-        } };
-      });
-      const snapshot = path.join(root, 'snapshot.json');
-      fs.writeFileSync(snapshot, JSON.stringify({ formatVersion: 1, seed, snapshotAt: '2026-01-01T00:00:00.000Z',
-        suites: { memory: { entries }, prose: { entries } } }));
-      let calls = 0;
-      const llm: LlmCallFn = async (opts) => {
-        calls++; expect(opts.ownerId).toBeTruthy(); expect(opts.model).toBe(BLIND_COHORT_CONTRACT.model);
-        const input = JSON.parse(opts.messages[0].content);
-        const json = input.questions ? { votes: input.questions.map((q: { queryId: string; query: string }) => ({
-          queryId: q.queryId, relevantKeys: q.queryId.endsWith('hard-negative') ? []
-            : input.sources.filter((s: { key: string }) => q.query.includes(`target=${s.key};`)).map((s: { key: string }) => s.key),
-          ambiguous: false, note: 'fixture judgment',
-        })) } : { queries: ['exact-identifier', 'lexical-gap', 'session-start-intent', 'hard-negative'].map((cls) => ({
-          class: cls, query: `target=${input.sources[0].key}; fixture question ${cls}`,
-        })) };
-        return { text: JSON.stringify(json), json, inputTokens: 1, outputTokens: 1, costUsd: 0, raw: null };
-      };
       const out = path.join(root, 'run');
       const receipt = await collectIndependentCohort({ snapshot, out, llm, targetsPerPartition: 1 });
-      expect(calls).toBe(8);
+      expect(f.calls).toBe(8);
       const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
       const proofs = JSON.parse(fs.readFileSync(receipt.judgments.path, 'utf8'));
       expect(labels.memory).toHaveLength(8); expect(labels.prose).toHaveLength(8);
@@ -116,8 +122,132 @@ describe('blind label collection through the injected stateless transport', () =
       const raw = JSON.parse(fs.readFileSync(path.join(out, rawFile), 'utf8'));
       raw.messages[0].content = 'altered provenance'; fs.writeFileSync(path.join(out, rawFile), JSON.stringify(raw));
       await expect(collectIndependentCohort({ snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('invalid recovered');
-      expect(calls).toBe(8);
+      expect(f.calls).toBe(8);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  async function authorOnly(f: ReturnType<typeof fixture>) {
+    const out = path.join(f.root, 'original');
+    const llm: LlmCallFn = async (opts) => {
+      if (JSON.parse(opts.messages[0].content).questions) throw new Error('fixture judge interruption');
+      return f.llm(opts);
+    };
+    await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('fixture judge interruption');
+    return out;
+  }
+  it('recovers authors by reference, preserves original invocation IDs and makes fresh independent judge calls', async () => {
+    const f = fixture();
+    try {
+      const original = await authorOnly(f), out = path.join(f.root, 'new-attempt');
+      // An old judge/source revision must not invalidate unchanged author prompts.
+      const identityFile = path.join(original, 'identity.json'), donor = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
+      donor.identity.contract.judge = 'legacy string-key judge';
+      donor.identity.sourceFingerprint.sha256 = '1'.repeat(64);
+      donor.identityHash = hashJson(donor.identity); fs.writeFileSync(identityFile, JSON.stringify(donor));
+      for (const name of fs.readdirSync(original).filter((s) => s.startsWith('memory-author-'))) {
+        const file = path.join(original, name), raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        raw.identityHash = donor.identityHash; fs.writeFileSync(file, JSON.stringify(raw));
+      }
+      fs.writeFileSync(path.join(original, 'memory-judge-1-0.json'), JSON.stringify({ invalidLegacyJudge: true }));
+      const originals = fs.readdirSync(original).filter((name) => name.startsWith('memory-author-')).map((name) => ({
+        name, bytes: fs.readFileSync(path.join(original, name)),
+      }));
+      const originalIds = originals.map(({ bytes }) => JSON.parse(bytes.toString()).invocationId).sort();
+      let newCalls = 0;
+      const llm: LlmCallFn = async (opts) => { newCalls++; return f.llm(opts); };
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1, reuseAuthorsFrom: original });
+      expect(newCalls).toBe(6); // two prose authors + four fresh judge passes
+      expect(f.calls).toBe(8);
+      for (const { name, bytes } of originals) {
+        expect(fs.readFileSync(path.join(original, name))).toEqual(bytes);
+        const ref = JSON.parse(fs.readFileSync(path.join(out, name), 'utf8'));
+        expect(ref.kind).toBe('reused-author'); expect(ref.result).toBeUndefined();
+        expect(ref.origin.path).toBe(path.join(original, name));
+      }
+      const authors = JSON.parse(fs.readFileSync(path.join(out, 'memory-authors.json'), 'utf8'));
+      expect(authors.calls.map((c: { invocationId: string }) => c.invocationId).sort()).toEqual(originalIds);
+      expect(JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8')).memory).toHaveLength(8);
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: original, llm, reuseAuthorsFrom: original })).rejects.toThrow('new output');
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['messages', 'model', 'promptSha256', 'identityHash', 'finishedAt', 'stopReason'])('refuses altered recovered author %s before any new transport', async (field) => {
+    const f = fixture();
+    try {
+      const original = await authorOnly(f), name = fs.readdirSync(original).find((s) => s.startsWith('memory-author-'))!;
+      const file = path.join(original, name), raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (field === 'messages') raw.messages[0].content = 'altered prompt';
+      else if (field === 'stopReason') raw.result.stopReason = 'max_tokens';
+      else raw[field] = field === 'finishedAt' ? '' : 'altered';
+      fs.writeFileSync(file, JSON.stringify(raw));
+      let calls = 0;
+      const llm: LlmCallFn = async (opts) => { calls++; return f.llm(opts); };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'new'), llm, targetsPerPartition: 1, reuseAuthorsFrom: original })).rejects.toThrow('invalid recovered');
+      expect(calls).toBe(0);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('revalidates an original raw fingerprint when resuming an existing author reference', async () => {
+    const f = fixture();
+    try {
+      const original = await authorOnly(f), out = path.join(f.root, 'new');
+      const paused: LlmCallFn = async () => { throw new Error('fixture new judge interruption'); };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: paused, targetsPerPartition: 1, reuseAuthorsFrom: original })).rejects.toThrow('fixture new judge interruption');
+      const name = fs.readdirSync(original).find((s) => s.startsWith('memory-author-'))!;
+      fs.appendFileSync(path.join(original, name), '\n');
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: paused, targetsPerPartition: 1, reuseAuthorsFrom: original })).rejects.toThrow('invalid authors-only raw reference');
+      expect(f.calls).toBe(2);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['ownerId', 'snapshot', 'model', 'author'])('refuses a mismatched recovery identity %s', async (field) => {
+    const f = fixture();
+    try {
+      const original = await authorOnly(f), file = path.join(original, 'identity.json');
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (field === 'ownerId') saved.identity.ownerId = 'other-owner';
+      else if (field === 'snapshot') saved.identity.snapshotFingerprint.sha256 = '0'.repeat(64);
+      else saved.identity.contract[field] = 'changed contract';
+      saved.identityHash = hashJson(saved.identity); fs.writeFileSync(file, JSON.stringify(saved));
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'new'), llm: f.llm, targetsPerPartition: 1, reuseAuthorsFrom: original })).rejects.toThrow('recovery identity');
+      expect(f.calls).toBe(2);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('retains an invalid numeric response and refuses labels before consensus', async () => {
+    const f = fixture();
+    try {
+      const out = path.join(f.root, 'invalid');
+      const llm: LlmCallFn = async (opts) => {
+        const result = await f.llm(opts);
+        if (!JSON.parse(opts.messages[0].content).questions) return result;
+        const json = JSON.parse(result.text); json.votes[0].d = [999];
+        return { ...result, json, text: JSON.stringify(json) };
+      };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('document index 999 outside');
+      expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(true);
+      expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
+      expect(fs.existsSync(path.join(out, 'judgments.json'))).toBe(false);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+});
+
+describe('blind numeric response validation', () => {
+  const questions = [{ id: 'question-a' }, { id: 'question-b' }], chunk = [{ key: 'source-a' }, { key: 'source-b' }];
+  const votes = [{ q: 0, d: [1], a: false }, { q: 1, d: [], a: false }];
+  it('maps reordered numeric votes through submitted references only', () => {
+    expect(parseBlindChunkVotes({ votes: [...votes].reverse() }, questions, chunk)).toEqual([
+      { queryId: 'question-b', relevantKeys: [], ambiguous: false, note: '' },
+      { queryId: 'question-a', relevantKeys: ['source-b'], ambiguous: false, note: '' },
+    ]);
+  });
+  it.each([
+    ['missing', [votes[0]], 'missing question indices 1'],
+    ['duplicate question', [votes[0], votes[0]], 'duplicate question index 0'],
+    ['unknown question', [votes[0], { ...votes[1], q: 2 }], 'question index 2 outside'],
+    ['unknown document', [{ ...votes[0], d: [2] }, votes[1]], 'document index 2 outside'],
+    ['duplicate document', [{ ...votes[0], d: [1, 1] }, votes[1]], 'duplicate document index'],
+    ['string question', [{ ...votes[0], q: '0' }, votes[1]], 'invalid blind numeric response'],
+    ['negative document', [{ ...votes[0], d: [-1] }, votes[1]], 'invalid blind numeric response'],
+    ['fractional document', [{ ...votes[0], d: [0.5] }, votes[1]], 'invalid blind numeric response'],
+    ['legacy source key', [{ ...votes[0], relevantKeys: ['unsubmitted'] }, votes[1]], 'invalid blind numeric response'],
+  ])('rejects %s without guessing a reference', (_name, rows, error) => {
+    expect(() => parseBlindChunkVotes({ votes: rows }, questions, chunk)).toThrow(error);
   });
 });
 

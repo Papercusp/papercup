@@ -565,6 +565,43 @@ export async function applyEventSubstrateMigrationsForTest(
 }
 
 /**
+ * The coordination substrate a work-item claim/lifecycle fixture needs on top of
+ * the event substrate: the key-fire latch resolves subscribers from
+ * `coord_entity_subscriptions` (created by 123, widened by 429, 568 and 1257),
+ * and 602 adds the follow-blocker kind the release path writes. ONE preset,
+ * audited by `migration-list-audit.test.ts`, instead of a copy per fixture:
+ * three fixtures each hand-copied "the same coordination extras", and each copy
+ * had drifted differently (two lacked 429/568, two lacked the 149 acknowledgement,
+ * one never declared the runtime table at all) — WI-10004742.
+ *
+ * Spread it into `applyEventSubstrateMigrationsForTest`, then add any
+ * fixture-specific `extra` / `knownInapplicable` alongside.
+ */
+export const COORD_SUBSCRIPTION_SUBSTRATE: {
+  readonly extra: readonly string[];
+  readonly runtimeTables: readonly string[];
+  readonly knownInapplicable: KnownInapplicableMigration[];
+} = {
+  extra: [
+    '123-coordination-substrate.sql',
+    '429-coord-entity-subscriptions-allow-fleet-kind.sql',
+    '568-coord-entity-subscriptions-allow-event-kind.sql',
+    '602-work-item-follow-blockers.sql',
+    '1257-coord-entity-subscriptions-allow-muted.sql',
+  ],
+  runtimeTables: ['harness_shared.coord_entity_subscriptions'],
+  knownInapplicable: [
+    {
+      file: '149-coord-threads-federation.sql',
+      reason:
+        'attaches federation outbox triggers to coord_threads/coord_thread_posts that call ' +
+        'harness_shared.capture_substrate_outbox(), created by 108-substrate-capture-reconcile ' +
+        'alongside tables a claim/lifecycle fixture does not build; those paths never write coord threads',
+    },
+  ],
+};
+
+/**
  * Apply the migrations `claims.ts`'s `acquireClaimLocal` path needs against a
  * hand-provisioned test DB: 140 (plan-item assignments), 141 (leased claims),
  * 143 (agent_activity — the EI-8997 holder-activity grace join). Every

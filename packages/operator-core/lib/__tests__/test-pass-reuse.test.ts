@@ -5,7 +5,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { classifyLanes, isUnitTestFile } from '@papercusp/test-config/lane-split';
 
-import {
+// The subject module is overridable (TEST_PASS_REUSE_SUBJECT = an absolute path to a copy) so
+// scripts/mutation-probe.sh can run this suite against a frozen historical or mutated snapshot
+// without touching the shared tree (WI-10004712). Unset, it is the real module.
+type ReuseSubject = typeof import('../../../../scripts/lib/test-pass-reuse.mjs');
+const reuseSubjectOverride = process.env.TEST_PASS_REUSE_SUBJECT;
+const reuseSubject: ReuseSubject = reuseSubjectOverride
+  ? await import(pathToFileURL(reuseSubjectOverride).href)
+  : await import('../../../../scripts/lib/test-pass-reuse.mjs');
+const {
   auditDraw,
   estimateReuseSavings,
   formatReuseAlarmLine,
@@ -27,7 +35,7 @@ import {
   TEST_REUSE_AUDIT_RATE_DEFAULT,
   TEST_REUSE_MAX_AGE_MS_DEFAULT,
   writeReuseSkipList,
-} from '../../../../scripts/lib/test-pass-reuse.mjs';
+} = reuseSubject;
 import {
   decideReuseSkip,
   executedSourceRunnerIdentity,
@@ -39,7 +47,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { dirname, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /**
  * gate-file-level-test-reuse-2026-09-27 P-008 / D-004: a selected test file is SKIPPED only

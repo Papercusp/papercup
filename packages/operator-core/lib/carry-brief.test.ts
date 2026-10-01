@@ -49,6 +49,13 @@ import {
 } from './carry-brief';
 import { shortCarryHash } from './carry-note';
 
+const carryConversationMocks = vi.hoisted(() => ({
+  getConversation: vi.fn(),
+  getConsultStates: vi.fn(),
+}));
+
+vi.mock('./agent-tools/coordination/conversations', () => carryConversationMocks);
+
 vi.mock('./work-items', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./work-items')>();
   return { ...actual, getWorkItem: vi.fn() };
@@ -391,6 +398,90 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
 });
 
 describe('note-citation hydration + post-note delta (cold-carry-system-hardening-2026-07-19 P-002/P-003)', () => {
+  it('default hydration resolves exact, unique-prefix, and missing conversation refs in the selected workspace', async () => {
+    const { currentRequestWorkspaceId } = await import('./workspace-als');
+    carryConversationMocks.getConversation.mockImplementation(async (id: string) => {
+      expect(currentRequestWorkspaceId()).toBe('ws-test');
+      if (id === 'conv-open') {
+        return {
+          conversation: { id: 'conv-open', kind: 'question', state: 'open', title: 'Open ask', body: 'Waiting for the owner.' },
+        };
+      }
+      if (id === 'conv-resolved') {
+        return {
+          conversation: { id: 'conv-resolved-full', kind: 'question', state: 'resolved', title: 'Resolved ask', body: 'The owner answered.' },
+          resolvedFromPrefix: id,
+        };
+      }
+      return null;
+    });
+    carryConversationMocks.getConsultStates.mockResolvedValue(new Map());
+
+    const note = '## Walls\n- Awaiting answers on conv-open and conv-resolved; check conv-missing.';
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        workspaceId: 'ws-test',
+        getLoopCarryNoteWithMetaFn: async () => ({ note, updatedAtMs: Date.now() - 60_000 }),
+        hydrateNoteRefsFn: undefined,
+      }),
+    );
+    const citedRefs = brief.citedRefs ?? [];
+    const activeLine = citedRefs.find((line) => line.includes('conv-open')) ?? '';
+    const resolvedLine = citedRefs.find((line) => line.includes('conv-resolved-full')) ?? '';
+
+    expect(carryConversationMocks.getConversation.mock.calls.map(([id]) => id)).toEqual([
+      'conv-open',
+      'conv-resolved',
+      'conv-missing',
+    ]);
+    expect(activeLine).toContain('conv-open [conversation/open]');
+    expect(resolvedLine).toContain('conv-resolved-full [conversation/resolved]');
+    expect(resolvedLine).toContain('requested: conv-resolved');
+    expect(citedRefs.join('\n')).toContain('conversation:conv-missing — unresolved (not_found)');
+    expect(parseCitedRefStateTag(activeLine)).toEqual({ id: 'conv-open', state: 'open' });
+    expect(parseCitedRefStateTag(resolvedLine)).toEqual({ id: 'conv-resolved-full', state: 'resolved' });
+    expect(detectTerminalCitedRefs([activeLine, resolvedLine])).toEqual(['conv-resolved-full']);
+    expect(annotateCarryNoteLiveContradictions(note, [resolvedLine])).toContain(
+      '⚠ LIVE: conv-resolved-full status=resolved',
+    );
+    expect(carryConversationMocks.getConsultStates).not.toHaveBeenCalled();
+  });
+
+  it('keeps consult_state separate from the conversation state in default hydration', async () => {
+    const { currentRequestWorkspaceId } = await import('./workspace-als');
+    carryConversationMocks.getConversation.mockImplementation(async (id: string) => {
+      expect(id).toBe('conv-consult');
+      expect(currentRequestWorkspaceId()).toBe('ws-test');
+      return {
+        conversation: { id, kind: 'consult', state: 'open', title: 'Consult request', body: 'Consult lifecycle is separate.' },
+      };
+    });
+    carryConversationMocks.getConsultStates.mockImplementation(async (ids: string[]) => {
+      expect(ids).toEqual(['conv-consult']);
+      expect(currentRequestWorkspaceId()).toBe('ws-test');
+      return new Map([['conv-consult', { conversation_id: 'conv-consult', state: 'expired' }]]);
+    });
+
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        workspaceId: 'ws-test',
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note: '## Walls\n- Consult conv-consult is awaiting its lifecycle check.',
+          updatedAtMs: Date.now() - 60_000,
+        }),
+        hydrateNoteRefsFn: undefined,
+      }),
+    );
+    const consultLine = brief.citedRefs?.find((line) => line.includes('conv-consult')) ?? '';
+
+    expect(consultLine).toContain('conv-consult [conversation/open]');
+    expect(consultLine).toContain('(consult_state=expired)');
+    expect(parseCitedRefStateTag(consultLine)).toEqual({ id: 'conv-consult', state: 'open' });
+    expect(detectTerminalCitedRefs([consultLine])).toEqual([]);
+  });
+
   it('P-003 keeps the complete directed-message sender usable for a coord:send reply', () => {
     const sender = 'su-respawn-1-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const sibling = 'su-respawn-1-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';

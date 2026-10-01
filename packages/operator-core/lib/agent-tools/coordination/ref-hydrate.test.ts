@@ -40,6 +40,9 @@ describe('parseRefToken', () => {
     expect(parseRefToken('wi:wi-4070')).toEqual({ kind: 'work-item', id: 'WI-4070' });
     expect(parseRefToken('ei-9501')).toEqual({ kind: 'work-item', id: 'EI-9501' });
     expect(parseRefToken('F-12')).toEqual({ kind: 'work-item', id: 'F-12' });
+    expect(parseRefToken('conv-abc123')).toEqual({ kind: 'conversation', id: 'conv-abc123' });
+    expect(parseRefToken('conversation:conv-abc123')).toEqual({ kind: 'conversation', id: 'conv-abc123' });
+    expect(canonicalRefKey({ kind: 'conversation', id: 'conv-abc123' })).toBe('conversation:conv-abc123');
     expect(parseRefToken('plan:my-plan-2026-07-11#P-004')).toEqual({
       kind: 'plan-item',
       slug: 'my-plan-2026-07-11',

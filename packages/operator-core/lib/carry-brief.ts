@@ -1095,7 +1095,7 @@ export function renderPostNoteInboxLine(e: Record<string, unknown>): string {
  *  single `↪ ` prefix. This used to call ref-hydrate's `renderHydratedRef`, which
  *  ALSO prefixes `↪ ` — doubling the glyph in every real (non-test) carry doc
  *  ("↪ ↪ EI-… [bug/done]: …", found while fixing EI-18726068732447732). */
-const CARRY_NOTE_REF = /\b(?:WI|EI)-\d+\b|\bplan:[a-z0-9][a-z0-9-]*#P-\d{3,}\b|\bP-\d{3,}\b/gi;
+const CARRY_NOTE_REF = /\b(?:WI|EI)-\d+\b|\bconv-[a-z0-9][a-z0-9-]*\b|\bplan:[a-z0-9][a-z0-9-]*#P-\d{3,}\b|\bP-\d{3,}\b/gi;
 
 /**
  * Resolve references in note prose without guessing. WI-/EI- ids are global;
@@ -1118,6 +1118,15 @@ export function detectCarryNoteRefs(
       if (!seen.has(key)) {
         seen.add(key);
         refs.push({ kind: 'work-item', id });
+      }
+      continue;
+    }
+    if (/^conv-/i.test(token)) {
+      const id = token;
+      const key = `conversation:${id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        refs.push({ kind: 'conversation', id });
       }
       continue;
     }
@@ -1154,10 +1163,14 @@ export function detectCarryNoteRefs(
 async function defaultHydrateNoteRefs(
   noteText: string,
   heldItems: readonly CarryBriefHeldItem[],
+  workspaceId?: string,
 ): Promise<string[]> {
   try {
-    const [{ hydrateRefs, makePlanItemResolver }] = await Promise.all([
+    const [{ hydrateRefs, makePlanItemResolver }, conversations, workspace, { clampSnippet }] = await Promise.all([
       import('./agent-tools/coordination/ref-hydrate-resolve'),
+      import('./agent-tools/coordination/conversations'),
+      import('./workspace-als'),
+      import('./agent-tools/coordination/ref-hydrate'),
     ]);
     const refs = detectCarryNoteRefs(noteText, heldItems);
     if (refs.length === 0) return [];
@@ -1170,8 +1183,46 @@ async function defaultHydrateNoteRefs(
         );
         return makePlanItemResolver(held?.harness ?? undefined)(ref, budget);
       };
-    const hydrated = await hydrateRefs(refs, { resolvers: { 'plan-item': planItemResolver } });
-    return hydrated.filter((h) => h.ok).map((h) => (h.snippet ? `${h.label}: "${h.snippet}"` : h.label));
+    const conversationResolver: import('./agent-tools/coordination/ref-hydrate-resolve').RefResolver =
+      async (ref, budget) => {
+        if (ref.kind !== 'conversation') return null;
+        const detail = await workspace.runWithWorkspaceIfConcrete(workspaceId, () =>
+          conversations.getConversation(ref.id),
+        );
+        if (!detail) return null;
+        const conversation = detail.conversation;
+        let consultState: string | null = null;
+        if (conversation.kind === 'consult') {
+          try {
+            const states = await workspace.runWithWorkspaceIfConcrete(workspaceId, () =>
+              conversations.getConsultStates([conversation.id]),
+            );
+            consultState = states.get(conversation.id)?.state ?? null;
+          } catch {
+            // Consult lifecycle is supplemental to the conversation's own state.
+          }
+        }
+        const requested = detail.resolvedFromPrefix
+          ? ` (requested: ${detail.resolvedFromPrefix})`
+          : '';
+        const consult = consultState ? ` (consult_state=${consultState})` : '';
+        const label = `${conversation.id} [conversation/${conversation.state}]${requested}${consult}`;
+        const snippet = [conversation.kind, conversation.title, conversation.body]
+          .filter((part): part is string => typeof part === 'string' && part.length > 0)
+          .join(' — ');
+        return { label, snippet: clampSnippet(snippet, budget.snippetChars) };
+      };
+    const hydrated = await hydrateRefs(refs, {
+      resolvers: { 'plan-item': planItemResolver, conversation: conversationResolver },
+    });
+    return hydrated.flatMap((h) => {
+      if (!h.ok) {
+        return h.ref.kind === 'conversation'
+          ? [`${h.label} — unresolved (${h.error ?? 'unknown'})`]
+          : [];
+      }
+      return [h.snippet ? `${h.label}: "${h.snippet}"` : h.label];
+    });
   } catch {
     return [];
   }
@@ -1182,7 +1233,7 @@ async function defaultHydrateNoteRefs(
  *  `<id> [<kind>/<state>...]`. Regex-only (never throws); returns null for a
  *  line with no recognizable id or tag (a custom hydrator, or a non-work-item
  *  ref shape) so callers degrade to "not terminal" rather than misfire. */
-const CITED_REF_ID = /\b((?:WI|EI|F)-\d+)\b/;
+const CITED_REF_ID = /\b((?:WI|EI|F)-\d+|conv-[a-z0-9][a-z0-9-]*)\b/i;
 const CITED_REF_STATE_TAG = /\[[a-z0-9_]+\/([a-z0-9_-]+)/i;
 export function parseCitedRefStateTag(line: string): { id: string; state: string } | null {
   const idMatch = CITED_REF_ID.exec(line);
@@ -1199,8 +1250,11 @@ const CITED_PLAN_ITEM_STATE_TAG = /\b(plan:([a-z0-9][a-z0-9-]*)#(P-\d{3,}))\s+\[
 export function parseCitedLiveState(
   line: string,
 ): { id: string; mention: string; state: string } | null {
-  const workItem = parseCitedRefStateTag(line);
-  if (workItem) return { ...workItem, mention: workItem.id };
+  const citedRef = parseCitedRefStateTag(line);
+  if (citedRef) {
+    const requestedPrefix = /\(requested:\s*(conv-[a-z0-9][a-z0-9-]*)\)/i.exec(line)?.[1];
+    return { ...citedRef, mention: requestedPrefix ?? citedRef.id };
+  }
   const planItem = CITED_PLAN_ITEM_STATE_TAG.exec(line);
   if (!planItem) return null;
   return {
@@ -1546,7 +1600,8 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
 
   const citedRefsPromise = Promise.all([loopPromise, heldItemsPromise]).then(([loopRead, heldItems]) => {
     if (!loopRead.loop?.carryNote) return undefined;
-    const hydrate = opts.hydrateNoteRefsFn ?? defaultHydrateNoteRefs;
+    const hydrate = opts.hydrateNoteRefsFn ?? ((note: string, items?: readonly CarryBriefHeldItem[]) =>
+      defaultHydrateNoteRefs(note, items ?? heldItems, concreteWorkspaceId ?? workspaceId));
     return bestEffort(() => hydrate(loopRead.loop!.carryNote!, heldItems), [] as string[]);
   });
 

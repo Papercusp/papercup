@@ -1799,8 +1799,19 @@ export function deriveSettleOutcome(input: {
   outcomes: readonly string[];
   /** Has the resolver ever reported life for this run? */
   everReportedLife: boolean;
+  /**
+   * The caller itself just completed a full scan of the run's seed plans
+   * in-process (the deterministic plan-cleanup pass). That IS the evidence of
+   * life rule (2) asks for: the scan ran, so zero findings means "nothing to
+   * clean", not "never started". Without it a clean scan settled `failed`,
+   * because the deterministic pass settles before any resolver exists to beat
+   * the heartbeat (WI-10004729). Honoured for `plan-cleanup` only — an inbox
+   * run's empty set is impossible-by-construction regardless of who settles.
+   */
+  scanCompleted?: boolean;
 }): { phase: BulkRunPhase; refusedReason: string | null } {
-  const { runKind, outcomes, everReportedLife } = input;
+  const { runKind, outcomes } = input;
+  const everReportedLife = input.everReportedLife || (runKind === 'plan-cleanup' && input.scanCompleted === true);
   const terminal =
     runKind === 'plan-cleanup' ? ['auto_applied', 'accepted', 'dismissed'] : ['auto_resolved', 'dismissed'];
   const awaitingOwner = outcomes.some((o) => !terminal.includes(o));
@@ -1836,6 +1847,8 @@ export async function settleRunPhase(input: {
   runId: string;
   resolverOwner?: string | null;
   workspaceId?: string;
+  /** See {@link deriveSettleOutcome}: the caller completed a full in-process scan. */
+  scanCompleted?: boolean;
 }): Promise<BulkRunRow | null> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
@@ -1874,6 +1887,7 @@ export async function settleRunPhase(input: {
       runKind,
       outcomes: states.map((i) => i.outcome),
       everReportedLife: locked[0].heartbeat_at != null,
+      scanCompleted: input.scanCompleted,
     });
     const rows = await tx<RawRunRow[]>`
       UPDATE harness_shared.attention_bulk_runs

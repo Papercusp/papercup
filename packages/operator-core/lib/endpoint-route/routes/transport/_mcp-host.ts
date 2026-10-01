@@ -664,6 +664,9 @@ const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
   'memory:remember',
   'memory:update',
   'memory:forget',
+  // EI-247550: memory:get resolves ids across the backend, but its handler returns shared rows
+  // only when the scope belongs to this workspace (and, with the clamp on, this session's Hive).
+  // Other users' rows and out-of-scope ids remain indistinguishable from missing ids.
   'memory:get',
   // search:* prose recall (session-search-scope-2026-07-05 live-smoke finding) —
   // read-only; crossWorkspace ONLY so an unscoped psu gets the admin handle for

@@ -47,8 +47,10 @@ function makeStatement(db: DatabaseSync, sql: string, binds: unknown[] = []): D1
       return { results, success: true, meta: {} } as unknown as D1Result<T>;
     },
     run: async <T>() => {
-      db.prepare(sql).run(...(normalizeBinds(binds) as never[]));
-      return { results: [], success: true, meta: {} } as unknown as D1Result<T>;
+      // Report rows changed as real D1 does (`meta.changes`): conditional upserts
+      // (ON CONFLICT … WHERE / DO NOTHING) decide their outcome from it.
+      const info = db.prepare(sql).run(...(normalizeBinds(binds) as never[]));
+      return { results: [], success: true, meta: { changes: Number(info.changes) } } as unknown as D1Result<T>;
     },
     // `raw` is deliberately not implemented: nothing in the commerce path calls
     // it, and D1's overloaded `columnNames` signature cannot be satisfied by a
