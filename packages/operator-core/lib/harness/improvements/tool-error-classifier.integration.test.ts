@@ -139,4 +139,43 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     // …and the timeout is a fingerprinted transient key.
     expect(keys.some((k) => k.startsWith('plans:list:transient:'))).toBe(true);
   });
+
+  it('excludes marked dispatch-wrapper rows from both the failure count and per-tool denominator (P-012)', async () => {
+    const sql = db.adminSql;
+    // This integration fixture owns a throwaway database. Clear the earlier
+    // rows so this exact per-tool denominator is isolated and reproducible.
+    await sql`DELETE FROM harness_shared.tool_invocations`;
+
+    const tool = 'tools:invoke';
+    const message = 'column "initiative" does not exist';
+    const wrapperMetadata = {
+      dispatchWrapper: true,
+      dispatchedTool: 'dev:session_detail',
+      childFailureRefs: ['dev:session_detail'],
+    };
+    const insert = async (status: 'ok' | 'error', metadata?: Record<string, unknown>) => {
+      await sql`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+           status, error_code, error_message, invoked_at, metadata_json)
+        VALUES (
+          '*', '', '', ${tool}, 'su', '', '', ${status},
+          ${status === 'error' ? 'handler_error' : null},
+          ${status === 'error' ? message : null}, now(), ${metadata ?? null}
+        )`;
+    };
+
+    for (let i = 0; i < 3; i++) await insert('error');
+    await insert('ok');
+    for (let i = 0; i < 10; i++) await insert('ok', wrapperMetadata);
+    for (let i = 0; i < 2; i++) await insert('error', wrapperMetadata);
+
+    // With wrappers removed the real calls are 3/4 (75%), so the rate bar
+    // fires despite the raised count bar. Counting wrapper errors yields 5/16
+    // and crosses only the count bar; counting wrapper successes alone dilutes
+    // the real rate below 50% and suppresses the signal.
+    const signals = await collectToolErrorSignals(sql, { structuralMinCount: 5 });
+    const signal = signals.find((s) => s.key.startsWith('tools:invoke:structural'));
+    expect(signal?.body).toContain('3× (75% of 4 calls)');
+  });
 });

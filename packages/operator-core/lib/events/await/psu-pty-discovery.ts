@@ -23,7 +23,6 @@ import { join } from 'node:path';
 import {
   readFileSync,
   existsSync,
-  readdirSync,
   statSync,
   openSync,
   readSync,
@@ -820,26 +819,37 @@ export function sockOwnerIdFromPath(sock: string): string | null {
  * The ownerId the HOST ITSELF recorded for this socket — the authoritative binding,
  * read from the discovery records rather than inferred from a filename.
  *
- * Only consulted when the cheap path check disagrees, because it costs a directory
- * scan. A socket path is allowed to be non-canonical (a caller passes whatever
- * `host.sock` the meta file holds), so a filename disagreement is a REASON TO LOOK,
- * never a verdict on its own.
+ * Only consulted when the cheap path check disagrees. A socket path is allowed to be
+ * non-canonical (a caller passes whatever `host.sock` the meta file holds), so a
+ * filename disagreement is a REASON TO LOOK, never a verdict on its own.
+ *
+ * WI-10004698: this reads at most TWO named records, never the directory. It used to
+ * readdirSync all of ~/.papercusp/psu-pty (~3,500 entries) on the operator main
+ * thread, and during an ext4 journal stall that scan sits in D-state at wchan
+ * iterate_dir for 10-24s, freezing every in-flight MCP request (owner directive
+ * #1155, WI-10004587). The two candidates are the only records a real binding can
+ * live under: the envelope owner's own record (a correctly-bound delivery on a
+ * rebound, non-canonical socket) and the record named by the socket filename (a
+ * misroute onto another owner's canonical socket). A socket recorded under a THIRD
+ * owner whose name matches neither is reported indeterminate, which the caller
+ * already counts and audits; it is not accused.
  */
-function recordedOwnerIdForSock(sock: string): string | null {
-  try {
-    for (const f of readdirSync(PSU_PTY_DIR)) {
-      if (!f.endsWith('.json')) continue;
-      try {
-        const h = JSON.parse(readFileSync(join(PSU_PTY_DIR, f), 'utf8')) as Partial<PsuPtyHost>;
-        if (h && h.sock === sock && typeof h.ownerId === 'string' && h.ownerId.length > 0) {
-          return h.ownerId;
-        }
-      } catch {
-        /* a corrupt/partial record is not evidence either way */
+function recordedOwnerIdForSock(sock: string, envelopeOwnerId: string | undefined): string | null {
+  const candidates = new Set<string>();
+  if (typeof envelopeOwnerId === 'string' && envelopeOwnerId.length > 0) {
+    candidates.add(sanitizeKey(envelopeOwnerId));
+  }
+  const fromPath = sockOwnerIdFromPath(sock);
+  if (fromPath != null) candidates.add(fromPath);
+  for (const key of candidates) {
+    try {
+      const h = JSON.parse(readFileSync(join(PSU_PTY_DIR, `${key}.json`), 'utf8')) as Partial<PsuPtyHost>;
+      if (h && h.sock === sock && typeof h.ownerId === 'string' && h.ownerId.length > 0) {
+        return h.ownerId;
       }
+    } catch {
+      /* missing, corrupt or partial record: not evidence either way */
     }
-  } catch {
-    /* no discovery dir — indeterminate */
   }
   return null;
 }
@@ -893,7 +903,7 @@ export function auditInjectOwnerBinding(
       // whatever `sock` the discovery record holds. Consult the authoritative
       // binding the host wrote before accusing anyone of a misroute — a detector
       // that cries wolf on a rebound socket is one people learn to ignore.
-      const recorded = recordedOwnerIdForSock(sock);
+      const recorded = recordedOwnerIdForSock(sock, msg.ownerId);
       if (recorded === null) {
         // NOT an accusation — the verdict stays `indeterminate`, because an absence of
         // evidence is not a misroute. But it is not NOTHING either: the two cheap

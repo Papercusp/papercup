@@ -15,6 +15,7 @@ import { paymentChannelsRoute } from './payment-channels.ts';
 import { meteredUsageRoute } from './metered-usage.ts';
 import { settlementsRoute } from './settlements.ts';
 import { treasuryRoute } from './treasury.ts';
+import { reconciliationRoute } from './reconciliation.ts';
 import type { SafeTreasuryAdapter } from '../treasury-adapter.ts';
 import type { PaymentChannelFundingAdapter } from '@papercusp/operator-core/lib/p2p/channel-funding.ts';
 import type { EvmSettlementFacilitator } from '@papercusp/operator-core/lib/p2p/evm-settlement.ts';
@@ -94,6 +95,10 @@ export function buildApi(
   // on what that route produces and only once it is FINAL: a claim can still be
   // dropped by a reorg, and a transfer out of the Safe cannot be unwound.
   api.route('/', treasuryRoute({ adapter: options.treasuryAdapter }));
+  // P-043 reconciliation seam: the operator's run pushes the DAO-transfer gate
+  // the treasury door above reads, and reads back credits + DAO transfers.
+  // HMAC-signed, not bearer-authenticated: the caller is a machine.
+  api.route('/', reconciliationRoute());
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);

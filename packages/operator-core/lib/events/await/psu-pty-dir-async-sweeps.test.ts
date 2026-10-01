@@ -48,6 +48,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as discovery from './psu-pty-discovery';
+import { stripCommentsAndStrings } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 import {
   listLiveHostsAsync,
   pruneDeadDiscoveryFilesAsync,
@@ -127,6 +128,19 @@ describe('psu-pty directory sweeps never touch the directory synchronously (WI-1
     expect(discovery).toHaveProperty('pruneDeadDiscoveryFilesAsync');
     expect(discovery).not.toHaveProperty('listLiveHosts');
     expect(discovery).not.toHaveProperty('pruneDeadDiscoveryFiles');
+  });
+
+  it('WI-10004698: the module contains NO synchronous directory scan at all, exported or internal', () => {
+    // The export check above cannot see a private helper. recordedOwnerIdForSock (the
+    // inject owner-binding detector) kept a readdirSync of the whole discovery dir after
+    // WI-10004587; it is now two named-record reads. Comments and strings are masked so
+    // prose that names the old call cannot satisfy or trip this.
+    const raw = readFileSync(join(__dirname, 'psu-pty-discovery.ts'), 'utf8');
+    const live = stripCommentsAndStrings(raw, 'psu-pty-discovery.ts');
+    expect(live).toMatch(/\breadFileSync\(/); // positive control: masking kept real calls
+    expect(raw).toMatch(/readdirSync/); // the prose mention exists, so the mask is what hides it
+    expect(live).not.toMatch(/\breaddirSync\b/);
+    expect(live).not.toMatch(/\bopendirSync\b/);
   });
 
   it('listLiveHostsAsync', async () => {

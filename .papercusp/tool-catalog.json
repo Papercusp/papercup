@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 931,
+  "count": 932,
   "tools": [
     {
       "name": "ablation:report",
@@ -6126,7 +6126,7 @@
           "POST"
         ]
       },
-      "description": "Read one or many conversations in full: seed, topics, thread (oldest-first), accepted answer, follower count, and consult lifecycle when applicable. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation?, topics, posts, subscriber_count, consult? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated id returns `warning` with the real id; ambiguous or nonexistent prefixes return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall.",
+      "description": "Read one or many conversations in full, or resolve a `thread-post:<positive-id>` citation to the post in the caller workspace. Conversation reads include seed, topics, thread, accepted answer, follower count, and consult lifecycle when applicable. Pass `id` (or `conversation_id`) for one or `ids` for 1–100; `id` wins when both single-item keys are supplied. Returns { ok, results:[{ ok, id, conversation? | post? | error }], counts }; correlate by id, and a missing id fails only its item. A unique-prefix fallback for a truncated conversation id returns `warning` with the real id; ambiguous or nonexistent ids return `not_found`. For consults, read `consult.state` — `conversation.state` may remain open after expiry, and empty posts do not prove a stall.",
       "capabilities": [
         "coord:read"
       ],
@@ -6151,7 +6151,7 @@
         "judge"
       ],
       "guidance": {
-        "when": "You have conversation ids and need the full thread. Use `id` or `conversation_id` for one, or `ids` for a batch.",
+        "when": "You have conversation ids and need the full thread, or a `thread-post:<id>` citation and need its post body.",
         "notWhen": "Browsing many → conversations:list.",
         "chaining": "conversations:get → conversations:answer / conversations:post / conversations:join / conversations:resolve."
       }
@@ -8772,6 +8772,24 @@
         "when": "Sharing a theme from Personalization so another workspace can install and select it.",
         "notWhen": "Creating/editing a local theme, selecting a theme, or installing an existing theme listing.",
         "chaining": "Export first, push the returned directory to the named public mirror, then publish the listing; consumers use cupboard:install-theme."
+      }
+    },
+    {
+      "name": "cupboard:reconciliation",
+      "http": {
+        "path": "/api/agent-tools/cupboard/reconciliation",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Money reconciliation for this workspace: status (latest run, latest month-close run, open breaks and their items, DAO-transfer gate) or run (import Stripe + DAO transfers, reconcile, file/resolve breaks, push the gate). run is a dry run unless confirm:true.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "A reconciliation break item needs its evidence, DAO transfers are paused (409 transfers_paused) and you need the reason, or a fix landed and the break should be re-checked now.",
+        "notWhen": "Reading journal entries or trial balances (the money journal tools); anchoring (cupboard:ledger-anchor).",
+        "chaining": "A break opened by a final (month-close) run is resolved only by run { mode:\"final\" }. status.latest.gatePublishDetail says why the Worker did not receive the gate."
       }
     },
     {

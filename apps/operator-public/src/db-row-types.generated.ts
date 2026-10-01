@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: c8b8f3ce082589659bbb5cc5ba0aa9e62b9cd007e914d682939fb8d3d0cc514a
+ * Migration digest: f7537a0891869ffbab7fa8f0a175fed700fb007f59826d79d0d9a90b5d7ed3b4
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "c8b8f3ce082589659bbb5cc5ba0aa9e62b9cd007e914d682939fb8d3d0cc514a";
+  "f7537a0891869ffbab7fa8f0a175fed700fb007f59826d79d0d9a90b5d7ed3b4";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -34,6 +34,7 @@ export const GENERATED_TABLES = [
   "settlement_batches",
   "treasury_safe_deployment_records",
   "treasury_safe_deployments",
+  "treasury_transfer_gate",
   "treasury_transfers",
   "usage_receipts",
   "wallet_binding_challenges",
@@ -427,6 +428,16 @@ export interface TreasurySafeDeploymentsRow {
   deployed_at_ms: number;
   recorded_at_ms: number;
   recorded_by: string;
+}
+
+export interface TreasuryTransferGateRow {
+  workspace_id: string;
+  open: number;
+  treasury_reconciled: number;
+  reasons_json: string;
+  run_id: string;
+  at_ms: number;
+  received_at_ms: number;
 }
 
 export interface TreasuryTransfersRow {

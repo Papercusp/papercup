@@ -72,6 +72,13 @@ export interface Env {
    *  an always-online key that also counts toward the owner threshold erodes
    *  the offline control meant to sit above the automated role. */
   TREASURY_AUTOMATION_PRIVATE_KEY?: string;
+  /** Shared secret the operator's reconciliation run signs its requests with
+   *  (P-043, D-025 §4): the DAO-transfer gate push and the reconciliation-inputs
+   *  read. Installed via `wrangler secret put RECONCILIATION_GATE_SECRET`; the
+   *  operator holds the same value under PAPERCUSP_RECONCILIATION_GATE_SECRET_REF.
+   *  OPTIONAL and fail-closed: unset, both signed routes answer 503 and the
+   *  treasury door keeps DAO transfers paused, because no gate can be pushed. */
+  RECONCILIATION_GATE_SECRET?: string;
   /** Idempotent channel contract implementing openChannel/closeChannel. */
   PAYMENT_CHANNEL_SETTLEMENT_CONTRACT?: string;
   /** Stablecoin contract address (pilot: Base-compatible USDC). */
@@ -121,6 +128,11 @@ export interface Env {
    *  this is exactly 'true'. Acceptance line 13 gates Safe signers and any
    *  mainnet capital on the owner; this is that gate, defaulting to refuse. */
   TREASURY_MAINNET_CAPITAL_APPROVED?: string;
+  /** The operator workspace whose reconciliation gate governs this Worker's DAO
+   *  transfers (P-043). A var: a workspace id confers nothing. Unset means no
+   *  workspace vouches for the treasury, so the routing door refuses every DAO
+   *  transfer with 409 `transfers_paused`. */
+  RECONCILIATION_GATE_WORKSPACE?: string;
   ENVIRONMENT: string;
   CUPBOARD_HOST: string;
   /** Comma-separated GitHub user ids allowed to use /admin operator surfaces

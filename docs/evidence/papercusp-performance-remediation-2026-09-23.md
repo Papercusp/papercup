@@ -3437,3 +3437,74 @@ producer progress, shared-host adoption of other fixes and app impact remain ope
 The next distinguishing measurement must separate waiting from active work in
 one identified phase, with an alternative and a bounded workload; it must not
 attribute these wall-time buckets to CPU or close R-8 from phase logging alone.
+
+### Matched isolated discovery waits — October 1, 09:09Z
+
+WI-10002830/P-008 extended the existing maintained runtime assertion rather
+than introducing a production observer. `listCandidateFiles` awaits the
+`jsonlAtDepth` walk and then each candidate's `stat` sequentially. The fixture
+now alternates observation off/on/on/off across four equal-size useful-tail
+passes, each followed by an unchanged pass over the same 4,800 candidates.
+The private child wraps real `fs/promises.readdir` and `stat`, synchronizes
+their ESM bindings, and restores both after every sweep. Only its managed
+fixture root is observed; neither filesystem results nor the clock is mocked.
+
+Each observed sweep verified 1,601 directory reads, 4,800 stats, and at most
+one outstanding observed operation. The first attempt failed because this
+author expected 1,281 directory reads: the exact five-level layout includes
+the final day-directory enumeration. That expectation was corrected from
+the walker source and the observed 1,601; the production implementation
+was unchanged. The passing canonical run was:
+
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`
+
+It passed 1/1, zero skipped, exit 0 at HEAD
+`f8610a668bf7625d1c4394e58d3a8a74018c7406` plus the local fixture edit.
+The router retained that HEAD throughout the passing run. Source SHA-256
+remained `a63bb35bca2738b33f62084917b9c3fa3b522ca21d37946000ae8786449529a3`;
+fixture SHA-256 is
+`cb3449ec08166aaed7ebbd0ac7e5d769bbc582fe116986db3ed405a9c4c6b865`.
+Child PID 2660140 used Node v25.9.0 and background workers enabled, DBOS
+routines disabled, a disposable migrated database and private HOME/workspace
+with runtime credentials stripped. It read back 256 turns and 2,560 parts,
+verified offsets, removed HOME/datadir, and observed the DB port refuse a
+connection. Workload hash:
+`6fda56724fe55c56706e4c99460603d83685d6e3debceca2f24a3210b6140ad4`.
+
+| Observed sweep | Wall ms | Discovery ms | Directory/stat await spans ms | Main-loop idle within those spans ms | Decode ms | Writes ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Useful tail 2 | 1577 | 292.2 | 272.4 | 174.8 | 809.0 | 210.4 |
+| Matched unchanged 2 | 557 | 293.5 | 273.0 | 169.9 | 0 | 0 |
+| Useful tail 3 | 1460 | 305.3 | 285.8 | 181.1 | 723.7 | 168.4 |
+| Matched unchanged 3 | 529 | 294.5 | 273.2 | 167.9 | 0 | 0 |
+
+Await spans include queueing, kernel work, callback scheduling and promise
+continuation; they are **not kernel IO duration**. Main-loop active/idle is
+the difference from `performance.eventLoopUtilization` across each real
+await. Its active time is not a CPU sample. Whole useful sweeps 2/3 recorded
+main-loop active 1251.5/1158.5 ms and child process CPU 1553.6/1520.4 ms;
+their unchanged partners recorded active 380.8/354.5 ms and process CPU
+593.3/570.6 ms. CPU sums `process.cpuUsage` user/system across all child
+threads, excludes the separate PG process, and is not per-phase CPU.
+
+The distinguishing observation is main-loop idle during the awaited
+discovery operations; fully active main-thread work throughout those spans
+would instead produce near-zero idle. This establishes an async waiting
+component for this fixture, while matched unchanged sweeps independently
+verify zero decode/write work. The equal-scale unobserved useful sweeps
+took 1714/1676 ms; unchanged sweeps took 609/1042 ms. This small alternating
+series does not isolate observer overhead from time/order variation and
+does not satisfy a profiler-overhead or live causal acceptance contract.
+It still does not reproduce the dated long live sweeps or identify their
+wait mechanism, per-phase CPU, or app impact. **P-008/R-8 remains open.**
+
+Passing log `/tmp/p008-ingest-discovery-runtime-20261001-r2.log` SHA-256:
+`055c41d3a750d6f98e021057d8080d8234e5a4f774b7b54933e6d1a88aea84e2`.
+Failed expectation log `r1.log` SHA-256:
+`052215d198b68b377cf580d8f2a9d1d9db049d0f980a4cc7f4d207e42c476a60`.
+The dated live receipt `0mup9bfumiwatefin87` and historical task-retention
+limits above remain separate evidence. D-006 still forbids a worker
+shared-host restart. A :3271 MCP transport send failure during the later
+lock acquisition was handled through sanctioned `ptool --url=:9071` under
+the same session: the path was first read as unheld, then claimed and
+released with native edit proof. No incidental DRAIN item was filed.

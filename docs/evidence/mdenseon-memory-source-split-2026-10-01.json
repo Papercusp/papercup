@@ -1,0 +1,71 @@
+{
+  "formatVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-003 recorded memory-source partition census before and after correction",
+  "framework": "operational",
+  "workItem": "EI-24766821844236009",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "rootCause": "takeCandidateSnapshot ignored stored source_session and used per-fact IDs for calibration/test assignment.",
+  "detectorFailure": "The first snapshot tests checked caller-supplied cluster strings; they never reconstructed two facts from one stored session.",
+  "comparisonProcedure": "Read each frozen memory snapshot's IDs and assigned partitions; join IDs to memory_canonical. Group by COALESCE(payload->>'source_session',payload->'metadata'->>'source_session'), then count sources having two DISTINCT partitions. The same read evaluated both snapshots. V1 is preserved and prohibited as an independent-label input.",
+  "fix": "candidateMemoryEntry records session:<source_session> clusters. Blind collection requires recorded provenance. --require-memory-source excludes unknown legacy provenance, preserving an explicit exclusion census and the full private source population.",
+  "guardTests": {
+    "unit": 20375683,
+    "judged": 20375684,
+    "integration": 20375687,
+    "runGroup": "a5990913-2b29-4010-9bfc-354872c17e22",
+    "result": "all three files pass; no scratch config"
+  },
+  "scopedTypecheck": {
+    "requestedFiles": 5,
+    "errorCount": 0,
+    "otherErrorCount": 0
+  },
+  "artifacts": [
+    {
+      "locator": "cache:validation/mdenseon-independent-WI10004537-20261001/snapshot-v1.json",
+      "sha256": "94ffb74e98a2f05794d3ff5d8fab8053ddb5474717933d613ea756a2eb1ed80a",
+      "bytes": 1316931
+    },
+    {
+      "locator": "cache:validation/mdenseon-independent-WI10004537-20261001/snapshot-v2.json",
+      "sha256": "b8449e9c7760283644ae8668fec897194c057e723f99a2d650aab62e57be150f",
+      "bytes": 1513218
+    },
+    {
+      "locator": "cache:validation/mdenseon-independent-WI10004537-20261001/census-v2.json",
+      "sha256": "b15da1426e9825621da89b0d774e3f88ac993ec2c799947ff9650a705e4641a5",
+      "bytes": 21848119
+    }
+  ],
+  "measurements": {
+    "v1": {
+      "known_sources": 179,
+      "split_sources": 20,
+      "facts_on_split_sources": 54,
+      "snapshotAt": "2026-10-01T08:37:24.208Z",
+      "memoryRows": 512,
+      "proseRows": 515
+    },
+    "v2": {
+      "known_sources": 283,
+      "split_sources": 0,
+      "facts_on_split_sources": 0,
+      "snapshotAt": "2026-10-01T09:05:27.623Z",
+      "memoryRows": 512,
+      "proseRows": 515
+    }
+  },
+  "census": {
+    "memoryRows": 2025,
+    "attributedFacts": 959,
+    "attributedSessions": 406,
+    "excludedUnknown": 1066,
+    "proseRows": 13996,
+    "proseSources": 2115
+  },
+  "limitations": [
+    "No retrieval model has been inferred on V2 yet. This source-split proof establishes the cohort boundary, not relevance quality.",
+    "The 1066 memories without recorded session provenance remain excluded from the independent-label population; no production memory data was changed."
+  ]
+}

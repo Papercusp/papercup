@@ -24,6 +24,12 @@ import {
   type CumulativePaymentVoucher,
 } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { revenueSplitManifest } from '@papercusp/operator-core/lib/p2p/revenue-settlement.ts';
+import {
+  RECONCILIATION_SIGNATURE_HEADER,
+  TRANSFER_GATE_MAX_AGE_MS,
+  TRANSFER_GATE_PATH,
+  signReconciliationRequest,
+} from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
 import { buildApi } from '../routes/index.ts';
 import type { SafeTreasuryAdapter } from '../treasury-adapter.ts';
 import { makeEnv } from './fake-d1.ts';
@@ -49,6 +55,7 @@ const DEPLOY_TX = `0x${'e'.repeat(64)}`;
 const TRANSFER_TX = `0x${'f'.repeat(64)}`;
 const CHANNEL = 'chan-treasury-1';
 const ESCROW = 1_000_000;
+const GATE_WORKSPACE = 'ws-treasury';
 
 const SHARES = {
   creator: 6_000,
@@ -112,9 +119,21 @@ function harness(
   adapter?: SafeTreasuryAdapter,
   observation?: EvmTransactionObservation,
 ) {
-  const { db } = makeSqliteDb();
+  const { db, raw } = makeSqliteDb();
   const { env } = makeEnv();
   env.DB = db;
+  // P-043: the treasury door refuses unless reconciliation has pushed a fresh,
+  // open, treasury-reconciled gate for the governing workspace. Every case here
+  // tests the routing chain BEFORE that gate, so seed one; the gate's own
+  // refusals are tested in treasury-transfer-gate.test.ts.
+  env.RECONCILIATION_GATE_WORKSPACE = GATE_WORKSPACE;
+  raw
+    .prepare(
+      `INSERT INTO treasury_transfer_gate
+         (workspace_id, open, treasury_reconciled, reasons_json, run_id, at_ms, received_at_ms)
+       VALUES (?, 1, 1, '[]', 'run-seed', ?, ?)`,
+    )
+    .run(GATE_WORKSPACE, Date.now(), Date.now());
   env.REVENUE_SPLIT_MANIFEST = JSON.stringify({ version: 'v1', sharesBps: SHARES });
   env.DAO_TREASURY_ADDRESS = TREASURY;
   env.PAYMENT_CHANNEL_STABLECOIN = STABLECOIN;
@@ -133,6 +152,7 @@ function harness(
       treasuryAdapter: adapter,
     }),
     db,
+    raw,
     env,
   };
 }
@@ -520,5 +540,105 @@ describe('POST /commerce/payment-channels/:channelId/settlements/:batchId/treasu
     expect((await refused.json()) as { detail: string }).toMatchObject({
       detail: expect.stringContaining("may not route payee share 'creator'"),
     });
+  });
+});
+
+describe('the P-043 reconciliation gate on DAO transfers', () => {
+  // A low-entropy test key, not a credential.
+  const SECRET = 'k'.repeat(32);
+
+  async function pushGate(api: Api, env: Env2, push: Record<string, unknown>): Promise<Response> {
+    const body = JSON.stringify(push);
+    const signature = await signReconciliationRequest({
+      secret: SECRET,
+      method: 'PUT',
+      pathname: TRANSFER_GATE_PATH,
+      body,
+      nowMs: Date.now(),
+    });
+    return api.request(
+      TRANSFER_GATE_PATH,
+      { method: 'PUT', headers: { 'content-type': 'application/json', [RECONCILIATION_SIGNATURE_HEADER]: signature }, body },
+      env,
+    );
+  }
+
+  it('pauses DAO transfers for every gate state except a fresh, open, treasury-reconciled one', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const { api, db, raw, env } = harness({ RECONCILIATION_GATE_SECRET: SECRET }, adapter);
+    const batchId = await settleToFinal(api, db, env);
+    await recordDeployment(api, env);
+    const setGate = (open: number, reconciled: number, reasons: string, atMs: number) =>
+      raw
+        .prepare(
+          `UPDATE treasury_transfer_gate SET open = ?, treasury_reconciled = ?, reasons_json = ?, at_ms = ? WHERE workspace_id = ?`,
+        )
+        .run(open, reconciled, reasons, atMs, GATE_WORKSPACE);
+
+    const expectPaused = async (code: string, detail?: string) => {
+      const response = await route(api, env, batchId);
+      expect(response.status).toBe(409);
+      expect((await response.json()) as Record<string, unknown>).toMatchObject({
+        error: 'transfers_paused',
+        code,
+        ...(detail ? { detail: expect.stringContaining(detail) } : {}),
+      });
+    };
+
+    // No workspace governs this Worker.
+    delete (env as unknown as Record<string, unknown>).RECONCILIATION_GATE_WORKSPACE;
+    await expectPaused('no-governing-workspace');
+    // A governing workspace reconciliation never reported for.
+    env.RECONCILIATION_GATE_WORKSPACE = 'ws-never-reported';
+    await expectPaused('never-reported');
+    env.RECONCILIATION_GATE_WORKSPACE = GATE_WORKSPACE;
+    // A break is open: the run's reason reaches the caller.
+    setGate(0, 1, JSON.stringify(['credit-reserve: reserve 10 < outstanding 20']), Date.now());
+    await expectPaused('break-open', 'credit-reserve');
+    // Open, but the run never read this treasury.
+    setGate(1, 0, '[]', Date.now());
+    await expectPaused('treasury-not-reconciled');
+    // Open and reconciled, but reconciliation stopped reporting.
+    setGate(1, 1, '[]', Date.now() - TRANSFER_GATE_MAX_AGE_MS - 60_000);
+    await expectPaused('stale');
+    expect(submitTransfer).not.toHaveBeenCalled();
+
+    // The reconciliation run's signed push is what reopens the door.
+    const pushed = await pushGate(api, env, {
+      workspaceId: GATE_WORKSPACE,
+      open: true,
+      reasons: [],
+      runId: 'run-fresh',
+      atMs: Date.now(),
+      treasuryReconciled: true,
+    });
+    expect(pushed.status).toBe(200);
+    expect((await pushed.json()) as Record<string, unknown>).toMatchObject({ applied: true, transfers: 'open' });
+    const routed = await route(api, env, batchId);
+    expect(routed.status).toBe(200);
+    expect(submitTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  it('a later run that finds a break closes the gate for the next routing', async () => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const { api, db, env } = harness({ RECONCILIATION_GATE_SECRET: SECRET }, adapter);
+    const batchId = await settleToFinal(api, db, env);
+    await recordDeployment(api, env);
+
+    const closed = await pushGate(api, env, {
+      workspaceId: GATE_WORKSPACE,
+      open: false,
+      reasons: ['dao-payable: accrued 1000 - transferred 0 != payable 900'],
+      runId: 'run-break',
+      atMs: Date.now(),
+      treasuryReconciled: true,
+    });
+    expect(closed.status).toBe(200);
+    expect((await closed.json()) as Record<string, unknown>).toMatchObject({ applied: true, transfers: 'paused' });
+
+    const response = await route(api, env, batchId);
+    expect(response.status).toBe(409);
+    expect((await response.json()) as Record<string, unknown>).toMatchObject({ error: 'transfers_paused', code: 'break-open' });
+    expect(submitTransfer).not.toHaveBeenCalled();
   });
 });
