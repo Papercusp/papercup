@@ -36,7 +36,7 @@ describe('public manual read boundary', () => {
     expect(asset.headers.get('x-content-type-options')).toBe('nosniff');
   });
   it('HEAD matches GET status and headers with no body', async () => {
-    for (const path of ['/docs', '/docs/using-the-app', '/docs/missing']) {
+    for (const path of ['/docs', '/docs/using-the-app', '/docs/missing', '/docs/%', '/docs/%00secret']) {
       const get = await servePublicDocs(request(path), root);
       const head = await servePublicDocs(request(path, 'HEAD'), root);
       expect(head.status).toBe(get.status);
@@ -47,6 +47,18 @@ describe('public manual read boundary', () => {
   it('returns genuine missing-page and unavailable-artifact statuses', async () => {
     expect((await servePublicDocs(request('/docs/missing'), root)).status).toBe(404);
     expect((await servePublicDocs(request('/docs'), join(dir, 'absent'))).status).toBe(503);
+    const unavailable = await servePublicDocs(request('/docs', 'HEAD'), join(dir, 'absent'));
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.text()).toBe('');
+  });
+  it('never serves files outside the public asset extension allowlist', async () => {
+    await writeFile(join(root, 'server.ts'), 'private-engineering-secret');
+    await writeFile(join(root, '.env'), 'private-engineering-secret');
+    for (const path of ['/docs/server.ts', '/docs/.env']) {
+      const response = await servePublicDocs(request(path), root);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain('private-engineering-secret');
+    }
   });
   it.each(['/docs/%', '/docs/%2e%2e%2fprivate.txt', '/docs/%252e%252e/private.txt',
     '/docs/%5c..%5cprivate.txt', '/docs/%00secret', '/internal/docs/index.html', '/api/config'])(

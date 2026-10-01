@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const root = resolve(import.meta.dirname, '../../../papercusp-docs');
+const root = resolve(import.meta.dirname, '../../papercusp-docs');
 const content = resolve(root, 'src/content/docs');
 const pages = ['index', 'using-the-app', 'workspaces-and-agents', 'harness-templates',
   'harness-snapshots', 'plugins', 'remote-access', 'troubleshooting'];

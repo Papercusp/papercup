@@ -31,16 +31,18 @@ export async function servePublicDocs(request: Request, root: string): Promise<R
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
   }
-  const rel = publicDocsRelativePath(new URL(request.url).pathname);
-  if (rel === null) return new Response('Invalid documentation path', { status: 400 });
   const head = request.method === 'HEAD';
   const reply = (text: string, status: number) =>
     new Response(head ? null : text, { status, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  const rel = publicDocsRelativePath(new URL(request.url).pathname);
+  if (rel === null) return reply('Invalid documentation path', 400);
   let canonicalRoot: string;
   try { canonicalRoot = await realpath(root); } catch {
     return reply('Public documentation is temporarily unavailable.', 503);
   }
   const read = async (name: string, status = 200): Promise<Response | null> => {
+    const type = TYPES[extname(name).toLowerCase()];
+    if (!type) return null;
     const file = resolve(canonicalRoot, name);
     if (!file.startsWith(`${canonicalRoot}${sep}`)) return null;
     try {
@@ -49,7 +51,7 @@ export async function servePublicDocs(request: Request, root: string): Promise<R
       return new Response(head ? null : new Uint8Array(await readFile(canonical)), {
         status,
         headers: {
-          'content-type': TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+          'content-type': type,
           'x-content-type-options': 'nosniff',
           'cache-control': 'public, max-age=0, must-revalidate',
         },

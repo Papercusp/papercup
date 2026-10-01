@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { servePublicDocs } from '@papercusp/operator-core/lib/public-docs';
 
-const root = resolve(import.meta.dirname, '../../../papercusp-docs/dist');
+const root = resolve(import.meta.dirname, '../../papercusp-docs/dist');
 
 describe('built public manual contract', () => {
   it('builds searchable HTML with the public canonical origin', async () => {
