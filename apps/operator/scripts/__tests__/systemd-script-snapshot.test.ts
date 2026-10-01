@@ -32,8 +32,11 @@ async function runWrapper(cwd: string, args: string[], extraEnv: Record<string, 
   );
 }
 
-async function waitForFile(path: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+// A wall-clock deadline, not an attempt count: 100 x 10ms gave a nested bash
+// ~1s to start, which the gate's loaded host missed (verify 079f459e, 8c666117).
+async function waitForFile(path: string, timeoutMs = 4_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
       await readFile(path);
       return;
