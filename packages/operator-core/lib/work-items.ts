@@ -81,6 +81,7 @@ import {
   liveGateOpsSelfSelectExclusionSql,
   liveGateOpsSelfSelectExplanation,
   loadTrustedGithubUserIds,
+  selfHealOwnNodeOriginIfStranded,
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
 } from './work-items-admission';
@@ -4015,6 +4016,14 @@ export async function setWorkItemState(
         by: opts.by ?? null,
       });
       if (orphan.healed) wi.origin = 'local';
+    }
+    // WI-10003565: the row's author key is one THIS workspace has written locally, so this
+    // node IS the authoring peer the refusal below would send the caller to — the same own-node
+    // rule the claim gate applies (issueOwnAuthorWhereSql). Without this a system-filed row
+    // (createdBy="system:*", matching none of the caller-identity hatches above) whose origin
+    // flipped could be claimed but never closed. The UPDATE's WHERE clause is the identity check.
+    if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(activeWorkspaceId(), id))) {
+      wi.origin = 'local';
     }
     if (wi.origin === 'remote') {
       throw new Error(
