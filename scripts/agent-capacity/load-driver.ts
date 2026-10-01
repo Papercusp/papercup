@@ -37,6 +37,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, createWriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { assertHostAdmission } from './host-admission';
 import { startReplayServer, type ReplayServer, type ReplayState } from './replay-server';
 import { finished } from 'node:stream/promises';
 import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
@@ -318,6 +319,7 @@ function arg(name: string, fallback?: string): string | undefined {
 }
 
 async function main(): Promise<void> {
+  assertHostAdmission(__dirname);
   const corpus = loadCorpus();
   const corpusDir = arg('corpus', path.join(CACHE, 'corpus'))!;
   const metas = loadMetas(corpusDir);

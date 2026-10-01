@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream }
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { assertHostAdmission } from './host-admission';
 import { startRecordProxy } from './record-proxy';
 import { copyTree, parseCgroupStats, removeTree, sessionSpawn, type Isolation } from './session-process';
 
@@ -306,6 +307,7 @@ function arg(name: string, fallback?: string): string | undefined {
 }
 
 async function main(): Promise<void> {
+  assertHostAdmission(__dirname);
   const corpus = loadCorpus();
   const cli = arg('cli') as Cli;
   if (cli !== 'claude' && cli !== 'codex') throw new Error('--cli claude|codex required');
