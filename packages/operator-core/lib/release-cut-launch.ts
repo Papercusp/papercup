@@ -20,7 +20,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
@@ -622,6 +622,26 @@ export function defaultIsUnitActive(unit: string): boolean {
   }
 }
 
+/**
+ * `systemctl --user is-active <unit>` without blocking the event loop: the raw
+ * ActiveState, or '' when systemctl could not answer. `is-active` exits non-zero
+ * for every state except active, and still prints the state, so stdout is read
+ * on both paths.
+ */
+export function readUnitActiveStateAsync(unit: string): Promise<string> {
+  return new Promise((resolve) => {
+    execFile('systemctl', ['--user', 'is-active', unit], { encoding: 'utf8', timeout: 5000 }, (_err, stdout) => {
+      resolve(typeof stdout === 'string' ? stdout.trim() : '');
+    });
+  });
+}
+
+/** Async {@link defaultIsUnitActive}: true only for active/activating. */
+export async function defaultIsUnitActiveAsync(unit: string): Promise<boolean> {
+  const state = await readUnitActiveStateAsync(unit);
+  return state === 'active' || state === 'activating';
+}
+
 function tailLines(text: string, n: number): string {
   const lines = text.split('\n');
   return lines.slice(Math.max(0, lines.length - n)).join('\n');
@@ -636,11 +656,40 @@ function tailLines(text: string, n: number): string {
  * else sentinel ⇒ done/failed by exit code; else started marker ⇒ interrupted; else idle.
  */
 export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
+  const probe = cutStatusProbe(deps);
+  return cutStatusFrom(probe, (deps.isUnitActive ?? defaultIsUnitActive)(probe.unit));
+}
+
+export interface ReadCutStatusAsyncDeps extends Omit<ReadCutStatusDeps, 'isUnitActive'> {
+  /** Async unit probe; defaults to {@link defaultIsUnitActiveAsync}. */
+  isUnitActiveAsync?: (unit: string) => Promise<boolean>;
+}
+
+/**
+ * {@link readCutStatus} with the systemd probe off the event loop
+ * (jev-memory-timeouts-to-zero-2026-10-01). The sync probe is an execFileSync
+ * that froze the calling worker for 50-240 ms per read on this host; the
+ * liveness alarm runs it on every tick. Same marker reads, same precedence.
+ */
+export async function readCutStatusAsync(deps: ReadCutStatusAsyncDeps = {}): Promise<CutStatus> {
+  const probe = cutStatusProbe(deps);
+  return cutStatusFrom(probe, await (deps.isUnitActiveAsync ?? defaultIsUnitActiveAsync)(probe.unit));
+}
+
+interface CutStatusProbe {
+  exists: (p: string) => boolean;
+  read: (p: string) => string;
+  logPath: string;
+  donePath: string;
+  startedSeen: boolean;
+  operation: CutOperationMarker | null;
+  unit: string;
+}
+
+/** The marker reads that decide WHICH unit to ask systemd about. */
+function cutStatusProbe(deps: Omit<ReadCutStatusDeps, 'isUnitActive'>): CutStatusProbe {
   const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
   const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
-  const active = deps.isUnitActive ?? defaultIsUnitActive;
-  const logPath = cutLogFor(deps.platform);
-  const donePath = cutDoneFor(deps.platform);
   const startedPath = cutStartedFor(deps.platform);
 
   const startedSeen = exists(startedPath);
@@ -653,7 +702,23 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
     }
   }
   const unit = operation?.taskId ? cutUnitForTask(operation.taskId) : cutUnitFor(deps.platform);
-  const running = active(unit);
+  return {
+    exists,
+    read,
+    logPath: cutLogFor(deps.platform),
+    donePath: cutDoneFor(deps.platform),
+    startedSeen,
+    operation,
+    unit,
+  };
+}
+
+/**
+ * The rest of the status, read AFTER the unit probe answered, so a cut that ends
+ * between the two reads lands as running-or-done, never as interrupted.
+ */
+function cutStatusFrom(probe: CutStatusProbe, running: boolean): CutStatus {
+  const { exists, read, logPath, donePath, startedSeen, operation } = probe;
   let exitCode: number | null = null;
   let doneSeen = false;
   if (exists(donePath)) {
