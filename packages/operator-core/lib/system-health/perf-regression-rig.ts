@@ -42,6 +42,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { currentLoopLag, startEventLoopLagMonitor } from '../event-loop-lag-monitor';
 import { pgHealth } from '../dev-data';
 import { PERF_BUDGETS } from './perf-budgets';
+import { readSidecarReadLatency } from '../fleet/sidecar-read-only-git';
 import type { CollectorResult, WatchdogSignal } from '../harness/improvements/watchdog';
 import type { ImprovementDispatchRow, DispatchOutcome } from '../harness/improvements/dispatch-ledger';
 import { isLaneBreakageOrphan } from '../harness/improvements/orphaned-dispatch';
@@ -269,6 +270,22 @@ export function evaluatePerfRegression(
       `orphaned (worker died without resolving), at or past the ${tier} budget of ${Math.round(budget * 100)}% — ` +
       `the regression class this rig exists to catch (it reached 91% once, silently).`,
   );
+  // Below the minimum sample the p50 is NOT MEASURED, not healthy: a thin window
+  // would let one slow `ls-remote` read as a regression and one fast probe read as
+  // a clean bill. Null suppresses both.
+  const sidecarReads = metrics.sidecarGitReadSample ?? 0;
+  consider(
+    'sidecar-git-read-p50',
+    sidecarReads >= budgets.sidecarGitReadMinSample ? (metrics.sidecarGitReadP50Ms ?? null) : null,
+    budgets.sidecarGitReadP50WarnMs,
+    budgets.sidecarGitReadP50CritMs,
+    'sidecar-git-read-p50',
+    'Sidecar read-only git p50 regressed past its SLO budget',
+    (v, budget, tier) =>
+      `sidecar-governed read-only git reads have a p50 of ${Math.round(v)}ms over the last ${sidecarReads} reads, ` +
+      `at or past the ${tier} budget of ${budget}ms (bare git is ~5ms) — per-read bookkeeping is back on the ` +
+      `exec critical path, or the sidecar host is saturated.`,
+  );
   consider(
     'coord-open-escalations',
     metrics.coordOpenEscalations,
@@ -335,6 +352,12 @@ export interface PerfRegressionDeps {
   readLoopLagP95Ms: () => number | null;
   /** PG server-wide saturation %, or null on failure. Default `pgHealth().saturationPct`. */
   readConnSaturationPct: () => Promise<number | null>;
+  /**
+   * This process's sidecar read-only git latency window. Optional: the default
+   * reads the pinned in-process window (sidecar-read-only-git.ts); a test injects
+   * its own so the rig never depends on real git traffic.
+   */
+  readSidecarReadLatency?: () => { sample: number; p50Ms: number | null };
 }
 
 /**
@@ -454,7 +477,7 @@ export async function readCoordOpenEscalations(
  *  POINT-SAMPLE of an inherently spiky in-memory gauge; the other metrics are
  *  aggregates over larger windows and already carry their own noise guards
  *  (e.g. dispatch-orphan-rate's min-sample gate). */
-export const HYSTERESIS_SIGNAL_KEYS: ReadonlySet<string> = new Set(['loop-lag-p95']);
+export const HYSTERESIS_SIGNAL_KEYS: ReadonlySet<string> = new Set(['loop-lag-p95', 'sidecar-git-read-p50']);
 
 /**
  * Read the set of metric keys that breached on the IMMEDIATELY-PRIOR snapshot (from
@@ -536,12 +559,27 @@ export async function collectPerfRegressionSnapshot(
   if (typeof backlog === 'object') notes.push(backlog.dormant);
   else coordOpenEscalations = backlog;
 
+  const sidecarLatency = (deps.readSidecarReadLatency ?? readSidecarReadLatency)();
+  const sidecarGitReadP50Ms = sidecarLatency.sample >= budgets.sidecarGitReadMinSample ? sidecarLatency.p50Ms : null;
+  // Same convention as dispatch-orphan above: note a THIN window (some reads, too few
+  // to grade) but stay quiet at zero — a process that issued no sidecar git reads has
+  // nothing to report, and a note on every such tick would break "a healthy tick
+  // emits no note". Zero reads is still NOT a verdict: the p50 stays null.
+  if (sidecarGitReadP50Ms === null && sidecarLatency.sample > 0) {
+    notes.push(
+      `sidecar-git-read-p50: not measured (${sidecarLatency.sample} read-only git reads in this process's window, ` +
+        `min ${budgets.sidecarGitReadMinSample})`,
+    );
+  }
+
   const metrics: PerfRegressionMetrics = {
     loopLagP95Ms,
     connSaturationPct,
     dispatchOrphanRate,
     dispatchSample,
     coordOpenEscalations,
+    sidecarGitReadP50Ms,
+    sidecarGitReadSample: sidecarLatency.sample,
   };
 
   const { signals, breaches } = evaluatePerfRegression(metrics, budgets);

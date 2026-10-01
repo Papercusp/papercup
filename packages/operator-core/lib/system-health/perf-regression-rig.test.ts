@@ -191,6 +191,54 @@ describe('evaluatePerfRegression — multiple simultaneous breaches', () => {
 
 // ── orphan-rate computation over a synthetic dispatch row set ────────────────
 
+describe('evaluatePerfRegression — sidecar read-only git p50 (WI-10004674)', () => {
+  it('warn band → major, crit band → critical', () => {
+    const warn = evaluatePerfRegression({
+      ...healthy,
+      sidecarGitReadP50Ms: B.sidecarGitReadP50WarnMs,
+      sidecarGitReadSample: B.sidecarGitReadMinSample,
+    });
+    expect(warn.signals).toHaveLength(1);
+    expect(warn.signals[0].key).toBe('sidecar-git-read-p50');
+    expect(warn.signals[0].severity).toBe('major');
+    const crit = evaluatePerfRegression({
+      ...healthy,
+      sidecarGitReadP50Ms: B.sidecarGitReadP50CritMs,
+      sidecarGitReadSample: B.sidecarGitReadMinSample,
+    });
+    expect(crit.signals[0].severity).toBe('critical');
+  });
+
+  it('a healthy p50 (the idle-sidecar ~80ms figure) is quiet', () => {
+    const { signals, breaches } = evaluatePerfRegression({
+      ...healthy,
+      sidecarGitReadP50Ms: 80,
+      sidecarGitReadSample: 500,
+    });
+    expect(signals).toEqual([]);
+    expect(breaches).toEqual([]);
+  });
+
+  it('below the minimum sample is NOT MEASURED — a slow p50 on a thin window must not breach', () => {
+    const { signals } = evaluatePerfRegression({
+      ...healthy,
+      sidecarGitReadP50Ms: B.sidecarGitReadP50CritMs * 10,
+      sidecarGitReadSample: B.sidecarGitReadMinSample - 1,
+    });
+    expect(signals).toEqual([]);
+  });
+
+  it('absent fields (an older caller) behave as not measured, not as a breach', () => {
+    expect(evaluatePerfRegression(healthy).signals).toEqual([]);
+  });
+
+  it('the budget sits between the idle-sidecar figure and the regressed live figure', () => {
+    expect(B.sidecarGitReadP50WarnMs).toBeGreaterThan(80);
+    expect(B.sidecarGitReadP50WarnMs).toBeLessThan(500);
+    expect(B.sidecarGitReadP50CritMs).toBeLessThanOrEqual(1000);
+  });
+});
+
 describe('dispatchOrphanRateFromAggregate', () => {
   it('computes orphaned/total over a sufficient sample', () => {
     // 91 of 100 orphaned — the silently-regressed incident shape.
@@ -496,6 +544,53 @@ describe('collectPerfRegressionSnapshot — loop-lag hysteresis (EI-8719 single-
       depsWith({ sql: () => fake.sql, readConnSaturationPct: () => Promise.resolve(B.connSaturationCritPct) }),
     );
     expect(out.signals.some((s) => s.key === 'conn-saturation' && s.severity === 'critical')).toBe(true);
+  });
+});
+
+describe('collectPerfRegressionSnapshot — sidecar read p50 (WI-10004674)', () => {
+  const slow = { sample: 200, p50Ms: B.sidecarGitReadP50CritMs + 500 };
+  const quietRows = [
+    { match: /improvement_dispatches/i, rows: dispatchRows(50, 1) },
+    { match: /coord_open_escalations/i, rows: [{ n: 3 }] },
+  ];
+
+  it('first slow window is suppressed by hysteresis, a SECOND consecutive one files', async () => {
+    const first = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({ sql: () => fakeSql(quietRows).sql, readSidecarReadLatency: () => slow }),
+    );
+    expect(first.signals.some((s) => s.key === 'sidecar-git-read-p50')).toBe(false);
+    expect(first.note).toContain('single-sample hysteresis');
+
+    const second = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({
+        sql: () =>
+          fakeSql([
+            ...quietRows,
+            {
+              match: /perf_regression_snapshots/i,
+              rows: [{ breached: [{ metric: 'sidecar-git-read-p50', value: 2000, budget: 1000, tier: 'crit' }] }],
+            },
+          ]).sql,
+        readSidecarReadLatency: () => slow,
+      }),
+    );
+    const sig = second.signals.find((s) => s.key === 'sidecar-git-read-p50');
+    expect(sig).toBeDefined();
+    expect(sig!.severity).toBe('critical');
+  });
+
+  it('a thin window is reported as NOT MEASURED in the note and never breaches', async () => {
+    const out = await collectPerfRegressionSnapshot(
+      'ws',
+      depsWith({
+        sql: () => fakeSql(quietRows).sql,
+        readSidecarReadLatency: () => ({ sample: B.sidecarGitReadMinSample - 1, p50Ms: 99_999 }),
+      }),
+    );
+    expect(out.signals.some((s) => s.key === 'sidecar-git-read-p50')).toBe(false);
+    expect(out.note).toContain('sidecar-git-read-p50: not measured');
   });
 });
 
