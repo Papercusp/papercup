@@ -122,6 +122,12 @@ const cutReuseSeedArg = z
   .boolean()
   .optional()
   .describe('Retry-only: reuse the already-completed seed in this isolated cut root (PAPERCUSP_SKIP_SEED_CUT=1).');
+const cutFullHistoryArg = z
+  .boolean()
+  .optional()
+  .describe(
+    'Re-cut Git with full reachable history by passing PAPERCUSP_SEED_DEPTH as a present-empty value. Omit/false keeps the release default depth 1. Requires a fresh seed cut.',
+  );
 const cutSeedlessArg = z
   .boolean()
   .optional()
@@ -320,6 +326,7 @@ function cutRuntimeEnv(
   args: {
     ownerName: string;
     ownerEmail?: string;
+    fullHistory?: boolean;
     reuseSeed?: boolean;
     seedless?: boolean;
     migrationBootSmokeOverride?: MigrationBootSmokeOverride;
@@ -329,11 +336,10 @@ function cutRuntimeEnv(
   return {
     ownerName: args.ownerName,
     ownerEmail: args.ownerEmail,
+    ...(args.fullHistory ? { fullHistory: true } : {}),
     reuseSeed: args.reuseSeed,
     ...(args.seedless ? { seedless: true } : {}),
-    ...(args.migrationBootSmokeOverride
-      ? { migrationBootSmokeOverride: args.migrationBootSmokeOverride }
-      : {}),
+    ...(args.migrationBootSmokeOverride ? { migrationBootSmokeOverride: args.migrationBootSmokeOverride } : {}),
     // P-001: present ⇒ release-local.sh runs its phase journal and the cut becomes
     // resumable and discoverable; absent ⇒ unchanged unmanaged behavior. buildCutEnv
     // refuses a half-set pair, so these two always travel together.
@@ -553,11 +559,19 @@ type CutSeedModeResolution =
 
 function resolveCutSeedMode(args: {
   version: string;
+  fullHistory?: boolean;
   reuseSeed?: boolean;
   seedless?: boolean;
 }): CutSeedModeResolution {
   if (args.reuseSeed && args.seedless) {
     return { ok: false, reason: 'seed_mode_conflict — reuseSeed and seedless are mutually exclusive' };
+  }
+  if (args.fullHistory && (args.reuseSeed || args.seedless)) {
+    return {
+      ok: false,
+      reason:
+        'seed_history_mode_conflict — fullHistory requires a fresh Git seed cut and cannot accompany reuseSeed or seedless',
+    };
   }
   if (args.reuseSeed) {
     return { ok: true, mode: 'reuse', rootOptions: { reuseSeedVersion: args.version } };
@@ -816,9 +830,9 @@ export default defineTool({
   description:
     'Cut a LOCAL Papercusp desktop release for owner upload; never publish a GitHub Release. Run/run-leg need the exact 40-char superproject sourceSha and refuse drift before writes. For new versions, prepare-tag creates only the missing remote tag (dry-run unless confirm:true; never overwrites a mismatch). preflight checks go/no-go; operator-gated run launches the full cut detached; run-leg launches one platform leg on its own unit. Both are dry-run unless confirm:true. Non-Linux legs require completed same-version Linux artifacts in the selected Cargo target slot; missing artifacts fail before gates. abort-leg stops a leg; status polls; gate-status reads/establishes the shared version/channel BUILD_SHA; handoff collects signed artifacts and hashes; reclaim lists/removes stale cut worktrees (dry-run unless confirm:true with targets).',
   guidance: {
-    when:
-      'Cutting a desktop release. New version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → status → verify → handoff. Fleet-split: prepare the tag once, build and verify Linux first, then each non-Linux agent gate-status to agree on one buildSha before run-leg{platform,sourceSha,confirm:true}; poll each leg and hand off after all finish. Single-platform cuts use run with the requested platform enabled.',
-    notWhen: "Not the web operator (:3070 — release:deploy) or the green-checkpoint verdict (release:checkpoint-run). Never publish to GitHub.",
+    when: 'Cutting a desktop release. New version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → status → verify → handoff. Fleet-split: prepare the tag once, build and verify Linux first, then each non-Linux agent gate-status to agree on one buildSha before run-leg{platform,sourceSha,confirm:true}; poll each leg and hand off after all finish. Single-platform cuts use run with the requested platform enabled.',
+    notWhen:
+      'Not the web operator (:3070 — release:deploy) or the green-checkpoint verdict (release:checkpoint-run). Never publish to GitHub.',
     seeAlso: [
       'papercusp-desktop/bin/verify-provenance.sh, papercusp-desktop/bin/vm-preflight.sh, and papercusp-desktop/bin/install-and-relaunch-verify.sh (the RELEASE-RUNBOOK ship-gates this cut composes)',
       'release:deploy (deploy the WEB operator to :3070 — a different target)',
@@ -849,15 +863,31 @@ export default defineTool({
       // The same release context callers carry through every operation. With
       // version + sourceSha (channel defaults to alpha), preflight also checks the
       // exact remote release tag the cut requires (EI-24611322499942803).
-      version: z.string().min(1).optional().describe('Release version. With sourceSha, preflight also checks the exact remote release tag.'),
-      channel: z.enum(['stable', 'beta', 'alpha']).optional().describe('Release channel for the tag check (default alpha).'),
-      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).optional().describe('Exact source commit. With version, preflight blocks when the remote release tag is missing or points elsewhere.'),
+      version: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Release version. With sourceSha, preflight also checks the exact remote release tag.'),
+      channel: z
+        .enum(['stable', 'beta', 'alpha'])
+        .optional()
+        .describe('Release channel for the tag check (default alpha).'),
+      sourceSha: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/)
+        .optional()
+        .describe(
+          'Exact source commit. With version, preflight blocks when the remote release tag is missing or points elsewhere.',
+        ),
     }),
     z.object({
       op: z.literal('prepare-tag'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease).'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
-      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit the new release tag must name.'),
+      sourceSha: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/)
+        .describe('Exact 40-char superproject commit the new release tag must name.'),
       root: cutRootArg.optional(),
       confirm: z
         .boolean()
@@ -868,16 +898,24 @@ export default defineTool({
       op: z.literal('run'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
-      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit authorized for this cut.'),
+      sourceSha: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/)
+        .describe('Exact 40-char superproject commit authorized for this cut.'),
       mac: z.boolean().optional().describe(MAC_LEG_ARGUMENT_DESCRIPTION),
       windows: z.boolean().optional().describe(WINDOWS_LEG_ARGUMENT_DESCRIPTION),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
       root: cutRootArg.optional(),
       ownerName: cutOwnerNameArg,
       ownerEmail: cutOwnerEmailArg,
+      fullHistory: cutFullHistoryArg,
       reuseSeed: cutReuseSeedArg,
       seedless: cutSeedlessArg,
-      migrationBootSmokeOverride: migrationBootSmokeOverrideArg.optional().describe('Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.'),
+      migrationBootSmokeOverride: migrationBootSmokeOverrideArg
+        .optional()
+        .describe(
+          'Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.',
+        ),
       confirm: z
         .boolean()
         .optional()
@@ -885,13 +923,23 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('status'),
-      platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).optional().describe('Poll ONE leg (WI-4233) instead of the legacy whole-cut unit.'),
+      platform: z
+        .enum(PLATFORMS as [Platform, ...Platform[]])
+        .optional()
+        .describe('Poll ONE leg (WI-4233) instead of the legacy whole-cut unit.'),
       // Keep the status poll compatible with release-cut callers that carry the
       // version/channel context through every operation. Status remains host-wide
       // (and therefore does not use these values to select a unit), but rejecting
       // them contradicts the tool's published union-level accepted-args contract.
-      version: z.string().min(1).optional().describe('Optional release version carried as caller context; status is host-wide.'),
-      channel: z.enum(['stable', 'beta', 'alpha']).optional().describe('Optional release channel carried as caller context; status is host-wide.'),
+      version: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Optional release version carried as caller context; status is host-wide.'),
+      channel: z
+        .enum(['stable', 'beta', 'alpha'])
+        .optional()
+        .describe('Optional release channel carried as caller context; status is host-wide.'),
     }),
     z.object({
       op: z.literal('handoff'),
@@ -903,13 +951,21 @@ export default defineTool({
       platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).describe('Which platform leg to fire on its own unit.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
-      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit authorized for this leg.'),
+      sourceSha: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/)
+        .describe('Exact 40-char superproject commit authorized for this leg.'),
       root: cutRootArg.optional(),
       ownerName: cutOwnerNameArg,
       ownerEmail: cutOwnerEmailArg,
+      fullHistory: cutFullHistoryArg,
       reuseSeed: cutReuseSeedArg,
       seedless: cutSeedlessArg,
-      migrationBootSmokeOverride: migrationBootSmokeOverrideArg.optional().describe('Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.'),
+      migrationBootSmokeOverride: migrationBootSmokeOverrideArg
+        .optional()
+        .describe(
+          'Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.',
+        ),
       confirm: z
         .boolean()
         .optional()
@@ -932,8 +988,16 @@ export default defineTool({
         .max(50)
         .optional()
         .describe('confirm:true only: registered worktree paths from the dry-run list to remove.'),
-      confirm: z.boolean().optional().describe('false/absent ⇒ DRY RUN (list verdicts). true ⇒ remove the named targets.'),
-      minIdleHours: z.number().min(0).max(24 * 60).optional().describe('HEAD must not have moved within this window (default 24).'),
+      confirm: z
+        .boolean()
+        .optional()
+        .describe('false/absent ⇒ DRY RUN (list verdicts). true ⇒ remove the named targets.'),
+      minIdleHours: z
+        .number()
+        .min(0)
+        .max(24 * 60)
+        .optional()
+        .describe('HEAD must not have moved within this window (default 24).'),
     }),
   ]),
   async handler(args, ctx) {
@@ -952,7 +1016,8 @@ export default defineTool({
           ok: false,
           op: 'reclaim',
           refused: true,
-          reason: 'targets_required — confirm:true removes only paths named from a dry-run list; run without confirm first.',
+          reason:
+            'targets_required — confirm:true removes only paths named from a dry-run list; run without confirm first.',
         });
       }
       const plan = await gatherCutReclaimPlan({
@@ -994,7 +1059,7 @@ export default defineTool({
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         ...result,
         note: result.go
-          ? "Ready to cut. release:cut{op:run,version,channel,confirm:true} fires it detached. LOCAL-only — hand the owner the artifacts (op:handoff), never publish to GitHub."
+          ? 'Ready to cut. release:cut{op:run,version,channel,confirm:true} fires it detached. LOCAL-only — hand the owner the artifacts (op:handoff), never publish to GitHub.'
           : `Not ready — resolve the blocker(s) first: ${result.blockers.join('; ')}`,
       });
     }
@@ -1050,7 +1115,12 @@ export default defineTool({
             remoteRefWrite: true,
             githubRelease: false,
             artifactUpload: false,
-            wouldRun: prepareTagPreview('<registered-isolated-worktree>/papercusp-desktop', args.version, channel, args.sourceSha),
+            wouldRun: prepareTagPreview(
+              '<registered-isolated-worktree>/papercusp-desktop',
+              args.version,
+              channel,
+              args.sourceSha,
+            ),
             blocker: selected.reason,
             note: 'Prepare and register a dedicated exact-SHA worktree, then pass its root to preview or confirm the tag write.',
           });
@@ -1091,19 +1161,20 @@ export default defineTool({
             payloadRef: `release:cut:prepare-tag:${args.version}:${channel}`,
             metadata: { version: args.version, channel },
           },
-          async () => String(
-            execFileSync(path.join(selected.desktopRoot, 'bin', 'release-local.sh'), [args.version, channel], {
-              cwd: selected.desktopRoot,
-              encoding: 'utf8',
-              timeout: 120_000,
-              maxBuffer: 4 * 1024 * 1024,
-              env: {
-                ...process.env,
-                PAPERCUSP_RELEASE_PREPARE_TAG_SHA: args.sourceSha,
-                PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
-              },
-            }),
-          ).trim(),
+          async () =>
+            String(
+              execFileSync(path.join(selected.desktopRoot, 'bin', 'release-local.sh'), [args.version, channel], {
+                cwd: selected.desktopRoot,
+                encoding: 'utf8',
+                timeout: 120_000,
+                maxBuffer: 4 * 1024 * 1024,
+                env: {
+                  ...process.env,
+                  PAPERCUSP_RELEASE_PREPARE_TAG_SHA: args.sourceSha,
+                  PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
+                },
+              }),
+            ).trim(),
         );
       } catch (err) {
         const reason = `prepare_tag_failed — ${err instanceof Error ? err.message : String(err)}`;
@@ -1117,7 +1188,16 @@ export default defineTool({
           created: false,
           reason,
         });
-        return json({ ok: false, op: 'prepare-tag', refused: true, version: args.version, channel, sourceSha: args.sourceSha, tag, reason });
+        return json({
+          ok: false,
+          op: 'prepare-tag',
+          refused: true,
+          version: args.version,
+          channel,
+          sourceSha: args.sourceSha,
+          tag,
+          reason,
+        });
       }
 
       const { ownerLabel } = readIdentity(ctx);
@@ -1149,15 +1229,13 @@ export default defineTool({
     // ── status: read-only poll (whole-cut, or one leg with `platform`) ──
     if (args.op === 'status') {
       const status = readCutStatus({ platform: args.platform });
-      const unit = status.operation?.taskId
-        ? cutUnitForTask(status.operation.taskId)
-        : cutUnitFor(args.platform);
+      const unit = status.operation?.taskId ? cutUnitForTask(status.operation.taskId) : cutUnitFor(args.platform);
       const legNote = args.platform ? `leg '${args.platform}' (unit ${unit})` : `unit ${unit}`;
       const note =
         status.state === 'running'
           ? `A cut is in flight (${legNote}). Poll again; the log tail is above. Do NOT start a second cut${args.platform ? ' for this leg' : ''}.`
           : status.state === 'done'
-            ? `The last ${legNote} finished OK. ${args.platform ? "Once every leg is done, run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed, then release:cut{op:handoff,version}." : 'Run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed for each leg, then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
+            ? `The last ${legNote} finished OK. ${args.platform ? 'Once every leg is done, run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed, then release:cut{op:handoff,version}.' : 'Run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed for each leg, then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
             : status.state === 'failed'
               ? `The last ${legNote} FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
               : status.state === 'interrupted'
@@ -1166,8 +1244,15 @@ export default defineTool({
                       ? `It ran under managed operation ${status.operation.operationId}, so its committed phase receipts survive — a re-run resumes from the last one rather than rebuilding.`
                       : 'It ran UNMANAGED (no operation id on the started marker), so there are no phase receipts to resume from — a re-run rebuilds from the start.'
                   } Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
-              : `No cut in flight and no recent result for ${legNote} on this host.`;
-      return json({ ok: true, op: 'status', ...(args.platform ? { platform: args.platform } : {}), ...status, unit, note });
+                : `No cut in flight and no recent result for ${legNote} on this host.`;
+      return json({
+        ok: true,
+        op: 'status',
+        ...(args.platform ? { platform: args.platform } : {}),
+        ...status,
+        unit,
+        note,
+      });
     }
 
     // ── handoff: collect the LOCAL deliverable ──
@@ -1229,7 +1314,9 @@ export default defineTool({
       const selected = await resolveCutRoot(args.root);
       if (!selected.ok) return json({ ok: false, op: 'gate-status', refused: true, reason: selected.reason });
       const { ownerLabel } = readIdentity(ctx);
-      const { gate, created } = readOrCreateGate(args.version, args.channel as Channel, ownerLabel, { root: selected.desktopRoot });
+      const { gate, created } = readOrCreateGate(args.version, args.channel as Channel, ownerLabel, {
+        root: selected.desktopRoot,
+      });
       return json({
         ok: true,
         op: 'gate-status',
@@ -1302,11 +1389,7 @@ export default defineTool({
       const orchestratorRoot = desktopRoot();
       const seedMode = resolveCutSeedMode(args);
       if (!seedMode.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: seedMode.reason });
-      const selected = await resolveCutRoot(
-        args.root,
-        undefined,
-        seedMode.rootOptions,
-      );
+      const selected = await resolveCutRoot(args.root, undefined, seedMode.rootOptions);
       if (!selected.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: selected.reason });
 
       const pre = preflightCut(legs, {
@@ -1314,9 +1397,10 @@ export default defineTool({
         root: selected.desktopRoot,
         release: { version: args.version, channel, sourceSha: args.sourceSha },
       });
-      const orderingNote = platform === 'linux'
-        ? ''
-        : ' A non-Linux run-leg reuses Linux and requires a completed same-version Linux leg with artifacts in the selected Cargo target slot. For a single-command cut, use op:run with the requested platform enabled so Linux and that platform build together.';
+      const orderingNote =
+        platform === 'linux'
+          ? ''
+          : ' A non-Linux run-leg reuses Linux and requires a completed same-version Linux leg with artifacts in the selected Cargo target slot. For a single-command cut, use op:run with the requested platform enabled so Linux and that platform build together.';
       const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
       if (inFlight && !inFlight.ok) {
         return json({
@@ -1348,6 +1432,7 @@ export default defineTool({
           channel,
           sourceSha: args.sourceSha,
           seedMode: seedMode.mode,
+          fullHistory: args.fullHistory === true,
           migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
           root: selected.desktopRoot,
           orchestratorRoot,
@@ -1367,7 +1452,10 @@ export default defineTool({
       // slow attempts waits for an audit on the item, before any side effect below.
       const cutWorkItem = await cutWorkItemId(ctx);
       const loopRefusal = await loopLaunchRefusal({
-        workspaceId: activeWorkspaceId(), workItemId: cutWorkItem, background: true, timeoutMs: 0,
+        workspaceId: activeWorkspaceId(),
+        workItemId: cutWorkItem,
+        background: true,
+        timeoutMs: 0,
       });
       if (loopRefusal) return json({ ...loopRefusal, op: 'run-leg', refused: true });
       if (seedMode.mode === 'seedless') {
@@ -1380,10 +1468,17 @@ export default defineTool({
       let migrationBootSmokeOverrideAuditId: string | null = null;
       if (args.migrationBootSmokeOverride) {
         try {
-          migrationBootSmokeOverrideAuditId = await recordCutAudit('migration-boot-smoke-override', actor, {
-            version: args.version, channel, platform,
-            ...args.migrationBootSmokeOverride,
-          }, true);
+          migrationBootSmokeOverrideAuditId = await recordCutAudit(
+            'migration-boot-smoke-override',
+            actor,
+            {
+              version: args.version,
+              channel,
+              platform,
+              ...args.migrationBootSmokeOverride,
+            },
+            true,
+          );
         } catch (err) {
           return json({ ok: false, op: 'run-leg', refused: true, reason: (err as Error).message });
         }
@@ -1397,7 +1492,12 @@ export default defineTool({
         workItemId: cutWorkItem,
       });
       if (!managed.operation) {
-        return json({ ok: false, op: 'run-leg', refused: true, reason: managed.reason ?? 'task ledger unavailable — refusing an unmanaged cut' });
+        return json({
+          ok: false,
+          op: 'run-leg',
+          refused: true,
+          reason: managed.reason ?? 'task ledger unavailable — refusing an unmanaged cut',
+        });
       }
       const launch = await launchDetachedCut({
         version: args.version,
@@ -1423,6 +1523,7 @@ export default defineTool({
         orchestratorRoot,
         legs,
         seedMode: seedMode.mode,
+        fullHistory: args.fullHistory === true,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         localOnly: true,
         launched: launch.launched,
@@ -1445,6 +1546,7 @@ export default defineTool({
         sourceSha: args.sourceSha,
         legs,
         seedMode: seedMode.mode,
+        fullHistory: args.fullHistory === true,
         root: selected.desktopRoot,
         orchestratorRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
@@ -1496,11 +1598,7 @@ export default defineTool({
     const orchestratorRoot = desktopRoot();
     const seedMode = resolveCutSeedMode(args);
     if (!seedMode.ok) return json({ ok: false, op: 'run', refused: true, reason: seedMode.reason });
-    const selected = await resolveCutRoot(
-      args.root,
-      undefined,
-      seedMode.rootOptions,
-    );
+    const selected = await resolveCutRoot(args.root, undefined, seedMode.rootOptions);
     if (!selected.ok) return json({ ok: false, op: 'run', refused: true, reason: selected.reason });
 
     // Refuse to start a second cut over an in-flight one (structured, so the caller waits).
@@ -1538,6 +1636,7 @@ export default defineTool({
         channel,
         sourceSha: args.sourceSha,
         seedMode: seedMode.mode,
+        fullHistory: args.fullHistory === true,
         migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
         root: selected.desktopRoot,
         orchestratorRoot,
@@ -1555,7 +1654,10 @@ export default defineTool({
     // expensive-verification-loops P-002: same loop gate as run-leg.
     const cutWorkItem = await cutWorkItemId(ctx);
     const loopRefusal = await loopLaunchRefusal({
-      workspaceId: activeWorkspaceId(), workItemId: cutWorkItem, background: true, timeoutMs: 0,
+      workspaceId: activeWorkspaceId(),
+      workItemId: cutWorkItem,
+      background: true,
+      timeoutMs: 0,
     });
     if (loopRefusal) return json({ ...loopRefusal, op: 'run', refused: true });
     if (seedMode.mode === 'seedless') {
@@ -1568,10 +1670,16 @@ export default defineTool({
     let migrationBootSmokeOverrideAuditId: string | null = null;
     if (args.migrationBootSmokeOverride) {
       try {
-        migrationBootSmokeOverrideAuditId = await recordCutAudit('migration-boot-smoke-override', actor, {
-          version: args.version, channel,
-          ...args.migrationBootSmokeOverride,
-        }, true);
+        migrationBootSmokeOverrideAuditId = await recordCutAudit(
+          'migration-boot-smoke-override',
+          actor,
+          {
+            version: args.version,
+            channel,
+            ...args.migrationBootSmokeOverride,
+          },
+          true,
+        );
       } catch (err) {
         return json({ ok: false, op: 'run', refused: true, reason: (err as Error).message });
       }
@@ -1585,7 +1693,12 @@ export default defineTool({
       workItemId: cutWorkItem,
     });
     if (!managed.operation) {
-      return json({ ok: false, op: 'run', refused: true, reason: managed.reason ?? 'task ledger unavailable — refusing an unmanaged cut' });
+      return json({
+        ok: false,
+        op: 'run',
+        refused: true,
+        reason: managed.reason ?? 'task ledger unavailable — refusing an unmanaged cut',
+      });
     }
     const launch = await launchDetachedCut({
       version: args.version,
@@ -1609,6 +1722,7 @@ export default defineTool({
       orchestratorRoot,
       legs,
       seedMode: seedMode.mode,
+      fullHistory: args.fullHistory === true,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
       localOnly: true,
       launched: launch.launched,
@@ -1628,6 +1742,7 @@ export default defineTool({
       sourceSha: args.sourceSha,
       legs,
       seedMode: seedMode.mode,
+      fullHistory: args.fullHistory === true,
       root: selected.desktopRoot,
       orchestratorRoot,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),

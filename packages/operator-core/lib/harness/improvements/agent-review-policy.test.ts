@@ -69,7 +69,9 @@ function sealedContract(
 }
 
 const readinessWith = (
-  acceptance: Record<string, unknown> | undefined,
+  // `object`, not Record<string, unknown>: fixtures pass interface values and
+  // deliberately malformed shapes alike.
+  acceptance: object | undefined,
   status: ImplementationReadinessState['status'] = 'ready',
 ) =>
   createImplementationReadiness({
@@ -77,7 +79,7 @@ const readinessWith = (
     source: 'agent-review',
     reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-review',
     updatedAt: '2026-09-05T00:00:00.000Z',
-    ...(acceptance ? { evidence: { acceptance } } : {}),
+    ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
   });
 
 const acceptedReadiness = (source: ImplementationAcceptanceSource = BUG_SOURCE) => readinessWith(sealedContract(source));
@@ -181,9 +183,169 @@ describe('versioned work-item intake stage', () => {
       input: {
         kind: 'feature',
         status: 'open',
-        payload: { implementationReadiness: acceptedReadiness() },
+        payload: { implementationReadiness: acceptedReadiness({ ...BUG_SOURCE, kind: 'feature' }) },
       },
       expected: { primaryStage: 'accepted', readiness: 'ready', countsAsBugWork: false },
+    },
+    {
+      name: 'R-21: a title edit after acceptance makes it stale and requests re-review',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        title: 'Bounded parser drops the trailing token (rescoped)',
+        payload: { implementationReadiness: acceptedReadiness() },
+      },
+      expected: {
+        primaryStage: 'candidate',
+        reason: 'acceptance-revision-stale',
+        acceptance: 'stale-revision',
+        reReviewRequested: true,
+        countsAsBugWork: false,
+      },
+    },
+    {
+      name: 'R-21: a kind change after acceptance makes it stale',
+      input: {
+        kind: 'change',
+        status: 'open',
+        payload: { implementationReadiness: acceptedReadiness() },
+      },
+      expected: { primaryStage: 'candidate', acceptance: 'stale-revision', reReviewRequested: true },
+    },
+    {
+      name: 'fail-closed: acceptance cannot qualify when the current source was not supplied',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        title: null,
+        payload: { implementationReadiness: acceptedReadiness() },
+      },
+      expected: { primaryStage: 'candidate', acceptance: 'stale-revision', qualifyingAcceptance: false },
+    },
+    {
+      name: 'R-20: self-review is not acceptance authority',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: readinessWith({
+            ...sealedContract(),
+            authority: { ...REVIEW_AUTHORITY, reviewer: 'su-author' },
+          }),
+        },
+      },
+      expected: {
+        primaryStage: 'candidate',
+        reason: 'acceptance-authority-invalid',
+        acceptance: 'invalid-authority',
+        countsAsBugWork: false,
+      },
+    },
+    {
+      name: 'R-20: confidence is never acceptance authority',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: readinessWith({
+            ...sealedContract(),
+            authority: { kind: 'confidence', confidence: 0.99 },
+          }),
+        },
+      },
+      expected: { primaryStage: 'candidate', acceptance: 'invalid-authority' },
+    },
+    {
+      name: 'R-20: dedup admission is not an allowlisted acceptance policy',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: readinessWith({
+            ...sealedContract(),
+            authority: { kind: 'policy', policy: 'duplicate-admission', actor: 'system:dedup' },
+          }),
+        },
+      },
+      expected: { primaryStage: 'candidate', acceptance: 'invalid-authority' },
+    },
+    {
+      name: 'an allowlisted existing policy may write qualifying acceptance',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: readinessWith(
+            sealedContract(BUG_SOURCE, {
+              kind: 'policy',
+              policy: 'trusted-tool-failure-promotion',
+              actor: 'system:tool-failure-watchdog',
+            }),
+          ),
+        },
+      },
+      expected: { primaryStage: 'accepted', acceptance: 'qualifying', countsAsBugWork: true },
+    },
+    {
+      name: 'R-4: a ready verdict missing the completion check stays in intake',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: readinessWith(
+            Object.fromEntries(Object.entries(sealedContract()).filter(([key]) => key !== 'completionCheck')),
+          ),
+        },
+      },
+      expected: {
+        primaryStage: 'candidate',
+        reason: 'ready-without-executable-acceptance',
+        acceptance: 'incomplete',
+        countsAsBugWork: false,
+      },
+    },
+    {
+      name: 'an unsealed producer proposal on an unknown verdict stays in intake',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: { implementationReadiness: readinessWith(PROPOSAL, 'unknown') },
+      },
+      expected: {
+        primaryStage: 'candidate',
+        reason: 'awaiting-qualifying-acceptance',
+        acceptance: 'incomplete',
+      },
+    },
+    {
+      name: 'a qualifying contract under a not-ready verdict is not accepted',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: { implementationReadiness: readinessWith(sealedContract(), 'not-ready') },
+      },
+      expected: { primaryStage: 'candidate', acceptance: 'qualifying', qualifyingAcceptance: false },
+    },
+    {
+      name: 'D-009a: a creation-enrollment stamp is a measurable candidate in intake',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: createImplementationReadiness({
+            status: 'unknown',
+            source: 'creation-enrollment',
+            reason: 'no-acceptance-evidence-at-creation',
+            updatedAt: '2026-09-05T00:00:00.000Z',
+          }),
+        },
+      },
+      expected: {
+        primaryStage: 'candidate',
+        readiness: 'unknown',
+        reason: 'awaiting-qualifying-acceptance',
+        acceptance: 'absent',
+      },
     },
     {
       name: 'terminal accepted work remains terminal history',
@@ -209,11 +371,128 @@ describe('versioned work-item intake stage', () => {
       expected: { primaryStage: 'unknown', readiness: 'malformed', countsAsBugWork: false },
     },
   ])('$name', ({ input, expected }) => {
-    const before = structuredClone(input);
-    const decision = deriveWorkItemIntakeStage(input);
+    // The current source content the acceptance revision is checked against;
+    // a case overrides title (or kind) to model an edit after acceptance.
+    const full = { title: BUG_SOURCE.title, summary: BUG_SOURCE.summary, ...input };
+    const before = structuredClone(full);
+    const decision = deriveWorkItemIntakeStage(full);
     expect(decision).toMatchObject(expected);
     expect(WORK_ITEM_INTAKE_PRIMARY_STAGES.filter((stage) => stage === decision.primaryStage)).toHaveLength(1);
-    expect(input).toEqual(before);
+    expect(full).toEqual(before);
+  });
+});
+
+describe('implementation acceptance contract (R-4 / R-20 / R-21)', () => {
+  it('seals a complete proposal bound to the judged source revision', () => {
+    const contract = sealedContract();
+    expect(contract).toEqual({
+      contractVersion: IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
+      ...PROPOSAL,
+      authority: REVIEW_AUTHORITY,
+      reason: 'agent-review-approved (grade 5/5)',
+      sourceRevision: acceptanceSourceRevision(BUG_SOURCE),
+      acceptedAt: '2026-09-05T00:00:00.000Z',
+    });
+    expect(evaluateImplementationAcceptance({ implementationReadiness: readinessWith(contract) }, BUG_SOURCE)).toMatchObject({
+      state: 'qualifying',
+      contract,
+    });
+  });
+
+  it.each(IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS.map((field) => ({ field })))(
+    'refuses — never defaults — a proposal missing $field',
+    ({ field }) => {
+      const proposal: Record<string, unknown> = { ...PROPOSAL, [field]: field === 'evidence' ? ['  '] : '   ' };
+      expect(
+        sealImplementationAcceptance({ proposal, authority: REVIEW_AUTHORITY, reason: 'approved', source: BUG_SOURCE }),
+      ).toEqual({ ok: false, refusal: 'incomplete', missing: [field] });
+      delete proposal[field];
+      expect(
+        sealImplementationAcceptance({ proposal, authority: REVIEW_AUTHORITY, reason: 'approved', source: BUG_SOURCE }),
+      ).toEqual({ ok: false, refusal: 'incomplete', missing: [field] });
+    },
+  );
+
+  it('refuses a missing reason and confidence never substitutes for a field', () => {
+    const { scope: _scope, ...withoutScope } = PROPOSAL;
+    expect(
+      sealImplementationAcceptance({
+        proposal: { ...withoutScope, confidence: 1, deduplicated: true } as never,
+        authority: REVIEW_AUTHORITY,
+        reason: ' ',
+        source: BUG_SOURCE,
+      }),
+    ).toEqual({ ok: false, refusal: 'incomplete', missing: ['scope', 'reason'] });
+  });
+
+  it.each([
+    { name: 'self-review', authority: { ...REVIEW_AUTHORITY, reviewer: 'su-author' } },
+    { name: 'round zero', authority: { ...REVIEW_AUTHORITY, round: 0 } },
+    { name: 'blank reviewer', authority: { ...REVIEW_AUTHORITY, reviewer: '  ' } },
+    { name: 'a non-allowlisted policy', authority: { kind: 'policy', policy: 'explicit-assignment', actor: 'su-x' } },
+    { name: 'an allowlisted policy without an actor', authority: { kind: 'policy', policy: 'trusted-tool-failure-promotion', actor: '' } },
+    { name: 'a confidence score', authority: { kind: 'confidence', confidence: 0.99 } },
+  ])('refuses $name as acceptance authority', ({ authority }) => {
+    expect(
+      sealImplementationAcceptance({
+        proposal: PROPOSAL,
+        authority: authority as ImplementationAcceptanceAuthority,
+        reason: 'approved',
+        source: BUG_SOURCE,
+      }),
+    ).toEqual({ ok: false, refusal: 'invalid-authority' });
+  });
+
+  it('revision changes with kind, title or body and treats a null body as empty', () => {
+    const base = acceptanceSourceRevision(BUG_SOURCE);
+    expect(base).toMatch(/^src-v1:[0-9a-f]{64}$/);
+    expect(acceptanceSourceRevision({ ...BUG_SOURCE, kind: 'change' })).not.toBe(base);
+    expect(acceptanceSourceRevision({ ...BUG_SOURCE, title: `${BUG_SOURCE.title}.` })).not.toBe(base);
+    expect(acceptanceSourceRevision({ ...BUG_SOURCE, summary: `${BUG_SOURCE.summary} More.` })).not.toBe(base);
+    expect(acceptanceSourceRevision({ ...BUG_SOURCE, summary: null })).toBe(
+      acceptanceSourceRevision({ ...BUG_SOURCE, summary: '' }),
+    );
+  });
+
+  it('reports the seal fields a bare proposal is missing, and an array authority as missing', () => {
+    expect(evaluateImplementationAcceptance({ implementationReadiness: readinessWith(PROPOSAL) }, BUG_SOURCE)).toEqual({
+      state: 'incomplete',
+      missing: ['contractVersion', 'authority', 'reason', 'sourceRevision', 'acceptedAt'],
+    });
+    expect(
+      evaluateImplementationAcceptance(
+        { implementationReadiness: readinessWith({ ...sealedContract(), authority: [REVIEW_AUTHORITY] }) },
+        BUG_SOURCE,
+      ),
+    ).toEqual({ state: 'incomplete', missing: ['authority'] });
+    expect(evaluateImplementationAcceptance({ implementationReadiness: readinessWith(undefined) }, BUG_SOURCE)).toEqual({
+      state: 'absent',
+      missing: [],
+    });
+  });
+});
+
+describe('implementationReadinessIsLegacyEquivalent (D-011 creation enrollment)', () => {
+  const stamp = (overrides: Partial<ImplementationReadinessState> = {}) => ({
+    implementationReadiness: {
+      ...createImplementationReadiness({
+        status: 'unknown',
+        source: 'creation-enrollment',
+        reason: 'no-acceptance-evidence-at-creation',
+        updatedAt: '2026-09-05T00:00:00.000Z',
+      }),
+      ...overrides,
+    },
+  });
+
+  it('treats an absent key and a well-formed creation stamp as the legacy exception only', () => {
+    expect(implementationReadinessIsLegacyEquivalent({})).toBe(true);
+    expect(implementationReadinessIsLegacyEquivalent(null)).toBe(true);
+    expect(implementationReadinessIsLegacyEquivalent(stamp())).toBe(true);
+    expect(implementationReadinessIsLegacyEquivalent(stamp({ source: 'capture-policy' }))).toBe(false);
+    expect(implementationReadinessIsLegacyEquivalent(stamp({ status: 'ready' }))).toBe(false);
+    expect(implementationReadinessIsLegacyEquivalent(stamp({ reason: '' }))).toBe(false);
+    expect(implementationReadinessIsLegacyEquivalent({ implementationReadiness: null })).toBe(false);
   });
 });
 

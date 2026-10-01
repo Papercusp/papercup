@@ -11,9 +11,11 @@
  * - `session_identity_activation_events` -> `adv_sessions.launch_spec`: the launch profile and
  *   the specification artifact's blueprint-layer inputs. A layer counts only when its document
  *   fills an identity slot, and is reported slot-qualified (`domain:papercusp-engineer`). Layers
- *   are trusted only when the launch record still carries the SAME specification revision the
- *   span applied; otherwise the row keeps its profile but no layers, which prices it as
- *   `inferred-profile` (never bill-grade) rather than guessing from a newer artifact.
+ *   are read only from the artifact of the SAME specification revision the span applied: the
+ *   launch record's current artifact, or — once the record has moved on — the matching entry of
+ *   its `identityHistory` (WI-10004494). With neither, the row keeps its profile but no layers,
+ *   which prices it as `inferred-profile` (never bill-grade) rather than guessing from a newer
+ *   artifact.
  * - `tool_invocations_identity_attribution`: tool calls, reported as counts (priced 0, D-009).
  */
 import type { Sql } from 'postgres';
@@ -78,9 +80,11 @@ export async function readShadowUsageAggregates(
            av.launch_spec->>'agent' AS agent,
            av.launch_spec->>'profile' AS profile,
            CASE
-             WHEN av.launch_spec->>'specificationRevision' = s.revision THEN (
+             WHEN art.artifact IS NOT NULL THEN (
                SELECT COALESCE(jsonb_agg(DISTINCT (slot->>'slot') || ':' || (i->>'ref')), '[]'::jsonb)
-                 FROM jsonb_array_elements(COALESCE(av.launch_spec->'specificationArtifact'->'inputs', '[]'::jsonb)) i
+                 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(art.artifact->'inputs') = 'array'
+                        THEN art.artifact->'inputs' ELSE '[]'::jsonb END) i
                  CROSS JOIN LATERAL jsonb_array_elements(
                    CASE WHEN jsonb_typeof(i->'document'->'slots') = 'array'
                         THEN i->'document'->'slots' ELSE '[]'::jsonb END) slot
@@ -95,7 +99,25 @@ export async function readShadowUsageAggregates(
            s.samples::text AS samples
       FROM s
       LEFT JOIN harness_shared.session_identity_activation_events e ON e.id = s.event_id
-      LEFT JOIN harness_shared.adv_sessions av ON av.id = e.adv_session_id`;
+      LEFT JOIN harness_shared.adv_sessions av ON av.id = e.adv_session_id
+      -- WI-10004494 gap 3: the artifact for EXACTLY the revision the span applied. A launch record
+      -- that has since moved on keeps its earlier revisions in identityHistory (written beside the
+      -- revision it describes, identity-management.ts historyWithCurrent); without this lookup
+      -- every such span priced as inferred-profile even though its layers are on record.
+      LEFT JOIN LATERAL (
+        SELECT CASE
+                 WHEN av.launch_spec->>'specificationRevision' = s.revision
+                   THEN av.launch_spec->'specificationArtifact'
+                 ELSE (
+                   SELECT h->'specificationArtifact'
+                     FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(av.launch_spec->'identityHistory') = 'array'
+                            THEN av.launch_spec->'identityHistory' ELSE '[]'::jsonb END) h
+                    WHERE h->>'specificationRevision' = s.revision
+                      AND jsonb_typeof(h->'specificationArtifact') = 'object'
+                    LIMIT 1)
+               END AS artifact
+      ) art ON true`;
   return rows.map((row) => ({
     workspaceId: input.workspaceId,
     month: input.month,

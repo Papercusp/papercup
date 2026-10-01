@@ -131,7 +131,7 @@ describe('realDocSemanticDeps — bounded query-embedder acquisition', () => {
 
 describe('docSectionsRanker', () => {
   const qVec = `[${VEC.join(',')}]`;
-  const params = (limit: number) =>
+  const params = (limit: number, signal?: AbortSignal) =>
     ({
       query: 'q',
       limit,
@@ -143,6 +143,7 @@ describe('docSectionsRanker', () => {
         profileId: 'gemma-embeddinggemma-300m-768@v1',
         legacyMode: 'gemma',
       },
+      ...(signal ? { signal } : {}),
     }) as never;
 
   it('dedupes to the best section per page and caps at limit', async () => {
@@ -176,6 +177,21 @@ describe('docSectionsRanker', () => {
       15,
       { profileId: 'gemma-embeddinggemma-300m-768@v1', legacyMode: 'gemma' },
     ]); // limit × OVERFETCH
+  });
+
+  it('passes the engine abort signal through to the semantic query', async () => {
+    const signal = new AbortController().signal;
+    let receivedSignal: AbortSignal | undefined;
+    const ranker = docSectionsRanker('src', 'gemma', () => {}, deps({
+      querySections: async (_vec, _mode, _sourceKey, _limit, _identity, querySignal) => {
+        receivedSignal = querySignal;
+        return [];
+      },
+    }));
+
+    await ranker(params(2, signal));
+
+    expect(receivedSignal).toBe(signal);
   });
 
   it('sinks each page hit so the caller can hydrate anchor/url/title after fusion', async () => {

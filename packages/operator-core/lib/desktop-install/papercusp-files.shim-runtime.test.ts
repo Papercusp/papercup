@@ -18,6 +18,7 @@
  * resolved launcher path to stderr so a stale/wrong resolution is visible
  * instead of a silent no-op.
  */
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
@@ -66,20 +67,22 @@ describe('shimRuntimeOptions (WI-4440)', () => {
 });
 
 describe('writeShim (WI-4440) — the generated script resolves at run time, not install time', () => {
-  it('checks PAPERCUSP_INTEGRATION_ROOT BEFORE PAPERCUSP_RELEASE_ROOT in the generated resolver', async () => {
+  it('checks PAPERCUSP_CANONICAL_TREE before the serving integration and release roots', async () => {
     const shimPath = path.join(tmp, 'psu');
     const launcherPath = path.join(tmp, 'release', 'apps', 'operator', 'scripts', 'psu-launcher.mjs');
     const runtime = shimRuntimeOptions(launcherPath, 'PAPERCUSP_PSU_LAUNCHER');
     await writeShim(shimPath, launcherPath, 'superuser launcher (psu)', runtime);
     const body = await fs.readFile(shimPath, 'utf8');
 
-    // Structural, not textual: PAPERCUSP_INTEGRATION_ROOT must appear before
-    // PAPERCUSP_RELEASE_ROOT in the `for root in ...` search-order loop, so an
-    // integration-tree launcher wins over a stale baked release path.
+    // The declared edit tree wins when it differs from the serving mirror,
+    // then the release root.
+    const canonicalIdx = body.indexOf('PAPERCUSP_CANONICAL_TREE');
     const integrationIdx = body.indexOf('PAPERCUSP_INTEGRATION_ROOT');
     const releaseIdx = body.indexOf('PAPERCUSP_RELEASE_ROOT');
+    expect(canonicalIdx).toBeGreaterThan(-1);
     expect(integrationIdx).toBeGreaterThan(-1);
     expect(releaseIdx).toBeGreaterThan(-1);
+    expect(canonicalIdx).toBeLessThan(integrationIdx);
     expect(integrationIdx).toBeLessThan(releaseIdx);
 
     // The explicit per-process override is checked first of all.
@@ -102,6 +105,37 @@ describe('writeShim (WI-4440) — the generated script resolves at run time, not
     expect(body).toContain('launcher="$(resolve_launcher)"');
     expect(body).toMatch(/superuser launcher \(psu\): launcher/);
     expect(body).toContain('>&2');
+  });
+
+  it('executes the canonical edit-tree launcher when the serving mirror differs', async () => {
+    const shimPath = path.join(tmp, 'ptool');
+    const canonicalRoot = path.join(tmp, 'canonical');
+    const servingRoot = path.join(tmp, 'serving-mirror');
+    const canonicalLauncher = path.join(canonicalRoot, 'apps', 'operator', 'scripts', 'ptool.mjs');
+    const servingLauncher = path.join(servingRoot, 'apps', 'operator', 'scripts', 'ptool.mjs');
+    await fs.mkdir(path.dirname(canonicalLauncher), { recursive: true });
+    await fs.mkdir(path.dirname(servingLauncher), { recursive: true });
+    await fs.writeFile(canonicalLauncher, "process.stdout.write('canonical');\n");
+    await fs.writeFile(servingLauncher, "process.stdout.write('serving-mirror');\n");
+
+    vi.stubEnv('PAPERCUSP_RELEASE_ROOT', '');
+    const runtime = shimRuntimeOptions(servingLauncher, 'PAPERCUSP_PTOOL_LAUNCHER');
+    await writeShim(shimPath, servingLauncher, 'defineTool CLI (ptool)', runtime);
+    const result = spawnSync(shimPath, [], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: tmp,
+        PAPERCUSP_PTOOL_LAUNCHER: '',
+        PAPERCUSP_CANONICAL_TREE: canonicalRoot,
+        PAPERCUSP_INTEGRATION_ROOT: servingRoot,
+        PAPERCUSP_RELEASE_ROOT: '',
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('canonical');
+    expect(result.stderr).toContain(canonicalLauncher);
   });
 
   it('an explicit per-process override wins outright when the file exists', async () => {

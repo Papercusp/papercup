@@ -60,13 +60,14 @@ const pkcs8Pem = (): string => toPem('PRIVATE KEY', pkcs8Bytes);
 const pkcs1Pem = (): string => toPem('RSA PRIVATE KEY', pkcs8Bytes.slice(26));
 
 beforeAll(async () => {
-  const pair = await crypto.subtle.generateKey(
+  // The Workers typings return `CryptoKey | CryptoKeyPair`; an RSASSA key is always a pair.
+  const pair = (await crypto.subtle.generateKey(
     { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
     true,
     ['sign', 'verify'],
-  );
+  )) as CryptoKeyPair;
   publicKey = pair.publicKey;
-  pkcs8Bytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey));
+  pkcs8Bytes = new Uint8Array((await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer);
 });
 
 async function hmacHex(secret: string, body: string): Promise<string> {

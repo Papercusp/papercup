@@ -115,6 +115,20 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       .toThrow(/seed_mode_conflict/);
   });
 
+  it('renders full-history as a present-empty seed depth and rejects modes that skip the seed cut', () => {
+    expect(buildCutEnv({}, sourceSha, { ownerName: 'Avi', fullHistory: true })).toHaveProperty(
+      'PAPERCUSP_SEED_DEPTH',
+      '',
+    );
+    expect(buildCutEnv({}, sourceSha, runtime)).not.toHaveProperty('PAPERCUSP_SEED_DEPTH');
+    expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', fullHistory: true, reuseSeed: true })).toThrow(
+      /seed_history_mode_conflict/,
+    );
+    expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', fullHistory: true, seedless: true })).toThrow(
+      /seed_history_mode_conflict/,
+    );
+  });
+
   // EI-23917342543376581. The env below is an explicit ALLOWLIST rendered onto a
   // systemd-run command, so a name that is not forwarded here is silently dropped — which
   // is how `release:cut` lost a lever that a manual bin/release-local.sh run has always
@@ -218,6 +232,13 @@ describe('buildCutArgv', () => {
     const seedlessInner = seedlessArgv[seedlessArgv.length - 1];
     expect(seedlessInner).toContain("PAPERCUSP_SKIP_SEED_CUT='1'");
     expect(seedlessInner).not.toContain('git restore -- package.json');
+  });
+  it('full-history is rendered into the detached command as a present-empty value', () => {
+    const fullHistoryArgv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', {}, sourceSha, '/usr/bin:/bin', {
+      ownerName: 'Avi',
+      fullHistory: true,
+    });
+    expect(fullHistoryArgv[fullHistoryArgv.length - 1]).toContain("PAPERCUSP_SEED_DEPTH=''");
   });
 });
 

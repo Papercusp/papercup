@@ -48,6 +48,7 @@ import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-sh
 import { SPAWNER_SOCKET_ENV, resolveSpawnerSocketPath } from './spawner-socket-path';
 import type { SpawnerCallOpts } from './spawner-ipc-client';
 import { reapDeadSidecar, sidecarContainmentCurrent, type SidecarContainment } from './sidecar-exec-lifetime';
+import { recordSidecarExecLatency } from './sidecar-read-only-git';
 
 /** The shape every `RunGit` seam in the repo returns. */
 export interface GitRunResult {
@@ -550,6 +551,7 @@ export async function runCommandViaSpawnerSidecar(
       }
       if (opts.signal?.aborted) return aborted();
     }
+    const execStartedAt = performance.now();
     const res = await client.call<GitRunResult>(
       'process:exec',
       {
@@ -571,6 +573,10 @@ export async function runCommandViaSpawnerSidecar(
       },
     );
     noteSidecarSuccess();
+    // WI-10004674: per-read wall latency, kept for read-only git only. Measured HERE
+    // (the client sees every exec) — NOT from the receipt ledger, which after the
+    // lazy-receipt fix holds only the slow reads and so cannot give a per-read p50.
+    recordSidecarExecLatency({ command, args }, performance.now() - execStartedAt);
     return res;
   } catch (error) {
     // Before dispatch a rejection is safe for local fallback. Afterwards keep

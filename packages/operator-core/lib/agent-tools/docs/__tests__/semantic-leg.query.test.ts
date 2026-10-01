@@ -34,10 +34,13 @@ const mocks = vi.hoisted(() => {
   const poolSql = vi.fn(async () => [row]);
   // The transaction handle withIterativeScan hands its body.
   const txSql = vi.fn(async () => [row]);
-  const withIterativeScan = vi.fn(
-    async (_handle: unknown, body: (handle: unknown) => Promise<unknown>) => body(txSql),
-  );
-  return { poolSql, txSql, withIterativeScan };
+  const boundedOrgTxn = vi.fn(async (body: (handle: unknown) => Promise<unknown>) => body(txSql));
+  const withIterativeScan = vi.fn(async (
+    _handle: unknown,
+    body: (handle: unknown) => Promise<unknown>,
+    options?: { runReadOnlyTransaction?: (body: (handle: unknown) => Promise<unknown>) => Promise<unknown> },
+  ) => options?.runReadOnlyTransaction ? options.runReadOnlyTransaction(body) : body(txSql));
+  return { poolSql, txSql, withIterativeScan, boundedOrgTxn };
 });
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -48,6 +51,7 @@ vi.mock('@papercusp/search', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/search')>()),
   withIterativeScan: mocks.withIterativeScan,
 }));
+vi.mock('../../../pg-bounded-txn', () => ({ boundedOrgTxn: mocks.boundedOrgTxn }));
 
 import { realDocSemanticDeps } from '../semantic-leg';
 
@@ -55,10 +59,16 @@ const GEMMA = { profileId: 'gemma-embeddinggemma-300m-768@v1', legacyMode: 'gemm
 
 describe('docs semantic leg: real doc_sections query', () => {
   it('issues the filtered vector query on the iterative-scan transaction handle', async () => {
-    const rows = await realDocSemanticDeps.querySections([0.1, 0.2], 'gemma', 'harness:papercusp', 72, GEMMA);
+    const signal = new AbortController().signal;
+    const rows = await realDocSemanticDeps.querySections([0.1, 0.2], 'gemma', 'harness:papercusp', 72, GEMMA, signal);
 
     expect(mocks.withIterativeScan).toHaveBeenCalledTimes(1);
-    expect(mocks.withIterativeScan).toHaveBeenCalledWith(mocks.poolSql, expect.any(Function));
+    expect(mocks.withIterativeScan).toHaveBeenCalledWith(
+      mocks.poolSql,
+      expect.any(Function),
+      { runReadOnlyTransaction: expect.any(Function) },
+    );
+    expect(mocks.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), { signal, readOnly: true });
     expect(mocks.txSql).toHaveBeenCalledTimes(1);
     expect(mocks.poolSql).not.toHaveBeenCalled();
     // The query that ran is the source-filtered, distance-ordered read.
@@ -85,6 +95,7 @@ describe('docs semantic leg: real doc_sections query', () => {
   it('control: an unaccepted profile issues no query at all', async () => {
     mocks.withIterativeScan.mockClear();
     mocks.txSql.mockClear();
+    mocks.boundedOrgTxn.mockClear();
     const rows = await realDocSemanticDeps.querySections([0.1], 'gemma', 'harness:papercusp', 72, {
       profileId: 'not-a-profile@v0',
       legacyMode: null,
@@ -92,5 +103,6 @@ describe('docs semantic leg: real doc_sections query', () => {
     expect(rows).toEqual([]);
     expect(mocks.withIterativeScan).not.toHaveBeenCalled();
     expect(mocks.txSql).not.toHaveBeenCalled();
+    expect(mocks.boundedOrgTxn).not.toHaveBeenCalled();
   });
 });

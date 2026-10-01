@@ -35,6 +35,8 @@
  * is ever relaxed to admit a converging regrade, that test fails and forces this
  * paragraph to be corrected in the same change.
  */
+import { isDeepStrictEqual } from 'node:util';
+
 import { getOrgPg } from '@papercusp/db-org';
 import {
   claimWorkItem,
@@ -53,6 +55,7 @@ import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
   createImplementationReadiness,
+  evaluateImplementationAcceptance,
   type ImplementationAcceptanceContract,
   readImplementationAcceptanceProposal,
   sealImplementationAcceptance,
@@ -396,7 +399,8 @@ function reviewImplementationReadiness(
     review.round === input.round &&
     review.reviewer === input.reviewer &&
     review.grade === input.grade &&
-    JSON.stringify(existing.evidence?.acceptance ?? null) === JSON.stringify(acceptance ?? null)
+    // Order-insensitive: the stored side came back through jsonb, which reorders keys.
+    isDeepStrictEqual(existing.evidence?.acceptance ?? null, acceptance ?? null)
   ) {
     return existing;
   }
@@ -426,11 +430,30 @@ export function approvalAcceptance(
   workItem: Pick<WorkItem, 'kind' | 'title' | 'summary' | 'payload'>,
   input: { reviewer: string; submittedBy: string; round: number; grade: number },
 ): ImplementationAcceptanceContract | undefined {
+  const authority = {
+    kind: 'agent-review',
+    reviewer: input.reviewer,
+    submittedBy: input.submittedBy,
+    round: input.round,
+  } as const;
+  const reason = `agent-review-approved (grade ${input.grade}/5)`;
+  const source = { kind: workItem.kind, title: workItem.title, summary: workItem.summary ?? null };
+  // Convergence: a retried approval of the same round must not re-seal (a fresh
+  // acceptedAt would rewrite readiness on every retry). Reuse the standing contract
+  // when it is still qualifying for this exact authority, grade and revision.
+  const standing = evaluateImplementationAcceptance(workItem.payload, source);
+  if (
+    standing.state === 'qualifying' &&
+    standing.contract?.reason === reason &&
+    isDeepStrictEqual(standing.contract.authority, authority)
+  ) {
+    return standing.contract;
+  }
   const sealed = sealImplementationAcceptance({
     proposal: readImplementationAcceptanceProposal(workItem.payload),
-    authority: { kind: 'agent-review', reviewer: input.reviewer, submittedBy: input.submittedBy, round: input.round },
-    reason: `agent-review-approved (grade ${input.grade}/5)`,
-    source: { kind: workItem.kind, title: workItem.title, summary: workItem.summary ?? null },
+    authority,
+    reason,
+    source,
   });
   return sealed.ok ? sealed.contract : undefined;
 }

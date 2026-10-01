@@ -137,6 +137,7 @@ export async function assertIpcCarriesFetch(): Promise<boolean> {
 async function readIpcClient(): Promise<string | null> {
   const finish = syncMetrics.beginIpcAssertion();
   let client: string | null = null;
+  let error: string | undefined;
   try {
     // P-007: the cold native trace spent 3614ms loading this tiny module and
     // only 17ms invoking status. Keep it available with the provider so the
@@ -151,10 +152,11 @@ async function readIpcClient(): Promise<string | null> {
     }
     client = status?.client ?? null;
     return client;
-  } catch {
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
     return null;
   } finally {
-    finish(client);
+    finish(client, error);
   }
 }
 

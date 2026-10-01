@@ -1536,15 +1536,35 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     }
   }
 
-  if (!agent && !advSession && invocations.length === 0 && children.length === 0) {
+  // A native CLI transcript can outlive its adv_sessions row. In that case,
+  // use the faithful parts store to distinguish a transcript-backed session
+  // from an unknown id. Keep every leading PK column bound: the writer sets
+  // workspace_id='default', and session_turn_parts is intentionally not
+  // indexed by session_id alone.
+  type TranscriptRow = { owner: string | null };
+  const transcriptRows =
+    !agent && !advSession && invocations.length === 0 && children.length === 0
+      ? ((await sql`
+          SELECT owner
+          FROM harness_shared.session_turn_parts
+          WHERE workspace_id = 'default'
+            AND source_kind IN ('claude', 'omp', 'codex')
+            AND session_id = ${spawnId}
+          ORDER BY ingested_at DESC
+          LIMIT 1
+        `) as TranscriptRow[])
+      : [];
+  const transcriptOnly = transcriptRows[0] ?? null;
+
+  if (!agent && !advSession && invocations.length === 0 && children.length === 0 && !transcriptOnly) {
     return null;
   }
 
   return {
     spawn_id: resolvedSpawnId,
-    session_id: agent?.session_id ?? advSession?.session_id ?? null,
+    session_id: agent?.session_id ?? advSession?.session_id ?? (transcriptOnly ? spawnId : null),
     omp_thread_id: advSession?.omp_thread_id ?? null,
-    coord_owner_id: advSession?.coord_owner_id ?? null,
+    coord_owner_id: advSession?.coord_owner_id ?? transcriptOnly?.owner ?? null,
     agent,
     invocations,
     children,

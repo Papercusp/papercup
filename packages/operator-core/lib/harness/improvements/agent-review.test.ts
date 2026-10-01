@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkItem } from '../../work-items';
 import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
-import { LEGACY_AGENT_REVIEW_SUBMITTER } from './agent-review-policy';
+import {
+  acceptanceSourceRevision,
+  createImplementationReadiness,
+  deriveWorkItemIntakeStage,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
+} from './agent-review-policy';
 import {
   claimAgentReview,
   enterAgentReview,
@@ -574,6 +579,105 @@ describe('agent-review grading lifecycle', () => {
       changed: false,
     });
     expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
+  });
+
+  // observation-candidate-acceptance-promotion P-005 (R-4 / R-20 / R-21).
+  const PROPOSAL = {
+    problem: 'Retry duplicates the ledger row.',
+    evidence: ['retry.test.ts shows two rows after one retry'],
+    outcome: 'A retried write converges on one row.',
+    scope: 'The retry seam only.',
+    completionCheck: 'retry.test.ts passes with one row.',
+  };
+  const withProposal = (proposal: Record<string, unknown>) =>
+    issue({
+      ...pending,
+      payload: {
+        ...(pending.payload as Record<string, unknown>),
+        implementationReadiness: createImplementationReadiness({
+          status: 'unknown',
+          source: 'agent-review',
+          reason: 'awaiting-agent-review',
+          updatedAt: '2026-08-20T00:00:00.000Z',
+          evidence: { acceptance: proposal },
+        }),
+      },
+    });
+  const stageOf = (item: WorkItem, overrides: Partial<WorkItem> = {}) =>
+    deriveWorkItemIntakeStage({
+      kind: item.kind,
+      status: item.state,
+      payload: item.payload,
+      title: overrides.title ?? item.title,
+      summary: item.summary,
+    });
+
+  it('approval seals a complete producer proposal into a revision-bound contract, and an edit invalidates it', async () => {
+    const h = harness(withProposal(PROPOSAL));
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-reviewer' };
+
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+    const acceptance = (h.state.issue.payload as { implementationReadiness: { evidence: { acceptance: unknown } } })
+      .implementationReadiness.evidence.acceptance;
+    expect(acceptance).toMatchObject({
+      ...PROPOSAL,
+      authority: { kind: 'agent-review', reviewer: 'su-reviewer', submittedBy: 'su-filer', round: 1 },
+      reason: 'agent-review-approved (grade 5/5)',
+      sourceRevision: acceptanceSourceRevision({ kind: 'change', title: pending.title, summary: pending.summary }),
+    });
+    expect(stageOf(h.state.issue)).toMatchObject({ primaryStage: 'accepted', acceptance: 'qualifying' });
+    expect(stageOf(h.state.issue, { title: 'Proposal needing peer review — widened' })).toMatchObject({
+      primaryStage: 'candidate',
+      acceptance: 'stale-revision',
+      reReviewRequested: true,
+    });
+
+    // Retry convergence: the second reconcile reuses the standing contract instead
+    // of re-sealing it with a fresh acceptedAt.
+    const before = structuredClone(h.state.issue.payload);
+    const writes = vi.mocked(h.deps.mergeWorkItemPayload).mock.calls.length;
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      changed: false,
+    });
+    expect(vi.mocked(h.deps.mergeWorkItemPayload).mock.calls.length).toBe(writes + 1);
+    expect(h.state.issue.payload).toEqual(before);
+  });
+
+  it('approval never defaults an incomplete proposal into acceptance', async () => {
+    const { completionCheck: _missing, ...incomplete } = PROPOSAL;
+    const h = harness(withProposal(incomplete));
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-reviewer' };
+
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+    expect(h.state.issue.payload).toMatchObject({
+      implementationReadiness: { status: 'ready', evidence: { acceptance: incomplete } },
+    });
+    expect(
+      (h.state.issue.payload as { implementationReadiness: { evidence: { acceptance: object } } }).implementationReadiness
+        .evidence.acceptance,
+    ).not.toHaveProperty('authority');
+    expect(stageOf(h.state.issue)).toMatchObject({
+      primaryStage: 'candidate',
+      acceptance: 'incomplete',
+      reason: 'ready-without-executable-acceptance',
+    });
+  });
+
+  it('a revision request carries the producer proposal forward unsealed', async () => {
+    const h = harness(withProposal(PROPOSAL));
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 2,
+      feedback: 'Name the retry seam precisely.',
+      gradedBy: 'su-reviewer',
+    };
+
+    await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+    expect(h.state.issue.payload).toMatchObject({
+      implementationReadiness: { status: 'not-ready', evidence: { acceptance: PROPOSAL } },
+    });
+    expect(stageOf(h.state.issue)).toMatchObject({ primaryStage: 'candidate', qualifyingAcceptance: false });
   });
 
   // EI-24720168531118378 / EI-21887295701926471. The standing ledger grade can belong to someone

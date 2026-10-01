@@ -52,6 +52,17 @@ describe('boundedOrgTxn', () => {
     expect(vals).toContain('12345ms'); // statement_timeout
   });
 
+  it('starts read-only transactions before applying the local timeouts', async () => {
+    const statements: string[] = [];
+    const client = fakeClient((text) => statements.push(text));
+
+    await boundedOrgTxn(async () => 'rows', { client, readOnly: true });
+
+    expect(statements[0]).toMatch(/SET TRANSACTION READ ONLY/i);
+    expect(statements[1]).toMatch(/set_config\('lock_timeout'/i);
+    expect(statements[1]).toMatch(/set_config\('statement_timeout'/i);
+  });
+
   it('cancels an active postgres query when the caller aborts the transaction', async () => {
     let resolveSlowStart!: () => void;
     const slowStarted = new Promise<void>((resolve) => {
@@ -459,6 +470,18 @@ describe('boundedOrgTxn', () => {
     expect((err as OrgTxnTimeoutError).message).toBe(
       'operator write timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly',
     );
+  });
+
+  it('describes a read-only statement timeout as a query timeout', async () => {
+    const err = await boundedOrgTxn(
+      async () => {
+        throw pgError('57014');
+      },
+      { client: fakeClient(), readOnly: true },
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect((err as OrgTxnTimeoutError).message).toContain('operator read query exceeded its time budget');
   });
 
   it('bounds fresh-connection acquisition for blocker diagnosis after a contention timeout', async () => {

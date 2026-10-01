@@ -456,6 +456,29 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
     expect(opts.lexicalQuery).not.toBe(query);
   });
 
+  // WI-10004485: the turn-start port's latency opt-in must reach the backend —
+  // and must stay OFF for every caller that did not ask (the strict cosine-gated
+  // series remains the default contract).
+  it('forwards overlapGatedLexical to the backend only when the caller opts in', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    const base = {
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      potSlugs: [],
+    };
+    await buildMemoryContextBlock({ ...base, overlapGatedLexical: true });
+    await buildMemoryContextBlock(base);
+    expect(backend.search).toHaveBeenCalledTimes(2);
+    expect(backend.search.mock.calls[0]![1]).toMatchObject({
+      fusionMode: 'cosine-gated',
+      overlapGatedLexical: true,
+    });
+    expect(backend.search.mock.calls[1]![1]).not.toHaveProperty('overlapGatedLexical');
+  });
+
   it('omits lexicalQuery entirely with no signals, so both legs share one query', async () => {
     // The no-signals turn must stay byte-identical to pre-P-044 — that is what
     // keeps the P-041 baseline comparable across the change.

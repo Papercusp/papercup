@@ -3578,3 +3578,88 @@ separate. **P-008/R-8 remains open: no live causal closure, acceptance binding,
 performance improvement or shipment is claimed.** Next distinguish the
 decoder's cleaning/redaction cost from its parsing work using a bounded
 canonical regression before changing that correctness/security surface.
+
+### Decoder redaction distinguishing regression — October 1
+
+WI-10002830 traced the sampled `parseCodexParts` work to its existing
+`cleanPartText`/`sensitive-text` seam. The key-directed regex optionally
+consumed an arbitrary identifier prefix before trying a credential suffix.
+On a non-secret identifier, that greedy prefix was retried from successive
+characters. The pre-fix canonical regression separates JSON parsing, the
+self-identifying token pass, and the key-directed pass on identical input
+sizes, with an equal-length punctuation-delimited control.
+
+The selected regression failed at HEAD `87e9f9ee9b` plus the local test:
+the 32,768-character identifier's key-directed scan used **1,305.492 ms
+process CPU**, against its 200 ms ceiling. At 8,192 characters it used
+101.851 ms. For the 32,768-character input, JSON parsing used 0.020 ms,
+the self-identifying pass 0.054 ms, and the punctuation-delimited
+key-directed control 0.353 ms. The receipts measure `process.cpuUsage`
+user plus system microseconds divided by 1,000, separately from wall time;
+they are bounded process measurements, not per-function native CPU samples.
+This distinguishes the key-directed retry path from parsing, the other
+redaction pass and an equal-byte control.
+
+The fix removes only that optional prefix from the existing shared matcher.
+Credential suffixes still match inside prefixed names, while their prefixes
+remain unchanged outside the match. Both redaction passes still precede
+part capping. No new redactor, flag, observer or production configuration
+was introduced. Tests cover empty, AWS, deployment and 32 KiB prefixes
+for access-key IDs, secret-access keys and database URLs. The Codex parts
+guard verifies a prefixed opaque value crossing the tool cap is scrubbed
+before truncation. Its first fixture mistakenly placed the replacement
+marker across the cap; moving the fixture prefix back and adding diagnostic
+context corrected the assertion without changing product behavior.
+
+Commands:
+
+```bash
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/sensitive-text.test.ts -t 'bounds key-directed scans'
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/sensitive-text.test.ts packages/operator-core/lib/search/session-turn-parts.test.ts packages/operator-core/lib/search/session-ingest.test.ts
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts
+```
+
+Final unit run `r3`, started `2026-10-01T09:47:14.825Z`, passed **74/74,
+zero skipped, exit 0** on HEAD `87e9f9ee9b` with local source/test edits.
+Its 32 KiB key-directed identifier scan used 0.010 ms process CPU;
+the same-size delimited control used 0.007 ms. These single observations
+establish the regression's failure/pass distinction, not a stable speedup
+percentage or a universal linear-time guarantee for arbitrary input.
+
+The maintained private runtime run, started `2026-10-01T09:49:53.975Z`,
+passed **2/2, zero skipped, exit 0** on the same HEAD plus the local redactor
+edit. Its fixture and ingestion source were unchanged. Children 1281362
+and 1299196 used Node v25.9.0 with background workers enabled. Each
+read back 256 turns and 2,560 parts, verified offsets, removed its HOME
+and datadir, and verified its DB port refused a connection. The workload
+hash remained `6fda56724fe55c56706e4c99460603d83685d6e3debceca2f24a3210b6140ad4`.
+All eight matched unchanged passes again recorded zero decoding/writes.
+The sampled useful passes recorded decode wall intervals 26.2/38.3 ms,
+versus the dated pre-fix 677.8/739.7 ms receipts above. These are separate
+runs with awaited/scheduling effects; do not convert them to a production
+performance improvement or an observer-overhead percentage.
+
+Fingerprints:
+
+| File | SHA-256 |
+|---|---|
+| `sensitive-text.ts` pre-fix at `87e9f9ee9b` | `45f8c9ff7b6c944f0fc2905261ab33ca21b0c2deea16af688bd90cb4c7d6eb88` |
+| `sensitive-text.ts` fixed, unchanged before/after runtime | `16bd299e52efe4f4a83a6dcf9f3ff3ea84d957231af9f6deaa67870b559d7c89` |
+| `sensitive-text.test.ts` | `f422ddf2480d27cf094b0aadbb91ae1bd8d1c54f2c88684b57ed32bf330369d5` |
+| `session-turn-parts.test.ts` | `b3659f68f4c5367656ae5945ef08fd79825e8a8d215007ef388fb123c5ca0c07` |
+| `session-ingest.test.ts` | `902be4ae79ac87e09ce418ac8a1c8b41e587515e849ac98d089a9bb73a663d94` |
+| `session-ingest.ts` | `a63bb35bca2738b33f62084917b9c3fa3b522ca21d37946000ae8786449529a3` |
+| runtime fixture | `a43b41bccf88a35b14434dc57efe6829fbac3204c28ecc188c215420e2887dd2` |
+
+Logs: `/tmp/p008-redaction-scan-red-20261001.log`
+SHA `84234801be181b40dfc0176ba923b3b1a618c684a72702bd876e74a5230868fd`;
+final unit `/tmp/p008-redaction-scan-green-20261001-r3.log`
+SHA `e1461c0b988513771d3e968242003e6627574effd9617e8bdf195c34078d16a2`;
+private runtime `/tmp/p008-redaction-runtime-green-20261001.log`
+SHA `31c702067bbb81d73d4746d76cbbb7042907303445069eafa917a703a68d1445`.
+Scoped `git diff --check` passed.
+
+The source defect and recurrence guard are verified. The retained live
+slow-sweep cause, app impact and shared-runtime adoption remain separate
+open questions under D-006. **P-008/R-8 remains open; no acceptance binding,
+shared-host restart or shipment is claimed.**

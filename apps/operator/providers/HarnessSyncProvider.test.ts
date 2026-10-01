@@ -147,19 +147,22 @@ describe('assertIpcCarriesFetch (D-047)', () => {
     },
   );
 
-  it('fails CAPPED when the shell rejects the invoke', async () => {
-    invoke.mockRejectedValue(new Error('no such command'));
+  it.each([new Error('no such command'), 'no such command'])(
+    'fails CAPPED and retains the reason when the shell rejects the invoke: %s', async (error) => {
+    invoke.mockRejectedValue(error);
     await expect(assertIpcCarriesFetch()).resolves.toBe(false);
     const sample = syncMetrics.snapshot().ipcAssertion![0];
     expect(sample.invokeStartedAtMs).not.toBeNull();
     expect(sample.invokeCompletedAtMs).not.toBeNull();
     expect(sample.completedAtMs).not.toBeNull();
     expect(sample.client).toBeNull();
+    expect(sample.error).toBe('no such command');
   });
 
   it('fails CAPPED on an older shell whose IpcStatus predates the client field', async () => {
     invoke.mockResolvedValue({ resolution_detail: 'some prose' });
     await expect(assertIpcCarriesFetch()).resolves.toBe(false);
+    expect(syncMetrics.snapshot().ipcAssertion![0].error).toBeUndefined();
   });
 
   it('never infers from resolution_detail prose (D-005 infer-from-a-string class)', async () => {

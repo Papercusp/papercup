@@ -198,6 +198,17 @@ export interface MemoryInjectionInput {
    * never affects recall/dedup.
    */
   telemetrySurface?: string;
+  /**
+   * Latency opt-in for a port whose build runs under a hard deadline: overlap
+   * the hybrid backend's `cosine-gated` lexical leg with its cosine leg instead
+   * of running them in series (`SearchOptionsCommon.overlapGatedLexical`).
+   * The recalled set is unchanged; the cost is one discarded lexical query on a
+   * call whose cosine set is empty. Turn-start sets it (WI-10004485: the gate
+   * closed on 0.4% of its recalls while the serial leg cost p50 386 ms of the
+   * 2 s build deadline); ports with a materially higher empty-cosine rate keep
+   * the strict sequence.
+   */
+  overlapGatedLexical?: boolean;
 }
 
 /**
@@ -1369,6 +1380,7 @@ async function buildBlockInner(
             minScore,
             minLexScore,
             fusionMode,
+            ...(input.overlapGatedLexical ? { overlapGatedLexical: true } : {}),
             // P-002 / migration 758: capture what each LEG did. Assigning to the
             // outer `legStats` is safe against the fan-out concern the option's
             // doc raises — this is ONE search call, not a per-scope loop, so

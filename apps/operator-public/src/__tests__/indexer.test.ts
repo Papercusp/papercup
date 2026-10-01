@@ -140,6 +140,8 @@ function harness(over: Partial<HarnessRow> = {}): HarnessRow {
     pinned_commit_sha: null, pinned_tree_digest: null, pinned_at: null,
     approved_commit_sha: null, approved_tree_digest: null, approved_at: null, drift: 0,
     authority_unresolved: null, authority_unresolved_cause: null,
+    // Migration 041: every listing's baseline badge is the Worker's own pin + scan.
+    verified_by: 'worker',
     ...over,
   };
 }

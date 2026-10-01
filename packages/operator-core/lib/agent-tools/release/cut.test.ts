@@ -811,8 +811,9 @@ describe('release:cut — run (operator-gated write)', () => {
     reason: 'Frozen source has the old aggregate Vitest deadline',
   };
 
-  it('publishes seedless as an explicit run argument', () => {
+  it('publishes seedless and fullHistory as explicit run arguments', () => {
     expect(tool.args.safeParse({ ...runArgs, seedless: true }).success).toBe(true);
+    expect(tool.args.safeParse({ ...runArgs, fullHistory: true }).success).toBe(true);
   });
 
   it('refuses conflicting seed controls before resolving or launching a root', async () => {
@@ -822,6 +823,17 @@ describe('release:cut — run (operator-gated write)', () => {
     ));
     expect(b).toMatchObject({ ok: false, refused: true });
     expect(b.reason).toMatch(/seed_mode_conflict/);
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('refuses fullHistory when the selected mode skips the seed cut', async () => {
+    for (const conflicting of [{ reuseSeed: true }, { seedless: true }]) {
+      const b = body(
+        await tool.handler({ ...runArgs, fullHistory: true, ...conflicting } as never, { role: 'operator' } as never),
+      );
+      expect(b).toMatchObject({ ok: false, refused: true });
+      expect(b.reason).toMatch(/seed_history_mode_conflict/);
+    }
     expect(launchM).not.toHaveBeenCalled();
   });
 
@@ -909,6 +921,13 @@ describe('release:cut — run (operator-gated write)', () => {
     const b = body(await tool.handler({ ...runArgs, reuseSeed: true } as never, { role: 'operator' } as never));
     expect(b.wouldRun).toContain('git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/Cargo.lock &&');
     expect(b.wouldRun).toContain("PAPERCUSP_SKIP_SEED_CUT='1'");
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('fullHistory dry-run renders the required present-empty seed depth', async () => {
+    const b = body(await tool.handler({ ...runArgs, fullHistory: true } as never, { role: 'operator' } as never));
+    expect(b.fullHistory).toBe(true);
+    expect(b.wouldRun).toContain("PAPERCUSP_SEED_DEPTH=''");
     expect(launchM).not.toHaveBeenCalled();
   });
 

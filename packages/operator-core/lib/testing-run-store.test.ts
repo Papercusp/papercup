@@ -558,6 +558,17 @@ describe('durable detached snapshot lifecycle', () => {
     { name: 'pruned snapshot wrong tenant', status: 'running', expected: null, legacy: true, expired: true, missing: true, wrongScope: true },
     { name: 'pruned snapshot partial report', status: 'running', expected: null, legacy: true, expired: true, missing: true, partial: true },
     { name: 'pruned snapshot ambiguous task', status: 'running', expected: null, legacy: true, expired: true, missing: true, ambiguous: true },
+    { name: 'ended_unobserved retained PASS', status: 'running', expected: 'pass', taskState: 'ended_unobserved', processExit: null },
+    { name: 'ended_unobserved retained FAIL', status: 'error', expected: 'fail', failure: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'ended_unobserved pruned PASS', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'ended_unobserved pruned FAIL', status: 'running', expected: 'fail', failure: true, legacy: true, expired: true, missing: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'ended_unobserved partial report', status: 'running', expected: 'error', partial: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'live task retained report', status: 'running', expected: 'running', taskState: 'running', processExit: null },
+    { name: 'live task pruned report', status: 'running', expected: null, legacy: true, expired: true, missing: true, taskState: 'running', processExit: null },
+    { name: 'cancelled task running snapshot', status: 'running', expected: 'error', taskState: 'killed', processExit: null },
+    { name: 'cancelled task pruned report', status: 'running', expected: null, legacy: true, expired: true, missing: true, taskState: 'killed', processExit: null },
+    { name: 'exited without observed exit', status: 'running', expected: 'error', processExit: null },
+    { name: 'observed exit contradicts report', status: 'running', expected: 'error', processExit: 1 },
   ] as const)('saved report recovery after worker disappearance: $name', async (scenario) => {
     const options = scenario as {
       status: string; expected: string | null; failure?: boolean; cancelled?: boolean;
@@ -565,8 +576,12 @@ describe('durable detached snapshot lifecycle', () => {
       expired?: boolean; missing?: boolean;
       ambiguous?: boolean;
       inlineSelector?: boolean;
+      taskState?: 'ended_unobserved' | 'running' | 'killed';
+      processExit?: number | null;
     };
     const { status } = options;
+    const taskState = options.taskState ?? (options.cancelled ? 'killed' : 'exited');
+    const processExit = options.processExit === undefined ? (options.failure ? 1 : 0) : options.processExit;
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-recovery-');
     const reportPath = join(reportDir, 'papercusp-testing-run-detached-fixture.json');
     try {
@@ -600,6 +615,8 @@ describe('durable detached snapshot lifecycle', () => {
         if (snapshotRead && options.expired) return [];
         if (taskRead && options.wrongScope) return [];
         if (taskRead && options.ambiguous) return [{}, {}];
+        // Model the actual task-state SQL predicate, including pruned snapshots.
+        if (taskRead && !statement.includes(`'${taskState}'`)) return [];
         if (snapshotRead || taskRead) return [{
           run_id: snapshot.runId, task_id: snapshot.taskId, kind: 'vitest', label: 'saved',
           file_path: null, command: options.legacy ? [
@@ -608,8 +625,8 @@ describe('durable detached snapshot lifecycle', () => {
           ] : snapshot.command, status, exit_code: status === 'pass' ? 0 : null,
           started_at: snapshot.startedAt, finished_at: status === 'error' ? snapshot.startedAt + 30 : null,
           output: status === 'error' ? '[detached-recovery] no test verdict was observed.' : '', truncated: false,
-          task_state: options.cancelled ? 'killed' : 'exited', task_exit_code: options.failure ? 1 : 0,
-          task_ended_at: snapshot.startedAt + 25,
+          task_state: taskState, task_exit_code: processExit,
+          task_ended_at: taskState === 'running' ? null : snapshot.startedAt + 25,
           task_detail: options.legacy ? {} : detail,
           task_cwd: '/tmp', task_harness_slug: options.legacy ? null : 'papercusp', task_workspace_id: 'papercusp-workspace',
           snapshot_missing: options.missing ?? false,
@@ -624,7 +641,11 @@ describe('durable detached snapshot lifecycle', () => {
         if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return options.casLost ? [] : [{ run_id: snapshot.runId }];
         return [];
       });
-      Object.assign(sql, { begin: (run: (tx: typeof sql) => Promise<unknown>) => run(sql) });
+      Object.assign(sql, { begin: async (run: (tx: typeof sql) => Promise<unknown>) => {
+        const before = ledger.length;
+        try { return await run(sql); }
+        catch (error) { ledger.splice(before); throw error; }
+      } });
 
       const recovered = await store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy ? {
         root: '/tmp', harnessSlug: 'papercusp', workspaceId: options.wrongScope ? 'other-workspace' : 'papercusp-workspace',
@@ -642,7 +663,9 @@ describe('durable detached snapshot lifecycle', () => {
         await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
         return;
       }
-      expect(recovered).toMatchObject({ exitCode: options.failure ? 1 : 0, finishedAt: snapshot.startedAt + 25 });
+      expect(recovered).toMatchObject({ exitCode: processExit, finishedAt: snapshot.startedAt + 25 });
+      expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.task_ledger'))).toBe(false);
+      if (taskState === 'ended_unobserved') expect(recovered!.output).toContain('process exit code was not observed');
       expect(writes).toHaveLength(1);
       expect(writes[0]![7]).toBe(snapshot.runId);
       expect(writes[0]![10]).toBe(options.legacy ? null : 'launch-sha');

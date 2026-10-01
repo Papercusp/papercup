@@ -241,6 +241,9 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
       queryContext: { userText: prompt },
       harnessSlugs: ['papercusp'],
       session: { sessionId: 'sess-1', port: 'turn-start' },
+      // WI-10004485: the deadline-bound turn-start build overlaps the gated
+      // lexical leg with the cosine leg instead of running them in series.
+      overlapGatedLexical: true,
     });
     // WI-10004485: the cache says whether anyone still waits on this build, so a
     // background rebuild is not bounded by a hook wall nobody is behind.

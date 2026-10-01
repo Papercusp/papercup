@@ -530,6 +530,10 @@ const turnStartMemory = defineTool({
                 },
                 budgetChars: TURN_START_BUDGET_CHARS,
                 heading: 'Relevant memory (turn-start delta)',
+                // WI-10004485: this build is bounded by the 2 s deadline and
+                // its cosine gate almost never closes (0.4% of recalls), so
+                // the serial lexical leg was ~386 ms p50 of pure waiting.
+                overlapGatedLexical: true,
               });
             }),
           );

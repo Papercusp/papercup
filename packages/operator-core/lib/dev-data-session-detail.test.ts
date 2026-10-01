@@ -22,8 +22,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 import { getSessionDetail } from './dev-data';
 
-// The three getOrgPg() tagged-template calls getSessionDetail makes, in order:
-// spawned_agents (1), tool_invocations (2), spawned_agents children (3).
+// The spawned-agent path uses getOrgPg() for spawned_agents, tool_invocations,
+// and children. Interactive and transcript-only paths add their resolver read.
 const AGENT_ROW = {
   spawn_id: 'spawn-1',
   session_id: null,
@@ -214,5 +214,53 @@ describe('getSessionDetail related_chats', () => {
       coord_owner_id: null,
     });
     expect(dbMocks.orgSql.mock.calls[0]?.slice(1)).toContain('claude-session-2');
+  });
+
+  it('resolves a transcript-only native session id through session_turn_parts', async () => {
+    dbMocks.orgSql.mockReset();
+    dbMocks.orgSql
+      .mockResolvedValueOnce([]) // no spawned_agents row
+      .mockResolvedValueOnce([]) // no adv_sessions row
+      .mockResolvedValueOnce([]) // no tool_invocations row by spawn id
+      .mockResolvedValueOnce([]) // no child spawns
+      .mockResolvedValueOnce([{ owner: 'su-owner-transcript' }]); // transcript part
+
+    const detail = await getSessionDetail('codex-session-from-transcript');
+
+    expect(detail).toMatchObject({
+      spawn_id: 'codex-session-from-transcript',
+      session_id: 'codex-session-from-transcript',
+      omp_thread_id: null,
+      coord_owner_id: 'su-owner-transcript',
+      agent: null,
+      invocations: [],
+      children: [],
+      related_chats: [],
+    });
+
+    const partsCall = dbMocks.orgSql.mock.calls[4];
+    const partsSql = partsCall?.[0] as TemplateStringsArray | undefined;
+    const query = partsSql?.join(' ') ?? '';
+    expect(query).toContain('FROM harness_shared.session_turn_parts');
+    expect(query).toContain("workspace_id = 'default'");
+    expect(query).toContain("source_kind IN ('claude', 'omp', 'codex')");
+    expect(partsCall?.slice(1)).toEqual(['codex-session-from-transcript']);
+    expect(
+      dbMocks.orgSql.mock.calls.some(([statement]) =>
+        (statement as TemplateStringsArray).join(' ').includes('harness_shared.session_turns'),
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps unknown ids unresolved when no transcript part exists', async () => {
+    dbMocks.orgSql.mockReset();
+    dbMocks.orgSql
+      .mockResolvedValueOnce([]) // no spawned_agents row
+      .mockResolvedValueOnce([]) // no adv_sessions row
+      .mockResolvedValueOnce([]) // no tool_invocations row by spawn id
+      .mockResolvedValueOnce([]) // no child spawns
+      .mockResolvedValueOnce([]); // no transcript part
+
+    await expect(getSessionDetail('unknown-session')).resolves.toBeNull();
   });
 });

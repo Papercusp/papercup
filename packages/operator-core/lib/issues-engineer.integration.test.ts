@@ -306,7 +306,53 @@ describe('engineer issues surface (real PG)', () => {
       createdBy: 'agA',
       payload: { reporterNote: 'preserved' },
     });
-    expect(task.payload).toEqual({ reporterNote: 'preserved' });
+    // (The creation-enrollment readiness stamp is asserted on its own below.)
+    expect(task.payload).toEqual({
+      reporterNote: 'preserved',
+      implementationReadiness: expect.objectContaining({ source: 'creation-enrollment' }),
+    });
+  });
+
+  it('enrolls verdict-less issue-family rows as unknown at creation, never ready (P-005 D-009a / D-011)', async () => {
+    const enrolled = {
+      schemaVersion: 'implementation-readiness-v1',
+      status: 'unknown',
+      source: 'creation-enrollment',
+      reason: 'no-acceptance-evidence-at-creation',
+      updatedAt: expect.any(String),
+    };
+    for (const kind of ['bug', 'change', 'task'] as const) {
+      const created = await issues.createIssue({ title: `enroll ${kind} ${Date.now()}`, kind, createdBy: 'agA' });
+      expect((created.payload as Record<string, unknown>).implementationReadiness).toEqual(enrolled);
+      // The stamp is the visible legacy exception, so the row stays claimable exactly
+      // as an un-enrolled row was (no claimability change before the P-007 cutover).
+      await expect(issues.claimIssue(created.id, `claimer-${kind}`)).resolves.toMatchObject({ assignee: `claimer-${kind}` });
+    }
+
+    // A producer's own verdict is never overwritten by the creation seam.
+    const producerVerdict = {
+      schemaVersion: 'implementation-readiness-v1',
+      status: 'unknown',
+      source: 'capture-policy',
+      reason: 'awaiting-agent-review',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    };
+    const captured = await issues.createIssue({
+      title: `captured ${Date.now()}`,
+      kind: 'bug',
+      createdBy: 'agA',
+      payload: { implementationReadiness: producerVerdict },
+    });
+    expect((captured.payload as Record<string, unknown>).implementationReadiness).toEqual(producerVerdict);
+
+    // Observations are evidence, not candidates: they are never enrolled.
+    const observation = await issues.createIssue({
+      title: `observed ${Date.now()}`,
+      kind: 'bug',
+      createdBy: 'agA',
+      payload: { lane: 'observation' },
+    });
+    expect(observation.payload).not.toHaveProperty('implementationReadiness');
   });
 
   it('issue-family writes refresh updated_at — no stale updated_ts (WI-339 regression)', async () => {
