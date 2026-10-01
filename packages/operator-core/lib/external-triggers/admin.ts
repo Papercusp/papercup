@@ -1220,7 +1220,13 @@ export async function migrateExternalTriggerPlanBindingToOperation(
       replacement.sourceId !== legacy.sourceId ||
       replacement.eventPattern !== legacy.eventPattern ||
       !isDeepStrictEqual(replacement.eventFilter, legacy.eventFilter) ||
-      !isDeepStrictEqual(replacement.stormPolicy, legacy.stormPolicy)
+      // Parity is about the EFFECTIVE policy, not the stored bytes: a new binding is
+      // written fully normalized (every bounded default stated, incl. maxAgeSeconds —
+      // WI-10004920), while a legacy row may still carry the older, shorter shape.
+      !isDeepStrictEqual(
+        normalizedStormPolicy(replacement.stormPolicy),
+        normalizedStormPolicy(legacy.stormPolicy),
+      )
     ) {
       throw new Error('external_trigger_binding_migration_parity_failed');
     }
