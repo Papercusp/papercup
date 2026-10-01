@@ -1,53 +1,47 @@
 {
-  "plan": "plan-cleanup-system-repair-2026-10-01",
-  "recordedAt": "2026-10-01T13:12:00Z",
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "plan-cleanup-system-repair-2026-10-01 live-plane acceptance readings (BARs R-4, R-6, R-7)",
+  "framework": "operational",
+  "command": [
+    "dev:pg_query",
+    "SELECT run_id, run_kind, phase, requested_by, total_items, created_at, finished_at FROM harness_shared.attention_bulk_runs WHERE run_id IN ('bulk-84e6854f-5105-4435-be20-6e6441f63f67','bulk-9e0ebfa4-60bc-486b-91cb-6e9be1067b06','bulk-c830bde2-8a0e-4639-8f35-7b591c4487b8') OR (requested_by='system:plan-cleanup-sweep' AND created_at > now() - interval '1 day')",
+    "SELECT plan_slug, status, schedule_active FROM harness_shared.harness_plans WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND plan_slug='plan-cleanup-recurring-sweep-2026-09-01'",
+    "work_items:get { ids: ['EI-21355873806996660','WI-2107951','WI-2140580'], harness: 'papercusp' }",
+    "scripts/verify-tauri-headless.sh -- bash .papercusp/scratch/p006-plans-strip.sh"
+  ],
+  "startedAt": "2026-10-01T12:53:53.000Z",
+  "finishedAt": "2026-10-01T13:16:30.000Z",
+  "exitCode": 0,
+  "summary": "Live readings on the current build. R-4: two sweep fires produced plan-cleanup runs requested_by system:plan-cleanup-sweep through the shared start path; the post-fix fire (bulk-9e0ebfa4) reached review with 200 items and 0 failed, and the old LLM template plan-cleanup-recurring-sweep-2026-09-01 is draft with schedule_active=false. R-6: a single clean plan run (bulk-84e6854f) settled complete, and the headless desktop shell rendered the Plans strip review card (harness run 20261001T125353Z-273079, 3 passed, 0 failed). R-7: the before-and-after census is recorded; EI-21355873806996660 and WI-2107951 are done, and WI-2140580 is commented, not superseded, per plan decision D-005.",
+  "assertions": [
+    {
+      "id": "r-4-sweep-fire-produces-run",
+      "passed": true,
+      "evidence": "attention_bulk_runs rows requested_by=system:plan-cleanup-sweep: bulk-c830bde2 (failed, 200 items; first fire, resolver launched on the wrong profile, fixed by WI-10004814 / D-004) and bulk-9e0ebfa4 (review, 200 items, 0 failed, created 11:56:59Z, finished 12:09:16Z). Re-read 13:16Z."
+    },
+    {
+      "id": "r-4-llm-template-disarmed",
+      "passed": true,
+      "evidence": "harness_plans plan-cleanup-recurring-sweep-2026-09-01: status=draft, schedule_active=false. Re-read 13:16Z. This is the live probe for R-4's disarm clause, which has no unit-test pin."
+    },
+    {
+      "id": "r-6-clean-single-plan-run-complete",
+      "passed": true,
+      "evidence": "attention_bulk_runs bulk-84e6854f-5105-4435-be20-6e6441f63f67: run_kind=plan-cleanup, phase=complete, requested_by=owner, total_items=1, created 11:50:44Z, finished 11:50:48Z. Started through :3170."
+    },
+    {
+      "id": "r-6-headless-strip-renders",
+      "passed": true,
+      "evidence": "verify-tauri-headless run 20261001T125353Z-273079: HARNESS_RESULT verdict=pass passed=3 failed=0; P006_STRIP_REVIEW_CHECK rc=0, [data-testid=plans-cleanup-review] present with a headline matching /assessed/. Strip text: '64 assessed · 0 auto-applied · 64 still open … 64 recommendations 12 owner actions 52 cleanup candidates'."
+    },
+    {
+      "id": "r-7-census-recorded",
+      "passed": true,
+      "evidence": "work_items:get at 13:16Z: EI-21355873806996660 done; WI-2107951 done (census comment by P-007 / WI-10004810); WI-2140580 open, census comment recorded and deliberately not superseded per D-005 (only 1 of its 26 plans was re-scanned by sweep bulk-9e0ebfa4)."
+    }
+  ],
+  "planSlug": "plan-cleanup-system-repair-2026-10-01",
   "recordedBy": "su-3d43bdee-11b4-4008-8867-0d51e16a732b",
-  "purpose": "Live-plane acceptance evidence for BARs R-4, R-6 and R-7 (instrument:none / live plane). Each reading names the query or harness run that produced it so a grader can re-measure.",
-  "R-4": {
-    "claim": "A recurring sweep produces a real plan-cleanup run with no LLM enumeration, through startPlanCleanupRun; the old LLM template schedule is disarmed.",
-    "readings": [
-      {
-        "source": "harness_shared.attention_bulk_runs WHERE requested_by='system:plan-cleanup-sweep' (workspace papercusp-workspace, harness papercusp)",
-        "rows": [
-          { "run_id": "bulk-c830bde2-8a0e-4639-8f35-7b591c4487b8", "run_kind": "plan-cleanup", "phase": "failed", "total_items": 200, "failed": 63, "created_at": "2026-10-01T11:19:33Z", "note": "first sweep fire; resolver launched on the wrong profile and hit a usage limit — fixed by WI-10004814 (D-004)" },
-          { "run_id": "bulk-9e0ebfa4-60bc-486b-91cb-6e9be1067b06", "run_kind": "plan-cleanup", "phase": "review", "total_items": 200, "recommended": 64, "failed": 0, "created_at": "2026-10-01T11:56:59Z", "finished_at": "2026-10-01T12:09:16Z", "note": "post-fix sweep fire; codex gpt-6.1-sol xhigh resolver per the standing profile" }
-        ]
-      },
-      {
-        "source": "harness_shared.harness_plans WHERE plan_slug='plan-cleanup-recurring-sweep-2026-09-01'",
-        "rows": [ { "plan_slug": "plan-cleanup-recurring-sweep-2026-09-01", "status": "draft", "schedule_active": false } ]
-      }
-    ],
-    "verdict": "pass"
-  },
-  "R-6": {
-    "claim": "On the current build a clean single-plan run settles complete, a sweep fire produces a run, and the Plans strip renders in a headless desktop shell.",
-    "readings": [
-      {
-        "source": "harness_shared.attention_bulk_runs run_id bulk-84e6854f-5105-4435-be20-6e6441f63f67",
-        "rows": [ { "run_kind": "plan-cleanup", "phase": "complete", "requested_by": "owner", "total_items": 1, "failed": 0, "created_at": "2026-10-01T11:50:44Z", "finished_at": "2026-10-01T11:50:48Z", "note": "single clean plan run started through :3170" } ]
-      },
-      { "source": "sweep fire", "ref": "bulk-9e0ebfa4-60bc-486b-91cb-6e9be1067b06 (see R-4)" },
-      {
-        "source": "scripts/verify-tauri-headless.sh -- bash .papercusp/scratch/p006-plans-strip.sh",
-        "harnessRun": "20261001T125353Z-273079",
-        "harnessVerdict": "HARNESS_RESULT verdict=pass passed=3 failed=0",
-        "evidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261001T125353Z-273079",
-        "assertion": "P006_STRIP_REVIEW_CHECK rc=0 — [data-testid=plans-cleanup-review] present and its headline matches /assessed/",
-        "stripText": "LAUNCHED gpt-6.1-sol:xhigh · codex · default · warm · review-all fresh · headless · su 64 assessed · 0 auto-applied · 64 still open … 64 recommendations 12 owner actions 52 cleanup candidates",
-        "navigation": "nuqs opcv=plans + chat=true mounts PlansPane inside OperatorChatSidebar"
-      }
-    ],
-    "verdict": "pass"
-  },
-  "R-7": {
-    "claim": "The plan records a before-and-after census of plan-cleanup runs.",
-    "readings": [
-      { "source": "work_items:get EI-21355873806996660", "state": "done" },
-      { "source": "work_items:get WI-2107951", "state": "done", "note": "census comment recorded by P-007 (WI-10004810)" },
-      { "source": "work_items:get WI-2140580", "state": "open", "note": "census comment recorded; deliberately NOT superseded per plan decision D-005 — only 1 of its 26 plans was re-scanned by sweep bulk-9e0ebfa4, so superseding would claim a re-measurement that did not happen" },
-      { "source": "plan audit seq 2, P-007 note", "text": "EI-21355873806996660 closed; WI-2140580 commented not superseded per D-005; census recorded on WI-2140580 and WI-2107951." }
-    ],
-    "verdict": "pass-with-recorded-deviation (D-005)"
-  }
+  "headlessEvidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261001T125353Z-273079"
 }
