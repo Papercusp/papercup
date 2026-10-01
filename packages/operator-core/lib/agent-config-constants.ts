@@ -748,7 +748,7 @@ export function isLaunchAccountValue(v: string): boolean {
  * config tests pin both keys so a third run kind cannot silently become
  * unconfigurable.
  */
-export const BULK_RESOLVER_PROFILE_KINDS = ['inbox-resolve', 'plan-cleanup'] as const;
+export const BULK_RESOLVER_PROFILE_KINDS = ['inbox-resolve', 'plan-cleanup', 'intake-triage'] as const;
 export type BulkResolverProfileKind = (typeof BULK_RESOLVER_PROFILE_KINDS)[number];
 
 /** Carry is an editable advanced axis; fresh/headless/su remain fixed launch
@@ -788,6 +788,7 @@ export function defaultBulkResolverLaunchProfiles(): BulkResolverLaunchProfiles 
   return {
     'inbox-resolve': { ...DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE },
     'plan-cleanup': { ...DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE },
+    'intake-triage': { ...DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE },
   };
 }
 
