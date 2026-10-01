@@ -26,6 +26,7 @@ import {
   gitSubcommandOf,
   qualifiesForLazyReceipt,
   SIDECAR_LAZY_RECEIPT_DELAY_MS,
+  sidecarReceiptMetadata,
   type ExecParams,
 } from './sidecar-exec-process';
 
@@ -94,6 +95,48 @@ describe('gitSubcommandOf / qualifiesForLazyReceipt (pure)', () => {
   it('exposes a delay long enough that a ~4 ms read never mints but a network ls-remote does', () => {
     expect(SIDECAR_LAZY_RECEIPT_DELAY_MS).toBeGreaterThanOrEqual(250);
     expect(SIDECAR_LAZY_RECEIPT_DELAY_MS).toBeLessThanOrEqual(2_000);
+  });
+});
+
+// The ledger carries no argv, so these two fields are the ONLY way to answer "which git execs still
+// mint a receipt after the lazy fix" (WI-10004674 done-when (b)). Pin them against the classifier so
+// the label can never disagree with the behaviour it describes.
+describe('sidecarReceiptMetadata (receipt attribution)', () => {
+  it.each([
+    [['rev-parse', 'HEAD'], 'rev-parse', true],
+    [['-C', '/r', 'ls-remote', 'origin'], 'ls-remote', true],
+    [['status', '--porcelain'], 'status', false],
+    [['commit', '-m', 'x'], 'commit', false],
+    [['--weird-global', 'log'], 'unknown', false],
+    [[], 'unknown', false],
+  ] as const)('git %j -> gitSubcommand %s, readOnlyGit %s', (args, subcommand, readOnly) => {
+    expect(sidecarReceiptMetadata({ command: 'git', args: [...args] })).toEqual({
+      processKind: 'sidecar-exec',
+      command: 'git',
+      gitSubcommand: subcommand,
+      readOnlyGit: readOnly,
+    });
+  });
+
+  it('readOnlyGit always agrees with qualifiesForLazyReceipt', () => {
+    for (const args of [['cat-file', '--batch'], ['fetch'], ['log', '-1'], ['status']]) {
+      expect(sidecarReceiptMetadata({ command: 'git', args }).readOnlyGit).toBe(
+        qualifiesForLazyReceipt({ command: 'git', args }),
+      );
+    }
+  });
+
+  it('a non-git command carries no git fields (shape unchanged for every other caller)', () => {
+    expect(sidecarReceiptMetadata({ command: 'node', args: ['x.js'] })).toEqual({
+      processKind: 'sidecar-exec',
+      command: 'node',
+    });
+  });
+
+  it('is deterministic, so a retry under one idempotency key keeps one request digest', () => {
+    const a = sidecarReceiptMetadata({ command: 'git', args: ['log', '-1'] });
+    const b = sidecarReceiptMetadata({ command: 'git', args: ['log', '-1'] });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
 

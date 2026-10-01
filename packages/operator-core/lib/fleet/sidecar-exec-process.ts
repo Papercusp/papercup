@@ -30,7 +30,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
 
-import { qualifiesForLazyReceipt } from './sidecar-read-only-git';
+import { gitSubcommandOf, qualifiesForLazyReceipt } from './sidecar-read-only-git';
 
 import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import {
@@ -182,6 +182,27 @@ function lazyReceipt(
     },
     finish: (demand) => settle((e) => e.finish(demand)),
     cancel: (reason) => settle((e) => e.cancel(reason)),
+  };
+}
+
+/**
+ * Receipt metadata. A git receipt also names its SUBCOMMAND and whether it was
+ * eligible for the lazy path: the ledger carries no argv, so without these a
+ * "which git execs still mint receipts after the lazy-receipt fix" question is
+ * unanswerable — a read-only subcommand here is a read that outlived the delay,
+ * a non-read-only one was always going to be eager (WI-10004674 done-when (b)).
+ * Derived deterministically from `params`, so a retry under the same
+ * idempotency key keeps the same request digest.
+ */
+export function sidecarReceiptMetadata(
+  params: Pick<ExecParams, 'command' | 'args'>,
+): Record<string, string | boolean> {
+  const base = { processKind: 'sidecar-exec', command: params.command };
+  if (params.command !== 'git') return base;
+  return {
+    ...base,
+    gitSubcommand: gitSubcommandOf(params.args ?? []) ?? 'unknown',
+    readOnlyGit: qualifiesForLazyReceipt(params),
   };
 }
 
