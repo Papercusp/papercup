@@ -2511,4 +2511,51 @@ describe('Jev on the push path (plan jev-decision-model-integration-2026-09-29, 
       expect(admission.jev).toMatchObject({ effective: mode, skipped: 'no-time' });
     }
   });
+
+  // WI-10004485 step D (staging, 2026-10-01): a stale-while-revalidate rebuild answers
+  // nobody, yet sized from the hook wall it skipped Jev with budgets down to
+  // -2,175 ms while its own deadline still had time. The wall applies only while a
+  // caller waits.
+  it('once no caller waits, the client wall no longer bounds Jev; the build deadline still does', async () => {
+    jev.mode = 'on';
+    const calls = answering([0.9, 0.95]);
+    useBackend(mockBackend(ROWS));
+    const deadline = createMemoryWorkDeadline(1000);
+    try {
+      // The wall passed 2 s ago; the build's own deadline has about 1 s left.
+      await buildMemoryContextBlock({ ...INPUT, deadline, respondByMs: Date.now() - 2000, callerWaiting: () => false });
+    } finally {
+      deadline.close();
+    }
+    await flush();
+    expect(calls).toHaveLength(1);
+    const timeoutMs = (calls[0]!.options as { timeoutMs?: number }).timeoutMs!;
+    expect(timeoutMs).toBeLessThanOrEqual(1000 - 250);
+    expect(timeoutMs).toBeGreaterThanOrEqual(150);
+    const { admission } = recordRecallStatsMock.mock.calls.at(-1)![1] as { admission: { jev?: Record<string, unknown> } };
+    expect(admission.jev).toMatchObject({ effective: 'on', outcome: 'answered', callerWaiting: false });
+    expect(admission.jev!.wallLeftMs as number).toBeLessThan(-1900);
+    expect(admission.jev!.deadlineLeftMs as number).toBeGreaterThan(250);
+  });
+
+  it('while a caller still waits, a passed wall still skips Jev, and the funnel names that bound', async () => {
+    const off = await baseline();
+    jev.mode = 'on';
+    const calls = answering([0.9, 0.95]);
+    useBackend(mockBackend(ROWS));
+    const deadline = createMemoryWorkDeadline(1000);
+    let block: string | null;
+    try {
+      block = await buildMemoryContextBlock({ ...INPUT, deadline, respondByMs: Date.now() - 2000, callerWaiting: () => true });
+    } finally {
+      deadline.close();
+    }
+    await flush();
+    expect(calls).toHaveLength(0);
+    expect(block).toBe(off);
+    const { admission } = recordRecallStatsMock.mock.calls.at(-1)![1] as { admission: { jev?: Record<string, unknown> } };
+    expect(admission.jev).toMatchObject({ effective: 'on', skipped: 'no-time', callerWaiting: true });
+    expect(admission.jev!.wallLeftMs as number).toBeLessThan(0);
+    expect(admission.jev!.deadlineLeftMs as number).toBeGreaterThan(250);
+  });
 });

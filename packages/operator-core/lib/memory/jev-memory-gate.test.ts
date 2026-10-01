@@ -363,4 +363,22 @@ describe('jevFunnelEntry — the recall row records the gate (WI-10004485)', () 
     expect(jevFunnelEntry({ effective: 'shadow', fired: true }, Number.POSITIVE_INFINITY)).toEqual({ effective: 'shadow' });
     expect(jevFunnelEntry({ effective: 'shadow', fired: false, cached: true }, 300)).toEqual({ effective: 'shadow', budgetMs: 300, cached: true });
   });
+
+  // WI-10004485 step D: a skip must name the bound that caused it. budgetMs alone
+  // could not tell a passed client wall from an exhausted build deadline.
+  it('records which bound set the budget: whether a caller waited, and what each bound had left', () => {
+    expect(jevFunnelEntry(
+      { effective: 'shadow', fired: false, skipped: 'no-time' },
+      -2175.4,
+      { callerWaiting: true, wallLeftMs: -1925.4, deadlineLeftMs: 812.6 },
+    )).toEqual({
+      effective: 'shadow', budgetMs: -2175, skipped: 'no-time', callerWaiting: true, wallLeftMs: -1925, deadlineLeftMs: 813,
+    });
+    // An unbounded deadline (Infinity) is not a number worth recording.
+    expect(jevFunnelEntry(
+      { effective: 'on', outcome: 'answered', keep: [true], scores: [0.9], model: 'jev-1.13.0' },
+      562,
+      { callerWaiting: false, wallLeftMs: -3000, deadlineLeftMs: Number.POSITIVE_INFINITY },
+    )).toEqual({ effective: 'on', budgetMs: 562, callerWaiting: false, wallLeftMs: -3000, outcome: 'answered' });
+  });
 });
