@@ -61,6 +61,9 @@ vi.mock('../../memory/memory-pause', () => ({
 vi.mock('../../memory/ref-expand', () => ({
   expandRefsForEmbed: vi.fn(async () => undefined),
 }));
+vi.mock('../../knowledge-packs/identity-learning', () => ({
+  wornMemoryIdentityIds: vi.fn(async () => ['test-identity']),
+}));
 // P-009: remember.ts now asks resolveConflictJudge(); route it through the
 // anthropic-judge mocks below so these cases keep their meaning and never touch
 // the real Jev key store. The factory itself is pinned in conflict-judge.test.ts.
@@ -996,6 +999,7 @@ describe('memory:remember — source attribution (EI-10358)', () => {
     expect(meta.source).toBe('agent');
     expect(meta.source_role).toBe('worker');
     expect(meta.source_session).toBe('su-abc123');
+    expect(meta.worn_identity_ids).toEqual(['test-identity']);
   });
 
   it('stamps source:"agent" with no source_role/source_session when ctx carries neither (no false attribution)', async () => {

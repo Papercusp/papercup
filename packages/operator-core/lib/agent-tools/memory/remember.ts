@@ -335,6 +335,10 @@ export default defineTool({
     };
     if (args.harness_slug) metadata.harness_slug = args.harness_slug;
     if (args.hive_slug) metadata.hive_slug = args.hive_slug;
+    if (ctx.uiClientId && ctx.principal?.workspaceId) {
+      const { wornMemoryIdentityIds } = await import('../../knowledge-packs/identity-learning');
+      metadata.worn_identity_ids = await wornMemoryIdentityIds(ctx.uiClientId, ctx.principal.workspaceId);
+    }
 
     // EI-10432 — federation egress needs a ROUTING KEY, and this path never set
     // one. `shareable: true` alone lands the row with memory_canonical.harness_slug
