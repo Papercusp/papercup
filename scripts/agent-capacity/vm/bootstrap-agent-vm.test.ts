@@ -116,4 +116,32 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
     expect(r.stderr).toMatch(/CLAUDE_VERSION/);
     expect(r.stdout).not.toMatch(/RUN /);
   });
+
+  // EI-21417256075155406: a missing skills root makes Codex watch /etc and $HOME with IN_OPEN.
+  const skillRootRuns = (stdout: string) =>
+    stdout.split('\n').filter((l) => l.startsWith('RUN ') && l.includes('skills')).map((l) => l.slice(4));
+
+  it('creates the Codex skills roots by default, after Codex is installed, and reports the setting', () => {
+    const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', HOME: root });
+    expect(r.status).toBe(0);
+    expect(skillRootRuns(r.stdout)).toEqual([
+      'sudo mkdir -p /etc/codex/skills',
+      `mkdir -p ${root}/.agents/skills ${root}/.codex/skills`,
+    ]);
+    const lines = r.stdout.trim().split('\n');
+    expect(lines.indexOf('RUN sudo mkdir -p /etc/codex/skills')).toBeGreaterThan(lines.findIndex((l) => l.includes('npm install -g')));
+    expect(lines.slice(-2)).toEqual(['CODEX_SKILL_ROOTS=create', 'BOOTSTRAP_OK']);
+  });
+
+  it('CODEX_SKILL_ROOTS=leave keeps the as-shipped baseline, and a bad value is refused before anything runs', () => {
+    const leave = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', CODEX_SKILL_ROOTS: 'leave' });
+    expect(leave.status).toBe(0);
+    expect(skillRootRuns(leave.stdout)).toEqual([]);
+    expect(leave.stdout).toMatch(/^CODEX_SKILL_ROOTS=leave$/m);
+
+    const bad = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', CODEX_SKILL_ROOTS: 'yes' });
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toMatch(/CODEX_SKILL_ROOTS must be create or leave/);
+    expect(bad.stdout).not.toMatch(/RUN /);
+  });
 });

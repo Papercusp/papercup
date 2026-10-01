@@ -22,6 +22,14 @@
 # clone. The volume must exist before anything is put in the cache, so a non-empty cache
 # dir that is not already a mount point is refused rather than hidden under the mount.
 #
+# CODEX_SKILL_ROOTS=create (default) | leave. Codex's skills watcher watches each skills
+# root, and for a MISSING root it watches the nearest existing ancestor with an inotify mask
+# that includes IN_OPEN. On a bare VM that is /etc and $HOME, so every process start (each
+# opens /etc/ld.so.cache) and every open of a file in $HOME wakes every Codex session
+# (EI-21417256075155406, measured 2026-10-01). `create` makes the empty roots
+# (/etc/codex/skills, ~/.agents/skills, ~/.codex/skills); `leave` keeps the as-shipped
+# behaviour, which is what the P-005 baseline VMs ran with.
+#
 # DRY_RUN=1 prints each command as `RUN <argv>` instead of running it (used by the test).
 set -euo pipefail
 
@@ -32,6 +40,11 @@ NODE_VERSION=${NODE_VERSION:-24.18.1}
 CACHE=${AGENT_CAPACITY_CACHE:-$HOME/.cache/agent-capacity}
 CACHE_XFS_GB=${CACHE_XFS_GB:-}
 CACHE_XFS_IMAGE=${CACHE_XFS_IMAGE:-$CACHE.xfs.img}
+CODEX_SKILL_ROOTS=${CODEX_SKILL_ROOTS:-create}
+case "$CODEX_SKILL_ROOTS" in
+  create | leave) ;;
+  *) echo "BOOTSTRAP_FAILED CODEX_SKILL_ROOTS must be create or leave, got '$CODEX_SKILL_ROOTS'" >&2; exit 2 ;;
+esac
 
 run() {
   if [ "${DRY_RUN:-0}" = 1 ]; then printf 'RUN %s\n' "$*"; else "$@"; fi
@@ -99,6 +112,10 @@ fi
 run curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz
 run sudo tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
 run sudo npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_VERSION}" "@openai/codex@${CODEX_VERSION}"
+if [ "$CODEX_SKILL_ROOTS" = create ]; then
+  run sudo mkdir -p /etc/codex/skills
+  run mkdir -p "$HOME/.agents/skills" "$HOME/.codex/skills"
+fi
 
 run curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
 run sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh /tmp/uv-install.sh
@@ -125,4 +142,5 @@ if [ "${DRY_RUN:-0}" != 1 ]; then
   case "$have_claude" in "$CLAUDE_VERSION"*) ;; *) echo "BOOTSTRAP_FAILED claude is $have_claude, want $CLAUDE_VERSION" >&2; exit 4 ;; esac
   case "$have_codex" in *"$CODEX_VERSION") ;; *) echo "BOOTSTRAP_FAILED codex is $have_codex, want $CODEX_VERSION" >&2; exit 4 ;; esac
 fi
+echo "CODEX_SKILL_ROOTS=$CODEX_SKILL_ROOTS"
 echo BOOTSTRAP_OK

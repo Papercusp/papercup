@@ -14,6 +14,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1621,5 +1622,57 @@ describe('makeCodingAssistantCodexHome (pui-chat-first-ux P-016)', () => {
     const out = parseToml(codingAssistantCodexConfigToml(toml)) as Record<string, any>;
     expect(Object.keys(out.mcp_servers).sort()).toEqual(['papercusp', 'papercusp-sub']);
     expect(out.model).toBe('m');
+  });
+});
+
+// EI-21417256075155406: a missing skills root makes Codex's watcher sit on the nearest existing
+// ancestor (/etc, $HOME, the Codex home) with IN_OPEN, so unrelated file opens wake every session.
+describe('ensureCodexSkillWatchRoots', () => {
+  it('creates the user and Codex-home skills roots and reports a missing system root', async () => {
+    const { ensureCodexSkillWatchRoots } = await import('./role-codex-home');
+    const codexHome = join(fakeHome, 'codex-home');
+    const systemSkillsDir = join(fakeHome, 'etc', 'codex', 'skills');
+    const roots = ensureCodexSkillWatchRoots({ codexHome, systemSkillsDir });
+    expect(roots).toEqual({
+      codexHomeSkillsDir: join(codexHome, 'skills'),
+      codexHomeSkillsReady: true,
+      userSkillsDir: join(fakeHome, '.agents', 'skills'),
+      userSkillsReady: true,
+      systemSkillsDir,
+      systemSkillsReady: false,
+    });
+    expect(lstatSync(join(fakeHome, '.agents', 'skills')).isDirectory()).toBe(true);
+    // The helper never creates the system root itself (it needs root): host setup owns it.
+    expect(existsSync(systemSkillsDir)).toBe(false);
+  });
+
+  it('keeps an inherited ~/.codex/skills symlink and replaces a dangling one with a real dir', async () => {
+    const { ensureCodexSkillWatchRoots } = await import('./role-codex-home');
+    const realSkills = join(fakeHome, '.codex', 'skills');
+    mkdirSync(realSkills, { recursive: true });
+    const linked = join(fakeHome, 'linked-home');
+    mkdirSync(linked);
+    symlinkSync(realSkills, join(linked, 'skills'), 'dir');
+    ensureCodexSkillWatchRoots({ codexHome: linked });
+    expect(lstatSync(join(linked, 'skills')).isSymbolicLink()).toBe(true);
+
+    const dangling = join(fakeHome, 'dangling-home');
+    mkdirSync(dangling);
+    symlinkSync(join(fakeHome, 'gone'), join(dangling, 'skills'), 'dir');
+    const roots = ensureCodexSkillWatchRoots({ codexHome: dangling });
+    expect(roots.codexHomeSkillsReady).toBe(true);
+    expect(lstatSync(join(dangling, 'skills')).isDirectory()).toBe(true);
+  });
+
+  it('a fresh role home gets the roots and reports them in papercusp-diagnostics.json', async () => {
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 77, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    expect(lstatSync(join(out.codexHome, 'skills')).isDirectory()).toBe(true);
+    expect(lstatSync(join(fakeHome, '.agents', 'skills')).isDirectory()).toBe(true);
+    const diag = JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
+    expect(diag.codexSkillWatchRoots.userSkillsReady).toBe(true);
+    expect(diag.codexSkillWatchRoots.codexHomeSkillsReady).toBe(true);
+    expect(diag.codexSkillWatchRoots.systemSkillsDir).toBe('/etc/codex/skills');
+    expect(typeof diag.codexSkillWatchRoots.systemSkillsReady).toBe('boolean');
   });
 });

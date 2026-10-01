@@ -51,6 +51,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -191,7 +192,67 @@ function freshCodexHome(codexHome: string): string {
   rmSync(codexHome, { recursive: true, force: true });
   mkdirSync(codexHome, { recursive: true });
   inheritUserCodexHome(codexHome);
+  ensureCodexSkillWatchRoots({ codexHome });
   return codexHome;
+}
+
+/** The system skills root Codex reads. Creating it needs root, so host setup provisions it. */
+export const CODEX_SYSTEM_SKILLS_DIR = '/etc/codex/skills';
+
+export interface CodexSkillWatchRoots {
+  /** `<CODEX_HOME>/skills` — a symlink to ~/.codex/skills when that exists, else an empty dir. */
+  codexHomeSkillsDir: string;
+  codexHomeSkillsReady: boolean;
+  /** `~/.agents/skills` — user-writable, created here. */
+  userSkillsDir: string;
+  userSkillsReady: boolean;
+  /** `/etc/codex/skills` — only reported; a missing one makes every Codex session watch /etc. */
+  systemSkillsDir: string;
+  systemSkillsReady: boolean;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * EI-21417256075155406 (measured 2026-10-01, codex-cli 0.159.3): Codex's skills watcher
+ * watches each skills root, and for a MISSING root it watches the nearest existing ancestor
+ * with an inotify mask that includes IN_OPEN. A missing /etc/codex/skills therefore puts a
+ * watch on /etc, and every process start anywhere on the host (each opens /etc/ld.so.cache)
+ * wakes every Codex session; a missing ~/.agents/skills or <CODEX_HOME>/skills does the same
+ * for $HOME / the busy Codex home. On a 128-core agent host this held idle sessions at
+ * ~1/3 core each; creating the roots dropped them to ~0.1%. Creating the roots as empty
+ * directories pins the watches onto quiet directories. Best-effort and never throws.
+ */
+export function ensureCodexSkillWatchRoots(
+  opts: { codexHome?: string; home?: string; systemSkillsDir?: string } = {},
+): CodexSkillWatchRoots {
+  const codexHomeSkillsDir = join(opts.codexHome ?? join(opts.home ?? homedir(), '.codex'), 'skills');
+  const userSkillsDir = join(opts.home ?? homedir(), '.agents', 'skills');
+  const systemSkillsDir = opts.systemSkillsDir ?? CODEX_SYSTEM_SKILLS_DIR;
+  for (const dir of [codexHomeSkillsDir, userSkillsDir]) {
+    if (isDirectory(dir)) continue;
+    try {
+      // A dangling inherited symlink would make mkdir fail; replace it with a real dir.
+      if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) unlinkSync(dir);
+      mkdirSync(dir, { recursive: true });
+    } catch {
+      /* reported below as not ready */
+    }
+  }
+  return {
+    codexHomeSkillsDir,
+    codexHomeSkillsReady: isDirectory(codexHomeSkillsDir),
+    userSkillsDir,
+    userSkillsReady: isDirectory(userSkillsDir),
+    systemSkillsDir,
+    systemSkillsReady: isDirectory(systemSkillsDir),
+  };
 }
 
 /** EI-11366: the sid `writeSuCodexHome` last stamped at this codexHome path
@@ -824,6 +885,9 @@ function writeCodexHomeDiagnostics(
     requiresExplicitPapercuspLocks: opts.lockRuntime.lockMode === 'manual',
     ...(opts.lockOwnerSid ? { lockOwnerSid: opts.lockOwnerSid } : {}),
     inheritedPromptsCopied: opts.inheritedPromptsCopied,
+    // EI-21417256075155406: systemSkillsReady=false means every Codex session on this host
+    // watches /etc and wakes on every process start — provision /etc/codex/skills.
+    codexSkillWatchRoots: ensureCodexSkillWatchRoots({ codexHome }),
   };
   writeFileSync(join(codexHome, 'papercusp-diagnostics.json'), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
 }
@@ -1278,6 +1342,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
     }
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     inheritUserCodexHome(codexHome);
+    ensureCodexSkillWatchRoots({ codexHome });
   }
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
