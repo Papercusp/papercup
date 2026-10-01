@@ -63,7 +63,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg, GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 // Pure plan-status grammar (zero I/O) — the one definition of "terminal plan",
 // shared with plans:set-plan-status. Used by the pot-owner worklist count.
-import { TERMINAL_PLAN_STATUSES } from '@papercusp/plan-parser';
+import { TERMINAL_PLAN_STATUSES, resolveEffectiveStatusForItems, type ItemStatus } from '@papercusp/plan-parser';
 // Re-exported below for the public surface; imported here because this module
 // uses both internally (the schema's role enum + the resolver signatures).
 import {
@@ -1386,11 +1386,24 @@ function parsePortfolioWorklist(
       else if (status === 'done' || status === 'dropped') counts.done += 1;
       else counts.todo += 1;
     }
-    const nextRow = items.find((item) => {
-      const status = portfolioString(item.status) ?? 'todo';
-      const blockedBy = portfolioArray(item.blockedBy).map(String).filter(Boolean);
-      return status === 'todo' && blockedBy.length === 0;
-    });
+    // Dependency-free means every blocked-by edge has RESOLVED (done/dropped), the
+    // same rule promotion and the claim floor apply. Reading the raw edge list
+    // instead kept a plan whose next todo waited only on finished work compiling
+    // as `blocked` forever, so placement could never offer it.
+    const { items: resolvedItems } = resolveEffectiveStatusForItems(items.map((item, index) => ({
+      id: portfolioString(item.id) ?? `#${index}`,
+      text: portfolioString(item.text) ?? '',
+      storedStatus: (portfolioString(item.status) ?? 'todo') as ItemStatus,
+      importance: 'normal',
+      blockedBy: portfolioArray(item.blockedBy).map(String).filter(Boolean),
+      decisionRefs: [],
+      phase: portfolioString(item.phase),
+      lineNumber: 0,
+      rawLine: '',
+    })));
+    const nextIndex = resolvedItems.findIndex((item) =>
+      item.effectiveStatus === 'todo' && item.unresolvedBlockers.length === 0 && !item.needsHuman);
+    const nextRow = nextIndex >= 0 ? items[nextIndex] : undefined;
     // A WIP item is the fleet's current lane. Only fall through to the next
     // dependency-free todo when nothing is already underway; otherwise a live
     // WIP lease would be hidden behind the subsequent todo and compile as a
@@ -1401,7 +1414,7 @@ function parsePortfolioWorklist(
           id: portfolioString(nextRow.id) ?? 'unknown',
           text: portfolioString(nextRow.text) ?? '',
           phase: portfolioString(nextRow.phase),
-          blockedBy: portfolioArray(nextRow.blockedBy).map(String).filter(Boolean),
+          blockedBy: resolvedItems[nextIndex].unresolvedBlockers,
         }
       : null;
     return [
