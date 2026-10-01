@@ -868,6 +868,10 @@ export const CC_HOOK_FILES = [
   // The incoming-content guard cannot see corruption introduced after dispatch;
   // this hook compares the requested UTF-8 bytes with the resulting file.
   'posttooluse-write-byte-integrity-guard.mjs',
+  // WI-10004699: re-seeds promptOverride.su the moment papercup-pot.su.md is edited, so
+  // the fail-closed launch check (verifyPapercuspSuInstanceOverride) never refuses every
+  // fresh papercusp su launch because a human forgot the manual re-seed (WI-10004556).
+  'posttooluse-su-instance-override-reseed.mjs',
   // PostToolUse nudge: an Edit/Write after the last `lint:tsc` run invalidates that
   // run's "clean" verdict, so the hook says so at the edit instead of hours later at
   // the gate (the hook file shipped without this allowlist entry — install parity 3/3).
@@ -2880,6 +2884,17 @@ export function mergeClaudeHookSettings(
       {
         matcher: fileOverwriteMatcher,
         hooks: cmd('posttooluse-write-byte-integrity-guard.mjs'),
+      },
+    );
+  // merge_su_instance_override_reseed_hook — PostToolUse (WI-10004699). The script itself
+  // no-ops for every path except the canonical papercup-pot.su.md source.
+  if (has('posttooluse-su-instance-override-reseed.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(
+      ev('PostToolUse'),
+      ours('posttooluse-su-instance-override-reseed.mjs'),
+      {
+        matcher: fileWriteMatcher,
+        hooks: cmd('posttooluse-su-instance-override-reseed.mjs'),
       },
     );
   // merge_activity_pre_hook — PreToolUse, matcher '*' (EI-8997: a renewal signal

@@ -202,6 +202,61 @@ export function verifyNpmCache({
   return result.status ?? 1;
 }
 
+/** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */
+export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT = 30_000;
+
+/**
+ * Run `verify` (npm cache verify) while holding PACKAGE_CACHE_MUTEX_NAME EXCLUSIVELY.
+ *
+ * `npm cache verify` WRITES the user-level cache that every checkout shares: after its
+ * garbage collection, cacache's `cleanTmp` step runs `rm -rf <cache>/tmp`, deleting every
+ * download another npm process has staged there and not yet renamed into content-v2.
+ * Until WI-10004430 it ran under the shared READ lease, beside other checkouts' reifies
+ * (the repo-keyed install mutex cannot serialize different roots), so a verify in one
+ * checkout could fail an install in another with
+ * `ENOENT rename <cache>/tmp/… -> content-v2/…` — a workspace-host release cut, 2026-09-30.
+ *
+ * Verify is a repair step, not a precondition. The fs-mutex is writer-preferring, so
+ * while this verifier waits, every other checkout's install queues behind it; past
+ * `waitMs` it gives up and skips verify (loudly) rather than fail this install or stall
+ * the others. Returns verify's exit status, or 0 when it was skipped.
+ */
+export async function verifyNpmCacheExclusive({
+  verify,
+  env = process.env,
+  waitMs = Number(env.PAPERCUSP_NPM_CACHE_VERIFY_WAIT_MS) > 0
+    ? Number(env.PAPERCUSP_NPM_CACHE_VERIFY_WAIT_MS)
+    : NPM_CACHE_VERIFY_WAIT_MS_DEFAULT,
+  acquire = withFsMutex,
+  log = console.error,
+} = {}) {
+  let entered = false;
+  try {
+    return await acquire(
+      PACKAGE_CACHE_MUTEX_NAME,
+      async () => {
+        entered = true;
+        return verify();
+      },
+      {
+        timeoutMs: waitMs,
+        onWaiting: ({ owner, elapsedMs }) => {
+          log(
+            `NPM_INSTALL_SAFE cache verify waiting for exclusive use of the shared npm cache (${Math.round(elapsedMs / 1000)}s so far) — holder: ${String(owner).trim()}`,
+          );
+        },
+      },
+    );
+  } catch (error) {
+    // A throw from verify itself is real; only a failure to ACQUIRE the lock is skippable.
+    if (entered) throw error;
+    log(
+      `NPM_INSTALL_SAFE_CACHE_VERIFY_SKIPPED: no exclusive use of the shared npm cache within ${waitMs}ms (${error instanceof Error ? error.message : String(error)}); installing without npm cache verify, because verifying now would delete another checkout's in-flight downloads.`,
+    );
+    return 0;
+  }
+}
+
 function isStrictlyWithin(parent, candidate) {
   const rel = relative(parent, candidate);
   return (
@@ -842,22 +897,23 @@ export async function main(argv = process.argv.slice(2)) {
   };
   const lockName = repoLockName(repoRoot);
 
-  const installStatus = await withPackageCacheReadLease(
-    () =>
-      withFsMutex(
-        lockName,
+  // Lock order: repo writer → EXCLUSIVE cache (verify only, released) → shared cache
+  // READ lease (reify). Verify must never overlap another checkout's reify — see
+  // verifyNpmCacheExclusive (WI-10004430).
+  const installStatus = await withFsMutex(
+    lockName,
+    async () => {
+      const cacheStatus = await verifyNpmCacheExclusive({
+        verify: () => verifyNpmCache({ repoRoot, npmArgs, env: npmEnv }),
+      });
+      if (cacheStatus !== 0) {
+        console.error(
+          `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
+        );
+        return cacheStatus;
+      }
+      return withPackageCacheReadLease(
         async () => {
-          const cacheStatus = verifyNpmCache({
-            repoRoot,
-            npmArgs,
-            env: npmEnv,
-          });
-          if (cacheStatus !== 0) {
-            console.error(
-              `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
-            );
-            return cacheStatus;
-          }
           console.log(
             `NPM_INSTALL_SAFE running: npm ${npmArgs.join(" ")} (root=${repoRoot}, lock=${lockName})`,
           );
@@ -899,15 +955,16 @@ export async function main(argv = process.argv.slice(2)) {
         {
           onWaiting: ({ owner, elapsedMs }) => {
             console.log(
-              `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
+              `NPM_INSTALL_SAFE waiting on package-cache maintenance (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
             );
           },
         },
-      ),
+      );
+    },
     {
       onWaiting: ({ owner, elapsedMs }) => {
         console.log(
-          `NPM_INSTALL_SAFE waiting on package-cache maintenance (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
+          `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
         );
       },
     },

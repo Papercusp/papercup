@@ -385,6 +385,11 @@ export interface PromoterRunResult {
    * `judgedPairsMissingAdjudication`.
    */
   writerCoverageGap: string[];
+  /**
+   * Scheduled ticks only: what the batch selection skipped before any model call, and why
+   * (WI-10004724). Absent on a targeted run, which keeps the exact historical read.
+   */
+  prescreen?: PromoterPrescreen;
 }
 
 /**
@@ -1973,8 +1978,14 @@ export async function readPendingBatch(
   harnessSlug: string,
   batchSize: number,
   targetItemIds?: readonly string[],
+  opts: { demoteGuardBlocked?: boolean } = {},
 ): Promise<PromoterItem[]> {
   const targets = normalizeAdmissionTargetIds(targetItemIds);
+  // demoteGuardBlocked (scheduled window only, WI-10004724): rows the promote guard will
+  // almost surely refuse on their own state sort LAST, so an ever-growing set of review-gated /
+  // remote / claimed / terminal rows cannot occupy the oldest-first head of every window. This
+  // is an ORDERING key only — it never excludes a row; endpointProtection stays authoritative.
+  const demote = opts.demoteGuardBlocked === true;
   const rows = await sql<WorkItemRow[]>`
     SELECT feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
       FROM harness_shared.work_items
@@ -1984,6 +1995,15 @@ export async function readPendingBatch(
        AND lane IS DISTINCT FROM 'observation'
        AND (${targets === undefined} OR feature_id = ANY(${targets ?? []}::text[]))
      ORDER BY
+       (${demote} AND COALESCE(
+          origin = 'remote'
+          OR NULLIF(btrim(COALESCE(taken_by, '')), '') IS NOT NULL
+          OR COALESCE(claim_hold, FALSE)
+          OR COALESCE(payload ->> '_claimHold', '') = 'true'
+          OR status IN ('blocked', 'needs-human')
+          OR payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
+          OR harness_shared.work_item_status_is_terminal(status),
+          FALSE)) ASC,
        (payload -> 'dedupCandidates') IS NOT NULL DESC,
        COALESCE((payload -> 'dedupCoverage' ->> 'degraded')::boolean, false) DESC,
        created_ts ASC NULLS FIRST, feature_id ASC
@@ -1999,9 +2019,12 @@ async function readPromoterPairs(
   recentTerminalDays: number,
   nowMs: number,
   includeOutsidePending = false,
+  /** Already-selected pending rows that are valid CANDIDATES but need no lateral scan of their own. */
+  extraCandidateIds: readonly string[] = [],
 ): Promise<PromoterPair[]> {
   if (pending.length === 0) return [];
   const ids = pending.map((item) => item.id);
+  const candidateIds = [...new Set([...ids, ...extraCandidateIds])];
   const recentCutoffMs = nowMs - recentTerminalDays * 86_400_000;
   const rows = await sql<PromoterPairRow[]>`
     WITH pending AS (
@@ -2046,7 +2069,7 @@ async function readPromoterPairs(
            AND wi.harness_slug = ${harnessSlug}
            AND wi.feature_id <> p.feature_id
            AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
-           AND (${includeOutsidePending} OR wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${ids}::text[]))
+           AND (${includeOutsidePending} OR wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${candidateIds}::text[]))
            AND (
              NOT harness_shared.work_item_status_is_terminal(wi.status)
              OR wi.updated_ts >= ${recentCutoffMs}
@@ -2079,6 +2102,150 @@ async function readPromoterPairs(
       ) c ON TRUE
      ORDER BY p.feature_id, c.feature_id`;
   return buildPromoterPairs(rows, new Set(ids));
+}
+
+/**
+ * Read-only selection of one promoter tick: the pending batch, its flagged pairs, and the
+ * captured snapshots both the prompt and the writer bind to. A TARGETED (request-driven)
+ * run keeps the exact historical read — narrowing the batch must not hide a pending twin
+ * from screening. A SCHEDULED run over-reads the oldest-first window and prescreens it
+ * (prescreenPromoterWindow) so rows the guard is certain to refuse cost no slot and no
+ * model time. Exported so the selection can be previewed against live data without writes.
+ */
+export async function readPromoterWindow(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    batchSize: number;
+    targetItemIds?: readonly string[];
+    recentTerminalDays: number;
+    nowMs: number;
+  },
+): Promise<{
+  pendingRows: PromoterItem[];
+  pairRows: PromoterPair[];
+  snapshotsById: Map<string, AdmissionMergeSnapshot>;
+  forcedHolds: Map<string, string>;
+  prescreen: PromoterPrescreen | null;
+}> {
+  const readSnapshots = (ids: readonly string[]) =>
+    readAdmissionMergeSnapshots(sql, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, ids: [...ids] });
+  if (input.targetItemIds !== undefined) {
+    const pendingRows = await readPendingBatch(
+      sql,
+      input.workspaceId,
+      input.harnessSlug,
+      input.batchSize,
+      input.targetItemIds,
+    );
+    const pairRows = await readPromoterPairs(
+      sql,
+      input.workspaceId,
+      input.harnessSlug,
+      pendingRows,
+      input.recentTerminalDays,
+      input.nowMs,
+      true,
+    );
+    const snapshotsById = await readSnapshots([
+      ...new Set([...pendingRows.map((item) => item.id), ...pairRows.flatMap((pair) => [pair.a.id, pair.b.id])]),
+    ]);
+    return { pendingRows, pairRows, snapshotsById, forcedHolds: new Map(), prescreen: null };
+  }
+  const window = await readPendingBatch(
+    sql,
+    input.workspaceId,
+    input.harnessSlug,
+    input.batchSize * PROMOTER_PRESCREEN_WINDOW_FACTOR,
+    undefined,
+    { demoteGuardBlocked: true },
+  );
+  const snapshotsById = await readSnapshots(window.map((item) => item.id));
+  // Self-blocked rows are excluded from the pair read itself: their pairs can never persist.
+  const selfBlockedIds = new Set(
+    window
+      .filter((item) => {
+        const snapshot = snapshotsById.get(item.id);
+        return snapshot !== undefined && endpointProtection(snapshot, 'promote') !== null;
+      })
+      .map((item) => item.id),
+  );
+  const eligible = window.filter((item) => !selfBlockedIds.has(item.id));
+  // The pair read is the expensive step (~1.7 s per row measured live, 2026-10-01), so read it
+  // in chunks of exactly what the batch still needs: normally ONE chunk of batchSize, the same
+  // cost as the historical single read. Rows already selected ride along as candidates so a
+  // twin split across two chunks is still paired.
+  const pairsByKey = new Map<string, PromoterPair>();
+  const processed = new Set<string>(selfBlockedIds);
+  let cursor = 0;
+  let selected = prescreenPromoterWindow({ window: [], pairs: [], snapshots: snapshotsById, batchSize: input.batchSize });
+  while (selected.batch.length < input.batchSize && cursor < eligible.length) {
+    const chunk = eligible.slice(cursor, cursor + (input.batchSize - selected.batch.length));
+    cursor += chunk.length;
+    const chunkPairs = await readPromoterPairs(
+      sql,
+      input.workspaceId,
+      input.harnessSlug,
+      chunk,
+      input.recentTerminalDays,
+      input.nowMs,
+      false,
+      selected.batch.map((item) => item.id),
+    );
+    for (const pair of chunkPairs) {
+      const prior = pairsByKey.get(pair.pairKey);
+      pairsByKey.set(
+        pair.pairKey,
+        prior
+          ? {
+              ...prior,
+              signals: [...new Set([...prior.signals, ...pair.signals])],
+              cosine: (pair.cosine ?? -1) > (prior.cosine ?? -1) ? pair.cosine : prior.cosine,
+            }
+          : pair,
+      );
+    }
+    for (const item of chunk) processed.add(item.id);
+    const missing = [...new Set(chunkPairs.flatMap((pair) => [pair.a.id, pair.b.id]))].filter(
+      (id) => !snapshotsById.has(id),
+    );
+    for (const [id, snapshot] of await readSnapshots(missing)) snapshotsById.set(id, snapshot);
+    selected = prescreenPromoterWindow({
+      window: window.filter((item) => processed.has(item.id)),
+      pairs: [...pairsByKey.values()],
+      snapshots: snapshotsById,
+      batchSize: input.batchSize,
+    });
+  }
+  if (selected.prescreen.window === 0 && selfBlockedIds.size > 0) {
+    // Every window row is self-blocked: still report them (no pair read needed).
+    selected = prescreenPromoterWindow({ window, pairs: [], snapshots: snapshotsById, batchSize: input.batchSize });
+  }
+  return {
+    pendingRows: selected.batch,
+    pairRows: selected.pairs,
+    snapshotsById,
+    forcedHolds: selected.forcedHolds,
+    prescreen: selected.prescreen,
+  };
+}
+
+/**
+ * A batch row with an unjudged, transiently protected twin must not be PROMOTED past it.
+ * A merge into a movable canonical (or a model hold) already resolves the row and stands.
+ */
+export function applyPrescreenHolds(plan: PromoterPlan, forcedHolds: ReadonlyMap<string, string>): PromoterPlan {
+  if (forcedHolds.size === 0) return plan;
+  return {
+    ...plan,
+    dispositions: plan.dispositions.map((disposition) => {
+      const reason = forcedHolds.get(disposition.itemId);
+      return reason && disposition.action === 'promote'
+        ? { itemId: disposition.itemId, action: 'hold', reason }
+        : disposition;
+    }),
+  };
 }
 
 async function unadjudicatedCensus(sql: OrgSql, workspaceId: string, harnessSlug: string): Promise<number> {
@@ -3200,6 +3367,202 @@ function snapshotIdentityProblem(
     };
   }
   return endpointProtection(live, role, options);
+}
+
+/**
+ * Over-read factor for the scheduled (non-targeted) promoter window. The window is read
+ * oldest-first; items the guard would refuse on their own state are skipped, and the batch
+ * is refilled from the rest of the window (WI-10004724).
+ */
+export const PROMOTER_PRESCREEN_WINDOW_FACTOR = 3;
+const PROMOTER_PRESCREEN_SAMPLE_CAP = 25;
+
+/**
+ * Endpoint protections that no later tick of THIS promoter can lift: a remote-owned row is
+ * written only by its owning node, and a terminal row without completion evidence stays
+ * terminal. A pair touching one can never persist any adjudication, so it is not a
+ * dedup-resolution option at all — the pending endpoint is judged on its other pairs.
+ */
+const PERMANENT_ENDPOINT_PROTECTIONS: ReadonlySet<AdmissionMergeGuardRefusal['reason']> = new Set([
+  'remote-owned',
+  'terminal-canonical-without-completion',
+]);
+
+export type PromoterPrescreenClass = 'self-blocked' | 'deferred' | 'unresolvable-pair' | 'protected-pair';
+
+export interface PromoterPrescreenSample {
+  itemId: string;
+  class: PromoterPrescreenClass;
+  reason: AdmissionMergeGuardRefusal['reason'];
+  /** The protected counterpart for a pair class; null when the item itself is protected. */
+  blockedBy: string | null;
+}
+
+export interface PromoterPrescreen {
+  /** Pending/unreviewed rows read (oldest-first) before selection. */
+  window: number;
+  /** Rows selected into this tick's batch. */
+  selected: number;
+  /** Rows skipped because the promote guard refuses them on their OWN state. */
+  selfBlocked: number;
+  /** Rows skipped because every remaining twin is transiently protected. */
+  deferred: number;
+  /** Pairs removed before the model call: a counterpart is permanently unresolvable. */
+  unresolvablePairs: number;
+  /** Pairs removed before the model call: a counterpart is transiently protected. */
+  protectedPairs: number;
+  /** Batch rows held without a promote because a transiently protected twin is unjudged. */
+  forcedHolds: number;
+  samples: PromoterPrescreenSample[];
+}
+
+/**
+ * The guard verdict for ONE endpoint in every role the promoter could give it. The
+ * `reference` role is the weakest check that still refuses every role: a row it refuses
+ * cannot be a canonical, a reference, or (being terminal or protected) a loser. Pure —
+ * the same captured snapshot always yields the same answer, so nothing is memoized.
+ */
+export function admissionEndpointBlock(
+  snapshot: AdmissionMergeSnapshot | undefined,
+): (Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> & { permanent: boolean }) | null {
+  if (!snapshot) return null;
+  const problem = endpointProtection(snapshot, 'reference');
+  if (!problem) return null;
+  return { ...problem, permanent: PERMANENT_ENDPOINT_PROTECTIONS.has(problem.reason) };
+}
+
+/**
+ * Select this tick's batch from an over-read window WITHOUT spending model time on work the
+ * persistence guard is certain to refuse (WI-10004724). Before this, the oldest re-review rows —
+ * agent-review revision-requested, remote-owned, terminal — were re-selected every tick, their
+ * ~140 pairs re-judged for ~10 minutes, every write refused, and nothing behind them promoted.
+ *
+ * Classification is recomputed from the captured snapshots on every tick rather than memoized:
+ * the guard is a pure function of the snapshot, so the moment a protection lifts (a review is
+ * resolved, a claim ends) the row re-enters with no stale memo to invalidate.
+ *
+ *  - self-blocked: the promote guard refuses the row itself → skipped (no slot, no model).
+ *  - a pair whose counterpart is permanently unresolvable → dropped; the row is judged on the rest.
+ *  - a pair whose counterpart is transiently protected → dropped. A row left with only such
+ *    pairs is deferred (skipped); a row that still has movable pairs is judged on those and
+ *    then HELD, so it is never promoted past an unjudged protected twin.
+ *
+ * The persistence guard still re-checks every write under row locks; this only decides what to ask.
+ */
+export function prescreenPromoterWindow(input: {
+  window: readonly PromoterItem[];
+  pairs: readonly PromoterPair[];
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>;
+  batchSize: number;
+}): { batch: PromoterItem[]; pairs: PromoterPair[]; forcedHolds: Map<string, string>; prescreen: PromoterPrescreen } {
+  const samples: PromoterPrescreenSample[] = [];
+  const sample = (entry: PromoterPrescreenSample) => {
+    if (samples.length < PROMOTER_PRESCREEN_SAMPLE_CAP) samples.push(entry);
+  };
+  const windowIds = new Set(input.window.map((item) => item.id));
+  const selfBlocked = new Set<string>();
+  for (const item of input.window) {
+    const snapshot = input.snapshots.get(item.id);
+    const problem = snapshot ? endpointProtection(snapshot, 'promote') : null;
+    if (!problem) continue;
+    selfBlocked.add(item.id);
+    sample({ itemId: item.id, class: 'self-blocked', reason: problem.reason, blockedBy: null });
+  }
+
+  // A pair's pending endpoints are derived from THIS window, never from the builder's view:
+  // the pairs may have been read in chunks, each of which knew only its own rows.
+  const windowEndpoints = (pair: PromoterPair) => [pair.a.id, pair.b.id].filter((id) => windowIds.has(id));
+  const pairsByItem = new Map<string, PromoterPair[]>();
+  for (const pair of input.pairs) {
+    for (const id of windowEndpoints(pair)) {
+      if (selfBlocked.has(id)) continue;
+      const list = pairsByItem.get(id) ?? [];
+      list.push(pair);
+      pairsByItem.set(id, list);
+    }
+  }
+
+  const blockedPairKeys = new Set<string>();
+  let unresolvablePairs = 0;
+  let protectedPairs = 0;
+  for (const pair of input.pairs) {
+    const blocks = [pair.a.id, pair.b.id]
+      .map((id) => ({ id, block: admissionEndpointBlock(input.snapshots.get(id)) }))
+      .filter((entry) => entry.block !== null);
+    if (blocks.length === 0) continue;
+    blockedPairKeys.add(pair.pairKey);
+    if (blocks.every((entry) => entry.block!.permanent)) unresolvablePairs += 1;
+    else protectedPairs += 1;
+  }
+
+  const batch: PromoterItem[] = [];
+  const forcedHolds = new Map<string, string>();
+  let deferred = 0;
+  for (const item of input.window) {
+    if (selfBlocked.has(item.id)) continue;
+    const itemPairs = pairsByItem.get(item.id) ?? [];
+    let movable = 0;
+    let protectedTwin: { id: string; reason: AdmissionMergeGuardRefusal['reason'] } | null = null;
+    for (const pair of itemPairs) {
+      if (!blockedPairKeys.has(pair.pairKey)) {
+        movable += 1;
+        continue;
+      }
+      const counterpart = pair.a.id === item.id ? pair.b : pair.a;
+      const block = admissionEndpointBlock(input.snapshots.get(counterpart.id));
+      if (block && !block.permanent && !protectedTwin) protectedTwin = { id: counterpart.id, reason: block.reason };
+      if (block?.permanent) {
+        sample({ itemId: item.id, class: 'unresolvable-pair', reason: block.reason, blockedBy: counterpart.id });
+      }
+    }
+    if (protectedTwin && movable === 0) {
+      deferred += 1;
+      sample({ itemId: item.id, class: 'deferred', reason: protectedTwin.reason, blockedBy: protectedTwin.id });
+      continue;
+    }
+    if (batch.length >= input.batchSize) continue;
+    batch.push(item);
+    if (protectedTwin) {
+      forcedHolds.set(
+        item.id,
+        `deferred: twin ${protectedTwin.id} is ${protectedTwin.reason}; held until it can be judged`,
+      );
+      sample({ itemId: item.id, class: 'protected-pair', reason: protectedTwin.reason, blockedBy: protectedTwin.id });
+    }
+  }
+
+  // Keep exactly the pairs today's single-batch read would have produced for these rows: at
+  // least one endpoint is in the batch, no endpoint is protected, and a still-`pending` window
+  // row outside the batch is not a candidate (readPromoterPairs excludes pending non-batch rows).
+  const batchIds = new Set(batch.map((item) => item.id));
+  const pendingOutside = new Set(
+    input.window.filter((item) => !batchIds.has(item.id) && item.admission === 'pending').map((item) => item.id),
+  );
+  const pairs = input.pairs
+    .filter(
+      (pair) =>
+        !blockedPairKeys.has(pair.pairKey) &&
+        windowEndpoints(pair).some((id) => batchIds.has(id)) &&
+        !pendingOutside.has(pair.a.id) &&
+        !pendingOutside.has(pair.b.id),
+    )
+    .map((pair) => ({ ...pair, pendingIds: windowEndpoints(pair).filter((id) => batchIds.has(id)).sort() }));
+
+  return {
+    batch,
+    pairs,
+    forcedHolds,
+    prescreen: {
+      window: input.window.length,
+      selected: batch.length,
+      selfBlocked: selfBlocked.size,
+      deferred,
+      unresolvablePairs,
+      protectedPairs,
+      forcedHolds: forcedHolds.size,
+      samples,
+    },
+  };
 }
 
 function retainedAdmissionObligations(snapshot: AdmissionMergeSnapshot): ReviewedAdmissionRetainedObligations {
@@ -4668,28 +5031,16 @@ export async function runWorkItemAdmissionPromoter(opts: {
   let modelCostUsd: number | null = 0;
   try {
     const censusBefore = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
-    const pendingRows = await readPendingBatch(sql, opts.workspaceId, opts.harnessSlug, batchSize, targetItemIds);
-    const pairRows = await readPromoterPairs(
-      sql,
-      opts.workspaceId,
-      opts.harnessSlug,
-      pendingRows,
-      recentTerminalDays,
-      startedAt,
-      // Narrowing the batch must not hide a pending twin from screening.
-      // Only the transactional mutation boundary narrows what may be written.
-      targetItemIds !== undefined,
-    );
     // Capture ONE authoritative endpoint/reference identity immediately before
     // the model call. Both the prompt and the writer are bound to these exact
     // values; persistence re-reads them under row locks.
-    const snapshotIds = [
-      ...new Set([...pendingRows.map((item) => item.id), ...pairRows.flatMap((pair) => [pair.a.id, pair.b.id])]),
-    ];
-    const snapshotsById = await readAdmissionMergeSnapshots(sql, {
+    const { pendingRows, pairRows, snapshotsById, forcedHolds, prescreen } = await readPromoterWindow(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
-      ids: snapshotIds,
+      batchSize,
+      targetItemIds,
+      recentTerminalDays,
+      nowMs: startedAt,
     });
     const pending = pendingRows.map((item) => bindAdmissionMergeSnapshot(item, snapshotsById.get(item.id)));
     const pairs = pairRows.map((pair) => ({
@@ -4728,10 +5079,11 @@ export async function runWorkItemAdmissionPromoter(opts: {
       recurrenceItems.set(pair.a.id, pair.a);
       recurrenceItems.set(pair.b.id, pair.b);
     }
-    const plan = selectAdmissionRecurrenceCanonicals(
-      planPromoterDispositions(pending, pairs, judgements),
-      recurrenceItems,
-      { onConflict: 'hold' },
+    const plan = applyPrescreenHolds(
+      selectAdmissionRecurrenceCanonicals(planPromoterDispositions(pending, pairs, judgements), recurrenceItems, {
+        onConflict: 'hold',
+      }),
+      forcedHolds,
     );
     await opts.beforePersist?.();
     const persisted = await persistAdmissionPlan(sql, {
@@ -4798,6 +5150,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
         heldReasons: persisted.held,
         // Only ever non-empty on a genuine writer defect; see writerCoverageGap on the result.
         writerCoverageGap,
+        ...(prescreen ? { prescreen } : {}),
       },
     });
     return {
@@ -4814,6 +5167,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       censusAfter,
       guardRefusals: persisted.guardRefusals,
       writerCoverageGap,
+      ...(prescreen ? { prescreen } : {}),
     };
   } catch (error) {
     await failRun(sql, runId, 'promoter', error, Math.max(0, now() - startedAt), {

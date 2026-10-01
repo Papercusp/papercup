@@ -25,6 +25,7 @@ import {
   applyDownConfirmDebounce,
   DOWN_CONFIRM_TICKS,
   PORTLESS_PROBE_NAME_SET,
+  OPERATOR_DOWN_CONFIRM_TICKS,
   STAGING_API_DOWN_CONFIRM_TICKS,
   DESKTOP_DOWN_CONFIRM_TICKS,
   EMBED_SIDECAR_DOWN_CONFIRM_TICKS,
@@ -297,12 +298,25 @@ describe('applyDownConfirmDebounce (EI-18144960689849695 — flap damping)', () 
     expect(second.results[0].note).toBe(embedDown.note);
   });
 
-  it('an UNDAMPED endpoint keeps single-tick alerting (damping is opt-in)', () => {
-    const operatorDown: ProbeResult = { name: 'operator', up: false, status: null, latencyMs: 1 };
-    const { results, nextStreaks } = applyDownConfirmDebounce([operatorDown], {});
+  it('an endpoint absent from the opt-in map keeps single-tick alerting', () => {
+    const unlistedDown: ProbeResult = { name: 'unlisted-probe', up: false, status: null, latencyMs: 1 };
+    const { results, nextStreaks } = applyDownConfirmDebounce([unlistedDown], {});
     expect(results[0].up).toBe(false); // reported DOWN immediately, no suppression
-    expect(results[0]).toEqual(operatorDown); // untouched
-    expect(nextStreaks.operator).toBeUndefined(); // no streak carried for undamped names
+    expect(results[0]).toEqual(unlistedDown); // untouched
+    expect(nextStreaks['unlisted-probe']).toBeUndefined(); // no streak carried for undamped names
+  });
+
+  it('damps a single operator preflight failure but confirms a sustained outage', () => {
+    const operatorDown: ProbeResult = { name: 'operator', up: false, status: null, latencyMs: 1 };
+    const first = applyDownConfirmDebounce([operatorDown], {});
+    expect(OPERATOR_DOWN_CONFIRM_TICKS).toBe(2);
+    expect(first.nextStreaks.operator).toBe(1);
+    expect(first.results[0].up).toBe(true); // a one-tick restart/startup blip is suppressed
+    expect(first.results[0].note).toMatch(/unconfirmed down \(streak 1\/2\)/);
+
+    const second = applyDownConfirmDebounce([operatorDown], first.nextStreaks);
+    expect(second.nextStreaks.operator).toBe(OPERATOR_DOWN_CONFIRM_TICKS);
+    expect(second.results[0]).toEqual(operatorDown); // persistent DOWN still alerts
   });
 
   it('tracks streaks per name independently', () => {

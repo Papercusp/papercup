@@ -2312,6 +2312,15 @@ export function diffHealth(
 export const DESKTOP_DOWN_CONFIRM_TICKS = 2;
 
 /**
+ * The operator probe resolves through `operatorApiBase()` to the current
+ * packaged listener. A single refused preflight can coincide with its brief
+ * restart/startup window, so use the same two-tick confirmation as the
+ * explicitly probed staging listener. A sustained outage still confirms on
+ * the next 60s health tick.
+ */
+export const OPERATOR_DOWN_CONFIRM_TICKS = 2;
+
+/**
  * WI-6146: damping is LOAD-BEARING for `staging-api`, not a nicety — without
  * it, adding the :3170 probe would have manufactured ~50 false DOWN
  * broadcasts/day.
@@ -2423,6 +2432,7 @@ export const JOURNAL_CANARY_DOWN_CONFIRM_TICKS = 2;
 
 export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
   [PORTLESS_PROBE_NAMES.desktop]: DESKTOP_DOWN_CONFIRM_TICKS,
+  operator: OPERATOR_DOWN_CONFIRM_TICKS,
   'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
   [PORTLESS_PROBE_NAMES.bgHostTicker]: BG_HOST_TICKER_DOWN_CONFIRM_TICKS,
   'oddsmith-sidecar': ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,

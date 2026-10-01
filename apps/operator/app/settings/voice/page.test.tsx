@@ -40,10 +40,11 @@ import VoiceSettingsPage from './page';
 beforeEach(() => {
   vi.clearAllMocks();
   h.prefs = { fullAgentEngine: 'off', sttEngine: 'voicemode', ttsEngine: 'kokoro' } as VoicePrefs;
-  vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => ({
-    ok: true,
+  vi.stubGlobal('fetch', vi.fn(async (url: unknown, options?: RequestInit) => ({
+    ok: options?.method === 'PUT' || String(url).endsWith('/operator-credentials') || String(url).includes('-spend'),
     json: async () => options?.method === 'PUT'
       ? { ...h.prefs, ...JSON.parse(String(options.body)) }
+      : String(url).includes('-spend') ? { spend: [] }
       : { google: { configured: true }, openai: { configured: true }, elevenlabs: { configured: true } },
   })));
 });
@@ -53,6 +54,7 @@ describe('full-agent engine capabilities', () => {
   it('disables Gemini even with a configured Google key, while supported engines remain selectable', async () => {
     render(<VoiceSettingsPage />);
     const select = await screen.findByRole('combobox', { name: 'Full-agent engine' });
+    await waitFor(() => expect(screen.getByRole('option', { name: /OpenAI Realtime/ }).textContent).not.toContain('needs OpenAI key'));
     const gemini = screen.getByRole('option', { name: /Gemini Live/ }) as HTMLOptionElement;
     expect(gemini.disabled).toBe(true);
     expect(gemini.textContent).toMatch(/not supported/i);

@@ -149,6 +149,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-locks-release.sh`,
       `${DEST}/posttooluse-activity-report.sh`,
       `${DEST}/posttooluse-write-byte-integrity-guard.mjs`,
+      `${DEST}/posttooluse-su-instance-override-reseed.mjs`,
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
       `${DEST}/posttooluse-behavioural-strand-nudge.mjs`,
@@ -181,6 +182,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-activity-report.sh')).toBe('*'); // activity (+ coord fold)
     expect(postMatcherOf('posttooluse-locks-release.sh')).toBe(FILE_WRITE_MATCHER); // mirrors acquire
     expect(postMatcherOf('posttooluse-write-byte-integrity-guard.mjs')).toBe(FILE_OVERWRITE_MATCHER);
+    expect(postMatcherOf('posttooluse-su-instance-override-reseed.mjs')).toBe(FILE_WRITE_MATCHER);
     // Previously unasserted: under the index form `[3] // strand nudge` was in fact reading THIS
     // hook, so the strand nudge itself had no assertion at all. Both happen to carry the same
     // matcher, which is why the mislabel stayed green — the by-name form makes the gap visible.

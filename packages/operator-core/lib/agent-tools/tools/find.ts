@@ -343,56 +343,60 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
     }
   }
 
-  // Keep required shallow fields ahead of optional ones so a long run of
-  // optional metadata cannot evict a required primitive from the bounded hint.
-  // An expanded structural child already consumes most of its parent's
-  // fallback budget. Keep that established path intact (notably
-  // completion.verification.coverage); direct siblings are needed here only
-  // when the wide child itself had to degrade to a shallow type.
-  if (!expandedNestedPath || !includeNestedPath) {
-    const directCandidates = directFields
-      .map(([name, raw]) => {
-        const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
-        const shape = schemaShape(child, depth, false, false);
-        return {
-          name,
-          child,
-          required: nested.required.has(name),
-          rendered: `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
-        };
-      })
-      .sort((a, b) => Number(b.required) - Number(a.required));
-    const requiredCandidates = directCandidates.filter((candidate) => candidate.required);
-    const optionalCandidates = directCandidates.filter((candidate) => !candidate.required);
-    const join = (base: string, entries: string[]) => [base, ...entries].filter(Boolean).join(',');
-    const renderRequired = (candidate: (typeof requiredCandidates)[number], mode: 'full' | 'type' | 'name') => {
-      if (mode === 'full') return candidate.rendered;
-      const type = mode === 'type' ? schemaType(candidate.child) : '';
-      return `${candidate.name}${type ? `:${type}` : ''}`;
-    };
+  // Keep required shallow fields even when an expanded structural child is
+  // selected. Otherwise a bounded hint can retain that optional child while
+  // hiding required siblings such as testing:run.recoverEvidence.originRunId.
+  // Optional direct details are considered only when there is no expanded
+  // nested path, preserving the established high-value paths such as
+  // completion.verification.coverage.
+  const includeOptionalDirectFields = !expandedNestedPath || !includeNestedPath;
+  const directCandidates = directFields
+    .map(([name, raw]) => {
+      const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
+      const shape = schemaShape(child, depth, false, false);
+      return {
+        name,
+        child,
+        required: nested.required.has(name),
+        rendered: `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
+      };
+    })
+    .sort((a, b) => Number(b.required) - Number(a.required));
+  const requiredCandidates = directCandidates.filter((candidate) => candidate.required);
+  const optionalCandidates = directCandidates.filter((candidate) => !candidate.required);
+  const join = (base: string, entries: string[]) => [base, ...entries].filter(Boolean).join(',');
+  const renderRequired = (candidate: (typeof requiredCandidates)[number], mode: 'full' | 'type' | 'name') => {
+    if (mode === 'full') return candidate.rendered;
+    const type = mode === 'type' ? schemaType(candidate.child) : '';
+    return `${candidate.name}${type ? `:${type}` : ''}`;
+  };
 
-    // Preserve every required key before spending the small nested-hint
-    // budget on optional metadata or long patterns. Required fields first use
-    // their full shape; under pressure, reduce them to type-only and then
-    // name-only forms so a long UUID pattern cannot evict a sibling required
-    // field such as testing:run.recoverEvidence.originRunId.
-    let requiredMode: 'full' | 'type' | 'name' = 'full';
-    let requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
-    if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS) {
-      requiredMode = 'type';
-      requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
-    }
-    if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS) {
-      requiredMode = 'name';
-      requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
-    }
-    if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS && body && !nestedPathRequired) {
-      body = '';
-    }
-    body = join(body, requiredEntries);
+  // Preserve every required key before spending the small nested-hint
+  // budget on optional metadata or long patterns. Required fields first use
+  // their full shape; under pressure, reduce them to type-only and then
+  // name-only forms so a long UUID pattern cannot evict a sibling required
+  // field such as testing:run.recoverEvidence.originRunId.
+  let requiredMode: 'full' | 'type' | 'name' = 'full';
+  let requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
+  // An optional nested path must not force required fields down to names only.
+  // Drop that path first, then simplify required fields only if their own full
+  // constraints still exceed the bounded hint.
+  if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS && body && !nestedPathRequired) {
+    body = '';
+  }
+  if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS) {
+    requiredMode = 'type';
+    requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
+  }
+  if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS) {
+    requiredMode = 'name';
+    requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
+  }
+  body = join(body, requiredEntries);
 
-    // Optional details remain useful when they fit after the required
-    // contract. They are the first fields omitted from a bounded hint.
+  // Optional details remain useful when there is room, but never displace
+  // any required direct field from the bounded hint.
+  if (includeOptionalDirectFields) {
     for (const candidate of optionalCandidates) {
       const next = join(body, [candidate.rendered]);
       if (next.length <= NESTED_OBJECT_HINT_MAX_CHARS) body = next;
@@ -407,6 +411,11 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   const nested = nestedObjectProperties(node);
   const properties = Object.entries(nested?.properties ?? {});
   if (!nested) return '';
+  const isWorkItemsGetResultRow =
+    properties.some(([name]) => name === 'checkpoint') &&
+    properties.some(([name]) => name === 'checkpointChecks') &&
+    properties.some(([name]) => name === 'checkpointAgeMs') &&
+    properties.some(([name]) => name === 'workItem');
   // `work_items:complete.specAdequacy.current` is a bounded array of evidence
   // tuples. The first seven identity fields are the structural join key; the
   // four optional dimension fingerprints are still available from the full
@@ -443,11 +452,12 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     // rerunRecipe.current.supplied is a required decision input. A wide
     // selection object must not push that shape behind the segment tail.
     if (name === 'current' && nested.required.has(name)) return 85;
-    // A bounded read envelope's thread window is the only discoverable path
-    // to recent comments. Keep its nested total/posts contract ahead of a
-    // wide diagnostic sibling such as checkpointChecks, whose full shape can
-    // otherwise consume the segment before threadWindow is rendered.
-    if (name === 'threadWindow') return 80;
+    // work_items:get's bounded result row must expose its resumable checkpoint,
+    // item identity, and recent-comment window together. Other diagnostic
+    // fields must not consume the segment before these caller-facing paths.
+    if (isWorkItemsGetResultRow && name === 'checkpoint') return 90;
+    if (isWorkItemsGetResultRow && name === 'workItem') return 85;
+    if (isWorkItemsGetResultRow && name === 'threadWindow') return 80;
     return 0;
   };
   const orderedProperties = properties
@@ -534,9 +544,22 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
           raw && typeof raw === 'object' && !Array.isArray(raw)
             ? nestedObjectFieldHint(raw as JsonSchemaNode, depth, false)
             : '';
+        const compactChild =
+          raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
+        // A required primitive can still be dropped here when the child list
+        // itself stays under the segment cap but its long constraints (for
+        // example a UUID pattern) do not fit after earlier required siblings.
+        // The parent-level nestedObjectFieldHint cannot help in that case,
+        // because this loop is already rendering the child's direct fields.
+        // Keep the required key and its broad type once its full shape cannot
+        // fit; optional metadata and long patterns remain expendable.
+        const compactRequired = nested.required.has(name) && !hasRequiredArrayItemFields(raw)
+          ? `${name}${schemaType(compactChild) ? `:${schemaType(compactChild)}${schemaBound(compactChild)}` : ''}`
+          : '';
         const fallbackCandidates = [
           hintedFallback,
           directHint ? `${fallback}${directHint}` : fallback,
+          compactRequired,
           fallback,
         ];
         const selectedFallback = fallbackCandidates.find((candidate) => {
@@ -1341,18 +1364,26 @@ export default defineTool({
       via: h.via,
     }));
 
+    const hasToolsInvokeHit = projectedHits.some((hit) => hit.tool === 'tools:invoke');
     const activatedHowToCall =
       'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
       'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
-      'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
-      'on every client via server-side dispatch. After the client refreshes (often next turn), the ' +
-      'direct wrapper may also be available.';
-    const inactiveHowToCall =
-      'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
-      'fail with unknown/not-found. Call them with ' +
-      'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
-      "the tool's real (colon-form) name; works on every client, needs no load step. " +
-      'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
+      (hasToolsInvokeHit
+        ? 'The tools:invoke hit is the dispatcher itself; do NOT pass name:"tools:invoke" through it. ' +
+          'Call tools:invoke directly with the name + args of a different target tool. '
+        : 'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
+          'on every client via server-side dispatch. ') +
+      'After the client refreshes (often next turn), the direct wrapper may also be available.';
+    const inactiveHowToCall = hasToolsInvokeHit
+      ? 'activated:false — direct calls to other hits may fail with unknown/not-found. The ' +
+        'tools:invoke hit is the dispatcher itself; do NOT pass name:"tools:invoke" through it. ' +
+        'Call tools:invoke directly with the name + args of a different target tool. ' +
+        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.'
+      : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
+        'fail with unknown/not-found. Call them with ' +
+        'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
+        "the tool's real (colon-form) name; works on every client, needs no load step. " +
+        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
 
     // Bound the candidate names before activating them. Otherwise a large schema
     // can cause the response to omit a matched tool while still adding that

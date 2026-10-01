@@ -532,6 +532,52 @@ export interface DetachedRunLedgerRecovery {
 
 const MAX_DETACHED_RUN_LEDGER_FILES = 200;
 
+interface PersistedDetachedTaskRow {
+  state: string;
+  exit_code: number | null;
+}
+
+type DetachedTaskLedgerLookup =
+  | { kind: 'found'; task: PersistedDetachedTaskRow }
+  | { kind: 'absent' | 'ambiguous' | 'unavailable' };
+
+async function readPersistedDetachedTask(
+  runId: string,
+  sql: SqlLike,
+): Promise<DetachedTaskLedgerLookup> {
+  let query: PromiseLike<unknown>;
+  try {
+    query = sql`
+      SELECT state, exit_code
+        FROM harness_shared.task_ledger
+       WHERE detail->>'runId' = ${runId}
+         AND class = 'test-run'
+         AND launched_by = 'testing-run-store'
+       LIMIT 2
+    `;
+  } catch {
+    return { kind: 'unavailable' };
+  }
+  const rows = await boundedSnapshotQuery<PersistedDetachedTaskRow[]>(query);
+  if (rows === null) return { kind: 'unavailable' };
+  if (rows.length === 0) return { kind: 'absent' };
+  if (rows.length !== 1) return { kind: 'ambiguous' };
+  return { kind: 'found', task: rows[0]! };
+}
+
+function taskAllowsDetachedLedgerRecovery(
+  task: PersistedDetachedTaskRow | null,
+  taskLinked: boolean,
+  verdict?: DetachedRunLedgerRecovery['status'],
+): boolean {
+  if (!task) return !taskLinked;
+  if (!isTerminalState(task.state as TaskState)) return false;
+  // A per-file Vitest ledger cannot prove that the outer multi-workspace
+  // command (including non-Vitest runners) completed successfully.
+  if (verdict === 'pass') return task.state === 'exited' && task.exit_code === 0;
+  return true;
+}
+
 async function readPersistedTestRunLedgerRows(runId: string, sql: SqlLike): Promise<PersistedTestRunRow[] | null> {
   let query: PromiseLike<unknown>;
   try {
@@ -604,8 +650,9 @@ function deriveDetachedRunLedgerRecovery(
 /**
  * Last-resort detached status recovery when the lifecycle snapshot is missing
  * or unreadable. The same exact run_group_id and terminal-row rules used to
- * reconcile a readable running snapshot apply here; partial/active groups stay
- * unavailable rather than being promoted to a test verdict.
+ * reconcile a readable running snapshot apply here. When a task-manager row
+ * exists, it must be terminal before its streamed per-file rows are trusted;
+ * an all-pass subset from an early workspace is not a completed run.
  */
 export async function getTestRunLedgerRecoveryAsync(
   runId: string,
@@ -613,8 +660,15 @@ export async function getTestRunLedgerRecoveryAsync(
 ): Promise<DetachedRunLedgerRecovery | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return null;
+  const taskLookup = await readPersistedDetachedTask(runId, sql);
+  if (taskLookup.kind === 'unavailable' || taskLookup.kind === 'ambiguous') return null;
+  const task = taskLookup.kind === 'found' ? taskLookup.task : null;
+  const taskLinked = taskLookup.kind === 'found';
+  if (!taskAllowsDetachedLedgerRecovery(task, taskLinked)) return null;
   const rows = await readPersistedTestRunLedgerRows(runId, sql);
-  return rows ? deriveDetachedRunLedgerRecovery(runId, rows) : null;
+  if (!rows) return null;
+  const recovery = deriveDetachedRunLedgerRecovery(runId, rows);
+  return recovery && taskAllowsDetachedLedgerRecovery(task, taskLinked, recovery.status) ? recovery : null;
 }
 
 /**
@@ -628,13 +682,18 @@ export async function getTestRunLedgerRecoveryAsync(
  * running snapshot into a terminal result. Latest-per-file selection also
  * prevents an older retry from poisoning the recovered verdict.
  */
-async function reconcilePersistedTestRun(snapshot: RunSnapshot, sql: SqlLike): Promise<RunSnapshot> {
-  if (snapshot.status !== 'running') return snapshot;
+async function reconcilePersistedTestRun(
+  snapshot: RunSnapshot,
+  task: PersistedDetachedTaskRow | null,
+  taskLinked: boolean,
+  sql: SqlLike,
+): Promise<RunSnapshot> {
+  if (snapshot.status !== 'running' || !taskAllowsDetachedLedgerRecovery(task, taskLinked)) return snapshot;
 
   const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
   if (!rows) return snapshot;
   const recovery = deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
-  if (!recovery) return snapshot;
+  if (!recovery || !taskAllowsDetachedLedgerRecovery(task, taskLinked, recovery.status)) return snapshot;
 
   const { status, exitCode, finishedAt } = recovery;
   const ledgerOutput = rows
@@ -689,8 +748,9 @@ async function persistReconciledSnapshot(
  * A detached snapshot is not itself a liveness oracle: the worker that owned
  * its child may have disappeared after writing `status='running'`. The linked
  * task-manager row is the durable process-liveness authority. Once that row is
- * terminal, the process is conclusively gone (or was killed), so keeping the
- * snapshot running would manufacture a live result forever.
+ * terminal, the process is conclusively gone (or was killed). Per-file rows are
+ * streamed as workspaces finish, so a linked nonterminal task must not be
+ * finalized from an all-pass subset.
  *
  * The update is compare-and-set on `status='running'`. A late child close or a
  * concurrent status reader therefore cannot resurrect a terminal snapshot, and
@@ -701,15 +761,20 @@ async function reconcilePersistedOrphan(
   row: DurableRunSnapshotRow,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
-  const fromReport = await reconcilePersistedReportArtifact(snapshot, row, sql);
-  if (fromReport !== snapshot) return fromReport;
-  const fromTestRunLedger = await reconcilePersistedTestRun(snapshot, sql);
-  if (fromTestRunLedger !== snapshot) return fromTestRunLedger;
-
   const taskState = row.task_state;
   const taskDeadlineAt = epochMs(row.task_deadline_at ?? null);
   const deadlineExpired = taskDeadlineAt !== null && taskDeadlineAt <= Date.now();
   const taskTerminal = typeof taskState === 'string' && isTerminalState(taskState as TaskState);
+  const taskLinked = row.task_id !== null || snapshot.taskId !== undefined;
+  const task = typeof taskState === 'string'
+    ? { state: taskState, exit_code: row.task_exit_code ?? null }
+    : null;
+
+  const fromReport = await reconcilePersistedReportArtifact(snapshot, row, sql);
+  if (fromReport !== snapshot) return fromReport;
+  const fromTestRunLedger = await reconcilePersistedTestRun(snapshot, task, taskLinked, sql);
+  if (fromTestRunLedger !== snapshot) return fromTestRunLedger;
+
   if (snapshot.status !== 'running' || (!taskTerminal && !deadlineExpired)) {
     return snapshot;
   }

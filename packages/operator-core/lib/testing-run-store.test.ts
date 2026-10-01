@@ -898,6 +898,42 @@ describe('durable detached snapshot lifecycle', () => {
     expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls.some((call) => call[0].join(' ').includes('FROM harness_shared.test_runs'))).toBe(true);
   });
 
+  it.each([
+    { name: 'while the linked task is running', taskState: 'running', exitCode: null, expected: null },
+    { name: 'after a clean task exit', taskState: 'exited', exitCode: 0, expected: 'pass' },
+    { name: 'after a nonzero task exit', taskState: 'exited', exitCode: 1, expected: null },
+  ] as const)(
+    'requires a linked detached task to finish before ledger recovery: $name',
+    async (scenario) => {
+      const runId = `ledger-${scenario.name.replaceAll(' ', '-')}`;
+      const ledgerRows = Array.from({ length: 9 }, (_, index) => ({
+        file_path: `lib/workspace-one-${index + 1}.test.ts`,
+        status: 'pass',
+        finished_at: new Date(1_700_000_001_000 + index * 1_000),
+        output_tail: null,
+      }));
+      const sql = vi.fn(async (strings: TemplateStringsArray) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.task_ledger')) {
+          return [{ state: scenario.taskState, exit_code: scenario.exitCode }];
+        }
+        if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+        return [];
+      }) as unknown as Sql;
+
+      const recovery = await store.getTestRunLedgerRecoveryAsync(runId, sql);
+
+      if (scenario.expected === 'pass') {
+        expect(recovery).toMatchObject({ runId, status: 'pass', fileCount: 9 });
+      } else {
+        expect(recovery).toBeNull();
+      }
+      const ledgerRead = (sql as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .some((call) => call[0].join(' ').includes('FROM harness_shared.test_runs'));
+      expect(ledgerRead).toBe(scenario.taskState !== 'running');
+    },
+  );
+
   it('does not recover a detached verdict from a partial or unreadable test_runs group', async () => {
     const partialSql = vi.fn(async (strings: TemplateStringsArray) => {
       if (strings.join(' ').includes('FROM harness_shared.test_runs')) {
@@ -1065,6 +1101,76 @@ describe('durable detached snapshot lifecycle', () => {
       finishedAt: null,
     });
   });
+
+  it.each([
+    { name: 'while the linked router is still running', taskState: 'running', taskExitCode: null, expected: 'running' },
+    { name: 'after the linked router exits cleanly', taskState: 'exited', taskExitCode: 0, expected: 'pass' },
+    { name: 'after the linked router exits unsuccessfully', taskState: 'exited', taskExitCode: 1, expected: 'error' },
+  ] as const)(
+    'does not finalize from an all-pass subset emitted by one workspace: $name',
+    async (scenario) => {
+      const runId = 'multi-workspace-ledger-run';
+      const ledgerRows = Array.from({ length: 9 }, (_, index) => ({
+        file_path: `lib/workspace-one-${index + 1}.test.ts`,
+        status: 'pass',
+        finished_at: new Date(1_700_000_001_000 + index * 1_000),
+        output_tail: null,
+      }));
+      const updates: unknown[][] = [];
+      const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+          return [{
+            run_id: runId,
+            task_id: 'task-multi-workspace',
+            kind: 'vitest',
+            label: 'multi-workspace router',
+            file_path: null,
+            command: ['node', 'scripts/test-files.mjs'],
+            status: 'running',
+            exit_code: null,
+            started_at: new Date(1_700_000_000_000),
+            finished_at: null,
+            output: '',
+            truncated: false,
+            task_state: scenario.taskState,
+            task_deadline_at: null,
+            task_exit_code: scenario.taskExitCode,
+            task_ended_at: scenario.taskState === 'running' ? null : new Date(1_700_000_020_000),
+          }];
+        }
+        if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+          updates.push(values);
+          return [{ run_id: runId }];
+        }
+        return [];
+      }) as unknown as Sql;
+
+      const recovered = await store.getRunAsync(runId, sql);
+
+      expect(recovered).toMatchObject({ runId, status: scenario.expected });
+      const ledgerRead = (sql as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .some((call) => call[0].join(' ').includes('FROM harness_shared.test_runs'));
+      if (scenario.taskState === 'running') {
+        expect(ledgerRead).toBe(false);
+        expect(updates).toHaveLength(0);
+        expect(recovered?.finishedAt).toBeNull();
+      } else if (scenario.expected === 'pass') {
+        expect(ledgerRead).toBe(true);
+        expect(updates).toHaveLength(1);
+        expect(recovered).toMatchObject({ exitCode: 0, finishedAt: 1_700_000_009_000 });
+      } else {
+        expect(ledgerRead).toBe(true);
+        expect(updates).toHaveLength(1);
+        expect(recovered).toMatchObject({
+          status: 'error',
+          exitCode: null,
+          output: expect.stringContaining('no test verdict was observed'),
+        });
+      }
+    },
+  );
 
   it('reconciles a stale running snapshot when its linked task deadline elapsed first', async () => {
     const updates: unknown[][] = [];

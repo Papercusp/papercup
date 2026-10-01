@@ -175,5 +175,57 @@
     "Consensus excludes whole four-class source bundles; quarantined labels are not inferred from author targets.",
     "This initial independent cohort does not settle the fixed0.03 paired MRR margin or exhaust the source census.",
     "Source transport raws remain private; this tracked artifact records metadata and fingerprints."
-  ]
+  ],
+  "numericCollectionSourceCommit": "f6b0d1c6921e7fef62dc72acffad26960cc1e4a0",
+  "sourceFingerprintConvention": "sourceFiles describes the historical numeric collection; every recorded source hash matches numericCollectionSourceCommit. authorReferenceRecovery.sourceFiles describes the later recovery extension.",
+  "authorReferenceRecovery": {
+    "workItem": "EI-24772826988865960",
+    "status": "verified",
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "68d8195ad02c676f41b24daeb5350deaa57f0fd4b3e08b5a9dfb6cd568b78af7",
+        "bytes": 39439
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "799234572a1c57152ba8615332a92f4ee7e03a440478182fba9d78204d87bcb0",
+        "bytes": 27407
+      }
+    ],
+    "unitCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/memory/bench/judged.test.ts",
+    "unitResult": "44 passed; exit0; 2026-10-01T10:45:04.851Z HEADf2ee2fce94 local dirty test stamp",
+    "typecheckCommand": "npm run lint:tsc -- --files=packages/operator-core/lib/memory/bench/judged.ts,packages/operator-core/lib/memory/bench/judged.test.ts",
+    "typecheckResult": "exit0; 2 named files and 1 direct importer checked; 0 errors; 2026-10-01T10:47:21.206Z HEADf2ee2fce94",
+    "negativeProbe": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/reuse-chain-negative-qYUq5v",
+      "result": "invalid recovered blind transport receipt before any model call"
+    },
+    "positiveProbe": {
+      "out": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/reuse-chain-positive-QTQa4Y",
+      "authorAttempts": 0,
+      "judgeAttempts": 1,
+      "modelTransports": 0,
+      "recoveredMemoryAuthors": 32,
+      "originalIdsPreserved": true,
+      "authors": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/reuse-chain-positive-QTQa4Y/memory-authors.json",
+        "sha256": "78ab8230ba4443561ffec140acf69aa6c4ed68ced3088002887b2d7d50cf481b",
+        "bytes": 15465
+      },
+      "source": {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "68d8195ad02c676f41b24daeb5350deaa57f0fd4b3e08b5a9dfb6cd568b78af7",
+        "bytes": 39439
+      }
+    },
+    "guards": [
+      "all donor identity/raw fingerprints and original prompt/owner/model/snapshot at each hop",
+      "anchor author filename/directory at each hop; reject symlink escapes",
+      "reject repeated paths and chains exceeding64hops",
+      "preserve deepest original invocation/prompt IDs",
+      "valid reference-bearing completed donors across3attempts",
+      "reject tampered inner raw/identity/prompt/path/invocation/cycle before transport"
+    ]
+  }
 }
