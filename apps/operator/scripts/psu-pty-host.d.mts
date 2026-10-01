@@ -2402,10 +2402,12 @@ export function submitVerifyQuietMs(env?: EnvironmentMap): any;
  * native proof, never "latest" (which can still be the critical predecessor).
  * @param {{ownerId: string, agent?: string, nativeId?: string | null,
  *   proof?: {persisted?: boolean, nativeRef?: string | null} | null,
- *   alreadyReported?: boolean, report?: (nativeId: string) => any,
+ *   alreadyReported?: boolean,
+ *   report?: (nativeId: string, options: {onConfirmed: () => void}) => any,
+ *   isCurrent?: () => boolean,
  *   emit?: typeof fireSessionCompactedEvent, timeoutMs?: number}} options
  */
-export function announceVerifiedCarryRespawn({ ownerId, agent, nativeId, proof, alreadyReported, report, emit, timeoutMs, }: {
+export function announceVerifiedCarryRespawn({ ownerId, agent, nativeId, proof, alreadyReported, report, emit, timeoutMs, isCurrent, }: {
     ownerId: string;
     agent?: string;
     nativeId?: string | null;
@@ -2414,7 +2416,10 @@ export function announceVerifiedCarryRespawn({ ownerId, agent, nativeId, proof, 
         nativeRef?: string | null;
     } | null;
     alreadyReported?: boolean;
-    report?: (nativeId: string) => any;
+    report?: (nativeId: string, options: {
+        onConfirmed: () => void;
+    }) => any;
+    isCurrent?: () => boolean;
     emit?: typeof fireSessionCompactedEvent;
     timeoutMs?: number;
 }): Promise<{

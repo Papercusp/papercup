@@ -2960,14 +2960,16 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
  * successor got: one that landed while the operator was restarting left the adv row
  * naming the predecessor, and no applied identity span ever named the live native id,
  * so owner-by-native-session oracles read its turns as foreign. Resolves with the
- * FIRST attempt's verdict, so a caller that gates on confirmation (the carry wake)
- * keeps its ordering. Retry timers are unref'd and a newer respawn supersedes them.
+ * FIRST attempt's verdict without holding up the successor. `onConfirmed` also
+ * notifies a carry announcer when a background retry succeeds; returning the first
+ * failure alone loses that wake. A newer respawn supersedes reports and callbacks.
  */
-export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, reportImpl, retryDelaysMs, sleepImpl, }?: {
+export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, reportImpl, retryDelaysMs, sleepImpl, onConfirmed, }?: {
     coordOwnerId?: null | undefined;
     reportImpl?: typeof reportSessionRespawned | undefined;
     retryDelaysMs?: number[] | undefined;
     sleepImpl?: ((ms: any) => Promise<any>) | undefined;
+    onConfirmed?: ((_nativeId: any) => void) | undefined;
 }): Promise<boolean>;
 /**
  * Complete a stale-host carry adoption's lifecycle report before announcing

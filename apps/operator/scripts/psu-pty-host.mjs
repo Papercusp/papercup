@@ -6422,12 +6422,15 @@ export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-
  * native proof, never "latest" (which can still be the critical predecessor).
  * @param {{ownerId: string, agent?: string, nativeId?: string | null,
  *   proof?: {persisted?: boolean, nativeRef?: string | null} | null,
- *   alreadyReported?: boolean, report?: (nativeId: string) => any,
+ *   alreadyReported?: boolean,
+ *   report?: (nativeId: string, options: {onConfirmed: () => void}) => any,
+ *   isCurrent?: () => boolean,
  *   emit?: typeof fireSessionCompactedEvent, timeoutMs?: number}} options
  */
 export async function announceVerifiedCarryRespawn({
   ownerId, agent, nativeId = null, proof = null, alreadyReported = false,
   report = () => false, emit = fireSessionCompactedEvent, timeoutMs = 2_000,
+  isCurrent = () => true,
 }) {
   if (!proof?.persisted) return { announced: false, nativeId, reason: 'native-turn-unverified' };
   if (!nativeId && agent === 'codex' && proof.nativeRef) {
@@ -6436,16 +6439,28 @@ export async function announceVerifiedCarryRespawn({
   }
   if (!ownerId || !nativeId) return { announced: false, nativeId, reason: 'successor-native-id-missing' };
   let reported = alreadyReported;
+  let announced = false;
+  const announce = () => {
+    if (announced || !isCurrent()) return;
+    emit(ownerId, 'carry-respawn', { nativeId });
+    announced = true;
+  };
+  const onConfirmed = () => {
+    reported = true;
+    try { announce(); } catch { /* fail-soft even after the foreground wait */ }
+  };
   let timer;
   try {
     if (!reported) {
-      reported = await Promise.race([
-        Promise.resolve().then(() => report(nativeId)),
+      const confirmed = await Promise.race([
+        Promise.resolve().then(() => report(nativeId, { onConfirmed })),
         new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
       ]) === true;
+      reported ||= confirmed;
     }
     if (!reported) return { announced: false, nativeId, reason: 'successor-reanchor-unconfirmed' };
-    emit(ownerId, 'carry-respawn', { nativeId });
+    if (!isCurrent()) return { announced: false, nativeId, reason: 'successor-carry-superseded' };
+    announce();
     return { announced: true, nativeId, reason: 'native-turn-and-reanchor-verified' };
   } catch {
     return { announced: false, nativeId, reason: 'successor-reanchor-or-emit-failed' };
@@ -11038,10 +11053,12 @@ export function hostThroughPty(o) {
         }
       }
       if (respawnMode === 'carry-respawn' && !drillId && carryResult.delivered) {
+        const carryChild = child;
         const announcement = await announceVerifiedCarryRespawn({
           ownerId, agent: env.PAPERCUSP_AGENT, nativeId, proof: turnStartProof,
           alreadyReported: respawnReported, report: onRespawn, emit: emitCompacted,
           timeoutMs: respawnReportTimeoutMs,
+          isCurrent: () => child === carryChild && !recycling && !shuttingDown && !cleaned,
         });
         if (announcement.nativeId) nativeId = announcement.nativeId;
         if (!announcement.announced) {

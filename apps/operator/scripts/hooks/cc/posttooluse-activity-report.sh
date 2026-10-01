@@ -76,6 +76,17 @@ if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
 
+# WI-10004945: a claude/codex NESTED inside another agent (run from an su's Bash tool,
+# or under a capability:bash job) inherited that su's PAPERCUSP_SID. Without this its
+# tool calls are reported AS the su, and the coord fold below hands the SU's inbox
+# deltas to the nested CLI and advances the su's per-owner bundle cursor, so the su
+# never sees those messages itself. Every tool call pays this check, so it reads the
+# verdict cached per CLI process (pc_nested_cli.sh), not pc_nested_cli.py directly. A
+# missing helper or any failure leaves the condition false: the hook runs as before.
+if . "$(dirname "$0")/pc_nested_cli.sh" 2>/dev/null && pc_nested_cli_cached; then
+  exit 0
+fi
+
 mkdir -p "$CACHE_DIR"
 chmod 700 "$CACHE_DIR" 2>/dev/null || true
 

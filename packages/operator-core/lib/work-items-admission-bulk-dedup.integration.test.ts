@@ -1196,6 +1196,9 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         runId: 'bulk-cause',
         sql: db.sql,
         census: { chunkCount: 2, targetTokens: 1_000 },
+        // Persistence of the cause is the subject here, not the outage ladder
+        // (WI-10004942); without this the default ladder sleeps ~3.75 min.
+        transportRetryBackoffsMs: [],
         llmCall: async () => {
           throw nested;
         },

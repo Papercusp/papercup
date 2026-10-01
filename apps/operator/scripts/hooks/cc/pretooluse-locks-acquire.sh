@@ -164,6 +164,13 @@ cwd = payload.get('cwd') or os.getcwd()
 # the machine-wide su-agent-id (two shells sharing only that collapse to
 # one owner — the bug PAPERCUSP_SID fixes). Pre + Post share the env, so
 # release still matches acquire.
+#
+# A CLI NESTED inside another agent (a `claude -p` from an su's Bash tool, or under a
+# capability:bash job) inherits that su's PAPERCUSP_SID and so locks AS the su. That is
+# deliberate (WI-10004945), unlike the activity/ask/nudge hooks, which skip a nested CLI
+# (pc_nested_cli.sh). The nested CLI edits the shared tree on the su's behalf, so the
+# su answers for those edits, and skipping here would drop the lock rail from them
+# entirely, leaving them free to clobber a peer's held file.
 env_sid = os.environ.get('PAPERCUSP_SID')
 lock_sid = os.environ.get('PAPERCUSP_LOCK_SID')
 session_id = payload.get('session_id')

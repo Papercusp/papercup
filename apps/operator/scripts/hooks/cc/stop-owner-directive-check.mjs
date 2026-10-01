@@ -18,10 +18,36 @@
  * FAIL-SILENT: no PAPERCUSP_SID (not a psu session), an unreachable or slow
  * operator, a bad response — each ends the turn normally with no output.
  */
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { operatorBase, sessionId } from '../inject/core.mjs';
 
 /** Hard wall on the operator call; past it the turn ends unchecked. */
 export const CHECK_TIMEOUT_MS = 2500;
+
+const NESTED_CLI_HELPER = fileURLToPath(new URL('./pc_nested_cli.sh', import.meta.url));
+
+/**
+ * WI-10004945: is the CLI running this hook NESTED inside another agent? Such a CLI (a
+ * `claude -p` run from an su's Bash tool, or under a capability:bash job) inherited the
+ * su's PAPERCUSP_SID, so without this check its Stop would be bounced on the SU's owner
+ * directives: a programmatic `claude -p` pushed into an extra turn about work it never
+ * held. Uses the per-CLI cached verdict (pc_nested_cli.sh); the walk starts at this
+ * hook's parent. Any failure answers false, so the check runs exactly as before.
+ * @returns {boolean}
+ */
+export function nestedCliCached() {
+  try {
+    const r = spawnSync('bash', [NESTED_CLI_HELPER], {
+      env: { ...process.env, PC_NESTED_CLI_START_PID: String(process.ppid) },
+      stdio: 'ignore',
+      timeout: 2000,
+    });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
 
 /** @param {unknown} v */
 function truthy(v) {
@@ -30,13 +56,19 @@ function truthy(v) {
 
 /**
  * The block reason for this Stop, or null to let the turn end.
- * @param {{ hook: Record<string, unknown>, env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch }} input
+ * @param {{ hook: Record<string, unknown>, env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, isNested?: () => boolean }} input
  * @returns {Promise<string | null>}
  */
-export async function evaluateStop({ hook, env = process.env, fetchImpl = globalThis.fetch }) {
+export async function evaluateStop({
+  hook,
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  isNested = nestedCliCached,
+}) {
   if (truthy(hook.stop_hook_active ?? hook.stopHookActive)) return null;
   const owner = sessionId(env);
   if (!owner) return null;
+  if (isNested()) return null;
   const params = new URLSearchParams({ owner });
   if (env.PAPERCUSP_WORKSPACE) params.set('workspace', env.PAPERCUSP_WORKSPACE);
   const res = await fetchImpl(`${operatorBase(env)}/api/agent-mcp/turn-end-directive-check?${params}`, {

@@ -1235,6 +1235,11 @@ export const CC_HOOK_FILES = [
   // the su's PAPERCUSP_SID). Omit it and the guard fails open: a nested `claude -p`
   // ends the su again. Run via the interpreter, never exec'd directly, so it is 0644.
   'pc_nested_cli.py',
+  // WI-10004945: the CACHED form of the same verdict, for hooks that fire on every tool
+  // call (activity reports, ask-gate-mirror, workitem-verify-nudge) and for the Stop
+  // directive check. Sourced by bash hooks and run via `bash <path>` by the .mjs one,
+  // never exec'd, so 0644. Omit it and those hooks fail open: a nested CLI acts as the su.
+  'pc_nested_cli.sh',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
@@ -1242,6 +1247,7 @@ const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
   'pc_tty.py',
   'mcp_response.py',
   'pc_nested_cli.py',
+  'pc_nested_cli.sh',
 ]);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */

@@ -10661,8 +10661,9 @@ const sleepUnref = (ms) =>
  * successor got: one that landed while the operator was restarting left the adv row
  * naming the predecessor, and no applied identity span ever named the live native id,
  * so owner-by-native-session oracles read its turns as foreign. Resolves with the
- * FIRST attempt's verdict, so a caller that gates on confirmation (the carry wake)
- * keeps its ordering. Retry timers are unref'd and a newer respawn supersedes them.
+ * FIRST attempt's verdict without holding up the successor. `onConfirmed` also
+ * notifies a carry announcer when a background retry succeeds; returning the first
+ * failure alone loses that wake. A newer respawn supersedes reports and callbacks.
  */
 export function reportSessionRespawnedDurably(
   advSessionId,
@@ -10672,17 +10673,27 @@ export function reportSessionRespawnedDurably(
     reportImpl = reportSessionRespawned,
     retryDelaysMs = RESPAWN_REPORT_RETRY_DELAYS_MS,
     sleepImpl = sleepUnref,
+    onConfirmed = (_nativeId) => {},
   } = {},
 ) {
   if (!sessionId || (!advSessionId && !coordOwnerId)) return Promise.resolve(false);
   const generation = ++respawnReportGeneration;
   const attempt = () =>
     Promise.resolve()
-      .then(() => reportImpl(advSessionId, sessionId, { coordOwnerId }))
-      .then((ok) => ok === true, () => false);
+      .then(() => generation === respawnReportGeneration
+        ? reportImpl(advSessionId, sessionId, { coordOwnerId }) : false)
+      .then((ok) => {
+        if (ok !== true || generation !== respawnReportGeneration) return false;
+        try {
+          void Promise.resolve(onConfirmed(sessionId)).catch(() => {});
+        } catch {
+          /* a notification failure must not invalidate the accepted mapping */
+        }
+        return true;
+      }, () => false);
   const first = attempt();
   void first.then(async (ok) => {
-    if (ok) return;
+    if (ok || generation !== respawnReportGeneration) return;
     for (const delayMs of retryDelaysMs) {
       await sleepImpl(delayMs);
       if (generation !== respawnReportGeneration) return;
@@ -10709,19 +10720,27 @@ export async function announceAdoptedCarryRespawn(
   } = {},
 ) {
   if (!ownerId || !nativeId) return false;
+  let announced = false;
+  const announce = () => {
+    if (announced) return;
+    try {
+      emitImpl(ownerId, "carry-respawn", { nativeId });
+      announced = true;
+    } catch {
+      /* a wake announcement must never surface into the successor */
+    }
+  };
   let reported = false;
   try {
-    reported = await reportImpl(advSessionId, nativeId, { coordOwnerId: ownerId });
+    reported = await reportImpl(advSessionId, nativeId, {
+      coordOwnerId: ownerId,
+      onConfirmed: (confirmedId) => { if (confirmedId === nativeId) announce(); },
+    });
   } catch {
     return false;
   }
-  if (!reported) return false;
-  try {
-    emitImpl(ownerId, "carry-respawn", { nativeId });
-  } catch {
-    /* a wake announcement must never surface into the successor */
-  }
-  return true;
+  if (reported) announce();
+  return announced;
 }
 
 /**
@@ -11911,7 +11930,7 @@ export function runWrapper(options) {
         sessionPort,
         onKickoffPersisted: (proof) =>
           reportSessionPortDelivery(sessionPort, proof),
-        onRespawn: (freshId) => {
+        onRespawn: (freshId, { onConfirmed } = {}) => {
           recordSessionOwner(freshId, ownerId, {
             advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
           });
@@ -11927,6 +11946,7 @@ export function runWrapper(options) {
             freshId,
             {
               coordOwnerId: ownerId,
+              onConfirmed,
             },
           );
         },

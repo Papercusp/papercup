@@ -55,6 +55,15 @@ FLAG_KEY="papercusp-workitem-verify-nudge"
 if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
+
+# WI-10004945: a claude/codex NESTED inside another agent inherited that su's
+# PAPERCUSP_SID. Its edits would mark the SU's session as having edited code, and its
+# Stop would post the nudge as a coord note from the su about an objective that is not
+# its own. Cached per CLI process (pc_nested_cli.sh), since PostToolUse fires on every
+# edit; any failure leaves the condition false and the hook runs as before.
+if . "$(dirname "$0")/pc_nested_cli.sh" 2>/dev/null && pc_nested_cli_cached; then
+  exit 0
+fi
 AGENT="${PAPERCUSP_AGENT:-}"
 # Drain stdin (the hook event JSON) so the pipe closes cleanly.
 INPUT="$(cat 2>/dev/null || true)"

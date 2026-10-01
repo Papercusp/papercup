@@ -87,6 +87,16 @@ if [ -z "${PAPERCUSP_SID:-}" ] || [ ! -s "$TOKEN_PATH" ]; then
   exit 0
 fi
 
+# WI-10004945: a claude/codex NESTED inside another agent inherited that su's
+# PAPERCUSP_SID. Its dialogs and <ask> endings are not the su's: mirroring them would put
+# a "su is waiting on you" card in the owner's Inbox that no answer can reach, and the
+# Stop bounce would push a programmatic `claude -p` into an extra turn it never asked
+# for. Skip every branch. Cached per CLI process (pc_nested_cli.sh); any failure leaves
+# the condition false and the hook runs as before.
+if . "$(dirname "$0")/pc_nested_cli.sh" 2>/dev/null && pc_nested_cli_cached; then
+  exit 0
+fi
+
 INPUT=$(cat)
 
 PY_STATUS=0

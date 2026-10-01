@@ -3,14 +3,25 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs and regenerate.
 /**
+ * WI-10004945: is the CLI running this hook NESTED inside another agent? Such a CLI (a
+ * `claude -p` run from an su's Bash tool, or under a capability:bash job) inherited the
+ * su's PAPERCUSP_SID, so without this check its Stop would be bounced on the SU's owner
+ * directives: a programmatic `claude -p` pushed into an extra turn about work it never
+ * held. Uses the per-CLI cached verdict (pc_nested_cli.sh); the walk starts at this
+ * hook's parent. Any failure answers false, so the check runs exactly as before.
+ * @returns {boolean}
+ */
+export function nestedCliCached(): boolean;
+/**
  * The block reason for this Stop, or null to let the turn end.
- * @param {{ hook: Record<string, unknown>, env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch }} input
+ * @param {{ hook: Record<string, unknown>, env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, isNested?: () => boolean }} input
  * @returns {Promise<string | null>}
  */
-export function evaluateStop({ hook, env, fetchImpl }: {
+export function evaluateStop({ hook, env, fetchImpl, isNested, }: {
     hook: Record<string, unknown>;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
+    isNested?: () => boolean;
 }): Promise<string | null>;
 /** Hard wall on the operator call; past it the turn ends unchecked. */
 export const CHECK_TIMEOUT_MS: 2500;
