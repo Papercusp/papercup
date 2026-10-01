@@ -284,7 +284,7 @@ export function validateCriterionCheckPaths(
         failures.push({
           criterionKey: c.key,
           path: resolution.path,
-          reason: `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
+          reason: resolution.reason ?? `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
           checkKind: 'cargo',
         });
         continue;
@@ -342,7 +342,7 @@ export function validateCriterionCheckPaths(
       failures.push({
         criterionKey: c.key,
         path: resolution.path,
-        reason: `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
+        reason: resolution.reason ?? `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
       });
       continue;
     }
