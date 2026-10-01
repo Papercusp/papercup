@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { BWRAP_USERNS_GRANT_FUNCTION } from './bwrap-userns-grant';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
@@ -2544,6 +2545,88 @@ describe('hosted connector enrollment conduit (D-403)', () => {
       expect(result.stderr).toContain('HTTP 401');
       expect(existsSync(envFile)).toBe(false);
       expect(existsSync(join(dir, 'systemctl.args'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// WI-10004636: Codex's workspace-write sandbox runs every tool command through bwrap. On stock
+// Ubuntu 24.04 an unprivileged bwrap cannot get a usable user namespace without an AppArmor grant,
+// and the failure is SILENT (every command fails, the run reports success). The grant behaviour
+// itself is tested in bwrap-userns-grant.test.ts; these pin where and for which model it renders.
+describe('agent sandbox user namespaces (WI-10004636)', () => {
+  const render = (hostModel: (typeof WORKSPACE_HOST_MODELS)[number]) =>
+    buildWorkspaceHostBootstrap(hostModel === 'bootc-image' ? bootcInput() : input());
+  const grantCall = `${BWRAP_USERNS_GRANT_FUNCTION} /etc/apparmor.d `;
+
+  it('installs bubblewrap through the Ubuntu apt contract', () => {
+    expect(WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES).toContain('bubblewrap');
+  });
+
+  it('renders the AppArmor grant on Ubuntu only, after the package install', () => {
+    const ubuntu = render('ubuntu-release-bundle');
+    const install = ubuntu.indexOf('retry 5 apt_install -y --no-install-recommends ');
+    const call = ubuntu.indexOf(grantCall);
+    expect(install).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(install);
+    // CentOS Stream 9 has no AppArmor; rendering the grant there would only be dead code.
+    expect(render('bootc-image')).not.toContain(grantCall);
+  });
+
+  it.each(WORKSPACE_HOST_MODELS)('probes as the agent account after it exists, and dies loudly (%s)', (hostModel) => {
+    const script = render(hostModel);
+    const created = script.indexOf('useradd --system --gid "$AGENT_GROUP"');
+    const probe = script.indexOf('runuser -u "$AGENT_USER" -- /usr/bin/bwrap ');
+    expect(created).toBeGreaterThan(-1);
+    expect(probe).toBeGreaterThan(created);
+    const line = script.slice(probe, script.indexOf('\n', probe));
+    expect(line).toContain('--unshare-user --unshare-pid --unshare-net');
+    expect(line).toContain('|| die "agent sandbox cannot create a user namespace');
+    if (hostModel === 'ubuntu-release-bundle') expect(script.indexOf(grantCall)).toBeLessThan(probe);
+  });
+
+  it('attests agent-sandbox-userns on both host models', () => {
+    for (const hostModel of WORKSPACE_HOST_MODELS) {
+      expect(workspaceHostBootstrapChecks(hostModel)).toContain('agent-sandbox-userns');
+    }
+  });
+
+  // The probe's die guard has to work as shell, not just as text: a failing bwrap must stop the
+  // script with the bwrap error in the message, and a passing one must let it continue.
+  it.each([
+    ['fails', 'echo "loopback: Failed RTM_NEWADDR: Operation not permitted" >&2; exit 1', 1],
+    ['passes', 'exit 0', 0],
+  ] as const)('the rendered probe line stops the script when bwrap %s', (_label, body, wantStatus) => {
+    const script = render('ubuntu-release-bundle');
+    const start = script.indexOf('sandbox_probe_err=');
+    const line = script.slice(start, script.indexOf('\n', start));
+    const dir = mkdtempSync(join(tmpdir(), 'sandbox-probe-'));
+    try {
+      // Stands in for `runuser -u <agent> -- bwrap …`; only its exit status and stderr matter.
+      writeFileSync(join(dir, 'runuser'), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          [
+            'set -euo pipefail',
+            'die() { echo "ERROR: $1" >&2; exit 1; }',
+            'AGENT_USER=papercusp-agent',
+            line,
+            'echo CONTINUED',
+          ].join('\n'),
+        ],
+        { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } },
+      );
+      expect(result.status).toBe(wantStatus);
+      if (wantStatus === 1) {
+        expect(result.stderr).toContain('agent sandbox cannot create a user namespace as papercusp-agent');
+        expect(result.stderr).toContain('RTM_NEWADDR');
+        expect(result.stdout).not.toContain('CONTINUED');
+      } else {
+        expect(result.stdout).toContain('CONTINUED');
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

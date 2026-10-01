@@ -7,25 +7,25 @@
     "node",
     "--input-type=module"
   ],
-  "startedAt": "2026-10-01T02:10:58.284Z",
-  "finishedAt": "2026-10-01T02:19:45.000Z",
+  "startedAt": "2026-10-01T06:33:31.667Z",
+  "finishedAt": "2026-10-01T06:33:34.003Z",
   "exitCode": 0,
-  "summary": "R-32 subscription HTTP200 and R-33 real included billing verified on restarted gateway; R-34 PG-authored registration guide read and updated. Console API-key probe rejected401; no API-credit spend/funding claimed. Credential prerequisite assigned as WI-10004490; temporary account removed and gateway hot-reloaded.",
+  "summary": "Fresh stable-source P010 proof: sanctioned gateway restart, subscription HTTP200 with request id, same-process full stats showing serving-account included billing, and current PG-authored API-key registration guide verified. Prior Console credential probe remains historical and separately owned WI-10004490.",
   "assertions": [
     {
       "id": "r32-subscription-http200-after-restart",
       "passed": true,
-      "evidence": "Gateway processStartedAt=1790819730329 (2026-10-01T01:55:30.329Z), build2dc4a60da4 contains gateway.ts change per dev:pipeline_position. POST/v1/messages at2026-10-01T02:10:58.284Z returned200; stream had message_start and message_stop. Request req_011CfahsQnnDA1NusbRhncDQ, served aviynw6."
+      "evidence": "Restarted gateway process at 2026-10-01T06:27:48.040Z. Small live streaming request returned 200 with req_011Cfb3tmzqr3JbUhAyEh9zM on aviynw6. Both message_start and message_stop arrived. Serving gateway build 6563e1ea76 (runtime-vintage, containsChange=true), cross-checked against :3170/api/health sha 6563e1ea76."
     },
     {
       "id": "r33-billing-from-real-response",
       "passed": true,
-      "evidence": "Same response unified status allowed_warning, overage-status rejected, overage-disabled-reason org_level_disabled. Immediate/stats read from same process had billing.byAccount.aviynw6 state included,authMode oauth,meteredNow false. Included allowance remains usable with disabled overage."
+      "evidence": "Full postrequest /stats snapshot preserved. Same processStartedAt before and after request; billing.byAccount[aviynw6] state included/authMode oauth, with real response billing headers recorded."
     },
     {
       "id": "r34-registration-guide",
       "passed": true,
-      "evidence": "docs:author overwrite returned ok:true, anchored:true,status:fresh for agent-insights/anthropic-usage-credits-and-api-key-accounts.mdx. Guide covers apikey:credentials/env/file, included-first overflow, never policy, auth/credit walls, billing stats, exact setup:save_key key/value command, registration and gateway:reload; stores live result and prerequisite WI-10004490."
+      "evidence": "Current docs:get source:true read of PG-authored agent-insights/anthropic-usage-credits-and-api-key-accounts, plus canonical source check for accounts:register and apikey:credentials/env/file forms. Source path and sha256 recorded."
     }
   ],
   "execution": {
@@ -49,25 +49,61 @@
         ],
         "stream": true
       },
-      "startedAt": "2026-10-01T02:10:58.284Z",
-      "finishedAt": "2026-10-01T02:10:58.915Z",
+      "startedAt": "2026-10-01T06:33:31.774Z",
+      "finishedAt": "2026-10-01T06:33:33.988Z",
       "status": 200,
+      "requestId": "req_011Cfb3tmzqr3JbUhAyEh9zM",
+      "routedAccount": "aviynw6",
+      "responseHeaders": {
+        "anthropic-ratelimit-unified-5h-reset": "1790844600",
+        "anthropic-ratelimit-unified-5h-status": "allowed_warning",
+        "anthropic-ratelimit-unified-5h-surpassed-threshold": "0.9",
+        "anthropic-ratelimit-unified-5h-utilization": "0.99",
+        "anthropic-ratelimit-unified-7d-reset": "1791187200",
+        "anthropic-ratelimit-unified-7d-status": "allowed",
+        "anthropic-ratelimit-unified-7d-utilization": "0.26",
+        "anthropic-ratelimit-unified-fallback": "available",
+        "anthropic-ratelimit-unified-fallback-percentage": "0.5",
+        "anthropic-ratelimit-unified-overage-disabled-reason": "org_level_disabled",
+        "anthropic-ratelimit-unified-overage-status": "rejected",
+        "anthropic-ratelimit-unified-representative-claim": "five_hour",
+        "anthropic-ratelimit-unified-reset": "1790844600",
+        "anthropic-ratelimit-unified-status": "allowed_warning",
+        "request-id": "req_011Cfb3tmzqr3JbUhAyEh9zM",
+        "x-papercusp-routed-account": "aviynw6"
+      },
       "messageStart": true,
       "messageStop": true,
-      "requestId": "req_011CfahsQnnDA1NusbRhncDQ",
-      "routedAccount": "aviynw6",
+      "responseBody": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_011Cfb3tnsBYYJLwSSzqmF7h\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":11,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"diagnostics\":null}    }\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}      }\n\nevent: ping\ndata: {\"type\": \"ping\"}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}             }\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\".\"}        }\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0          }\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"stop_details\":null,\"container\":null},\"usage\":{\"input_tokens\":11,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":5}      }\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"            }\n\n",
       "billingHeaders": {
-        "anthropic-ratelimit-unified-status": "allowed_warning",
-        "anthropic-ratelimit-unified-overage-status": "rejected",
+        "anthropic-ratelimit-unified-5h-reset": "1790844600",
+        "anthropic-ratelimit-unified-5h-status": "allowed_warning",
+        "anthropic-ratelimit-unified-5h-surpassed-threshold": "0.9",
+        "anthropic-ratelimit-unified-5h-utilization": "0.99",
+        "anthropic-ratelimit-unified-7d-reset": "1791187200",
+        "anthropic-ratelimit-unified-7d-status": "allowed",
+        "anthropic-ratelimit-unified-7d-utilization": "0.26",
+        "anthropic-ratelimit-unified-fallback": "available",
+        "anthropic-ratelimit-unified-fallback-percentage": "0.5",
         "anthropic-ratelimit-unified-overage-disabled-reason": "org_level_disabled",
-        "anthropic-ratelimit-unified-representative-claim": "seven_day"
+        "anthropic-ratelimit-unified-overage-status": "rejected",
+        "anthropic-ratelimit-unified-representative-claim": "five_hour",
+        "anthropic-ratelimit-unified-reset": "1790844600",
+        "anthropic-ratelimit-unified-status": "allowed_warning"
       },
       "stats": {
-        "processStartedAt": 1790819730329,
+        "processStartedAt": 1790836068040,
         "account": "aviynw6",
         "billingState": "included",
         "authMode": "oauth",
         "meteredNow": false
+      },
+      "fullStatsSnapshot": {
+        "path": "docs/evidence/anthropic-credits-p010-stats-2026-10-01.json",
+        "sha256": "2657641497e18aa4f5d53b41f50da68c853c63aa6e98b114a2622c5f73f7b44b",
+        "bytes": 830564,
+        "mediaType": "application/json",
+        "containsFullSnapshot": true
       }
     },
     "apiKeyPrerequisite": {
@@ -95,7 +131,48 @@
     },
     "doc": {
       "slug": "agent-insights/anthropic-usage-credits-and-api-key-accounts",
-      "path": "apps/operator-docs/src/content/docs/agent-insights/anthropic-usage-credits-and-api-key-accounts.mdx"
+      "path": "apps/operator-docs/src/content/docs/agent-insights/anthropic-usage-credits-and-api-key-accounts.mdx",
+      "readAt": "2026-10-01T06:35:56.783Z",
+      "canonicalReadTool": "docs:get source:true harness:engineering",
+      "sha256": "91e23f92bb31cc43a1f26c1df0f0d1396f06ce41943fdc48548db8a7ed01734d",
+      "checks": {
+        "register": true,
+        "credentials": true,
+        "env": true,
+        "file": true,
+        "save": true,
+        "reload": true
+      }
+    },
+    "restart": {
+      "mechanism": "dev:restart",
+      "target": "gateway",
+      "confirmed": true,
+      "processStartedAt": 1790836068040,
+      "processStartedAtIso": "2026-10-01T06:27:48.040Z",
+      "sameProcessBeforeAndAfterRequest": true,
+      "operatorHealth": {
+        "url": "http://127.0.0.1:3170/api/health",
+        "status": 200,
+        "body": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "6563e1ea76",
+          "version": "0.0.0",
+          "ts": "2026-10-01T06:33:31.772Z"
+        }
+      },
+      "servingGatewayRuntime": {
+        "runtime": "gateway",
+        "role": "owner",
+        "buildSha": "6563e1ea76",
+        "buildShaSource": "runtime-vintage",
+        "containsChange": true,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null
+      },
+      "healthBuildShaMatchesGateway": true
     }
   },
   "replication": [
@@ -108,5 +185,12 @@
   "limitations": [
     "API-key was rejected; successful Console API-credit spend and funding not verified.",
     "This evidence concerns the actual gateway service, not release-operator promotion or the shared release gate."
-  ]
+  ],
+  "currentRubricRevision": 4,
+  "currentSpecRevisions": {
+    "AUTO-BAR-R-32-P-010": 4,
+    "AUTO-BAR-R-33-P-010": 3,
+    "AUTO-BAR-R-34-P-010": 4
+  },
+  "measurementSourceHead": "9d4ef786ead5300531da3726bde167b79a75ac20"
 }

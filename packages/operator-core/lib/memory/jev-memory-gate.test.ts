@@ -10,7 +10,10 @@ import {
   JEV_MEMORY_ENCODING,
   JEV_MEMORY_MIN_WAIT_MS,
   JEV_MEMORY_NO_WAIT_PORTS,
+  JEV_MEMORY_RESPONSE_MARGIN_MS,
   JEV_MEMORY_VARIANT,
+  jevFunnelEntry,
+  jevMemoryBudgetMs,
   jevMemoryCacheKey,
   jevMemoryWaitMs,
   runJevMemoryGate,
@@ -276,12 +279,44 @@ describe('runJevMemoryGate — the wait fits the caller’s wall (WI-10004485 st
     expect(h.decideSpy.mock.calls[0][1]?.timeoutMs).toBe(500);
   });
 
-  it('On does not wait when less than the floor is left: it runs Log only under the full cap', async () => {
-    const never = new Promise<DecisionOutcome<QuestionMap>>(() => undefined);
-    const h = harness('on', () => never);
+  // A call made here would reach the ledger as one On waited on, under a bound On
+  // never gave it, and hide the skip inside an answered row (WI-10004485).
+  it('On does not wait when less than the floor is left, and makes no call: it keeps every candidate', async () => {
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.1 }));
     const r = await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start', budgetMs: JEV_MEMORY_MIN_WAIT_MS - 1 }, h.deps);
+    expect(r).toEqual({ effective: 'on', outcome: 'inconclusive', reason: 'no-time' });
+    expect(h.decideSpy).not.toHaveBeenCalled();
+  });
+
+  it('Log only skips the same calls On would skip, and says so', async () => {
+    const h = harness('shadow', async () => answered({ m1: 0.9, m2: 0.1 }));
+    const r = await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start', budgetMs: JEV_MEMORY_MIN_WAIT_MS - 1 }, h.deps);
+    expect(r).toEqual({ effective: 'shadow', fired: false, skipped: 'no-time' });
+    expect(h.decideSpy).not.toHaveBeenCalled();
+  });
+
+  it('a no-wait port never skips for lack of time: nothing waits there', async () => {
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.1 }));
+    const r = await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'mid-turn', budgetMs: -500 }, h.deps);
     expect(r).toEqual({ effective: 'shadow', fired: true });
-    expect(h.decideSpy.mock.calls[0][1]?.timeoutMs).toBe(JEV_MEMORY_TIMEOUT_MS);
+    expect(h.decideSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('budgets the smaller of the client wall and the build deadline, net of the margin', () => {
+    const now = 1_000_000;
+    // Turn-start's real shape: 2,500 ms wall, 2,000 ms build deadline — the deadline binds.
+    expect(jevMemoryBudgetMs(now, { respondByMs: now + 2_500, deadlineRemainingMs: 2_000 })).toBe(2_000 - JEV_MEMORY_RESPONSE_MARGIN_MS);
+    // A wall that ends first binds instead.
+    expect(jevMemoryBudgetMs(now, { respondByMs: now + 900, deadlineRemainingMs: 2_000 })).toBe(900 - JEV_MEMORY_RESPONSE_MARGIN_MS);
+    // Either bound alone.
+    expect(jevMemoryBudgetMs(now, { deadlineRemainingMs: 1_000 })).toBe(1_000 - JEV_MEMORY_RESPONSE_MARGIN_MS);
+    expect(jevMemoryBudgetMs(now, { respondByMs: now + 1_000 })).toBe(1_000 - JEV_MEMORY_RESPONSE_MARGIN_MS);
+    // No finite bound: no budget, so the gate waits the full cap.
+    expect(jevMemoryBudgetMs(now, {})).toBeUndefined();
+    expect(jevMemoryBudgetMs(now, { deadlineRemainingMs: Number.POSITIVE_INFINITY })).toBeUndefined();
+    expect(jevMemoryBudgetMs(now, { deadlineRemainingMs: Number.NaN })).toBeUndefined();
+    // An expired deadline leaves nothing (negative after the margin, so no wait).
+    expect(jevMemoryWaitMs(jevMemoryBudgetMs(now, { deadlineRemainingMs: 0 }))).toBeNull();
   });
 
   it('Log only on a waiting port measures under the bound On would wait', async () => {
@@ -302,5 +337,30 @@ describe('runJevMemoryGate — the wait fits the caller’s wall (WI-10004485 st
     await runJevMemoryGate({ message: 'q2', candidates: CANDS }, h.deps);
     expect(h.decideSpy.mock.calls[0][1]?.surface).toBe('turn-start');
     expect(h.decideSpy.mock.calls[1][1]).not.toHaveProperty('surface');
+  });
+});
+
+describe('jevFunnelEntry — the recall row records the gate (WI-10004485)', () => {
+  it('records nothing when the filter was Off', () => {
+    expect(jevFunnelEntry({ effective: 'off' }, 500)).toBeUndefined();
+  });
+
+  it('marks a no-time skip the same way in both modes, so one predicate counts it', () => {
+    expect(jevFunnelEntry({ effective: 'shadow', fired: false, skipped: 'no-time' }, 99.6))
+      .toEqual({ effective: 'shadow', budgetMs: 100, skipped: 'no-time' });
+    expect(jevFunnelEntry({ effective: 'on', outcome: 'inconclusive', reason: 'no-time' }, -40))
+      .toEqual({ effective: 'on', budgetMs: -40, outcome: 'inconclusive', reason: 'no-time', skipped: 'no-time' });
+  });
+
+  it('keeps On outcomes and drops the scores, which belong to the decision ledger', () => {
+    const answeredEntry = jevFunnelEntry({ effective: 'on', outcome: 'answered', keep: [true, false], scores: [0.9, 0.1], model: 'jev-1.13.0', cached: true }, 600);
+    expect(answeredEntry).toEqual({ effective: 'on', budgetMs: 600, outcome: 'answered', cached: true });
+    expect(jevFunnelEntry({ effective: 'on', outcome: 'inconclusive', reason: 'timeout' }, undefined))
+      .toEqual({ effective: 'on', outcome: 'inconclusive', reason: 'timeout' });
+  });
+
+  it('records a fired or cached Log-only call without an outcome (it lands later, in the ledger)', () => {
+    expect(jevFunnelEntry({ effective: 'shadow', fired: true }, Number.POSITIVE_INFINITY)).toEqual({ effective: 'shadow' });
+    expect(jevFunnelEntry({ effective: 'shadow', fired: false, cached: true }, 300)).toEqual({ effective: 'shadow', budgetMs: 300, cached: true });
   });
 });

@@ -340,7 +340,7 @@ describe('plain launch kickoff turn-start proof', () => {
     expect(firstKickoffTurnStartedBeforeRetry(null)).toBe(false);
   });
 
-  it('does not rewrite a queued kickoff after its first native turn starts', async () => {
+  it('does not rewrite a queued kickoff after its first native turn starts beyond the bounded tail', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-delayed-kickoff-'));
     const codexHome = join(root, 'codex-home');
     const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
@@ -351,6 +351,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const { captured, io } = fakeIo();
     const childCode = [
       "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "const appendNative=fs.appendFileSync;let padded=false;fs.appendFileSync=(file,data,...args)=>{if(!padded&&file===process.env.NATIVE_FILE&&String(data).includes('task_started')){padded=true;appendNative(file,JSON.stringify({type:'system',payload:{text:'x'.repeat(300*1024)}})+'\\n');}return appendNative(file,data,...args);};",
       "let input='',pending='',submitted=0,echoed=false;process.stdout.write('62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;pending+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
       "if(d.includes('\\r')){if(pending.includes('BEGIN_DELAYED_KICKOFF')){submitted++;fs.appendFileSync(process.env.COUNT_FILE,submitted+'\\n');if(submitted===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}})+'\\n');const tick=setInterval(()=>process.stdout.write('MODEL_BUSY\\n'),10);setTimeout(()=>{clearInterval(tick);fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'delayed-1'}})+'\\n');process.stdout.write('MODEL_STARTED\\n');},1500);}else process.stdout.write('DUPLICATE_KICKOFF\\n');}else process.stdout.write('RESUBMIT_ACK\\n');pending='';}",
@@ -384,6 +385,10 @@ describe('plain launch kickoff turn-start proof', () => {
         expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
           .toContain('launch-kickoff-model-turn-retry-skipped');
       }, { timeout: 5_000 });
+      const transcript = readFileSync(nativeFile, 'utf8');
+      const markerOffset = transcript.indexOf(marker);
+      expect(markerOffset).toBeGreaterThanOrEqual(0);
+      expect(Buffer.byteLength(transcript.slice(markerOffset))).toBeGreaterThan(256 * 1024);
       expect(readFileSync(countFile, 'utf8').trim().split(/\r?\n/)).toEqual(['1']);
       expect(captured()).not.toContain('DUPLICATE_KICKOFF');
     } finally {

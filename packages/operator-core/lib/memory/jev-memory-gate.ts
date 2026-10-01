@@ -17,9 +17,14 @@
  *    Injection is never delayed or changed; the decision client's ledger hook
  *    records the call, including every P(yes), in decision_model_calls
  *    (consumer `memory-injection`). A would-drop is any P(yes) below the threshold.
- *  - `on` waits for the answer under the client's hard bound (400 ms) and returns
+ *    Each request runs under the bound On would wait for, and where On would have
+ *    no time to wait, Log only makes no call either, so the ledger shows the
+ *    timeout rate On would see.
+ *  - `on` waits for the answer for what the caller has left, up to
+ *    JEV_MEMORY_TIMEOUT_MS (see jevMemoryWaitMs / jevMemoryBudgetMs), and returns
  *    which candidates to keep. Any inconclusive outcome (timeout, error, no key,
- *    malformed answer) fails OPEN: the caller keeps every candidate (D-002).
+ *    malformed answer, no time to wait) fails OPEN: the caller keeps every
+ *    candidate (D-002).
  *
  * Jev only filters; it never reorders and never authorizes anything (D-001).
  */
@@ -31,6 +36,7 @@ import { JEV_PINNED_MODEL, type DecisionClient } from '@papercusp/decision-model
 import { getOperatorCache } from '../cache/instance';
 import { activeWorkspaceId } from '../workspace-registry';
 import { judgeAdmission, type AdmissionDecide, type AdmissionEncoding, type AdmissionVariant } from './jev-admission-request';
+import type { JevFunnelEntry } from './recall-stats';
 import {
   ensureJevDecisionClient,
   getJevMode,
@@ -103,6 +109,35 @@ export function jevMemoryWaitMs(budgetMs: number | undefined): number | null {
 }
 
 /**
+ * The `budgetMs` a waiting port can give Jev, net of
+ * {@link JEV_MEMORY_RESPONSE_MARGIN_MS}: the smaller of what is left of the client's
+ * wall (`respondByMs`, epoch ms) and what is left of the memory build's own deadline
+ * (`deadlineRemainingMs`). Undefined when neither is finite (no bound: the full cap).
+ *
+ * The build deadline binds as often as the wall does. Turn-start's build runs under
+ * a 2,000 ms deadline (injection-block-cache MEMORY_BLOCK_COLD_DEADLINE_MS) inside a
+ * 2,500 ms hook wall, so the deadline always ends first. Sized from the wall alone,
+ * a Jev wait was cut off by that deadline in On, while Log only, which waits for
+ * nothing, let the same call run on and recorded it as answered. The ledger then
+ * overstated what On delivers (WI-10004485). The same margin applies to both bounds:
+ * a cold build's caller stops waiting when the deadline ends, and the work after
+ * Jev (filter, render, stats, response) has to fit before then.
+ */
+export function jevMemoryBudgetMs(
+  now: number,
+  bounds: { readonly respondByMs?: number; readonly deadlineRemainingMs?: number },
+): number | undefined {
+  const wallLeft = bounds.respondByMs !== undefined && Number.isFinite(bounds.respondByMs)
+    ? bounds.respondByMs - now
+    : Number.POSITIVE_INFINITY;
+  const deadlineLeft = bounds.deadlineRemainingMs !== undefined && !Number.isNaN(bounds.deadlineRemainingMs)
+    ? bounds.deadlineRemainingMs
+    : Number.POSITIVE_INFINITY;
+  const left = Math.min(wallLeft, deadlineLeft);
+  return Number.isFinite(left) ? left - JEV_MEMORY_RESPONSE_MARGIN_MS : undefined;
+}
+
+/**
  * How long a Jev answer is reused for an exact repeat (WI-10004485). Measured on
  * live Log-only traffic 2026-10-01 01:49-04:07Z: 13.7% of answered calls asked
  * about a (message, candidate set) Jev had already answered, and most repeats came
@@ -154,9 +189,10 @@ export type JevMemoryGateResult =
   | { readonly effective: 'off' }
   /**
    * Log only: nothing waits. `fired` is whether a request went out; a repeat the
-   * cache already answered (`cached`) sends none.
+   * cache already answered (`cached`) sends none, and neither does a call On would
+   * have had no time to wait for (`skipped: 'no-time'`).
    */
-  | { readonly effective: 'shadow'; readonly fired: boolean; readonly cached?: true }
+  | { readonly effective: 'shadow'; readonly fired: boolean; readonly cached?: true; readonly skipped?: 'no-time' }
   /**
    * On, answered: `keep` is index-aligned with the candidates. `model` is the id
    * the provider says answered (not the pin we asked for), so a served-model
@@ -234,9 +270,9 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
   if (effective === 'off') return { effective: 'off' };
   const noWaitPort = input.port !== undefined && JEV_MEMORY_NO_WAIT_PORTS.has(input.port);
   const waitMs = noWaitPort ? null : jevMemoryWaitMs(input.budgetMs);
-  if (effective === 'on' && waitMs === null) effective = 'shadow';
+  if (effective === 'on' && noWaitPort) effective = 'shadow';
   // The bound each request runs under. Where the turn would wait, the wait On would
-  // use, so Log only measures the timeout rate On would see. Where nothing waits,
+  // use, so Log only measures the timeout rate On would see. On a no-wait port,
   // the full cap: a longer bound costs no latency there, and the ledger then
   // records Jev's real answer instead of a timeout.
   const timeoutMs = waitMs ?? JEV_MEMORY_TIMEOUT_MS;
@@ -244,6 +280,16 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
   const candidates = input.candidates.filter((c) => c.text.trim().length > 0);
   if (candidates.length === 0 || !input.message.trim()) {
     return effective === 'shadow' ? { effective, fired: false } : { effective, outcome: 'inconclusive', reason: 'no-candidates' };
+  }
+  // A waiting port with too little time left to wait. On keeps every candidate
+  // without asking, so neither mode makes a call: one made here would reach the
+  // ledger as a call On waited on, under a bound On never gave it, and would hide
+  // the skip inside an answered row. The caller records the skip with the recall
+  // (memory_recall_stats.admission.jev), where it can be counted per port.
+  if (!noWaitPort && waitMs === null) {
+    return effective === 'shadow'
+      ? { effective, fired: false, skipped: 'no-time' }
+      : { effective, outcome: 'inconclusive', reason: 'no-time' };
   }
 
   const consumer = input.consumer ?? JEV_MEMORY_CONSUMER;
@@ -299,4 +345,33 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
     if (e instanceof JevInconclusive) return { effective, outcome: 'inconclusive', reason: e.reason };
     return { effective, outcome: 'inconclusive', reason: `error: ${e instanceof Error ? e.message : String(e)}` };
   }
+}
+
+/**
+ * The admission-funnel record of one gate result (memory_recall_stats.admission.jev),
+ * or undefined when the filter was Off. `budgetMs` is what the caller offered
+ * ({@link jevMemoryBudgetMs}). A no-time skip is marked `skipped` in both modes, so
+ * one predicate counts it whether the filter was On or Log only.
+ */
+export function jevFunnelEntry(result: JevMemoryGateResult, budgetMs: number | undefined): JevFunnelEntry | undefined {
+  if (result.effective === 'off') return undefined;
+  const budget = budgetMs !== undefined && Number.isFinite(budgetMs) ? { budgetMs: Math.round(budgetMs) } : {};
+  if (result.effective === 'shadow') {
+    return {
+      effective: 'shadow',
+      ...budget,
+      ...(result.skipped ? { skipped: result.skipped } : {}),
+      ...(result.cached ? { cached: true as const } : {}),
+    };
+  }
+  if (result.outcome === 'answered') {
+    return { effective: 'on', ...budget, outcome: 'answered', ...(result.cached ? { cached: true as const } : {}) };
+  }
+  return {
+    effective: 'on',
+    ...budget,
+    outcome: 'inconclusive',
+    reason: result.reason,
+    ...(result.reason === 'no-time' ? { skipped: 'no-time' as const } : {}),
+  };
 }

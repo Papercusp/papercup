@@ -29,16 +29,28 @@ function harness(legacyRows: ReturnType<typeof legacy>[], existing: ReturnType<t
   opts: { failMergeFor?: string } = {}) {
   const merges: Array<[string, Record<string, unknown>]> = [];
   const resolved: string[] = [];
+  const sqlCalls: Array<{ text: string; params: unknown[] }> = [];
   const deps: SignatureFoldDeps = {
-    sql: { unsafe: async (text: string) => text.includes("NOT LIKE 'tool-failure-signature:%'")
-      ? legacyRows : (existing ? [existing] : []) } as never,
+    sql: { unsafe: async (text: string, params: unknown[] = []) => {
+      sqlCalls.push({ text, params });
+      return text.includes("NOT LIKE 'tool-failure-signature:%'") ? legacyRows : (existing ? [existing] : []);
+    } } as never,
     mergeIssuePayload: async (id, patch) => {
       if (id === opts.failMergeFor) throw new Error('merge refused');
       merges.push([id, patch]);
     },
     resolveDuplicate: async (id) => { resolved.push(id); },
   };
-  return { deps, merges, resolved };
+  return { deps, merges, resolved, sqlCalls };
+}
+
+/** A pre-D-010 per-class row that was PROMOTED to an accountable issue and never worked. */
+function promoted(id: string, build: string, repeatCount: number, extra: Record<string, unknown> = {},
+  failure: Partial<SuspectedToolFailure> = {}) {
+  const row = legacy(id, build, repeatCount, extra, failure);
+  const { lane: _lane, toolInvocation: _inv, ...payload } = row.payload;
+  return { ...row, payload: { ...payload, toolFailureProbation: {
+    ...(payload.toolFailureProbation as Record<string, unknown>), state: 'promoted' } } };
 }
 
 const SIGNATURE = toolFailureSignatureKey(metadataToolFailure, 'caller');
@@ -100,5 +112,62 @@ describe('foldLegacyToolFailureRows (review-system-rework-reduction D-010)', () 
     expect(await foldLegacyToolFailureRows('ws', h.deps)).toMatchObject({ groups: 2, failedGroups: 1, rekeyed: 1 });
     expect(h.merges.map(([id]) => id)).toEqual(['EI-9']);
     expect(h.resolved).toEqual([]);
+  });
+
+  it('the default (probation) scope never carries the promoted-scope safety predicates', async () => {
+    const h = harness([legacy('EI-1', 'b1', 2)]);
+    await foldLegacyToolFailureRows('ws', h.deps);
+    expect(h.sqlCalls[0]!.text).toContain("payload->>'lane' = 'observation'");
+    expect(h.sqlCalls[0]!.text).not.toContain('taken_by');
+    expect(h.sqlCalls[0]!.params).toHaveLength(3);
+  });
+});
+
+describe('foldLegacyToolFailureRows scope=promoted (WI-10004648)', () => {
+  it('reads ONLY unworked promoted rows: open, unclaimed, not held, not gated, not observation', async () => {
+    const h = harness([]);
+    await foldLegacyToolFailureRows('ws', h.deps, 50, 'promoted');
+    const { text, params } = h.sqlCalls[0]!;
+    // Each predicate is what keeps an accountable row from being folded out from under its worker.
+    for (const predicate of ["status = 'open'", 'taken_by IS NULL', 'claim_hold IS NOT TRUE',
+      'needs_owner_action IS NOT TRUE', 'needs_human_review IS NOT TRUE', "lane IS DISTINCT FROM 'observation'",
+      "->>'state' = 'promoted'", "COALESCE(admission, '') <> 'pending'",
+      "NOT IN ('pending', 'revision-requested')", "NOT LIKE 'tool-failure-signature:%'"]) {
+      expect(text).toContain(predicate);
+    }
+    expect(params).toEqual(['ws', 50]);
+  });
+
+  it('folds promoted per-build rows onto the newest, re-keyed, keeping state promoted, losers resolved', async () => {
+    const rows = [promoted('EI-3', 'b3', 5), promoted('EI-2', 'b2', 3), promoted('EI-1', 'b1', 2),
+      promoted('EI-9', 'b1', 4, {}, { toolName: 'coord:inbox' })];
+    const h = harness(rows);
+    const result = await foldLegacyToolFailureRows('ws', h.deps, undefined, 'promoted');
+    expect(result).toEqual({ scanned: 4, groups: 2, folded: 2, rekeyed: 2, failedGroups: 0 });
+    const survivor = h.merges.find(([id]) => id === 'EI-3')![1];
+    expect(survivor).toMatchObject({ watchdogKey: SIGNATURE, repeatCount: 10,
+      toolFailureProbation: { watchdogKey: SIGNATURE, signatureKey: SIGNATURE, state: 'promoted' } });
+    expect(h.resolved.sort()).toEqual(['EI-1', 'EI-2']);
+    for (const loser of ['EI-2', 'EI-1']) {
+      expect(h.merges.find(([id]) => id === loser)![1]).toMatchObject({ signatureFoldedInto: 'EI-3' });
+    }
+  });
+
+  it('looks the survivor up on the accountable lane, never the observation lane', async () => {
+    const h = harness([promoted('EI-1', 'b1', 2)]);
+    await foldLegacyToolFailureRows('ws', h.deps, undefined, 'promoted');
+    const survivorLookup = h.sqlCalls[1]!.text;
+    expect(survivorLookup).toContain("lane IS DISTINCT FROM 'observation'");
+    expect(survivorLookup).not.toContain("payload->>'lane' = 'observation'");
+  });
+
+  it('folds onto an already-open signature row (migration 865 unique index) without re-keying it', async () => {
+    const existing = promoted('EI-SIG', 'b9', 7);
+    existing.payload.watchdogKey = SIGNATURE;
+    const h = harness([promoted('EI-1', 'b1', 2)], existing);
+    expect(await foldLegacyToolFailureRows('ws', h.deps, undefined, 'promoted'))
+      .toMatchObject({ folded: 1, rekeyed: 0 });
+    expect(h.merges.find(([id]) => id === 'EI-SIG')![1].repeatCount).toBe(9);
+    expect(h.resolved).toEqual(['EI-1']);
   });
 });

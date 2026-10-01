@@ -170,6 +170,24 @@ export interface TranscriptUsageEvent {
   cacheReadKnown?: boolean;
 }
 
+/**
+ * Identity of one persisted usage observation (agent_usage_samples.usage_event_key).
+ *
+ * A provider-native message id (`message:<id>`) names ONE billed API request no matter which
+ * file it is read from. A carried or resumed session's transcript is copied into each
+ * successor's isolated config dir (~/.papercusp/session-claude/<owner>/), so the same request
+ * is read from many files; keying it by file counted it once per copy (WI-10004637, up to 31
+ * copies). It is therefore keyed by model + message id only, and a later copy max-merges into
+ * the existing row as a no-op. Id-less observations (`line:`/`aggregate:`) have no identity
+ * beyond their position, so they stay scoped to the file and its truncation generation.
+ */
+export function transcriptUsageEventKey(input: { file: string; fileGeneration: number; model: string; sourceId: string }): string {
+  const identity = input.sourceId.startsWith('message:')
+    ? ['provider-message', input.model, input.sourceId]
+    : [input.file, input.fileGeneration, input.model, input.sourceId];
+  return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+}
+
 export function transcriptEventTime(value: unknown): number | null {
   const parsed = typeof value === 'string' ? Date.parse(value) : value;
   return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
@@ -698,7 +716,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
           for (const [eventIndex, event] of observations.entries()) {
             const { model } = event;
             const sourceId = event.sourceId.startsWith('line:') ? `line:${offset + event.relativeOffset}` : event.sourceId;
-            const eventKey = createHash('sha256').update(JSON.stringify([file, fileState.fileGeneration ?? 0, model, sourceId])).digest('hex');
+            const eventKey = transcriptUsageEventKey({ file, fileGeneration: fileState.fileGeneration ?? 0, model, sourceId });
             const [previous] = await tx<Array<{
               input_tokens: string | null; output_tokens: string | null; cache_read_tokens: string | null;
               cache_creation_tokens: string | null; cache_creation_5m_tokens: string | null;

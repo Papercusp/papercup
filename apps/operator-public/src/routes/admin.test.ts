@@ -37,6 +37,12 @@ const h = vi.hoisted(() => {
   listReports: vi.fn(async () => []),
   listPendingReview: vi.fn<(db: unknown, limit?: number) => Promise<Array<Record<string, unknown>>>>(async () => []),
   setReviewStatus: vi.fn(async () => {}),
+  // P-008: approval goes through approveListingVersion (records the reviewed SHA,
+  // re-pins a drifted row, retires superseded versions); the two readers feed the
+  // audit detail and the review-diff surface.
+  approveListingVersion: vi.fn(async () => {}),
+  getPreviouslyApprovedVersion: vi.fn(async () => null),
+  listVersionsSupersededByApproval: vi.fn(async () => []),
   markHarnessUnlisted: vi.fn(async () => {}),
   resolveReport: vi.fn(async () => 1),
   listBannedPubkeys: vi.fn<(db: unknown) => Promise<Array<Record<string, unknown>>>>(async () => []),
@@ -51,9 +57,12 @@ vi.mock('../auth.ts', () => ({
   isCupboardOperator: h.isCupboardOperator,
 }));
 vi.mock('../db.ts', () => ({
+  approveListingVersion: h.approveListingVersion,
   audit: h.audit,
   banPublisherPubkey: h.banPublisherPubkey,
   getHarnessById: h.getHarnessById,
+  getPreviouslyApprovedVersion: h.getPreviouslyApprovedVersion,
+  listVersionsSupersededByApproval: h.listVersionsSupersededByApproval,
   getReportById: h.getReportById,
   listBannedPubkeys: h.listBannedPubkeys,
   listPendingReview: h.listPendingReview,
@@ -182,8 +191,22 @@ describe('POST /admin/listings/:id/review', () => {
   it('approves a pending listing, persists status + audits the decision', async () => {
     const res = await jsonPost('/admin/listings/l1/review', { decision: 'approve', reason: '  good  ' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, id: 'l1', review_status: 'approved' });
-    expect(h.setReviewStatus).toHaveBeenCalledWith(expect.anything(), 'l1', 'approved', 'good', expect.any(Number));
+    expect(await res.json()).toEqual({
+      ok: true,
+      id: 'l1',
+      review_status: 'approved',
+      approved_commit_sha: null,
+      repinned: false,
+      retired_ids: [],
+    });
+    // Approval is one atomic version-aware write (P-008), not a bare status flip. A
+    // non-self-describing 'harness' listing carries no content pin, so nothing is
+    // recorded as approved, nothing re-pinned, nothing retired.
+    expect(h.approveListingVersion).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'l1', reason: 'good', approved: null, repinned: false, retire: null }),
+    );
+    expect(h.setReviewStatus).not.toHaveBeenCalled();
     const auditDetail = h.audit.mock.calls[0][3] as Record<string, unknown>;
     expect(auditDetail).toMatchObject({ decision: 'approved', operator_github_user_id: 7, publisher_github_user_id: 42 });
   });

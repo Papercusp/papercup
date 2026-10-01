@@ -637,6 +637,38 @@ describe('routines:list', () => {
     expect(b.routines[0].health.git_sync_exclusions.warning).toContain('last completed sweep');
   });
 
+  it('surfaces the writer-backed content-error paths and signature in routine health', async () => {
+    const now = Date.now();
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'home-harness',
+        name: 'git-sync',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */3 * * * *' },
+        target_role: 'system:git-sync',
+        active: true,
+        next_fire_at: new Date(now + 60_000),
+        last_fired_at: new Date(now - 60_000),
+        group_slug: null,
+        metadata: {
+          last_status: 'quarantined',
+          last_synced_at: now - 30_000,
+          consecutive_content_error_ticks: 1,
+          last_content_errors: ['root/docs/evidence/bad.json [identity-leak]'],
+          last_content_error_signature: 'stable-file-detector-signature',
+        },
+      },
+    ]);
+
+    const b = body(
+      await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
+    );
+    expect(b.routines[0].health.consecutive_content_error_ticks).toBe(1);
+    expect(b.routines[0].health.last_content_errors).toEqual(['root/docs/evidence/bad.json [identity-leak]']);
+    expect(b.routines[0].health.last_content_error_signature).toBe('stable-file-detector-signature');
+  });
+
   it('surfaces the git-sync head_sha through the callable health reader', async () => {
     const now = Date.now();
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));

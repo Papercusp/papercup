@@ -308,6 +308,11 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     'last_errors',
     'consecutive_error_ticks',
     'consecutive_content_error_ticks',
+    // EI-20105965677293021: recordOutcome persists the exact content-lint paths and
+    // detector keys plus their stable signature. Without this reader, `quarantined`
+    // and its counter expose the failure class but not the file an agent must resolve.
+    'last_content_errors',
+    'last_content_error_signature',
     'fire_count',
     'armed_at',
     'fire_started_at',

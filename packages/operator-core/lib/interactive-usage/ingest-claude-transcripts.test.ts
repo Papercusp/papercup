@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { costFromTokens } from '@papercusp/model-pricing';
-import { mergeTranscriptUsage, modelClassForModel, parseTranscriptChunk, readFileDelta, transcriptEventTime } from './ingest-claude-transcripts';
+import { mergeTranscriptUsage, modelClassForModel, parseTranscriptChunk, readFileDelta, transcriptEventTime, transcriptUsageEventKey } from './ingest-claude-transcripts';
 
 const turn = (model: string, usage: Record<string, number>, type = 'assistant', id?: string): string =>
   JSON.stringify({ type, message: { ...(id ? { id } : {}), model, usage } });
@@ -129,6 +129,24 @@ describe('parseTranscriptChunk', () => {
     expect(mergeTranscriptUsage(known, { ...repeated, cacheCreationTokens: 200 })).toEqual({
       ...repeated, cacheCreationTokens: 200,
     });
+  });
+});
+
+describe('transcriptUsageEventKey (WI-10004637)', () => {
+  const base = { file: '/cfg/su-a/projects/r/s.jsonl', fileGeneration: 0, model: 'claude-opus-4-8' };
+  it('keys a provider message by its id alone, so every transcript copy maps to one row', () => {
+    const a = transcriptUsageEventKey({ ...base, sourceId: 'message:msg_1' });
+    expect(transcriptUsageEventKey({ ...base, file: '/cfg/su-b/projects/r/s.jsonl', sourceId: 'message:msg_1' })).toBe(a);
+    expect(transcriptUsageEventKey({ ...base, fileGeneration: 3, sourceId: 'message:msg_1' })).toBe(a);
+    expect(transcriptUsageEventKey({ ...base, sourceId: 'message:msg_2' })).not.toBe(a);
+    expect(transcriptUsageEventKey({ ...base, model: 'claude-sonnet-5-5', sourceId: 'message:msg_1' })).not.toBe(a);
+  });
+  it('keeps id-less observations scoped to their file and truncation generation', () => {
+    const a = transcriptUsageEventKey({ ...base, sourceId: 'line:120' });
+    expect(transcriptUsageEventKey({ ...base, file: '/cfg/su-b/projects/r/s.jsonl', sourceId: 'line:120' })).not.toBe(a);
+    expect(transcriptUsageEventKey({ ...base, fileGeneration: 1, sourceId: 'line:120' })).not.toBe(a);
+    expect(transcriptUsageEventKey({ ...base, sourceId: 'aggregate:0:claude-opus-4-8' })).not.toBe(
+      transcriptUsageEventKey({ ...base, file: '/other.jsonl', sourceId: 'aggregate:0:claude-opus-4-8' }));
   });
 });
 

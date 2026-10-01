@@ -233,6 +233,7 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
           deadline: {
             signal: deadline.signal,
             run: (start, label, capMs) => traceWork(`deadline:${label}`, () => deadline.run(start, label, capMs)),
+            remainingMs: () => deadline.remainingMs(),
             close: () => deadline.close(),
           },
           workspaceId,

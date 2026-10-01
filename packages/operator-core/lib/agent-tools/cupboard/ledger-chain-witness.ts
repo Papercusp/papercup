@@ -22,16 +22,18 @@ export default defineTool({
     seeAlso: ['cupboard:ledger-chain'],
   },
   args: z.object({
-    pot: z.string().min(1).max(200).describe("The pot's home slug."),
+    stream: z.enum(['plan-admission', 'money-journal']).default('plan-admission'),
+    pot: z.string().min(1).max(200).optional().describe("plan-admission: the pot's home slug."),
   }),
   async handler(args, ctx) {
-    const [{ activeWorkspaceId }, store, chain] = await Promise.all([
+    const [{ activeWorkspaceId }, chain, { ledgerChainSource }] = await Promise.all([
       import('../../workspace-registry'),
-      import('../plans/plan-admission-governance-store'),
       import('../../cupboard/ledger-chain'),
+      import('./ledger-chain-source'),
     ]);
     const workspaceId = ctx?.principal?.workspaceId ?? activeWorkspaceId();
-    const source = await store.planAdmissionGovernanceLedgerSource({ workspaceId, potHomeSlug: args.pot });
+    const source = await ledgerChainSource(workspaceId, args.stream, args.pot);
+    if ('error' in source) return text({ ok: false, error: source.error });
     const result = await chain.witnessLedger(workspaceId, source, chain.pgLedgerChainLinkStore());
     return text({ ok: true, ...result });
   },

@@ -462,6 +462,136 @@ export async function setReviewStatus(
     .run();
 }
 
+/** A version of one (repo, kind, listing_ref) identity (P-008). */
+export interface ListingVersionIdentity {
+  github_repository_id: number;
+  listing_kind: ListingKind;
+  listing_ref: string;
+}
+
+/**
+ * The active approved version of an identity other than `excludeId` — the
+ * baseline an operator's review diff is taken against ("the previously approved
+ * SHA"). Null when nothing is approved yet (the first-ever version) or the only
+ * approved row was taken down.
+ */
+export async function getPreviouslyApprovedVersion(
+  db: D1Database,
+  identity: ListingVersionIdentity,
+  excludeId: string,
+): Promise<HarnessRow | null> {
+  const row = await db
+    .prepare(
+      `SELECT * FROM harnesses
+        WHERE github_repository_id = ? AND listing_kind = ? AND listing_ref = ?
+          AND review_status = 'approved' AND unlisted_at IS NULL AND id != ?
+        ORDER BY COALESCE(approved_at, reviewed_at, created_at) DESC
+        LIMIT 1`,
+    )
+    .bind(identity.github_repository_id, identity.listing_kind, identity.listing_ref, excludeId)
+    .first<HarnessRow>();
+  return row ?? null;
+}
+
+/**
+ * The rows approving `row` makes obsolete: the previously approved version(s) of
+ * the same identity, and any pending version published BEFORE it. A pending
+ * version published AFTER it is a newer candidate and stays in the queue.
+ */
+export async function listVersionsSupersededByApproval(
+  db: D1Database,
+  row: Pick<HarnessRow, 'id' | 'github_repository_id' | 'listing_kind' | 'listing_ref' | 'created_at'>,
+): Promise<HarnessRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT * FROM harnesses
+        WHERE github_repository_id = ? AND listing_kind = ? AND listing_ref = ?
+          AND id != ? AND unlisted_at IS NULL
+          AND (review_status = 'approved' OR (review_status = 'pending' AND created_at <= ?))
+        ORDER BY created_at ASC`,
+    )
+    .bind(row.github_repository_id, row.listing_kind, row.listing_ref, row.id, row.created_at)
+    .all<HarnessRow>();
+  return res.results ?? [];
+}
+
+export interface ApproveListingVersionInput {
+  id: string;
+  reason: string | null;
+  now: number;
+  /** The commit + canonical tree digest the operator reviewed (self-describing
+   *  kinds); null for a kind that carries no pin. When it differs from the row's
+   *  stored pin the row is RE-PINNED to it — `pinned_*` and `approved_*` end up
+   *  equal, so what is served is exactly what was reviewed. */
+  approved: { commitSha: string; treeDigest: string } | null;
+  /** True when `approved` replaces a different stored pin (a drifted row). */
+  repinned: boolean;
+  /** The identity whose older versions this approval retires; null = retire none. */
+  retire: Pick<HarnessRow, 'github_repository_id' | 'listing_kind' | 'listing_ref' | 'created_at'> | null;
+}
+
+/**
+ * Approve a pending listing AND make it the single served version of its
+ * identity, in ONE atomic batch (P-008 / WI-10004625). The retire statement is
+ * guarded by `EXISTS (the new row is approved)`, so a lost race on the first
+ * statement can never unlist the previously approved row without a successor.
+ */
+export async function approveListingVersion(db: D1Database, input: ApproveListingVersionInput): Promise<void> {
+  const { id, now, approved } = input;
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `UPDATE harnesses
+            SET review_status = 'approved', reviewed_at = ?, review_reason = ?, updated_at = ?,
+                approved_commit_sha = ?, approved_tree_digest = ?, approved_at = ?,
+                drift = 0,
+                pinned_commit_sha = COALESCE(?, pinned_commit_sha),
+                pinned_tree_digest = COALESCE(?, pinned_tree_digest),
+                pinned_at = COALESCE(?, pinned_at)
+          WHERE id = ? AND review_status = 'pending' AND unlisted_at IS NULL`,
+      )
+      .bind(
+        now,
+        input.reason,
+        now,
+        approved?.commitSha ?? null,
+        approved?.treeDigest ?? null,
+        approved ? now : null,
+        input.repinned ? (approved?.commitSha ?? null) : null,
+        input.repinned ? (approved?.treeDigest ?? null) : null,
+        input.repinned ? now : null,
+        id,
+      ),
+  ];
+  if (input.retire) {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE harnesses
+              SET superseded_by = ?, claim_status = 'superseded', unlisted_at = ?,
+                  unlisted_reason = 'superseded_by_approved_version', updated_at = ?
+            WHERE github_repository_id = ? AND listing_kind = ? AND listing_ref = ?
+              AND id != ? AND unlisted_at IS NULL
+              AND (review_status = 'approved' OR (review_status = 'pending' AND created_at <= ?))
+              AND EXISTS (SELECT 1 FROM harnesses n
+                           WHERE n.id = ? AND n.review_status = 'approved' AND n.unlisted_at IS NULL)`,
+        )
+        .bind(
+          id,
+          now,
+          now,
+          input.retire.github_repository_id,
+          input.retire.listing_kind,
+          input.retire.listing_ref,
+          id,
+          input.retire.created_at,
+          id,
+        ),
+    );
+  }
+  await db.batch(statements);
+}
+
 /** The operator's pending-review queue, oldest first. */
 export async function listPendingReview(db: D1Database, limit = 100): Promise<HarnessRow[]> {
   const res = await db

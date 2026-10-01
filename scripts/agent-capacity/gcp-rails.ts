@@ -349,6 +349,8 @@ async function main(argv: string[]): Promise<number> {
       zone: flag(argv, 'zone'),
       diskGb: flag(argv, 'disk-gb') ? Number(flag(argv, 'disk-gb')) : undefined,
       metadataFromFile: flag(argv, 'metadata-from-file')?.split(','),
+      imageFamily: flag(argv, 'image-family'),
+      imageProject: flag(argv, 'image-project'),
     };
     const result = await createInstance(spec);
     console.log(JSON.stringify(result, null, 2));
@@ -359,7 +361,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(JSON.stringify(result, null, 2));
     return result.verified ? 0 : 4;
   }
-  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file=] | teardown --run=');
+  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project=] | teardown --run=');
   return 2;
 }
 

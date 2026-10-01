@@ -35,6 +35,7 @@ import { waitForAppMount } from "../app-mount";
 import { recordMeasure } from "../perf-report";
 import {
   METRIC_ENVIRONMENT,
+  collectPageStartupTrace,
   collectWebVitals,
   describeReading,
   type WebVitalName,
@@ -65,87 +66,7 @@ describe("Packaged Papercusp desktop binary", () => {
     }
     // Compare passing and failing paint samples through the same bounded
     // page-local probe. Host load average alone cannot explain either result.
-    const startup = await browser.execute(async (fcpMs: number | null) => {
-      const metrics = (window as unknown as {
-        __sync_metrics__?: {
-          snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null };
-          queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string }>;
-        };
-      }).__sync_metrics__;
-      const snapshot = metrics?.snapshot();
-      const scheduler = snapshot?.scheduler ?? null;
-      const runtime = (window as unknown as {
-        __TAURI_INTERNALS__?: {
-          invoke?: (command: string) => Promise<{ client?: string; ownerIsContentOrigin?: boolean }>;
-        };
-      }).__TAURI_INTERNALS__;
-      const ipcClient = await (async () => {
-        if (!runtime?.invoke) return { kind: 'unavailable' as const };
-        try {
-          const status = await runtime.invoke('endpoint_ipc_status');
-          return {
-            kind: 'ok' as const,
-            client: status?.client ?? null,
-            ownerIsContentOrigin: status?.ownerIsContentOrigin ?? null,
-          };
-        } catch (error) {
-          return { kind: 'error' as const, error: String(error).slice(0, 160) };
-        }
-      })();
-      const startedBeforeFcp = (metrics?.queries() ?? [])
-        .filter((query) => fcpMs === null || query.startedAtMs <= fcpMs);
-      // The ring contains COMPLETED events. A request can start before paint
-      // but time out afterward; counting its full wait as a pre-paint cost
-      // would manufacture a critical path that never existed.
-      const completedBeforeFcp = startedBeforeFcp.filter((query) => fcpMs === null ||
-        query.startedAtMs + query.waitMs + query.requestMs <= fcpMs);
-      const compactQuery = (query: typeof startedBeforeFcp[number]) => ({
-        name: query.name,
-        startMs: Math.round(query.startedAtMs),
-        waitMs: Math.round(query.waitMs),
-        requestMs: Math.round(query.requestMs),
-        outcome: query.outcome,
-      });
-      const resources = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
-        .sort((a, b) => b.duration - a.duration).slice(0, 12)
-        .map((entry) => ({
-          path: new URL(entry.name, location.href).pathname,
-          startMs: Math.round(entry.startTime),
-          durationMs: Math.round(entry.duration),
-        }));
-      return {
-        readyState: document.readyState,
-        resources,
-        scheduler,
-        lcp:
-          (window as unknown as { __wv_lcp?: unknown; __wv_lcp_error?: string })
-            .__wv_lcp ?? null,
-        lcpAttributionError:
-          (window as unknown as { __wv_lcp_error?: string }).__wv_lcp_error ??
-          null,
-        ipc: {
-          client: ipcClient,
-          assertionTimedOut: snapshot?.ipcAssertTimedOut ?? null,
-          assertionLastClient: snapshot?.ipcAssertLastClient ?? null,
-        },
-        queryCountCompletedBeforeFcp: completedBeforeFcp.length,
-        startedBeforeFcpCompletedLater:
-          startedBeforeFcp.length - completedBeforeFcp.length,
-        longestWaitsCompletedBeforeFcp: completedBeforeFcp
-          .slice()
-          .sort((a, b) => b.waitMs - a.waitMs)
-          .slice(0, 10)
-          .map(compactQuery),
-        longestRequestsCompletedBeforeFcp: completedBeforeFcp
-          .slice()
-          .sort((a, b) => b.requestMs - a.requestMs)
-          .slice(0, 10)
-          .map(compactQuery),
-        longTasksSupported:
-          PerformanceObserver.supportedEntryTypes?.includes("longtask") ??
-          false,
-      };
-    }, reading.metrics.FCP ?? null);
+    const startup = await collectPageStartupTrace(browser, reading);
     console.log('[web-vitals] page trace:', JSON.stringify(startup));
 
     // Record BEFORE asserting: an assert throws, and instrument health is

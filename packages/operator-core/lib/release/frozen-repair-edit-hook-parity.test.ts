@@ -223,6 +223,10 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
     ['mcp__papercusp-su__capability_edit', { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' }],
     ['mcp__papercusp-su__capability_write', { file_path: 'lib/a.ts', content: 'w' }],
     ['mcp__papercusp-su__capability_multi_edit', { file_path: 'lib/a.ts', edits: [{ old_string: 'x', new_string: 'y' }] }],
+    ['mcp__papercusp-su__tools_invoke', { name: 'capability:edit', args: { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' } }],
+    ['mcp__papercusp-su__tools_invoke', { name: 'capability:write', args: { file_path: 'lib/a.ts', content: 'w' } }],
+    ['mcp__papercusp-su__tools_invoke', { name: 'capability:read', args: { file_path: 'lib/a.ts' } }],
+    ['mcp__papercusp-su__tools_invoke', { name: 'capability:edit' }],
     ['write_file', { path: 'lib/a.ts', content: 'codex' }],
     ['edit_file', { path: 'lib/a.ts', old_string: 'o', new_string: 'n' }],
     ['apply_patch', CODEX_UPDATE_PATCH],
@@ -239,6 +243,18 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
         hunksFromToolCall(toolName, toolInput),
       );
     }
+  });
+  it('a tools:invoke-wrapped capability edit records the same hunk as the direct call (the trimmed psu write path)', () => {
+    const args = { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' };
+    const direct = hunksFromToolCall('mcp__papercusp-su__capability_edit', args);
+    expect(direct).toHaveLength(1);
+    const wrapped = { tool_name: 'mcp__papercusp-su__tools_invoke', tool_input: { name: 'capability:edit', args } };
+    expect(hunksFromToolCall(wrapped.tool_name, wrapped.tool_input)).toEqual(direct);
+    expect(hookHunksFrom(wrapped)).toEqual(direct);
+    expect(editedPathsFrom(wrapped)).toEqual(['lib/a.ts']);
+    const otherInvoke = { tool_name: 'mcp__papercusp-su__tools_invoke', tool_input: { name: 'capability:read', args: { file_path: 'lib/a.ts' } } };
+    expect(hookHunksFrom(otherInvoke)).toEqual([]);
+    expect(editedPathsFrom(otherInvoke)).toEqual([]);
   });
   it('is a real check — a deliberately different extraction is caught', () => {
     const wrong = hunksFromToolCall('Edit', { file_path: 'a', old_string: 'o', new_string: 'n' }).map((h) => ({

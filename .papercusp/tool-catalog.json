@@ -8477,7 +8477,7 @@
           "POST"
         ]
       },
-      "description": "Verify or export a pot's hash-chained plan-admission governance ledger. `verify` recomputes the chain against the stored events and names the FIRST broken position (an edited, deleted or spliced entry) plus entries not yet chained; pass `expectedHead` from an earlier export to also detect truncation. `export` returns the stable JSONL chain that verifies offline (`npx tsx libs/generic/hash-chain/src/verify-main.ts`).",
+      "description": "Verify or export a hash-chained ledger: a pot's plan-admission governance events, or the workspace money journal. `verify` recomputes the chain against the stored events and names the FIRST broken position (an edited, deleted or spliced entry) plus entries not yet chained; pass `expectedHead` from an earlier export to also detect truncation. `export` returns the stable JSONL chain that verifies offline (`npx tsx libs/generic/hash-chain/src/verify-main.ts`).",
       "capabilities": [
         "harness:read"
       ],

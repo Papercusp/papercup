@@ -1063,7 +1063,14 @@ function registerListingEndpoints(
       pinned_at: pin ? now : null,
       created_at: now,
     });
-    if (priorVersion && pin != null && priorVersion.pinned_commit_sha !== pin.commitSha) {
+    // SPEC-P-004@2: a new SHA is a new VERSION, and the previously approved one
+    // keeps being served to installers while the new one is `pending` review.
+    // The prior row is retired only at the moment the new version becomes the
+    // served one — here for a kind that publishes `approved` (no review policy),
+    // and at the review approval for the rest (P-008). Superseding at publish
+    // for a pending version would unlist the only installable copy (the
+    // availability hole this guard exists to prevent).
+    if (priorVersion && pin != null && review_status === 'approved' && priorVersion.pinned_commit_sha !== pin.commitSha) {
       await supersedeHarnessListing(c.env.DB, priorVersion.id, id, 'superseded_by_new_content_pin', now);
     }
     await audit(c.env.DB, now, 'published', {

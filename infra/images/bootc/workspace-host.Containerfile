@@ -118,6 +118,10 @@ RUN set -eux; \
          --enablerepo=google-compute-engine \
          `# system packages — WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES` \
          acl \
+         `# Codex's sandbox runs every tool command through bwrap. Stream 9 has no AppArmor` \
+         `# userns restriction, so the package is the whole fix here; the bootstrap's` \
+         `# agent-sandbox-userns check proves it on the booted host (WI-10004636).` \
+         bubblewrap \
          ca-certificates \
          curl \
          dracut \

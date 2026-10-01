@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  assembleIntakeCandidateGroups,
   buildDigest,
   dedupSignature,
   findLikelyDuplicates,
@@ -26,6 +27,157 @@ describe('dedupSignature', () => {
   });
   it('ignores punctuation + case', () => {
     expect(dedupSignature('coord:inbox OVERFLOWS!!')).toBe(dedupSignature('coord inbox overflows'));
+  });
+});
+
+describe('assembleIntakeCandidateGroups — lossless intake evidence without authority', () => {
+  it('assembles repeated reports into one exact-identity group with every source and currentness class', () => {
+    const groups = assembleIntakeCandidateGroups([
+      {
+        id: 'EI-1',
+        title: 'worker restart drops the inbox receipt',
+        conditionKey: 'worker:inbox-receipt-loss',
+        canonicalRefs: ['wi:WI-9'],
+        sourceRefs: ['observation:obs-1'],
+        occurrenceHistory: [
+          {
+            ref: 'occurrence:101',
+            occurredAt: '2026-09-30T10:00:00.000Z',
+            kind: 'duplicate',
+            evidenceRefs: ['log:restart-1'],
+          },
+        ],
+        digestFoldRefs: ['pattern:inbox-loss'],
+        evidence: [{ ref: 'log:restart-1', revision: 'sha-a', state: 'current', codeRuntimeState: 'current' }],
+        consumption: [{ ref: 'consumption:obs-1', mode: 'read', at: '2026-09-30T10:05:00.000Z' }],
+      },
+      {
+        id: 'EI-2',
+        title: 'receipt missing after the worker restarts',
+        conditionKey: 'worker:inbox-receipt-loss',
+        canonicalRefs: ['wi:WI-9'],
+        sourceRefs: ['observation:obs-2'],
+        occurrenceHistory: [
+          {
+            ref: 'occurrence:102',
+            occurredAt: '2026-09-30T11:00:00.000Z',
+            kind: 'duplicate',
+            evidenceRefs: ['log:restart-2'],
+          },
+        ],
+        digestFoldRefs: ['pattern:inbox-loss'],
+        evidence: [
+          { ref: 'log:restart-2', revision: 'sha-b', state: 'stale', codeRuntimeState: 'unknown' },
+          { ref: 'probe:runtime', state: 'unknown', codeRuntimeState: 'stale' },
+        ],
+        consumption: [{ ref: 'consumption:obs-2', mode: 'backfill' }],
+        decisions: [{ ref: 'review:44', revision: '4', disposition: 'investigate' }],
+      },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      groupKey: 'canonical:wi:WI-9',
+      sourceIds: ['EI-1', 'EI-2'],
+      canonicalRefs: ['wi:WI-9'],
+      digestFoldRefs: ['pattern:inbox-loss'],
+      evidenceStates: { current: 1, stale: 1, unknown: 1 },
+      codeRuntimeStates: { current: 1, stale: 1, unknown: 1 },
+      authority: { state: 'not-evaluated', reason: 'grouping-is-not-acceptance' },
+    });
+    expect(groups[0].sourceRefs).toEqual(
+      expect.arrayContaining([
+        'wi:EI-1',
+        'wi:EI-2',
+        'wi:WI-9',
+        'observation:obs-1',
+        'observation:obs-2',
+        'occurrence:101',
+        'occurrence:102',
+        'pattern:inbox-loss',
+        'log:restart-1',
+        'log:restart-2',
+        'probe:runtime',
+        'consumption:obs-1',
+        'consumption:obs-2',
+        'review:44',
+      ]),
+    );
+    expect(groups[0].occurrenceHistory.map((item) => item.ref)).toEqual(['occurrence:101', 'occurrence:102']);
+    expect(groups[0].consumption.map((item) => item.mode)).toEqual(['read', 'backfill']);
+    expect(groups[0].decisions).toHaveLength(1);
+  });
+
+  it('preserves distinct remedies inside one stable problem group', () => {
+    const [group] = assembleIntakeCandidateGroups([
+      {
+        id: 'EI-A',
+        title: 'sync stalls after conflict',
+        watchdogKey: 'git-sync:conflict-stall',
+        remedies: [{ key: 'retry-lock', ref: 'proposal:retry-lock', summary: 'retry after the lock releases' }],
+      },
+      {
+        id: 'EI-B',
+        title: 'sync conflict leaves the queue stalled',
+        watchdogKey: 'git-sync:conflict-stall',
+        remedies: [
+          { key: 'transactional-queue', ref: 'proposal:transactional-queue', summary: 'persist a resumable queue' },
+        ],
+      },
+    ]);
+
+    expect(group?.sourceIds).toEqual(['EI-A', 'EI-B']);
+    expect(group?.remedies.map((remedy) => remedy.key)).toEqual(['retry-lock', 'transactional-queue']);
+    expect(group?.remedies.map((remedy) => remedy.sourceIds)).toEqual([['EI-A'], ['EI-B']]);
+  });
+
+  it('does not let identical or similar prose override distinct producer identities', () => {
+    const titleA = 'workspace sync stalls after remote conflict on repository';
+    const titleB = 'workspace sync stalls after remote conflict in repository';
+    const groups = assembleIntakeCandidateGroups([
+      {
+        id: 'EI-X',
+        title: titleA,
+        watchdogKey: 'sync:repo-a',
+      },
+      {
+        id: 'EI-Y',
+        title: titleB,
+        watchdogKey: 'sync:repo-b',
+      },
+    ]);
+
+    expect(titleSimilarity(titleA, titleB)).toBe(1);
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.authority.state === 'not-evaluated')).toBe(true);
+  });
+
+  it('groups keyless legacy repeats only on the exact admission title key', () => {
+    const groups = assembleIntakeCandidateGroups([
+      { id: 'EI-L1', title: '[bug] Presence list overflows token limit' },
+      { id: 'EI-L2', title: 'token limit overflows presence list' },
+      { id: 'EI-L3', title: 'presence list occasionally renders slowly' },
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.find((group) => group.sourceIds.includes('EI-L1'))?.sourceIds).toEqual(['EI-L1', 'EI-L2']);
+  });
+
+  it('keeps digest reads and backfills out of the decision collection', () => {
+    const [group] = assembleIntakeCandidateGroups([
+      {
+        id: 'EI-C',
+        title: 'digest saw the report',
+        consumption: [
+          { ref: 'consumption:read', mode: 'read' },
+          { ref: 'consumption:backfill', mode: 'backfill' },
+        ],
+      },
+    ]);
+
+    expect(group?.consumption).toHaveLength(2);
+    expect(group?.decisions).toEqual([]);
+    expect(group?.authority).toEqual({ state: 'not-evaluated', reason: 'grouping-is-not-acceptance' });
   });
 });
 

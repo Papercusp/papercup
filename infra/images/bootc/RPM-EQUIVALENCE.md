@@ -39,6 +39,7 @@ Every one resolves to the **same absolute path** as on Ubuntu, so no path consta
 | `/usr/sbin/nologin` | present | present (`/sbin/nologin` also) | `test -e` |
 | `sshd` | `/usr/sbin/sshd` | `/usr/sbin/sshd` | `command -v`; `openssh-server` **INSTALLED** |
 | `systemctl` | `/usr/bin/systemctl` | `/usr/bin/systemctl` | `command -v` |
+| `bwrap` *(added WI-10004636)* | `/usr/bin/bwrap` (pkg `bubblewrap`) | `/usr/bin/bwrap` (pkg `bubblewrap`, same name) | measured 2026-10-01 on a stock GCE `centos-stream-9` VM (kernel 5.14.0-741.el9, SELinux enforcing, no AppArmor): `dnf install bubblewrap` → `bubblewrap-0.6.3-1.el9`, mode `-rwxr-xr-x` (not setuid), `user.max_user_namespaces=62740`, and `runuser -u <nologin system user> -- bwrap … --unshare-user --unshare-pid --unshare-net true` **OK**. ⚠ A stock VM, not the bootc image: the booted host's `agent-sandbox-userns` bootstrap check is the proof for the image itself |
 
 ### Flag semantics — the exact flags the bootstrap passes
 

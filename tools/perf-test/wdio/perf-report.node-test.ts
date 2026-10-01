@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import test from "node:test";
+import { evaluateRequiredPageLoad, readPageStartupTrace, type WebVitalsReading } from "./web-vitals-probe";
 import type { Browser } from "webdriverio";
 
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
@@ -15,6 +16,80 @@ import {
   waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
+
+test("startup trace separates completed-before-paint requests from later completions", async () => {
+  const globals = ['window', 'document', 'performance', 'location', 'PerformanceObserver'] as const;
+  const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  const lcp = { tag: 'DIV', className: 'plans-list', text: 'Plan title', startMs: 200 };
+  const values = {
+    window: { __wv_lcp: lcp, __sync_metrics__: { snapshot: () => ({}), queries: () => [
+      { name: 'finished-before-fcp', startedAtMs: 10, waitMs: 20, requestMs: 30, outcome: 'ok' },
+      { name: 'finished-before-lcp', startedAtMs: 40, waitMs: 10, requestMs: 120, outcome: 'ok' },
+      { name: 'finished-after-lcp', startedAtMs: 50, waitMs: 200, requestMs: 30, outcome: 'timeout' },
+      { name: 'started-after-lcp', startedAtMs: 210, waitMs: 0, requestMs: 10, outcome: 'ok' },
+    ] } },
+    document: { readyState: 'complete' },
+    performance: { getEntriesByType: () => [{ name: 'papercusp://localhost/assets/main.js', startTime: 5, duration: 30, initiatorType: 'script' }] },
+    location: { href: 'papercusp://localhost/adv' }, PerformanceObserver: { supportedEntryTypes: [] },
+  };
+  for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, value: values[name] });
+  try {
+    const trace = await readPageStartupTrace({ fcpMs: 100, lcpMs: 200 });
+    assert.equal(trace.lcp, lcp);
+    assert.equal(trace.queryCountCompletedBeforeFcp, 1);
+    assert.equal(trace.startedBeforeFcpCompletedLater, 2);
+    assert.deepEqual(trace.longestRequestsCompletedBeforeFcp.map((query) => query.name), ['finished-before-fcp']);
+    assert.equal(trace.beforeLcp.queryCountCompleted, 2);
+    assert.equal(trace.beforeLcp.startedCompletedLater, 1);
+    assert.deepEqual(trace.beforeLcp.longestRequests.map((query) => query.name), ['finished-before-lcp', 'finished-before-fcp']);
+    assert.equal(trace.resources[0].endMs, 35);
+    assert.equal(trace.ipc.client.kind, 'unavailable');
+    const missing = await readPageStartupTrace({ fcpMs: null, lcpMs: null });
+    assert.equal(missing.queryCountCompletedBeforeFcp, 0);
+    assert.equal(missing.beforeLcp.queryCountCompleted, 0);
+    // A real IPC round trip yielded to a later LCP observer in native r146.
+    // The trace must keep the subject captured with the measured 200ms value.
+    Object.assign(values.window, { __TAURI_INTERNALS__: { invoke: async () => {
+      values.window.__wv_lcp = { ...lcp, startMs: 900 };
+      return { client: 'connected', ownerIsContentOrigin: true };
+    } } });
+    const atomic = await readPageStartupTrace({ fcpMs: 100, lcpMs: 200,
+      attribution: { lcp, lcpAttributionError: null } });
+    assert.equal(atomic.lcp, lcp);
+    assert.equal(values.window.__wv_lcp.startMs, 900);
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});
+
+test("combined native load verdict retains both individual budget breaches", () => {
+  const reading: WebVitalsReading = { instrument: 'ready', brokenReason: null,
+    metrics: { FCP: 3_001, LCP: 4_001 }, missingExpected: [], absentByEnvironment: [], errors: [] };
+  const verdict = evaluateRequiredPageLoad(reading);
+  assert.deepEqual(verdict.measures.map(({ value, ok }) => ({ value, ok })), [
+    { value: 3_001, ok: false }, { value: 4_001, ok: false },
+  ]);
+  assert.equal(verdict.failures.length, 2);
+  assert.deepEqual(evaluateRequiredPageLoad({ ...reading, metrics: { FCP: 3_000, LCP: 4_000 } }).failures, []);
+});
+
+test("combined native load verdict cannot pass empty, invalid or broken instruments", () => {
+  const reading: WebVitalsReading = { instrument: 'ready', brokenReason: null,
+    metrics: {}, missingExpected: [], absentByEnvironment: [], errors: [] };
+  for (const metrics of [{}, { FCP: NaN, LCP: 0 }, { FCP: -1, LCP: Infinity }]) {
+    const verdict = evaluateRequiredPageLoad({ ...reading, metrics });
+    assert.equal(verdict.measures.length, 0);
+    assert.equal(verdict.failures.length, 2);
+  }
+  const realMetrics = { FCP: 100, LCP: 200 };
+  assert.match(evaluateRequiredPageLoad({ ...reading, metrics: realMetrics, instrument: 'threw',
+    brokenReason: 'observer failed' }).failures[0], /observer failed/);
+  assert.deepEqual(evaluateRequiredPageLoad({ ...reading, metrics: realMetrics, errors: ['registration failed'] }).failures,
+    ['registration failed']);
+});
 
 test("React probe rejects a component chunk before importing or invoking its minified export", async () => {
   const result = await new Promise<{ installed: boolean; error?: string }>((done) =>

@@ -684,3 +684,12 @@ export {
   runWorkspaceHostCredentialDeliveryCli,
   createProductionWorkspaceHostCredentialDeliveryDeps,
 } from "./workspace-host-credential-delivery-cli";
+export {
+  APPARMOR_PROFILE_DIR,
+  APPARMOR_RESTRICT_UNPRIVILEGED_USERNS_SYSCTL,
+  BWRAP_BIN,
+  BWRAP_USERNS_GRANT_FUNCTION,
+  BWRAP_USERNS_PROBE_ARGS,
+  bwrapUsernsAppArmorProfileLines,
+  bwrapUsernsGrantShellLines,
+} from "./bwrap-userns-grant";

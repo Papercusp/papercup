@@ -27,6 +27,7 @@ import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import workItemsGet from '../work_items/get';
 import workItemsRelease from '../work_items/release';
+import workItemsCheckpoint from '../work_items/checkpoint';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
@@ -1055,6 +1056,17 @@ describe('handler — graceful degrade + result shape', () => {
     // registered structural projection rather than its authored prose clause.
     expect(self?.returns).toContain('hits?');
     expect(self?.returnsSource).toBe('registered-output-schema');
+  });
+
+  it('does not advertise loop checkpoint CAS fields on work-item checkpoints', async () => {
+    expect(workItemsCheckpoint.name).toBe('work_items:checkpoint');
+    const out = await callHandler({ query: 'work_items:checkpoint', limit: 1 });
+    const checkpoint = out.hits.find((hit) => hit.tool === 'work_items:checkpoint');
+
+    expect(checkpoint).toBeDefined();
+    expect(checkpoint?.argSchema).toContain('contentHash?');
+    expect(checkpoint?.argSchema).toContain('unchanged?');
+    expect(checkpoint?.argSchema).not.toContain('expectedHash');
   });
 
   it('shows the facts body storage cap in compact discovery', async () => {

@@ -149,6 +149,34 @@ export interface WebVitalsReading {
   absentByEnvironment: WebVitalName[];
   /** Registration errors raised inside the page, if any. */
   errors: string[];
+  /** Captured synchronously with metrics; a later IPC await may change LCP. */
+  attribution?: { lcp: unknown; lcpAttributionError: string | null };
+}
+
+/** Retain real load measurements before asserting a combined native sample. */
+export function evaluateRequiredPageLoad(reading: WebVitalsReading) {
+  const failures: string[] = [];
+  if (reading.instrument !== "ready") {
+    failures.push(`web-vitals instrument is ${reading.instrument}: ${reading.brokenReason ?? "no reason recorded"}`);
+  }
+  failures.push(...reading.errors);
+  const measures = [];
+  for (const [name, budget] of [["FCP", 3_000], ["LCP", 4_000]] as const) {
+    const value = reading.metrics[name];
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      failures.push(`${name} is missing or invalid`);
+      continue;
+    }
+    const ok = value <= budget;
+    measures.push({ key: `web-vital:${name}`, value, unit: "ms" as const, budget, ok });
+    if (!ok) failures.push(`${name} ${value}ms exceeds ${budget}ms`);
+  }
+  for (const name of reading.missingExpected) {
+    if (!failures.some((failure) => failure.startsWith(`${name} `))) {
+      failures.push(`${name} is missing`);
+    }
+  }
+  return { measures, failures };
 }
 
 let cachedBundle: string | null = null;
@@ -200,6 +228,9 @@ export function buildWebVitalsBundle(): string {
                     tag: element && element.tagName || null,
                     id: element && typeof element.id === 'string' ? element.id.slice(0, 80) : null,
                     testId: element && element.getAttribute ? element.getAttribute('data-testid')?.slice(0, 80) || null : null,
+                    className: element && typeof element.className === 'string' ? element.className.slice(0, 160) : null,
+                    text: element && element.textContent ? element.textContent.trim().slice(0, 160) : null,
+                    url: entry.url ? String(entry.url).slice(0, 240) : null,
                   } : null;
                 } catch (e) { window.__wv_lcp_error = String(e).slice(0, 160); }
               }
@@ -255,6 +286,73 @@ export function buildWebVitalsBundle(): string {
  * — FCP/LCP are buffered and arrive almost immediately — but a little slack keeps
  * the reading stable on a loaded box.
  */
+export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
+  fcpMs: number | null; lcpMs: number | null; attribution?: WebVitalsReading['attribution'];
+}) {
+  const metrics = (window as unknown as {
+    __sync_metrics__?: {
+      snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null };
+      queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string }>;
+    };
+  }).__sync_metrics__;
+  const snapshot = metrics?.snapshot();
+  const queries = metrics?.queries() ?? [];
+  const capturedAttribution = attribution ?? {
+    lcp: (window as unknown as { __wv_lcp?: unknown }).__wv_lcp ?? null,
+    lcpAttributionError: (window as unknown as { __wv_lcp_error?: string }).__wv_lcp_error ?? null,
+  };
+  const runtime = (window as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: (command: string) => Promise<{ client?: string; ownerIsContentOrigin?: boolean }> };
+  }).__TAURI_INTERNALS__;
+  const ipcClient = await (async () => {
+    if (!runtime?.invoke) return { kind: 'unavailable' as const };
+    try {
+      const status = await runtime.invoke('endpoint_ipc_status');
+      return { kind: 'ok' as const, client: status?.client ?? null, ownerIsContentOrigin: status?.ownerIsContentOrigin ?? null };
+    } catch (error) {
+      return { kind: 'error' as const, error: String(error).slice(0, 160) };
+    }
+  })();
+  const beforePaint = (paintMs: number | null) => {
+    // The ring holds completed requests. A request that finishes after paint
+    // contributes no evidence of a blocking pre-paint request interval.
+    const started = queries.filter((query) => paintMs !== null && query.startedAtMs <= paintMs);
+    const completed = started.filter((query) => query.startedAtMs + query.waitMs + query.requestMs <= paintMs!);
+    const compact = (query: typeof queries[number]) => ({
+      name: query.name, startMs: Math.round(query.startedAtMs), waitMs: Math.round(query.waitMs),
+      requestMs: Math.round(query.requestMs), endMs: Math.round(query.startedAtMs + query.waitMs + query.requestMs), outcome: query.outcome,
+    });
+    return {
+      paintMs, queryCountCompleted: completed.length, startedCompletedLater: started.length - completed.length,
+      longestWaits: completed.slice().sort((a, b) => b.waitMs - a.waitMs).slice(0, 10).map(compact),
+      longestRequests: completed.slice().sort((a, b) => b.requestMs - a.requestMs).slice(0, 10).map(compact),
+    };
+  };
+  const fcp = beforePaint(fcpMs);
+  const lcp = beforePaint(lcpMs);
+  const resources = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+    .sort((a, b) => b.duration - a.duration).slice(0, 12)
+    .map((entry) => ({ path: new URL(entry.name, location.href).pathname, startMs: Math.round(entry.startTime),
+      durationMs: Math.round(entry.duration), endMs: Math.round(entry.startTime + entry.duration), initiator: entry.initiatorType }));
+  return {
+    readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
+    ...capturedAttribution,
+    ipc: { client: ipcClient, assertionTimedOut: snapshot?.ipcAssertTimedOut ?? null, assertionLastClient: snapshot?.ipcAssertLastClient ?? null },
+    queryCountCompletedBeforeFcp: fcp.queryCountCompleted,
+    startedBeforeFcpCompletedLater: fcp.startedCompletedLater,
+    longestWaitsCompletedBeforeFcp: fcp.longestWaits,
+    longestRequestsCompletedBeforeFcp: fcp.longestRequests,
+    beforeLcp: lcp,
+    longTasksSupported: PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false,
+  };
+}
+
+/** The shared smoke/combined-load diagnostic runs before popup interaction. */
+export async function collectPageStartupTrace(browser: Browser, reading: WebVitalsReading) {
+  return browser.execute(readPageStartupTrace, { fcpMs: reading.metrics.FCP ?? null,
+    lcpMs: reading.metrics.LCP ?? null, attribution: reading.attribution });
+}
+
 export async function collectWebVitals(
   browser: Browser,
   { settleMs = 3_000 }: { settleMs?: number } = {},
@@ -309,11 +407,14 @@ export async function collectWebVitals(
       __wv_errors?: string[];
       __wv_injected?: boolean;
       __wv_fatal?: string;
+      __wv_lcp?: unknown;
+      __wv_lcp_error?: string;
       __papercusp_perf_doc__?: string;
     };
     return {
       ready: w.__wv_ready === true,
       metrics: w.__wv ?? null,
+      attribution: { lcp: w.__wv_lcp ?? null, lcpAttributionError: w.__wv_lcp_error ?? null },
       errors: w.__wv_errors ?? [],
       injected: w.__wv_injected === true,
       fatal: w.__wv_fatal ?? null,
@@ -328,6 +429,7 @@ export async function collectWebVitals(
   })) as {
     ready: boolean;
     metrics: Record<string, number> | null;
+    attribution: NonNullable<WebVitalsReading['attribution']>;
     errors: string[];
     injected: boolean;
     fatal: string | null;
@@ -376,6 +478,7 @@ export async function collectWebVitals(
     instrument: "ready",
     brokenReason: null,
     metrics,
+    attribution: raw.attribution,
     missingExpected,
     absentByEnvironment,
     errors: raw.errors ?? [],

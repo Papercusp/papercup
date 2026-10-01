@@ -114,16 +114,22 @@ export function foldRowIntoTally(
  * which is then re-keyed to the signature. A group that fails is left for the
  * next tick and counted in `failedGroups`; it never aborts the others.
  */
-export async function foldLegacyToolFailureRows(
-  workspaceId: string,
-  deps: SignatureFoldDeps = {},
-  limit = SIGNATURE_FOLD_BATCH,
-): Promise<SignatureFoldResult> {
-  const sql = deps.sql ?? getOrgPg().sql;
-  const merge = deps.mergeIssuePayload ?? ((id, patch) => mergeIssuePayload(id, patch));
-  const resolve = deps.resolveDuplicate ??
-    ((id) => setIssueState(id, 'resolved', SIGNATURE_FOLD_OWNER, undefined, { skipCompletionGate: true }));
-  const rows = await sql.unsafe<FoldRow[]>(`
+/**
+ * Which population one fold pass reads.
+ *  - `probation`: observation-lane rows still in probation (the D-010 default).
+ *  - `promoted`: legacy per-class rows that were PROMOTED to accountable issues
+ *    before D-010 and never worked (WI-10004648). work_items:bulk_dedup's
+ *    reviewed-merge gate cannot dedup these — every row carries its own
+ *    watchdogKey, so it correctly refuses `producer-identity-mismatch` — and the
+ *    probation scope above excludes them. A promoted row is folded ONLY while it
+ *    is still genuinely unworked: open, unclaimed, not held, not owner-gated and
+ *    not under agent/admission review. Anything someone has touched keeps its
+ *    own disposition. Absence alone never closes a row here: the survivor stays
+ *    open and carries the losers' counts.
+ */
+export type SignatureFoldScope = 'probation' | 'promoted';
+
+const PROBATION_CANDIDATES_SQL = `
     SELECT feature_id AS id, harness_slug,
            COALESCE(payload->'_ei'->>'signal_origin', 'organic') AS origin, payload
       FROM harness_shared.work_items
@@ -136,7 +142,49 @@ export async function foldLegacyToolFailureRows(
        AND payload->>'watchdogKey' IS NOT NULL
        AND payload->>'watchdogKey' NOT LIKE 'tool-failure-signature:%'
      ORDER BY updated_ts DESC NULLS LAST, feature_id
-     LIMIT $3`, [workspaceId, TERMINAL, limit]);
+     LIMIT $3`;
+
+const PROMOTED_CANDIDATES_SQL = `
+    SELECT feature_id AS id, harness_slug,
+           COALESCE(payload->'_ei'->>'signal_origin', 'organic') AS origin, payload
+      FROM harness_shared.work_items
+     WHERE workspace_id = $1
+       AND item_kind IN ('bug', 'change')
+       AND status = 'open'
+       AND taken_by IS NULL
+       AND claim_hold IS NOT TRUE
+       AND needs_owner_action IS NOT TRUE
+       AND needs_human_review IS NOT TRUE
+       AND lane IS DISTINCT FROM 'observation'
+       AND payload->>'lane' IS DISTINCT FROM 'observation'
+       AND payload->'toolFailureProbation'->>'state' = 'promoted'
+       AND payload->>'watchdogKey' IS NOT NULL
+       AND payload->>'watchdogKey' NOT LIKE 'tool-failure-signature:%'
+       AND COALESCE(admission, '') <> 'pending'
+       AND COALESCE(payload->'agentReview'->>'status', '') NOT IN ('pending', 'revision-requested')
+     ORDER BY updated_ts DESC NULLS LAST, feature_id
+     LIMIT $2`;
+
+// The survivor a group folds onto: the open row already keyed by the signature.
+// Probation reads the observation lane; promoted reads the accountable lane (the
+// open-improvement unique index of migration 865 guarantees at most one).
+const OBSERVATION_SURVIVOR_LANE = `AND payload->>'lane' = 'observation'`;
+const PROMOTED_SURVIVOR_LANE =
+  `AND lane IS DISTINCT FROM 'observation' AND payload->>'lane' IS DISTINCT FROM 'observation'`;
+
+export async function foldLegacyToolFailureRows(
+  workspaceId: string,
+  deps: SignatureFoldDeps = {},
+  limit = SIGNATURE_FOLD_BATCH,
+  scope: SignatureFoldScope = 'probation',
+): Promise<SignatureFoldResult> {
+  const sql = deps.sql ?? getOrgPg().sql;
+  const merge = deps.mergeIssuePayload ?? ((id, patch) => mergeIssuePayload(id, patch));
+  const resolve = deps.resolveDuplicate ??
+    ((id) => setIssueState(id, 'resolved', SIGNATURE_FOLD_OWNER, undefined, { skipCompletionGate: true }));
+  const rows = scope === 'promoted'
+    ? await sql.unsafe<FoldRow[]>(PROMOTED_CANDIDATES_SQL, [workspaceId, limit])
+    : await sql.unsafe<FoldRow[]>(PROBATION_CANDIDATES_SQL, [workspaceId, TERMINAL, limit]);
   const result: SignatureFoldResult = { scanned: rows.length, groups: 0, folded: 0, rekeyed: 0, failedGroups: 0 };
   const groups = new Map<string, { signature: string; harness: string; origin: string; members: FoldRow[] }>();
   for (const row of rows) {
@@ -159,7 +207,7 @@ export async function foldLegacyToolFailureRows(
            AND (status IS NULL OR status <> ALL ($3::text[]))
            AND payload->>'watchdogKey' = $4
            AND COALESCE(payload->'_ei'->>'signal_origin', 'organic') = $5
-           AND payload->>'lane' = 'observation'
+           ${scope === 'promoted' ? PROMOTED_SURVIVOR_LANE : OBSERVATION_SURVIVOR_LANE}
          LIMIT 1`, [workspaceId, group.harness, TERMINAL, group.signature, group.origin]);
       // Rows already marked by an interrupted earlier fold are only re-resolved.
       const pending = group.members.filter((m) => typeof m.payload.signatureFoldedInto !== 'string');

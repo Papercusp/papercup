@@ -142,6 +142,29 @@ describe('withMemoryTimeout — deadline race', () => {
     } finally { deadline.close(); vi.useRealTimers(); }
   });
 
+  // The Jev memory gate sizes its own wait from this, so its own timeout (which the
+  // decision ledger records) fires before the deadline cuts it off (WI-10004485).
+  it('reports the time left: counting down, 0 once expired or aborted, Infinity when unbounded', async () => {
+    vi.useFakeTimers();
+    const deadline = createMemoryWorkDeadline(100);
+    const unbounded = createMemoryWorkDeadline(Number.POSITIVE_INFINITY);
+    const parent = new AbortController();
+    const child = createMemoryWorkDeadline(1_000, parent.signal);
+    try {
+      expect(deadline.remainingMs()).toBe(100);
+      await vi.advanceTimersByTimeAsync(40);
+      expect(deadline.remainingMs()).toBe(60);
+      await vi.advanceTimersByTimeAsync(60);
+      expect(deadline.remainingMs()).toBe(0);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(deadline.remainingMs()).toBe(0);
+      expect(unbounded.remainingMs()).toBe(Number.POSITIVE_INFINITY);
+      expect(child.remainingMs()).toBe(850);
+      parent.abort();
+      expect(child.remainingMs()).toBe(0);
+    } finally { deadline.close(); unbounded.close(); child.close(); vi.useRealTimers(); }
+  });
+
   it('cancels a child immediately when its parent lifetime expires', async () => {
     const parent = new AbortController();
     const deadline = createMemoryWorkDeadline(5000, parent.signal);

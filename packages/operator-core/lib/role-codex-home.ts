@@ -1352,6 +1352,10 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
   const expectedNativeSessionHeader = 'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }';
+  const expectedSuMcpRoute =
+    '[mcp_servers.papercusp-su]\nurl = "' +
+    tomlEscape(mcpUrlWithClient(opts.mcpUrl, opts.sid)) +
+    '"';
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
     gatewayOn: opts.codexGatewayAuto,
     ownerId: opts.sid,
@@ -1374,7 +1378,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       ? hasHeadlessPluginsPolicy && hasHeadlessAuthPolicy
       : !hasHeadlessPluginsPolicy && !hasHeadlessAuthPolicy;
     configReady =
-      current.includes('[mcp_servers.papercusp-su]') &&
+      current.includes(expectedSuMcpRoute) &&
       current.includes(expectedProjectMcp) &&
       current.includes(expectedClient) &&
       current.includes(expectedNativeSessionHeader) &&

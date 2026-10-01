@@ -17,6 +17,7 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs, recordMeasure } from "../perf-report";
+import { collectPageStartupTrace, collectWebVitals, describeReading, evaluateRequiredPageLoad } from "../web-vitals-probe";
 import { APP_MOUNT_TIMEOUT_MS, installPopupLayoutProbe, installPopupReactProbe, readPlanPopupCandidates, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
 // Imported by PATH for the same reason app-mount.ts imports it that way: this
 // runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
@@ -41,6 +42,7 @@ const DASHBOARD_WAIT_MS = 20_000;
 const PRELOAD_WAIT_MS = 30_000;
 /** Emitted only after PlanDashboard's Vditor/Lute preloader really succeeds. */
 const VDITOR_READY_MARK = "plan-dashboard-vditor-ready-success-v1";
+const POPUP_MODULE_READY_MARK = "plan-dashboard-popup-module-ready-success-v1";
 /** How many sidebar rows to try before declaring the environment unmeasurable. */
 const MAX_ROWS_TO_TRY = 5;
 // Budget MIRRORS DESKTOP_PERF_BUDGETS.interactions['plan-popup-open']
@@ -103,6 +105,16 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     // 1. Wait for the operator UI to mount real app content.
     // URL discovery and the second navigation share one mount budget.
     await waitForAppMount(browser, Math.max(1, APP_MOUNT_TIMEOUT_MS - (Date.now() - mountStartedAt)));
+
+    // Capture load on this same document before the popup can become a new LCP
+    // candidate. Preserve a failed load verdict while still measuring the popup.
+    const loadReading = await collectWebVitals(browser, { settleMs: 3_000 });
+    console.log(describeReading(loadReading));
+    const loadVerdict = evaluateRequiredPageLoad(loadReading);
+    for (const measure of loadVerdict.measures) recordMeasure(measure);
+    recordMeasure({ key: 'plan-popup-load-errors', value: loadVerdict.failures.length,
+      unit: 'count', budget: 0, ok: loadVerdict.failures.length === 0 });
+    console.log('[web-vitals] page trace:', JSON.stringify(await collectPageStartupTrace(browser, loadReading)));
 
     // 2. Select the op-chat sidebar Plans face (?opcv=plans) — where the real
     //    "open a plan" interaction lives (WI-5547: the sidebar Plans view).
@@ -257,14 +269,14 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         .waitUntil(
           async () =>
             await browser.execute(
-              (mark) => performance.getEntriesByName(mark, "mark").length > 0,
-              VDITOR_READY_MARK,
+              (marks) => marks.every((mark) => performance.getEntriesByName(mark, "mark").length > 0),
+              [VDITOR_READY_MARK, POPUP_MODULE_READY_MARK],
             ),
-          { timeout: PRELOAD_WAIT_MS, timeoutMsg: "Vditor warm-up did not succeed" },
+          { timeout: PRELOAD_WAIT_MS, timeoutMsg: "Vditor/popup module warm-up did not succeed" },
         )
         .then(() => true, () => false);
       if (!warmed) {
-        lastFailure = "Vditor warm-up did not succeed";
+        lastFailure = "Vditor/popup module warm-up did not succeed";
         attempts.push(`${candidate.slug} [${candidate.harness ?? "?"}]: ${lastFailure}`);
         await browser
           .execute(() => {
@@ -768,12 +780,15 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         visibility: diagnostics.visibility,
       }));
     }
+    recordInteractionMs(INTERACTION_NAME, measuredMs, PLAN_POPUP_OPEN_BUDGET_MS);
+    for (const phase of phases) {
+      recordMeasure({ ...phase, unit: 'ms', budget: null, ok: true });
+    }
     for (const phase of (process.env.PAPERCUSP_PERF_REQUIRED_PHASES ?? '').split(',').filter(Boolean)) {
       if (!phases.some((entry) => entry.key === `${INTERACTION_NAME}:phase:${phase}`)) {
         throw new Error(`UNMEASURABLE: required phase ${phase} is missing; verify the SPA actually loaded by this native artifact`);
       }
     }
-    recordInteractionMs(INTERACTION_NAME, measuredMs, PLAN_POPUP_OPEN_BUDGET_MS);
     const resources = await browser.execute((name) => {
       const measure = performance.getEntriesByName(name, 'measure').at(-1);
       if (!measure) return [];
@@ -793,13 +808,11 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       return metrics?.snapshot().scheduler ?? null;
     });
     console.log('[perf] plan-popup scheduler after render', JSON.stringify(schedulerAfter));
-    for (const phase of phases) {
-      recordMeasure({ ...phase, unit: 'ms', budget: null, ok: true });
-    }
     if (startWallMs === null) {
       throw new Error('UNMEASURABLE: completed plan-popup measure lost its absolute start time');
     }
     expect(measuredMs).not.toBeNull();
+    expect(loadVerdict.failures).toEqual([]);
     expect(measuredMs as number).toBeLessThanOrEqual(PLAN_POPUP_OPEN_BUDGET_MS);
   });
 });

@@ -198,6 +198,13 @@ export function withMemoryTimeout<T>(
 export interface MemoryWorkDeadline {
   readonly signal: AbortSignal;
   run<T>(start: () => Promise<T>, label: string, capMs?: number): Promise<T>;
+  /**
+   * Milliseconds left before this deadline expires: 0 once it has expired or been
+   * aborted, Infinity when it is unbounded. A step that sizes its own wait from
+   * this (the Jev memory gate does) stops before the deadline cuts it off, so the
+   * step's own timeout, not the deadline, is what its ledger records.
+   */
+  remainingMs(): number;
   close(): void;
 }
 
@@ -220,6 +227,10 @@ export function createMemoryWorkDeadline(timeoutMs: number, parent?: AbortSignal
       // cancellation remains local to this request, never a global health signal.
       return await withMemoryTimeout(start(), label, Math.min(remaining, capMs), controller,
         capMs < remaining ? 'backend-operation' : 'request-budget');
+    },
+    remainingMs() {
+      // expiresAt is Infinity for an unbounded deadline, so this stays Infinity.
+      return controller.signal.aborted ? 0 : Math.max(0, expiresAt - Date.now());
     },
     close() { if (timer !== undefined) clearTimeout(timer); parent?.removeEventListener('abort', onParentAbort); },
   };

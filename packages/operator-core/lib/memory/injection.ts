@@ -44,7 +44,7 @@ import { alreadySurfacedIds, currentSessionEpoch, stampSurfaced } from './sessio
 import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
 import { lexicalQueryText, retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
-import { JEV_MEMORY_RESPONSE_MARGIN_MS, runJevMemoryGate } from './jev-memory-gate';
+import { jevFunnelEntry, jevMemoryBudgetMs, runJevMemoryGate } from './jev-memory-gate';
 import { annotateSupersededMemory } from './temporal-render';
 import { systemDistinctId } from '../flag-distinct-id';
 import {
@@ -1641,19 +1641,26 @@ async function buildBlockInner(
           ...harnessHits.map(({ hit }) => hit),
           ...hiveHits.map(({ hit }) => hit),
         ];
+        // What Jev may use: the smaller of what is left of the client's wall and of
+        // this build's own deadline, which ends first on turn-start. A wait sized
+        // from the wall alone was cut off by the deadline (jevMemoryBudgetMs).
+        const budgetMs = jevMemoryBudgetMs(Date.now(), {
+          ...(input.respondByMs !== undefined ? { respondByMs: input.respondByMs } : {}),
+          deadlineRemainingMs: deadline.remainingMs(),
+        });
         const verdict = await deadline.run(() => runJevMemoryGate({
           workspaceId: input.workspaceId,
           message: queryText,
           candidates: pooled.map((hit) => ({ id: hit.id, text: hit.text })),
           // On waits only where the port's wall can afford it (JEV_MEMORY_NO_WAIT_PORTS),
-          // and only for what is left of that wall (jevMemoryWaitMs).
+          // and only for what is left (jevMemoryWaitMs).
           ...(input.session?.port ? { port: input.session.port } : {}),
-          ...(input.respondByMs !== undefined
-            ? { budgetMs: input.respondByMs - Date.now() - JEV_MEMORY_RESPONSE_MARGIN_MS }
-            : {}),
+          ...(budgetMs !== undefined ? { budgetMs } : {}),
           // The same label memory_recall_stats.surface records for this recall.
           surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
         }), 'admission');
+        const jevEntry = jevFunnelEntry(verdict, budgetMs);
+        if (jevEntry) funnel.jev = jevEntry;
         if (verdict.effective === 'on' && verdict.outcome === 'answered') {
           const drop = new Set(pooled.filter((_, i) => verdict.keep[i] === false));
           if (drop.size > 0) {

@@ -588,6 +588,10 @@ export const WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS = [
   // so the single property whose absence made the original host unrecoverable was invisible in
   // the document that asserts the host is fine (EI-22185970114422986).
   "workspace-ssh-authorized-keys",
+  // The agent account can create the user/pid/net namespaces Codex's sandbox needs. Shared, not
+  // Ubuntu-only: the bootc base needs no AppArmor grant, but it still has to ship bubblewrap and
+  // allow unprivileged user namespaces, and a host that cannot is just as broken (WI-10004636).
+  "agent-sandbox-userns",
 ] as const;
 
 /**
@@ -708,6 +712,7 @@ export const WORKSPACE_HOST_BOOTSTRAP_CHECK_EVIDENCE: Readonly<
   "ssh-forwarding-policy": 'grep -Fx "allowtcpforwarding local"',
   "workspace-ssh-authorized-keys":
     "workspace authorized_keys is unreadable or empty at attest time",
+  "agent-sandbox-userns": "agent sandbox cannot create a user namespace",
 };
 
 export interface WorkspaceHostBootstrapRelease {
@@ -2425,6 +2430,13 @@ export function buildWorkspaceHostBootstrap(
     ...(hostModel === 'ubuntu-release-bundle'
       ? [
           `retry 5 apt_install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")} || die "runtime package install failed after 5 attempts"`,
+          // Stock Ubuntu 24.04 restricts unprivileged user namespaces, so the bubblewrap installed
+          // above cannot sandbox anything until AppArmor grants it `userns`. The function never
+          // fails the bootstrap itself; the `agent-sandbox-userns` probe below decides that.
+          ...bwrapUsernsGrantShellLines(
+            '# Managed by the papercusp workspace-host bootstrap (WI-10004636).',
+          ),
+          `${BWRAP_USERNS_GRANT_FUNCTION} ${APPARMOR_PROFILE_DIR} ${APPARMOR_RESTRICT_UNPRIVILEGED_USERNS_SYSCTL} ${BWRAP_BIN}`,
         ]
       : []),
     // A recreated image may allocate different numeric IDs to the same named accounts. `/home`
@@ -2472,6 +2484,10 @@ export function buildWorkspaceHostBootstrap(
     'if id -nG "$AGENT_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "agent identity must not belong to the runtime service group"; fi',
     'if id -nG "$AGENT_USER" | tr " " "\\n" | grep -Fx "$WORKSPACE_GROUP" >/dev/null; then die "agent identity must not belong to the workspace SSH group"; fi',
     'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$AGENT_GROUP" >/dev/null; then die "workspace SSH user must not belong to the agent group"; fi',
+    // Prove the AGENT account (the one that runs the bundled CLIs) can sandbox, rather than that
+    // bwrap is merely installed: without a usable user namespace Codex's workspace-write sandbox
+    // fails every tool command while the run reports success (WI-10004636, plan D-012).
+    `sandbox_probe_err="$(runuser -u "$AGENT_USER" -- ${BWRAP_BIN} ${BWRAP_USERNS_PROBE_ARGS.join(" ")} 2>&1)" || die "agent sandbox cannot create a user namespace as $AGENT_USER: \${sandbox_probe_err:-bwrap exited non-zero}"`,
     'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/embedded-pg"',
     'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
     // The AGENT identity must TRAVERSE the runtime root, because it is the account that runs the

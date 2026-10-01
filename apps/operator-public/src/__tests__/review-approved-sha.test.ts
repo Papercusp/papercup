@@ -10,6 +10,7 @@
  * version makes it the single served version of its (repo, kind, ref).
  */
 import { afterEach, describe, expect, it } from 'vitest';
+import { approveListingVersion } from '../db.ts';
 import { buildApi } from '../routes/index.ts';
 import { makeEnv, stubGithub, type GhStubTreeEntry } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1';
@@ -227,6 +228,34 @@ describe('P-008 review approves a SHA', () => {
     // v4 was published AFTER the reviewed v3: a newer candidate, not obsolete.
     expect(rowById(ctx, v4)).toMatchObject({ review_status: 'pending', unlisted_at: null, superseded_by: null });
     expect(await servedIds(ctx)).toEqual([v3]);
+  });
+
+  it('P-008 / WI-10004625 a lost race on the approve statement retires NOTHING — the EXISTS guard keeps the served version', async () => {
+    const ctx = setup();
+    const v1 = await publishAt(ctx, A, 1000);
+    expect((await review(ctx, v1, { decision: 'approve' })).status).toBe(200);
+    const v2 = await publishAt(ctx, B, 2000);
+    const v3 = await publishAt(ctx, C, 3000);
+    // v3 loses the race: another request unlisted it between the route's read and
+    // the batch, so the approve UPDATE (…AND unlisted_at IS NULL) matches no row.
+    ctx.raw.prepare("UPDATE harnesses SET unlisted_at = 9, unlisted_reason = 'raced' WHERE id = ?").run(v3);
+    const v3Row = ctx.raw.prepare('SELECT created_at FROM harnesses WHERE id = ?').get(v3) as unknown as { created_at: number };
+
+    await approveListingVersion(ctx.env.DB, {
+      id: v3,
+      reason: null,
+      now: 5000,
+      approved: { commitSha: C, treeDigest: 'f'.repeat(64) },
+      repinned: false,
+      retire: { github_repository_id: REPO_ID, listing_kind: 'plan', listing_ref: 'quality-plan', created_at: v3Row.created_at },
+    });
+
+    // v3 was NOT approved, so the retire statement must not have fired: the previously
+    // approved v1 is still the served version and the older pending v2 is untouched.
+    expect(rowById(ctx, v3)).toMatchObject({ review_status: 'pending', approved_commit_sha: null, unlisted_reason: 'raced' });
+    expect(rowById(ctx, v1)).toMatchObject({ review_status: 'approved', claim_status: expect.not.stringMatching(/^superseded$/), superseded_by: null, unlisted_at: null });
+    expect(rowById(ctx, v2)).toMatchObject({ review_status: 'pending', superseded_by: null, unlisted_at: null });
+    expect(await servedIds(ctx)).toEqual([v1]);
   });
 
   it('P-008 a drifted row is re-pinned to the reviewed SHA: pinned_* and approved_* both end up at what was read', async () => {

@@ -156,7 +156,15 @@ function decodeMcp(raw: string, id: number): unknown {
       ? (result.content as Array<{ type?: string; text?: string }>).filter((c) => c.type === 'text' && typeof c.text === 'string')
       : [];
     for (const t of texts) {
-      try { return JSON.parse(t.text!); } catch { /* advisory text; keep looking */ }
+      let parsed: unknown;
+      try { parsed = JSON.parse(t.text!); } catch { continue; /* advisory text; keep looking */ }
+      // A spill-reference envelope is NOT the tool's result. Returning it would hand
+      // every caller's schema an object whose fields all read undefined.
+      const env = parsed as { schemaVersion?: unknown; content?: Array<{ kind?: string; uri?: string }> };
+      if (env?.schemaVersion === 'papercusp.output-envelope/v1' && env.content?.some((c) => c.kind === 'reference')) {
+        throw new Error(`result was spilled behind a reference envelope (${env.content.find((c) => c.kind === 'reference')?.uri}); the call must carry its own _meta.outputGroupId`);
+      }
+      return parsed;
     }
     if ('structuredContent' in result) return result.structuredContent;
     return texts[0]?.text ?? result;
@@ -173,7 +181,15 @@ async function mcp(tool: string, args: Record<string, unknown>): Promise<unknown
   const res = await fetch(`${BASE}/api/mcp?${qs}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: tool, arguments: args } }),
+    // Each smoke call is its own output group. Without an explicit group the
+    // result door's compatibility fallback (result-door.ts beginResultDoorAggregate)
+    // groups every call that starts within 2 s into ONE per-hop byte budget, and
+    // this client fires ~20 calls back to back: past ~14 KB every later result
+    // comes back as a spill-reference envelope instead of the tool's JSON.
+    body: JSON.stringify({
+      jsonrpc: '2.0', id, method: 'tools/call',
+      params: { name: tool, arguments: args, _meta: { outputGroupId: `p015-smoke:${id}:${randomUUID()}` } },
+    }),
   });
   const raw = await res.text();
   try {

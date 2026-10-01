@@ -374,13 +374,81 @@ def export_onnx(directory):
     finalize_existing_onnx(root)
 
 
+def qualify_incumbent_reference(native_file, out_file):
+    """Same pinned ONNX assets; independently maintained Python tokenizer and pooling.
+
+    This is reference qualification, not a second export or a production migration.
+    Report shipped and corrected Gemma separately even when shipped loses parity.
+    """
+    import numpy as np
+    import onnxruntime as ort
+    native_path = Path(native_file)
+    native = json.loads(native_path.read_text())
+    request_file = Path(str(native_path) + ".request.json")
+    if file_sha256(request_file) != native["requestSha256"]:
+        raise ValueError("reference request identity drift")
+    request = json.loads(request_file.read_text())
+    if native["cases"] != request["cases"] or native["identities"] != request["identities"]:
+        raise ValueError("reference native/request recipe drift")
+    report = {"formatVersion": 1, "nativeSha256": file_sha256(native_path),
+              "requestSha256": native["requestSha256"], "executionProvider": "CPUExecutionProvider",
+              "thresholds": {"minimumCosine": VECTOR_COSINE_FLOOR, "maximumAbsoluteError": VECTOR_MAX_ABS_ERROR},
+              "versions": {name: package_version(name) for name in ["numpy", "onnxruntime", "tokenizers", "transformers"]},
+              "arms": []}
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = request["execution"]["intraOpNumThreads"]
+    options.inter_op_num_threads = request["execution"]["interOpNumThreads"]
+    for identity in request["identities"]:
+        for asset in identity["files"]:
+            if file_sha256(asset["path"]) != asset["sha256"] or Path(asset["path"]).stat().st_size != asset["bytes"]:
+                raise ValueError("reference asset identity drift")
+        tokenizer = load_pinned_tokenizer(Path(identity["directory"]))
+        graph = next(asset["path"] for asset in identity["files"] if asset["path"].endswith("/onnx/model.onnx"))
+        session = ort.InferenceSession(graph, sess_options=options, providers=["CPUExecutionProvider"])
+        for arm in [a for a in native["arms"] if a["model"] == identity["model"]]:
+            if [c["id"] for c in arm["cases"]] != [c["id"] for c in request["cases"]]:
+                raise ValueError("reference case coverage/order mismatch")
+            results = []
+            for case in arm["cases"]:
+                encoded = tokenizer(case["promptedText"], padding=True, truncation=True,
+                                    max_length=tokenizer.model_max_length, return_tensors="np")
+                outputs = dict(zip([x.name for x in session.get_outputs()], session.run(None, {
+                    x.name: encoded[x.name].astype(np.int64) for x in session.get_inputs()})))
+                if identity["model"] == "harrier":
+                    vector = outputs["sentence_embedding"][0]
+                else:
+                    mask = encoded["attention_mask"].astype(np.float32)[..., None]
+                    vector = (outputs["last_hidden_state"] * mask).sum(axis=1)[0] / mask.sum(axis=1)[0]
+                vector = vector / np.linalg.norm(vector)
+                reference = vector.tolist()
+                comparison = compare_vectors([case["vector"]], [reference], [case["id"]])
+                tokens_equal = encoded["input_ids"][0].tolist() == case["inputIds"]
+                results.append({"id": case["id"], "tokenIdsEqual": tokens_equal,
+                                "referenceTokenIds": encoded["input_ids"][0].tolist(), "referenceVector": reference,
+                                "nativeParity": comparison,
+                                "shippedWorkerParity": compare_vectors([case["shippedVector"]], [case["vector"]], [case["id"]]) if case.get("shippedVector") else None})
+            report["arms"].append({"model": arm["model"], "profileId": arm["profileId"],
+                                   "tokenizerBackend": arm["tokenizerBackend"], "cases": results})
+        del session
+    destination = Path(out_file)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("x") as handle:
+        json.dump(report, handle)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out")
     parser.add_argument("--export-onnx", help="New local Transformers.js model directory")
     parser.add_argument("--validate-onnx", help="Validate and finalize an existing ONNX export")
+    parser.add_argument("--reference-native", help="Qualify incumbent native results against pinned Python ONNX/tokenizer reference")
     parser.add_argument("--corpus", choices=["memory", "prose", "both"], default="both")
     args = parser.parse_args()
+    if args.reference_native:
+        if not args.out:
+            parser.error("--reference-native requires --out")
+        qualify_incumbent_reference(args.reference_native, args.out)
+        return
     torch.set_num_threads(4)
     torch.set_num_interop_threads(1)
     if args.export_onnx:

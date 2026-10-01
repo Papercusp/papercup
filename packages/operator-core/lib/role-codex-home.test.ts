@@ -463,6 +463,38 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(home.configPath, 'utf8')).toContain(expected);
   });
 
+  it("refreshes the native MCP URL on resume when staging is routed through its proxy", async () => {
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const directUrl = 'http://127.0.0.1:3170/api/mcp?superuser=1&workspace=papercusp-workspace';
+    const originalOpts = {
+      sessionKey: 'mcp-route-refresh',
+      mcpUrl: directUrl,
+      promptText: 'PRESERVE',
+      sid: 'su-mcp-route-refresh',
+      model: RESOLVED_CODEX_DEFAULT,
+    };
+    const home = writeSuCodexHome(originalOpts);
+    const rollout = join(home.codexHome, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(home.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(rollout, '{"type":"session_meta"}\n');
+
+    const routedOpts = {
+      ...originalOpts,
+      mcpUrl: directUrl.replace(':3170', ':9171'),
+    };
+    const repaired = ensureSuCodexHomeConfig(routedOpts);
+
+    expect(repaired.repaired).toBe(true);
+    const config = readFileSync(home.configPath, 'utf8');
+    expect(config).toContain(
+      'url = "' + routedOpts.mcpUrl + '&client=' + encodeURIComponent(routedOpts.sid) + '"',
+    );
+    expect(config).not.toContain(':3170');
+    expect(readFileSync(rollout, 'utf8')).toContain('session_meta');
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+    expect(ensureSuCodexHomeConfig(routedOpts).repaired).toBe(false);
+  });
+
   it('suppresses browser-capable plugin auth in fresh and repaired headless homes without changing visible homes', async () => {
     const { ensureSuCodexHomeConfig, writeRoleCodexHome, writeSuCodexHome } = await import('./role-codex-home');
     const role = writeRoleCodexHome({

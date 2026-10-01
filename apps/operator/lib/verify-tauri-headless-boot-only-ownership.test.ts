@@ -41,3 +41,54 @@ describe('EI-20226754912676562 — --boot-only handoff is per-run and owner-veri
     expect(src).toContain('verify_tauri_assert_owned');
   });
 });
+
+describe('WI-10004544 — Xvfb teardown is bound to the originating run', () => {
+  const startDisplayServer = src.match(
+    /start_display_server\(\) \{([\s\S]*?)^\}/m,
+  )?.[1];
+  const xvfbStopWriter = src.match(
+    /^write_xvfb_stop_script\(\) \{[\s\S]*?^\}/m,
+  )?.[0];
+  const stopWriter = src.match(
+    /^write_stop_script\(\) \{[\s\S]*?^\}/m,
+  )?.[0];
+  const retryStart = src.indexOf('if [ "$DISPLAY_LOST" = 1 ]; then');
+  const retryEnd = src.indexOf('      display_lock_release', retryStart);
+  const retryTeardown = retryStart >= 0 && retryEnd > retryStart
+    ? src.slice(retryStart, retryEnd)
+    : '';
+
+  it('starts Xvfb with a unique run provenance and display marker', () => {
+    expect(startDisplayServer).toBeTruthy();
+    expect(startDisplayServer).toContain('PAPERCUSP_TAURI_LAUNCH_PROVENANCE');
+    expect(startDisplayServer).toContain('PAPERCUSP_VERIFY_XVFB_DISPLAY');
+  });
+
+  it('rechecks both markers before TERM and fallback KILL', () => {
+    expect(xvfbStopWriter).toBeTruthy();
+    expect(xvfbStopWriter).toContain(
+      'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$EXPECTED_PROVENANCE',
+    );
+    expect(xvfbStopWriter).toContain(
+      'PAPERCUSP_VERIFY_XVFB_DISPLAY=$EXPECTED_DISPLAY',
+    );
+    expect(xvfbStopWriter).toContain('kill -TERM "$xvfb_pid"');
+    expect(xvfbStopWriter).toMatch(
+      /xvfb_is_owned "\$xvfb_pid"[\s\S]*?kill -KILL "\$xvfb_pid"/,
+    );
+    expect(xvfbStopWriter).not.toMatch(/pkill\s+-9\s+-f\s+"Xvfb/);
+  });
+
+  it('uses the owned helper for final and retry teardown without unlinking shared display files', () => {
+    expect(stopWriter).toBeTruthy();
+    expect(stopWriter).toContain('"$WORK/stop-xvfb.sh"');
+    expect(stopWriter).not.toMatch(/pkill\s+-9\s+-f\s+"Xvfb/);
+    expect(stopWriter).not.toContain('rm -f "/tmp/.X11-unix/X$DISPLAY_NUM"');
+    expect(stopWriter).not.toContain('"/tmp/.X$DISPLAY_NUM-lock"');
+
+    expect(retryTeardown).toContain('write_xvfb_stop_script');
+    expect(retryTeardown).toContain('"$WORK/stop-xvfb.sh"');
+    expect(retryTeardown).not.toMatch(/pkill\s+-9\s+-f\s+"Xvfb/);
+    expect(retryTeardown).not.toContain('"/tmp/.X$DISPLAY_NUM-lock"');
+  });
+});

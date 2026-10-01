@@ -157,6 +157,16 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'invalid_input: database constraint failed')).toBe('structural');
   });
 
+  it('classifies the nested tools:invoke checkpoint replacement safety refusal as caller', () => {
+    // Live rows keep the nested { ok:false, error, errorCode } refusal as JSON
+    // in error_message, while the wrapper records error_code='handler_error'.
+    const nestedRefusal =
+      '{"ok":false,"error":"checkpoint_replace_would_drop_rows","errorCode":"checkpoint_replace_would_drop_rows","retryable":true}';
+    expect(classifyToolError('handler_error', 'error', nestedRefusal)).toBe('caller');
+    expect(classifyToolError('checkpoint_replace_would_drop_rows', 'error', null)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', '{"ok":false,"error":"unrelated_refusal"}')).toBe('structural');
+  });
+
   it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {
     expect(
       classifyToolError(

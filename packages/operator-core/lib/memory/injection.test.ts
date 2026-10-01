@@ -2456,4 +2456,59 @@ describe('Jev on the push path (plan jev-decision-model-integration-2026-09-29, 
     const block = (await buildMemoryContextBlock(INPUT))!;
     expect(block.indexOf(ROWS[0]!.text)).toBeLessThan(block.indexOf(ROWS[1]!.text));
   });
+
+  // WI-10004485: turn-start's build runs under a 2,000 ms deadline inside a 2,500 ms
+  // wall, so the deadline ends first. A wait sized from the wall alone was cut off
+  // by the deadline in On while the ledger recorded the call as answered.
+  it('bounds the Jev wait by the build deadline, not only by the client wall', async () => {
+    jev.mode = 'on';
+    const calls = answering([0.9, 0.95]);
+    useBackend(mockBackend(ROWS));
+    const deadline = createMemoryWorkDeadline(1000);
+    try {
+      await buildMemoryContextBlock({ ...INPUT, deadline, respondByMs: Date.now() + 60_000 });
+    } finally {
+      deadline.close();
+    }
+    expect(calls).toHaveLength(1);
+    const timeoutMs = (calls[0]!.options as { timeoutMs?: number }).timeoutMs!;
+    // At most the deadline net of the 250 ms response margin; the 60 s wall would
+    // have allowed the full 800 ms cap.
+    expect(timeoutMs).toBeLessThanOrEqual(1000 - 250);
+    expect(timeoutMs).toBeGreaterThanOrEqual(150);
+  });
+
+  it('records the Jev result in the admission funnel', async () => {
+    jev.mode = 'on';
+    answering([0.9, 0.01]);
+    useBackend(mockBackend(ROWS));
+    await buildMemoryContextBlock(INPUT);
+    await flush();
+    const { admission } = recordRecallStatsMock.mock.calls.at(-1)![1] as { admission: { jev?: Record<string, unknown> } };
+    expect(admission.jev).toMatchObject({ effective: 'on', outcome: 'answered' });
+    expect(typeof admission.jev!.budgetMs).toBe('number');
+    expect(admission.jev).not.toHaveProperty('skipped');
+  });
+
+  it('with no time left to wait, neither On nor Log only calls Jev, and the funnel counts the skip', async () => {
+    const off = await baseline();
+    for (const mode of ['on', 'shadow'] as const) {
+      jev.mode = mode;
+      const calls = answering([0.9, 0.01]);
+      useBackend(mockBackend(ROWS));
+      // 350 ms of deadline, net of the 250 ms margin, is under the 150 ms floor.
+      const deadline = createMemoryWorkDeadline(350);
+      let block: string | null;
+      try {
+        block = await buildMemoryContextBlock({ ...INPUT, deadline });
+      } finally {
+        deadline.close();
+      }
+      await flush();
+      expect(calls).toHaveLength(0);
+      expect(block).toBe(off);
+      const { admission } = recordRecallStatsMock.mock.calls.at(-1)![1] as { admission: { jev?: Record<string, unknown> } };
+      expect(admission.jev).toMatchObject({ effective: mode, skipped: 'no-time' });
+    }
+  });
 });

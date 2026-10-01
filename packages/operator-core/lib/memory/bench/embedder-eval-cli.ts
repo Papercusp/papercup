@@ -107,7 +107,7 @@ import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
 import { compareLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
   assertCandidateArm, failMeasurementCell, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
@@ -530,6 +530,12 @@ function scoreLeg(
 }
 
 async function main(): Promise<void> {
+  if (argValue('--qualify-reference')) {
+    const output = argValue('--out');
+    if (!output) throw new Error('--qualify-reference requires --out');
+    await qualifyIncumbentReferences(argValue('--qualify-reference')!, argValue('--reference-sha256') ?? '', output);
+    return;
+  }
   // `--legs none` embeds nothing: a PURE ANALYSIS pass that only re-compares
   // runs already on disk (paired stats are computed from stored per-query rows,
   // so re-deriving a verdict — or comparing two past runs against each other —

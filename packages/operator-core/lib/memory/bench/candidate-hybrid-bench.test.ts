@@ -3,11 +3,17 @@ import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateH
 import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES,
   mdenseOnPrompt, embedRequestedExecution } from '@papercusp/memory';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { measurementManifestFixture, independentCohortFixture } from './fixtures/measurement-manifest';
-import { validateMeasurementManifest, validateIndependentCohort, validateMeasurementCoverage,
+import * as currentMeasurement from './measurement-manifest';
+// Load the copy-out subject explicitly: Vite otherwise realpaths mirror test
+// symlinks into the shared tree and silently exercises the original guard.
+const { validateMeasurementManifest, validateIndependentCohort, validateMeasurementCoverage,
   assertMeasuredEmbedResponse, assertMeasuredExecution, assertMeasurementArm, assertCandidateArm,
-  fingerprintFile, measurementPackageVersion, hashJson, type CellOutcome } from './measurement-manifest';
+  fingerprintFile, measurementPackageVersion, hashJson }: typeof currentMeasurement = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
+    ? await import(pathToFileURL(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE).href)
+    : currentMeasurement;
+import type { CellOutcome } from './measurement-manifest';
 
 const entries = [{ key: 'a', text: 'frozen a', kind: 'fact' }, { key: 'b', text: 'frozen b', kind: 'fact' }];
 const queries: HeldoutQuery[] = [

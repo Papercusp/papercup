@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
@@ -15,7 +15,7 @@ vi.mock('../workspace-registry', async (original) => ({
   ...(await original<typeof import('../workspace-registry')>()), activeWorkspaceId: () => WS,
 }));
 
-const { ingestInteractiveUsage, parseTranscriptChunk, legacyUsageFingerprint, markUnavailableTranscriptUsage } = await import('./ingest-claude-transcripts');
+const { ingestInteractiveUsage, parseTranscriptChunk, legacyUsageFingerprint, markUnavailableTranscriptUsage, transcriptUsageEventKey } = await import('./ingest-claude-transcripts');
 const { replayTranscriptPrefix } = await import('./replay-transcripts');
 const { archiveSession, pgSessionArchiveStore } = await import('../session-archive');
 const { parseCodexChunk, parseOmpChunk, codexSessionIdForFile } = await import('./ingest-adapters');
@@ -489,6 +489,85 @@ describe('persistent transcript accounting', () => {
     expect(rows).toHaveLength(2);
     expect(new Set(rows.map((r) => r.usage_event_key)).size).toBe(2);
     expect(rows.every((r) => r.event_ts === null)).toBe(true);
+  });
+
+  it('counts one provider request once when its transcript is copied into several isolated config dirs (WI-10004637)', async () => {
+    // A carried/resumed session's transcript is copied into each successor's isolated
+    // CLAUDE_CONFIG_DIR, and each dir is ingested by its own claude-iso-N adapter.
+    const request = (id: string, output: number) => line({ type: 'assistant', sessionId: 'shared-session',
+      message: { id, model: 'claude-opus-4-8', usage: { input_tokens: 10, output_tokens: output, cache_read_input_tokens: 0 } } });
+    const transcript = request('msg_copy_a', 100) + request('msg_copy_b', 200);
+    const dirs = await Promise.all(['owner-one', 'owner-two', 'owner-three'].map(async (owner) => {
+      const dir = path.join(root, owner, 'projects', 'repo');
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'shared-session.jsonl'), transcript);
+      return path.join(root, owner);
+    }));
+    const adapters = dirs.map((dir, i) => ({ name: `claude-iso-${i}`, root: dir, parse: parseTranscriptChunk }));
+    const result = await ingestInteractiveUsage({ adapters });
+    expect(result.errors).toEqual([]);
+    const rows = await sql`SELECT usage_provenance->>'sourceId' AS source_id, output_tokens::int AS output
+      FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS} ORDER BY 1`;
+    expect(rows.map((r) => [r.source_id, r.output])).toEqual([['message:msg_copy_a', 100], ['message:msg_copy_b', 200]]);
+    // A copy that later grows the same request (a streamed message flushed further) still
+    // max-merges into the one row instead of adding a second.
+    await fs.appendFile(path.join(dirs[2]!, 'projects', 'repo', 'shared-session.jsonl'), request('msg_copy_b', 250));
+    expect((await ingestInteractiveUsage({ adapters })).errors).toEqual([]);
+    const [after] = await sql`SELECT count(*)::int AS n, sum(output_tokens)::int AS output
+      FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(after).toEqual({ n: 2, output: 350 });
+  });
+
+  it('migration 1287 collapses pre-fix transcript copies onto the key the fixed ingester writes (WI-10004637)', async () => {
+    const migration = new URL('../../../../libs/papercusp/libs/db/sql/1287-dedupe-claude-transcript-usage-copies.sql', import.meta.url);
+    const body = await fs.readFile(migration, 'utf8').catch(() => fs.readFile(new URL(migration.href + '.DRAFT'), 'utf8'));
+    await sql.unsafe(body);
+    const model = 'claude-opus-4-8';
+    // Rows exactly as the pre-fix ingester wrote them: one per transcript copy, keyed by file.
+    const seed = async (sessionId: string, file: string, sourceId: string, output: number) => {
+      const key = createHash('sha256').update(JSON.stringify([file, 0, model, sourceId])).digest('hex');
+      const [row] = await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, ts, bucket_key, provider, model_class, source, input_tokens, output_tokens,
+         cache_read_tokens, cost_usd, model, cost_source, session_id, usage_event_key, ingested_at, usage_provenance)
+        VALUES (${WS}, 1, 'anthropic:opus', 'anthropic', 'opus', 'interactive', 10, ${output}, 0, ${output / 1000},
+          ${model}, 'estimated', ${sessionId}, ${key}, 1, ${sql.json({ sourceId, sourceFile: file, adapter: 'claude-iso-0' })})
+        RETURNING id`;
+      return Number(row!.id);
+    };
+    const original = await seed('session-original', '/a/s.jsonl', 'message:msg_legacy', 100);
+    await seed('session-copy-1', '/b/s.jsonl', 'message:msg_legacy', 100);
+    await seed('session-copy-2', '/c/s.jsonl', 'message:msg_legacy', 100);
+    // Copies whose numbers differ are never merged away (deleting one would lose data).
+    await seed('session-original', '/a/s.jsonl', 'message:msg_diverged', 100);
+    await seed('session-copy-1', '/b/s.jsonl', 'message:msg_diverged', 120);
+    // Id-less observations have no identity beyond their file and stay as they are.
+    await seed('session-original', '/a/s.jsonl', 'line:42', 7);
+    await seed('session-copy-1', '/b/s.jsonl', 'line:42', 7);
+
+    const [first] = await sql`SELECT * FROM harness_shared.collapse_transcript_usage_copies()`;
+    expect(first).toEqual({ deleted_rows: 2, rekeyed_rows: 1, multi_row_groups: 1 });
+    const rows = await sql`SELECT id, session_id, usage_event_key, usage_provenance->>'sourceId' AS source_id
+      FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS} ORDER BY id`;
+    const legacy = rows.filter((r) => r.source_id === 'message:msg_legacy');
+    expect(legacy.map((r) => [Number(r.id), r.session_id])).toEqual([[original, 'session-original']]);
+    // Cross-language parity: the SQL key is byte-for-byte the TypeScript key.
+    expect(legacy[0]!.usage_event_key).toBe(transcriptUsageEventKey({ file: '/z', fileGeneration: 9, model, sourceId: 'message:msg_legacy' }));
+    expect(rows.filter((r) => r.source_id === 'message:msg_diverged')).toHaveLength(2);
+    expect(rows.filter((r) => r.source_id === 'line:42')).toHaveLength(2);
+
+    const [again] = await sql`SELECT * FROM harness_shared.collapse_transcript_usage_copies()`;
+    expect(again).toEqual({ deleted_rows: 0, rekeyed_rows: 0, multi_row_groups: 1 });
+
+    // A copy of the same transcript ingested after the repair lands on the surviving row.
+    const dir = path.join(root, 'late-copy', 'projects', 'repo');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 's.jsonl'), line({ type: 'assistant', sessionId: 's',
+      message: { id: 'msg_legacy', model, usage: { input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 0 } } }));
+    const result = await ingestInteractiveUsage({ adapters: [{ name: 'claude-iso-late', root: path.join(root, 'late-copy'), parse: parseTranscriptChunk }] });
+    expect(result.errors).toEqual([]);
+    const [count] = await sql`SELECT count(*)::int AS n FROM harness_shared.agent_usage_samples
+      WHERE workspace_id=${WS} AND usage_provenance->>'sourceId' = 'message:msg_legacy'`;
+    expect(count!.n).toBe(1);
   });
 
   it('distinguishes reused byte offsets after transcript truncation', async () => {

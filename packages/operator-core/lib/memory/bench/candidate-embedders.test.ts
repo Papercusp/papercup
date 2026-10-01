@@ -9,7 +9,20 @@ vi.mock('@huggingface/transformers', () => ({
   AutoTokenizer: { from_pretrained: mocks.loadTokenizer },
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, type CandidateVectors } from './candidate-embedders';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, qualifyIncumbentReferences, type CandidateVectors } from './candidate-embedders';
+
+describe('incumbent reference qualification', () => {
+  it('uses only attended tokens for the independent mean and rejects invalid model output', () => {
+    expect(benchmarkMaskedMean([2, 4, 4, 8, 999, 999], [1, 1, 0], 2)).toEqual([3, 6]);
+    expect(() => benchmarkMaskedMean([1, 2], [0], 2)).toThrow('invalid');
+    expect(() => benchmarkMaskedMean([NaN, 2], [1], 2)).toThrow('nonfinite');
+    expect(() => benchmarkMaskedMean([1, 2, 3], [1], 2)).toThrow('invalid');
+  });
+  it('refuses an untrusted protocol SHA before any tokenizer/model construction', async () => {
+    await expect(qualifyIncumbentReferences('/absent/reference.json', 'invalid', '/private/result.json')).rejects.toThrow('SHA mismatch');
+    expect(mocks.loadTokenizer).not.toHaveBeenCalled(); expect(mocks.loadModel).not.toHaveBeenCalled();
+  });
+});
 
 afterEach(() => vi.resetAllMocks());
 
