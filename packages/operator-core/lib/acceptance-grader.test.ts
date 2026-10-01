@@ -1267,6 +1267,23 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     ).toBeNull();
   });
 
+  it('matches a completed unsupported system-role turn only for a controlled caller', () => {
+    const raw =
+      "\u001b[38;5;220m●\u001b[3GAPI Error: 400 role 'system' is not supported on this model\u001b[0m\r\n" +
+      '\u001b[38;5;246m✻ Cooked for 7m 59s · done 3:17 AM\u001b[0m\r\n❯';
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'inference_gateway_error',
+      evidence: "API Error: 400 role 'system' is not supported on this model ✻ Cooked for 7m 59s · done",
+    });
+    expect(
+      classifyAcceptanceGraderTerminalFailure(raw.replace(' · done', ' · retrying'), {
+        allowInferenceGatewayError: true,
+      }),
+    ).toBeNull();
+  });
+
   it('matches the completed gateway pool-exhaustion screen only for a controlled caller', () => {
     const error =
       '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +

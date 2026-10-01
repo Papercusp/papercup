@@ -1346,6 +1346,138 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  // WI-10004666. Measured 2026-10-01: the 07:10Z db-dump tick contended for the lock
+  // FIRST, which registered the priority marker and stopped a hot sweep 36 min in
+  // (154.5G read); only then did it check its own admission, log priority-on-pressure
+  // io full_avg10=24.08, and wait. The sweep was stopped for a cycle that did not run.
+  // A priority producer must wait out its own pressure before it asks anyone to yield.
+  it('does not stop a running hot sweep while the priority producer is itself pressure-blocked', async () => {
+    const { dir, env } = fixture();
+    seedDeadlineBase(dir, 'db-dump', 2_003);
+    const hotReady = join(dir, 'hot-ready');
+    const dbRan = join(dir, 'db-ran');
+    const collect = (child: ReturnType<typeof spawn>) => {
+      const out = { text: '' };
+      child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+        out.text += chunk;
+      });
+      child.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+        out.text += chunk;
+      });
+      return out;
+    };
+    const hot = spawn(
+      'bash',
+      [guard, '--mode', 'scheduled', '--label', 'hot', '--', 'bash', '-c', 'touch "$1"; while :; do sleep 0.05; done', '_', hotReady],
+      { env, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    const hotOut = collect(hot);
+    const hotClosed = new Promise<number | null>((resolve) => hot.once('close', resolve));
+    let db: ReturnType<typeof spawn> | undefined;
+    let dbOut = { text: '' };
+    try {
+      await waitForPath(hotReady);
+      // The sweep was admitted on a quiet host; pressure rises while it runs.
+      pressureFile(env.KOPIA_BACKUP_IO_PSI_PATH!, 15.4);
+      db = spawn(
+        'bash',
+        [guard, '--mode', 'scheduled', '--label', 'db-dump', '--no-restart-safe', '--priority-on-contention', '--', 'touch', dbRan],
+        { env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      dbOut = collect(db);
+      const dbClosed = new Promise<number | null>((resolve) => db!.once('close', resolve));
+
+      await waitForOutput(() => dbOut.text, 'result=waiting reason=priority-on-pressure io-pressure full_avg10=15.40');
+      // ~20 of the sweep's 0.05s handoff polls: a registered marker would have stopped it.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(hotOut.text, hotOut.text).not.toContain('result=stopping-during-run');
+      expect(hot.exitCode).toBeNull();
+      expect(dbOut.text).not.toContain('reason=priority-on-contention');
+      expect(existsSync(dbRan)).toBe(false);
+
+      // Once the producer's own admission clears, it contends and the sweep yields.
+      pressureFile(env.KOPIA_BACKUP_IO_PSI_PATH!, 3);
+      await expect(dbClosed).resolves.toBe(0);
+      await expect(hotClosed).resolves.toBe(SCHEDULED_DEFER_EXIT);
+    } finally {
+      for (const child of [hot, db]) {
+        if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    }
+    const out = dbOut.text;
+    const waited = out.indexOf('result=waiting reason=priority-on-pressure');
+    const cleared = out.indexOf('result=pressure-cleared');
+    const contended = out.indexOf('result=waiting reason=priority-on-contention');
+    const started = out.indexOf('result=started mode=scheduled');
+    expect(waited, out).toBeGreaterThanOrEqual(0);
+    expect(cleared, out).toBeGreaterThan(waited);
+    expect(contended, out).toBeGreaterThan(cleared);
+    expect(started, out).toBeGreaterThan(contended);
+    expect(hotOut.text).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(existsSync(dbRan)).toBe(true);
+  }, 30_000);
+
+  // WI-10004666, second half. A sweep that yielded to this cycle has already lost its
+  // work, so releasing the lock to re-wait on pressure that returned during the
+  // seconds-long handoff throws that work away for nothing. The sweep's child here
+  // raises io pressure as it is stopped; the producer must keep the lock and run.
+  it('keeps a lock won through a fresh handoff even if pressure returns during it', () => {
+    const fx = fixture();
+    const { dir } = fx;
+    // A 1s pressure budget: re-waiting instead of keeping the lock would defer (75).
+    const env = { ...fx.env, KOPIA_BACKUP_PRIORITY_PRESSURE_WAIT_MAX_SEC: '1' };
+    seedDeadlineBase(dir, 'db-dump', 2_003);
+    const ioHigh = join(dir, 'io.high');
+    pressureFile(ioHigh, 15.4);
+    const hotChild = join(dir, 'hot-child.sh');
+    writeFileSync(hotChild, '#!/usr/bin/env bash\ntrap \'cp "$2" "$3"; exit 0\' TERM\ntouch "$1"\nwhile :; do sleep 0.05; done\n');
+    chmodSync(hotChild, 0o755);
+    const hotLog = join(dir, 'hot.log');
+    const dbLog = join(dir, 'db.log');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash "$HOT_CHILD" "$HOT_READY" "$IO_HIGH" "$KOPIA_BACKUP_IO_PSI_PATH" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- touch "$DB_RAN" >"$DB_LOG" 2>&1
+        db_rc=$?
+        wait "$hot"
+        hot_rc=$?
+        [ "$db_rc" -eq 0 ] || exit 92
+        [ -e "$DB_RAN" ] || exit 93
+        [ "$hot_rc" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 94
+        grep -q 'result=stopping-during-run reason=priority-waiter' "$HOT_LOG" || exit 95
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          HOT_CHILD: hotChild,
+          HOT_READY: join(dir, 'hot-ready'),
+          IO_HIGH: ioHigh,
+          HOT_LOG: hotLog,
+          DB_RAN: join(dir, 'db-ran'),
+          DB_LOG: dbLog,
+        },
+        timeout: 10_000,
+      },
+    );
+    const dbOut = existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing';
+    const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\ndb guard:\n${dbOut}\nhot guard:\n${hotOut}`).toBe(0);
+    // The pressure the stopped sweep left behind is real and still visible...
+    expect(dbOut).toMatch(/result=admitted-after-handoff reason=io-pressure full_avg10=15\.40 limit=10 lock_waited_sec=\d+/);
+    // ...but it did not send the producer back to wait.
+    expect(dbOut).not.toContain('result=waiting reason=priority-on-pressure');
+    expect(dbOut).toContain('result=finished mode=scheduled rc=0');
+  });
+
   it('does not retire an escalated run on the same pressure that admitted it', () => {
     const { dir, env } = fixture(23.84);
     seedDeadlineBase(dir, 'armed', 25_200);

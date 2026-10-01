@@ -428,7 +428,17 @@ run_scheduled_command() {
 # Take the shared lock for a scheduled cycle, or exit with the deferral status.
 # Called once before admission and again after every admission-pressure wait, so
 # a re-acquire follows exactly the same three branches as the first acquire.
+#
+# lock_handoff_requested / lock_waited_sec record whether this cycle took the lock
+# by registering a priority request (which makes a running restart-safe hot sweep
+# STOP) and how long that took. The admission loop below reads them: see
+# handoff_fresh_sec.
+lock_handoff_requested=0
+lock_waited_sec=0
 acquire_scheduled_lock() {
+  local lock_wait_started
+  lock_handoff_requested=0
+  lock_waited_sec=0
   flock -n 9 && return 0
   if [ "$pressure_escalated" = 1 ]; then
     register_priority_request
@@ -440,9 +450,23 @@ acquire_scheduled_lock() {
     guard_log "result=deferred reason=lock-held $staleness_override_reason"
     exit "$scheduled_defer_exit"
   fi
+  lock_handoff_requested=1
+  lock_wait_started=$(date +%s)
   flock 9 || exit "$scheduled_defer_exit"
+  lock_waited_sec=$(( $(date +%s) - lock_wait_started ))
   cleanup_priority_request
 }
+
+# How long a restart-safe holder can take to yield to a priority request: it
+# polls for the marker every monitor_interval, then gives its child stop_grace
+# before SIGKILL. A lock acquired through a request within this window means the
+# admission reading taken just before the request is still current, and that a
+# running sweep has most likely just been stopped for this cycle. Re-checking
+# pressure then and RELEASING the lock to wait again would throw that stopped
+# sweep's work away for a cycle that does not run (WI-10004666). A longer wait
+# means the holder ran to its own end, so the reading is stale and the loop
+# re-checks as before.
+handoff_fresh_sec=$(awk -v m="$monitor_interval" -v g="$stop_grace" 'BEGIN { printf "%d", m + g + 5 }')
 
 # Evaluate every admission signal before taking ONE deferral decision. The
 # staleness floor applies to all of them. An unreadable PSI file defers exactly
@@ -504,7 +528,6 @@ if [ "$mode" = scheduled ]; then
   # floor is armed, become a priority waiter: the hot-sweep handoff recognizes
   # this marker and yields the shared lock instead of starving this producer.
   arm_staleness_override || true
-  acquire_scheduled_lock
 
   # WHY THE CGROUP AND NOT /proc/pressure -- measured on this host 2026-09-05.
   #
@@ -555,6 +578,25 @@ if [ "$mode" = scheduled ]; then
   fi
   guard_log "result=psi-scope scope=$psi_scope memory_path=$memory_path io_path=$io_path"
 
+  # A priority producer waits out its OWN admission pressure BEFORE it contends
+  # for the lock -- without the lock and without a priority marker. Contending
+  # first registers the marker that makes a running restart-safe hot sweep stop,
+  # and only then learning that this cycle may not start yet stopped that sweep
+  # for nothing. Measured 2026-10-01 (WI-10004666): the 07:10Z db-dump tick
+  # stopped a hot sweep 36 min in (154.5G read), then logged
+  # priority-on-pressure io full_avg10=24.08 and did not run; the sweep restarted
+  # at 07:30Z and was stopped again at 07:34Z when the dump's floor armed. Host io
+  # full avg10 sits above the limit most of the time, so that was the usual
+  # outcome of a tick, and the sweep had not completed since 2026-09-29.
+  if [ "$priority_on_contention" = 1 ] && [ "$pressure_escalated" != 1 ]; then
+    evaluate_admission
+    if [ -n "$admission_block_reason" ] && ! wait_out_admission_pressure; then
+      guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason waited_sec=$pressure_waited_sec"
+      exit "$scheduled_defer_exit"
+    fi
+  fi
+  acquire_scheduled_lock
+
   # The staleness floor was armed once before lock acquisition and applies to
   # every admission signal (see evaluate_admission).
   evaluate_admission
@@ -566,6 +608,13 @@ if [ "$mode" = scheduled ]; then
     if [ "$priority_on_contention" != 1 ]; then
       guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason"
       exit "$scheduled_defer_exit"
+    fi
+    # The lock came through a handoff seconds after admission cleared: keep it
+    # (see handoff_fresh_sec). The cgroup caps bound this run exactly as they
+    # bound an admitted-despite-pressure one.
+    if [ "$lock_handoff_requested" = 1 ] && [ "$lock_waited_sec" -le "$handoff_fresh_sec" ]; then
+      guard_log "result=admitted-after-handoff reason=$admission_block_reason lock_waited_sec=$lock_waited_sec $staleness_override_reason"
+      break
     fi
     # Priority producer: pressure DELAYS this cycle and may not cancel it. Never
     # wait on pressure while holding the shared lock (see

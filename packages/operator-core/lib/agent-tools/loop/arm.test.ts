@@ -13,6 +13,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 // `onFlagChange` is required even though this suite never exercises it: importing
 // locks/configure.ts pulls in txn-timeouts-config.ts, which calls onFlagChange() at
@@ -51,6 +52,7 @@ vi.mock('../../acceptance-runtime-wait-guard', () => ({
   mainWaitPlanReviewForWait: vi.fn(async () => null),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
+vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../pot/_resolve', () => ({ resolveHomePotSlug: vi.fn(async () => 'papercusp') }));
 vi.mock('../../session-brief', () => ({ getSessionBrief: vi.fn(async () => null) }));
@@ -193,6 +195,7 @@ const admitLoopM = vi.mocked(admitWorkItemForLoopTarget);
 const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const homePotM = vi.mocked(resolveHomePotSlug);
+const operatorHomeM = vi.mocked(operatorHomeHarnessSlug);
 const monitorAdmissionM = vi.mocked(admitMonitorArm);
 const briefM = vi.mocked((await import('../../session-brief')).getSessionBrief);
 const potHomeM = vi.mocked((await import('../../pot/wake')).resolvePotHomeSlug);
@@ -1173,7 +1176,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(body(out)).toMatchObject({ ok: true, loop: { harness: 'sb-devboard-hive' } });
   });
 
-  it('EI-21280482685800432: workspace home beats a stale session brief for a wildcard Codex member', async () => {
+  it('EI-24748685399658874: operator home beats an unrelated first Pot for a wildcard operator session', async () => {
     briefM.mockResolvedValue({
       ownerId: 'su-caller-own-id',
       workspaceId: 'ws-1',
@@ -1191,7 +1194,10 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
       firstSeenAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
-    homePotM.mockResolvedValueOnce('papercusp');
+    // The Pot resolver falls back to the first formal Pot, which may be an
+    // unrelated hive. Operator-scoped work has its own canonical home resolver.
+    homePotM.mockResolvedValueOnce('sb-devboard-hive');
+    operatorHomeM.mockReturnValueOnce('papercusp');
     mockReturnOnceTyped(potHomeM, 'papercusp');
 
     const out = (await tool.handler(
@@ -1200,7 +1206,8 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     )) as Out;
     const b = body(out);
 
-    expect(homePotM).toHaveBeenCalledWith('ws-1');
+    expect(homePotM).not.toHaveBeenCalled();
+    expect(operatorHomeM).toHaveBeenCalledOnce();
     expect(briefM).not.toHaveBeenCalled();
     expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
     expect(b.loop.harness).not.toBe('sb-devboard-hive');

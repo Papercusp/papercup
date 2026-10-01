@@ -167,6 +167,13 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', '{"ok":false,"error":"unrelated_refusal"}')).toBe('structural');
   });
 
+  it('classifies an expected missing rubric reference as caller input, not a tool bug', () => {
+    expect(classifyToolError('rubric-not-found', 'error', 'rubric not found')).toBe('caller');
+    // The classification is code-specific; an unrelated tool failure with the
+    // same prose must still reach the structural lane.
+    expect(classifyToolError('handler_error', 'error', 'rubric not found')).toBe('structural');
+  });
+
   it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {
     expect(
       classifyToolError(

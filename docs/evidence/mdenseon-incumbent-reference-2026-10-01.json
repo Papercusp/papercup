@@ -1,0 +1,1722 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 pinned incumbent CPU reference qualification",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+    "--qualify-reference",
+    "docs/evidence/mdenseon-measurement-protocol-2026-10-01.json",
+    "--reference-sha256",
+    "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a",
+    "--out",
+    "<private-native-output>",
+    "THEN",
+    "<maintained-python-env>",
+    "packages/operator-core/lib/memory/bench/mdenseon-vectors.py",
+    "--reference-native",
+    "<private-native-output>",
+    "--out",
+    "<private-python-reference>",
+    "THEN",
+    "node",
+    "--import",
+    "tsx",
+    "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+    "--summarize-reference",
+    "<private-native-output>",
+    "--python-reference",
+    "<private-python-reference>",
+    "--out",
+    "<private-summary>"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T07:06:37.305Z",
+  "finishedAt": "2026-10-01T07:24:31.146085Z",
+  "summary": "Three distinct pinned incumbent recipes passed 16 controlled token/vector comparisons each; all eight query rankings per recipe agree with independently maintained Python ONNX/tokenizer/pooling reference. Corrected isolated Gemma has zero observed token/vector/rank effect on this controlled population. Production profiles unchanged; corpus-wide defect absence and relevance are not established.",
+  "assertions": [
+    {
+      "id": "pinned-native-request",
+      "passed": true,
+      "evidence": "Raw native/request/Python SHA joins verified by the summary CLI; request and asset hashes rechecked by the maintained Python run."
+    },
+    {
+      "id": "three-distinct-recipes",
+      "passed": true,
+      "evidence": "Shipped Gemma, corrected Rust Gemma, and shipped Harrier retain separate model/profile/tokenizer IDs."
+    },
+    {
+      "id": "controlled-token-vector-parity",
+      "passed": true,
+      "evidence": "48/48 token matches; all recomputed cosines exceed0.99999 and maximum absolute errors are below3e-5."
+    },
+    {
+      "id": "controlled-ranking-parity",
+      "passed": true,
+      "evidence": "24/24 complete eight-document query rankings match maintained references."
+    },
+    {
+      "id": "corrected-gemma-effect-measured",
+      "passed": true,
+      "evidence": "16 paired cases: no changed token IDs, maximum vector error0, no changed query rankings. This is a scoped measured null, not proof of tokenizer defect absence."
+    }
+  ],
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItem": "WI-10004536",
+  "spec": "MDENSE-reference-arm-identity@1",
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts",
+      "sha256": "cf18942d43d054c6faf488cdf5cd603f0cc0308503f76fa7facb89ad1c39328f",
+      "bytes": 23151
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+      "sha256": "a5327c9ab6506791aa5323214fd8ada61808091021789b4bea5b912584f8170e",
+      "bytes": 43880
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/mdenseon-vectors.py",
+      "sha256": "01b1cb8cd018384bee0c0b7e1659154fa1ccf7a877e5a62449948dcd57413bdd",
+      "bytes": 26734
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+      "sha256": "fbf2cc53cdde1771c98ff3428d3ef8b3e38c27565f4bd777561231e13dfd9812",
+      "bytes": 8490
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/candidate-embedders.integration.test.ts",
+      "sha256": "d4821d64175edeb5a3118f53659f5e213c1e56ea4a26a19e0a2c4c8ee2af0bc1",
+      "bytes": 2535
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/fixtures/incumbent-reference.ts",
+      "sha256": "eab0427ac8b0b08f68696e03e0c62bee4323da4775ce100334a4ce767740b303",
+      "bytes": 2306
+    },
+    {
+      "path": "libs/generic/memory/src/tokenizer-normalization.test.ts",
+      "sha256": "500d3444c2191b4d96be60380fc37cc87377d90805151c376ecb383a04d92043",
+      "bytes": 1388
+    },
+    {
+      "path": "libs/generic/memory/src/embedder-dims.ts",
+      "sha256": "2816351c95720c65168e3fc530cbb252a9500b981c1179a9d0d2df03f964de91",
+      "bytes": 25831
+    },
+    {
+      "path": "libs/generic/memory/src/gemma-embedder.ts",
+      "sha256": "c864aed9ba07a54419ec0f233bb29e9cc6f2dcebe4a46b68c310f913eab6090e",
+      "bytes": 9698
+    },
+    {
+      "path": "libs/generic/memory/src/harrier-embedder.ts",
+      "sha256": "46f566d47622d9c854f04227d4797265bde213f9b22fb6b44042420d8b734901",
+      "bytes": 7497
+    },
+    {
+      "path": "libs/generic/memory/src/local-embedder-worker.ts",
+      "sha256": "39eec98a15f58a83c753ddb0145932a78fa94754eb56e217027ddc544b3121f2",
+      "bytes": 34723
+    }
+  ],
+  "rawArtifacts": [
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/native-v1.json",
+      "sha256": "270fad45bba996241ac00f067e07e7c50fa7e10327719d73812b571cc0edf887",
+      "bytes": 1500328
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/native-v1.json.gemma-corrected-rust-768_benchmark-v1.json",
+      "sha256": "bdb9ef1487e451457d9ed1de2320f401a942dcac34b2df2fc0568d971c07ea30",
+      "bytes": 265890
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/native-v1.json.gemma-embeddinggemma-300m-768_v1.json",
+      "sha256": "7ec863ce5ce299b6946d6fbd53c25a287536f6868c7a955b7be95a71e715f0f6",
+      "bytes": 527429
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/native-v1.json.harrier-oss-v1-0.6b-1024_v1.json",
+      "sha256": "eefa4a5f24c6c5bfb8fde60341238f16d4b8f50e830ac8a9b79cd07b4348910a",
+      "bytes": 699965
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/native-v1.json.request.json",
+      "sha256": "4aec943511864de3619503b61120fd677c9341b60f64941fa5ee19a001258dcf",
+      "bytes": 6949
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/python-reference-v1.json",
+      "sha256": "dd01a463349c43ec96be6d71d1128a726d5050aa0354eb9fd6b8e6558cd124bf",
+      "bytes": 944374
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/qualification-summary-v1.json",
+      "sha256": "35b88a5cc0fe273e53b7ce2e1831ca29d467a86f7f5d324cb925438628de7f0d",
+      "bytes": 46634
+    }
+  ],
+  "measurement": {
+    "formatVersion": 1,
+    "protocolSha256": "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a",
+    "requestSha256": "4aec943511864de3619503b61120fd677c9341b60f64941fa5ee19a001258dcf",
+    "executionProvider": "CPUExecutionProvider",
+    "referenceVersions": {
+      "numpy": "2.2.6",
+      "onnxruntime": "1.23.2",
+      "tokenizers": "0.22.2",
+      "transformers": "4.57.6"
+    },
+    "thresholds": {
+      "minimumCosine": 0.99999,
+      "maximumAbsoluteError": 0.00003
+    },
+    "arms": [
+      {
+        "model": "gemma",
+        "profileId": "gemma-embeddinggemma-300m-768@v1",
+        "tokenizerBackend": "shipped-sdk",
+        "pooling": "mean",
+        "dimensions": 768,
+        "caseCount": 16,
+        "tokenMatches": 16,
+        "minimumCosine": 0.9999999455340951,
+        "maximumAbsoluteError": 8.123215256006233e-8,
+        "passed": true,
+        "rankings": {
+          "queryCount": 8,
+          "exactRankAgreements": 8,
+          "native": [
+            {
+              "queryId": "query-plain",
+              "rankedDocIds": [
+                "document-plain",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-normalization",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-newline",
+              "rankedDocIds": [
+                "document-newline",
+                "document-whitespace",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-whitespace",
+              "rankedDocIds": [
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-unicode",
+              "rankedDocIds": [
+                "document-unicode",
+                "document-empty",
+                "document-special-token",
+                "document-normalization",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-normalization",
+              "rankedDocIds": [
+                "document-normalization",
+                "document-empty",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-plain",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-code",
+              "rankedDocIds": [
+                "document-code",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-special-token",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-empty",
+              "rankedDocIds": [
+                "document-empty",
+                "document-special-token",
+                "document-newline",
+                "document-plain",
+                "document-whitespace",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            }
+          ],
+          "reference": [
+            {
+              "queryId": "query-plain",
+              "rankedDocIds": [
+                "document-plain",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-normalization",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-newline",
+              "rankedDocIds": [
+                "document-newline",
+                "document-whitespace",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-whitespace",
+              "rankedDocIds": [
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-unicode",
+              "rankedDocIds": [
+                "document-unicode",
+                "document-empty",
+                "document-special-token",
+                "document-normalization",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-normalization",
+              "rankedDocIds": [
+                "document-normalization",
+                "document-empty",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-plain",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-code",
+              "rankedDocIds": [
+                "document-code",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-special-token",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-empty",
+              "rankedDocIds": [
+                "document-empty",
+                "document-special-token",
+                "document-newline",
+                "document-plain",
+                "document-whitespace",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            }
+          ]
+        },
+        "cases": [
+          {
+            "id": "query-plain",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999877283766,
+              "maximumAbsoluteError": 2.474774907224031e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999993,
+              "maximumAbsoluteError": 1.1679834321931537e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-plain",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999798180634,
+              "maximumAbsoluteError": 2.8160668130716715e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.0000000000000018,
+              "maximumAbsoluteError": 1.3083948480208107e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-newline",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.999999982074983,
+              "maximumAbsoluteError": 2.256374323494903e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999991,
+              "maximumAbsoluteError": 1.1981771019797804e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-newline",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999741183857,
+              "maximumAbsoluteError": 2.625444850412606e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.0000000000000004,
+              "maximumAbsoluteError": 9.52843653978519e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-whitespace",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000577517723,
+              "maximumAbsoluteError": 1.8345833088795338e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.0000000000000002,
+              "maximumAbsoluteError": 1.2903116908269396e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-whitespace",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000667216906,
+              "maximumAbsoluteError": 3.5502282669241936e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999996,
+              "maximumAbsoluteError": 1.3474454663153779e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-unicode",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999578870769,
+              "maximumAbsoluteError": 2.0659578492399078e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999998,
+              "maximumAbsoluteError": 6.27235458017239e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-unicode",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000665649398,
+              "maximumAbsoluteError": 2.9602827633645745e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999983,
+              "maximumAbsoluteError": 4.332331215994856e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-normalization",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999804701637,
+              "maximumAbsoluteError": 1.6659305546173897e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999978,
+              "maximumAbsoluteError": 7.1436402349078776e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-normalization",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999475919167,
+              "maximumAbsoluteError": 2.8856241784946945e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1,
+              "maximumAbsoluteError": 5.906026945279308e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-code",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.999999997128235,
+              "maximumAbsoluteError": 4.5692460148849534e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999987,
+              "maximumAbsoluteError": 8.238203369481667e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-code",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000507678037,
+              "maximumAbsoluteError": 3.921374960857982e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999991,
+              "maximumAbsoluteError": 1.0529271343706625e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-special-token",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999474859265,
+              "maximumAbsoluteError": 2.6516034035140024e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999991,
+              "maximumAbsoluteError": 4.426748342889475e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-special-token",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000202807613,
+              "maximumAbsoluteError": 2.806299459479078e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1,
+              "maximumAbsoluteError": 4.49549686365458e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-empty",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999455340951,
+              "maximumAbsoluteError": 8.123215256006233e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1,
+              "maximumAbsoluteError": 1.2382587122328204e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-empty",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000105808384,
+              "maximumAbsoluteError": 1.5090862337530098e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999999999998,
+              "maximumAbsoluteError": 2.133993604047646e-8,
+              "passed": true
+            }
+          }
+        ]
+      },
+      {
+        "model": "gemma",
+        "profileId": "gemma-corrected-rust-768@benchmark-v1",
+        "tokenizerBackend": "corrected-rust",
+        "pooling": "mean",
+        "dimensions": 768,
+        "caseCount": 16,
+        "tokenMatches": 16,
+        "minimumCosine": 0.9999999455340951,
+        "maximumAbsoluteError": 8.123215256006233e-8,
+        "passed": true,
+        "rankings": {
+          "queryCount": 8,
+          "exactRankAgreements": 8,
+          "native": [
+            {
+              "queryId": "query-plain",
+              "rankedDocIds": [
+                "document-plain",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-normalization",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-newline",
+              "rankedDocIds": [
+                "document-newline",
+                "document-whitespace",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-whitespace",
+              "rankedDocIds": [
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-unicode",
+              "rankedDocIds": [
+                "document-unicode",
+                "document-empty",
+                "document-special-token",
+                "document-normalization",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-normalization",
+              "rankedDocIds": [
+                "document-normalization",
+                "document-empty",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-plain",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-code",
+              "rankedDocIds": [
+                "document-code",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-special-token",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-empty",
+              "rankedDocIds": [
+                "document-empty",
+                "document-special-token",
+                "document-newline",
+                "document-plain",
+                "document-whitespace",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            }
+          ],
+          "reference": [
+            {
+              "queryId": "query-plain",
+              "rankedDocIds": [
+                "document-plain",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-normalization",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-newline",
+              "rankedDocIds": [
+                "document-newline",
+                "document-whitespace",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-whitespace",
+              "rankedDocIds": [
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-special-token",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-unicode",
+              "rankedDocIds": [
+                "document-unicode",
+                "document-empty",
+                "document-special-token",
+                "document-normalization",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-normalization",
+              "rankedDocIds": [
+                "document-normalization",
+                "document-empty",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-plain",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-code",
+              "rankedDocIds": [
+                "document-code",
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-special-token",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-empty",
+                "document-newline",
+                "document-whitespace",
+                "document-plain",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-empty",
+              "rankedDocIds": [
+                "document-empty",
+                "document-special-token",
+                "document-newline",
+                "document-plain",
+                "document-whitespace",
+                "document-normalization",
+                "document-code",
+                "document-unicode"
+              ]
+            }
+          ]
+        },
+        "cases": [
+          {
+            "id": "query-plain",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999877283766,
+              "maximumAbsoluteError": 2.474774907224031e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-plain",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999798180634,
+              "maximumAbsoluteError": 2.8160668130716715e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "query-newline",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.999999982074983,
+              "maximumAbsoluteError": 2.256374323494903e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-newline",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999741183857,
+              "maximumAbsoluteError": 2.625444850412606e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "query-whitespace",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000577517723,
+              "maximumAbsoluteError": 1.8345833088795338e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-whitespace",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000667216906,
+              "maximumAbsoluteError": 3.5502282669241936e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "query-unicode",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999578870769,
+              "maximumAbsoluteError": 2.0659578492399078e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-unicode",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000665649398,
+              "maximumAbsoluteError": 2.9602827633645745e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "query-normalization",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999804701637,
+              "maximumAbsoluteError": 1.6659305546173897e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-normalization",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999475919167,
+              "maximumAbsoluteError": 2.8856241784946945e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "query-code",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.999999997128235,
+              "maximumAbsoluteError": 4.5692460148849534e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-code",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000507678037,
+              "maximumAbsoluteError": 3.921374960857982e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "query-special-token",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999474859265,
+              "maximumAbsoluteError": 2.6516034035140024e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-special-token",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000202807613,
+              "maximumAbsoluteError": 2.806299459479078e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "query-empty",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999455340951,
+              "maximumAbsoluteError": 8.123215256006233e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          },
+          {
+            "id": "document-empty",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000105808384,
+              "maximumAbsoluteError": 1.5090862337530098e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": null
+          }
+        ]
+      },
+      {
+        "model": "harrier",
+        "profileId": "harrier-oss-v1-0.6b-1024@v1",
+        "tokenizerBackend": "shipped-sdk",
+        "pooling": "model-graph",
+        "dimensions": 1024,
+        "caseCount": 16,
+        "tokenMatches": 16,
+        "minimumCosine": 0.9999999796409158,
+        "maximumAbsoluteError": 2.9802322387695312e-8,
+        "passed": true,
+        "rankings": {
+          "queryCount": 8,
+          "exactRankAgreements": 8,
+          "native": [
+            {
+              "queryId": "query-plain",
+              "rankedDocIds": [
+                "document-plain",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-normalization",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-newline",
+              "rankedDocIds": [
+                "document-newline",
+                "document-whitespace",
+                "document-empty",
+                "document-special-token",
+                "document-normalization",
+                "document-unicode",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-whitespace",
+              "rankedDocIds": [
+                "document-whitespace",
+                "document-newline",
+                "document-special-token",
+                "document-empty",
+                "document-code",
+                "document-unicode",
+                "document-plain",
+                "document-normalization"
+              ]
+            },
+            {
+              "queryId": "query-unicode",
+              "rankedDocIds": [
+                "document-unicode",
+                "document-special-token",
+                "document-normalization",
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-normalization",
+              "rankedDocIds": [
+                "document-normalization",
+                "document-unicode",
+                "document-special-token",
+                "document-newline",
+                "document-empty",
+                "document-whitespace",
+                "document-code",
+                "document-plain"
+              ]
+            },
+            {
+              "queryId": "query-code",
+              "rankedDocIds": [
+                "document-code",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-plain",
+                "document-normalization",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-special-token",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-newline",
+                "document-empty",
+                "document-whitespace",
+                "document-unicode",
+                "document-plain",
+                "document-code",
+                "document-normalization"
+              ]
+            },
+            {
+              "queryId": "query-empty",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-whitespace",
+                "document-empty",
+                "document-newline",
+                "document-unicode",
+                "document-normalization",
+                "document-code",
+                "document-plain"
+              ]
+            }
+          ],
+          "reference": [
+            {
+              "queryId": "query-plain",
+              "rankedDocIds": [
+                "document-plain",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-normalization",
+                "document-unicode",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-newline",
+              "rankedDocIds": [
+                "document-newline",
+                "document-whitespace",
+                "document-empty",
+                "document-special-token",
+                "document-normalization",
+                "document-unicode",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-whitespace",
+              "rankedDocIds": [
+                "document-whitespace",
+                "document-newline",
+                "document-special-token",
+                "document-empty",
+                "document-code",
+                "document-unicode",
+                "document-plain",
+                "document-normalization"
+              ]
+            },
+            {
+              "queryId": "query-unicode",
+              "rankedDocIds": [
+                "document-unicode",
+                "document-special-token",
+                "document-normalization",
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-plain",
+                "document-code"
+              ]
+            },
+            {
+              "queryId": "query-normalization",
+              "rankedDocIds": [
+                "document-normalization",
+                "document-unicode",
+                "document-special-token",
+                "document-newline",
+                "document-empty",
+                "document-whitespace",
+                "document-code",
+                "document-plain"
+              ]
+            },
+            {
+              "queryId": "query-code",
+              "rankedDocIds": [
+                "document-code",
+                "document-special-token",
+                "document-whitespace",
+                "document-newline",
+                "document-empty",
+                "document-plain",
+                "document-normalization",
+                "document-unicode"
+              ]
+            },
+            {
+              "queryId": "query-special-token",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-newline",
+                "document-empty",
+                "document-whitespace",
+                "document-unicode",
+                "document-plain",
+                "document-code",
+                "document-normalization"
+              ]
+            },
+            {
+              "queryId": "query-empty",
+              "rankedDocIds": [
+                "document-special-token",
+                "document-whitespace",
+                "document-empty",
+                "document-newline",
+                "document-unicode",
+                "document-normalization",
+                "document-code",
+                "document-plain"
+              ]
+            }
+          ]
+        },
+        "cases": [
+          {
+            "id": "query-plain",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000804584774,
+              "maximumAbsoluteError": 1.4901161193847656e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999967846241,
+              "maximumAbsoluteError": 5.561433535916649e-10,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-plain",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000120007817,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.0000000060003924,
+              "maximumAbsoluteError": 1.5648944362567363e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-newline",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000716808928,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.000000035840447,
+              "maximumAbsoluteError": 4.797831243408268e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-newline",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000694591824,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.0000000347295923,
+              "maximumAbsoluteError": 7.997944778681543e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-whitespace",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000121189014,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.000000006059454,
+              "maximumAbsoluteError": 1.0135312034087463e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-whitespace",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000896501549,
+              "maximumAbsoluteError": 2.9802322387695312e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.000000103341023,
+              "maximumAbsoluteError": 2.4743736531940286e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-unicode",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000640222475,
+              "maximumAbsoluteError": 1.4901161193847656e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999891085517,
+              "maximumAbsoluteError": 1.707280511409337e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-unicode",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000892145173,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.0000000446072577,
+              "maximumAbsoluteError": 9.450926624632316e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-normalization",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999796409158,
+              "maximumAbsoluteError": 7.450580596923828e-9,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999468344186,
+              "maximumAbsoluteError": 6.5139525856627856e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-normalization",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000762730785,
+              "maximumAbsoluteError": 1.4901161193847656e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999945816282,
+              "maximumAbsoluteError": 9.503230147256403e-10,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-code",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999918517878,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999959258961,
+              "maximumAbsoluteError": 9.305423931404988e-10,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-code",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000257088013,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.000000012854402,
+              "maximumAbsoluteError": 3.4281582572681657e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-special-token",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000455516123,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.000000022775807,
+              "maximumAbsoluteError": 4.241200640686671e-9,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-special-token",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.9999999856773725,
+              "maximumAbsoluteError": 2.9802322387695312e-8,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999364708009,
+              "maximumAbsoluteError": 1.726027853976575e-8,
+              "passed": true
+            }
+          },
+          {
+            "id": "query-empty",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 0.999999994680023,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 0.9999999973400118,
+              "maximumAbsoluteError": 4.876711534596012e-10,
+              "passed": true
+            }
+          },
+          {
+            "id": "document-empty",
+            "tokenIdsEqual": true,
+            "nativeParity": {
+              "cosine": 1.0000000373152582,
+              "maximumAbsoluteError": 0,
+              "passed": true
+            },
+            "shippedWorkerParity": {
+              "cosine": 1.0000000186576286,
+              "maximumAbsoluteError": 5.532212021819305e-9,
+              "passed": true
+            }
+          }
+        ]
+      }
+    ],
+    "correctedGemmaEffect": {
+      "population": 16,
+      "changedTokenCases": [],
+      "minimumCosine": 0.9999999999999988,
+      "maximumAbsoluteError": 0,
+      "rankingQueriesChanged": [],
+      "cases": [
+        {
+          "id": "query-plain",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000004,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-plain",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000022,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "query-newline",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000022,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-newline",
+          "tokensChanged": false,
+          "cosine": 1,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "query-whitespace",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000004,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-whitespace",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000002,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "query-unicode",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000002,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-unicode",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000016,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "query-normalization",
+          "tokensChanged": false,
+          "cosine": 0.9999999999999991,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-normalization",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000009,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "query-code",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000002,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-code",
+          "tokensChanged": false,
+          "cosine": 1.000000000000001,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "query-special-token",
+          "tokensChanged": false,
+          "cosine": 0.9999999999999988,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-special-token",
+          "tokensChanged": false,
+          "cosine": 1,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "query-empty",
+          "tokensChanged": false,
+          "cosine": 1.0000000000000013,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        },
+        {
+          "id": "document-empty",
+          "tokensChanged": false,
+          "cosine": 0.9999999999999992,
+          "maximumAbsoluteError": 0,
+          "passed": true
+        }
+      ]
+    },
+    "limitation": "Controlled tokenizer/runtime qualification: eight texts in query/document forms. No corpus-wide defect-absence or relevance claim.",
+    "nativeSha256": "270fad45bba996241ac00f067e07e7c50fa7e10327719d73812b571cc0edf887",
+    "pythonSha256": "dd01a463349c43ec96be6d71d1128a726d5050aa0354eb9fd6b8e6558cd124bf",
+    "assets": [
+      {
+        "model": "gemma",
+        "profile": {
+          "profileId": "gemma-embeddinggemma-300m-768@v1",
+          "model": "onnx-community/embeddinggemma-300m-ONNX",
+          "modelRevision": "onnx-community/embeddinggemma-300m-ONNX",
+          "revisionPolicy": "profile-versioned-provider-model-id",
+          "nativeDims": 768,
+          "mrl": "discrete",
+          "trainedDims": [
+            768,
+            512,
+            256,
+            128
+          ],
+          "targetDims": 768,
+          "distanceMetric": "cosine",
+          "normalization": {
+            "kind": "l2",
+            "timing": "after-truncation"
+          },
+          "pooling": "mean",
+          "outputDtype": "float32",
+          "documentRecipe": "embeddinggemma-search-document@v1",
+          "queryRecipe": "embeddinggemma-search-query@v1"
+        },
+        "files": [
+          {
+            "locator": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/config.json",
+            "sha256": "6e1f06404b7163e0325ed2ea3e6781cde50f4a50b31780a95ad0d30e8404d77b",
+            "bytes": 1765
+          },
+          {
+            "locator": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/tokenizer.json",
+            "sha256": "4dda02faaf32bc91031dc8c88457ac272b00c1016cc679757d1c441b248b9c47",
+            "bytes": 20323312
+          },
+          {
+            "locator": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/tokenizer_config.json",
+            "sha256": "3ca953eea6c3c9fcda9cf3df22949ff18b216f7c74bd6459230f3f1013953f3a",
+            "bytes": 1156830
+          },
+          {
+            "locator": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/onnx/model.onnx",
+            "sha256": "ea91fd315a7c152d427d231746f0f811a1ac93beaba656abfdf2b24e091265e4",
+            "bytes": 479932
+          },
+          {
+            "locator": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/onnx/model.onnx_data",
+            "sha256": "ef835ae565d8695236652475903078e8ed794c7c35faf1164d78ec3238e8a88d",
+            "bytes": 1234521088
+          }
+        ]
+      },
+      {
+        "model": "harrier",
+        "profile": {
+          "profileId": "harrier-oss-v1-0.6b-1024@v1",
+          "model": "microsoft/harrier-oss-v1-0.6b",
+          "modelRevision": "onnx-community/harrier-oss-v1-0.6b-ONNX",
+          "revisionPolicy": "profile-versioned-provider-model-id",
+          "nativeDims": 1024,
+          "mrl": "none",
+          "trainedDims": [
+            1024
+          ],
+          "targetDims": 1024,
+          "distanceMetric": "cosine",
+          "normalization": {
+            "kind": "l2",
+            "timing": "model-graph"
+          },
+          "pooling": "model-graph",
+          "outputDtype": "float32",
+          "documentRecipe": "harrier-raw-document@v1",
+          "queryRecipe": "harrier-web-search-query@v1"
+        },
+        "files": [
+          {
+            "locator": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/config.json",
+            "sha256": "c55e075ac57223f7442ef1755051e9bd212e0d4ff2ed68694037f5a21dba7eeb",
+            "bytes": 1530
+          },
+          {
+            "locator": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/tokenizer.json",
+            "sha256": "2320ebaed2032c36f5c539cb8531d0642a10024e164f1d81ebbe163b259e3ba5",
+            "bytes": 9117473
+          },
+          {
+            "locator": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/tokenizer_config.json",
+            "sha256": "e1c8a5341a350885510d652a3a303beabf3a76ef745af6c6b4c3f0d815ccfb5c",
+            "bytes": 4650
+          },
+          {
+            "locator": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/onnx/model.onnx",
+            "sha256": "46e6d18455f25b2ebe9bccdc0fe3bf2a36442796ecc0991141c12c1f098f27b9",
+            "bytes": 299981
+          },
+          {
+            "locator": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/onnx/model.onnx_data",
+            "sha256": "1f936ece1604ac0117e808f9db9959e3e8b6b860d44d1a6ecf55a5353ee2d55c",
+            "bytes": 2094723072
+          },
+          {
+            "locator": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/onnx/model.onnx_data_1",
+            "sha256": "5b2a43d2df8ba4706d44769c023f2627309a8e48ec0fea70e92afc1a974e169f",
+            "bytes": 306225152
+          }
+        ]
+      }
+    ]
+  },
+  "verificationLayers": {
+    "operational": "Actual local CPU/fp32 weights and shipped worker, plus independently maintained Python ORT1.23.2/tokenizers0.22.2/transformers4.57.6; native private graph snapshots unchanged.",
+    "unit": "Exact ledger rows20369979 candidate-embedders and20369980 tokenizer-normalization passed; profile collision and measured loss guards in conventional suite.",
+    "integration": "Exact ledger row20370018 passed both native/request/Python file join and collapsed-recipe/altered-byte negative controls in the conventional integration suite. Prior CLI-child transport test20369986 failed after its30s budget and is superseded by this focused file-boundary guard; actual summary CLI independently exited0 on full operational vectors.",
+    "fixture": "Controlled eight texts in query/document forms; integration fixtures are explicitly synthetic and do not replace operational weights proof."
+  }
+}

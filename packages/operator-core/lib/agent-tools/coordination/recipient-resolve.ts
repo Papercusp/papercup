@@ -15,7 +15,6 @@
 
 import { listPresence } from './presence';
 import { listRecordedLiveSessions } from '../../adv-sessions';
-import { shortHandle } from '../../coord-schema';
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
 import { listLiveSessionPresence } from '../../sync/hyperbee/session-presence-store';
 import { listRunningNurseryAliasRows } from './nursery-alias-liveness';
@@ -37,30 +36,11 @@ export interface RecipientResolution {
   ambiguous: { id: string; matches: string[] }[];
 }
 
-/**
- * A resumed PSU session can mint a new full `su-<uuid>` owner id while keeping
- * the five-character handle shown in coord injections. A copied full id from
- * before that respawn therefore no longer matches by prefix or substring, but
- * its handle still identifies the current session. Keep this fallback narrow:
- * short, human-readable ids and arbitrary typos must retain their existing
- * unknown behavior.
- */
-function staleSuSessionHandle(id: string): string | null {
-  if (!/^su-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-    return null;
-  }
-  return shortHandle(id);
-}
-
-/** Find current owner ids for a concrete recipient, including the stable
- * handle fallback for a stale full PSU session id. */
+/** Find current owner IDs for a concrete recipient using its supplied prefix
+ * or short-handle substring. A stale full ID is not proof of a successor. */
 function matchingOwnerIds(id: string, knownOwnerIds: readonly string[]): string[] {
   let matches = knownOwnerIds.filter((k) => k.startsWith(id));
   if (matches.length === 0) matches = knownOwnerIds.filter((k) => k.includes(id));
-  if (matches.length === 0) {
-    const handle = staleSuSessionHandle(id);
-    if (handle) matches = knownOwnerIds.filter((k) => k.includes(handle));
-  }
   return matches;
 }
 
@@ -261,7 +241,7 @@ export async function resolveRecipients(
 }
 
 /** PURE best-effort core: rewrite each entry to its FULL ownerId when a unique
- *  prefix matches, otherwise leave it UNCHANGED (the silent twin of
+ *  prefix or caller-supplied short-handle substring matches, otherwise leave it UNCHANGED (the silent twin of
  *  resolveRecipientsAgainst — for the shared message/wake layers where a hard
  *  fail would break federation + broadcasts). selector/wildcard, exact match,
  *  ambiguous, and unknown all pass through untouched; only a unique prefix is

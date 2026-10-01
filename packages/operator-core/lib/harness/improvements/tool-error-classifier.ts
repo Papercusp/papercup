@@ -133,6 +133,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     errorCodes: [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',
+      'rubric-not-found',
     ],
     statuses: ['role-not-allowed'],
     messagePattern: CALLER_MESSAGE_PATTERN,

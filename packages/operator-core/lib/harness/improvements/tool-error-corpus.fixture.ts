@@ -180,6 +180,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'nested tools:invoke wrapper preserves a deliberate checkpoint safety refusal in JSON error_message; it is caller-directed, not structural',
   },
+  {
+    n: 1, errorCode: 'rubric-not-found', status: 'error',
+    message: 'rubric not found',
+    expectedClass: 'caller',
+    note: 'rubrics:get rejected an unsupported rubricRef@revision form; revision is supplied separately as a numeric argument',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

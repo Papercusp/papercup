@@ -3294,3 +3294,80 @@ The 13 legacy EIs inspected this turn are all `change/open/unassigned` with
 fleet leader acknowledged ownership of their routing in
 `mup656x1-0000-619b1db28fbd460c977cc3910f91759e`; no member-side claim or
 terminal disposition was made. Their full inventory remains on WI-10002830.
+
+### Native diagnostic launch and independent SQL lifetime — 2026-10-01 07:45Z
+
+**P-008 remains open; no live R-8 acceptance is claimed.** This entry supersedes
+the preceding investigation's unknown original launch, full SQL and shell timeout.
+It does not establish exact historical backend linkage or application impact.
+
+The maintained archive reader recovered the exact Claude transcript
+`6208927d-9f3a-4a92-8ea8-74eaaca026ea`: 1,505,615 bytes, SHA-256
+`3cbd6efa447616f6c6b52ecea2a04830726955968fc08b7431abce9f20aa600d`.
+Line 88 at `2026-09-23T21:13:35.274Z`, tool-use
+`toolu_011ffskoLo3VhEFWRgfqGc4K`, launches the scan through
+`capability:bash`, `sudo -n -u postgres psql -d papercusp -At` and a quoted
+SQL heredoc. Dispatch receipt `29268988` identifies caller
+`su-cecee8ca-952a-463c-bd06-ef584b4d0acd`. The DO block visits every
+`harness_shared` text column except `bak_%`, dynamically counts matches for
+`%WORKSPACE STAND-DOWN DRAINED THE BOX%`, and catches ordinary SQL errors.
+The command contains no statement timeout. Full SQL SHA-256:
+`31f8063862a1dad37779aaf0e71d239cf8ca7ab0257cf5857c8ebb0863099f8a`.
+Its first 320 characters exactly match the frozen PID `3962125` query prefix.
+
+The paired result at `21:14:20.661Z` retains task
+`0muelod7g1hap2451co`, bash ID `6822e638-1ae`, response window 45,000 ms,
+execution timeout 120,000 ms and deadline `21:15:35.479Z`. Its original log
+records terminal `failed/timed_out`, exit 143, at `21:15:35.517Z` /
+`21:15:35.549Z`, SHA-256
+`4b655b6b14118ab93a2a2ecd39fc37c956512993e91b3207bcf354f788a573d1`.
+Reduced archive receipt: `.papercusp/scratch/bash-d7a46e42-d52.log`, SHA-256
+`189c4237d008fa1322bea1a0dab7afbedfe6e3c64f4edca319cc5338f61bc758`.
+The dispatch writer timestamps settlement, not launch; its 45,071 ms duration
+places handler entry at approximately `21:13:35.382Z`, consistent with the
+native transcript. Prefix and chronology support a match, but no retained
+receipt links that shell task to backend PID `3962125`. A duplicate launch
+outside the retained window is not excluded.
+
+Historical source `509f7b0b56` signals the shell process group and, when present,
+its systemd service. Those boundaries do not contain the independently owned
+PostgreSQL backend. PostgreSQL documents that disabled connection checks detect
+a disconnected client at the next socket interaction; a server statement timeout
+separately bounds query execution. These are documented mechanisms, not measured
+historical configuration: [connection checks](https://www.postgresql.org/docs/18/runtime-config-connection.html#GUC-CLIENT-CONNECTION-CHECK-INTERVAL),
+[statement timeout](https://www.postgresql.org/docs/18/runtime-config-client.html#GUC-STATEMENT-TIMEOUT).
+
+The new conventional integration suite
+`packages/operator-core/lib/pg-client-disconnect.integration.test.ts` uses
+the maintained `startDedicatedNativePg` fixture, a real psql frontend and the
+existing `runForeground` shell path. It records the backend PID and settings,
+then observes that exact PID executing a uniquely tagged `pg_sleep` before
+accepting any termination evidence. With connection checks and statement timeout
+explicitly zero, the 5-second shell deadline kills the frontend while that exact
+backend remains active. With the same workload and a 1-second server statement
+timeout, psql reports statement cancellation and the identified query stops.
+This distinguishes frontend termination from SQL cancellation. It does not
+reproduce the old database contents, sudo route, shell signal sequence or app
+latency, and does not measure shared-host adoption.
+
+Canonical `npm run test:file -- packages/operator-core/lib/pg-client-disconnect.integration.test.ts`
+passed **2/2, zero skipped**, exit 0 at `9f9ff57142` plus the local new test.
+Both test-cluster teardown and the outer maintained native-PG override verified
+directory removal and private-port refusal. Log
+`/tmp/p008-client-disconnect-20261001.log`, SHA-256
+`3f087bb1f03c540042ec315347f8fe31ce6d17cf8085e18d9ff92525f61f9253`.
+Test SHA-256: `65bf0c18a207e00af6db5e4f93163877239399546ba55582c8911c5ab245be6d`;
+shell implementation SHA-256: `a95b5ca361eebbc2b2b59160f19bf303f1328876680755826f9672c72003c3d6`.
+
+The existing shell tool's timeout argument now explains this external-server
+boundary and directs diagnostic reads to `dev:pg_query`, or native SQL to an
+explicit verified server deadline. No new tool, policy or global PostgreSQL
+setting was introduced. Guidance regression suite passed **4/4, zero skipped**;
+scoped typecheck passed with **zero diagnostics**, including direct importers.
+Logs `/tmp/p008-bash-guidance-20261001.log` SHA-256
+`7cc6ebe865f0ad42c110a42d1eca03dafb5689dcf3245c4688dccd27ab509ceb` and
+`/tmp/p008-client-disconnect-tsc-20261001.log` SHA-256
+`a1c4da60a2f575229e08bea69bba96d4a2a95f785126764d4bae6b18b36753de`.
+Tool source SHA-256: `413e1d217d9d28bda601c5358c0be85b031cd4e52e6020f869227a4f1a7d5642`.
+The twelve existing checkpoint checks are preserved at their cap; this additional
+proof is retained here and in fact `p008-native-sql-lifetime-20261001`.

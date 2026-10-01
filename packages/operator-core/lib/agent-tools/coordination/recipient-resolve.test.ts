@@ -45,8 +45,8 @@ const KNOWN = [
   'su-fc2fd592-e760-42bd-8057-beb4d06eef52',
   'pus-abcdef01-2345',
 ];
-const STALE_SU_SESSION = 'su-d9211d54-beee-4d43-8154-fdc13877435a';
-const RESUMED_SU_SESSION = 'su-d9211d54-fa02-4391-b0a2-0efbce528c1f';
+const STALE_SU_SESSION = 'su-38150967-c71c-49ce-8f6f-b13541ca4d7e';
+const UNRELATED_SU_SESSION = 'su-44d9d024-f986-4033-aa23-0381508e5938';
 
 describe('resolveRecipientsAgainst', () => {
   it('resolves a unique short prefix to the full ownerId (the wake-key bug)', () => {
@@ -68,11 +68,11 @@ describe('resolveRecipientsAgainst', () => {
     ]);
   });
 
-  it('resolves a stale full su session id through the resumed session short handle', () => {
-    const r = resolveRecipientsAgainst([STALE_SU_SESSION], [RESUMED_SU_SESSION]);
+  it('does not route a stale full su id through a handle substring in an unrelated UUID', () => {
+    const r = resolveRecipientsAgainst([STALE_SU_SESSION], [UNRELATED_SU_SESSION]);
     expect(r).toEqual({
-      resolved: [RESUMED_SU_SESSION],
-      unknown: [],
+      resolved: [],
+      unknown: [STALE_SU_SESSION],
       ambiguous: [],
     });
   });
@@ -157,9 +157,9 @@ describe('resolveBestEffort (the silent shared-layer twin)', () => {
   it('leaves an AMBIGUOUS prefix unchanged', () => {
     expect(resolveBestEffort(['su-'], KNOWN)).toEqual(['su-']);
   });
-  it('rewrites a stale full su session id through its resumed short handle', () => {
-    expect(resolveBestEffort([STALE_SU_SESSION], [RESUMED_SU_SESSION])).toEqual([
-      RESUMED_SU_SESSION,
+  it('leaves a stale full su id unchanged when its handle only occurs inside an unrelated UUID', () => {
+    expect(resolveBestEffort([STALE_SU_SESSION], [UNRELATED_SU_SESSION])).toEqual([
+      STALE_SU_SESSION,
     ]);
   });
   it('passes selectors/wildcards + exact ids through untouched', () => {

@@ -290,12 +290,8 @@ describe('agent sandbox leg', () => {
   it('reports a probe that overran its deadline as unknown, never down, and does not cache it', async () => {
     const slow = fake({ run: async () => ({ code: null, stderr: '', error: 'timeout after 30000ms' }) });
     expect(await probeAgentSandbox(slow.deps)).toMatchObject({ status: 'unknown', detail: 'timeout after 30000ms' });
-    await readAgentSandbox(slow.deps);
-    await readAgentSandbox(slow.deps);
-    expect(slow.calls).toHaveLength(0); // the fake run above records nothing; count probes instead:
     let probes = 0;
     const counted = fake({ run: async () => (probes++, { code: null, stderr: '', error: 'timeout after 30000ms' }) });
-    __resetAgentSandboxCache();
     await readAgentSandbox(counted.deps);
     await readAgentSandbox(counted.deps);
     expect(probes).toBe(2);

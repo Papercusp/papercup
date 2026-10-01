@@ -99,6 +99,17 @@ vi.mock('@papercusp/operator-core/lib/harness-effective-config', async () => {
     readEffectiveHarnessConfig: async () => ({ parallelWorkers: { max: ctl.cap } }),
   };
 });
+// The dispatch gate also resolves the harness's effective blueprint from PG
+// (orchestrator-loop.ts resolveHarnessDispatchGate → getEffectiveBlueprint). This
+// fixture hand-rolls its DDL and has no harness_shared.blueprints relation, so the
+// real resolver throws, the gate logs a warning and falls back to null, and
+// vitest-fail-on-console fails the test (WI-10004634). Return that same null
+// directly: dispatch then comes from the mocked effective config above, which is
+// the behaviour these sweep-glue scenarios assert.
+vi.mock('@papercusp/operator-core/lib/blueprint/project-to-pg', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/blueprint/project-to-pg')>('@papercusp/operator-core/lib/blueprint/project-to-pg');
+  return { ...actual, getEffectiveBlueprint: async () => null };
+});
 // Neutralise the best-effort side-channels (own coverage; not the sweep glue).
 vi.mock('@papercusp/operator-core/lib/promote-issue', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/promote-issue')>('@papercusp/operator-core/lib/promote-issue');

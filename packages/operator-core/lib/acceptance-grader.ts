@@ -694,6 +694,25 @@ export function classifyAcceptanceGraderTerminalFailure(
     };
   }
 
+  // EI-24761061357755499: a routed judge can land on a model/backend that
+  // rejects the system-role frame before the grading brief is processed. The
+  // interactive PTY remains live at its prompt after the completed error turn,
+  // so task liveness is not mission liveness and the audit repair otherwise
+  // dedupes to this dead mission forever. Keep this inside the controlled
+  // inference-error opt-in: general acceptance evidence may quote the same
+  // provider error, while the grading-integrity brief cannot.
+  const unsupportedSystemRole = allowInferenceGatewayError
+    ? normalized.match(
+        /API Error:\s*400\s+role\s+['"]system['"]\s+is not supported on this model[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
+      )
+    : null;
+  if (unsupportedSystemRole) {
+    return {
+      code: 'inference_gateway_error',
+      evidence: unsupportedSystemRole[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+
   const gatewayError = allowInferenceGatewayError
     ? normalized.match(
         /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)(?:\s*·\s*inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after \d+s|\s+This request would exceed your\s+account(?:'|’)s rate limit\.\s*Please try again later\.))[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,

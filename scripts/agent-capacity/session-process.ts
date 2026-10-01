@@ -47,6 +47,69 @@ export async function copyTree(src: string, dst: string): Promise<void> {
 
 export const removeTree = (p: string): Promise<void> => runAsync('rm', ['-rf', '--', p]);
 
+/**
+ * How a replay gets its private, writable checkout.
+ *
+ * `copy`: a full `cp -a --reflink=auto` of the prepared checkout, removed with `rm -rf` after.
+ * `overlay`: an overlayfs mount with the prepared checkout as the read-only lower layer and an
+ * empty per-session upper layer, so setup and teardown cost the same at any checkout size and
+ * only what the session itself wrote is ever removed.
+ *
+ * Why `overlay` exists (WI-10004672, measured 2026-10-01 on an e2-standard-32, XFS reflink
+ * cache): one copy of the 69k-file excalidraw checkout took 5.7s and four concurrent 9.0s; one
+ * `rm -rf` took 2.6s and four concurrent 12.2s, slower than running them serially. With `copy`,
+ * every P-005 ramp step therefore held about 12-13 sessions in flight whatever N was asked for,
+ * on 8 vCPUs and on 32 alike, so the ramps measured setup throughput instead of the machine. An
+ * overlay mount took 0.05s and its umount 0.11s. A long-running real agent pays its checkout
+ * once per hours-long session, so setup must not dominate a replay that lasts minutes.
+ *
+ * `overlay` needs `sudo -n mount` (the capacity VMs' default user has passwordless sudo) and
+ * paths free of `,` and `:`, which overlayfs's option string cannot carry.
+ */
+export type WorkdirMode = 'copy' | 'overlay';
+
+/** The overlay's upper and work dirs for a session checkout at `dst`, beside it, never inside. */
+export function overlayLayout(src: string, dst: string): { upper: string; work: string; mountArgs: string[] } {
+  for (const p of [src, dst]) if (/[,:]/.test(p)) throw new Error(`overlay paths cannot contain ',' or ':': ${p}`);
+  const upper = `${dst}.ovl/up`;
+  const work = `${dst}.ovl/wk`;
+  return { upper, work, mountArgs: ['-n', 'mount', '-t', 'overlay', 'overlay', '-o', `lowerdir=${src},upperdir=${upper},workdir=${work}`, dst] };
+}
+
+export interface Workdir {
+  /** Unmount (overlay) and, unless `keep`, delete the checkout. `keep` leaves an overlay's upper layer: what the session changed. */
+  teardown(keep: boolean): Promise<void>;
+}
+
+/**
+ * Give `dst` a private writable view of `src` in `mode`. Leftovers of an aborted run at `dst` are
+ * cleared first, mounted or not, so a relaunch under the same run id starts clean.
+ */
+export async function prepareWorkdir(mode: WorkdirMode, src: string, dst: string, run: typeof runAsync = runAsync): Promise<Workdir> {
+  mkdirSync(path.dirname(dst), { recursive: true });
+  if (mode === 'copy') {
+    await copyTree(src, dst);
+    return { teardown: async (keep) => (keep ? undefined : removeTree(dst)) };
+  }
+  const { upper, work, mountArgs } = overlayLayout(src, dst);
+  const clear = async () => {
+    await run('sudo', ['-n', 'umount', dst]).catch(() => undefined);
+    // overlayfs creates root-owned entries in the work dir, so removal needs root too.
+    await run('sudo', ['-n', 'rm', '-rf', '--', dst, `${dst}.ovl`]);
+  };
+  await clear();
+  mkdirSync(upper, { recursive: true });
+  mkdirSync(work, { recursive: true });
+  mkdirSync(dst, { recursive: true });
+  await run('sudo', mountArgs);
+  return {
+    teardown: async (keep) => {
+      if (!keep) return clear();
+      await run('sudo', ['-n', 'umount', dst]);
+    },
+  };
+}
+
 /** Parse the epilogue line the wrapper appends: `CAPDRV_CGROUP peak=<bytes> usage_usec=<n>`. */
 export function parseCgroupStats(text: string): { memPeakBytes: number | null; cpuUsec: number | null } {
   const line = text.split('\n').reverse().find((l) => l.startsWith(STATS_MARKER));

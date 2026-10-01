@@ -27,7 +27,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
-import { resolveHomePotSlug } from '../pot/_resolve';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { isParkedNextFire } from '@papercusp/db-org';
 import {
   materializeLoop,
@@ -945,19 +945,15 @@ export default defineTool({
       }
     }
     // A wildcard operator session means "this workspace", not "whatever harness
-    // the last session brief happened to retain". Resolve the formal workspace
-    // home before consulting the populate-once brief; the latter can be stale
-    // after a Codex member is relaunched into a different harness (EI-212804...).
+    // the last session brief happened to retain" or the first registered Pot.
+    // resolveHomePotSlug() is the Pot steering default and falls back to registry
+    // order; loop work must instead use the canonical operator-home pointer
+    // (PAPERCUSP_POT_HOME_SLUG, defaulting to papercusp).
+    // Resolve that operator home before consulting the populate-once brief; the
+    // latter can be stale after a Codex member is relaunched into a different
+    // harness (EI-212804...).
     if (onlyWorkspaceScope && !harness) {
-      try {
-        const home = await resolveHomePotSlug(workspaceId);
-        if (home) harness = resolvePotHomeSlug(home, undefined);
-      } catch {
-        // Home-pot discovery is a convenience for workspace-scoped callers. If
-        // the registry is temporarily unreadable, preserve the older env/ctx
-        // fallback and let the existing no_harness response explain the gap.
-        harness = null;
-      }
+      harness = resolvePotHomeSlug(operatorHomeHarnessSlug(), undefined);
     }
     // EI-20211399000978706: retain the durable coord:orient/declare-intent
     // scope as a fallback for workspaces without a formal home pot. Explicit
