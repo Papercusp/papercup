@@ -102,7 +102,7 @@ import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../f
 import { COORD_REPLY_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkEnvelope, type BulkItemResult } from '../../_bulk';
-import { cellTranscriptionHint } from '../../../cell-transcription-detector';
+import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import {
   messageBodyArg,
   PREMISES_REF_OBJECT_REENCODING,
@@ -2217,7 +2217,10 @@ async function sendOne(
   // claim bug below — a detector reading the wrong text reports a confident
   // clean.
   const sentText = [msg.summary, bodyText].filter(Boolean).join('\n');
-  const cellHint = cellTranscriptionHint(sentText);
+  // EI-24684014950807803: resolve each sha-shaped token against the integration tree
+  // before flagging it — an agent short id like `c0b38c83` is hex-shaped but names no
+  // commit. Async + parallel (never a sync spawn on the send hot path), never throws.
+  const cellHint = await cellTranscriptionHintResolvingCommits(sentText);
 
   // WI-41323 — the SENDER-side half of EI-21333824056510800. That item fixed what
   // the RECEIVER sees: an unbacked "OWNER-VERIFIED DIRECTIVE" now renders prefixed
