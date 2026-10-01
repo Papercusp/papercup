@@ -581,17 +581,21 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
   const sourceFingerprint = await fingerprintFile(new URL('./judged.ts', import.meta.url).pathname);
   const root = path.resolve(opts.out), reuseRoot = opts.reuseAuthorsFrom ? path.resolve(opts.reuseAuthorsFrom) : undefined;
   if (reuseRoot === root) throw new Error('authors-only recovery requires a new output directory');
-  let reuseIdentityHash: string | undefined;
   let authorReuse: { identity: Awaited<ReturnType<typeof fingerprintFile>>; identityHash: string } | undefined;
-  if (reuseRoot) {
-    const file = path.join(reuseRoot, 'identity.json'), saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const readAuthorIdentity = async (file: string, expected?: Awaited<ReturnType<typeof fingerprintFile>>) => {
+    const actual = await fingerprintFile(file);
+    if (expected && hashJson(actual) !== hashJson(expected)) throw new Error('invalid authors-only identity fingerprint');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (hashJson(saved.identity) !== saved.identityHash || saved.identity?.ownerId !== ownerId
       || saved.identity?.snapshotFingerprint?.sha256 !== snapshotFingerprint.sha256
       || saved.identity?.snapshotFingerprint?.bytes !== snapshotFingerprint.bytes
       || saved.identity?.contract?.model !== BLIND_COHORT_CONTRACT.model
       || saved.identity?.contract?.author !== BLIND_COHORT_CONTRACT.author) throw new Error('invalid authors-only recovery identity: snapshot/owner/model/author contract mismatch');
-    reuseIdentityHash = saved.identityHash;
-    authorReuse = { identity: await fingerprintFile(file), identityHash: saved.identityHash };
+    return { saved, reference: { identity: actual, identityHash: saved.identityHash as string } };
+  };
+  const donor = reuseRoot ? await readAuthorIdentity(path.join(reuseRoot, 'identity.json')) : undefined;
+  if (donor) {
+    authorReuse = donor.reference;
   }
   const identity = { snapshotFingerprint, sourceFingerprint, ownerId, targets, contract: BLIND_COHORT_CONTRACT,
     ...(authorReuse ? { authorReuse } : {}) };
@@ -616,9 +620,31 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     };
     const isAuthor = system === BLIND_COHORT_CONTRACT.author && /^(memory|prose)-author-/.test(name);
     const recoverAuthor = async (origin: Awaited<ReturnType<typeof fingerprintFile>>) => {
-      if (!isAuthor || !reuseRoot || !reuseIdentityHash || origin.path !== path.join(reuseRoot, `${name}.json`)
-        || hashJson(await fingerprintFile(origin.path)) !== hashJson(origin)) throw new Error('invalid authors-only raw reference');
-      return validate(JSON.parse(fs.readFileSync(origin.path, 'utf8')), reuseIdentityHash);
+      if (!isAuthor || !donor) throw new Error('invalid authors-only raw reference');
+      let current = donor, target = origin;
+      const seen = new Set<string>(), references = [];
+      for (;;) {
+        const expectedPath = path.join(path.dirname(current.reference.identity.path), `${name}.json`);
+        if (target.path !== expectedPath
+          || path.dirname(fs.realpathSync(target.path)) !== fs.realpathSync(path.dirname(expectedPath))) throw new Error('invalid authors-only raw reference path');
+        const realPath = fs.realpathSync(target.path);
+        if (seen.has(realPath) || seen.size >= 64) throw new Error('cyclic or excessive authors-only reference chain');
+        seen.add(realPath);
+        if (hashJson(await fingerprintFile(target.path)) !== hashJson(target)) throw new Error('invalid authors-only raw reference');
+        const saved = JSON.parse(fs.readFileSync(target.path, 'utf8'));
+        if (saved.kind !== 'reused-author') {
+          const original = validate(saved, current.reference.identityHash);
+          if (references.some((ref) => ref.invocationId !== original.invocationId || ref.promptSha256 !== original.promptSha256)) throw new Error('invalid authors-only invocation reference');
+          return original;
+        }
+        if (saved.identityHash !== current.reference.identityHash
+          || !saved.authorReuse || hashJson(saved.authorReuse) !== hashJson(current.saved.identity.authorReuse)
+          || saved.promptSha256 !== promptSha256) throw new Error('invalid authors-only recovery reference');
+        references.push(saved);
+        const parent = await readAuthorIdentity(saved.authorReuse.identity.path, saved.authorReuse.identity);
+        if (parent.reference.identityHash !== saved.authorReuse.identityHash) throw new Error('invalid authors-only parent identity');
+        current = parent; target = saved.origin;
+      }
     };
     if (fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));

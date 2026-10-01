@@ -42,8 +42,11 @@ export function isGlobalRunnerInput(rel: any): boolean;
  * Can a change to this npm script change how a recorded proof's file runs? True for a task script,
  * for its `pre`/`post` hook (npm runs `pretest` and `posttest` around `npm run test`), and for an
  * install lifecycle script.
+ *
+ * @param {string} name
+ * @returns {boolean}
  */
-export function isRunnerAffectingScript(name: any): boolean;
+export function isRunnerAffectingScript(name: string): boolean;
 /**
  * gate-test-reuse-yield-2026-10-01 P-002: is a change to the ROOT package.json inert for pass
  * proofs? True only when both texts parse to JSON objects, they are equal once `scripts` is

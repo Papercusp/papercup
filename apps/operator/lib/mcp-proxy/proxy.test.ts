@@ -788,7 +788,7 @@ describe("postConnectRetryable — write-free requests only", () => {
 // EI-21268234394605529 guard: the curated allowlist must NEVER contain a mutating verb —
 // a write wrongly listed here would be silently double-applied on a post-connect replay.
 describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
-  it("classifies sessions:search as replay-safe", () => {
+  it("keeps sessions:search out of pure-read retries because live refresh writes", () => {
     const body = Buffer.from(
       JSON.stringify({
         jsonrpc: "2.0",
@@ -798,12 +798,13 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
       }),
     );
 
-    expect(
-      prepareForward("POST", {}, body, {
-        keyingEnabled: true,
-        genKey: () => "00000000-0000-4000-8000-000000000000",
-      }).klass,
-    ).toBe("readonly");
+    const prepared = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: () => "00000000-0000-4000-8000-000000000000",
+    });
+    expect(READ_ONLY_TOOLS).not.toContain("sessions:search");
+    expect(prepared.klass).toBe("keyed");
+    expect(postConnectRetryable(prepared.klass, 0, 1, 100, 5_000)).toBe(false);
   });
 
   it("keeps sessions:timeline out of the free-replay class because live refresh writes", () => {
@@ -2106,7 +2107,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
-  it("EI-21398388520825280: sessions:search retries once after a post-connect reset", async () => {
+  it("EI-21398388520825280: sessions:search does not replay a post-connect reset while live refresh writes", async () => {
     const upstream = resetOnceUpstream(
       '{"result":{"total_hits":0,"results":[]}}',
     ) as http.Server & { hits: () => number };
@@ -2126,8 +2127,9 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       port(proxy),
       '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sessions:search","arguments":{"query":"needle"}}}',
     );
-    expect(r.status).toBe(200);
-    expect(upstream.hits()).toBe(2);
+    expect(r.status).toBe(502);
+    expect(r.body).toContain("mcp_proxy_upstream_error");
+    expect(upstream.hits()).toBe(1);
   });
 
   it("EI-23082732693236516: work_items:search retries once after a post-connect reset", async () => {

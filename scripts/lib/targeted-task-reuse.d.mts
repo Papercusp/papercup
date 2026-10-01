@@ -56,6 +56,7 @@ export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env
         connect: (env: any) => Promise<import("pg").Client>;
         loadProofs: typeof loadReuseProofs;
         changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
+        inertGlobalChange: (root: any) => (rel: string, fromSha: string, toSha: string) => boolean;
         now: () => number;
         makeTempDir: () => string;
         removeTempDir: (dir: any) => void;

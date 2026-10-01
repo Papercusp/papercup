@@ -481,7 +481,20 @@ export default defineTool({
           } };
         }
       }
-      const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation);
+      const currentPlan = await getPlanRow(args.slug, {
+        workspaceId,
+        harnessSlug: harnessSlug ?? '',
+      });
+      // A prior target whose destination the current plan no longer contains (an R-N removed
+      // by a rubric amendment, a deleted item/decision/section) is dead: it may be retired,
+      // because keeping it could never pass the plan-target validation below. A malformed
+      // target is not "dead" — it never named a destination, so it stays a conflict.
+      const deadTargets = previousAudit?.activation && currentPlan
+        ? validateActivationAuditPlanTargets(previousAudit.activation, currentPlan.content)
+          .filter((problem) => problem.code !== 'invalid_plan_target')
+          .map(({ mappingId, target }) => ({ mappingId, target }))
+        : [];
+      const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation, { deadTargets });
       if (!merged.ok) {
         return { data: {
           ok: false as const,
@@ -499,10 +512,6 @@ export default defineTool({
       const sourceRanges = activation.sourceRanges;
       const mappings = activation.mappings;
 
-      const currentPlan = await getPlanRow(args.slug, {
-        workspaceId,
-        harnessSlug: harnessSlug ?? '',
-      });
       if (dryRun && !currentPlan) {
         return { data: {
           ok: false as const,
@@ -789,6 +798,7 @@ export default defineTool({
           mappings: mappings.length,
           carriedMappings: merged.carriedMappingIds.length,
           carriedMappingIds: merged.carriedMappingIds,
+          ...(merged.retiredTargets.length ? { retiredTargets: merged.retiredTargets } : {}),
           coverageBaseAuditSeq: previousAudit?.auditSeq ?? null,
           sourceRefsResolved: resolutions.length,
           itemProvenance: itemProvenanceResult,
@@ -1014,6 +1024,7 @@ export default defineTool({
         mappings: mappings.length,
         carriedMappings: merged.carriedMappingIds.length,
         carriedMappingIds: merged.carriedMappingIds,
+        ...(merged.retiredTargets.length ? { retiredTargets: merged.retiredTargets } : {}),
         coverageBaseAuditSeq: previousAudit?.auditSeq ?? null,
         sourceRefsResolved: resolutions.length,
         sourceRefsFromArchive: resolutions.filter((resolution) => resolution.source === 'archive').length,

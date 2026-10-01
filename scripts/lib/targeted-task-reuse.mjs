@@ -45,6 +45,7 @@ import {
   executedMapRecordingEnabled,
   formatExecutedMapResultLines,
   gitChangedBetween,
+  gitInertGlobalChange,
   loadReuseProofs,
   readExecutedMapResults,
 } from "./executed-source-map.mjs";
@@ -158,6 +159,8 @@ const defaultDeps = {
   connect: (env) => connectExecutedMapPg({ env }),
   loadProofs: loadReuseProofs,
   changedBetween: (root) => gitChangedBetween({ repoRoot: root, relative: true }),
+  // gate-test-reuse-yield-2026-10-01 P-002: the same inert-global seam affected-tests passes.
+  inertGlobalChange: (root) => gitInertGlobalChange({ repoRoot: root }),
   now: () => Date.now(),
   makeTempDir: () => mkdtempSync(path.join(tmpdir(), "pc-targeted-reuse-")),
   removeTempDir: (dir) => rmSync(dir, { recursive: true, force: true }),
@@ -311,6 +314,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     nowMs: d.now(),
     maxAgeMs: testReuseMaxAgeMs(out),
     auditRate: testReuseAuditRate(out),
+    inertGlobalChange: typeof d.inertGlobalChange === "function" ? d.inertGlobalChange(root) : null,
   });
   let reused = 0;
   if (skip.length > 0) {

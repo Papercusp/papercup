@@ -20,6 +20,7 @@ const {
   formatTestReuseLine,
   formatTestReuseTotalLine,
   isGlobalRunnerInput,
+  isRunnerAffectingScript,
   laneOfFromSplit,
   laneOfTaskScript,
   laneScopedCandidates,
@@ -28,6 +29,7 @@ const {
   reuseCandidates,
   reuseRunnerIdentity,
   reuseSoundnessAlarms,
+  rootPackageJsonChangeIsInert,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
@@ -43,6 +45,8 @@ import {
   REUSE_PROOF_FORMAT as RECORDER_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA as READER_SCHEMA,
 } from '@papercusp/test-config/test-pass-reuse-skip';
+import { gitInertGlobalChange } from '../../../../scripts/lib/executed-source-map.mjs';
+import { LANE_SCRIPTS } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { builtinModules } from 'node:module';
@@ -302,6 +306,169 @@ describe('isGlobalRunnerInput', () => {
   });
 });
 
+/**
+ * gate-test-reuse-yield-2026-10-01 P-002: a root package.json change is global only when something
+ * a proof cannot see changed. Measured: 12 of 43 global-touching commits in 72h touched it.
+ */
+describe('P-002: scripts-only root package.json changes are not global', () => {
+  const pkg = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      name: 'root',
+      private: true,
+      workspaces: ['packages/*'],
+      devDependencies: { vitest: '4.0.0' },
+      scripts: { test: 'node scripts/affected-tests.mjs', 'lint:x': 'node x.mjs', 'gen:y': 'node y.mjs' },
+      ...over,
+    });
+
+  it('judges only non-runner script edits as inert', () => {
+    const base = pkg();
+    // Inert: an added, changed or removed non-task script, and pure key reordering.
+    expect(rootPackageJsonChangeIsInert(base, pkg({ scripts: { test: 'node scripts/affected-tests.mjs', 'lint:x': 'node x2.mjs', 'gen:y': 'node y.mjs', 'lint:new': 'z' } }))).toBe(true);
+    expect(rootPackageJsonChangeIsInert(base, pkg({ scripts: { test: 'node scripts/affected-tests.mjs' } }))).toBe(true);
+    const reordered = JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(base) as Record<string, unknown>).reverse()));
+    expect(reordered).not.toBe(base);
+    expect(rootPackageJsonChangeIsInert(base, reordered)).toBe(true);
+    // 'prettier' starts with "pre" but is no task's hook.
+    expect(rootPackageJsonChangeIsInert(base, pkg({ scripts: { ...JSON.parse(base).scripts, prettier: 'prettier .' } }))).toBe(true);
+    // Global: any field outside scripts.
+    expect(rootPackageJsonChangeIsInert(base, pkg({ devDependencies: { vitest: '4.0.1' } }))).toBe(false);
+    expect(rootPackageJsonChangeIsInert(base, pkg({ workspaces: ['packages/*', 'libs/*'] }))).toBe(false);
+    expect(rootPackageJsonChangeIsInert(base, pkg({ overrides: { esbuild: '0.25.0' } }))).toBe(false);
+    expect(rootPackageJsonChangeIsInert(base, pkg({ type: 'module' }))).toBe(false);
+  });
+
+  it('keeps task scripts, their pre/post hooks and install lifecycle scripts global', () => {
+    const base = pkg();
+    const withScript = (name: string, body: string) =>
+      pkg({ scripts: { ...JSON.parse(base).scripts, [name]: body } });
+    for (const name of [
+      'test', 'test:lane-pure', 'test:lane-stateful', 'test:lane-future', 'test:integration', 'test:el-suite',
+      'lint:el-tools', 'pretest', 'posttest', 'pretest:lane-pure', 'posttest:integration',
+      'postinstall', 'preinstall', 'install', 'prepare', 'dependencies',
+    ]) {
+      expect(isRunnerAffectingScript(name), name).toBe(true);
+      expect(rootPackageJsonChangeIsInert(base, withScript(name, 'changed')), name).toBe(false);
+    }
+    for (const name of ['lint:x', 'gen:y', 'test:file', 'test:affected', 'prettier', 'postgres:up']) {
+      expect(isRunnerAffectingScript(name), name).toBe(false);
+    }
+  });
+
+  it('fails closed on anything it cannot parse as two JSON objects with object scripts', () => {
+    const base = pkg();
+    expect(rootPackageJsonChangeIsInert(base, '{ not json')).toBe(false);
+    expect(rootPackageJsonChangeIsInert('[]', '[]')).toBe(false);
+    expect(rootPackageJsonChangeIsInert('null', 'null')).toBe(false);
+    expect(rootPackageJsonChangeIsInert(base, pkg({ scripts: 'node x.mjs' }))).toBe(false);
+    expect(rootPackageJsonChangeIsInert(base, pkg({ scripts: ['a'] }))).toBe(false);
+  });
+
+  // The lane list is the gate's task vocabulary (targeted-task-reuse.mjs), and affected-tests
+  // pushes further task scripts by literal name. Every one must count as runner-affecting, or a
+  // root edit to it would be wrongly judged inert.
+  it('covers every task script the gate runs (derived from the runners, not hand-listed)', () => {
+    for (const name of LANE_SCRIPTS) expect(isRunnerAffectingScript(name), name).toBe(true);
+    const repo = realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
+    const src = readFileSync(join(repo, 'scripts/affected-tests.mjs'), 'utf8');
+    const pushed = [...src.matchAll(/tasks\.push\(\{\s*ws,\s*script:\s*"([^"]+)"\s*\}\)/g)].map((m) => m[1]!);
+    // Positive control: the scan must find the known literal pushes, or it is checking nothing.
+    expect(pushed).toEqual(expect.arrayContaining(['test', 'lint:el-tools', 'test:integration', 'test:el-suite']));
+    for (const name of pushed) expect(isRunnerAffectingScript(name), name).toBe(true);
+  });
+
+  function runWithSeam(
+    drift: Set<string>,
+    inertGlobalChange: ((rel: string, from: string, to: string) => boolean) | null,
+    p: Proof = proof(T),
+  ) {
+    return selectReusablePasses({
+      candidates: [T],
+      proofs: new Map([[T, p]]),
+      judgedSha: 'new',
+      changedBetween: () => drift,
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+      inertGlobalChange,
+    });
+  }
+
+  it('reuses a proof across an inert root package.json change and counts it as inertGlobal', () => {
+    const asked: string[] = [];
+    const r = runWithSeam(new Set(['package.json', 'other/unrelated.ts']), (rel, from, to) => {
+      asked.push(`${rel}@${from}..${to}`);
+      return true;
+    });
+    expect(r.skip).toEqual([T]);
+    expect(r.summary).toMatchObject({ reused: 1, globalInput: 0, inputChanged: 0, inertGlobal: 1 });
+    // Only GLOBAL drift paths are put to the seam, with the proof's recorded sha and the judged sha.
+    expect(asked).toEqual(['package.json@old..new']);
+  });
+
+  it('still invalidates a proof that read the root package.json itself', () => {
+    const p = proof(T, { readPaths: ['package.json'] });
+    const r = runWithSeam(new Set(['package.json']), () => true, p);
+    expect(r.skip).toEqual([]);
+    expect(r.summary).toMatchObject({ globalInput: 0, inputChanged: 1, inertGlobal: 1 });
+  });
+
+  it('keeps the change global when the seam says no, throws, answers non-true, or is absent', () => {
+    const seams: Array<((rel: string, from: string, to: string) => boolean) | null> = [
+      () => false,
+      () => {
+        throw new Error('git show failed');
+      },
+      () => 1 as unknown as boolean,
+      () => 'yes' as unknown as boolean,
+      null,
+    ];
+    for (const seam of seams) {
+      const r = runWithSeam(new Set(['package.json']), seam);
+      expect(r.skip).toEqual([]);
+      expect(r.summary).toMatchObject({ globalInput: 1, inertGlobal: 0 });
+    }
+  });
+
+  it('stays global when any other global path drifted alongside the inert one', () => {
+    const r = runWithSeam(new Set(['package.json', 'package-lock.json']), (rel) => rel === 'package.json');
+    expect(r.skip).toEqual([]);
+    expect(r.summary).toMatchObject({ globalInput: 1, inertGlobal: 0 });
+  });
+
+  it('gitInertGlobalChange reads both shas with git show, judges only the root package.json, and caches', () => {
+    const texts: Record<string, string> = {
+      'old:package.json': pkg(),
+      'new:package.json': pkg({ scripts: { test: 'node scripts/affected-tests.mjs', 'lint:x': 'changed' } }),
+      'dep:package.json': pkg({ devDependencies: { vitest: '9.9.9' } }),
+    };
+    const calls: string[][] = [];
+    const exec = (file: string, args: string[]) => {
+      calls.push([file, ...args]);
+      const t = texts[args[1]!];
+      if (t === undefined) throw new Error(`fatal: invalid object name ${args[1]}`);
+      return t;
+    };
+    const seam = gitInertGlobalChange({ repoRoot: '/repo', exec });
+    expect(seam('package.json', 'old', 'new')).toBe(true);
+    expect(seam('package.json', 'old', 'new')).toBe(true);
+    expect(calls).toEqual([
+      ['git', 'show', 'old:package.json'],
+      ['git', 'show', 'new:package.json'],
+    ]);
+    expect(seam('package.json', 'old', 'dep')).toBe(false);
+    // A sha this clone lacks reads as "cannot tell": global.
+    expect(seam('package.json', 'gone', 'new')).toBe(false);
+    // Only the ROOT manifest can be inert; nothing else is even read.
+    const before = calls.length;
+    expect(seam('package-lock.json', 'old', 'new')).toBe(false);
+    expect(seam('libs/test-config/src/vitest-config.ts', 'old', 'new')).toBe(false);
+    expect(seam('patches/x.patch', 'old', 'new')).toBe(false);
+    expect(calls.length).toBe(before);
+  });
+});
+
 describe('env toggles and the report line', () => {
   it('is ON by default and OFF for the documented values', () => {
     expect(testReuseEnabled({})).toBe(true);
@@ -314,7 +481,7 @@ describe('env toggles and the report line', () => {
     const r = run([T], new Map([[T, proof(T)]]), new Set());
     const line = formatTestReuseLine('@papercusp/x', r.summary);
     expect(line).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
-    expect(line).toMatch(/ audited=0 expiredClean=0$/);
+    expect(line).toMatch(/ audited=0 expiredClean=0 inertGlobal=0$/);
   });
 
   it('reads the P-012 audit rate: 5% by default, clamped to [0,1], garbage falls back', () => {

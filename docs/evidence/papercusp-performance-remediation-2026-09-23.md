@@ -3663,3 +3663,80 @@ The source defect and recurrence guard are verified. The retained live
 slow-sweep cause, app impact and shared-runtime adoption remain separate
 open questions under D-006. **P-008/R-8 remains open; no acceptance binding,
 shared-host restart or shipment is claimed.**
+
+### Matched metadata read controls — October 1, 10:44Z
+
+WI-10002830 extended the maintained private-runtime fixture with real
+synchronous filesystem call/byte counters. Every managed home now has a
+38-byte synthetic diagnostics stamp and a 55-byte config. The incremental
+workload remains 4,800 rollouts across 320 homes, 80 useful tails per pass,
+and the existing four repeats. Its workload hash remains
+`6fda56724fe55c56706e4c99460603d83685d6e3debceca2f24a3210b6140ad4`;
+the added metadata fixture hash is
+`d664293d6c33eceee43b15c3ff8807edb84f0a969e3885201d50ad8e1556e1e7`.
+
+The distinguishing control calls `codexTranscriptMeta` followed by
+`codexAdvSessionMetadata`, alternately omitting/passing the already resolved
+native id. Its four profiler-off observations use duplicate/reuse/reuse/duplicate
+order. The wrapper always invokes the original filesystem reader and records
+successes, errors, bytes and wall spans; it supplies no cached values. All four
+owner/native-id/model/effort output hashes are identical:
+`e55b702411dac67a678e9f756ef8c1cd7caff011c4109f2e551b26e7eca315d4`.
+
+| Mode, same 4,800 paths | Diagnostics calls | Diagnostics bytes | Config calls | Config bytes |
+|---|---:|---:|---:|---:|
+| Resolve identity twice | 9,600 | 364,800 | 4,800 | 264,000 |
+| Pass the resolved identity | 4,800 | 182,400 | 4,800 | 264,000 |
+
+The source cause is the second `codexTranscriptMeta` call inside
+`codexAdvSessionMetadata` when no id override is supplied. The pre-fix
+canonical runtime regression failed with actual 9,600 versus expected 4,800
+diagnostics reads. The fix passes the existing `meta.sessionId` from both the
+sweep and `ingestFileNow`; an explicit single-file override still wins. Config
+continues to be read freshly. The unit regression rewrites model/effort between
+metadata-only calls and checks the explicit identity and new settings.
+
+Both useful and matched unchanged sweeps now assert 4,800 successful diagnostics
+reads and 4,800 config reads, with exact byte totals and zero read errors.
+Single-file metadata-only repairs, with and without an explicit id, assert one
+read of each file and zero inserted turns. Each child retains 256 turns and
+2,560 parts, verifies offsets, removes its private HOME/datadir, and verifies
+the database port refuses connections. The existing profiler off/on/on/off
+comparison remains, with filesystem counters held fixed.
+
+Canonical verification:
+
+```bash
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts packages/operator-core/lib/search/session-ingest-adv-metadata.test.ts packages/operator-core/lib/search/session-ingest-walker.test.ts packages/operator-core/lib/search/session-ingest-phases.test.ts packages/operator-core/lib/search/session-ingest.test.ts
+```
+
+Runs `r2` and `r3` each passed 58 tests in five files, zero skipped, exit 0.
+`r2` started 10:40:09Z on `28db2e820b`; its children were 4179054 and 17582.
+`r3` started 10:43:23Z on `3331de7812`. Automatic commits moved HEAD during
+both matrices, so the router explicitly marks broader dependency provenance
+**unknown**. The named files and ingestion source fingerprints stayed fixed;
+this is scoped fixture evidence, not a settled-HEAD acceptance result. A bounded
+git-sync resource-lock attempt was refused `held_exclusive`; no lock was taken
+or bypassed. Do not repeat these unchanged matrices merely to recover receipts.
+
+| Current file | SHA-256 |
+|---|---|
+| `session-ingest.ts` | `c7bb38ff15c421571116361362da12e8020b929c385894b424461297a7665af7` |
+| runtime fixture | `df457c62ac8e9fc2999972eaba57aceffb3892c9376dc3cc66295afdecdf8ee7` |
+| adv metadata test | `75554e5b06f9c45ef4178924407ac67e6cb771b951b7c0832967c65143e9dd06` |
+
+Red receipt: `/tmp/p008-metadata-red-20261001-r1.log`, SHA
+`e1080ab950bfa1b508d3d5b24ba892a3424387a1ce1755f7349078ebd6a4c712`.
+Final matrices: `/tmp/p008-metadata-matrix-20261001-r2.log`, SHA
+`f130592d89fb7058a0268d5c1c581f3578df11e79b5bfdb20ac6cc0da2a4e249`;
+`/tmp/p008-metadata-matrix-20261001-r3.log`, SHA
+`52ea8e02575b9ce576ad190f8a1f55a620dece106932fd02ba9611b4d377dbb4`.
+Scoped diff validation passed.
+
+The matched control proves a redundant-read mechanism and preserves metadata
+output. Its short process-CPU/wall observations include the observer and other
+child threads; they establish no stable overhead percentage or production
+speedup. Config's repeated per-rollout reads and their freshness/selection
+contract remain a separate possible optimization. The long shared-host sweep
+cause, app impact, adoption and sustained profiler overhead remain unproved.
+**P-008/R-8 stays open; no live acceptance binding or shipment is claimed.**

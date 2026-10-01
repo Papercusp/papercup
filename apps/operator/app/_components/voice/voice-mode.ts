@@ -1190,6 +1190,13 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     // see a startup "[voice] realtime start failed at stage=prefs" warning
     // on a cold tab; 30s leaves headroom without affecting a real hang.
     const prefs = loadVoicePrefsClient();
+    // Preserve legacy preferences, but never silently route a selected
+    // unsupported full-agent provider through local microphone capture.
+    if (prefs.fullAgentEngine === 'gemini-live') {
+      setVoiceMode('off');
+      void emitVoiceToast('error', 'Gemini Live is not supported in this release. Choose another full-agent engine or Off in /settings/voice.');
+      return true; // Handled: suppress the caller's local-STT fallback.
+    }
     // Pull idle-timeout pref so both EL and Realtime paths can use it.
     if (typeof prefs.fullAgentIdleTimeoutMin === 'number') {
       idleTimeoutMs = Math.max(0, prefs.fullAgentIdleTimeoutMin) * 60_000;

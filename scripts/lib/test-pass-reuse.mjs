@@ -154,6 +154,9 @@ const INSTALL_LIFECYCLE_SCRIPTS = new Set([
  * Can a change to this npm script change how a recorded proof's file runs? True for a task script,
  * for its `pre`/`post` hook (npm runs `pretest` and `posttest` around `npm run test`), and for an
  * install lifecycle script.
+ *
+ * @param {string} name
+ * @returns {boolean}
  */
 export function isRunnerAffectingScript(name) {
   if (INSTALL_LIFECYCLE_SCRIPTS.has(name)) return true;

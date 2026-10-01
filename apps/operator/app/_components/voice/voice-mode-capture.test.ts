@@ -483,6 +483,38 @@ describe('speak / cancelAllSpeech queue', () => {
 });
 
 describe('setVoiceMode', () => {
+  it('rejects stored Gemini Live with a clear error and no provider or local capture', async () => {
+    const toastError = vi.fn();
+    const startLocalCapture = vi.fn();
+    const startProvider = vi.fn();
+    vi.doMock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: toastError }) }));
+    vi.doMock('./energy-vad-capture', () => ({ startEnergyVadCapture: startLocalCapture }));
+    vi.doMock('./operator-voice-runtime', () => ({ startDesktopOperatorVoice: startProvider }));
+    try {
+      const prefs = await import('./voice-prefs-client');
+      prefs.setVoicePrefsClient({
+        ...prefs.loadVoicePrefsClient(),
+        fullAgentEngine: 'gemini-live',
+        sttEngine: 'webspeech',
+        voicePrivacyMode: 'wake-word-gated',
+      });
+      const mod = await loadVoiceMode();
+      mod.setVoiceMode('always-on');
+      await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith(
+        expect.stringContaining('Gemini Live is not supported'), expect.anything(),
+      ));
+      expect(mod.getVoiceState()).toMatchObject({ mode: 'off', status: 'off', micOwnedByFullAgent: false });
+      expect(prefs.loadVoicePrefsClient().fullAgentEngine).toBe('gemini-live');
+      expect(startProvider).not.toHaveBeenCalled();
+      expect(startLocalCapture).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('sonner');
+      vi.doUnmock('./energy-vad-capture');
+      vi.doUnmock('./operator-voice-runtime');
+    }
+  });
+
   it('off clears mode + status', async () => {
     const mod = await loadVoiceMode();
     mod.setVoiceMode('always-on');

@@ -86,6 +86,47 @@ describe('activation audit accumulated source coverage', () => {
       ]);
     }
   });
+
+  const removedBarMapping = (): ActivationAuditPayload => {
+    const previous = payload(1);
+    previous.mappings = [{
+      id: 'M-004', sourceRefs: ['session_turn:codex:carry-0:1'],
+      requirement: 'Lessons enter candidate review', planTargets: ['R-4', 'P-008'],
+      disposition: 'covered',
+    }];
+    return previous;
+  };
+
+  it('retires a target the current plan no longer contains and records the retirement', () => {
+    const previous = removedBarMapping();
+    const incoming = payload(0);
+    incoming.mappings = [{ ...previous.mappings[0], planTargets: ['P-008', 'D-043'], disposition: 'rejected' }];
+    const merged = mergeActivationAuditCoverage(previous, incoming, {
+      deadTargets: [{ mappingId: 'M-004', target: 'R-4' }],
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.retiredTargets).toEqual([{ mappingId: 'M-004', target: 'R-4' }]);
+    expect(merged.activation.mappings[0]).toMatchObject({ disposition: 'rejected', planTargets: ['P-008', 'D-043'] });
+    expect(merged.activation.rejectedOrSuperseded).toContain(
+      'M-004 target R-4 retired: absent from the current plan revision');
+  });
+
+  it('still refuses dropping a live target, even beside a dead one or a dead target of another mapping', () => {
+    const previous = removedBarMapping();
+    const incoming = payload(0);
+    incoming.mappings = [{ ...previous.mappings[0], planTargets: ['D-043'], disposition: 'rejected' }];
+    const merged = mergeActivationAuditCoverage(previous, incoming, {
+      deadTargets: [{ mappingId: 'M-004', target: 'R-4' }, { mappingId: 'M-009', target: 'P-008' }],
+    });
+    expect(merged.ok).toBe(false);
+    if (!merged.ok) {
+      expect(merged.conflicts).toEqual([{
+        mappingId: 'M-004', code: 'mapping_targets_dropped', detail: 'M-004 drops prior plan target(s): P-008',
+      }]);
+    }
+    expect(mergeActivationAuditCoverage(previous, incoming).ok).toBe(false);
+  });
 });
 
 let workspaceRoot: string;

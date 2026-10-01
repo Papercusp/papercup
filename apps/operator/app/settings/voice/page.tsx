@@ -50,7 +50,6 @@ const FULL_AGENT_KEY: Record<string, {
   helpUrl: string;
 }> = {
   'openai-realtime':           { service: 'openai',     field: 'openaiApiKey',     label: 'OpenAI',    placeholder: 'sk-…',  helpUrl: 'https://platform.openai.com/api-keys' },
-  'gemini-live':               { service: 'google',     field: 'googleApiKey',     label: 'Google AI', placeholder: 'AIza…', helpUrl: 'https://aistudio.google.com/app/apikey' },
   'elevenlabs-conv':           { service: 'elevenlabs', field: 'elevenlabsApiKey', label: 'ElevenLabs', placeholder: 'sk_…', helpUrl: 'https://elevenlabs.io/app/settings/api-keys' },
   // Legacy alias for 'elevenlabs-conv' — kept so a stored value still resolves,
   // but deliberately NOT offered in the engine picker's option list.
@@ -376,7 +375,9 @@ export default function VoiceSettingsPage() {
                 <label style={lbl}>Full-agent engine</label>
                 <Select
                   value={fullAgentVal}
-                  onChange={(v) => savePrefsPatch({ fullAgentEngine: v as VoicePrefs['fullAgentEngine'] })}
+                  onChange={(v) => {
+                    if (v !== 'gemini-live') void savePrefsPatch({ fullAgentEngine: v as VoicePrefs['fullAgentEngine'] });
+                  }}
                   ariaLabel="Full-agent engine"
                   disabled={savingPrefs}
                   triggerStyle={sel as React.CSSProperties}
@@ -388,7 +389,8 @@ export default function VoiceSettingsPage() {
                     },
                     {
                       value: 'gemini-live',
-                      label: `Google Gemini Live (multimodal)${!allCreds?.google?.configured ? ' — needs Google AI key' : ''}`,
+                      label: 'Google Gemini Live — not supported in this release',
+                      disabled: true,
                     },
                     {
                       value: 'elevenlabs-conv',
@@ -407,6 +409,12 @@ export default function VoiceSettingsPage() {
                   Recommended: ElevenLabs Conv AI with Claude Haiku underneath — best voice quality,
                   delegates complex tasks to Claude. OpenAI Realtime is a working fallback.
                 </p>
+                {fullAgentVal === 'gemini-live' && (
+                  <p role="alert" style={hint}>
+                    Gemini Live is not supported in this release. Choose ElevenLabs, OpenAI Realtime,
+                    or Off to use the STT + TTS pair. Your saved engine preference has been kept.
+                  </p>
+                )}
               </div>
 
               {/* ── CLOUD API KEYS POINTER ────────────────────────────────

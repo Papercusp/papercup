@@ -240,11 +240,29 @@ export interface ActivationAuditCoverageConflict {
   detail: string;
 }
 
+/** A prior mapping target the CURRENT plan revision no longer contains. */
+export interface DeadActivationTarget {
+  mappingId: string;
+  target: string;
+}
+
+export interface MergeActivationAuditCoverageOptions {
+  /**
+   * Prior targets that fail {@link validateActivationAuditPlanTargets} against the current
+   * plan revision because their destination is gone (e.g. an acceptance bar removed by a
+   * rubric amendment). Dropping one shrinks no coverage, and keeping one can never pass
+   * target validation — so without this the mapping could not be re-audited at all, not even
+   * to correct its disposition. Every retirement is recorded in rejectedOrSuperseded.
+   */
+  deadTargets?: readonly DeadActivationTarget[];
+}
+
 export type MergeActivationAuditCoverageResult =
   | {
       ok: true;
       activation: ActivationAuditPayload;
       carriedMappingIds: string[];
+      retiredTargets: DeadActivationTarget[];
     }
   | {
       ok: false;
@@ -265,20 +283,25 @@ export type MergeActivationAuditCoverageResult =
  * prior coverage. Omitted ids are carried mechanically, just like unchanged
  * completion-audit entries. Intentional supersession stays explicit: keep the
  * mapping, change its disposition/targets additively, and describe the ruling in
- * rejectedOrSuperseded.
+ * rejectedOrSuperseded. The one target a re-audit may drop is a dead one (see
+ * {@link MergeActivationAuditCoverageOptions.deadTargets}).
  */
 export function mergeActivationAuditCoverage(
   previous: ActivationAuditPayload | null | undefined,
   submitted: ActivationAuditPayload,
+  options: MergeActivationAuditCoverageOptions = {},
 ): MergeActivationAuditCoverageResult {
   if (!previous) {
-    return { ok: true, activation: submitted, carriedMappingIds: [] };
+    return { ok: true, activation: submitted, carriedMappingIds: [], retiredTargets: [] };
   }
 
   const conflicts: ActivationAuditCoverageConflict[] = [];
   const submittedById = new Map(submitted.mappings.map((mapping) => [mapping.id, mapping]));
   const carriedMappingIds: string[] = [];
   const mappings: ActivationAuditMapping[] = [];
+  const deadKey = (mappingId: string, target: string) => `${mappingId}\u0000${target}`;
+  const dead = new Set((options.deadTargets ?? []).map((entry) => deadKey(entry.mappingId, entry.target)));
+  const retiredTargets: DeadActivationTarget[] = [];
 
   for (const prior of previous.mappings) {
     const next = submittedById.get(prior.id);
@@ -306,7 +329,12 @@ export function mergeActivationAuditCoverage(
       });
     }
     const nextTargets = new Set(next.planTargets);
-    const droppedTargets = prior.planTargets.filter((target) => !nextTargets.has(target));
+    const droppedTargets: string[] = [];
+    for (const target of prior.planTargets) {
+      if (nextTargets.has(target)) continue;
+      if (dead.has(deadKey(prior.id, target))) retiredTargets.push({ mappingId: prior.id, target });
+      else droppedTargets.push(target);
+    }
     if (droppedTargets.length) {
       conflicts.push({
         mappingId: prior.id,
@@ -343,14 +371,19 @@ export function mergeActivationAuditCoverage(
   }
 
   const unique = (values: readonly string[]) => [...new Set(values)];
+  const retiredRecords = retiredTargets.map(({ mappingId, target }) =>
+    `${mappingId} target ${target} retired: absent from the current plan revision`);
   return {
     ok: true,
     carriedMappingIds,
+    retiredTargets,
     activation: {
       sourceRanges: [...ranges.values()],
       mappings,
       repairedOmissions: unique([...previous.repairedOmissions, ...submitted.repairedOmissions]),
-      rejectedOrSuperseded: unique([...previous.rejectedOrSuperseded, ...submitted.rejectedOrSuperseded]),
+      rejectedOrSuperseded: unique([
+        ...previous.rejectedOrSuperseded, ...submitted.rejectedOrSuperseded, ...retiredRecords,
+      ]),
       unresolvedBlockers: unique([...previous.unresolvedBlockers, ...submitted.unresolvedBlockers]),
       ...mergeItemProvenanceDeclarations(previous.itemProvenance, submitted.itemProvenance),
     },

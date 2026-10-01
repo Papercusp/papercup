@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 932,
+  "count": 933,
   "tools": [
     {
       "name": "ablation:report",
@@ -8556,6 +8556,24 @@
         "when": "Serving or paying for a unit of a per-use Cupboard offer, after cupboard:checkout returned a microcharge preflight and the channel was funded.",
         "notWhen": "A one-time or subscription offer (cupboard:checkout alone settles those). Funding the channel itself. Reading what an org bought (cupboard:commerce-dashboards).",
         "chaining": "reserve → execute the unit → settle with actualQuantity. Reserve FIRST: settling a nonce that was never reserved is refused rather than billed, and a unit executed before reserving may turn out to be uncoverable. Reuse the SAME usageNonce across the pair; a fresh one on retry double-bills."
+      }
+    },
+    {
+      "name": "cupboard:payment-receipt",
+      "http": {
+        "path": "/api/agent-tools/cupboard/payment-receipt",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Per-payment receipts: a salted commitment to one Stripe balance transaction, proven by the hourly anchor. `issue` (balanceTransactionId), `customer` (stripeCustomerId), `verify` (receipt) against public chain data.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "A customer needs proof that one payment is in the anchored ledger, or you must check such a receipt.",
+        "notWhen": "Proving a non-payment chain link (cupboard:ledger-anchor prove).",
+        "chaining": "`issue` returns `not-yet-anchored` until the next hourly pass covers the receipt link."
       }
     },
     {

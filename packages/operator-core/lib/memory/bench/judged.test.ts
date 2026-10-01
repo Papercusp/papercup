@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { candidateSourcePartition } from './candidate-hybrid-bench';
-import { hashJson } from './measurement-manifest';
+import { hashJson, fingerprintFile } from './measurement-manifest';
 
 import { deriveRubricVersion, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import type { LlmCallFn } from '@papercusp/testing-shell/llm';
@@ -181,6 +181,55 @@ describe('blind label collection through the injected stateless transport', () =
       let calls = 0;
       const llm: LlmCallFn = async (opts) => { calls++; return f.llm(opts); };
       await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'new'), llm, targetsPerPartition: 1, reuseAuthorsFrom: original })).rejects.toThrow('invalid recovered');
+      expect(calls).toBe(0);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('reuses a completed reference-bearing donor across multiple attempts without reauthoring', async () => {
+    const f = fixture();
+    try {
+      const original = await authorOnly(f), first = path.join(f.root, 'first');
+      await collectIndependentCohort({ snapshot: f.snapshot, out: first, llm: f.llm, targetsPerPartition: 1, reuseAuthorsFrom: original });
+      const originalIds = ['memory', 'prose'].map((corpus) => JSON.parse(fs.readFileSync(path.join(first, `${corpus}-authors.json`), 'utf8')).calls.map((c: { invocationId: string }) => c.invocationId));
+      let donor = first;
+      for (const name of ['second', 'third']) {
+        const out = path.join(f.root, name); let newCalls = 0;
+        const llm: LlmCallFn = async (opts) => {
+          expect(JSON.parse(opts.messages[0].content).questions).toBeDefined();
+          newCalls++; return f.llm(opts);
+        };
+        const result = await collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1, reuseAuthorsFrom: donor });
+        expect(newCalls).toBe(4); // only independent judge passes
+        for (const [index, corpus] of ['memory', 'prose'].entries()) {
+          const authors = JSON.parse(fs.readFileSync(path.join(out, `${corpus}-authors.json`), 'utf8'));
+          expect(authors.calls.map((c: { invocationId: string }) => c.invocationId)).toEqual(originalIds[index]);
+        }
+        expect(JSON.parse(fs.readFileSync(result.labels.path, 'utf8')).memory).toHaveLength(8);
+        donor = out;
+      }
+      expect(f.calls).toBe(16);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['raw', 'identity', 'prompt', 'path', 'invocation', 'cycle'])('rejects a chained donor with altered %s before transport', async (field) => {
+    const f = fixture();
+    try {
+      const original = await authorOnly(f), middle = path.join(f.root, 'middle');
+      const pause: LlmCallFn = async () => { throw new Error('fixture pause after author recovery'); };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: middle, llm: pause, targetsPerPartition: 1, reuseAuthorsFrom: original })).rejects.toThrow('fixture pause');
+      const name = fs.readdirSync(middle).find((s) => s.startsWith('memory-author-'))!;
+      const file = path.join(middle, name), ref = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (field === 'raw') fs.appendFileSync(ref.origin.path, '\n');
+      else if (field === 'identity') fs.appendFileSync(ref.authorReuse.identity.path, '\n');
+      else if (field === 'prompt') {
+        const raw = JSON.parse(fs.readFileSync(ref.origin.path, 'utf8')); raw.messages[0].content = 'changed inner prompt';
+        fs.writeFileSync(ref.origin.path, JSON.stringify(raw)); ref.origin = await fingerprintFile(ref.origin.path);
+      } else if (field === 'path') {
+        const other = fs.readdirSync(original).find((s) => s.startsWith('memory-author-') && s !== name)!;
+        ref.origin = await fingerprintFile(path.join(original, other));
+      } else if (field === 'cycle') ref.origin = { ...ref.origin, path: file };
+      else ref.invocationId = 'invented invocation';
+      fs.writeFileSync(file, JSON.stringify(ref));
+      let calls = 0; const llm: LlmCallFn = async () => { calls++; throw new Error('unexpected new transport'); };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'next'), llm, targetsPerPartition: 1, reuseAuthorsFrom: middle })).rejects.toThrow(/invalid .*reference|invalid .*fingerprint|invalid recovered/);
       expect(calls).toBe(0);
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
