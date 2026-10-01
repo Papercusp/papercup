@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { moduleRepoRoot } from '../../module-repo-root';
 import os from 'node:os';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
@@ -127,7 +128,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
   }
   const device = process.env.PAPERCUSP_EMBED_DEVICE as 'cpu' | 'cuda';
   if (requested.device !== device) throw new Error('native boundary requested device mismatch');
-  const output = path.resolve(outputFile), repo = path.resolve(import.meta.dirname, '../../../../..');
+  const output = path.resolve(outputFile), repo = moduleRepoRoot(import.meta.url);
   const parent = fs.realpathSync(path.dirname(output));
   if (parent === repo || parent.startsWith(`${repo}${path.sep}`)) throw new Error('raw boundary output must stay private outside repository');
   const summaryPath = path.join(referenceDirectory, 'summary.json');
@@ -345,7 +346,7 @@ export async function qualifyIncumbentReferences(protocolFile: string, expectedS
   const protocol = JSON.parse(fs.readFileSync(protocolFile, 'utf8'));
   if (protocol.plan !== 'mdenseon-adoption-measurements-2026-10-01' || protocol.ownerId !== process.env.PAPERCUSP_SID) throw new Error('reference protocol owner/plan mismatch');
   if (embedRequestedExecution().device !== 'cpu') throw new Error('reference qualification requires explicit CPU; no fallback');
-  const output = path.resolve(outputFile), repo = path.resolve(import.meta.dirname, '../../../../..');
+  const output = path.resolve(outputFile), repo = moduleRepoRoot(import.meta.url);
   if (output === repo || output.startsWith(`${repo}${path.sep}`)) throw new Error('raw reference vectors must remain private outside repository');
   const identities = ['gemma', 'harrier'].map((model) => {
     const arm = protocol.modelIdentities.find((a: any) => a.model === model);
