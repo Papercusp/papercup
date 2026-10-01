@@ -326,14 +326,18 @@ const NESTED_GUARDED_HOOKS = [
 ];
 
 describe("per-turn owner-mutating hooks skip a nested CLI (WI-10004863)", () => {
-  it("each guarded hook consults pc_nested_cli.py BEFORE reading its payload", () => {
+  it("each guarded hook consults pc_nested_cli.py BEFORE its operator-facing python runs", () => {
+    // The owner-mutating work in every guarded hook is a `python3 - …` heredoc (the POST /
+    // classification). lifecycle-report.sh legitimately reads stdin first (`python3 -c`, to
+    // learn the event name) — that sends nothing, so the invariant is "guard before the
+    // reporting heredoc", not "guard before stdin".
     for (const name of NESTED_GUARDED_HOOKS) {
       const src = fs.readFileSync(join(HOOK_DIR, name), "utf8");
       const guard = src.indexOf('python3 "$(dirname "$0")/pc_nested_cli.py"');
-      const read = src.indexOf("INPUT=$(cat)");
+      const work = src.indexOf("python3 - ");
       expect(guard, `${name}: no pc_nested_cli.py guard`).toBeGreaterThan(-1);
-      expect(read, `${name}: payload read not found (instrument broken)`).toBeGreaterThan(-1);
-      expect(guard, `${name}: guard must run before the payload is read`).toBeLessThan(read);
+      expect(work, `${name}: reporting heredoc not found (instrument broken)`).toBeGreaterThan(-1);
+      expect(guard, `${name}: guard must run before the reporting heredoc`).toBeLessThan(work);
     }
   });
 
