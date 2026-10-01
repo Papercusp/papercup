@@ -33,6 +33,8 @@ const {
   reuseRunnerIdentity,
   reuseSoundnessAlarms,
   rootPackageJsonChangeIsInert,
+  scriptInvocationJudge,
+  scriptsOnlyChangedNames,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
@@ -40,6 +42,7 @@ const {
   TEST_REUSE_AUDIT_RATE_DEFAULT,
   TEST_REUSE_MAX_AGE_MS_DEFAULT,
   tsconfigUnreadByToolchain,
+  workspacePackageJsonChangeIsInert,
   writeReuseSkipList,
 } = reuseSubject;
 import {
@@ -50,10 +53,11 @@ import {
   REUSE_SKIP_LIST_SCHEMA as READER_SCHEMA,
 } from '@papercusp/test-config/test-pass-reuse-skip';
 import { EXECUTED_SOURCE_MAP_IMPORT_LIMIT as RECORDER_IMPORT_LIMIT } from '@papercusp/test-config/vitest-config';
-import { gitInertGlobalChange } from '../../../../scripts/lib/executed-source-map.mjs';
+import { gitInertGlobalChange, treeScriptCommands } from '../../../../scripts/lib/executed-source-map.mjs';
 import { LANE_SCRIPTS } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { dirname, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -466,12 +470,280 @@ describe('P-002: scripts-only root package.json changes are not global', () => {
     expect(seam('package.json', 'old', 'dep')).toBe(false);
     // A sha this clone lacks reads as "cannot tell": global.
     expect(seam('package.json', 'gone', 'new')).toBe(false);
-    // Only the root manifest and the lockfile (P-005, below) can be inert; nothing else is read.
+    // Only manifests (root here, workspace ones in the D-009 block below) and the lockfile
+    // (P-005, below) can be inert; nothing else is read.
     const before = calls.length;
     expect(seam('libs/test-config/src/vitest-config.ts', 'old', 'new')).toBe(false);
     expect(seam('patches/x.patch', 'old', 'new')).toBe(false);
-    expect(seam('packages/operator-core/package.json', 'old', 'new')).toBe(false);
+    expect(seam('packages/operator-core/tsconfig.json', 'old', 'new')).toBe(false);
     expect(calls.length).toBe(before);
+    // A workspace manifest is judged over the whole tree (D-009); this fake has no tree, so the
+    // read fails and the answer is "cannot tell".
+    expect(seam('packages/operator-core/package.json', 'old', 'new')).toBe(false);
+  });
+});
+
+/**
+ * gate-test-reuse-yield-2026-10-01 D-009 (WI-10004940): a scripts-only edit to a WORKSPACE
+ * package.json voided every proof beneath that directory through the ancestor-config rule.
+ * Measured: 2,847 of 3,757 proofs at 87d557e7 for one operator-core script edit, ~1.5 such edits
+ * a day. It is inert only when no changed name is runner-affecting and no script anywhere in the
+ * tree can invoke one.
+ */
+describe('D-009: scripts-only workspace package.json changes reach only proofs that read them', () => {
+  const ws = (scripts: Record<string, string>, over: Record<string, unknown> = {}) =>
+    JSON.stringify({ name: '@x/pkg', type: 'module', dependencies: { zod: '3.0.0' }, scripts, ...over });
+  const base = { test: 'vitest run', 'gen:docs': 'node gen.mjs', prebuild: 'node pre.mjs' };
+  const never = () => false;
+
+  it('scriptsOnlyChangedNames lists added, removed and changed names, and null for anything else', () => {
+    expect(scriptsOnlyChangedNames(ws(base), ws({ ...base, 'gen:docs': 'node gen2.mjs', 'lint:new': 'x' }))).toEqual(['gen:docs', 'lint:new']);
+    expect(scriptsOnlyChangedNames(ws(base), ws({ test: 'vitest run', prebuild: 'node pre.mjs' }))).toEqual(['gen:docs']);
+    expect(scriptsOnlyChangedNames(ws(base), ws(base))).toEqual([]);
+    expect(scriptsOnlyChangedNames(ws(base), ws(base, { dependencies: { zod: '3.0.1' } }))).toBeNull();
+    expect(scriptsOnlyChangedNames(ws(base), '{ nope')).toBeNull();
+    expect(scriptsOnlyChangedNames(ws(base), ws(base, { scripts: ['a'] }))).toBeNull();
+  });
+
+  it('is inert only for a non-runner, non-invokable scripts-only change', () => {
+    expect(workspacePackageJsonChangeIsInert(ws(base), ws({ ...base, 'gen:docs': 'node gen2.mjs' }), never)).toBe(true);
+    // A non-script field, a runner-affecting script, a parse failure: never inert.
+    expect(workspacePackageJsonChangeIsInert(ws(base), ws(base, { type: 'commonjs' }), never)).toBe(false);
+    expect(workspacePackageJsonChangeIsInert(ws(base), ws({ ...base, test: 'vitest run --bail' }), never)).toBe(false);
+    expect(workspacePackageJsonChangeIsInert(ws(base), ws({ ...base, 'pretest:lane-pure': 'x' }), never)).toBe(false);
+    expect(workspacePackageJsonChangeIsInert(ws(base), '{ nope', never)).toBe(false);
+    // Invokable: the judge must answer exactly false; true, a non-boolean or a throw keep it a config change.
+    const changed = ws({ ...base, 'gen:docs': 'node gen2.mjs' });
+    expect(workspacePackageJsonChangeIsInert(ws(base), changed, (n) => n === 'gen:docs')).toBe(false);
+    expect(workspacePackageJsonChangeIsInert(ws(base), changed, () => undefined as unknown as boolean)).toBe(false);
+    expect(
+      workspacePackageJsonChangeIsInert(ws(base), changed, () => {
+        throw new Error('tree unreadable');
+      }),
+    ).toBe(false);
+  });
+
+  it('treats a pre/post hook as invoked whenever the script it wraps is', () => {
+    // npm runs `prebuild` around every `npm run build`.
+    const edited = ws({ ...base, prebuild: 'node pre2.mjs' });
+    expect(workspacePackageJsonChangeIsInert(ws(base), edited, (n) => n === 'build')).toBe(false);
+    expect(workspacePackageJsonChangeIsInert(ws(base), edited, never)).toBe(true);
+    const post = ws({ ...base, 'postgen:docs': 'node after.mjs' });
+    expect(workspacePackageJsonChangeIsInert(ws(base), post, (n) => n === 'gen:docs')).toBe(false);
+  });
+
+  it('scriptInvocationJudge finds sibling, cross-package and pattern invocations', () => {
+    const judge = scriptInvocationJudge([
+      // papercusp-desktop's shape: a task script that runs its siblings.
+      { rel: 'desk/package.json', name: 'test', command: 'npm run test:config && npm run test:shell' },
+      { rel: 'desk/package.json', name: 'test:config', command: 'node --test config.test.js' },
+      // A root script reaching into a workspace.
+      { rel: 'package.json', name: 'docs', command: 'npm run build:docs --workspace apps/docs' },
+      // A script whose own command mentions its own name is not an invocation of itself.
+      { rel: 'pkg/package.json', name: 'gen:x', command: 'node gen-x.mjs gen:x' },
+    ]);
+    expect(judge('test:config', 'desk/package.json')).toBe(true);
+    expect(judge('build:docs', 'apps/docs/package.json')).toBe(true);
+    expect(judge('gen:x', 'pkg/package.json')).toBe(false);
+    // ...but the same name spelled in ANOTHER package's command is (substring, over-approximate).
+    expect(judge('gen:x', 'other/package.json')).toBe(true);
+    expect(judge('test:con', 'x/package.json')).toBe(true);
+    expect(judge('lint:never-mentioned', 'pkg/package.json')).toBe(false);
+    for (const command of ["run-s 'lint:*'", 'npm-run-all --parallel gen:*', 'concurrently "npm:watch-*"']) {
+      const patterned = scriptInvocationJudge([{ rel: 'package.json', name: 'all', command }]);
+      expect(patterned('lint:never-mentioned', 'pkg/package.json'), command).toBe(true);
+    }
+    // A plain glob in a non-runner command is not a pattern run.
+    expect(scriptInvocationJudge([{ rel: 'p/package.json', name: 'fmt', command: 'prettier "src/**/*.ts"' }])('gen:y', 'q/package.json')).toBe(false);
+  });
+
+  function runWith(
+    drift: Set<string>,
+    inertGlobalChange: ((rel: string, from: string, to: string) => boolean) | null,
+    p: Proof = proof(T),
+    file = T,
+  ) {
+    return selectReusablePasses({
+      candidates: [file],
+      proofs: new Map([[file, p]]),
+      judgedSha: 'new',
+      changedBetween: () => drift,
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+      inertGlobalChange,
+    });
+  }
+
+  it('reuses a proof beneath an inert workspace manifest and counts it as inertWorkspaceConfig', () => {
+    const asked: string[] = [];
+    const seam = (rel: string, from: string, to: string) => {
+      asked.push(`${rel}@${from}..${to}`);
+      return true;
+    };
+    const r = runWith(new Set(['pkg/package.json', 'pkg/src/unrelated.ts', 'docs/readme.md']), seam);
+    expect(r.skip).toEqual([T]);
+    expect(r.summary).toMatchObject({ reused: 1, inputChanged: 0, globalInput: 0, inertWorkspaceConfig: 1, inertGlobal: 0 });
+    // Only manifests are put to the seam; other non-global paths never are.
+    expect(asked).toEqual(['pkg/package.json@old..new']);
+  });
+
+  it('still invalidates through the ancestor rule when the seam says no, and a proof that read the manifest', () => {
+    for (const seam of [() => false, null, () => { throw new Error('x'); }]) {
+      const r = runWith(new Set(['pkg/package.json']), seam);
+      expect(r.skip).toEqual([]);
+      expect(r.summary).toMatchObject({ inputChanged: 1, inertWorkspaceConfig: 0 });
+    }
+    const reader = proof(T, { readPaths: ['pkg/package.json'] });
+    const r = runWith(new Set(['pkg/package.json']), () => true, reader);
+    expect(r.skip).toEqual([]);
+    expect(r.summary).toMatchObject({ inputChanged: 1, inertWorkspaceConfig: 0 });
+  });
+
+  it('counts only proofs the manifest would have reached, and keeps the root counter separate', () => {
+    const elsewhere = 'other/x.test.ts';
+    const r = runWith(new Set(['pkg/package.json']), () => true, proof(elsewhere, { executedModules: [elsewhere], readPaths: [] }), elsewhere);
+    expect(r.skip).toEqual([elsewhere]);
+    expect(r.summary).toMatchObject({ reused: 1, inertWorkspaceConfig: 0, inertGlobal: 0 });
+    const both = runWith(new Set(['package.json', 'pkg/package.json']), () => true);
+    expect(both.summary).toMatchObject({ reused: 1, inertGlobal: 1, inertWorkspaceConfig: 1 });
+  });
+
+  // A fake git over named trees: `${repoDir}@${sha}` -> path -> manifest text or a gitlink.
+  type TreeSpec = Record<string, string | { gitlink: string }>;
+  function fakeGit(repos: Record<string, TreeSpec>) {
+    const blobs = new Map<string, string>();
+    const calls: string[] = [];
+    const oidOf = (text: string) => {
+      const oid = createHash('sha1').update(text).digest('hex');
+      blobs.set(oid, text);
+      return oid;
+    };
+    const exec = (_file: string, args: string[], opts: object) => {
+      const { cwd, input } = opts as { cwd: string; input?: Buffer };
+      calls.push(`${cwd} ${args[0]}`);
+      if (args[0] === 'ls-tree') {
+        const spec = repos[`${cwd}@${args.at(-1)}`];
+        if (!spec) throw new Error(`fatal: not a tree object: ${args.at(-1)}`);
+        return (
+          Object.entries(spec)
+            .map(([p, v]) => (typeof v === 'string' ? `100644 blob ${oidOf(v)}\t${p}` : `160000 commit ${v.gitlink}\t${p}`))
+            .join('\0') + '\0'
+        );
+      }
+      if (args[0] === 'cat-file') {
+        const parts = String(input).trim().split('\n').map((oid) => {
+          const text = Buffer.from(blobs.get(oid) ?? '');
+          return Buffer.concat([Buffer.from(`${oid} blob ${text.length}\n`), text, Buffer.from('\n')]);
+        });
+        return Buffer.concat(parts) as unknown as string;
+      }
+      throw new Error(`unexpected git ${args.join(' ')}`);
+    };
+    return { exec, calls };
+  }
+
+  const SUB_OLD = 'a1'.repeat(20);
+  const SUB_NEW = 'b2'.repeat(20);
+  // Multibyte text checks that cat-file's byte sizes are honoured.
+  const root = (scripts: Record<string, string> = {}) => JSON.stringify({ name: 'root', description: 'naïve — ✓', scripts });
+  const repos: Record<string, TreeSpec> = {
+    '/repo@old': { 'package.json': root(), 'pkg/package.json': ws(base), 'pkg/src/a.ts': 'x', 'libs/sub': { gitlink: SUB_OLD } },
+    '/repo@new': {
+      'package.json': root(),
+      'pkg/package.json': ws({ ...base, 'gen:docs': 'node gen2.mjs' }),
+      'libs/sub': { gitlink: SUB_NEW },
+    },
+    // At new2 the root starts invoking the changed script.
+    '/repo@new2': {
+      'package.json': root({ docs: 'npm run gen:docs --workspace pkg' }),
+      'pkg/package.json': ws({ ...base, 'gen:docs': 'node gen2.mjs' }),
+      'libs/sub': { gitlink: SUB_NEW },
+    },
+    '/repo@broken': { 'package.json': root(), 'pkg/package.json': ws(base), 'fixtures/package.json': '{ nope' },
+    '/repo@lostsub': { 'package.json': root(), 'pkg/package.json': ws(base), 'libs/sub': { gitlink: 'c3'.repeat(20) } },
+    [`/repo/libs/sub@${SUB_OLD}`]: { 'package.json': root(), 'x/package.json': ws({ 'lint:y': 'eslint .' }) },
+    [`/repo/libs/sub@${SUB_NEW}`]: { 'package.json': root(), 'x/package.json': ws({ 'lint:y': 'eslint src' }) },
+  };
+
+  it('treeScriptCommands reads every manifest, submodules at their pinned commit, and fails closed', () => {
+    const { exec } = fakeGit(repos);
+    const tree = treeScriptCommands({ exec, repoRoot: '/repo', sha: 'old' });
+    expect([...tree.texts.keys()].sort()).toEqual(['libs/sub/package.json', 'libs/sub/x/package.json', 'package.json', 'pkg/package.json']);
+    expect(tree.texts.get('package.json')).toBe(root());
+    expect(tree.commands).toContainEqual({ rel: 'libs/sub/x/package.json', name: 'lint:y', command: 'eslint .' });
+    expect(() => treeScriptCommands({ exec, repoRoot: '/repo', sha: 'broken' })).toThrow();
+    expect(() => treeScriptCommands({ exec, repoRoot: '/repo', sha: 'lostsub' })).toThrow();
+  });
+
+  it('gitInertGlobalChange judges workspace manifests against the tree at both shas, once per sha', () => {
+    const { exec, calls } = fakeGit(repos);
+    const seam = gitInertGlobalChange({ repoRoot: '/repo', exec });
+    expect(seam('pkg/package.json', 'old', 'new')).toBe(true);
+    // A manifest inside a submodule is read at the commit each side pins.
+    expect(seam('libs/sub/x/package.json', 'old', 'new')).toBe(true);
+    // Each tree is listed once per repository, however many paths are judged.
+    expect(calls.filter((c) => c.endsWith('ls-tree')).sort()).toEqual(['/repo ls-tree', '/repo ls-tree', '/repo/libs/sub ls-tree', '/repo/libs/sub ls-tree']);
+    // Invoked by a script at EITHER side: not inert.
+    expect(seam('pkg/package.json', 'old', 'new2')).toBe(false);
+    expect(seam('pkg/package.json', 'new2', 'old')).toBe(false);
+    // The manifest is identical at new2 and new: nothing changed, so nothing to reach.
+    expect(seam('pkg/package.json', 'new2', 'new')).toBe(true);
+    // Any unreadable side fails closed.
+    expect(seam('pkg/package.json', 'broken', 'new')).toBe(false);
+    expect(seam('pkg/package.json', 'lostsub', 'new')).toBe(false);
+    expect(seam('pkg/package.json', 'gone', 'new')).toBe(false);
+    expect(seam('missing/package.json', 'old', 'new')).toBe(false);
+  });
+
+  // D-009 rule 3 reads package.json COMMANDS only. That is sound only while no task script (the
+  // only scripts whose tests are reused) runs a FILE that itself runs npm scripts: such a file
+  // could reach a changed name the commands never spell. Measured 2026-10-01: 27 files referenced
+  // by 135 runner-affecting scripts; the ones mentioning an npm-script run are listed here, each
+  // with why it is not an invocation the rule misses. A new one must be taught to
+  // scriptInvocationJudge (or shown harmless here), not silently added.
+  it('no task script reaches npm scripts through a file it runs, beyond the known ones', () => {
+    const KNOWN: Record<string, string> = {
+      'scripts/affected-tests.mjs':
+        'the gate runner: runs task scripts by literal name (pinned runner-affecting above) and repo-wide guards, which are never reused (unitTasks = test + lane scripts)',
+      'scripts/pc-heavy.sh': 'mentions npm run only in help text it echoes',
+      'scripts/guard-shared-tree-install.mjs': 'mentions npm run only in its refusal message',
+      'scripts/install-onnxruntime-node.mjs': 'mentions npm run only in an error message',
+    };
+    const repo = realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
+    const manifests = execFileSync('git', ['ls-files', '--recurse-submodules', '-z'], { cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28 })
+      .split('\0')
+      .filter((f) => f.endsWith('package.json') && /(?:^|\/)package\.json$/.test(f) && !f.includes('node_modules/'));
+    const INVOKE_RE = /\bnpm\s+(?:run|run-script|test|t|start|restart|stop)\b|\bnpm-run-all2?\b|\brun-[sp]\b|\bconcurrently\b|\bnpm:|\bpnpm\b|\byarn\b|\blerna\s+run\b|\bturbo\s+run\b/;
+    const reaching = new Set<string>();
+    let filesChecked = 0;
+    for (const m of manifests) {
+      const abs = join(repo, m);
+      if (!existsSync(abs)) continue;
+      let scripts: Record<string, unknown> = {};
+      try {
+        scripts = (JSON.parse(readFileSync(abs, 'utf8')) as { scripts?: Record<string, unknown> }).scripts ?? {};
+      } catch {
+        continue; // a fixture; treeScriptCommands fails closed on it in the gate
+      }
+      for (const [name, command] of Object.entries(scripts)) {
+        if (!isRunnerAffectingScript(name)) continue;
+        for (const token of String(command).split(/[\s;&|()'"=]+/)) {
+          if (!/\.(?:sh|bash|mjs|cjs|js|ts|mts|cts|py)$/.test(token)) continue;
+          const file = join(dirname(abs), token);
+          if (!existsSync(file) || !statSync(file).isFile()) continue;
+          filesChecked += 1;
+          const live = readFileSync(file, 'utf8').split('\n').filter((l) => !/^\s*(?:\/\/|#|\*)/.test(l));
+          if (live.some((l) => INVOKE_RE.test(l))) reaching.add(relative(repo, file).split(sep).join('/'));
+        }
+      }
+    }
+    // Positive control: the scan must see the runner itself, or it is checking nothing.
+    expect(filesChecked).toBeGreaterThan(5);
+    expect(reaching).toContain('scripts/affected-tests.mjs');
+    const unknown = [...reaching].filter((f) => !(f in KNOWN));
+    expect(unknown, `teach scriptInvocationJudge about these files: ${unknown.join(', ')}`).toEqual([]);
   });
 });
 
@@ -759,7 +1031,11 @@ describe('env toggles and the report line', () => {
     const r = run([T], new Map([[T, proof(T)]]), new Set());
     const line = formatTestReuseLine('@papercusp/x', r.summary);
     expect(line).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
-    expect(line).toMatch(/ audited=0 expiredClean=0 inertGlobal=0 testConfigNarrowed=0 tsconfigNarrowed=0$/);
+    expect(line).toMatch(
+      / audited=0 expiredClean=0 inertGlobal=0 testConfigNarrowed=0 tsconfigNarrowed=0 inertWorkspaceConfig=0 schemaNarrowed=0$/,
+    );
+    // D-009: the workspace-manifest narrowing is visible in the gate log, not only in the summary object.
+    expect(formatTestReuseLine('@papercusp/x', { ...r.summary, inertWorkspaceConfig: 3 })).toMatch(/ inertWorkspaceConfig=3 /);
   });
 
   it('reads the P-012 audit rate: 5% by default, clamped to [0,1], garbage falls back', () => {

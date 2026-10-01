@@ -780,6 +780,66 @@ async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdic
  * `gate-tooling-crash` so a reader can tell it from an ordinary cancel/timeout.
  * Only call this for a non-zero exit with NO result marker. Best-effort: never changes recording.
  */
+export interface ManualCheckpointCrashSweepDeps {
+  /** The stable `/tmp/<unit>.log` symlink → the newest manual run's own log. */
+  resolveLog?: (stablePath: string) => Promise<string | null>;
+  readLog?: (logPath: string) => Promise<string | null>;
+  /** Atomic create-if-absent of the per-run sentinel; false when it already existed. */
+  claimSentinel?: (sentinelPath: string) => Promise<boolean>;
+  emit?: typeof emitAwaitedEvent;
+}
+
+export type ManualCheckpointCrashSweepResult =
+  | { status: 'no-log' | 'no-terminal-evidence' | 'not-a-tooling-crash' | 'already-alarmed'; logPath: string | null }
+  | { status: 'alarmed'; logPath: string };
+
+/**
+ * WI-10004928 part 1, manual leg: a `release:checkpoint-run` suite runs as a transient systemd
+ * unit, not under the routine, so `reconcileLoadedScheduledCheckpointTerminal` never sees it.
+ * The unit's ExecStopPost (systemd-owned, so it survives the crash) appends the terminal tuple to
+ * the run's own log. A LOAD-TIME crash is that tuple abnormal, with no result marker AND no
+ * candidate line (the CLI dies before it resolves a candidate). A suite that was killed, timed
+ * out, or replaced resolved a candidate first, so it is deliberately not called a tooling crash.
+ * The sentinel `<log>.tooling-crash-alarmed` makes the sweep idempotent per run.
+ */
+export async function sweepManualCheckpointToolingCrash(
+  root: string,
+  deps: ManualCheckpointCrashSweepDeps = {},
+): Promise<ManualCheckpointCrashSweepResult> {
+  const launch = await import('../../release-checkpoint-launch');
+  const stable = launch.checkpointLatestLogPath(launch.checkpointUnitForRoot(root));
+  const { realpath, writeFile } = await import('node:fs/promises');
+  const resolveLog = deps.resolveLog ?? ((p: string) => realpath(p).catch(() => null));
+  const readLog = deps.readLog ?? (async (p: string) => launch.defaultReadLogTail(p));
+  const claimSentinel =
+    deps.claimSentinel ??
+    ((p: string) =>
+      writeFile(p, `${new Date().toISOString()}\n`, { flag: 'wx' }).then(
+        () => true,
+        () => false,
+      ));
+  const logPath = await resolveLog(stable);
+  if (!logPath) return { status: 'no-log', logPath: null };
+  const log = await readLog(logPath);
+  if (log == null) return { status: 'no-log', logPath };
+  const evidence = launch.parseCheckpointSystemdTerminalEvidence(log);
+  if (!evidence) return { status: 'no-terminal-evidence', logPath };
+  const hasResult = log
+    .split(/\r?\n/)
+    .some((line) => line.trim().startsWith(`${GREEN_CHECKPOINT_RESULT_MARKER} `));
+  if (!evidence.abnormal || hasResult || evidence.candidate !== null) {
+    return { status: 'not-a-tooling-crash', logPath };
+  }
+  if (!(await claimSentinel(`${logPath}.tooling-crash-alarmed`))) return { status: 'already-alarmed', logPath };
+  const exitCode = /^\d+$/.test(evidence.exit_status) ? Number(evidence.exit_status) : null;
+  await emitGateToolingCrashEvent(
+    root,
+    { exitCode, runId: path.basename(logPath), logPath, tail: log.slice(-2000) },
+    deps.emit ?? emitAwaitedEvent,
+  );
+  return { status: 'alarmed', logPath };
+}
+
 export async function emitGateToolingCrashEvent(
   root: string,
   info: { exitCode: number | null; runId: string | null; logPath: string | null; tail: string | null },
@@ -2292,6 +2352,17 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   ).length;
   if (recoveredCount > 0) {
     console.log(`${orchestratorStdoutTag()} reconciled ${recoveredCount} scheduled checkpoint terminal marker(s)`);
+  }
+  // WI-10004928: the same reconciliation for a MANUAL (release:checkpoint-run) unit that died at
+  // load — its only terminal evidence is the systemd ExecStopPost tuple in its own log.
+  const manualCrash = await sweepManualCheckpointToolingCrash(integrationRoot()).catch((error) => {
+    console.warn(
+      `${orchestratorStdoutTag()} manual checkpoint crash sweep failed: ${error instanceof Error ? error.message : error}`,
+    );
+    return null;
+  });
+  if (manualCrash?.status === 'alarmed') {
+    console.log(`${orchestratorStdoutTag()} gate-tooling-crash alarm emitted for manual run ${manualCrash.logPath}`);
   }
   // per-hive-git-and-release-gate P-010: route a per-hive routine to ITS OWN checkout /
   // branches / greenCmd. Operator-home (papercusp) → default root + empty overlay = EXACT

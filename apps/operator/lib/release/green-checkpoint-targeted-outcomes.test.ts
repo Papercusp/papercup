@@ -50,6 +50,37 @@ describe("targeted gate outcome evidence", () => {
     });
   });
 
+  it("treats a registered non-gating NOT CHECKED leg as coverage-neutral, an unregistered exit 2 as fail (WI-10004928 / D-129)", async () => {
+    // Exit 2 = EXIT_NOT_CHECKED. Only the registered diff-vs-HEAD detector is forgiven;
+    // it examines nothing in the gate's clean checkout at EVERY head, so counting it as
+    // missing coverage blocked every repair-round selectiveCoverage receipt.
+    const run = vi.fn(async (script: string) => ({
+      code: script === "lint:vimock-export-strands" || script === "lint:unregistered" ? 2 : 0,
+    }));
+    const result = await measureTargetedGateRuns(
+      ["lint:vimock-export-strands", "lint:unregistered", "lint:after"],
+      run,
+    );
+    expect(result).toMatchObject({
+      pass: false,
+      coverageComplete: true,
+      perGate: [
+        { id: "lint:vimock-export-strands", status: "not-checked" },
+        { id: "lint:unregistered", status: "fail" },
+        { id: "lint:after", status: "pass" },
+      ],
+    });
+    // A not-checked leg beside an ERRORED one still leaves the measurement incomplete.
+    const errored = await measureTargetedGateRuns(
+      ["lint:vimock-export-strands", "lint:throws"],
+      vi.fn(async (script: string) => {
+        if (script === "lint:throws") throw new Error("spawn failed");
+        return { code: 2 };
+      }),
+    );
+    expect(errored.coverageComplete).toBe(false);
+  });
+
   it("names WHY a leg errored in the summary instead of a bare ERRORED (WI-10003211)", async () => {
     const run = vi.fn(async (script: string) => {
       if (script === "lint:throws") {

@@ -108,6 +108,8 @@ export interface RunSnapshot {
   kind: 'vitest' | 'playwright' | 'cargo' | 'node' | 'shell' | 'admin-suite';
   label: string;
   filePath?: string;
+  /** Exact per-file request manifest for detached Vitest recovery. */
+  requestedFiles?: string[];
   command: string[];
   status: RunStatus;
   exitCode: number | null;
@@ -131,6 +133,7 @@ interface RunState {
   proc: ChildProcess | null;
   cwd: string;
   worktreeBefore: WorktreeGitSnapshot;
+  finalization: Promise<void> | null;
 }
 
 const _runs = new Map<string, RunState>();
@@ -237,6 +240,25 @@ function commandFromRow(value: unknown): string[] | null {
   }
 }
 
+function requestedFilesFromValue(value: unknown): string[] | null {
+  let candidate = value;
+  if (typeof candidate === 'string') {
+    try { candidate = JSON.parse(candidate); } catch { return null; }
+  }
+  if (!Array.isArray(candidate) || candidate.length === 0
+    || !candidate.every((entry) => typeof entry === 'string' && entry.length > 0)) return null;
+  return [...candidate];
+}
+
+function requestedFilesFromTaskDetail(value: unknown): string[] | null {
+  let detail = value;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch { return null; }
+  }
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  return requestedFilesFromValue((detail as { requestedFiles?: unknown }).requestedFiles);
+}
+
 function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
   const startedAt = epochMs(row.started_at);
   const command = commandFromRow(row.command);
@@ -247,6 +269,9 @@ function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
     kind: row.kind,
     label: row.label,
     ...(row.file_path === null ? {} : { filePath: row.file_path }),
+    ...(requestedFilesFromTaskDetail(row.task_detail) === null
+      ? {}
+      : { requestedFiles: requestedFilesFromTaskDetail(row.task_detail)! }),
     command,
     status: row.status,
     exitCode: row.exit_code,
@@ -532,9 +557,21 @@ export interface DetachedRunLedgerRecovery {
 
 const MAX_DETACHED_RUN_LEDGER_FILES = 200;
 
+function hasExactPassedFileCoverage(
+  requestedFiles: string[] | null,
+  files: DetachedRunLedgerRecovery['files'],
+): boolean {
+  if (!requestedFiles || requestedFiles.length === 0
+    || new Set(requestedFiles).size !== requestedFiles.length
+    || files.length !== requestedFiles.length) return false;
+  const outcomes = new Map(files.map((file) => [file.filePath, file.status]));
+  return requestedFiles.every((filePath) => outcomes.get(filePath) === 'pass');
+}
+
 interface PersistedDetachedTaskRow {
   state: string;
   exit_code: number | null;
+  requested_files?: unknown;
 }
 
 type DetachedTaskLedgerLookup =
@@ -548,7 +585,7 @@ async function readPersistedDetachedTask(
   let query: PromiseLike<unknown>;
   try {
     query = sql`
-      SELECT state, exit_code
+      SELECT state, exit_code, detail->'requestedFiles' AS requested_files
         FROM harness_shared.task_ledger
        WHERE detail->>'runId' = ${runId}
          AND class = 'test-run'
@@ -668,6 +705,8 @@ export async function getTestRunLedgerRecoveryAsync(
   const rows = await readPersistedTestRunLedgerRows(runId, sql);
   if (!rows) return null;
   const recovery = deriveDetachedRunLedgerRecovery(runId, rows);
+  if (recovery?.status === 'pass'
+    && !hasExactPassedFileCoverage(requestedFilesFromValue(task?.requested_files), recovery.files)) return null;
   return recovery && taskAllowsDetachedLedgerRecovery(task, taskLinked, recovery.status) ? recovery : null;
 }
 
@@ -694,6 +733,11 @@ async function reconcilePersistedTestRun(
   if (!rows) return snapshot;
   const recovery = deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
   if (!recovery || !taskAllowsDetachedLedgerRecovery(task, taskLinked, recovery.status)) return snapshot;
+  if (recovery.status === 'pass'
+    && !hasExactPassedFileCoverage(
+      requestedFilesFromValue(task?.requested_files) ?? requestedFilesFromValue(snapshot.requestedFiles),
+      recovery.files,
+    )) return snapshot;
 
   const { status, exitCode, finishedAt } = recovery;
   const ledgerOutput = rows

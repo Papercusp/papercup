@@ -47,6 +47,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { join, dirname, delimiter, basename, relative } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from "@papercusp/operator-core/lib/agent-kickoff/prompt-transport.mjs";
 
 /** Keep the packaged adapter relocatable while preserving source-checkout development. */
 export function resolveNativeMcpAssets(moduleUrl = import.meta.url, available = existsSync) {
@@ -2346,7 +2347,8 @@ export function kickoffPositionalArgs(res, args) {
  * quotes included). Pure — exported for tests.
  */
 export function resolveKickoffText(args, env = process.env) {
-  return args?.kickoffPromptText || env?.PAPERCUSP_KICKOFF_PROMPT || null;
+  return args?.kickoffPromptText || env?.PAPERCUSP_KICKOFF_PROMPT ||
+    consumeKickoffPromptFile(env?.[KICKOFF_PROMPT_FILE_ENV]) || null;
 }
 
 /**

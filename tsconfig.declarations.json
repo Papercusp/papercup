@@ -102,6 +102,9 @@
     // (D-004). Registered for the same reason as executed-source-map.mjs above: imported
     // directly by test-pass-reuse.test.ts.
     "scripts/lib/test-pass-reuse.mjs",
+    // gate-test-reuse-yield-2026-10-01 P-007 (D-010) — per-table generated-schema drift. Imported
+    // by test-pass-reuse.mjs and directly by schema-symbol-drift.test.ts.
+    "scripts/lib/schema-symbol-drift.mjs",
     // EI-24538088938561684 — pass reuse + proof recording for the gate's targeted task re-runs.
     // Imported by apps/operator/lib/release/green-checkpoint.ts (runGateAtRef) and directly by
     // targeted-task-reuse.test.ts.

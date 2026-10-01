@@ -91,10 +91,10 @@ function DesktopConnection({
   // D-405: a new machine runs no desktop until someone opens one. Opening this
   // page IS that ask, so an empty roster starts the workspace desktop and opens it.
   useEffect(() => {
-    if (!bridge || rosterState !== "ready" || roster.length > 0) return;
+    if (!showDesktop || !bridge || rosterState !== "ready" || roster.length > 0) return;
     if (startRequested.current) return;
     startRequested.current = bridge.requestStart();
-  }, [bridge, roster, rosterState]);
+  }, [showDesktop, bridge, roster, rosterState]);
   const onDesktopStarted = useCallback((desktop: HostedDesktopRosterEntry) => {
     setRoster((current) =>
       current.some((entry) => entry.desktopSessionId === desktop.desktopSessionId)

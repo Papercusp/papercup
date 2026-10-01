@@ -268,6 +268,81 @@ test('diagnostic index rejects SPA directory symlinks and index hardlinks before
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('early native startup probe does not initialize speech and retains native timings beyond the storage cap', () => {
+  const globals = ['window', 'Storage', 'performance'] as const;
+  const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  let clock = 0;
+  let getterCalls = 0;
+  let getterFailure = false;
+  let methodFailure = false;
+  const failure = new Error('native speech failure');
+  const voices = [{ name: 'private voice' }];
+  class NativeSpeech {
+    getVoices() {
+      assert.equal(this, speech);
+      clock += 700;
+      if (methodFailure) throw failure;
+      return voices;
+    }
+  }
+  class NativeStorage { getItem() { return null; } }
+  const speech = new NativeSpeech();
+  const storage = new NativeStorage();
+  const fakeWindow = {} as { localStorage: NativeStorage; speechSynthesis: NativeSpeech; __pcStartupStorageProbe?: unknown };
+  const speechGetter = function (this: unknown) {
+    assert.equal(this, fakeWindow);
+    getterCalls++;
+    clock += 4000;
+    if (getterFailure) throw failure;
+    return speech;
+  };
+  Object.defineProperty(fakeWindow, 'speechSynthesis', { configurable: true, get: speechGetter });
+  Object.defineProperty(fakeWindow, 'localStorage', { configurable: true, get: () => storage });
+  const originalMethod = NativeSpeech.prototype.getVoices;
+  for (const [name, value] of [['window', fakeWindow], ['Storage', NativeStorage],
+    ['performance', { now: () => clock++, timeOrigin: 1000 }]] as const) {
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+  }
+  try {
+    Function(buildStartupStorageProbeScript())();
+    const probe = fakeWindow.__pcStartupStorageProbe as ReturnType<typeof installStartupStorageProbe>;
+    assert.equal(getterCalls, 0);
+    for (let i = 0; i < 210; i++) fakeWindow.localStorage.getItem();
+    assert.equal(fakeWindow.speechSynthesis, speech);
+    assert.equal(speech.getVoices(), voices);
+    getterFailure = true;
+    assert.throws(() => fakeWindow.speechSynthesis, (error) => error === failure);
+    getterFailure = false;
+    methodFailure = true;
+    assert.throws(() => speech.getVoices(), (error) => error === failure);
+    methodFailure = false;
+    const report = probe.stop();
+    assert.equal(report.rows.length, 200);
+    assert(report.dropped > 0);
+    assert.equal(report.nativeStartup.rows.length, 4);
+    assert(report.nativeStartup.rows.some((r) => r.operation === 'get:speechSynthesis' && r.durationMs >= 4000 && r.caller));
+    assert(report.nativeStartup.rows.some((r) => r.operation === 'speechSynthesis.getVoices' && r.durationMs >= 700));
+    assert.equal(report.nativeStartup.rows.filter((r) => r.threw).length, 2);
+    assert(!JSON.stringify(report).includes('private voice'));
+    assert.equal(Object.getOwnPropertyDescriptor(fakeWindow, 'speechSynthesis')!.get, speechGetter);
+    assert.equal(NativeSpeech.prototype.getVoices, originalMethod);
+    const bounded = installStartupStorageProbe();
+    for (let i = 0; i < 25; i++) speech.getVoices();
+    // Install the method lazily via the caller's first native getter access.
+    fakeWindow.speechSynthesis;
+    for (let i = 0; i < 25; i++) speech.getVoices();
+    const boundedReport = bounded.stop();
+    assert.equal(boundedReport.nativeStartup.rows.length, 20);
+    assert.equal(boundedReport.nativeStartup.dropped, 6);
+  } finally {
+    NativeSpeech.prototype.getVoices = originalMethod;
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});
+
 test('early serialized storage probe measures native getters/calls, preserves semantics and restores', () => {
   const globals = ['window', 'Storage', 'performance'] as const;
   const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);

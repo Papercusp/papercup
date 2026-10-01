@@ -87,5 +87,11 @@ export const GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES: number;
 export const GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES: number;
 export const GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS: 16;
 export const GOVERNED_TEST_PROCESS_SAMPLE_INTERVAL_MS: 250;
+/**
+ * Above this many pids the per-pid children walk stops paying for itself (measured 2026-10-01:
+ * 390-620 ms on 1,600-3,850-pid churning trees, more than the host-wide scan), so the walk
+ * hands over to the scan.  Test trees are a handful of pids.
+ */
+export const GOVERNED_PROCESS_TREE_WALK_PID_CAP: 512;
 /** Emitted on every retry so fleet-wide DB contention stays VISIBLE. */
 export const GOVERNED_ADMISSION_RETRY_MARKER: "GOVERNED_ADMISSION_RETRY";

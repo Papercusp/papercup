@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
+  act,
   fireEvent,
   render,
   screen,
@@ -683,7 +684,7 @@ describe("HostedWorkspaceSession", () => {
     );
   });
 
-  it("automatically starts an empty desktop after the session gains controller role", async () => {
+  it.each([true, false])("automatically starts an empty desktop after the session gains controller role only when the desktop is visible=%s", async (showDesktop) => {
     const workspace: WorkspaceHostControlRow = {
       kind: "workspace",
       id: "host-1",
@@ -704,7 +705,7 @@ describe("HostedWorkspaceSession", () => {
         connector: { routeLabel: "workspace-relay", transport: "websocket" },
       },
     };
-    render(<HostedDesktopConnection workspace={workspace} />);
+    render(<HostedDesktopConnection workspace={workspace} showDesktop={showDesktop} />);
     const socket = await connected();
     const sentMessages = () =>
       socket.send.mock.calls.map(
@@ -728,18 +729,16 @@ describe("HostedWorkspaceSession", () => {
         desktops: [],
       }),
     });
-    await waitFor(() =>
-      expect(screen.getByText("No desktops are available yet")).toBeTruthy(),
-    );
+    if (showDesktop) await waitFor(() => expect(screen.getByText("No desktops are available yet")).toBeTruthy());
     expect(sentMessages().some((message) => message.type === "desktop.start")).toBe(false);
 
-    socket.emit("message", {
+    await act(async () => socket.emit("message", {
       data: JSON.stringify({ type: "session.role", role: "controller" }),
-    });
+    }));
     await waitFor(() =>
       expect(
         sentMessages().filter((message) => message.type === "desktop.start"),
-      ).toHaveLength(1),
+      ).toHaveLength(showDesktop ? 1 : 0),
     );
   });
 

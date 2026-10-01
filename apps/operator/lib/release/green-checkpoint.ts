@@ -6548,7 +6548,11 @@ export interface TargetedGateResult {
   /** Present only on the detailed runner, not legacy aggregate-only responses. */
   perGate?: TargetedGateOutcome[];
   measuredHead?: string;
-  /** NOT CHECKED and execution errors are not reusable coverage, even if non-gating. */
+  /** Execution errors are not reusable coverage. A registered non-gating NOT CHECKED leg
+   * is coverage-NEUTRAL (WI-10004928 / D-129 item 2): it infers its subject from a
+   * working-tree diff that is empty in the gate's clean checkout at EVERY head, so the
+   * full gate measures nothing there either, and re-running it in a later round could
+   * never add evidence. Counting it as incomplete blocked every repair-round receipt. */
   coverageComplete?: boolean;
 }
 
@@ -6622,7 +6626,9 @@ export async function measureTargetedGateRuns(
   return {
     pass,
     perGate,
-    coverageComplete: perGate.every((entry) => entry.status === "pass" || entry.status === "fail"),
+    // `not-checked` is only ever assigned to a registered non-gating script (above), so
+    // only `errored` (thrown, unmapped, spawn failure) leaves the measurement incomplete.
+    coverageComplete: perGate.every((entry) => entry.status !== "errored"),
     summary: summaries.join("; "),
   };
 }

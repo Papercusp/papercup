@@ -4899,3 +4899,53 @@ describe('WI-10004928 part 1: emitGateToolingCrashEvent', () => {
     warn.mockRestore();
   });
 });
+
+describe('WI-10004928 part 1 manual leg: sweepManualCheckpointToolingCrash', () => {
+  const crashTuple = '\n__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__ service_result=exit-code exit_code=exited exit_status=1\n';
+  const loadCrashLog = `SyntaxError: Top-level await is currently not supported with the "cjs" output format${crashTuple}`;
+  const sweep = async (log: string | null, claimed = true) => {
+    const { sweepManualCheckpointToolingCrash } = await import('./release-actions');
+    const emit = vi.fn(async (..._a: unknown[]) => ({}));
+    const claimSentinel = vi.fn(async () => claimed);
+    const result = await sweepManualCheckpointToolingCrash('/x/papercusp', {
+      resolveLog: async () => '/tmp/run-1.log',
+      readLog: async () => log,
+      claimSentinel,
+      emit: emit as never,
+    });
+    return { result, emit, claimSentinel };
+  };
+
+  it('alarms a load-time crash: abnormal systemd tuple, no result marker, no candidate', async () => {
+    const { result, emit, claimSentinel } = await sweep(loadCrashLog);
+    expect(result).toEqual({ status: 'alarmed', logPath: '/tmp/run-1.log' });
+    expect(claimSentinel).toHaveBeenCalledWith('/tmp/run-1.log.tooling-crash-alarmed');
+    const payloads = emit.mock.calls.map(([a]) => (a as { payload: Record<string, unknown> }).payload);
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toMatchObject({ reason: 'gate-tooling-crash', exitCode: 1, logPath: '/tmp/run-1.log' });
+  });
+
+  it('is idempotent per run: an existing sentinel suppresses a second alarm', async () => {
+    const { result, emit } = await sweep(loadCrashLog, false);
+    expect(result.status).toBe('already-alarmed');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not call a killed/timed-out suite a tooling crash (it resolved a candidate first)', async () => {
+    const { result, emit } = await sweep(`checkpointing candidate abc123def456${crashTuple}`);
+    expect(result.status).toBe('not-a-tooling-crash');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('ignores a clean exit and a still-running unit (no ExecStopPost tuple yet)', async () => {
+    const clean = await sweep(
+      '\n__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__ service_result=success exit_code=exited exit_status=0\n',
+    );
+    expect(clean.result.status).toBe('not-a-tooling-crash');
+    const running = await sweep('booting...\n');
+    expect(running.result.status).toBe('no-terminal-evidence');
+    const missing = await sweep(null);
+    expect(missing.result.status).toBe('no-log');
+    expect(clean.emit).not.toHaveBeenCalled();
+  });
+});

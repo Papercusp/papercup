@@ -19,6 +19,9 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { GENERATED_SCHEMA_FILES } from "./schema-symbol-drift.mjs";
+
+const GENERATED_SCHEMA_FILE_SET = new Set(GENERATED_SCHEMA_FILES);
 
 /** Env kill switch: `0`/`false`/`off`/`no` disables reuse entirely (default: ON). */
 export const TEST_REUSE_ENV = "AFFECTED_TEST_REUSE";
@@ -490,6 +493,12 @@ function invalidates(rel, o) {
  *        files vite and vite-tsconfig-paths read (libs/test-config/src/toolchain-tsconfigs.ts).
  *        A drift tsconfig outside it is neither global nor an ancestor config; it still
  *        invalidates a proof whose readPaths name it. Omitted = no tsconfig is narrowed.
+ * @param {((proof: ReuseProof) => boolean) | null} [o.schemaDriftJudge] P-007 (D-010): asked when
+ *        a proof EXECUTED a drifted generated DB schema file (GENERATED_SCHEMA_FILES) without
+ *        reading it through fs; returning exactly `true` says no table that changed reaches this
+ *        proof, so that drift path does not invalidate it (summary.schemaNarrowed). Any other
+ *        result, or a throw, keeps the whole-file rule. Omitted = nothing is narrowed. Implemented
+ *        over git by gitSchemaDriftJudge (scripts/lib/schema-symbol-drift.mjs).
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
@@ -508,6 +517,7 @@ export function selectReusablePasses({
   inertGlobalChange = null,
   testConfigMainProcess = null,
   toolchainTsconfigs = null,
+  schemaDriftJudge = null,
 }) {
   const summary = {
     candidates: 0,
@@ -535,6 +545,9 @@ export function selectReusablePasses({
     // D-009: proofs REUSED (or audited / watched) that an inert workspace package.json drift
     // path would have invalidated before D-009, as an ancestor-directory config.
     inertWorkspaceConfig: 0,
+    // P-007 (D-010): proofs REUSED (or audited / watched) that a generated DB schema drift path
+    // would have invalidated before P-007, because they executed the regenerated file.
+    schemaNarrowed: 0,
   };
   const skip = [];
   /** @type {Map<string, "audit" | "expired-clean">} */
@@ -676,7 +689,31 @@ export function selectReusablePasses({
       unreadTsconfigHit: false,
       inertWorkspaceHit: false,
     };
+    /** @type {boolean | null} */
+    let schemaVerdict = null;
+    let schemaHit = false;
+    // P-007 (D-010): only an EXECUTED generated schema file is narrowed. A proof that read it
+    // through fs (a file read or a read of a directory holding it), or whose record may be capped,
+    // keeps the whole-file rule.
+    const schemaNarrows = (rel) => {
+      if (!schemaDriftJudge || !GENERATED_SCHEMA_FILE_SET.has(rel)) return false;
+      if (!p.executedModules.includes(rel) || (p.readPaths ?? []).includes(rel)) return false;
+      if (readDirs.some((prefix) => rel.startsWith(prefix))) return false;
+      if (p.executedModules.length >= EXECUTED_SOURCE_MAP_IMPORT_LIMIT) return false;
+      if (schemaVerdict === null) {
+        try {
+          schemaVerdict = schemaDriftJudge(p) === true;
+        } catch {
+          schemaVerdict = false;
+        }
+      }
+      return schemaVerdict;
+    };
     for (const rel of drift) {
+      if (schemaNarrows(rel)) {
+        schemaHit = true;
+        continue;
+      }
       if (invalidates(rel, check)) {
         changed = true;
         break;
@@ -688,6 +725,7 @@ export function selectReusablePasses({
     }
     if ((tsconfigNarrowed || check.unreadTsconfigHit) && !expired) summary.tsconfigNarrowed += 1;
     if (check.inertWorkspaceHit && !expired) summary.inertWorkspaceConfig += 1;
+    if (schemaHit && !expired) summary.schemaNarrowed += 1;
     if (expired) {
       summary.expiredClean += 1;
       watch.set(file, "expired-clean");
@@ -896,6 +934,7 @@ export function formatTestReuseLine(wsName, summary, extra = "") {
     `notCaptured=${s.notCaptured} opaque=${s.opaque} unknownDrift=${s.unknownDrift} ` +
     `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
     `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0} ` +
-    `testConfigNarrowed=${s.testConfigNarrowed ?? 0} tsconfigNarrowed=${s.tsconfigNarrowed ?? 0}${extra}`
+    `testConfigNarrowed=${s.testConfigNarrowed ?? 0} tsconfigNarrowed=${s.tsconfigNarrowed ?? 0} ` +
+    `inertWorkspaceConfig=${s.inertWorkspaceConfig ?? 0} schemaNarrowed=${s.schemaNarrowed ?? 0}${extra}`
   );
 }
