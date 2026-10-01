@@ -2689,3 +2689,85 @@ adoption for a separately coordinated runtime lane. This worker performed only
 a `dev:restart` dry-run and did not restart the shared host. The current runtime
 report still names bg-host `244f7d127c`, `containsChange:false`; live adoption,
 causal attribution, latency acceptance and final shipment remain open.
+
+### PUI account-request attribution — 03:33Z
+
+The account-call label `palette` is shared dispatch plumbing, not a component
+name. `apps/tui/src/client.rs:1453` implements `accounts_status()` by invoking
+`accounts:status`; `run_tool_body` stamps `callerSid=pui-<process id>` at line
+3553. `packages/operator-core/lib/capabilities/invoke.ts:216` retains
+`spawnId=palette` while carrying that id in `uiClientId`. The principal identity
+writer namespaces it as `loopback/pui-<pid>` in the current ledger. These are
+caller-supplied attribution fields, not authenticated PUI binary provenance.
+
+The current PUI has two direct consumers in `apps/tui/src/main.rs`: session
+setup at line 2932 and the general workbench `refetch_all` at line 7770. The
+latter runs after the initial load, a 60-second safety tick, and debounced SSE
+invalidations. `invalidation_loop` forwards every `invalidate`/`update` frame;
+the current signal gates plan reads, while account reads remain unconditional
+in a full hydration pass. This is a source mechanism that can amplify account
+reads on unrelated updates. No replay in this investigation has yet measured
+its effect or linked a specific historical request to its triggering frame.
+The same account-method/caller-id/safety-tick paths exist in Git source
+`29bf735091` and historical server source `e5b3a2cb54`; server SHA does not
+establish which PUI binary was loaded.
+
+The exact retained sample is workspace `papercusp-workspace`, tool
+`accounts:status`, caller `loopback/pui-2221762`, spawn `palette`, host
+`port-3070`, build `29bf735091`, settlement interval
+`[2026-10-01T00:19:00Z,2026-10-01T01:19:00Z)`. A bounded read with a positive
+control returned:
+
+| Quantity | Observation |
+|---|---:|
+| Calls | 60 |
+| Summed dispatch wall time | 3127 ms |
+| Dispatch p50 / p95 / maximum | 34 / 153.9 / 505 ms |
+| Serialized result units | 2435534 |
+| Adjacent settlement spacing, minimum / maximum | 31.272 / 98.551 seconds |
+
+First settlement: `00:19:30.220Z`; last: `01:18:31.453Z`. An exhaustive
+status/metadata partition returned one cell: `status=ok`, dispatch-stage
+metadata absent, 60 calls with 60 duration and 60 size values. Thus this sample
+has no dispatcher-error rows and cannot attribute wall time to individual
+dispatch phases. `duration_ms` comes from `Date.now()-startedAt` in
+`libs/generic/tooldef/src/dispatch-stack.ts:1732`; it includes waits and
+scheduling but excludes the telemetry sink. `invoked_at` is stamped at
+settlement in `projected-tool-deps.ts`. `output_size` falls back to
+`JSON.stringify(r.content).length`, so these are serialized units, not measured
+UTF-8 network bytes. Neither the sum nor the percentile establishes CPU cost,
+overlap with ingestion, or a causal effect on app latency.
+
+A separate bounded September 23 day read for `pui-2057122` and
+`loopback/pui-2057122` retained the ten largest build/host groups. One group
+contains 1488 calls on `port-3170`, build `e5b3a2cb54`, from
+`03:00:54.263Z` to `04:15:04.197Z`: 110276 ms summed dispatch wall and
+44395557 serialized units. This is positive evidence of historical frequent
+PUI-shaped calls; ten selected groups are not a complete daily census. It is
+not comparable to the October 1 sample as an improvement measurement.
+
+Read-only reproduction uses `dev:pg_query` over `harness_shared.tool_invocations`
+with the exact scalar predicates above. Compute adjacent spacing with
+`lag(invoked_at) OVER (ORDER BY invoked_at,id)` inside that sample; group by
+`status` and a three-way metadata case (`NULL`, `dispatchStages` present,
+absent) to retain unknown values. The positive control was id `30385108`.
+The historical query uses `[2026-09-23T00:00:00Z,2026-09-24T00:00:00Z)`,
+groups by host/build/caller/spawn, orders by count descending, and limits 10;
+its positive control was id `29288084`. Both reads completed with no child
+failure. The second CLI invocation yielded native session 17280 and was drained
+to exit 0; it was not retried as an empty result.
+
+Source snapshot for these references: HEAD
+`0325bcf20a1c2144215f775e1744399abd24e1cb` plus the shared working tree.
+SHA-256: `main.rs` =
+`613113a5b96cffe5ea1baad3f5838a2ac430c5603a3e36123eafffbcee60cc44`;
+`client.rs` =
+`96471030a05791427337feb37133ff5d00ef3eb3e10f29d05e8245c2e2d53e18`;
+`capabilities/invoke.ts` =
+`c8e58e77d31d398c7946dea4e6a91d0a7f78b753c1d16c108fa38877180d31f9`;
+`dispatch-stack.ts` =
+`d7486b7ca68ccf6f051d2bcbd7cc7b646a6b8dfe320b490bcc8e1cb648b44295`.
+No production request replay, service restart, or account-refresh code change
+was performed. P-008 remains open; the next independent step is a maintained
+test of unrelated SSE invalidation versus account-specific invalidation before
+changing refresh behavior.
