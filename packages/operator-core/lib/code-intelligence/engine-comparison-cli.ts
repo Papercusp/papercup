@@ -101,7 +101,10 @@ async function buildArm(id: CliArmId): Promise<EngineArm> {
     return createCodebaseMemoryArm({ id, version: `dev@${commit.stdout.trim() || 'unknown'}`, bin: CBM_BIN, treeRoot, home, cacheDir }, deps);
   }
   const bin = id === 'gitnexus-installed' ? INSTALLED_GITNEXUS_BIN : path.join(CANDIDATE_GITNEXUS_DIR, 'node_modules/.bin/gitnexus');
-  const live = createGitnexusArm({ id, version: await binVersion(bin), bin, treeRoot, home: path.join(armDir(id), 'home') }, deps, facade, opForIntent);
+  // Measured raw `startLine` base per pinned version (see GitnexusArmConfig.startLineBase): 1.6.9 (installed) is
+  // 0-based, 1.6.12 (candidate) is 1-based — the facade's unconditional +1 is only right for the former.
+  const startLineBase = id === 'gitnexus-installed' ? 0 : 1;
+  const live = createGitnexusArm({ id, version: await binVersion(bin), bin, treeRoot, home: path.join(armDir(id), 'home'), startLineBase }, deps, facade, opForIntent);
   return withPrecomputedIndex(live, precomputed(id));
 }
 
