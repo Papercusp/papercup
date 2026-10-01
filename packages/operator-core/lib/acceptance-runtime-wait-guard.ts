@@ -15,8 +15,8 @@
  * dependency has not been reviewed. It never rewrites the plan graph itself.
  */
 import { resolveBarEvidenceRuntime, type BarEvidenceRuntime } from './acceptance-bar-evidence-runtime';
-import type { ServingRuntimeId } from './serving-runtimes';
-import { currentBuildRoutesForRuntime } from './serving-runtimes';
+import type { EvidenceRuntimeId } from './serving-runtimes';
+import { currentBuildRoutesForRuntime, isRuntimeVintageEvidenceRuntimeId } from './serving-runtimes';
 import { withBoundedTimeout } from './bounded-timeout';
 import {
   hasNarrowDeployedMainException,
@@ -166,7 +166,7 @@ export function buildAcceptancePlaneAdvisory(bars: ReadonlyArray<HeldLiveBar>): 
     (b) => b.resolution.runtime !== null && b.resolution.runtime !== 'release-operator',
   );
   if (elsewhere.length === 0) return null;
-  const byRuntime = new Map<ServingRuntimeId, string[]>();
+  const byRuntime = new Map<EvidenceRuntimeId, string[]>();
   for (const bar of elsewhere) {
     const runtime = bar.resolution.runtime!;
     const list = byRuntime.get(runtime) ?? [];
@@ -181,11 +181,15 @@ export function buildAcceptancePlaneAdvisory(bars: ReadonlyArray<HeldLiveBar>): 
     ),
   );
   const releaseBars = bars.filter((b) => b.resolution.runtime === 'release-operator').map((b) => `${b.planSlug}#${b.barKey}`);
+  const vintageRuntimes = [...byRuntime.keys()].filter(isRuntimeVintageEvidenceRuntimeId);
   return (
     `ACCEPTANCE-PLANE ADVISORY: this wait is on the release operator (:3070 / green main), but the live/deployed ` +
     `acceptance bars you hold are measured on other runtimes — ${where}. Measure those NOW on their runtime ` +
     `(dev:pipeline_position { path } → servingRuntimes names each runtime's build and whether it runs your change); ` +
     (routes.length ? `Current-build test route(s): ${routes.join('; ')}. ` : '') +
+    (vintageRuntimes.length
+      ? `External runtime(s): ${vintageRuntimes.join(', ')} — read deploys:vintage for the exact workspace/unit/host and build; if absent or unmeasured, keep acceptance unknown. An operator test route cannot substitute for it. `
+      : '') +
     `a :3070 deploy does not change code they execute. ` +
     (releaseBars.length
       ? `Only ${releaseBars.join(', ')} genuinely need the release operator. `
@@ -202,7 +206,7 @@ export interface WaitGuardDeps {
     barKey?: string;
     key: string;
     evidencePlane?: 'tree' | 'deployed' | 'live';
-    evidenceRuntime?: ServingRuntimeId;
+    evidenceRuntime?: EvidenceRuntimeId;
     model?: string;
     method?: string;
     driftMarkers?: string;

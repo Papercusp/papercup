@@ -340,7 +340,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
       getSql: () => rootSql,
       feedback,
       confirmReservation: async () => true,
-      resolveParties: async (ids) => new Map(ids.map((id) => [
+      resolveParties: async (ids) => new Map(ids.filter((id): id is string => typeof id === 'string').map((id) => [
         id,
         id === 'spec-quality-plan-creator-child' ? planCreator : id,
       ])),

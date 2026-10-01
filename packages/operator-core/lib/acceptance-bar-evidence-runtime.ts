@@ -19,13 +19,14 @@
  */
 import { classifyRuntimeOwners } from './git-pipeline-position';
 import {
-  resolveServingRuntimeAlias,
+  resolveEvidenceRuntimeAlias,
   runtimesForHost,
+  type EvidenceRuntimeId,
   type ServingRuntimeId,
 } from './serving-runtimes';
 
 export interface BarEvidenceRuntime {
-  runtime: ServingRuntimeId | null;
+  runtime: EvidenceRuntimeId | null;
   source: 'declared' | 'inferred' | 'unresolved' | 'not-applicable';
   /** True whenever a human should confirm the runtime (inferred or unresolved). */
   reviewFlag: boolean;
@@ -35,7 +36,7 @@ export interface BarEvidenceRuntime {
 
 export interface BarEvidenceRuntimeInput {
   evidencePlane?: 'tree' | 'deployed' | 'live' | null;
-  evidenceRuntime?: ServingRuntimeId | null;
+  evidenceRuntime?: EvidenceRuntimeId | null;
   model?: string | null;
   method?: string | null;
   driftMarkers?: string | null;
@@ -84,12 +85,12 @@ export function resolveBarEvidenceRuntime(input: BarEvidenceRuntimeInput): BarEv
  * The runtime an evidence row says it was measured on, from its free-form `details`.
  * Accepts the canonical id or any alias (`bg-host`, `:3170`, ...). Null when unstated.
  */
-export function evidenceRuntimeOf(details: Record<string, unknown> | null | undefined): ServingRuntimeId | null {
+export function evidenceRuntimeOf(details: Record<string, unknown> | null | undefined): EvidenceRuntimeId | null {
   if (!details) return null;
   for (const key of ['evidenceRuntime', 'runtime', 'servingRuntime']) {
     const raw = details[key];
     if (typeof raw === 'string') {
-      const id = resolveServingRuntimeAlias(raw);
+      const id = resolveEvidenceRuntimeAlias(raw);
       if (id) return id;
     }
   }

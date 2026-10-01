@@ -32,7 +32,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
-import type { ServingRuntimeId } from './serving-runtimes';
+import type { EvidenceRuntimeId } from './serving-runtimes';
 import {
   normalizeRequirementSections,
   type RequirementIntent,
@@ -200,7 +200,7 @@ export interface RubricCriterion {
   evidencePlane?: AcceptanceEvidencePlane;
   /** deployed/live BARs: the runtime whose build the evidence must be measured on
    * (acceptance-runtime-plane P-002). Absent ⇒ inferred + flagged, never :3070 by default. */
-  evidenceRuntime?: ServingRuntimeId;
+  evidenceRuntime?: EvidenceRuntimeId;
   requiredTestLayers?: string[];
   /** Ratings that satisfy this BAR. Empty/absent remains legacy/unbound. */
   passRatings?: string[];
@@ -573,7 +573,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         mandatory?: boolean;
         requiredScope?: string[];
         evidencePlane?: AcceptanceEvidencePlane;
-        evidenceRuntime?: ServingRuntimeId;
+        evidenceRuntime?: EvidenceRuntimeId;
         passRatings?: string[];
         coversBarKeys?: string[];
         barProvenance?: AcceptanceBarProvenance;

@@ -17,6 +17,18 @@ import {
 
 const BG_PATH = 'packages/operator-core/lib/harness/routines/psu-pty-host-events-ingest.ts';
 
+it('routes an external acceptance runtime to the existing vintage registry, never an operator test route', async () => {
+  const runtime = 'runtime-vintage:papercusp-workspace/portal-web@marsh-office' as const;
+  const bars = await loadHeldLiveBars('su-x', deps([{ key: 'r-1', evidencePlane: 'live', evidenceRuntime: runtime }]));
+  expect(bars[0]?.resolution.runtime).toBe(runtime);
+  const advisory = buildAcceptancePlaneAdvisory(bars);
+  expect(advisory).toContain(runtime);
+  expect(advisory).toContain('deploys:vintage');
+  expect(advisory).toContain('if absent or unmeasured, keep acceptance unknown');
+  expect(advisory).not.toContain('http://127.0.0.1:3170');
+  expect(advisory).not.toContain('Current-build test route(s)');
+});
+
 const deps = (criteria: Awaited<ReturnType<WaitGuardDeps['acceptanceCriteria']>>): WaitGuardDeps & { reads: number } => {
   const d = {
     reads: 0,

@@ -41,6 +41,17 @@ export const SERVING_RUNTIME_IDS = [
 ] as const;
 export type ServingRuntimeId = (typeof SERVING_RUNTIME_IDS)[number];
 
+/** A row in the existing vintage registry, identified by workspace/unit/host. */
+export type RuntimeVintageEvidenceRuntimeId = `runtime-vintage:${string}/${string}@${string}`;
+export type EvidenceRuntimeId = ServingRuntimeId | RuntimeVintageEvidenceRuntimeId;
+
+// Explicit identity only: a bare external app name must never alias an operator.
+export const RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE = /^runtime-vintage:[A-Za-z0-9][A-Za-z0-9._-]{0,119}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,119}@[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
+
+export function isRuntimeVintageEvidenceRuntimeId(value: unknown): value is RuntimeVintageEvidenceRuntimeId {
+  return typeof value === 'string' && RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE.test(value);
+}
+
 export type ServingRuntimeCodeSource =
   | 'release-checkout'
   | 'staging-checkout'
@@ -266,7 +277,7 @@ export function currentBuildTestRoute(id: string): CurrentBuildTestRoute | null 
 }
 
 /** An owning runtime may serve more than one test class; never infer universal readiness. */
-export function currentBuildRoutesForRuntime(runtime: ServingRuntimeId): CurrentBuildTestRoute[] {
+export function currentBuildRoutesForRuntime(runtime: EvidenceRuntimeId): CurrentBuildTestRoute[] {
   return CURRENT_BUILD_TEST_CLASSES.filter((route) => route.runtime === runtime && route.readiness !== 'release-only');
 }
 
@@ -545,6 +556,27 @@ export function resolveServingRuntimeAlias(text: string): ServingRuntimeId | nul
     if (SERVING_RUNTIMES[id].aliases.some((alias) => alias.toLowerCase() === needle)) return id;
   }
   return null;
+}
+
+/** Vintage references preserve the registry's case-sensitive identity. */
+export function resolveEvidenceRuntimeAlias(text: string): EvidenceRuntimeId | null {
+  const value = text.trim();
+  if (isRuntimeVintageEvidenceRuntimeId(value)) return value;
+  // Never interpret a malformed vintage reference as one of its embedded unit labels.
+  if (value.startsWith('runtime-vintage:')) return null;
+  return resolveServingRuntimeAlias(value);
+}
+
+/** Read explicit vintage citations alongside the existing built-in runtime aliases. */
+export function evidenceRuntimesMentioned(text: string): EvidenceRuntimeId[] {
+  const vintage = new Set<RuntimeVintageEvidenceRuntimeId>();
+  const remainder = text.replace(/runtime-vintage:[^\s`'"(),;\[\]<>]+/g, (token) => {
+    // Sentence punctuation is not part of a hostname.
+    const value = token.replace(/[.!?]+$/, '');
+    if (isRuntimeVintageEvidenceRuntimeId(value)) vintage.add(value);
+    return ' ';
+  });
+  return [...servingRuntimesMentioned(remainder), ...vintage];
 }
 
 /** Every runtime id or alias mentioned anywhere in `text` (word-bounded). */

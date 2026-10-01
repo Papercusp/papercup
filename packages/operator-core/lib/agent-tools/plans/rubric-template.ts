@@ -20,7 +20,7 @@
 import { z } from 'zod';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
-import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
+import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
 import { registerPlanTemplate, type PlanTemplate } from './template-registry';
 
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
@@ -360,7 +360,16 @@ export type AcceptanceEvidencePlane = z.infer<typeof acceptanceEvidencePlaneSche
  * the ship door check evidence from THAT runtime; an undeclared one is inferred from the
  * BAR's source paths and flagged for review, never silently defaulted to :3070.
  */
-export const acceptanceEvidenceRuntimeSchema = z.enum(SERVING_RUNTIME_IDS);
+export const acceptanceEvidenceRuntimeSchema = z.union([
+  z.enum(SERVING_RUNTIME_IDS),
+  // Tool args must export at host boot: use a representable pattern, never z.custom.
+  // The same pattern validates declarations and advertises their contract to clients.
+  z
+    .string()
+    .regex(RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE,
+      'Expected runtime-vintage:<workspace>/<unit>@<host> identifying an existing vintage row',
+    ) as unknown as z.ZodType<RuntimeVintageEvidenceRuntimeId>,
+]);
 export type AcceptanceEvidenceRuntime = z.infer<typeof acceptanceEvidenceRuntimeSchema>;
 
 /** Server-owned pin from a subject plan's activation seed to its rubric revision. */
@@ -451,7 +460,7 @@ export const requirementAcceptanceSchema = z
     evidenceRuntime: acceptanceEvidenceRuntimeSchema
       .optional()
       .describe(
-        'deployed/live BARs: the runtime the evidence must be measured on (release-operator is green main; staging-operator, bg-host, gateway, embed-sidecar, psu-pty-host and desktop-shell are not)',
+        'deployed/live BARs: built-in runtime or runtime-vintage:<workspace>/<unit>@<host> from the existing registry; release-operator alone is green main',
       ),
     requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
     passRatings: acceptancePassRatingsSchema,
@@ -529,7 +538,7 @@ const rubricCriterionObjectSchema = z
     evidenceRuntime: acceptanceEvidenceRuntimeSchema
       .optional()
       .describe(
-        'acceptance-kind deployed/live BARs only: the runtime whose build the evidence must be measured on; absent ⇒ inferred from source paths and flagged for review, never defaulted to :3070',
+        'acceptance-kind deployed/live BARs: built-in runtime or exact runtime-vintage:<workspace>/<unit>@<host>; absent ⇒ inferred and flagged, never defaulted to :3070',
       ),
     requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers.describe(
       'acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change',
