@@ -103,7 +103,8 @@ describe('current-build ingestion on a private background runtime', () => {
           if (observation) {
             assert.equal(observation.pending, 0);
             assert.equal(observation.maxPending, 1, 'production discovery is sequential');
-            assert.equal(observation.readdir.calls, workload.homes * 4 + 1);
+            // Root + home/sessions/year/month/day for every managed home.
+            assert.equal(observation.readdir.calls, workload.homes * 5 + 1);
             assert.equal(observation.stat.calls, workload.homes * workload.filesPerHome);
             for (const bucket of [observation.readdir, observation.stat]) {
               assert.ok(bucket.awaitMs > 0 && bucket.activeMs >= 0 && bucket.idleMs >= 0);
