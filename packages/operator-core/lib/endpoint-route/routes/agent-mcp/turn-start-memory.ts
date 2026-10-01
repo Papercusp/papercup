@@ -480,7 +480,7 @@ const turnStartMemory = defineTool({
           // provider work is still settling, and the guard retains its lease
           // until that raw work actually exits.
           const admitted = await withOptionalMemoryAdmission(() =>
-            getMemoryBlockBoundedResult(workspaceId, `turn-start:${owner}`, async (deadline) => {
+            getMemoryBlockBoundedResult(workspaceId, `turn-start:${owner}`, async (deadline, { callerWaiting }) => {
               // P-044 (F-L): resolve the agent's ACTION signals only when this
               // turn actually builds/revalidates memory. A stale cache hit must
               // return immediately rather than paying these lookups inline.
@@ -501,6 +501,9 @@ const turnStartMemory = defineTool({
               }
               return await buildMemoryContextBlock({
                 deadline,
+                // A stale serve answers this turn at once; the rebuild then runs for
+                // the next turn and the hook wall no longer bounds Jev in it.
+                callerWaiting,
                 ...(typeof body.wallMs === 'number' && body.wallMs > 0 && body.wallMs <= 60_000
                   ? { respondByMs: arrivedAt + body.wallMs }
                   : {}),
