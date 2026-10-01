@@ -70,7 +70,7 @@ export async function getFeedbackProd(
         getLiveness: async (ownerIds) => {
           const [verdicts, pausedOwners] = await Promise.all([
             resolveSessionStates(ownerIds.map((ownerId) => ({ ownerId })), {
-              hydratePerId: true,
+              hydrateBatch: true,
               psuHostPositiveAuthority: true,
             }),
             listLoopStanddownOwners(getOrgPg().sql, { workspaceId: request.workspaceId }),

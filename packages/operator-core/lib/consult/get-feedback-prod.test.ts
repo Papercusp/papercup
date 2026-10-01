@@ -71,6 +71,17 @@ describe('getFeedbackProd expert-routing settings', () => {
     expect(routeParams.recencyHalfLifeDays).toBe(14);
     expect(routeParams.subjectRef).toBe('acceptance-x');
 
+    const routeDeps = h.routeConsult.mock.calls[0]?.[1] as {
+      getLiveness?: (ownerIds: string[]) => Promise<unknown>;
+    };
+    h.resolveSessionStates.mockResolvedValue(new Map());
+    h.listLoopStanddownOwners.mockResolvedValue(new Set());
+    await routeDeps.getLiveness?.(['expert-a', 'expert-b']);
+    expect(h.resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'expert-a' }, { ownerId: 'expert-b' }],
+      { hydrateBatch: true, psuHostPositiveAuthority: true },
+    );
+
     await deps.reach({ responder: 'expert', conversationId: 'conversation', summary: 'summary', body: 'body' });
     const dispatchDeps = h.makeConsultReachDispatcher.mock.calls[0]?.[1] as {
       loadRanks: (workspaceId: string) => Promise<readonly unknown[]>;

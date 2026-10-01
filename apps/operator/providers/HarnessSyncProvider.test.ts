@@ -99,6 +99,23 @@ describe('resolveMaxInFlightFetches', () => {
 });
 
 describe('assertIpcCarriesFetch (D-047)', () => {
+  it('records a slow pending startup assertion before allowing the IPC cap', async () => {
+    let resolve!: (value: { client: string }) => void;
+    invoke.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const hook = renderHook(() => useIpcCarriesFetch());
+    await act(async () => { await Promise.resolve(); });
+    expect(hook.result.current).toBe(false);
+    const pending = syncMetrics.snapshot().ipcAssertion!;
+    expect(pending).toHaveLength(1);
+    expect(pending[0].completedAtMs).toBeNull();
+    await act(async () => { resolve({ client: 'connected' }); });
+    expect(hook.result.current).toBe(true);
+    const completed = syncMetrics.snapshot().ipcAssertion![0];
+    expect(completed.client).toBe('connected');
+    expect(completed.completedAtMs).toBeGreaterThanOrEqual(completed.startedAtMs);
+    expect(pending[0].completedAtMs).toBeNull();
+  });
+
   it('is true ONLY for a connected IPC client', async () => {
     invoke.mockResolvedValue({ client: 'connected' });
     await expect(assertIpcCarriesFetch()).resolves.toBe(true);

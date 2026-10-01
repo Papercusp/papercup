@@ -52,7 +52,7 @@
  * liveness-parity.test.ts (P-001).
  */
 
-import { probeProcessLiveness, getPresence } from './presence';
+import { probeProcessLiveness, getPresence, listPresence } from './presence';
 import {
   fetchWakeability,
   deriveSessionState,
@@ -189,6 +189,10 @@ export interface ResolveSessionStatesOpts {
    *  coord_presence row (one point-read per hydrated subject — for the small-N
    *  bare-id callers like the send-miss path, never for whole rosters). */
   hydratePerId?: boolean;
+  /** Fill the same fields as `hydratePerId` with one owner-filtered list read.
+   *  Use for candidate pools or rosters; the result preserves per-id semantics
+   *  while avoiding one `coord_presence` query per subject. */
+  hydrateBatch?: boolean;
   /** P-005: consult the box-local psu-pty host registry — `parked` + known
    *  non-cup role + no live host ⇒ `ended`. See the header for why opt-in. */
   psuHostAuthority?: boolean;
@@ -236,6 +240,8 @@ export interface ResolveSessionStatesOpts {
      */
     agentRole?: string | null;
   } | null>;
+  /** Batched counterpart to `getPresenceFn`, injectable for PG-free tests. */
+  listPresenceFn?: typeof listPresence;
 }
 
 /** PURE: one subject's verdict from already-fetched signals — the single place
@@ -476,7 +482,34 @@ export async function resolveSessionStates(
   const findHostFn = opts.findHostFn ?? findLiveHost;
 
   let hydrated: readonly LivenessSubject[] = subjects;
-  if (opts.hydratePerId) {
+  if (opts.hydrateBatch) {
+    const needsHydration = subjects.filter((s) => s.heartbeatAt == null && s.stale == null);
+    if (needsHydration.length > 0) {
+      try {
+        const rows = await (opts.listPresenceFn ?? listPresence)({
+          ownerIds: needsHydration.map((s) => s.ownerId),
+        });
+        const byOwner = new Map(rows.map((row) => [row.ownerId, row]));
+        hydrated = subjects.map((s) => {
+          if (s.heartbeatAt != null || s.stale != null) return s;
+          const p = byOwner.get(s.ownerId);
+          if (!p) return s;
+          return {
+            ...s,
+            heartbeatAt: p.heartbeatAt,
+            stale: p.stale,
+            host: s.host ?? p.host,
+            pid: s.pid ?? p.pid,
+            source: s.source ?? p.source,
+            agentRole: s.agentRole ?? p.agentRole,
+          };
+        });
+      } catch {
+        // Match the per-id path: best-effort hydration must never block a verdict.
+        hydrated = subjects;
+      }
+    }
+  } else if (opts.hydratePerId) {
     const getPresenceFn = opts.getPresenceFn ?? getPresence;
     hydrated = await Promise.all(
       subjects.map(async (s) => {

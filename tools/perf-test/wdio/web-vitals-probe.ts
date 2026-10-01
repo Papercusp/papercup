@@ -292,6 +292,7 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
   const metrics = (window as unknown as {
     __sync_metrics__?: {
       snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null;
+        ipcAssertion?: Array<{ startedAtMs: number; completedAtMs: number | null; client: string | null }>;
         stages?: { recent: Array<{ stage: string; unit: 'ms'; durationMs: number; measuredAtMs: number;
           queryName?: string; traceId?: string }> } };
       queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string;
@@ -351,7 +352,8 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
     syncTrace: { unit: 'ms' as const, clock: 'performance.now' as const, startupQueries,
       planQueries: planQueries.map(compact), planStages },
     ...capturedAttribution,
-    ipc: { client: ipcClient, assertionTimedOut: snapshot?.ipcAssertTimedOut ?? null, assertionLastClient: snapshot?.ipcAssertLastClient ?? null },
+    ipc: { client: ipcClient, assertionTimedOut: snapshot?.ipcAssertTimedOut ?? null,
+      assertionLastClient: snapshot?.ipcAssertLastClient ?? null, assertion: snapshot?.ipcAssertion ?? [] },
     queryCountCompletedBeforeFcp: fcp.queryCountCompleted,
     startedBeforeFcpCompletedLater: fcp.startedCompletedLater,
     longestWaitsCompletedBeforeFcp: fcp.longestWaits,

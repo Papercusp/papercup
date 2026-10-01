@@ -241,6 +241,26 @@ describe('classifyOriginSchedulerFetch', () => {
 });
 
 describe('installOriginSchedulerFetch', () => {
+  it('attributes finite slot occupants without recording URL credentials or query secrets', async () => {
+    const held = deferred<Response>();
+    stubWindow(vi.fn(() => held.promise) as unknown as typeof fetch);
+    const scheduler = getOriginScheduler(ORIGIN, { limit: 1, requestTimeoutMs: 0 });
+    installOriginSchedulerFetch();
+    const first = window.fetch(`${ORIGIN}/api/profile?token=private`);
+    const duplicate = window.fetch(`${ORIGIN}/api/profile?token=private`);
+    const queued = window.fetch(`${ORIGIN}/api/bootstrap?password=secret`);
+    await tick();
+    const samples = scheduler.snapshot().tasks!;
+    expect(samples).toMatchObject([
+      { label: 'GET /api/profile', state: 'running' },
+      { label: 'GET /api/bootstrap', state: 'queued' },
+    ]);
+    expect(JSON.stringify(samples)).not.toMatch(/token|private|password|secret/);
+    held.resolve(response());
+    await Promise.all([first, duplicate, queued]);
+    expect(scheduler.snapshot().tasks!.map((sample) => sample.state)).toEqual(['ok', 'ok']);
+  });
+
   it('shares one origin-wide queue across raw fetch callers', async () => {
     const hold = deferred<void>();
     const inner = vi.fn(async () => {

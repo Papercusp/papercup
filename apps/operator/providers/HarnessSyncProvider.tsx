@@ -134,12 +134,17 @@ export async function assertIpcCarriesFetch(): Promise<boolean> {
 }
 
 async function readIpcClient(): Promise<string | null> {
+  const finish = syncMetrics.beginIpcAssertion();
+  let client: string | null = null;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const status = await invoke<{ client?: string }>('endpoint_ipc_status');
-    return status?.client ?? null;
+    client = status?.client ?? null;
+    return client;
   } catch {
     return null;
+  } finally {
+    finish(client);
   }
 }
 

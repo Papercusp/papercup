@@ -531,6 +531,9 @@ function runScheduledFetch(
   const timeoutMs = schedulerTimeoutForMethod(method);
   const runOptions: OriginSchedulerRunOptions = {
     class: requestClass,
+    // The pathname identifies the slot occupant without storing credentials,
+    // workspace/query values, headers or request bodies in page diagnostics.
+    label: `${method} ${new URL(rawUrlOf(input), window.location.href).pathname}`,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(signal ? { signal } : {}),
   };

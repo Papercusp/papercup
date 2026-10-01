@@ -8207,6 +8207,7 @@ export function hostThroughPty(o) {
         // proof returned and must not become a late sampling baseline.
         const readLastOutputAt = () => activity.snapshot().lastOutputAt ?? 0;
         const kickoffMarker = leadingTurnOriginMarker(launchKickoff);
+        const kickoffMarkerAnchor = { fileIdentity: null, markerEndOffset: null };
         const nativeTurnActivity = kickoffMarker && proof.nativeRef &&
           nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported
           ? () => nativeKickoffTurnActivityAfterMarker({
@@ -8215,6 +8216,7 @@ export function hostThroughPty(o) {
               transcriptPath: proof.nativeRef,
               marker: kickoffMarker,
               markerLostChars: proof.markerTruncated?.lostChars ?? 0,
+              anchor: kickoffMarkerAnchor,
             })
           : null;
         const configuredPollMs = Number(env.PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS);

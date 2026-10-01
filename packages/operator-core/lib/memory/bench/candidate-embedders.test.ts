@@ -9,7 +9,8 @@ vi.mock('@huggingface/transformers', () => ({
   AutoTokenizer: { from_pretrained: mocks.loadTokenizer },
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, type CandidateVectors } from './candidate-embedders';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences, type CandidateVectors } from './candidate-embedders';
+import { incumbentReferenceFixture } from './fixtures/incumbent-reference';
 
 describe('incumbent reference qualification', () => {
   it('resolves published locators locally and refuses machine-specific or escaping paths', () => {
@@ -28,6 +29,39 @@ describe('incumbent reference qualification', () => {
   it('refuses an untrusted protocol SHA before any tokenizer/model construction', async () => {
     await expect(qualifyIncumbentReferences('/absent/reference.json', 'invalid', '/private/result.json')).rejects.toThrow('SHA mismatch');
     expect(mocks.loadTokenizer).not.toHaveBeenCalled(); expect(mocks.loadModel).not.toHaveBeenCalled();
+  });
+  it('keeps three recipes, computes all token/vector/rank comparisons and reports a zero measured tokenizer effect', () => {
+    const { native, python } = incumbentReferenceFixture();
+    const summary = summarizeIncumbentReferences(native, python);
+    expect(summary.arms.map((a) => [a.caseCount, a.tokenMatches, a.passed, a.rankings.exactRankAgreements])).toEqual([[16, 16, true, 8], [16, 16, true, 8], [16, 16, true, 8]]);
+    expect(summary.correctedGemmaEffect).toMatchObject({ population: 16, changedTokenCases: [], rankingQueriesChanged: [], minimumCosine: 1 });
+    expect(mocks.loadTokenizer).not.toHaveBeenCalled(); expect(mocks.loadModel).not.toHaveBeenCalled();
+  });
+  it('refuses the exact falsifier: corrected and shipped arms under one recipe identity', () => {
+    const { native, python } = incumbentReferenceFixture();
+    native.arms[1].profileId = native.arms[0].profileId;
+    expect(() => summarizeIncumbentReferences(native, python)).toThrow('identity collision');
+  });
+  it('reports a tokenizer/vector/ranking loss using actual arrays without accepting producer PASS metadata', () => {
+    const { native, python } = incumbentReferenceFixture();
+    native.arms[0].cases[0].inputIds = [99]; native.arms[0].cases[0].attentionMask = [1];
+    native.arms[0].cases[0].vector = [...native.arms[0].cases[2].vector];
+    const summary = summarizeIncumbentReferences(native, python);
+    expect(summary.arms[0]).toMatchObject({ tokenMatches: 15, passed: false, minimumCosine: 0 });
+    expect(summary.arms[0].rankings.exactRankAgreements).toBe(7);
+    expect(summary.correctedGemmaEffect.changedTokenCases).toEqual(['query-plain']);
+    expect(summary.correctedGemmaEffect.rankingQueriesChanged).toEqual(['query-plain']);
+  });
+  it.each(['missing-case', 'wrong-prompt', 'wrong-model', 'nonfinite', 'no-worker', 'unversioned', 'unpinned'])('refuses %s evidence', (failure) => {
+    const { native, python } = incumbentReferenceFixture();
+    if (failure === 'missing-case') python.arms[0].cases.pop();
+    if (failure === 'wrong-prompt') native.arms[0].cases[0].promptedText = native.arms[0].cases[1].promptedText;
+    if (failure === 'wrong-model') native.arms[0].model = 'harrier';
+    if (failure === 'nonfinite') native.arms[0].cases[0].vector[0] = NaN;
+    if (failure === 'no-worker') delete native.arms[0].cases[0].shippedVector;
+    if (failure === 'unversioned') delete python.versions.tokenizers;
+    if (failure === 'unpinned') native.identities[0].files[0].sha256 = 'wrong';
+    expect(() => summarizeIncumbentReferences(native, python)).toThrow();
   });
 });
 

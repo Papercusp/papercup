@@ -23,7 +23,7 @@
  * because an unreachable-today hazard is precisely the kind that gets armed by
  * a later change (a per-id try/catch, a cache layer) and then goes unnoticed.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   classifyReadActionability,
   resolveSessionStates,
@@ -155,5 +155,50 @@ describe('resolveSessionStates is TOTAL — unknown is in band, never omitted', 
     // over-correcting the fix into synthesising rows nobody asked for.
     const out = await resolveSessionStates([], opts(new Map()));
     expect(out.size).toBe(0);
+  });
+
+  it('hydrates a 200-owner candidate pool with one batch read and preserves per-id verdicts', async () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({ ownerId: `su-candidate-${i}` }));
+    const rows = many.map((subject) => ({
+      ownerId: subject.ownerId,
+      heartbeatAt: iso(5_000),
+      stale: false,
+      host: null,
+      pid: null,
+      source: 'test',
+      agentRole: 'su',
+    }));
+    const byOwner = new Map(rows.map((row) => [row.ownerId, row]));
+    const perIdRead = vi.fn(async (ownerId: string) => byOwner.get(ownerId) ?? null);
+    const batchRead = vi.fn(async ({ ownerIds }: { ownerIds?: readonly string[] }) =>
+      (ownerIds ?? []).flatMap((ownerId) => {
+        const row = byOwner.get(ownerId);
+        return row ? [row] : [];
+      }),
+    );
+    const common = {
+      nowMs: NOW,
+      fetchWakeabilityFn: async (ids: string[]) => new Map(ids.map((id) => [id, SIGNALLED])),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => null,
+      findHostFn: () => null,
+    };
+
+    const perId = await resolveSessionStates(many, {
+      ...common,
+      hydratePerId: true,
+      getPresenceFn: perIdRead,
+    });
+    const batched = await resolveSessionStates(many, {
+      ...common,
+      hydrateBatch: true,
+      listPresenceFn: batchRead as never,
+    });
+
+    expect(perIdRead).toHaveBeenCalledTimes(200);
+    expect(batchRead).toHaveBeenCalledTimes(1);
+    expect(batchRead).toHaveBeenCalledWith({ ownerIds: many.map((subject) => subject.ownerId) });
+    expect(batched).toEqual(perId);
   });
 });
