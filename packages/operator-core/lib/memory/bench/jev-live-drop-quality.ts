@@ -55,8 +55,9 @@ interface TranscriptEntry {
  * tool_result block's own content stands in.
  */
 export function transcriptBatches(entries: readonly unknown[]): TranscriptBatch[] {
-  const batches: { at: string; messageId: string; calls: { id: string; tool: string; toolInput: unknown; toolResponse?: unknown }[] }[] = [];
-  const byUseId = new Map<string, { toolResponse?: unknown }>();
+  type Call = { id: string; tool: string; toolInput: unknown; toolResponse?: unknown };
+  const batches: { at: string; messageId: string; calls: Call[] }[] = [];
+  const byUseId = new Map<string, Call>();
   for (const raw of entries) {
     if (!raw || typeof raw !== 'object') continue;
     const e = raw as TranscriptEntry;
@@ -70,7 +71,7 @@ export function transcriptBatches(entries: readonly unknown[]): TranscriptBatch[
           batch = { at: typeof e.timestamp === 'string' ? e.timestamp : '', messageId, calls: [] };
           batches.push(batch);
         }
-        const call = { id: block.id, tool: typeof block.name === 'string' ? block.name : '', toolInput: block.input };
+        const call: Call = { id: block.id, tool: typeof block.name === 'string' ? block.name : '', toolInput: block.input };
         batch.calls.push(call);
         byUseId.set(block.id, call);
       }

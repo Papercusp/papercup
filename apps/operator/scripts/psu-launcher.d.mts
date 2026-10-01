@@ -3460,9 +3460,10 @@ export function assertFleetJoined(requestedFleet: any, res: any): void;
 export function psuLaunchArgvRecord(selections: any, args: any, { brain }?: {
     brain?: boolean | undefined;
 }): string[];
-export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey }?: {
+export function freshSuBootstrapBody(selections: any, args: any, { brain, bootstrapIdempotencyKey, mcpBaseUrl, }?: {
     brain?: boolean | undefined;
     bootstrapIdempotencyKey?: null | undefined;
+    mcpBaseUrl?: any;
 }): {
     session_port_protocol?: any;
     session_port_transform_version?: any;
@@ -3497,6 +3498,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     headless?: boolean | undefined;
     launch_argv: string[];
     bootstrap_idempotency_key?: undefined;
+    mcp_base_url?: any;
     agent: any;
     workspace: any;
     harness_slug: any;

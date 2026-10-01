@@ -9,10 +9,10 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lockHasLiveHolder, lsofLockHolder, runLsof } from './run-git-sync';
+import { lockHasLiveHolder, lsofLockHolder } from './run-git-sync';
 
 type RunResult = { code: number | null; stdout: string; stderr: string; missing?: boolean };
 
@@ -114,8 +114,15 @@ try {
 // This case checks lsof's VERDICTS, not its speed. On the dev box one call scans
 // ~8,000 processes and took 9.6-11.6s on 2026-10-01, past the 10s production
 // timeout, so the timeout's `null` read as a wrong verdict (EI-24743587456535351).
+// The real lsof therefore runs here under the test's own budget.
 const REAL_LSOF_TIMEOUT_MS = 60_000;
-const realLsof = (bin: string, args: string[]) => runLsof(bin, args, REAL_LSOF_TIMEOUT_MS);
+const realLsof = (bin: string, args: string[]): Promise<RunResult> =>
+  new Promise((resolve) => {
+    execFile(bin, args, { encoding: 'utf8', timeout: REAL_LSOF_TIMEOUT_MS }, (err, stdout, stderr) => {
+      if (err?.code === 'ENOENT') return resolve({ code: null, stdout: '', stderr: err.message, missing: true });
+      resolve({ code: err ? (typeof err.code === 'number' ? err.code : null) : 0, stdout, stderr });
+    });
+  });
 
 describe.skipIf(!hasLsof)('lsofLockHolder against the real lsof (WI-10003529)', () => {
   let dir: string | null = null;

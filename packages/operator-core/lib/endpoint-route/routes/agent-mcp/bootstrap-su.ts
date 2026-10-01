@@ -21,6 +21,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { isIP } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
@@ -1653,6 +1654,8 @@ export const bootstrapSu = defineTool({
        *  is on + the id is a valid, allowed pool account. Explicit auto/pin requests
        *  fail closed when unavailable; default/omitted uses the system login. */
       account?: string | null;
+      /** Launcher-selected origin for the Codex superuser MCP config. */
+      mcp_base_url?: string | null;
       /** named-su-agent-fleets P-006: the durable slug of a named fleet to JOIN
        *  (member). Folded into PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE on the
        *  spawn env. Ignored when `fleet_name` is present (a new fleet wins). */
@@ -1759,6 +1762,47 @@ export const bootstrapSu = defineTool({
       );
     }
     const agent: SuAgent = body.agent;
+    const requestOriginUrl = new URL(req.url);
+    let launchMcpBaseUrl = requestOriginUrl.origin;
+    const rawMcpBaseUrl = body.mcp_base_url;
+    if (rawMcpBaseUrl != null) {
+      if (agent !== 'codex') {
+        return jsonRes({ status: 'error', error: 'mcp_base_url is only supported for Codex launches' }, 400);
+      }
+      if (
+        typeof rawMcpBaseUrl !== 'string' ||
+        rawMcpBaseUrl.length > 512 ||
+        rawMcpBaseUrl.trim() !== rawMcpBaseUrl
+      ) {
+        return jsonRes({ status: 'error', error: 'mcp_base_url must be a root HTTP(S) origin' }, 400);
+      }
+      let selectedMcpBaseUrl: URL;
+      try {
+        selectedMcpBaseUrl = new URL(rawMcpBaseUrl);
+      } catch {
+        return jsonRes({ status: 'error', error: 'mcp_base_url must be a root HTTP(S) origin' }, 400);
+      }
+      const hostnameIsLoopback = (hostname: string) => {
+        const normalized = hostname.startsWith('[') && hostname.endsWith(']')
+          ? hostname.slice(1, -1).toLowerCase()
+          : hostname.toLowerCase();
+        return normalized === 'localhost' || normalized === '::1' ||
+          (isIP(normalized) === 4 && normalized.startsWith('127.'));
+      };
+      const sameHost = selectedMcpBaseUrl.hostname.toLowerCase() === requestOriginUrl.hostname.toLowerCase();
+      const sameLocalHost = hostnameIsLoopback(selectedMcpBaseUrl.hostname) &&
+        hostnameIsLoopback(requestOriginUrl.hostname);
+      if (
+        (selectedMcpBaseUrl.protocol !== 'http:' && selectedMcpBaseUrl.protocol !== 'https:') ||
+        selectedMcpBaseUrl.protocol !== requestOriginUrl.protocol ||
+        selectedMcpBaseUrl.username || selectedMcpBaseUrl.password ||
+        selectedMcpBaseUrl.pathname !== '/' || selectedMcpBaseUrl.search || selectedMcpBaseUrl.hash ||
+        (!sameHost && !sameLocalHost)
+      ) {
+        return jsonRes({ status: 'error', error: 'mcp_base_url must be a root HTTP(S) origin on the request host or local loopback' }, 400);
+      }
+      launchMcpBaseUrl = selectedMcpBaseUrl.origin;
+    }
     const workspace = body.workspace?.trim() || activeWorkspaceId();
     const rawGoalBootstrapSubject = body.goal_bootstrap_subject;
     const goalBootstrapSubject = typeof rawGoalBootstrapSubject === 'string'
@@ -1992,7 +2036,7 @@ export const bootstrapSu = defineTool({
         kind: 'su',
         agent,
         workspaceId: workspace,
-        operatorBaseUrl: new URL(req.url).origin,
+        operatorBaseUrl: launchMcpBaseUrl,
         harnessSlug,
         profile,
         contextSize,

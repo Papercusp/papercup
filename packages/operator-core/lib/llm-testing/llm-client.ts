@@ -33,6 +33,7 @@ import {
 } from '../agent-chat-stream';
 import { readCredentials } from '../credentials';
 import { loopbackFetch } from '../loopback-fetch';
+import { CODEX_LLM_DEFAULT_MODEL, codexWireModel, isCodexModel } from './codex-model-pricing';
 
 /** Provider label for classifying a backend's error message (labeling only — rate detection is
     status/regex-based, so this never changes the class). */
@@ -51,10 +52,9 @@ const TEST_BACKEND = process.env.LLM_TEST_BACKEND as AgentBackend | undefined;
 const CODEX_GATEWAY_AUTH = 'papercusp-gateway';
 const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
 
-export function isCodexModel(model: string | undefined): boolean {
-  const m = model?.trim().toLowerCase() ?? '';
-  return /^(chatgpt:|gpt-|openai-codex\/)/.test(m);
-}
+// The routing + price rule lives in codex-model-pricing.ts so write-time seams
+// (steering, pot overrides) apply the same rule this call path enforces (WI-10004526).
+export { isCodexModel };
 
 export function backendForLlmCall(
   model: string | undefined,
@@ -69,11 +69,7 @@ export function modelForLlmCall(model: string | undefined, backend: AgentBackend
   if (backend !== 'codex') return model;
   const trimmed = model?.trim();
   if (!trimmed) return model;
-  const chatgpt = /^chatgpt:(.+)$/i.exec(trimmed);
-  if (chatgpt) return `gpt-${chatgpt[1]}`;
-  const prefix = 'openai-codex/';
-  if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length);
-  return trimmed;
+  return codexWireModel(trimmed);
 }
 
 const KNOWN_EFFORT_SUFFIXES = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -154,14 +150,14 @@ async function llmCallViaCodexGateway(
   model: string | undefined,
   promptText: string,
 ): Promise<LlmCallResult> {
-  const pricedModel = model ?? 'gpt-5.5';
+  const pricedModel = model ?? CODEX_LLM_DEFAULT_MODEL;
   if (!priceFor(pricedModel)) throw new Error('Codex model has no registered usage price: ' + pricedModel);
   const input =
     opts.responseFormat === 'json' && !/\bjson\b/i.test(promptText)
       ? `${promptText}\n\nRespond with valid json.`
       : promptText;
   const body: Record<string, unknown> = {
-    model: model ?? 'gpt-5.5',
+    model: model ?? CODEX_LLM_DEFAULT_MODEL,
     input,
     stream: false,
   };

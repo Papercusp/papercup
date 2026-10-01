@@ -77,9 +77,9 @@ xfs_packages=
 # never abandoned: on 2026-10-01 cap-p005-s8 sat 12+ min in `apt-get install` on one stalled
 # connection to the GCE mirror while three sibling VMs finished in 3 min. Bound each fetch and retry.
 apt_opts=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=5)
-run sudo apt-get "${apt_opts[@]}" update -q
+run sudo apt-get update -q "${apt_opts[@]}"
 # shellcheck disable=SC2046,SC2086 # word-splitting the package lists is intended
-run sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -yq git curl ca-certificates xz-utils zstd build-essential python3 $xfs_packages $(system_packages)
+run sudo env DEBIAN_FRONTEND=noninteractive apt-get install -yq "${apt_opts[@]}" git curl ca-certificates xz-utils zstd build-essential python3 $xfs_packages $(system_packages)
 
 if [ "$mount_cache" = 1 ]; then
   run mkdir -p "$CACHE"

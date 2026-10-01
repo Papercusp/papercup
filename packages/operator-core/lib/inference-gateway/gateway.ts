@@ -918,6 +918,118 @@ export interface GatewayModelResolution {
   context1m: boolean;
 }
 
+/** Reasoning-effort ladder a fallback-lineup Codex model advertises (standard = low..xhigh, max adds max, ultra adds ultra). */
+export type CodexFallbackReasoningTier = 'standard' | 'max' | 'ultra';
+
+export interface CodexFallbackLineupEntry {
+  slug: string;
+  displayName: string;
+  description: string;
+  priority: number;
+  /** Advertised context window; absent = 272,000. */
+  contextWindow?: number;
+  /** Advertised max window; absent = `contextWindow` (a real "no extended window" state). */
+  maxContextWindow?: number;
+  /** Absent = 'standard'. */
+  reasoning?: CodexFallbackReasoningTier;
+}
+
+/**
+ * The Codex model lineup the gateway advertises on `GET /v1/models` when no live
+ * account catalog is available (`codexModelsResponse`). Data only: the response
+ * builder maps each row through its `model()` shape. Windows mirror the upstream
+ * registry (see that builder's note); keep them in sync alongside the lineup.
+ *
+ * Exported so `configured-models-priced.test.ts` derives its population from it
+ * (WI-10004506): every model the gateway offers must have a usage price, or
+ * llm-client's Codex path refuses it at call time (the WI-10004502 Scout outage).
+ */
+export const CODEX_GATEWAY_FALLBACK_LINEUP: readonly CodexFallbackLineupEntry[] = [
+  {
+    slug: 'gpt-6.1-sol',
+    displayName: 'GPT-6.1-Sol',
+    description: 'Latest Sol workhorse for coding and everyday tasks.',
+    priority: 17,
+    contextWindow: 272_000,
+    maxContextWindow: 1_000_000,
+    reasoning: 'max',
+  },
+  {
+    slug: 'gpt-6-astra',
+    displayName: 'GPT-6-Astra',
+    description: 'Our most capable model for complex, demanding work.',
+    priority: 16,
+    contextWindow: 272_000,
+    maxContextWindow: 872_000,
+    reasoning: 'ultra',
+  },
+  {
+    slug: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6-Sol',
+    description: 'Reliable agentic workhorse for everyday tasks.',
+    priority: 15,
+    contextWindow: 272_000,
+    maxContextWindow: 872_000,
+    reasoning: 'ultra',
+  },
+  {
+    slug: 'gpt-6-sol',
+    displayName: 'GPT-6-Sol',
+    description: 'GPT-6 Sol Codex model.',
+    priority: 15,
+    contextWindow: 272_000,
+    maxContextWindow: 872_000,
+    reasoning: 'ultra',
+  },
+  {
+    slug: 'gpt-6-luna',
+    displayName: 'GPT-6-Luna',
+    description: 'GPT-6 Luna Codex model.',
+    priority: 14,
+    contextWindow: 272_000,
+    maxContextWindow: 872_000,
+    reasoning: 'max',
+  },
+  {
+    slug: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6-Terra',
+    description: 'Balanced agentic coding model for everyday work.',
+    priority: 14,
+    contextWindow: 272_000,
+    maxContextWindow: 872_000,
+    reasoning: 'ultra',
+  },
+  {
+    slug: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6-Luna',
+    description: 'Fast and affordable agentic coding model.',
+    priority: 13,
+    contextWindow: 272_000,
+    maxContextWindow: 872_000,
+    reasoning: 'max',
+  },
+  {
+    slug: 'gpt-5.5',
+    displayName: 'GPT-5.5',
+    description: 'Frontier model for complex coding, research, and real-world work.',
+    priority: 12,
+  },
+  {
+    slug: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+    description: 'Strong model for everyday coding.',
+    priority: 11,
+    contextWindow: 272_000,
+    maxContextWindow: 1_000_000,
+  },
+  {
+    slug: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4-Mini',
+    description: 'Small, fast, and cost-efficient model for simpler coding tasks.',
+    priority: 10,
+  },
+];
+
 /** Resolve a CLI model marker to the real upstream model id and its beta requirement. */
 export function resolveGatewayModel(model: string): GatewayModelResolution {
   if (!/\[1m\]/i.test(model)) return { model, context1m: false };
@@ -4982,74 +5094,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
       supports_search_tool: true,
       use_responses_lite: false,
     });
-    const fallbackModels: CodexModel[] = [
+    const reasoningTiers: Record<CodexFallbackReasoningTier, ReasoningLevel[]> = {
+      standard: standardReasoningLevels,
+      max: maxReasoningLevels,
+      ultra: ultraReasoningLevels,
+    };
+    const fallbackModels: CodexModel[] = CODEX_GATEWAY_FALLBACK_LINEUP.map((entry) =>
       model(
-        'gpt-6.1-sol',
-        'GPT-6.1-Sol',
-        'Latest Sol workhorse for coding and everyday tasks.',
-        17,
-        272_000,
-        1_000_000,
-        maxReasoningLevels,
+        entry.slug,
+        entry.displayName,
+        entry.description,
+        entry.priority,
+        entry.contextWindow,
+        entry.maxContextWindow,
+        reasoningTiers[entry.reasoning ?? 'standard'],
       ),
-      model(
-        'gpt-6-astra',
-        'GPT-6-Astra',
-        'Our most capable model for complex, demanding work.',
-        16,
-        272_000,
-        872_000,
-        ultraReasoningLevels,
-      ),
-      model(
-        'gpt-5.6-sol',
-        'GPT-5.6-Sol',
-        'Reliable agentic workhorse for everyday tasks.',
-        15,
-        272_000,
-        872_000,
-        ultraReasoningLevels,
-      ),
-      model(
-        'gpt-6-sol',
-        'GPT-6-Sol',
-        'GPT-6 Sol Codex model.',
-        15,
-        272_000,
-        872_000,
-        ultraReasoningLevels,
-      ),
-      model(
-        'gpt-6-luna',
-        'GPT-6-Luna',
-        'GPT-6 Luna Codex model.',
-        14,
-        272_000,
-        872_000,
-        maxReasoningLevels,
-      ),
-      model(
-        'gpt-5.6-terra',
-        'GPT-5.6-Terra',
-        'Balanced agentic coding model for everyday work.',
-        14,
-        272_000,
-        872_000,
-        ultraReasoningLevels,
-      ),
-      model(
-        'gpt-5.6-luna',
-        'GPT-5.6-Luna',
-        'Fast and affordable agentic coding model.',
-        13,
-        272_000,
-        872_000,
-        maxReasoningLevels,
-      ),
-      model('gpt-5.5', 'GPT-5.5', 'Frontier model for complex coding, research, and real-world work.', 12),
-      model('gpt-5.4', 'GPT-5.4', 'Strong model for everyday coding.', 11, 272_000, 1_000_000),
-      model('gpt-5.4-mini', 'GPT-5.4-Mini', 'Small, fast, and cost-efficient model for simpler coding tasks.', 10),
-    ];
+    );
     const validReasoningLevels = (value: unknown): ReasoningLevel[] =>
       Array.isArray(value)
         ? value.flatMap((level) => {

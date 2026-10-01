@@ -56,6 +56,10 @@ import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
 import { resolvePlanScope } from './source';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
+import {
+  settleAcceptanceReviewReservationsForPlan,
+  type AcceptanceReviewReservationSettlement,
+} from '../../coord/condition-upsert';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { domainFailureMessage } from './plan-activation-gate';
 import { PLAN_STATUSES } from './parser';
@@ -558,6 +562,7 @@ export default defineTool({
         // evidence was (or was not) live. A ship on undeployed evidence is allowed and
         // must never be SILENT.
         let citationDeployment: CitationDeployment | undefined;
+        let acceptanceGateSatisfied = false;
         if (shouldEvaluateAcceptanceGate(status, args.expectedCurrent)) {
           // Match withPlanLock's member → Hive-home resolution. The caller's
           // harness can name a member, while the subject row lives at its home.
@@ -606,6 +611,7 @@ export default defineTool({
               ...acceptanceGraderRefusalFields(gate.repairAction, acceptanceGrader, sweep),
             };
           }
+          acceptanceGateSatisfied = true;
         }
         // EI-19403437795858863 — the deprecate counterpart. The acceptance gate above
         // fires only on `shipped`, so until now a supersede could strand every one of
@@ -706,6 +712,27 @@ export default defineTool({
             intent: `plans:set-plan-status → ${status}`,
             ...(harnessSlug ? { harnessSlug } : {}),
             afterWrite: rev.afterWrite,
+            // Keep the rich acceptance policy in TypeScript. The deferred DB
+            // constraint only verifies that this exact plan transition carries
+            // a receipt from this successful gate evaluation in the same xact.
+            inTransaction: acceptanceGateSatisfied
+              ? async (tx, _writtenBody, scope, value) => {
+                  if (!value.ok || value.newStatus !== 'shipped' || value.changed !== true) return;
+                  await tx`
+                    SELECT set_config(
+                      'papercusp.plan_shipment_acceptance_gate_receipt',
+                      jsonb_build_object(
+                        'schemaVersion', 1,
+                        'transactionId', txid_current()::text,
+                        'workspaceId', ${scope.workspaceId},
+                        'harnessSlug', ${scope.harnessSlug},
+                        'planSlug', ${slug}
+                      )::text,
+                      true
+                    )
+                  `;
+                }
+              : undefined,
           },
           async (current): Promise<{ newBody: string | null; value: SetPlanStatusValue }> => {
             if (current === null) {
@@ -836,12 +863,27 @@ export default defineTool({
         // Repeat on superseded no-ops too, repairing older terminal rows with live rubrics.
         // Best-effort: a busy lock is skipped and the rubric remains resolvable by id.
         let acceptanceRubricRetired: string | null = null;
+        let acceptanceReviewReservations: AcceptanceReviewReservationSettlement | { error: string } | undefined;
         if (status === 'superseded' || (status === 'shipped' && result.value.changed)) {
           const id = resolveAgentIdentity(ctx);
           acceptanceRubricRetired = await retireAcceptanceRubricForPlan(slug, id.ownerId, {
             harnessSlug: result.scope.harnessSlug,
             terminalStatus: status,
           });
+          // EI-24654801606034099: the recruiter FILED a review-target reservation for this
+          // plan, and condition-upsert filings have no auto-settle. With the target terminal,
+          // close any still-open one here; otherwise a grader who graded through their own
+          // item leaves it open forever. Best-effort like the retire above, but a failure is
+          // surfaced on the response rather than swallowed.
+          try {
+            acceptanceReviewReservations = await settleAcceptanceReviewReservationsForPlan(slug, {
+              workspaceId: result.scope.workspaceId,
+              harnessSlug: result.scope.harnessSlug ?? null,
+              terminalStatus: status,
+            });
+          } catch (err) {
+            acceptanceReviewReservations = { error: err instanceof Error ? err.message : String(err) };
+          }
         }
 
         let learningsObservation:
@@ -881,6 +923,12 @@ export default defineTool({
           ...(mappedFrom ? { mappedFrom } : {}),
           ...(learningsObservation ? { learningsObservation } : {}),
           ...(acceptanceRubricRetired ? { acceptanceRubricRetired } : {}),
+          ...(acceptanceReviewReservations &&
+          ('error' in acceptanceReviewReservations ||
+            acceptanceReviewReservations.settled.length > 0 ||
+            acceptanceReviewReservations.failed.length > 0)
+            ? { acceptanceReviewReservations }
+            : {}),
           ...(scopeCascade ? { scopeCascade } : {}),
           // A forced ship is loud in the RESPONSE too, not only in the plan
           // file: the caller who waived the gate should not have to re-read the

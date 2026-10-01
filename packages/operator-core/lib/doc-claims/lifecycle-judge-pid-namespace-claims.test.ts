@@ -19,7 +19,7 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
   });
 
   it('says pids.current counts kernel tasks, including threads', () => {
-    expect(source()).toMatch(/pids\.current counts kernel tasks, including threads, rather than task-manager process rows/i);
+    expect(source()).toMatch(/`?pids\.current`? counts kernel tasks, including threads, rather than task-manager process rows/i);
   });
 
   it('says proxied loopback 502 is not a connection-refused result', () => {

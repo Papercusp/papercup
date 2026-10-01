@@ -1737,6 +1737,34 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for verify-identities-r7.mjs: this operator-invoked acceptance journey awaits each Tauri command before the next UI step, bounds UI/poll commands to 45 seconds, liveness to 15 seconds, and its Git identity read to 5 seconds. It neither detaches children nor retains a resident queue after the journey ends.",
   },
+  {
+    path: "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for mutation-probe-fence.ts: committedUnchanged runs awaited `git ls-tree -z HEAD` and `git hash-object` metadata reads over the probe's finite path list via promisified execFile, each bounded by a 5-second timeout and 1 MiB output, with an outer 10-second deadline that keeps the fence in force on a stall. It detaches nothing and creates no resident queue.",
+  },
+  {
+    path: "packages/operator-core/lib/search/bench/near-duplicate-guard-compare-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for near-duplicate-guard-compare-cli.ts: gitBlob runs one awaited execFileSync(git hash-object <path>) per compared artifact to stamp provenance on this operator-invoked bench CLI; a failure is caught as null. It exits immediately and creates no detached worker or resident queue.",
+  },
+  {
+    path: "packages/operator-core/lib/search/embedding-space-parity-cases.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for embedding-space-parity-cases.ts: censusFilterCallSites runs one awaited execFileSync(git grep --untracked -lE) over packages/apps/libs to enumerate call-site files for an in-process AST census. It is a bounded local metadata search that exits immediately and starts no detached worker or resident queue.",
+  },
+  {
+    path: "scripts/check-tracked-ignored.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-tracked-ignored.mjs: this CI lint script runs awaited spawnSync(git ls-files / check-ignore) metadata reads per repository with a 256 MiB output bound. Each exits immediately, and it creates no detached worker or resident queue.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [

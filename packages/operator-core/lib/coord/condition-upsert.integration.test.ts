@@ -105,7 +105,12 @@ vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
 });
 
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
-const { upsertConditionWorkItem, CONDITION_UPSERT_MARKER } = await import('./condition-upsert');
+const {
+  upsertConditionWorkItem,
+  CONDITION_UPSERT_MARKER,
+  reserveAcceptanceReviewTarget,
+  settleAcceptanceReviewReservationsForPlan,
+} = await import('./condition-upsert');
 const { findConditionObject } = await import('./condition-object');
 const { setWorkItemState } = await import('../work-items');
 const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
@@ -178,6 +183,7 @@ beforeAll(async () => {
       '1135-work-items-epoch-ms-timestamp-guard.sql',
       '1194-work-items-directive-ref.sql',
       '1216-event-await-fired-delivery-intent-marker.sql',
+      '1250-predicate-watch-evaluator-baselines.sql',
     ],
     {
       label: 'condition-upsert.integration',
@@ -311,5 +317,81 @@ describe('createOneWorkItem { conditionKey } — the WI-39604 tool-path leg', ()
     expect(viaTool.conditionUpsert?.adopted).toBe(true);
     expect(viaTool.workItem.id).toBe(seeded.id);
     expect(await openItemsFor(KEY)).toHaveLength(1);
+  });
+});
+
+// EI-24654801606034099: condition-upsert filings have no auto-settle, so a review-target
+// reservation the grader never claimed (they graded through their own item) stayed open
+// after its plan shipped — 32 such rows were measured live. The recruiter (the filer)
+// now settles them when the subject plan goes terminal.
+describe('settleAcceptanceReviewReservationsForPlan — EI-24654801606034099', () => {
+  const statusOf = async (id: string) =>
+    (await db.sql<{ status: string }[]>`SELECT status FROM harness_shared.work_items WHERE feature_id = ${id}`)[0]
+      ?.status;
+  const isTerminal = (status: string | undefined) =>
+    status !== undefined && (ANY_FAMILY_TERMINAL_STATES as readonly string[]).includes(status);
+  const target = (planSlug: string) => ({
+    workspaceId: WS,
+    harnessSlug: H,
+    planSlug,
+    rubricId: `acceptance-${planSlug}`,
+    revision: 3,
+  });
+
+  it('drops the open reservation of a plan that went terminal, and leaves a sibling plan open', async () => {
+    const shipped = await reserveAcceptanceReviewTarget(target('ei2465-shipped'));
+    const sibling = await reserveAcceptanceReviewTarget(target('ei2465-still-reviewing'));
+    expect(shipped.id).toBeTruthy();
+    expect(sibling.id).toBeTruthy();
+    expect(isTerminal(await statusOf(shipped.id!))).toBe(false);
+
+    const out = await settleAcceptanceReviewReservationsForPlan('ei2465-shipped', {
+      workspaceId: WS,
+      harnessSlug: H,
+      terminalStatus: 'shipped',
+    });
+
+    expect(out).toEqual({ settled: [shipped.id], failed: [] });
+    expect(await statusOf(shipped.id!)).toBe('dropped');
+    expect(isTerminal(await statusOf(sibling.id!))).toBe(false);
+  });
+
+  it('is idempotent: a second call finds nothing open and re-touches nothing', async () => {
+    const r = await reserveAcceptanceReviewTarget(target('ei2465-idempotent'));
+    const opts = { workspaceId: WS, harnessSlug: H, terminalStatus: 'shipped' as const };
+    expect((await settleAcceptanceReviewReservationsForPlan('ei2465-idempotent', opts)).settled).toEqual([r.id]);
+    expect(await settleAcceptanceReviewReservationsForPlan('ei2465-idempotent', opts)).toEqual({
+      settled: [],
+      failed: [],
+    });
+    expect(await statusOf(r.id!)).toBe('dropped');
+  });
+
+  it('is scoped by harness and workspace: the same slug elsewhere settles nothing', async () => {
+    const r = await reserveAcceptanceReviewTarget(target('ei2465-scoped'));
+    const otherHarness = await settleAcceptanceReviewReservationsForPlan('ei2465-scoped', {
+      workspaceId: WS,
+      harnessSlug: 'some-other-harness',
+      terminalStatus: 'shipped',
+    });
+    const otherWorkspace = await settleAcceptanceReviewReservationsForPlan('ei2465-scoped', {
+      workspaceId: 'some-other-workspace',
+      harnessSlug: H,
+      terminalStatus: 'shipped',
+    });
+    expect(otherHarness.settled).toEqual([]);
+    expect(otherWorkspace.settled).toEqual([]);
+    expect(isTerminal(await statusOf(r.id!))).toBe(false);
+  });
+
+  it('settles on superseded as well as shipped', async () => {
+    const r = await reserveAcceptanceReviewTarget(target('ei2465-superseded'));
+    const out = await settleAcceptanceReviewReservationsForPlan('ei2465-superseded', {
+      workspaceId: WS,
+      harnessSlug: H,
+      terminalStatus: 'superseded',
+    });
+    expect(out.settled).toEqual([r.id]);
+    expect(await statusOf(r.id!)).toBe('dropped');
   });
 });

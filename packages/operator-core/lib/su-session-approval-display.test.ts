@@ -17,9 +17,10 @@ describe('readable tool-approval cards (pui-chat-first-ux P-008)', () => {
     const input = { file_path: `${CWD}/calc.js`, old_string: 'function add(a, b) {\n  return a - b;\n}',
       new_string: 'function add(a, b) {\n  return a + b;\n}', replace_all: false };
     const card = approvalCardText('Edit', input, { cwd: CWD });
+    // The title already names calc.js relative to the chat: no second path line
+    // (P-020).
     expect(card.prompt.split('\n')).toEqual([
       'Allow Update(calc.js)?',
-      `${CWD}/calc.js`,
       'Add 1 line, remove 1 line',
       '-   return a - b;',
       '+   return a + b;',
@@ -33,6 +34,30 @@ describe('readable tool-approval cards (pui-chat-first-ux P-008)', () => {
   it('keeps a path outside the launch directory absolute and does not repeat it', () => {
     const card = approvalCardText('Read', { file_path: '/etc/hosts' }, { cwd: CWD });
     expect(card.prompt).toBe('Allow Read(/etc/hosts)?');
+  });
+
+  it('shows a clipped title\'s full path once, relative to the chat, never absolute (P-020)', () => {
+    const rel = `src/components/${'deeply-nested-folder/'.repeat(4)}Widget.tsx`;
+    const card = approvalCardText('Edit', { file_path: `${CWD}/${rel}`, old_string: 'a', new_string: 'b' }, { cwd: CWD });
+    const [headline, ...rest] = card.prompt.split('\n');
+    expect(headline).toMatch(/^Allow Update\(src\/components\/.*…\)\?$/);
+    expect(rest[0]).toBe(rel);
+    expect(card.prompt).not.toContain(CWD);
+    expect(card.prompt.split('\n').filter((line) => line.includes('Widget.tsx'))).toHaveLength(1);
+  });
+
+  it('adds a path under a Claude title only when that title does not name the file (P-020)', () => {
+    const input = { file_path: `${CWD}/calc.js`, old_string: 'a', new_string: 'b' };
+    expect(approvalCardText('Edit', input, { cwd: CWD, title: 'Claude wants to edit calc.js' }).prompt.split('\n')[1])
+      .toBe('Add 1 line, remove 1 line');
+    expect(approvalCardText('Edit', input, { cwd: CWD, title: `Claude wants to edit ${CWD}/calc.js` }).prompt.split('\n')[1])
+      .toBe('Add 1 line, remove 1 line');
+    expect(approvalCardText('Edit', input, { cwd: CWD, title: 'Claude wants to make an edit' }).prompt.split('\n')[1])
+      .toBe('calc.js');
+    // A file whose name ends another name in the title is not "named" by it.
+    const data = { file_path: `${CWD}/a.js`, old_string: 'a', new_string: 'b' };
+    expect(approvalCardText('Edit', data, { cwd: CWD, title: 'Claude wants to edit data.js' }).prompt.split('\n')[1])
+      .toBe('a.js');
   });
 
   it('shows the whole command under a clipped shell title', () => {

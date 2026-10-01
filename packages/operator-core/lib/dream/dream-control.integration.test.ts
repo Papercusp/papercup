@@ -1,4 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { insertHiveIfAbsent } from '../hive-store';
@@ -60,6 +64,46 @@ describe('Dream controls persist atomically in real PostgreSQL', () => {
     expect((await readDreamRoutineControls(db.adminSql, { workspaceId, potSlug: 'dream-control-pot-b' })).every((row) => !row.active)).toBe(true);
     expect((await getOwnerSteering(workspaceId, scope.potSlug, db.adminSql)).idleActivities).toBeNull();
   });
+
+  it('native counterexample acknowledges the real Start under update publication and rejects a missing replica identity', async () => {
+    const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+    const nativeSource = readFileSync(new URL('../../../../scripts/verify-dream-native.sh', import.meta.url), 'utf8');
+    const faultFunction = nativeSource.match(/runtime_fault\(\) \{[\s\S]*?\nNODE\n\}/)?.[0];
+    expect(faultFunction).toBeTruthy();
+    const runFault = (action: string) => promisify(execFile)('bash', ['-c',
+      `${faultFunction}\nruntime_fault "$1"`, 'dream-native-fixture-test', action], {
+      cwd: repoRoot, timeout: 20_000,
+      env: { ...process.env, POT: scope.potSlug, PAPERCUSP_WORKSPACE_ID: workspaceId,
+        HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.appDsn, DATABASE_URL: db.adminDsn },
+    });
+    try {
+      // Execute the maintained fixture, including its real db-org connection.
+      await runFault('install');
+      await db.adminSql.unsafe("CREATE PUBLICATION dream_native_test_updates FOR TABLE harness_shared.dream_native_fault WITH (publish = 'update')");
+      await setDreamControl(db.adminSql, { ...scope, mode: 'manual', enabled: true, actor: 'test' }, read);
+      await runFault('verify');
+      expect((await read(db.adminSql, scope)).manual.active).toBe(false);
+
+      // This distinguishing control recreates the measured failure; the same
+      // Start must now refuse and roll back instead of establishing the fault.
+      await db.adminSql.unsafe('ALTER TABLE harness_shared.dream_native_fault DROP CONSTRAINT dream_native_fault_pkey');
+      await expect(setDreamControl(db.adminSql, { ...scope, mode: 'manual', enabled: true, actor: 'test' }, read))
+        .rejects.toThrow('replica identity');
+      await runFault('verify');
+      await db.adminSql.unsafe('ALTER TABLE harness_shared.dream_native_fault ADD PRIMARY KEY (workspace_id, pot_slug)');
+      await runFault('remove');
+
+      // Removing the fault restores the very same writer's positive journey.
+      for (const enabled of [true, false, true, false]) {
+        await setDreamControl(db.adminSql, { ...scope, mode: 'manual', enabled, actor: 'test' }, read);
+        expect((await read(db.adminSql, scope)).manual.active).toBe(enabled);
+      }
+      expect((await read(db.adminSql, scope)).automatic.enabled).toBe(false);
+    } finally {
+      await runFault('remove');
+      await db.adminSql.unsafe('DROP PUBLICATION IF EXISTS dream_native_test_updates');
+    }
+  }, 80_000);
 
   it('starts with persisted raised manual limits and refuses auto at its own lower cap', async () => {
     await db.adminSql`UPDATE harness_shared.routines

@@ -1,7 +1,19 @@
 /**
  * Phase 4 T2.3 scratch GC + quota unit tests.
  */
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+
+// Pass-through spies on the SYNCHRONOUS fs calls, so a test can prove the reservation hot path
+// never touches the disk synchronously (WI-10004513). Behaviour is the real implementation.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readdirSync: vi.fn(actual.readdirSync),
+    statSync: vi.fn(actual.statSync),
+    existsSync: vi.fn(actual.existsSync),
+  };
+});
 import {
   mkdtempSync,
   mkdirSync,
@@ -10,6 +22,7 @@ import {
   existsSync,
   utimesSync,
   readdirSync,
+  statSync,
 } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +34,11 @@ import {
   RETENTION_MS,
   _resetScratchGcCountersForTests,
   scratchEvictionBytes,
+  refreshScratchUsage,
+  scratchUsageBytes,
+  _setScratchUsageForTests,
+  _resetScratchUsageForTests,
+  WORKSPACE_QUOTA_BYTES,
 } from './scratch-gc';
 
 // Tests run against a sandbox scratch root so they don't touch the
@@ -111,6 +129,76 @@ describe('reserveScratchSpace — quota enforcement', () => {
 
   it('rejects negative bytes', () => {
     expect(() => reserveScratchSpace({ workspaceId: 'ws-A', bytes: -1 })).toThrow(ScratchQuotaError);
+  });
+});
+
+describe('reserveScratchSpace — no synchronous walk on the hot path (WI-10004513)', () => {
+  beforeEach(() => {
+    _resetScratchUsageForTests();
+  });
+  afterEach(() => {
+    _resetScratchUsageForTests();
+  });
+
+  it('calibration: the spies DO see scratch-gc.ts sync fs calls (so the zero-call assertions are not vacuous)', () => {
+    makeRunDir('ws-A', 'tool', UUID(9), 64);
+    vi.mocked(readdirSync).mockClear();
+    vi.mocked(statSync).mockClear();
+    runScratchGc({ workspaceRegistry: ['ws-A'] }); // the hourly sweep still walks synchronously
+    expect(vi.mocked(readdirSync)).toHaveBeenCalled();
+    expect(vi.mocked(statSync)).toHaveBeenCalled();
+  });
+
+  it('performs ZERO synchronous fs calls, however large the tree', async () => {
+    // A populated tree: the old implementation did a recursive readdirSync+statSync over all of it
+    // on every reservation, which blocked the :3070 worker's event loop past the 20s sentinel.
+    for (let i = 0; i < 40; i++) makeRunDir('ws-A', `tool-${i % 4}`, UUID(i), 128);
+    await refreshScratchUsage('ws-A'); // fresh cache → no background re-measure either
+    vi.mocked(readdirSync).mockClear();
+    vi.mocked(statSync).mockClear();
+    vi.mocked(existsSync).mockClear();
+    for (let i = 0; i < 25; i++) reserveScratchSpace({ workspaceId: 'ws-A', bytes: 64 });
+    expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(statSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(existsSync)).not.toHaveBeenCalled();
+  });
+
+  it('also does no synchronous fs work when the cache is stale (the re-measure is async)', () => {
+    makeRunDir('ws-A', 'tool', UUID(1), 4096);
+    vi.mocked(readdirSync).mockClear();
+    vi.mocked(statSync).mockClear();
+    vi.mocked(existsSync).mockClear();
+    reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 }); // never measured → kicks a background refresh
+    expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(statSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(existsSync)).not.toHaveBeenCalled();
+    expect(scratchUsageBytes('ws-A')).toBe(10); // the reservation itself is counted immediately
+  });
+
+  it('a stale reservation triggers ONE background re-measure that replaces the cached total', async () => {
+    makeRunDir('ws-A', 'tool-a', UUID(1), 1000);
+    makeRunDir('ws-A', 'tool-b', UUID(2), 2000);
+    reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
+    reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
+    await refreshScratchUsage('ws-A'); // joins the in-flight measure started by the first reservation
+    expect(scratchUsageBytes('ws-A')).toBe(3000);
+  });
+
+  it('refreshScratchUsage measures the tree size asynchronously (missing tree = 0)', async () => {
+    await refreshScratchUsage('ws-empty');
+    expect(scratchUsageBytes('ws-empty')).toBe(0);
+    makeRunDir('ws-B', 'tool', UUID(3), 5000);
+    makeRunDir('ws-B', 'tool', UUID(4), 7000);
+    await refreshScratchUsage('ws-B');
+    expect(scratchUsageBytes('ws-B')).toBe(12000);
+  });
+
+  it('still enforces the workspace quota against the cached total', () => {
+    _setScratchUsageForTests('ws-A', WORKSPACE_QUOTA_BYTES - 1000);
+    expect(() => reserveScratchSpace({ workspaceId: 'ws-A', bytes: 600 })).not.toThrow();
+    // 600 is now counted, so another 600 overflows.
+    expect(() => reserveScratchSpace({ workspaceId: 'ws-A', bytes: 600 })).toThrow(ScratchQuotaError);
+    expect(scratchUsageBytes('ws-A')).toBe(WORKSPACE_QUOTA_BYTES - 400);
   });
 });
 

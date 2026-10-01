@@ -1177,6 +1177,46 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex', mode: 'console' }));
   });
 
+  it('uses the validated Codex MCP base for buildLaunchSpec while the envelope keeps request origin', async () => {
+    const selectedMcpBase = 'http://127.0.0.1:9071';
+    const { buildConsoleEnvelope } = await import('../../console-launcher');
+    vi.mocked(buildConsoleEnvelope).mockClear();
+    buildLaunchSpecMock.mockClear();
+
+    const res = await callPost({
+      agent: 'codex',
+      harness_slug: null,
+      plan_slug: null,
+      mcp_base_url: selectedMcpBase,
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(
+      expect.objectContaining({ operatorBaseUrl: selectedMcpBase }),
+    );
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({ operatorBaseUrl: 'http://localhost:3070' }),
+    );
+    expect(json.envelopeEnv.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3070');
+  });
+
+  it('rejects an untrusted Codex MCP base before it can create a session', async () => {
+    buildLaunchSpecMock.mockClear();
+    recordAdvSessionMock.mockClear();
+    writeSuCodexHomeMock.mockClear();
+
+    const res = await callPost({
+      agent: 'codex',
+      harness_slug: null,
+      plan_slug: null,
+      mcp_base_url: 'https://outside.example',
+    });
+    expect(res.status).toBe(400);
+    expect(buildLaunchSpecMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+  });
+
   it('uses the configured Sol xhigh default only for a visible Codex bootstrap', async () => {
     const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null });
     expect(res.status).toBe(200);

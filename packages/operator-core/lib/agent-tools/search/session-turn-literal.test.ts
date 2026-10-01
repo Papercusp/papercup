@@ -15,7 +15,10 @@ import {
   expandableTokens,
   fuzzyVariant,
   markFirst,
+  orderFuzzyVariants,
+  resolveVariantsIsolated,
   tieredHitToWire,
+  type LiteralRow,
   type SessionTurnLiteralHit,
 } from './session-turn-literal';
 
@@ -368,5 +371,163 @@ describe('tieredHitToWire (the /search-transcripts wire projection)', () => {
     expect(wire.tier).not.toBe('fuzzy');
     expect('focusTerm' in wire).toBe(false);
     expect(wire.matchedBy).toBe('lexical');
+  });
+});
+
+// ── WI-10004501 / D-009: per-variant isolation of the fuzzy tier ──────────────────────────────────
+
+const lrow = (sid: string, idx: number, epoch: number | null, needle: string | null = null): LiteralRow => ({
+  source_kind: 'claude',
+  session_id: sid,
+  turn_idx: idx,
+  speaker: 'user',
+  owner: null,
+  harness_slug: null,
+  ts: null,
+  sort_epoch: epoch,
+  needle,
+  needle_ord: needle ? 0 : null,
+  snippet: `${sid}:${idx}`,
+});
+const rowIds = (rows: LiteralRow[]): string[] => rows.map((r) => `${r.session_id}:${r.turn_idx}`);
+
+describe('orderFuzzyVariants', () => {
+  it('orders best-similarity first, keeps generation order on ties, and collapses a duplicate text onto its BEST match', () => {
+    const { texts, byText } = orderFuzzyVariants([
+      { text: 'low', match: { similarity: 0.31 } },
+      { text: 'tie-first', match: { similarity: 0.5 } },
+      { text: 'best', match: { similarity: 0.9 } },
+      { text: 'tie-second', match: { similarity: 0.5 } },
+      { text: 'best', match: { similarity: 0.4 } }, // same text, worse pair: must not displace the 0.9 match
+    ]);
+    expect(texts).toEqual(['best', 'tie-first', 'tie-second', 'low']);
+    expect(byText.get('best')).toEqual({ similarity: 0.9 });
+  });
+});
+
+describe('resolveVariantsIsolated', () => {
+  const OPTS = { limit: 10, totalDeadlineMs: 2000, variantDeadlineMs: 500 };
+
+  it('Fuzzy variant isolation regression: a variant that times out is skipped while the other variants hits are KEPT', async () => {
+    const calls: string[] = [];
+    const out = await resolveVariantsIsolated(
+      ['good', 'slow', 'also-good'],
+      async (variant) => {
+        calls.push(variant);
+        if (variant === 'slow') return { rows: [], deadline: true };
+        return { rows: [lrow(variant, 0, 100, variant)], deadline: false };
+      },
+      OPTS,
+    );
+    expect(calls).toEqual(['good', 'slow', 'also-good']); // the slow variant did not abort the rest
+    expect(rowIds(out.rows).sort()).toEqual(['also-good:0', 'good:0']);
+    expect(out.timedOut).toEqual(['slow']); // reported on the receipt, never silent
+    expect(out.deadline).toBe(true); // the tier is still honestly marked 'deadline'
+  });
+
+  it('falsifiability control: the PRE-FIX shape (one batch, any timeout zeroes everything) fails the isolation scenario above', async () => {
+    const scenario: Record<string, { rows: LiteralRow[]; deadline: boolean }> = {
+      good: { rows: [lrow('good', 0, 100)], deadline: false },
+      slow: { rows: [], deadline: true },
+      'also-good': { rows: [lrow('also-good', 0, 100)], deadline: false },
+    };
+    const run = async (variant: string) => scenario[variant]!;
+    // The pre-fix behaviour, kept here permanently as the wrong implementation: any variant timeout
+    // abandons the whole tier, so the hits the other variants found are lost.
+    const batchAbandonsOnTimeout = async (variants: readonly string[]) => {
+      const rows: LiteralRow[] = [];
+      for (const v of variants) {
+        const r = await run(v);
+        if (r.deadline) return { rows: [] as LiteralRow[], deadline: true, timedOut: [...variants] };
+        rows.push(...r.rows);
+      }
+      return { rows, deadline: false, timedOut: [] as string[] };
+    };
+    const variants = ['good', 'slow', 'also-good'];
+    const wrong = await batchAbandonsOnTimeout(variants);
+    const real = await resolveVariantsIsolated(variants, run, OPTS);
+    expect(wrong.rows).toEqual([]); // the defect the isolation test would catch
+    expect(rowIds(real.rows).sort()).toEqual(['also-good:0', 'good:0']); // calibration: the real one keeps both
+  });
+
+  it('every variant timing out yields no rows but names each one', async () => {
+    const out = await resolveVariantsIsolated(['a', 'b'], async () => ({ rows: [], deadline: true }), OPTS);
+    expect(out.rows).toEqual([]);
+    expect(out.timedOut).toEqual(['a', 'b']);
+    expect(out.deadline).toBe(true);
+  });
+
+  it('no timeouts: deadline false and nothing reported', async () => {
+    const out = await resolveVariantsIsolated(['a'], async () => ({ rows: [lrow('a', 0, 1)], deadline: false }), OPTS);
+    expect(out.deadline).toBe(false);
+    expect(out.timedOut).toEqual([]);
+    expect(rowIds(out.rows)).toEqual(['a:0']);
+  });
+
+  it('the TOTAL deadline is respected: each run gets min(variant cap, remaining), and once spent the rest never run', async () => {
+    let clock = 0;
+    const seen: Array<{ variant: string; deadlineMs: number }> = [];
+    const out = await resolveVariantsIsolated(
+      ['v1', 'v2', 'v3', 'v4', 'v5'],
+      async (variant, deadlineMs) => {
+        seen.push({ variant, deadlineMs });
+        clock += 400; // every variant burns 400 ms of the 1000 ms budget
+        return { rows: [lrow(variant, 0, 100)], deadline: false };
+      },
+      { limit: 10, totalDeadlineMs: 1000, variantDeadlineMs: 500, now: () => clock },
+    );
+    expect(seen).toEqual([
+      { variant: 'v1', deadlineMs: 500 }, // remaining 1000 -> capped by the per-variant deadline
+      { variant: 'v2', deadlineMs: 500 }, // remaining 600
+      { variant: 'v3', deadlineMs: 200 }, // remaining 200 -> clipped to what is left
+    ]); // v4 / v5 never ran: the budget was spent at 1200 ms
+    expect(out.timedOut).toEqual(['v4', 'v5']);
+    expect(out.deadline).toBe(true);
+    expect(rowIds(out.rows).sort()).toEqual(['v1:0', 'v2:0', 'v3:0']); // hits found before the cut survive
+  });
+
+  it('dedupes a turn matched by several variants (earliest variant wins its row) and merges newest-first, nulls last', async () => {
+    const byVariant: Record<string, LiteralRow[]> = {
+      first: [lrow('x', 1, 100, 'first'), lrow('y', 2, 300, 'first'), lrow('n', 0, null, 'first')],
+      second: [lrow('y', 2, 300, 'second'), lrow('z', 3, 200, 'second')],
+    };
+    const out = await resolveVariantsIsolated(
+      ['first', 'second'],
+      async (variant) => ({ rows: byVariant[variant]!, deadline: false }),
+      OPTS,
+    );
+    expect(rowIds(out.rows)).toEqual(['y:2', 'z:3', 'x:1', 'n:0']);
+    expect(out.rows.find((r) => r.session_id === 'y')!.needle).toBe('first');
+  });
+
+  it('applies the row limit AFTER the newest-first merge, so the page keeps the newest turns across variants', async () => {
+    const out = await resolveVariantsIsolated(
+      ['old', 'new'],
+      async (variant) => ({ rows: [lrow(variant, 0, variant === 'old' ? 10 : 99)], deadline: false }),
+      { ...OPTS, limit: 1 },
+    );
+    expect(rowIds(out.rows)).toEqual(['new:0']);
+  });
+
+  it('with best-similarity-first input the budget cut drops the LEAST similar variants', async () => {
+    let clock = 0;
+    const ordered = orderFuzzyVariants([
+      { text: 'least', match: { similarity: 0.3 } },
+      { text: 'best', match: { similarity: 0.9 } },
+      { text: 'middle', match: { similarity: 0.6 } },
+      { text: 'second-least', match: { similarity: 0.35 } },
+    ]);
+    const ran: string[] = [];
+    const out = await resolveVariantsIsolated(
+      ordered.texts,
+      async (variant) => {
+        ran.push(variant);
+        clock += 600;
+        return { rows: [], deadline: false };
+      },
+      { limit: 10, totalDeadlineMs: 1000, variantDeadlineMs: 500, now: () => clock },
+    );
+    expect(ran).toEqual(['best', 'middle']);
+    expect(out.timedOut).toEqual(['second-least', 'least']);
   });
 });

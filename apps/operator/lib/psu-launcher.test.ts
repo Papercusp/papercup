@@ -4459,6 +4459,23 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
+  it("freshSuBootstrapBody forwards the selected MCP base only for Codex", () => {
+    const selectedMcpBase = "http://127.0.0.1:9071";
+    const codex = freshSuBootstrapBody(
+      { agent: "codex", workspace: "ws1", harness: null, plan: null },
+      {},
+      { mcpBaseUrl: selectedMcpBase },
+    );
+    expect(codex.mcp_base_url).toBe(selectedMcpBase);
+
+    const claude = freshSuBootstrapBody(
+      { agent: "claude", workspace: "ws1", harness: null, plan: null },
+      {},
+      { mcpBaseUrl: selectedMcpBase },
+    );
+    expect("mcp_base_url" in claude).toBe(false);
+  });
+
   it("freshSuBootstrapBody carries a stable replay key only when the fresh launcher supplies one", () => {
     const selections = {
       agent: "codex",

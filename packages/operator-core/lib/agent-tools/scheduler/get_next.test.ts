@@ -265,9 +265,7 @@ beforeEach(() => {
   reconcileFleetScopeClaimsM.mockImplementation(async () => ({
     scope: scopeState.scope,
     quarantinedIds: scopeState.quarantinedIds,
-    ...(scopeState.fleetAssignmentRows
-      ? { fleetAssignmentRows: scopeState.fleetAssignmentRows }
-      : {}),
+    ...(scopeState.fleetAssignmentRows ? { fleetAssignmentRows: scopeState.fleetAssignmentRows } : {}),
   }));
   readFleetPauseStateM.mockImplementation(async () => ({
     windingDown: scopeState.windingDown,
@@ -978,8 +976,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Simulate the pool-contention stall: the atomic claim never resolves within the budget.
     let claimSignal: AbortSignal | undefined;
-    getNextM.mockImplementation((args: { signal?: AbortSignal }) => {
+    getNextM.mockImplementation((args: { signal?: AbortSignal; onClaimStep?: (step: string) => void }) => {
       claimSignal = args.signal;
+      args.onClaimStep?.('claim-concurrency-read');
       return new Promise(() => {});
     });
     const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
@@ -1001,10 +1000,13 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
       possiblyClaimed: true,
       heldIds: [],
       claimReconciliation: 'none-observed',
+      lastClaimStep: 'claim-concurrency-read',
     });
     expect(typeof b.message).toBe('string');
     // The message must point the caller at the real failure (idle-timeout abort) + the retry.
     expect(b.message).toContain('300s');
+    expect(b.message).toContain('claim-concurrency-read');
+    expect(b.message).not.toContain('likely transient PG pool');
     // A transient timeout is NOT a drained lane — windDown must never be set for it.
     expect(b.windDown).toBeUndefined();
     // The bounded-timeout deadline fired (the fail-fast) — assert it explicitly.
@@ -1012,6 +1014,37 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(claimSignal).toBeInstanceOf(AbortSignal);
     expect(claimSignal?.aborted).toBe(true);
     expect(readClaimConcurrencyM).toHaveBeenCalledWith({ cupId: 'su-member', workspaceId: 'ws-1' });
+    warnSpy.mockRestore();
+  });
+
+  it('distinguishes a candidate stall from setup and freezes the phase before late progress', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let reportStep: ((step: string) => void) | undefined;
+    getNextM.mockImplementation((args: { onClaimStep?: (step: string) => void }) => {
+      reportStep = args.onClaimStep;
+      reportStep?.('candidate-resolution');
+      return new Promise(() => {});
+    });
+    readClaimConcurrencyM.mockImplementation(async () => {
+      reportStep?.('claim-audit');
+      return { blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] };
+    });
+    const metadata = vi.fn();
+    const pending = getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never);
+    await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
+    const out = (await pending) as { content: Array<{ text: string }> };
+    expect(JSON.parse(out.content[0]!.text)).toMatchObject({
+      error: 'timeout',
+      lastClaimStep: 'candidate-resolution',
+      possiblyClaimed: true,
+    });
+    expect(metadata).toHaveBeenCalledWith({
+      schedulerTimeout: {
+        phase: 'claim',
+        lastClaimStep: 'candidate-resolution',
+      },
+    });
     warnSpy.mockRestore();
   });
 

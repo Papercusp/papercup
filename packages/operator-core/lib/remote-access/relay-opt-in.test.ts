@@ -495,6 +495,14 @@ describe('a portal that does not answer is reported with the reason the request 
     expect(describeFetchFailure(new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }))).toBe('fetch failed: ECONNRESET');
   });
 
+  it('control: the pre-fix message (err.message only) fails the same check, so the check can fail', () => {
+    const err = undiciFailure('EAI_AGAIN', 'getaddrinfo EAI_AGAIN app.papercusp.com');
+    const preFix = (e: unknown) => (e instanceof Error ? e.message : String(e));
+    const namesTheCause = (s: string) => s.includes('EAI_AGAIN');
+    expect(namesTheCause(preFix(err))).toBe(false);
+    expect(namesTheCause(describeFetchFailure(err))).toBe(true);
+  });
+
   it('leaves an error without a cause (the 15s timeout) as its own message', () => {
     const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
     expect(describeFetchFailure(timeout)).toBe('The operation was aborted due to timeout');

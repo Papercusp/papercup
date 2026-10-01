@@ -203,3 +203,48 @@ describe('listPlanRowsMatchingAnyToken slug prefilter arm (source.ts)', () => {
     expect(rows.map((r) => r.planSlug)).toContain(SLUG_B);
   });
 });
+
+describe('listPlanRowsMatchingAnyToken candidate ordering', () => {
+  it('keeps a late-slug plan matching more query terms ahead of common-token noise', async () => {
+    const tokens = ['needle', 'reaper', 'confirm', 'abandoned'];
+    const noiseSlugs = [
+      'aaa-candidate-noise-01',
+      'aaa-candidate-noise-02',
+      'aaa-candidate-noise-03',
+      'aaa-candidate-noise-04',
+    ];
+    const targetSlug = 'zzz-late-relevance-target';
+    const makePlan = (title: string, body: string) => `---
+title: ${title}
+created: 2026-06-14
+updated: 2026-06-14
+status: active
+---
+
+# ${title}
+
+${body}
+`;
+
+    for (const [index, slug] of noiseSlugs.entries()) {
+      await seedPlan(admin, WS, HARNESS, slug, makePlan(`Noise ${index}`, 'The needle marker is common.'));
+    }
+    await seedPlan(
+      admin,
+      WS,
+      HARNESS,
+      targetSlug,
+      makePlan('Late relevance target', 'Needle reaper confirm abandoned. The full query is present.'),
+    );
+
+    const { rows, truncated } = await listPlanRowsMatchingAnyToken(tokens, {
+      harnessSlug: HARNESS,
+      workspaceId: WS,
+      includeArchived: true,
+      limit: 3,
+    });
+
+    expect(truncated).toBe(true);
+    expect(rows[0]?.planSlug).toBe(targetSlug);
+  });
+});

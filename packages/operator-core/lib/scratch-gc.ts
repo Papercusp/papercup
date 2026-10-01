@@ -32,7 +32,9 @@ import {
   existsSync,
   mkdirSync,
 } from 'node:fs';
+import { readdir as readdirAsync, stat as statAsync } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
 
 /** Retention window for run-dirs since last mtime. 24h default. */
@@ -171,12 +173,119 @@ export function runScratchGc(opts: {
 }
 
 /**
+ * How stale a workspace's cached usage total may get before the next reservation kicks off a
+ * background re-measure. Between measurements the total tracks this process's own reservations;
+ * other processes' writes and GC deletions are picked up on the next re-measure. The quota is a
+ * coarse disk-safety net (5 GB vs ~0.4 GB in practice), so minutes of drift are immaterial.
+ */
+export const USAGE_REFRESH_MS = 5 * 60 * 1000;
+
+interface ScratchUsageEntry {
+  /** Best-known bytes used: last async measurement + reservations made since. */
+  bytes: number;
+  /** When the last completed measurement finished (0 = never measured). */
+  measuredAt: number;
+  /** In-flight background measurement, if any (at most one per workspace). */
+  refreshing: Promise<void> | null;
+}
+
+/** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
+ *  fork it into two caches that each under-count. */
+const usageState = pinModuleState('@papercusp/operator-core.scratch-gc.usage', () => ({
+  byWorkspace: new Map<string, ScratchUsageEntry>(),
+}));
+
+function usageEntry(workspaceId: string): ScratchUsageEntry {
+  let entry = usageState.byWorkspace.get(workspaceId);
+  if (!entry) {
+    entry = { bytes: 0, measuredAt: 0, refreshing: null };
+    usageState.byWorkspace.set(workspaceId, entry);
+  }
+  return entry;
+}
+
+/**
+ * Measure a directory tree's size ASYNCHRONOUSLY and SEQUENTIALLY (one fs op in flight at a
+ * time): it never blocks the event loop, and it occupies at most one libuv threadpool thread,
+ * so a slow disk can't starve the pool other async I/O shares.
+ */
+async function sizeOfDirAsync(dir: string): Promise<number> {
+  let entries;
+  try {
+    entries = await readdirAsync(dir, { withFileTypes: true });
+  } catch {
+    return 0; // missing or unreadable — counts as empty
+  }
+  let total = 0;
+  for (const entry of entries) {
+    const child = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await sizeOfDirAsync(child);
+    } else {
+      try {
+        total += (await statAsync(child)).size;
+      } catch {
+        /* vanished mid-walk (GC) — skip */
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Re-measure a workspace's scratch usage in the background and replace the cached total.
+ * Concurrent callers share the one in-flight measurement. Exported for tests and for any host
+ * that wants to warm the cache.
+ */
+export function refreshScratchUsage(workspaceId: string, now: () => number = Date.now): Promise<void> {
+  const entry = usageEntry(workspaceId);
+  if (entry.refreshing) return entry.refreshing;
+  const run = (async () => {
+    try {
+      const measured = await sizeOfDirAsync(scratchRootForWorkspace(workspaceId));
+      entry.bytes = measured;
+      entry.measuredAt = now();
+    } finally {
+      entry.refreshing = null;
+    }
+  })();
+  entry.refreshing = run;
+  return run;
+}
+
+/** This process's current best-known usage total for a workspace (0 before any measurement). */
+export function scratchUsageBytes(workspaceId: string): number {
+  return usageState.byWorkspace.get(workspaceId)?.bytes ?? 0;
+}
+
+/** Test-only: seed a workspace's cached usage total (skips the measurement). */
+export function _setScratchUsageForTests(workspaceId: string, bytes: number, measuredAt = Date.now()): void {
+  const entry = usageEntry(workspaceId);
+  entry.bytes = bytes;
+  entry.measuredAt = measuredAt;
+}
+
+/** Test-only: forget every cached usage total. */
+export function _resetScratchUsageForTests(): void {
+  usageState.byWorkspace.clear();
+}
+
+/**
  * Single-write reservation. Throws ScratchQuotaError if writing
  * `bytes` would push the workspace past WORKSPACE_QUOTA_BYTES.
  * Caller is responsible for actually performing the write.
  * Doesn't reserve atomically — concurrent writes could race past
  * the quota by a small margin; acceptable for the chat-tool use
  * case (we're not transactional).
+ *
+ * O(1) and touches NO filesystem (WI-10004513, owner Avi 2026-10-01). It used to recompute usage
+ * with a synchronous recursive readdir+stat of the whole workspace tree on EVERY spill write — ~70k
+ * blocking syscalls at 17k run dirs, on the request worker's main thread. Under ext4 contention one
+ * of those readdirs blocked >20s in D-state and the event-loop sentinel SIGKILLed the :3070 worker
+ * with every in-flight MCP call (61 kills in 6h). It now checks a cached per-workspace total that a
+ * background, non-blocking re-measure refreshes every USAGE_REFRESH_MS. Until the first measure
+ * lands (just after boot) the total starts at 0, so only the single-write cap applies — the hourly
+ * runScratchGc quota eviction still bounds the tree.
  */
 export function reserveScratchSpace(opts: {
   workspaceId: string;
@@ -190,14 +299,18 @@ export function reserveScratchSpace(opts: {
       `scratch reservation: single write of ${opts.bytes} bytes exceeds workspace quota ${WORKSPACE_QUOTA_BYTES}`,
     );
   }
-  const wsRoot = scratchRootForWorkspace(opts.workspaceId);
-  let used = 0;
-  if (existsSync(wsRoot)) used = sizeOfDir(wsRoot);
+  const entry = usageEntry(opts.workspaceId);
+  if (!entry.refreshing && Date.now() - entry.measuredAt >= USAGE_REFRESH_MS) {
+    // Fire-and-forget: the caller never waits on the disk. A failed measure keeps the old total.
+    void refreshScratchUsage(opts.workspaceId).catch(() => {});
+  }
+  const used = entry.bytes;
   if (used + opts.bytes > WORKSPACE_QUOTA_BYTES) {
     throw new ScratchQuotaError(
       `scratch reservation: workspace ${opts.workspaceId} used ${used} + ${opts.bytes} > quota ${WORKSPACE_QUOTA_BYTES}`,
     );
   }
+  entry.bytes = used + opts.bytes;
 }
 
 /** Ensure the scratch directory chain exists for a (workspace, tool, run). */

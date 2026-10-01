@@ -184,17 +184,33 @@ export interface ApprovalCardText {
   details: string;
 }
 
+/** Whether `text` names `path` as a whole token: `a.js` is not named by
+ * `data.js`, and `calc.js` is not named by `/tmp/proj/calc.js`. */
+function names(text: string, path: string): boolean {
+  for (let at = text.indexOf(path); at !== -1; at = text.indexOf(path, at + 1)) {
+    const before = at === 0 ? '' : text[at - 1]!;
+    const after = text[at + path.length] ?? '';
+    if (!/[\w./-]/.test(before) && !/[\w/-]/.test(after)) return true;
+  }
+  return false;
+}
+
 /** The text of one native tool-approval card. A `title` Claude supplies is
  * kept (it is already human text); otherwise the readable tool title is asked
- * about. The full path is shown under the title when the title shortened it,
- * so the owner always sees exactly which file is affected. */
+ * about. The file's path, relative to the chat's launch directory like the
+ * title's, is added once under the headline only when the headline does not
+ * already name it (a clipped title, or a Claude title that omits the file), so
+ * the owner always sees which file is affected without reading it twice
+ * (pui-chat-first-ux P-020). */
 export function approvalCardText(toolName: string, input: unknown,
   options: { title?: string; description?: string; decisionReason?: string; cwd?: string } = {}): ApprovalCardText {
   const { name, input: args } = effective(toolName, record(input));
   const display = toolTitle(toolName, input, options.cwd);
   const path = str(args, 'file_path') ?? str(args, 'notebook_path');
-  const fullPath = path && !display.title.includes(`(${path})`) ? [path] : [];
-  const lines = [options.title || `Allow ${display.title}?`, ...fullPath, ...display.body,
+  const headline = options.title || `Allow ${display.title}?`;
+  const shownPath = path ? displayPath(path, options.cwd) : undefined;
+  const pathLine = path && shownPath && !names(headline, shownPath) && !names(headline, path) ? [shownPath] : [];
+  const lines = [headline, ...pathLine, ...display.body,
     options.description, options.decisionReason].filter((line): line is string => Boolean(line && line.trim()));
   // Claude's permission-request description is usually the tool input's own
   // description (a Bash call's), which the body already shows: say it once.

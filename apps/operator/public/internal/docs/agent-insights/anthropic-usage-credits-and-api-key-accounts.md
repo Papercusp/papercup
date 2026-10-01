@@ -23,11 +23,11 @@ API keys are a credential kind of the `claude` provider, not a separate provider
 accounts:register { id: 'console-key-1', provider: 'claude', credentialRef: 'apikey:credentials' }
 ```
 
-| credentialRef        | where the key is read from                                                                                  |
-| -------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `apikey:credentials` | the operator credentials store's `anthropic_api_key`, written by `setup:save_key { provider: 'anthropic' }` |
-| `apikey:env:NAME`    | the gateway process's environment variable `NAME`                                                           |
-| `apikey:file:<path>` | a file holding the key                                                                                      |
+| credentialRef        | where the key is read from                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apikey:credentials` | the operator credentials store's `anthropic_api_key`, written by `setup:save_key { key: 'anthropic_api_key', value: '<Console API key>' }` |
+| `apikey:env:NAME`    | the gateway process's environment variable `NAME`                                                                                          |
+| `apikey:file:<path>` | a file holding the key                                                                                                                     |
 
 The ref is a **reference**, never the secret. The key is read once and cached. An upstream 401 invalidates the cache, so a rotated key is picked up on the next request without a gateway restart. A subscription OAuth token stored at an `apikey:` source is refused with a message naming the right `token:` form. API-key accounts authenticate with `x-api-key`, not the OAuth bearer.
 
@@ -59,7 +59,7 @@ These responses mean the account cannot serve until billing changes or the perio
 * `402` `billing_error`;
 * `400` "You have reached your specified ... API usage limits";
 * `429` with `error.details.error_code = enforced_spend_limit_reached` and no `retry-after`;
-* a subscription response with `overage-status: rejected` plus a disabled reason.
+* a subscription response whose included allowance is rejected and whose `overage-status` is rejected with a disabled reason. An allowed included response remains serviceable when overage is disabled.
 
 An ordinary API `429` **with** `retry-after` stays a transient rate window. Parsing and classification live in `anthropic-billing.ts`.
 
@@ -72,8 +72,32 @@ An ordinary API `429` **with** `retry-after` stays a transient rate window. Pars
 
 Each tally holds `requests`, `inputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `outputTokens`, `usageKnown` and `outputKnown`. The last two count the requests whose usage was actually observed; a stream that closed early contributes a request without tokens. Counters are **in-memory since gateway boot**: a restart zeroes them.
 
-`accounts:list` shows each account's registered `credentialRef` (an `apikey:` scheme marks an API-key account) and `meteredPolicy`. Live billing state and metered totals come from the gateway, not the pool store, so read `/stats` for them.
+`accounts:status` carries the same view per account (WI-10004486). Each claude row has a `billing` field holding that account's `billing.byAccount` entry, and the response carries a top-level `billing: { source, reachable, supported, metered }`. The tool takes ONE `/stats` snapshot and shares it with the edge-throttle fields, so both describe the same instant.
+
+* `billing: 'unavailable'` — the gateway did not answer. This is **unknown**, not "unmetered".
+* `billing: 'not-observed'` — the gateway answered but has not served that account since boot, or it predates this plan (`supported: false`).
+* Codex rows carry no `billing` field; the Anthropic billing model does not apply to them.
+
+`accounts:list` shows each account's registered `credentialRef` (an `apikey:` scheme marks an API-key account) and `meteredPolicy` from the pool store. It carries no live billing state.
 
 ## Tests
 
-`anthropic-billing.test.ts` (header and body parsing, walls), `metered-selection.test.ts` (included-first, overflow, `never`, pins), `metered-spend.test.ts` (billing class, per-account totals, billing state), `credential-store-apikey.test.ts` and `claude-auth-mode.test.ts` (API-key credentials, auth mode).
+`anthropic-billing.test.ts` (header and body parsing, walls), `metered-selection.test.ts` (included-first, overflow, `never`, pins), `metered-spend.test.ts` (billing class, per-account totals, billing state), `credential-store-apikey.test.ts` and `claude-auth-mode.test.ts` (API-key credentials, auth mode), and `accounts.test.ts` (the `accounts:status` billing join).
+
+## Live verification and credential prerequisite (2026-10-01)
+
+P-010/WI-10004443 restarted the gateway through `dev:restart`. The resulting process started at `2026-10-01T01:55:30.329Z`; its gateway build was `2dc4a60da4`, and `dev:pipeline_position` confirmed the changed gateway source was loaded. No operator or release-gate restart was needed.
+
+A small streaming `POST /v1/messages` request using `claude-haiku-4-5`, `max_tokens: 8`, and automatic routing returned HTTP 200 at `2026-10-01T02:10:58.915Z`. Both `message_start` and `message_stop` arrived. The response named account `aviynw6` and request `req_011CfahsQnnDA1NusbRhncDQ`. Real upstream headers reported unified status `allowed_warning` and overage `rejected`/`org_level_disabled`; the same process's `/stats` reported that account as `included`, `authMode: oauth`, and `meteredNow: false`. Disabled overage did not wall the included allowance.
+
+The operator's `anthropic_api_key` existed, but an API-key request through a temporarily registered `apikey:credentials` account returned HTTP 401, `authentication_error: invalid x-api-key` at `2026-10-01T02:14:32.189Z` (request `req_011Cfai99wWUr6DukNu8ytMk`). This does not establish Console funding or successful API-credit spend. The temporary account was removed and `gateway:reload` restored the original eight OAuth accounts. Credential replacement and the real API-credit check are assigned to the fleet leader in WI-10004490.
+
+Supply a valid funded Console key through the existing credential store, then register and hot-reload the pool:
+
+```text
+setup:save_key { key: 'anthropic_api_key', value: '<Console API key>' }
+accounts:register { id: 'anthropic-console-credits', provider: 'claude', credentialRef: 'apikey:credentials' }
+gateway:reload {}
+```
+
+Send one small `/v1/messages` request through `:8788` with `x-papercusp-account: anthropic-console-credits`, `x-papercusp-account-pin: hard`, and the caller's `x-papercusp-owner`. Require HTTP 200 and a matching `billing.byAccount` entry with `authMode: api-key` and a served `api-credits` tally. A hard pin keeps this credential check from silently falling back to a subscription. Never put the key in the repository or report its value.

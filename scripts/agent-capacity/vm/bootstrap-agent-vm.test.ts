@@ -57,9 +57,9 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
     const apt = r.stdout.split('\n').filter((l) => l.startsWith('RUN ') && l.includes('apt-get'));
     expect(apt.length).toBe(2);
     for (const l of apt) {
-      expect(l).toMatch(/ -o Acquire::http::Timeout=30 /);
-      expect(l).toMatch(/ -o Acquire::https::Timeout=30 /);
-      expect(l).toMatch(/ -o Acquire::Retries=5 /);
+      expect(l).toMatch(/ -o Acquire::http::Timeout=30(?: |$)/);
+      expect(l).toMatch(/ -o Acquire::https::Timeout=30(?: |$)/);
+      expect(l).toMatch(/ -o Acquire::Retries=5(?: |$)/);
     }
   });
 

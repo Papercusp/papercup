@@ -1810,6 +1810,22 @@ SELECT file_path, status FROM harness_shared.test_runs
 ```
 
 Then per path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repairHead>:<path>`: **DIFFERENT blobs mean the fix ALREADY LANDED** and the file awaits re-verification, not repair. Equal blobs are the real queue. For a SUBMODULE path the blobs are identical while the gitlink moved — use `git diff --raw <candidate> <repairHead> -- <sub> | grep '^:160000'`. And `filesJudged` is the AFFECTED RADIUS, never the ~6,700-file suite: an empty failing list is **not** "the gate is green".
+
+`testing:runs` returns a parser-validated `root` from `execution_details` but has no root filter. To LOCATE rows recorded under an isolated checkpoint tree, use the exact non-null root it returned and the frozen candidate SHA in a separate **diagnostic locator only**:
+
+```sql
+SELECT id, file_path, status, source, worktree_dirty, commit_sha, run_group_id
+  FROM harness_shared.test_runs
+ WHERE workspace_id='<workspace id from testing:runs>'
+   AND harness_slug='<harness slug from testing:runs>'
+   AND execution_details->>'root'='<exact checkpoint root from testing:runs>'
+   AND commit_sha='<the frozen candidate sha>'
+   AND source='local' AND worktree_dirty=true
+   AND status IN ('fail','error')
+ ORDER BY finished_at DESC NULLS LAST, started_at DESC;
+```
+
+If `root` is null, do not guess the checkout path or treat zero rows as absence. Add the exact `run_group_id` when known to narrow the query to one invocation. This is only a locator for rows and files: dirty `source='local'` rows do **NOT** prove those failures occurred on the frozen candidate and must never be counted as candidate failures. Use only `candidateFailures` or the clean `source='ci' AND worktree_dirty=false` population above for that verdict.
 #### Why the `test_runs` routing row exists — the measured failure
 
 `harness_shared.test_runs` mixes three populations and only one of them judges the frozen

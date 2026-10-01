@@ -193,7 +193,25 @@ const KNOWN_RESIDUE: Array<{ algorithm: string; file: string; workItem: string }
 ];
 
 const SOURCES = walk(join(OPERATOR_CORE, 'lib'));
-const CODE = new Map(SOURCES.map((abs) => [opRel(abs), read(abs)]));
+
+// Copy-out mutation probes substitute ONE walked file with a mutant copy, so
+// falsifiability is proven without dirtying the shared tree:
+// PAPERCUSP_MOVED_ALGORITHMS_SUBJECT='<operator-core-relative path>=<absolute copy path>'.
+const SUBJECT = (() => {
+  const raw = process.env.PAPERCUSP_MOVED_ALGORITHMS_SUBJECT;
+  if (!raw) return null;
+  const at = raw.indexOf('=');
+  const rel = raw.slice(0, at);
+  if (at < 1 || !SOURCES.some((abs) => opRel(abs) === rel)) {
+    // A substitution that matches no walked file would leave the run measuring the
+    // real tree while the probe believes it measured the mutant.
+    throw new Error(`PAPERCUSP_MOVED_ALGORITHMS_SUBJECT names no walked file: ${raw}`);
+  }
+  return { rel, copy: raw.slice(at + 1) };
+})();
+const CODE = new Map(
+  SOURCES.map((abs) => [opRel(abs), read(SUBJECT && opRel(abs) === SUBJECT.rel ? SUBJECT.copy : abs)]),
+);
 
 describe('moved algorithms live only in @papercusp/search (R-14)', () => {
   it('the walk covers operator-core/lib, including every host module (non-vacuous)', () => {

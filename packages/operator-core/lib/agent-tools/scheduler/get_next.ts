@@ -228,6 +228,7 @@ export const MISS_BREAKDOWN_BUDGET_MS = 1_500;
 export function getNextTimeoutResult(
   budgetMs = GET_NEXT_BUDGET_MS,
   reconciliation: ClaimTimeoutReconciliation = { status: 'unknown', heldIds: [] },
+  lastClaimStep?: string,
 ): {
   ok: false;
   error: 'timeout';
@@ -236,6 +237,7 @@ export function getNextTimeoutResult(
   possiblyClaimed: true;
   heldIds: string[];
   claimReconciliation: ClaimTimeoutReconciliationStatus;
+  lastClaimStep?: string;
   message: string;
 } {
   const reconciliationNote =
@@ -253,13 +255,15 @@ export function getNextTimeoutResult(
     possiblyClaimed: true,
     heldIds: reconciliation.heldIds,
     claimReconciliation: reconciliation.status,
+    ...(lastClaimStep ? { lastClaimStep } : {}),
     message:
-      `scheduler:get_next exceeded its ${budgetMs}ms internal budget (likely transient PG pool ` +
-      `contention) and returned a fast error instead of hanging until the MCP client's 300s ` +
+      `scheduler:get_next exceeded its ${budgetMs}ms internal budget` +
+      (lastClaimStep ? ` at claim step "${lastClaimStep}"` : '') +
+      ` and returned a fast error instead of hanging until the MCP client's 300s ` +
       `idle-timeout abort (EI-18167154191955470). The claim promise may still commit after this ` +
       `response, so possiblyClaimed is true. ${reconciliationNote} Reconcile the held ids before ` +
-      `retrying; if the timeout persists, the account/PG pool may be saturated (see ` +
-      `accounts:status / dev:rate_governor_status).`,
+      `retrying. The last entered step identifies the unresolved phase, not its cause; ` +
+      `measure that phase before attributing the timeout to database or pool contention.`,
   };
 }
 
@@ -1475,9 +1479,7 @@ export default defineTool({
           currentPreflightStep = 'fleet-leader-liveness';
           const leaderLiveness = await diagnoseFleetScopeLeaderLiveness({
             scope: reconciliation.scope,
-            ...(reconciliation.fleetAssignmentRows
-              ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows }
-              : {}),
+            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
           });
           if (leaderLiveness === false) return { kind: 'leader-unavailable', reconciliation };
         }
@@ -1732,11 +1734,16 @@ export default defineTool({
       });
     };
     const claimBudgetMs = remainingBudgetMs();
+    let lastClaimStep = 'claim-start';
+    const onClaimStep = (step: string): void => {
+      lastClaimStep = step;
+    };
     const claim = await withBoundedTimeout(
       (signal) =>
         getNextForBee({
           cupId: ident.ownerId,
           onPlanLaneBlocked,
+          onClaimStep,
           // EI-21830839826880925: ordinary MCP reads can occupy every slot on the
           // process-wide org pool. Keep pickup on its own tiny transactional pool so a
           // fleet member does not spend the whole 30s claim budget waiting behind them.
@@ -1769,14 +1776,27 @@ export default defineTool({
     // not become a generic `handler_error` that strands the fleet pull loop (EI-20224136729541724).
     if (claim.degraded && claim.reason === 'error') {
       if (claim.error instanceof OrgTxnTimeoutError) {
+        ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep } });
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(getNextContentionResult(claim.error)) }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ...getNextContentionResult(claim.error),
+                lastClaimStep,
+              }),
+            },
+          ],
         };
       }
       throw new Error(claim.errorMessage ?? 'scheduler:get_next claim failed');
     }
     // Budget exceeded: return the fast, retryable timeout miss instead of hanging to the abort.
     if (claim.degraded) {
+      // Snapshot before reconciliation: its reads are a separate phase and an abandoned
+      // resolver may make late progress while they run. Preserve the timeout's own evidence.
+      const timedOutClaimStep = lastClaimStep;
+      ctx.metadata?.({ schedulerTimeout: { phase: 'claim', lastClaimStep: timedOutClaimStep } });
       // EI-22737570207805341: withBoundedTimeout is a Promise.race and does not cancel the
       // abandoned claim. The resolver can therefore commit after this watchdog fires. Read the
       // caller's held rows before responding, but preserve UNKNOWN when that read fails or also
@@ -1804,7 +1824,7 @@ export default defineTool({
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(getNextTimeoutResult(claimBudgetMs, timeoutReconciliation)),
+            text: JSON.stringify(getNextTimeoutResult(claimBudgetMs, timeoutReconciliation, timedOutClaimStep)),
           },
         ],
       };
@@ -2032,9 +2052,7 @@ export default defineTool({
           diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope }),
           diagnoseFleetScopeLeaderLiveness({
             scope: reconciliation.scope,
-            ...(reconciliation.fleetAssignmentRows
-              ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows }
-              : {}),
+            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
           }),
         ]);
         if (featureFamilyMatched && featureFamilyMatched > 0) {

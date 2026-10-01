@@ -13278,7 +13278,11 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
 export function freshSuBootstrapBody(
   selections,
   args,
-  { brain = false, bootstrapIdempotencyKey = null } = {},
+  {
+    brain = false,
+    bootstrapIdempotencyKey = null,
+    mcpBaseUrl = OPERATOR_TARGET.url,
+  } = {},
 ) {
   bootstrapIdempotencyKey ||= args.bootstrapIdempotencyKey || null;
   const launchMode = launchModeFromArgs(args);
@@ -13300,6 +13304,11 @@ export function freshSuBootstrapBody(
     workspace: selections.workspace,
     harness_slug: selections.harness,
     plan_slug: selections.plan,
+    // Codex writes this base into its per-session MCP config. Keep it separate
+    // from the bootstrap request origin, which the server uses for control-plane env.
+    ...(selections.agent === "codex" && mcpBaseUrl
+      ? { mcp_base_url: mcpBaseUrl }
+      : {}),
     // WI-41363: stable across every fetchWithResilience replay of THIS launch.
     // bootstrap-su caches the completed response under the existing agent-launch
     // ledger, so an upstream-silent 502 can be retried without minting a second

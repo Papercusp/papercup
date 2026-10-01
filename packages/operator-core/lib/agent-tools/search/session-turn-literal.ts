@@ -369,6 +369,21 @@ async function vocabNeighbours(
 }
 
 /**
+ * Order fuzzy variants BEST-SIMILARITY FIRST and collapse duplicate texts onto their best match
+ * (WI-10004501 / D-009): the variant list is consumed front-to-back under a total budget, so the tail
+ * the budget drops must be the LEAST similar. The sort is stable (ties keep generation order) and a
+ * text produced by several (token, word) pairs keeps the first — i.e. highest-similarity — match.
+ */
+export function orderFuzzyVariants<M extends { similarity: number }>(
+  variants: ReadonlyArray<{ text: string; match: M }>,
+): { texts: string[]; byText: Map<string, M> } {
+  const sorted = [...variants].sort((a, b) => b.match.similarity - a.match.similarity);
+  const byText = new Map<string, M>();
+  for (const v of sorted) if (!byText.has(v.text)) byText.set(v.text, v.match);
+  return { texts: [...byText.keys()], byText };
+}
+
+/**
  * Resolve fuzzy variants ISOLATED (WI-10004501): `run` executes ONE variant under `deadlineMs`; a variant
  * that times out is recorded and skipped, never allowed to zero the others. `variants` are best-similarity
  * first, so on budget exhaustion the dropped tail is the least likely. Rows merge newest-first
@@ -435,9 +450,7 @@ export async function retrieveSessionTurnFuzzy(
   if (variants.length === 0) return { hits: [], deadline, expanded, timedOutVariants: [] };
 
   // Best-similarity variant first: it runs first and wins a turn that several variants contain.
-  variants.sort((a, b) => b.match.similarity - a.match.similarity);
-  const byText = new Map(variants.map((v) => [v.text, v.match] as const));
-  const texts = [...byText.keys()];
+  const { texts, byText } = orderFuzzyVariants(variants);
   // One statement per variant: a lossy-trigram variant (73k candidates / 0 true matches, 5.8 s on the real
   // corpus) times out alone instead of zeroing the batch (WI-10004501).
   const resolved = await resolveVariantsIsolated(

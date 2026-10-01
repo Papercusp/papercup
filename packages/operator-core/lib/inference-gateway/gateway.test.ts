@@ -2158,8 +2158,9 @@ test('UNPINNED request steers to the least-utilized healthy account up front, no
   // retry + stall-absorb ladder (~90s) before shedding — surfacing to the caller as an opaque 500 — while the
   // SAME request PINNED to a healthy account returned 200 in <25s. The proactive health pick must route the
   // unpinned request to the account with the MOST residual budget BEFORE forwarding. The reactive paused-walk
-  // does NOT cover this: 'hot' is at 0.85 unified utilization (> 0.8 pace watermark, < 0.95 predictive-pause
-  // watermark), so it PACES but its governor.pausedUntil stays <= now — only the proactive pick routes around it.
+  // does NOT cover this: 'hot' is at 0.85 unified utilization but still ALLOWED, so its governor.pausedUntil
+  // stays <= now (allowed windows neither pause nor pace — WI-10004492/WI-10004505) — only the proactive
+  // least-utilized pick routes around it.
   resetGovernorRegistry();
   upstream = await startUpstream((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -2177,7 +2178,7 @@ test('UNPINNED request steers to the least-utilized healthy account up front, no
   };
   gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 80 });
   port = await gw.listen(0);
-  // Seed 'hot' to 0.85 unified 5h utilization with a FUTURE reset + allowed status → it PACES but is NOT paused.
+  // Seed 'hot' to 0.85 unified 5h utilization with a FUTURE reset + allowed status → NOT paused (and not paced).
   const futureResetSec = Math.round(Date.now() / 1000) + 3600;
   getGovernor('anthropic', 'opus', undefined, 'hot').recordResponse({
     'anthropic-ratelimit-unified-5h-status': 'allowed',

@@ -39,6 +39,12 @@ vi.mock('../../deployment/account-pool', () => ({
   getAccount: vi.fn(() => ({ id: 'A1', label: 'acct' })),
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
+// The live gateway seam. Unmocked, accounts:status and accounts:reset-rate would make REAL
+// requests to the :8788 gateway on this box from a unit test. Default: the gateway is down.
+vi.mock('../../inference-gateway/observability', () => ({
+  fetchGatewayStatsRaw: vi.fn(async () => null),
+  readmitGatewayAccounts: vi.fn(async () => ({ reachable: false, readmitted: [] })),
+}));
 
 import {
   loadAccountPool,
@@ -46,10 +52,15 @@ import {
   handleAccountExhausted,
   accountStatus,
   poolVerdictByProvider,
+  type AccountStatusRow,
   type ProviderPoolVerdict,
 } from '../../deployment/account-pool-store';
 import { getAccount, recordAccountReset } from '../../deployment/account-pool';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { fetchGatewayStatsRaw } from '../../inference-gateway/observability';
+import type { GatewayAccountBilling } from '../../inference-gateway/gateway';
+import type { RawGatewayStats } from '../../inference-gateway/gateway-wedge';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
+const statsM = vi.mocked(fetchGatewayStatsRaw);
 const loadM = vi.mocked(loadAccountPool);
 const saveM = vi.mocked(updateAccountPool);
 const exhaustM = vi.mocked(handleAccountExhausted);
@@ -231,8 +242,9 @@ describe('accounts:status', () => {
     statusM.mockResolvedValue([] as never);
     await statusTool.handler({ workspace: 'ws-7' } as never, {} as never);
     // P-002: one `now` is threaded through BOTH reads so the rows and their rollup cannot be
-    // evaluated at two different instants.
-    expect(statusM).toHaveBeenCalledWith('ws-7', expect.any(Number));
+    // evaluated at two different instants. WI-10004486: the handler's one /stats snapshot (the
+    // mocked gateway is down ⇒ null) is injected rather than re-fetched inside accountStatus.
+    expect(statusM).toHaveBeenCalledWith('ws-7', expect.any(Number), { gatewayStats: null });
   });
 
   it('P-002: returns a per-provider poolVerdict rolled up from THOSE rows, at the same instant', async () => {
@@ -258,6 +270,105 @@ describe('accounts:status', () => {
     // Derived from the SAME rows the caller sees — not a second, independently-read population.
     expect(verdictM).toHaveBeenCalledWith(rows, expect.any(Number));
     expect(verdictM.mock.calls[0]![1]).toBe(statusM.mock.calls[0]![1]);
+  });
+
+  // WI-10004486: live billing state + metered totals exist only in the gateway's memory, so
+  // accounts:status joins the gateway's /stats billing.byAccount entry onto each claude row.
+  describe('WI-10004486: gateway billing join', () => {
+    const tally = {
+      requests: 3,
+      inputTokens: 120,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      outputTokens: 40,
+      usageKnown: 3,
+      outputKnown: 3,
+    };
+    const overageBilling: GatewayAccountBilling = {
+      state: 'usage-credits',
+      stateUntil: 1_790_900_000_000,
+      meteredNow: true,
+      authMode: 'oauth',
+      meteredPolicy: 'overflow',
+      classes: { 'usage-credits': tally },
+      metered: tally,
+    };
+    // A COMPLETE AccountStatusRow (no `as never`): a cast would hide this fixture going stale
+    // the next time the row type gains a required field.
+    function statusRow(overrides: Partial<AccountStatusRow> & { id: string }): AccountStatusRow {
+      return {
+        provider: 'claude',
+        credentialRef: `token:/tmp/${overrides.id}`,
+        boundTo: [],
+        available: true,
+        usageWalled: false,
+        sustainedlyLimited: false,
+        edgeThrottleKnown: false,
+        edgeThrottled: false,
+        edgeThrottleCooledIps: 0,
+        edgeThrottleBare429Streak: 0,
+        rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 },
+        liveBuckets: [],
+        readingStatus: 'never-observed',
+        burn: {
+          burnRatePerHr: null,
+          headroomFraction: null,
+          projectedExhaustionAt: null,
+          exhaustsBeforeReset: false,
+          action: 'none',
+          utilization7d: null,
+          disposition: 'no-verdict',
+          reason: 'fixture',
+        },
+        ...overrides,
+      };
+    }
+    const rows = [statusRow({ id: 'C1' }), statusRow({ id: 'C2' }), statusRow({ id: 'X1', provider: 'codex' })];
+
+    it("joins each claude row with its gateway billing entry and marks unseen accounts 'not-observed'", async () => {
+      mockResolvedTyped(statusM, rows);
+      const stats: RawGatewayStats & { billing: unknown } = {
+        billing: { byAccount: { C1: overageBilling }, metered: tally },
+      };
+      mockResolvedOnceTyped(statsM, stats);
+      const b = body((await statusTool.handler({} as never, {} as never)) as Out);
+      expect(b.accounts[0]).toEqual({ ...rows[0], billing: overageBilling });
+      expect(b.accounts[1]).toEqual({ ...rows[1], billing: 'not-observed' });
+      // The Anthropic billing model does not apply to codex: no key, not a fabricated value.
+      expect(b.accounts[2]).toEqual(rows[2]);
+      expect(b.accounts[2]).not.toHaveProperty('billing');
+      expect(b.billing).toEqual({ source: 'gateway:/stats', reachable: true, supported: true, metered: tally });
+      // ONE /stats read, shared with accountStatus so edge-throttle and billing describe one instant.
+      expect(statsM).toHaveBeenCalledTimes(1);
+      expect(statsM).toHaveBeenCalledWith({ timeoutMs: 500 });
+      expect(statusM).toHaveBeenCalledWith('default', expect.any(Number), { gatewayStats: stats });
+      // The rollup still reads the store rows, unchanged by the join.
+      expect(verdictM).toHaveBeenCalledWith(rows, expect.any(Number));
+    });
+
+    it("an unreachable gateway reads billing:'unavailable' on every claude row, never an omission", async () => {
+      mockResolvedTyped(statusM, rows);
+      mockResolvedOnceTyped(statsM, null);
+      const b = body((await statusTool.handler({} as never, {} as never)) as Out);
+      expect(b.ok).toBe(true);
+      expect(b.accounts.map((r: { billing?: unknown }) => r.billing)).toEqual(['unavailable', 'unavailable', undefined]);
+      expect(b.billing).toEqual({ source: 'gateway:/stats', reachable: false, supported: false });
+      // null is injected (not undefined), so accountStatus does not re-fetch the dead gateway.
+      expect(statusM).toHaveBeenCalledWith('default', expect.any(Number), { gatewayStats: null });
+    });
+
+    it("a gateway without a billing block (pre-P-009 build) reads 'not-observed', flagged supported:false", () => {
+      const { accounts, billing } = mod.joinGatewayBilling(rows, { totalRequests: 4 });
+      expect(accounts.map((r) => r.billing)).toEqual(['not-observed', 'not-observed', undefined]);
+      expect(billing).toEqual({ source: 'gateway:/stats', reachable: true, supported: false });
+    });
+
+    it('does not resolve an inherited property name as a billing entry', () => {
+      const { accounts } = mod.joinGatewayBilling([{ id: 'toString', provider: 'claude' }], {
+        billing: { byAccount: {} },
+      });
+      expect(accounts[0]!.billing).toBe('not-observed');
+    });
   });
 });
 
