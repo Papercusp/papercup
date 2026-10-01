@@ -134,8 +134,17 @@ beforeAll(async () => {
   // into a fixture failure. Keep the fixture honest about the runtime table instead of mocking
   // the emit away: this suite is meant to exercise the complete claim path.
   // The key-fire latch resolves subscribers from event_awaits (WI-10004234), so the
-  // whole shared event substrate is needed, not just event_key_fires (WI-10004700).
-  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'scheduler/get-next.integration.test.ts' });
+  // whole shared event substrate is needed, not just event_key_fires (WI-10004700). The
+  // latch's subscriber lookup also reads coord_entity_subscriptions (123, last widened by
+  // 1257), so apply the same coordination extras as work-items-release-request.
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'scheduler/get-next.integration.test.ts',
+    extra: [
+      '123-coordination-substrate.sql',
+      '602-work-item-follow-blockers.sql',
+      '1257-coord-entity-subscriptions-allow-muted.sql',
+    ],
+  });
   // The claim path records the latest coordination-post id in the claimed row's
   // payload.  This focused fixture exercises real claims but does not bootstrap the
   // full coordination substrate, so provide the minimal runtime shape that query

@@ -359,6 +359,8 @@ const HAND_APPLIED_EVENT_MIGRATION_HOLDOUTS: Readonly<Record<string, string>> = 
 
 /** Files that are fixtures (paths relative to operator-core): tests, test/ helpers, *-rig.ts. */
 function isFixtureSource(rel: string): boolean {
+  // The extension check also drops directories, which a recursive readdir lists too.
+  if (!/\.m?ts$/.test(rel)) return false;
   return /\.test\.m?ts$/.test(rel) || rel.startsWith('test/') || /-rig\.ts$/.test(rel);
 }
 
@@ -403,6 +405,7 @@ describe('no fixture hand-applies an event-substrate migration (WI-10004700)', (
     expect(isFixtureSource('test/_work-items-schema.ts')).toBe(true);
     expect(isFixtureSource('lib/shared-pot-loop/composition-rig.ts')).toBe(true);
     expect(isFixtureSource('lib/pg-read-query.ts')).toBe(false);
+    expect(isFixtureSource('test/fixtures')).toBe(false);
   });
 
   const hits = scanFixtureSources();

@@ -172,8 +172,15 @@ beforeAll(async () => {
   // unrelated to the NULL-semantics assertions.
   // The key-fire latch resolves subscribers from event_awaits (WI-10004234), so the
   // whole shared event substrate is needed, not just event_key_fires (WI-10004700).
+  // The latch's subscriber lookup also reads coord_entity_subscriptions (123, last widened
+  // by 1257): same coordination extras as get-next and work-items-release-request.
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'scheduler/claim-spec-null-semantics.integration.test.ts',
+    extra: [
+      '123-coordination-substrate.sql',
+      '602-work-item-follow-blockers.sql',
+      '1257-coord-entity-subscriptions-allow-muted.sql',
+    ],
   });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
