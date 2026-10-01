@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 0acdf43ea472774686e9b9569a363f85c127ba2632a4a0e42d5918760a2fe143
+ * Migration digest: f7e1682e643a177c8d32c7fcb826138c4e51449005f664113a69ac2a49777a59
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "0acdf43ea472774686e9b9569a363f85c127ba2632a4a0e42d5918760a2fe143";
+  "f7e1682e643a177c8d32c7fcb826138c4e51449005f664113a69ac2a49777a59";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -32,6 +32,8 @@ export const GENERATED_TABLES = [
   "reports",
   "settlement_batch_vouchers",
   "settlement_batches",
+  "transparency_live",
+  "transparency_statements",
   "treasury_safe_deployment_records",
   "treasury_safe_deployments",
   "treasury_transfer_gate",
@@ -398,6 +400,25 @@ export interface SettlementBatchesRow {
   created_at_ms: number;
   updated_at_ms: number;
   finalized_at_ms: number | null;
+}
+
+export interface TransparencyLiveRow {
+  workspace_id: string;
+  month: string;
+  report_json: string;
+  statement_status_json: string;
+  generated_at_ms: number;
+  received_at_ms: number;
+}
+
+export interface TransparencyStatementsRow {
+  workspace_id: string;
+  month: string;
+  digest: string;
+  signature: string;
+  signer: string;
+  signed_json: string;
+  published_at_ms: number;
 }
 
 export interface TreasurySafeDeploymentRecordsRow {

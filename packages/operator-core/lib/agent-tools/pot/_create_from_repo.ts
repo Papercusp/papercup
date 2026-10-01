@@ -52,6 +52,7 @@ import {
   topicAsHex,
 } from '../../sync/hyperbee/derive-swarm-topic';
 import { trackDetached } from '../../detached-imports';
+import type { NewHiveGitModeOutcome } from '../../harness/git-sync/new-hive-git-mode-default';
 
 // ── Options / results ─────────────────────────────────────────────────────────
 
@@ -132,6 +133,9 @@ export type CreatePotFromRepoResult =
       /** git-sync-any-pot B-01: outcome of seeding the member's `system:git-sync`
        *  routine. Best-effort — a failed/ineligible seed never fails the create. */
       gitSync: SeedGitSyncRoutineOutcome;
+      /** P-503: outcome of applying the new-hive default `hiveGit.mode`. Absent
+       *  for an into-pot add (the existing home's mode is never touched). */
+      hiveGitMode?: NewHiveGitModeOutcome;
     };
 
 // ── Injectable seams (tests pass fakes; production uses the defaults) ─────────
@@ -171,6 +175,10 @@ export interface CreatePotFromRepoDeps {
    *  Default: seedGitSyncRoutineForMember (lazy-imported). Best-effort — a
    *  seeding failure NEVER fails the create (mirrors the publish discipline). */
   seedGitSync?: (opts: SeedGitSyncRoutineOpts) => Promise<SeedGitSyncRoutineOutcome>;
+  /** P-503 (WI-10004765): apply the workspace's configured default `hiveGit.mode`
+   *  to a NEW pot home (never an into-pot add). Default:
+   *  applyNewHiveGitModeDefault (lazy-imported). Best-effort — never fails the create. */
+  applyNewHiveGitMode?: (workspaceId: string, potHomeSlug: string) => Promise<NewHiveGitModeOutcome>;
   loadRegistry?: typeof loadHarnessRegistry;
   mutateRegistry?: typeof mutateHarnessRegistry;
   /** Remove a half-created pot home (reverse of createPotHarness). Best-effort. */
@@ -344,6 +352,10 @@ export async function createPotFromRepo(
     deps.seedGitSync ??
     (async (o: SeedGitSyncRoutineOpts) =>
       (await import('../../harness/git-sync/git-sync-routine')).seedGitSyncRoutineForMember(o));
+  const applyNewHiveGitMode =
+    deps.applyNewHiveGitMode ??
+    (async (ws: string, slug: string) =>
+      (await import('../../harness/git-sync/new-hive-git-mode-default')).applyNewHiveGitModeDefault(ws, slug));
   const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
   const mutateRegistry = deps.mutateRegistry ?? mutateHarnessRegistry;
   const removePotHome = deps.removePotHome ?? defaultRemovePotHome;
@@ -566,6 +578,19 @@ export async function createPotFromRepo(
     ...(repoId !== undefined ? { github_repository_id: repoId } : {}),
     ...(defaultBranch ? { github_default_branch: defaultBranch } : {}),
   };
+  // 7.4 — P-503 (WI-10004765): apply the workspace's configured default
+  //       `hiveGit.mode` to a NEW pot home, BEFORE the git-sync seed so the
+  //       first tick already sees the posture. Ships unset ⇒ legacy ⇒ no write.
+  //       into-pot adds never touch the existing home's mode. Best-effort.
+  let hiveGitMode: NewHiveGitModeOutcome | undefined;
+  if (!intoPot) {
+    hiveGitMode = await applyNewHiveGitMode(opts.workspaceId, potSlug).catch((e) => ({
+      applied: false as const,
+      reason: 'error' as const,
+      message: e instanceof Error ? e.message : String(e),
+    }));
+  }
+
   const gitSync: SeedGitSyncRoutineOutcome = await seedGitSync({
     workspaceId: opts.workspaceId,
     installSlug: memberSlug,
@@ -680,5 +705,6 @@ export async function createPotFromRepo(
     bindingUnverified,
     publish: publishOutcome,
     gitSync,
+    ...(hiveGitMode ? { hiveGitMode } : {}),
   };
 }

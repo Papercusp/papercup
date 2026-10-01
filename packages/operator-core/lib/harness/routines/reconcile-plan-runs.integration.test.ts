@@ -14,6 +14,7 @@ import {
   reconcileScheduledPlanRuns,
   autoPauseOnFailureStreak,
   reconcileAndGovern,
+  PLAN_RUN_PROMOTION_GRACE_MS,
 } from './reconcile-plan-runs';
 import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
 
@@ -137,6 +138,65 @@ describe('reconcileScheduledPlanRuns', () => {
     const res = await reconcileScheduledPlanRuns({ sql });
     expect(res.reconciled).toBe(1);
     expect((await runRow(id)).outcome).toBe('success');
+  });
+
+  /*
+   * WI-10004731 — a fire that threw after its seed transaction left a run with
+   * zero work-items whose instance still has OPEN items. That is "promotion
+   * never completed", not a prose plan; it was being settled done/success, so
+   * every refused plan-cleanup sweep fire (2026-09-07, 09-14, 10-01) read as a
+   * healthy run.
+   */
+  describe('zero work-items on an instance with open items (WI-10004731)', () => {
+    async function seedUnpromoted(slug: string, ageMs: number): Promise<number> {
+      const id = await seedRun(slug);
+      const instanceSlug = `${slug}@run-${id}`;
+      await sql`
+        INSERT INTO harness_shared.harness_plans
+          (workspace_id, harness_slug, plan_slug, status, template_slug, items)
+        VALUES (${WS}, ${HARNESS}, ${instanceSlug}, 'active', ${slug},
+                ${JSON.stringify([{ id: 'P-001', status: 'todo' }, { id: 'P-002', status: 'done' }])}::text::jsonb)`;
+      await sql`
+        UPDATE harness_shared.plan_runs
+           SET workspace_id = ${WS}, instance_plan_slug = ${instanceSlug}, launched_at = ${Date.now() - ageMs}
+         WHERE id = ${id}`;
+      return id;
+    }
+
+    it('settles it FAILED with a reason once the grace window has passed', async () => {
+      const id = await seedUnpromoted('p-unpromoted', PLAN_RUN_PROMOTION_GRACE_MS + 60_000);
+      const res = await reconcileScheduledPlanRuns({ sql });
+      expect(res.settled).toEqual([expect.objectContaining({ runId: id, outcome: 'failed' })]);
+      const row = await runRow(id);
+      expect(row.status).toBe('failed');
+      expect(row.outcome).toBe('failed');
+      const [summary] = await sql<{ result_summary: string | null }[]>`
+        SELECT result_summary FROM harness_shared.plan_runs WHERE id = ${id}`;
+      expect(summary.result_summary).toMatch(/promotion never completed/);
+    });
+
+    it('leaves it running inside the grace window, so an in-flight promotion is never raced', async () => {
+      const id = await seedUnpromoted('p-promoting', 5_000);
+      const res = await reconcileScheduledPlanRuns({ sql });
+      expect(res.reconciled).toBe(0);
+      expect((await runRow(id)).status).toBe('running');
+    });
+
+    it('still settles success when every instance item is already terminal (nothing to promote)', async () => {
+      const id = await seedRun('p-all-done');
+      const instanceSlug = `p-all-done@run-${id}`;
+      await sql`
+        INSERT INTO harness_shared.harness_plans
+          (workspace_id, harness_slug, plan_slug, status, template_slug, items)
+        VALUES (${WS}, ${HARNESS}, ${instanceSlug}, 'active', 'p-all-done',
+                ${JSON.stringify([{ id: 'P-001', status: 'done' }])}::text::jsonb)`;
+      await sql`
+        UPDATE harness_shared.plan_runs
+           SET workspace_id = ${WS}, instance_plan_slug = ${instanceSlug}, launched_at = 0
+         WHERE id = ${id}`;
+      await reconcileScheduledPlanRuns({ sql });
+      expect((await runRow(id)).outcome).toBe('success');
+    });
   });
 });
 

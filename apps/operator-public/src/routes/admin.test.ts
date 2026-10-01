@@ -207,8 +207,12 @@ describe('POST /admin/listings/:id/review', () => {
       expect.objectContaining({ id: 'l1', reason: 'good', approved: null, repinned: false, retire: null }),
     );
     expect(h.setReviewStatus).not.toHaveBeenCalled();
-    const auditDetail = h.audit.mock.calls[0][3] as Record<string, unknown>;
-    expect(auditDetail).toMatchObject({ decision: 'approved', operator_github_user_id: 7, publisher_github_user_id: 42 });
+    // WI-10004643: the audit row rides in the approval's OWN atomic batch (D1 has no transaction
+    // across two calls), so the route no longer issues a separate audit() for an approval.
+    expect(h.audit).not.toHaveBeenCalled();
+    const input = (h.approveListingVersion.mock.calls as unknown as unknown[][])[0][1] as { audit: { kind: string; detail: Record<string, unknown> } };
+    expect(input.audit.kind).toBe('review_decided');
+    expect(input.audit.detail).toMatchObject({ decision: 'approved', operator_github_user_id: 7, publisher_github_user_id: 42 });
   });
 
   it('refuses approval of an unpinned self-describing listing', async () => {

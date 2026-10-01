@@ -16,7 +16,7 @@ import { bulkAutomationSnapshot } from '../../attention/bulk-dispositions';
 import {
   BulkRunAlreadyActiveError,
   createRun,
-  getActiveRun,
+  getRunningRun,
   setRunPhase,
   type BulkRunSeedItem,
 } from '../../attention/bulk-run-store';
@@ -72,7 +72,15 @@ function seedItems(data: unknown, cap = INBOX_BULK_RESOLVE_CAP): BulkRunSeedItem
 export interface InboxBulkResolveActionDeps {
   enabled: () => Promise<boolean>;
   readAttention: () => Promise<unknown>;
-  activeRun: (workspaceId: string) => Promise<unknown>;
+  /**
+   * The run that EXCLUDES a new one: `pending`/`running` only — the same set
+   * `createRun` and migration 915's single-flight index key on. A run waiting in
+   * `review` is waiting on the OWNER, not working, so it must never gate the
+   * scheduled backstop. It used to (via getActiveRun), and one review list left
+   * open on 2026-08-24 silently no-op'd every 15-minute fire for 37 days
+   * (WI-10004720).
+   */
+  runningRun: (workspaceId: string) => Promise<{ runId: string; phase: string } | null>;
   launch: (input: {
     runId: string;
     itemCount: number;
@@ -95,16 +103,25 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
   const deps: InboxBulkResolveActionDeps = {
     enabled: () => getFlag(FLAGS.INBOX_BULK_RESOLVE, 'system:inbox-bulk-resolve').catch(() => false),
     readAttention: () => callPlansRead('attention', {}, { uiProjection: false }),
-    activeRun: (workspaceId) => getActiveRun(workspaceId, 'inbox-resolve'),
+    runningRun: (workspaceId) => getRunningRun(workspaceId, 'inbox-resolve'),
     launch: productionLaunch,
     log: (message) => console.log(`[${INBOX_BULK_RESOLVE}] ${message}`),
     ...overrides,
   };
   return async (ctx: SystemActionCtx): Promise<void> => {
     if (!(await deps.enabled())) return;
-    if (await deps.activeRun(ctx.workspaceId)) return;
+    // Every skip says why. A bare `return` here made "a run is executing" and
+    // "the backstop is wedged" byte-identical for 37 days.
+    const running = await deps.runningRun(ctx.workspaceId);
+    if (running) {
+      deps.log(`skip: run=${running.runId} is ${running.phase} (single-flight)`);
+      return;
+    }
     const items = seedItems(await deps.readAttention());
-    if (items.length === 0) return;
+    if (items.length === 0) {
+      deps.log('skip: no action-bearing attention items');
+      return;
+    }
     const policy = bulkAutomationSnapshot(await readStandingBulkAutomationPolicy(ctx.workspaceId));
     const resolved = resolveBulkResolverLaunch({
       automationMode: policy.mode,
@@ -140,7 +157,10 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       });
       deps.log(`run=${run.runId} items=${items.length} phase=${launched.ok ? 'running' : 'failed'}`);
     } catch (error) {
-      if (error instanceof BulkRunAlreadyActiveError) return;
+      if (error instanceof BulkRunAlreadyActiveError) {
+        deps.log(`skip: lost the single-flight race (${error.message})`);
+        return;
+      }
       deps.log(`scheduled start failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };

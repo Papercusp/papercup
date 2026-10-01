@@ -640,7 +640,74 @@ export async function runScheduledPlanFire(
 ): Promise<ScheduledPlanFireResult> {
   const prepared = await sql.begin((tx) => runScheduledPlanFireTx(tx, opts));
   if (prepared.started === false) return prepared;
+  try {
+    return await promoteScheduledFire(prepared, opts, deps);
+  } catch (error) {
+    // The instance + ledger row already committed as 'running'. Left alone, the
+    // row has zero work-items and reconcile used to settle it done/success, so
+    // every refused fire read as a healthy run (WI-10004731). Record the
+    // failure on the row, retire the instance, then rethrow for the caller.
+    await recordScheduledFireFailure(sql, {
+      runId: prepared.runId,
+      workspaceId: opts.workspaceId,
+      appHarnessSlug: prepared.appHarnessSlug,
+      instanceSlug: prepared.instanceSlug,
+      templateSlug: opts.templateSlug,
+      error,
+    }).catch((recordError) =>
+      console.warn(
+        `[plan-run] could not record failed fire ${prepared.instanceSlug}: ` +
+          `${recordError instanceof Error ? recordError.message : recordError}`,
+      ),
+    );
+    throw error;
+  }
+}
 
+/**
+ * Mark a scheduled fire that threw after its seed transaction as FAILED, with
+ * the error, and supersede its instance plan (the same instance retirement
+ * reconcile performs on a settled run). Only a still-`running` row is touched,
+ * so a concurrent reconcile/sweep that already settled it wins.
+ */
+export async function recordScheduledFireFailure(
+  sql: Sql,
+  input: {
+    runId: number;
+    workspaceId: string;
+    appHarnessSlug: string;
+    instanceSlug: string;
+    templateSlug: string;
+    error: unknown;
+  },
+): Promise<void> {
+  const now = Date.now();
+  const message = input.error instanceof Error ? input.error.message : String(input.error);
+  await sql`
+    UPDATE harness_shared.plan_runs
+       SET status = 'failed', outcome = 'failed', result_summary = ${`fire failed: ${message}`.slice(0, 4000)},
+           finished_at = ${now}, updated_at = ${now}
+     WHERE id = ${input.runId} AND status = 'running'
+  `;
+  const planStorageSlug = await routineStorageSlug(input.appHarnessSlug, input.workspaceId);
+  await sql`
+    UPDATE harness_shared.harness_plans
+       SET status = 'superseded'
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${planStorageSlug}
+       AND plan_slug = ${input.instanceSlug}
+       AND template_slug = ${input.templateSlug}
+       AND status = 'active'
+  `;
+}
+
+type PreparedScheduledFire = Extract<Awaited<ReturnType<typeof runScheduledPlanFireTx>>, { started: true }>;
+
+async function promoteScheduledFire(
+  prepared: PreparedScheduledFire,
+  opts: ScheduledPlanFireOptions,
+  deps: ScheduledPlanFireDeps,
+): Promise<ScheduledPlanFireResult> {
   const planRun: PlanRunPromotionContext = {
     runId: prepared.runId,
     runSeq: prepared.runSeq,

@@ -295,17 +295,22 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
       repinned,
       authority: repinAuthority,
       retire: approved ? row : null,
-    });
-    await audit(c.env.DB, now, 'review_decided', {
-      id,
-      listing_kind: row.listing_kind,
-      decision: 'approved',
-      operator_github_user_id: op.id,
-      publisher_github_user_id: row.publisher_github_user_id,
-      approved_commit_sha: approved?.commitSha ?? null,
-      repinned,
-      from_pinned_commit_sha: repinned ? row.pinned_commit_sha : null,
-      retired_ids: superseded.map((v) => v.id),
+      // WI-10004643: the audit row rides in the approval's own atomic batch (D1 has no
+      // transaction across two calls), so a Worker failure can't leave an approval unaudited.
+      audit: {
+        kind: 'review_decided',
+        detail: {
+          id,
+          listing_kind: row.listing_kind,
+          decision: 'approved',
+          operator_github_user_id: op.id,
+          publisher_github_user_id: row.publisher_github_user_id,
+          approved_commit_sha: approved?.commitSha ?? null,
+          repinned,
+          from_pinned_commit_sha: repinned ? row.pinned_commit_sha : null,
+          retired_ids: superseded.map((v) => v.id),
+        },
+      },
     });
     return c.json({
       ok: true,

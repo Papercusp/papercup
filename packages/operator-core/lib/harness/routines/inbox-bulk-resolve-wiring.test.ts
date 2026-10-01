@@ -38,7 +38,9 @@ describe('scheduled Inbox resolver wiring', () => {
   it('reads canonical action-bearing attention data and reuses the route launcher', () => {
     const src = read(ACTION);
     expect(src).toContain("callPlansRead('attention', {}, { uiProjection: false })");
-    expect(src).toContain('getActiveRun');
+    // WI-10004720: gate on the EXCLUSIVE set, never on getActiveRun (counts `review`).
+    expect(src).toContain('getRunningRun');
+    expect(src).not.toContain('getActiveRun(');
     expect(src).toContain('BulkRunAlreadyActiveError');
     expect(src).toContain('createRun');
     expect(src).toContain('launchResolver');

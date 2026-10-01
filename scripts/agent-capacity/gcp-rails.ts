@@ -44,6 +44,7 @@ export const LABEL_PLAN = 'papercusp-plan';
 export const LABEL_EPHEMERAL = 'papercusp-ephemeral';
 export const LABEL_RUN = 'papercusp-run';
 export const LABEL_MAXCOST = 'papercusp-maxcost-cents';
+export const LABEL_PROVISIONING = 'papercusp-provisioning';
 
 /** USD, us-central1 on-demand, Cloud Billing Catalog API read 2026-09-30. */
 export const PRICES_2026_09_30 = {
@@ -52,6 +53,15 @@ export const PRICES_2026_09_30 = {
   n2d: { vcpuHour: 0.027502, gbRamHour: 0.003686 },
   balancedDiskGbMonth: 0.1,
 } as const;
+
+/**
+ * USD, us-central1 SPOT, Cloud Billing Catalog API read 2026-10-01 09:15Z (plan D-015): about 40%
+ * below on-demand. Only families whose spot SKU was actually read are listed; a spot VM in any
+ * other family is refused rather than priced by guess (WI-10004749).
+ */
+export const SPOT_PRICES_2026_10_01: Partial<Record<Family, { vcpuHour: number; gbRamHour: number }>> = {
+  e2: { vcpuHour: 0.01309, gbRamHour: 0.001754 },
+};
 const HOURS_PER_MONTH = 730;
 
 export type Family = 'e2' | 'n2' | 'n2d';
@@ -81,15 +91,23 @@ export function parseMachineType(machineType: string): MachineShape {
   throw new Error(`unpriced machine type '${machineType}': add its shape before starting it`);
 }
 
-export function hourlyPriceUsd(machineType: string, diskGb = DEFAULT_DISK_GB): number {
+/** Spot list price for a family, or a refusal: a spot VM is never priced at a guessed discount. */
+function spotRates(family: Family): { vcpuHour: number; gbRamHour: number } {
+  const p = SPOT_PRICES_2026_10_01[family];
+  if (!p) throw new Error(`no measured spot price for family '${family}': read its spot SKU before starting a spot VM`);
+  return p;
+}
+
+/** Hourly list price, disk included (the disk is never spot-discounted). */
+export function hourlyPriceUsd(machineType: string, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } = {}): number {
   const shape = parseMachineType(machineType);
-  const p = PRICES_2026_09_30[shape.family];
+  const p = opts.spot ? spotRates(shape.family) : PRICES_2026_09_30[shape.family];
   const disk = (diskGb * PRICES_2026_09_30.balancedDiskGbMonth) / HOURS_PER_MONTH;
   return shape.vcpus * p.vcpuHour + shape.ramGb * p.gbRamHour + disk;
 }
 
-export function worstCaseCents(machineType: string, maxHours: number, diskGb = DEFAULT_DISK_GB): number {
-  return Math.ceil(hourlyPriceUsd(machineType, diskGb) * maxHours * 100);
+export function worstCaseCents(machineType: string, maxHours: number, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } = {}): number {
+  return Math.ceil(hourlyPriceUsd(machineType, diskGb, opts) * maxHours * 100);
 }
 
 export interface CreateSpec {
@@ -105,6 +123,11 @@ export interface CreateSpec {
   /** Extra `--metadata-from-file` entries, e.g. `startup-script=/path/to/boot.sh`. */
   metadataFromFile?: string[];
   extraLabels?: Record<string, string>;
+  /**
+   * Start a SPOT VM (P-007): GCP may reclaim it at any time. The termination action stays DELETE,
+   * so a reclaim and the max-run-duration timer both delete it; it is priced at the measured spot rate.
+   */
+  spot?: boolean;
 }
 
 const LABEL_VALUE = /^[a-z0-9_-]{1,63}$/;
@@ -133,7 +156,8 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
     [LABEL_PLAN]: PLAN_SLUG,
     [LABEL_EPHEMERAL]: 'true',
     [LABEL_RUN]: spec.runId,
-    [LABEL_MAXCOST]: String(worstCaseCents(spec.machineType, spec.maxHours, diskGb)),
+    [LABEL_MAXCOST]: String(worstCaseCents(spec.machineType, spec.maxHours, diskGb, { spot: spec.spot })),
+    [LABEL_PROVISIONING]: spec.spot ? 'spot' : 'standard',
   };
   for (const [k, v] of Object.entries(labels)) assertLabelValue(k, v);
   const minutes = Math.round(spec.maxHours * 60);
@@ -153,6 +177,7 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
     '--format=json',
   ];
   if (spec.metadataFromFile?.length) args.push(`--metadata-from-file=${spec.metadataFromFile.join(',')}`);
+  if (spec.spot) args.push('--provisioning-model=SPOT');
   return args;
 }
 
@@ -246,7 +271,7 @@ export interface AdmissionVerdict {
 }
 
 export function admitCreate(spec: CreateSpec, census: Census): AdmissionVerdict {
-  const newCents = worstCaseCents(spec.machineType, spec.maxHours, spec.diskGb ?? DEFAULT_DISK_GB);
+  const newCents = worstCaseCents(spec.machineType, spec.maxHours, spec.diskGb ?? DEFAULT_DISK_GB, { spot: spec.spot });
   const committedCents = committedWorstCaseCents(census);
   const ceilingCents = MAX_CONCURRENT_WORST_CASE_USD * 100;
   const admitted = committedCents + newCents <= ceilingCents;
@@ -351,6 +376,7 @@ async function main(argv: string[]): Promise<number> {
       metadataFromFile: flag(argv, 'metadata-from-file')?.split(','),
       imageFamily: flag(argv, 'image-family'),
       imageProject: flag(argv, 'image-project'),
+      spot: argv.includes('--spot'),
     };
     const result = await createInstance(spec);
     console.log(JSON.stringify(result, null, 2));
@@ -361,7 +387,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(JSON.stringify(result, null, 2));
     return result.verified ? 0 : 4;
   }
-  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project=] | teardown --run=');
+  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project= --spot] | teardown --run=');
   return 2;
 }
 

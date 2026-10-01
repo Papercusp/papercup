@@ -177,6 +177,7 @@ import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 import { mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import {
+  mockRejectedTyped,
   mockResolvedOnceTyped,
   mockResolvedTyped,
   mockReturnOnceTyped,
@@ -2143,10 +2144,10 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
     // case below differs from the default (empty ⇒ 'none') in exactly ONE input.
     describe('live wake-await lookup wiring (EI-19447204017443244)', () => {
       it('QUERIES the caller and threads a HIT into the cap message', async () => {
-        wakeAwaitsM.mockResolvedValue({
+        mockResolvedTyped(wakeAwaitsM, {
           totalCount: 1,
           sample: [{ eventKey: 'predicate:44071', expiresTs: null, rootId: null }],
-        } as never);
+        });
         const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'waiting on a deploy' } }));
         // Queried for the ARMING owner — a lookup against anyone else answers the wrong question.
         expect(wakeAwaitsM).toHaveBeenCalledWith('su-caller-own-id');
@@ -2207,7 +2208,7 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
       it('a FAILED lookup still arms, and claims NEITHER way', async () => {
         // Best-effort contract: advisory reads must not fail the arm, and must not
         // degrade into a fabricated "I checked and found nothing".
-        wakeAwaitsM.mockRejectedValue(new Error('statement timeout') as never);
+        mockRejectedTyped(wakeAwaitsM, new Error('statement timeout'));
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'waiting on a deploy' } }));
         // The failure is SWALLOWED for the caller but must not be silent for the operator.

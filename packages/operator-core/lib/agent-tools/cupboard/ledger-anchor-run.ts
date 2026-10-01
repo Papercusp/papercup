@@ -15,7 +15,7 @@ export default defineTool({
   name: 'cupboard:ledger-anchor-run',
   capability: 'harness:write',
   description:
-    "Run one ledger anchoring pass for this workspace now: log new chain links, publish the completed hour's root (EAS on Base Sepolia), check cadence. Dry run unless confirm:true.",
+    "Run one ledger anchoring pass for this workspace now: log new chain links, publish the completed hour's root (EAS on Base Sepolia), check cadence, then push the public transparency report. Dry run unless confirm:true.",
   guidance: {
     when: 'The hourly anchor is behind (a missed-hour alert, or cupboard:ledger-anchor status shows cadence missed) and the cause is fixed.',
     notWhen: 'Reading anchor state or proofs (cupboard:ledger-anchor). An hour that is already anchored is a no-op.',
@@ -51,11 +51,17 @@ export default defineTool({
     }
     const result = await runtime.runLedgerAnchorPass({ workspaces: [workspaceId] });
     const ws = result.workspaces[0];
+    // The schedule pushes the transparency report right after anchoring (P-044); so does the manual lever.
+    const { runTransparencyPass } = await import('../../cupboard/transparency-runtime');
+    const transparency = await runTransparencyPass({ workspaces: [workspaceId] }).catch((error: unknown) => ({
+      error: error instanceof Error ? error.message : String(error),
+    }));
     return text({
       ok: ws?.tick.status === 'anchored' || ws?.tick.status === 'already-anchored',
       backend: result.backend,
       backendUnavailable: result.backendUnavailable,
       workspace: ws ?? null,
+      transparency,
     });
   },
 });

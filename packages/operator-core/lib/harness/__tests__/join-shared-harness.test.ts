@@ -25,7 +25,9 @@ import {
   step2_cloneRepo,
   stepPublishBinding,
   stepBootFederate,
+  bootFederateOutcome,
   stepAwaitAdmissionMerge,
+  admissionPendingDetail,
   stepRouteInsights,
   joinSharedHarness,
   JoinStepError,
@@ -256,6 +258,29 @@ describe('stepBootFederate', () => {
       stepBootFederate({ workspaceId: 'ws', harnessSlug: 'h', bootFn }),
     ).rejects.toThrow('DHT unreachable');
   });
+
+  // WI-10004746: bootSingleHarness RETURNS (does not throw) on its race timeout.
+  it('reports booted:false with an in-progress detail when the booter returns a boot timeout', async () => {
+    const bootFn = vi.fn().mockResolvedValue({ state: 'failed', error: 'boot timeout after 30000ms' });
+    const out = await stepBootFederate({ workspaceId: 'ws', harnessSlug: 'h', bootFn });
+    expect(out.booted).toBe(false);
+    expect(out.detail).toMatch(/still in progress/);
+    expect(out.detail).toMatch(/boot timeout after 30000ms/);
+  });
+});
+
+describe('bootFederateOutcome', () => {
+  it('treats only an explicit failed/deferred state as not booted', () => {
+    expect(bootFederateOutcome({ state: 'booted' }).booted).toBe(true);
+    expect(bootFederateOutcome({ state: 'already-booted' }).booted).toBe(true);
+    expect(bootFederateOutcome({ booted: true }).booted).toBe(true);
+    expect(bootFederateOutcome({}).booted).toBe(true);
+    expect(bootFederateOutcome(undefined).booted).toBe(true);
+    const failed = bootFederateOutcome({ state: 'failed', error: 'corestore locked' });
+    expect(failed).toEqual({ booted: false, detail: expect.stringMatching(/substrate boot failed: corestore locked/) });
+    const deferred = bootFederateOutcome({ state: 'deferred', deferReason: 'inactive' });
+    expect(deferred).toEqual({ booted: false, detail: expect.stringMatching(/deferred \(inactive\)/) });
+  });
 });
 
 // ─── stepAwaitAdmissionMerge ─────────────────────────────────────────────────
@@ -299,6 +324,42 @@ describe('stepAwaitAdmissionMerge', () => {
       now: fakeNow,
     });
     expect(result.remoteOpLanded).toBe(false);
+  });
+
+  // WI-10004746: a wait that ends with NO local handle is our own boot still in
+  // flight, not a missing peer — the detail must say which.
+  it('reports substrateBooted:false and a still-booting detail when no handle ever appeared', async () => {
+    const isBootedFn = vi.fn().mockReturnValue(false);
+    let t = 0;
+    const result = await stepAwaitAdmissionMerge({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      timeoutMs: 1000,
+      pollMs: 100,
+      readAdmittedCountFn: () => 0,
+      isBootedFn,
+      sleep: async () => {},
+      now: () => (t += 300),
+    });
+    expect(result).toEqual({ remoteOpLanded: false, substrateBooted: false });
+    expect(isBootedFn).toHaveBeenCalledWith('ws', 'h');
+    expect(admissionPendingDetail(result)).toMatch(/local substrate still booting/);
+  });
+
+  it('reports substrateBooted:true and the no-peer detail when booted without peers', async () => {
+    let t = 0;
+    const result = await stepAwaitAdmissionMerge({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      timeoutMs: 1000,
+      pollMs: 100,
+      readAdmittedCountFn: () => 0,
+      isBootedFn: () => true,
+      sleep: async () => {},
+      now: () => (t += 300),
+    });
+    expect(result).toEqual({ remoteOpLanded: false, substrateBooted: true });
+    expect(admissionPendingDetail(result)).toMatch(/no peer connected within timeout/);
   });
 
   it('returns remoteOpLanded:false immediately when timeoutMs=0', async () => {
@@ -644,6 +705,40 @@ describe('joinSharedHarness orchestrator', () => {
     // Join still completes (route_insights done).
     expect(finalState.steps.route_insights.status).toBe('done');
     expect(typeof finalState.completedAt).toBe('number');
+  });
+
+  // WI-10004746 (S1 cold join, 2026-10-01): the booter RETURNED a boot timeout,
+  // the join marked boot_federate done and then blamed "no peer connected".
+  it('a returned boot timeout → boot_federate phase_0_pending and an honest still-booting admission detail', async () => {
+    const finalState = await joinSharedHarness({
+      link,
+      slug: SLUG + '-boot-timeout',
+      token: 'tok-ok',
+      githubUserId: USER_ID,
+      githubLogin: LOGIN,
+      keychainId: KEYCHAIN_ID,
+      registerCloneFn: async () => undefined, // EI-339: never the live registry
+      existingGistId: 'gist-abc',
+      fetchFn: makeFetch([{ status: 200, body: { id: USER_ID, login: LOGIN } }]),
+      execFileFn: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+      mkdirFn: vi.fn().mockResolvedValue(undefined),
+      readStateFn: vi.fn().mockResolvedValue(null),
+      writeStateFn: vi.fn().mockResolvedValue(undefined),
+      bootFederateFn: vi.fn().mockResolvedValue({ state: 'failed', error: 'boot timeout after 30000ms' }),
+      readAdmittedCountFn: vi.fn().mockReturnValue(0),
+      isBootedFn: vi.fn().mockReturnValue(false),
+      awaitAdmissionTimeoutMs: 1,
+      awaitAdmissionPollMs: 1,
+      sleepFn: async () => {},
+      octokit: makeFakeOctokit(),
+    });
+
+    expect(finalState.steps.boot_federate.status).toBe('phase_0_pending');
+    expect(finalState.steps.boot_federate.detail).toMatch(/still in progress/);
+    expect(finalState.steps.await_admission_merge.status).toBe('phase_0_pending');
+    expect(finalState.steps.await_admission_merge.detail).toMatch(/local substrate still booting/);
+    expect(finalState.steps.await_admission_merge.detail).not.toMatch(/no peer connected/);
+    expect(finalState.steps.route_insights.status).toBe('done');
   });
 
   it('await_admission_merge timeout → soft phase_0_pending, join still completes', async () => {

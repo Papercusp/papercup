@@ -4,9 +4,11 @@
 -- here over the reconciliation HMAC; this Worker serves them publicly.
 --
 --   transparency_live        the hourly live report for the open month, one row per
---                            workspace. A push replaces the row only when its
---                            generated_at_ms is not older than the stored one, so a
---                            delayed push can never roll the public page back.
+--                            workspace, with where the latest closed month's statement
+--                            stands (published / pending / withheld, and why). A push
+--                            replaces the row only when its generated_at_ms is not
+--                            older than the stored one, so a delayed push can never
+--                            roll the public page back.
 --   transparency_statements  one signed monthly statement per (workspace, month).
 --                            IMMUTABLE: the first publication wins. A later push
 --                            with the same digest is a no-op; a different digest is
@@ -19,6 +21,7 @@ CREATE TABLE IF NOT EXISTS transparency_live (
   workspace_id    TEXT PRIMARY KEY,
   month           TEXT NOT NULL,
   report_json     TEXT NOT NULL,
+  statement_status_json TEXT NOT NULL,
   generated_at_ms INTEGER NOT NULL,
   received_at_ms  INTEGER NOT NULL
 );

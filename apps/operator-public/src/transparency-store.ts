@@ -3,38 +3,44 @@
  * 042_transparency.sql). The live row only moves forward in time; a monthly
  * statement is immutable once stored.
  */
-import type { SignedStatement } from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
+import type { LiveTransparencyPush, SignedStatement, StatementStatus } from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
 
 export interface LiveReportRow {
   readonly month: string;
-  readonly report: unknown;
+  readonly report: LiveTransparencyPush['report'];
+  readonly statementStatus: StatementStatus;
   readonly generatedAtMs: number;
 }
 
-export async function recordLiveReport(
-  db: D1Database,
-  input: { workspaceId: string; month: string; reportJson: string; generatedAtMs: number; receivedAtMs: number },
-): Promise<'stored' | 'stale'> {
+export async function recordLiveReport(db: D1Database, push: LiveTransparencyPush, receivedAtMs: number): Promise<'stored' | 'stale'> {
   const r = await db
     .prepare(
-      `INSERT INTO transparency_live (workspace_id, month, report_json, generated_at_ms, received_at_ms)
-       VALUES (?1, ?2, ?3, ?4, ?5)
+      `INSERT INTO transparency_live (workspace_id, month, report_json, statement_status_json, generated_at_ms, received_at_ms)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
        ON CONFLICT (workspace_id) DO UPDATE SET
          month = excluded.month, report_json = excluded.report_json,
+         statement_status_json = excluded.statement_status_json,
          generated_at_ms = excluded.generated_at_ms, received_at_ms = excluded.received_at_ms
        WHERE excluded.generated_at_ms >= transparency_live.generated_at_ms`,
     )
-    .bind(input.workspaceId, input.month, input.reportJson, input.generatedAtMs, input.receivedAtMs)
+    .bind(push.workspaceId, push.month, JSON.stringify(push.report), JSON.stringify(push.statementStatus), push.generatedAtMs, receivedAtMs)
     .run();
   return (r.meta?.changes ?? 0) > 0 ? 'stored' : 'stale';
 }
 
 export async function readLiveReport(db: D1Database, workspaceId: string): Promise<LiveReportRow | null> {
   const row = await db
-    .prepare(`SELECT month, report_json, generated_at_ms FROM transparency_live WHERE workspace_id = ?1`)
+    .prepare(`SELECT month, report_json, statement_status_json, generated_at_ms FROM transparency_live WHERE workspace_id = ?1`)
     .bind(workspaceId)
-    .first<{ month: string; report_json: string; generated_at_ms: number }>();
-  return row ? { month: row.month, report: JSON.parse(row.report_json), generatedAtMs: Number(row.generated_at_ms) } : null;
+    .first<{ month: string; report_json: string; statement_status_json: string; generated_at_ms: number }>();
+  return row
+    ? {
+        month: row.month,
+        report: JSON.parse(row.report_json) as LiveReportRow['report'],
+        statementStatus: JSON.parse(row.statement_status_json) as StatementStatus,
+        generatedAtMs: Number(row.generated_at_ms),
+      }
+    : null;
 }
 
 export type StatementWrite = 'created' | 'unchanged' | { readonly conflict: string };

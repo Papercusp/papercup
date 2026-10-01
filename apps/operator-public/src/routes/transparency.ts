@@ -18,7 +18,11 @@ import {
   TRANSPARENCY_STATEMENT_PATH,
   verifyReconciliationRequest,
 } from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
-import { parseSignedStatement, verifySignedStatement } from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
+import {
+  parseLiveTransparencyPush,
+  parseSignedStatement,
+  verifySignedStatement,
+} from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
 import type { Env } from '../env.ts';
 import { listStatements, publishStatement, readLiveReport, readStatement, recordLiveReport } from '../transparency-store.ts';
 
@@ -54,28 +58,13 @@ export function transparencyRoute(options: { now?: () => number } = {}): Hono<{ 
   route.put(TRANSPARENCY_LIVE_PATH, async (c) => {
     const r = await signedJson(c, TRANSPARENCY_LIVE_PATH);
     if ('error' in r) return c.json(r.error, r.status);
-    const push = r.json as { workspaceId?: unknown; month?: unknown; generatedAtMs?: unknown; report?: { workspaceId?: unknown; kind?: unknown; month?: unknown } };
-    const valid =
-      typeof push?.workspaceId === 'string' &&
-      typeof push.month === 'string' &&
-      MONTH.test(push.month) &&
-      typeof push.generatedAtMs === 'number' &&
-      Number.isFinite(push.generatedAtMs) &&
-      push.report?.kind === 'live' &&
-      push.report.workspaceId === push.workspaceId &&
-      push.report.month === push.month;
-    if (!valid) return c.json({ error: 'invalid_request', detail: 'not a live transparency push' }, 400);
+    const push = parseLiveTransparencyPush(r.json);
+    if (!push) return c.json({ error: 'invalid_request', detail: 'not a live transparency push' }, 400);
     const nowMs = now();
-    if ((push.generatedAtMs as number) > nowMs + RECONCILIATION_SIGNATURE_TOLERANCE_MS) {
+    if (push.generatedAtMs > nowMs + RECONCILIATION_SIGNATURE_TOLERANCE_MS) {
       return c.json({ error: 'invalid_request', detail: 'generatedAtMs is in the future' }, 400);
     }
-    const stored = await recordLiveReport(c.env.DB, {
-      workspaceId: push.workspaceId as string,
-      month: push.month as string,
-      reportJson: JSON.stringify(push.report),
-      generatedAtMs: push.generatedAtMs as number,
-      receivedAtMs: nowMs,
-    });
+    const stored = await recordLiveReport(c.env.DB, push, nowMs);
     return c.json({ ok: true, stored });
   });
 

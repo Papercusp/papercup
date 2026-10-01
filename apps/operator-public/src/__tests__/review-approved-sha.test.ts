@@ -258,6 +258,64 @@ describe('P-008 review approves a SHA', () => {
     expect(await servedIds(ctx)).toEqual([v1]);
   });
 
+  describe('WI-10004643 the approval and its audit row are ONE atomic batch', () => {
+    const auditRows = (ctx: Ctx) =>
+      ctx.raw.prepare("SELECT kind, detail FROM audit WHERE kind = 'review_decided'").all() as unknown as Array<{ kind: string; detail: string }>;
+
+    it('an approval through the route writes exactly one review_decided audit row, inside the batch', async () => {
+      const ctx = setup();
+      const v1 = await publishAt(ctx, A, 1000);
+      expect((await review(ctx, v1, { decision: 'approve' })).status).toBe(200);
+      const rows = auditRows(ctx);
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0].detail)).toMatchObject({ id: v1, decision: 'approved', approved_commit_sha: A, repinned: false });
+    });
+
+    it('a failing audit statement rolls the approval back — no approved row without its audit row', async () => {
+      const ctx = setup();
+      const v1 = await publishAt(ctx, A, 1000);
+      // The audit INSERT is the LAST statement in the batch; make it throw so the earlier
+      // approve UPDATE has already run inside the transaction when the failure lands.
+      ctx.raw.exec("CREATE TRIGGER audit_boom BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'audit boom'); END");
+      const v1Row = ctx.raw.prepare('SELECT created_at FROM harnesses WHERE id = ?').get(v1) as unknown as { created_at: number };
+
+      await expect(
+        approveListingVersion(ctx.env.DB, {
+          id: v1,
+          reason: null,
+          now: 5000,
+          approved: { commitSha: A, treeDigest: 'f'.repeat(64) },
+          repinned: false,
+          retire: { github_repository_id: REPO_ID, listing_kind: 'plan', listing_ref: 'quality-plan', created_at: v1Row.created_at },
+          audit: { kind: 'review_decided', detail: { id: v1, decision: 'approved' } },
+        }),
+      ).rejects.toThrow(/audit boom/);
+
+      expect(rowById(ctx, v1)).toMatchObject({ review_status: 'pending', approved_commit_sha: null, approved_at: null });
+      expect(auditRows(ctx)).toHaveLength(0);
+      expect(await servedIds(ctx)).toEqual([]);
+    });
+
+    it('a lost race on the approve UPDATE records NO audit row (no phantom "approved" decision)', async () => {
+      const ctx = setup();
+      const v1 = await publishAt(ctx, A, 1000);
+      ctx.raw.prepare("UPDATE harnesses SET unlisted_at = 9, unlisted_reason = 'raced' WHERE id = ?").run(v1);
+
+      await approveListingVersion(ctx.env.DB, {
+        id: v1,
+        reason: null,
+        now: 5000,
+        approved: { commitSha: A, treeDigest: 'f'.repeat(64) },
+        repinned: false,
+        retire: null,
+        audit: { kind: 'review_decided', detail: { id: v1, decision: 'approved' } },
+      });
+
+      expect(rowById(ctx, v1)).toMatchObject({ review_status: 'pending', approved_commit_sha: null });
+      expect(auditRows(ctx)).toHaveLength(0);
+    });
+  });
+
   it('P-008 a drifted row is re-pinned to the reviewed SHA: pinned_* and approved_* both end up at what was read', async () => {
     const ctx = setup();
     const id = await publishAt(ctx, A, 1000);

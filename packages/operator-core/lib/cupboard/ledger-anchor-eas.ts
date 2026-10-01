@@ -322,15 +322,29 @@ export function resolveAnchorBackend(
   if (!spec.testnet && env.PAPERCUSP_LEDGER_ANCHOR_ALLOW_MAINNET !== '1') {
     return fail('mainnet-not-enabled', `chain ${config.chainId} is a mainnet; set PAPERCUSP_LEDGER_ANCHOR_ALLOW_MAINNET=1 (P-039)`);
   }
+  const key = readAnchorPrivateKey(config.keyFile);
+  if (!key.ok) return fail(key.reason, key.detail);
+  return { ok: true, config, backend: easAnchorBackend({ ...chainCfg, privateKey: key.privateKey }), reader };
+}
+
+export type AnchorKeyRead =
+  | { readonly ok: true; readonly privateKey: Hex }
+  | { readonly ok: false; readonly reason: 'key-missing' | 'key-invalid' | 'key-permissions'; readonly detail: string };
+
+/**
+ * The anchor key file: a 32-byte hex secp256k1 key, mode 0600. The same key
+ * attests anchored roots (D-021) and signs monthly statements (D-028 §4).
+ */
+export function readAnchorPrivateKey(keyFile: string): AnchorKeyRead {
   let raw: string;
   try {
-    const st = statSync(config.keyFile);
-    if ((st.mode & 0o077) !== 0) return fail('key-permissions', `${config.keyFile} must not be readable by group or others (chmod 600)`);
-    raw = readFileSync(config.keyFile, 'utf8').trim();
+    const st = statSync(keyFile);
+    if ((st.mode & 0o077) !== 0) return { ok: false, reason: 'key-permissions', detail: `${keyFile} must not be readable by group or others (chmod 600)` };
+    raw = readFileSync(keyFile, 'utf8').trim();
   } catch {
-    return fail('key-missing', `no anchor key at ${config.keyFile}`);
+    return { ok: false, reason: 'key-missing', detail: `no anchor key at ${keyFile}` };
   }
   const key = (raw.startsWith('0x') ? raw : `0x${raw}`).toLowerCase();
-  if (!/^0x[0-9a-f]{64}$/.test(key)) return fail('key-invalid', `${config.keyFile} does not hold a 32-byte hex private key`);
-  return { ok: true, config, backend: easAnchorBackend({ ...chainCfg, privateKey: key as Hex }), reader };
+  if (!/^0x[0-9a-f]{64}$/.test(key)) return { ok: false, reason: 'key-invalid', detail: `${keyFile} does not hold a 32-byte hex private key` };
+  return { ok: true, privateKey: key as Hex };
 }

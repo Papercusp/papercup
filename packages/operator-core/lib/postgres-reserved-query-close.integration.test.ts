@@ -10,7 +10,12 @@ describe('postgres.js reserved query queue after backend close', () => {
     db = await createFreshPgDb('reserved-query-close');
     // One in-flight query fills the only pipeline slot; the next query stays in
     // postgres.js reserve()'s private queue until the backend is killed.
-    sql = postgres(db.url, { max: 1, max_pipeline: 1, prepare: false });
+    // `max_pipeline` is a real runtime option (postgres/src/index.js parseOptions
+    // defaults it to 100) that the package's typings omit, so a literal object
+    // trips TS2353. A non-literal argument skips the excess-property check while
+    // `max` and `prepare` stay type-checked against Options.
+    const options = { max: 1, max_pipeline: 1, prepare: false };
+    sql = postgres(db.url, options);
   }, 180_000);
 
   afterAll(async () => {

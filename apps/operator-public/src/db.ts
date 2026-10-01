@@ -546,6 +546,11 @@ export interface ApproveListingVersionInput {
   authority?: { unresolved: boolean; cause: string | null } | null;
   /** The identity whose older versions this approval retires; null = retire none. */
   retire: Pick<HarnessRow, 'github_repository_id' | 'listing_kind' | 'listing_ref' | 'created_at'> | null;
+  /** The admin-decision audit row, written in the SAME atomic batch as the approval (WI-10004643).
+   *  D1 has no transaction spanning two separate calls, so a Worker failure between an approve
+   *  `batch` and a following `audit()` left an approval with no audit entry. The insert is guarded
+   *  on the approval having landed, so a lost race records no phantom "approved" decision. */
+  audit?: { kind: string; detail: Record<string, unknown> } | null;
 }
 
 /**
@@ -612,6 +617,21 @@ export async function approveListingVersion(db: D1Database, input: ApproveListin
           input.retire.created_at,
           id,
         ),
+    );
+  }
+  if (input.audit) {
+    // Same batch = same transaction: the approval and its audit row commit or roll back together.
+    // Guarded on THIS approval having landed (reviewed_at = now on an approved row), so a lost
+    // race on the approve UPDATE records no phantom "approved" decision.
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO audit (ts, kind, detail)
+           SELECT ?, ?, ?
+            WHERE EXISTS (SELECT 1 FROM harnesses a
+                           WHERE a.id = ? AND a.review_status = 'approved' AND a.reviewed_at = ?)`,
+        )
+        .bind(now, input.audit.kind, JSON.stringify(input.audit.detail), id, now),
     );
   }
   await db.batch(statements);

@@ -4,7 +4,9 @@
  * against its signer and is immutable once published. Real SQLite, real migrations.
  */
 import { describe, expect, it } from 'vitest';
-import { generatePrivateKey } from 'viem/accounts';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+// The PG-free core of the operator's pass (the runtime adds only its Postgres / key-file defaults).
+import { cupboardTransparencyWorker, publishTransparency } from '@papercusp/operator-core/lib/cupboard/transparency-publish.ts';
 import {
   RECONCILIATION_SIGNATURE_HEADER,
   TRANSPARENCY_LIVE_PATH,
@@ -13,7 +15,13 @@ import {
 } from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
 import { journalEntryForMovement, type JournalEntry } from '@papercusp/operator-core/lib/cupboard/money-journal.ts';
 import { buildMonthlyStatement, buildTransparencyReport, monthPeriod, treasuryFigure } from '@papercusp/operator-core/lib/cupboard/transparency-report.ts';
-import { signStatement, verifySignedStatement, type SignedStatement } from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
+import {
+  signStatement,
+  verifySignedStatement,
+  type LiveTransparencyPush,
+  type SignedStatement,
+  type StatementStatus,
+} from '@papercusp/operator-core/lib/cupboard/transparency-statement.ts';
 import { buildApi } from '../routes/index.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
@@ -52,9 +60,11 @@ function journal(extraCents = 0): JournalEntry[] {
 
 const treasury = treasuryFigure(null, 'not measured in this test');
 
-function liveReport(generatedAtMs: number, extraCents = 0) {
+const PENDING: StatementStatus = { status: 'pending', month: '2026-08', digest: null, withheldBy: [], detail: 'awaiting the month-close run' };
+
+function liveReport(generatedAtMs: number, extraCents = 0): LiveTransparencyPush {
   const report = buildTransparencyReport({ workspaceId: WS, kind: 'live', entries: journal(extraCents), period: monthPeriod('2026-09'), provisional: true, treasury, latestAnchor: null });
-  return { workspaceId: WS, month: '2026-09', generatedAtMs, report };
+  return { workspaceId: WS, month: '2026-09', generatedAtMs, report, statementStatus: PENDING };
 }
 
 async function statement(key: `0x${string}`, extraCents = 0): Promise<SignedStatement> {
@@ -78,8 +88,8 @@ describe('transparency routes (P-044)', () => {
 
     const res = await get(h, `/transparency/${WS}`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { live: { month: string; generatedAtMs: number; report: { revenueCents: number; provisional: boolean } }; statements: unknown[] };
-    expect(body.live).toMatchObject({ month: '2026-09', generatedAtMs: t, report: { provisional: true } });
+    const body = (await res.json()) as { live: { month: string; generatedAtMs: number; report: { revenueCents: number; provisional: boolean }; statementStatus: StatementStatus }; statements: unknown[] };
+    expect(body.live).toMatchObject({ month: '2026-09', generatedAtMs: t, report: { provisional: true }, statementStatus: PENDING });
     expect(body.live.report.revenueCents).toBe(liveReport(t, 500).report.revenueCents);
     expect(body.statements).toEqual([]);
   });
@@ -90,6 +100,9 @@ describe('transparency routes (P-044)', () => {
     expect((await put(h, TRANSPARENCY_LIVE_PATH, { ...liveReport(Date.now()), month: 'Sept' })).status).toBe(400);
     const otherWs = liveReport(Date.now());
     expect((await put(h, TRANSPARENCY_LIVE_PATH, { ...otherWs, workspaceId: 'someone-else' })).status).toBe(400);
+    const { statementStatus: _omitted, ...noStatus } = liveReport(Date.now());
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, noStatus)).status).toBe(400);
+    expect((await put(h, TRANSPARENCY_LIVE_PATH, { ...otherWs, statementStatus: { ...PENDING, status: 'final' } })).status).toBe(400);
     expect((await get(h, `/transparency/${WS}`)).status).toBe(404);
   });
 
@@ -112,6 +125,65 @@ describe('transparency routes (P-044)', () => {
     expect(await verifySignedStatement(served)).toEqual({ ok: true });
     const index = (await (await get(h, `/transparency/${WS}`)).json()) as { statements: { month: string; digest: string; signer: string }[] };
     expect(index.statements).toEqual([{ month: '2026-09', digest: signed.digest, signer: signed.signer, publishedAtMs: expect.any(Number) }]);
+  });
+
+  it('end to end: the operator pass publishes through the signed routes and a public reader verifies the statement to the anchor key', async () => {
+    const h = harness();
+    const key = generatePrivateKey();
+    const nowMs = Date.UTC(2026, 9, 1, 10);
+    const sept = journal();
+    const septEnd = Date.UTC(2026, 9, 1) / 1000;
+    const anchor = {
+      anchorSeq: 1, logId: `ledger-anchor:${WS}`, logRoot: 'cd'.repeat(32), treeSize: 4, windowStart: septEnd - 3600, windowEnd: septEnd,
+      backend: 'eas', chainId: 84532, ref: `0x${'e'.repeat(64)}`, txHash: `0x${'f'.repeat(64)}`, attester: null, consistencyFrom: 0, consistencyProof: [],
+    };
+    const finalRun = {
+      runId: 'final-2026-09', mode: 'final' as const, month: '2026-09', startedAt: '2026-10-01T00:30:00.000Z', finishedAt: '2026-10-01T00:31:00.000Z',
+      gateOpen: true, gateReasons: [], gatePublished: true, gatePublishDetail: null, opened: [], resolved: [],
+      verdicts: [{ invariant: 'journal-matches-stripe' as const, status: 'ok' as const, detail: 'matches' }],
+    };
+    const worker = cupboardTransparencyWorker({
+      baseUrl: 'https://cupboard.test',
+      secret: KEY,
+      // The signed PUTs carry real HMACs; the Worker checks them at its own clock.
+      now: Date.now,
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = new URL(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url);
+        return h.api.request(`${u.pathname}${u.search}`, init ?? {}, h.env);
+      }) as typeof fetch,
+    });
+    const run = () =>
+      publishTransparency({
+        workspaces: [WS],
+        worker,
+        workerUnavailable: null,
+        now: () => nowMs,
+        readEntries: async () => sept,
+        readReconciliation: async () => ({ latestFinal: finalRun, openBreaks: [] }),
+        anchors: async () => [anchor],
+        treasury: async () => treasury,
+        signingKey: () => ({ ok: true, privateKey: key }),
+        drift: async () => undefined,
+      });
+
+    const first = await run();
+    expect(first.workspaces[0]).toMatchObject({ live: { pushed: true, stored: 'stored' }, statement: { status: 'published', month: '2026-09' }, error: null });
+    const second = await run();
+    expect(second.workspaces[0]!.statement).toMatchObject({ status: 'published', detail: 'published' });
+
+    const page = (await (await get(h, `/transparency/${WS}`)).json()) as {
+      live: { month: string; report: { kind: string; latestAnchor: { logRoot: string } | null }; statementStatus: StatementStatus };
+      statements: { month: string; signer: string }[];
+    };
+    expect(page.live.month).toBe('2026-10');
+    expect(page.live.report.latestAnchor?.logRoot).toBe(anchor.logRoot);
+    expect(page.live.statementStatus).toMatchObject({ status: 'published', month: '2026-09' });
+    expect(page.statements).toEqual([expect.objectContaining({ month: '2026-09', signer: privateKeyToAccount(key).address })]);
+
+    const served = (await (await get(h, `/transparency/${WS}/statements/2026-09`)).json()) as SignedStatement;
+    expect(await verifySignedStatement(served)).toEqual({ ok: true });
+    expect(served.signer).toBe(privateKeyToAccount(key).address);
+    expect(served.statement.report.latestAnchor?.txHash).toBe(anchor.txHash);
   });
 
   it('refuses a statement whose figures were altered after signing', async () => {

@@ -28,6 +28,7 @@ function fakes(over: Partial<CreatePotFromRepoDeps> = {}) {
     publishes: [] as Record<string, unknown>[],
     beaconWrites: [] as { pot: string; consent: boolean }[],
     gitSyncSeeds: [] as Record<string, unknown>[],
+    hiveGitModeApplies: [] as { ws: string; pot: string; order: number }[],
     registry: [{ slug: 'existing', path: '/x' }] as Record<string, unknown>[],
   };
   const deps: CreatePotFromRepoDeps = {
@@ -79,6 +80,10 @@ function fakes(over: Partial<CreatePotFromRepoDeps> = {}) {
         cron: '0 3,13,23,33,43,53 * * * *',
         branch: 'develop',
       };
+    },
+    applyNewHiveGitMode: async (ws, pot) => {
+      calls.hiveGitModeApplies.push({ ws, pot, order: calls.gitSyncSeeds.length });
+      return { applied: false, reason: 'default-legacy', mode: 'legacy' };
     },
     ...over,
   };
@@ -480,6 +485,47 @@ describe('createPotFromRepo (P-006)', () => {
     if (!r.ok || !('created' in r)) throw new Error('expected created');
     expect(r.gitSync).toEqual({ seeded: false, reason: 'error', message: 'routines pg down' });
     expect(r.publish).toMatchObject({ announced: true }); // the rest of the create proceeded
+  });
+
+  it('P-503: applies the new-hive default hiveGit.mode to a NEW pot, BEFORE the git-sync seed', async () => {
+    const { deps, calls } = fakes({
+      applyNewHiveGitMode: async (ws, pot) => {
+        calls.hiveGitModeApplies.push({ ws, pot, order: calls.gitSyncSeeds.length });
+        return { applied: true, mode: 'bridged' };
+      },
+    });
+    const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(calls.hiveGitModeApplies).toEqual([{ ws: 'ws', pot: r.created.potSlug, order: 0 }]);
+    expect(calls.gitSyncSeeds).toHaveLength(1);
+    expect(r.hiveGitMode).toEqual({ applied: true, mode: 'bridged' });
+  });
+
+  it('P-503: a throwing mode-default NEVER fails the create', async () => {
+    const { deps } = fakes({
+      applyNewHiveGitMode: async () => {
+        throw new Error('policy read down');
+      },
+    });
+    const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(r.hiveGitMode).toEqual({ applied: false, reason: 'error', message: 'policy read down' });
+    expect(r.gitSync).toMatchObject({ seeded: true });
+  });
+
+  it('P-503: an into-pot add never touches the existing home mode', async () => {
+    const { deps, calls } = fakes({
+      loadRegistry: async () =>
+        ({ projects: [{ slug: 'mypot', path: '/h', harness_kind: 'hive' }] }) as never,
+      republish: (async () => ({ announced: true, cupboard: { attempted: false } })) as never,
+    });
+    const r = await createPotFromRepo({ githubUrl: URL, intoPot: 'mypot', workspaceId: 'ws' }, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok || !('created' in r)) throw new Error('expected created');
+    expect(calls.hiveGitModeApplies).toEqual([]);
+    expect(r.hiveGitMode).toBeUndefined();
   });
 
   it('a FAILED create never reaches the seeder (member-create failure)', async () => {

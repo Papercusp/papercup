@@ -10,9 +10,67 @@
 import { canonicalJson, sha256Hex } from '@papercusp/hash-chain';
 import { verifyMessage, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import type { MonthlyStatement } from './transparency-report';
+import type { MonthlyStatement, TransparencyReport } from './transparency-report';
 
 export const STATEMENT_SIGNATURE_SCHEME = 'eip191-sha256-canonical-json' as const;
+
+/**
+ * Where the latest closed month's statement stands (D-028 §5), carried on every
+ * live push so the public page says why a month has no statement yet.
+ *   published  the statement for `month` is on the Worker (`digest`)
+ *   pending    `month` closed but cannot be published yet (no final reconciliation
+ *              run, no anchored root covering month end, or no signing key)
+ *   withheld   the month's final run did not reconcile; `withheldBy` names the invariants
+ *   none       no month has closed with journal activity yet
+ */
+export interface StatementStatus {
+  readonly status: 'published' | 'pending' | 'withheld' | 'none';
+  readonly month: string | null;
+  readonly digest: string | null;
+  readonly withheldBy: readonly string[];
+  readonly detail: string;
+}
+
+/** The hourly live push body (PUT TRANSPARENCY_LIVE_PATH). */
+export interface LiveTransparencyPush {
+  readonly workspaceId: string;
+  readonly month: string;
+  readonly generatedAtMs: number;
+  readonly report: TransparencyReport;
+  readonly statementStatus: StatementStatus;
+}
+
+const MONTH = /^\d{4}-\d{2}$/;
+const STATEMENT_STATES: ReadonlySet<string> = new Set(['published', 'pending', 'withheld', 'none']);
+
+/** Shape check for a pushed live report: the report and the status must describe the push's own workspace and month. */
+export function parseLiveTransparencyPush(raw: unknown): LiveTransparencyPush | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const report = r.report as Record<string, unknown> | undefined;
+  const status = r.statementStatus as Record<string, unknown> | undefined;
+  const ok =
+    typeof r.workspaceId === 'string' &&
+    r.workspaceId.length > 0 &&
+    typeof r.month === 'string' &&
+    MONTH.test(r.month) &&
+    typeof r.generatedAtMs === 'number' &&
+    Number.isFinite(r.generatedAtMs) &&
+    !!report &&
+    report.kind === 'live' &&
+    report.provisional === true &&
+    report.workspaceId === r.workspaceId &&
+    report.month === r.month &&
+    !!status &&
+    typeof status.status === 'string' &&
+    STATEMENT_STATES.has(status.status) &&
+    (status.month === null || (typeof status.month === 'string' && MONTH.test(status.month))) &&
+    (status.digest === null || typeof status.digest === 'string') &&
+    Array.isArray(status.withheldBy) &&
+    status.withheldBy.every((w) => typeof w === 'string') &&
+    typeof status.detail === 'string';
+  return ok ? (raw as LiveTransparencyPush) : null;
+}
 
 export interface SignedStatement {
   readonly scheme: typeof STATEMENT_SIGNATURE_SCHEME;

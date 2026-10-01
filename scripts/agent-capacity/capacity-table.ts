@@ -78,6 +78,19 @@ export interface CapacityRow {
   usdPerHour: number;
   /** null when capacity is 0. An upper bound when `censored`. */
   usdPerAgentMonth: number | null;
+  /**
+   * The same capacity priced at the measured SPOT rate (spot does not change what a machine can
+   * hold). null when capacity is 0 or the family has no measured spot price (WI-10004749).
+   */
+  usdPerAgentMonthSpot: number | null;
+}
+
+function spotHourlyOrNull(machineType: string, diskGb: number): number | null {
+  try {
+    return hourlyPriceUsd(machineType, diskGb, { spot: true });
+  } catch {
+    return null;
+  }
 }
 
 const pct = (xs: number[], p: number): number => {
@@ -99,6 +112,7 @@ export function capacityRow(
   const best = passed.at(-1) ?? null;
   const capacity = best?.n ?? 0;
   const usdPerHour = hourlyPriceUsd(machineType, diskGb);
+  const spotPerHour = spotHourlyOrNull(machineType, diskGb);
   let coresPerAgent: number | null = null;
   let sliceAnonMbPerAgent: number | null = null;
   if (best && atCapacity.capture && atCapacity.capture.samples.length > 1) {
@@ -123,17 +137,18 @@ export function capacityRow(
     toolDivergedShare: best && atCapacity.sessions.length ? diverged / atCapacity.sessions.length : null,
     usdPerHour,
     usdPerAgentMonth: capacity > 0 ? (usdPerHour * 730) / capacity : null,
+    usdPerAgentMonthSpot: capacity > 0 && spotPerHour !== null ? (spotPerHour * 730) / capacity : null,
   };
 }
 
 const f = (x: number | null, d = 2) => (x === null ? '—' : x.toFixed(d));
 
 export function renderMarkdown(rows: readonly CapacityRow[]): string {
-  const head = '| machine | workload | capacity N | saturated at | slowdown at N | tool-diverged % | cores/agent | anon MB/agent | session peak MiB p50/p95 | $/h | $/agent-month |';
-  const out = [head, '|' + ' --- |'.repeat(11)];
+  const head = '| machine | workload | capacity N | saturated at | slowdown at N | tool-diverged % | cores/agent | anon MB/agent | session peak MiB p50/p95 | $/h | $/agent-month | spot $/agent-month |';
+  const out = [head, '|' + ' --- |'.repeat(12)];
   for (const r of rows) {
     out.push(
-      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${r.toolDivergedShare === null ? '—' : f(r.toolDivergedShare * 100, 0)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} |`,
+      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${r.toolDivergedShare === null ? '—' : f(r.toolDivergedShare * 100, 0)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} | ${r.usdPerAgentMonthSpot === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonthSpot)}`} |`,
     );
   }
   return out.join('\n');

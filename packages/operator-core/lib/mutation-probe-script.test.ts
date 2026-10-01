@@ -1034,6 +1034,39 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   const verifiedOriginal = () => [realpathSync(dir), join(realpathSync(dir), 'subject.txt'),
     createHash('sha256').update(ORIGINAL).digest('hex'), ''];
 
+  it('pins admitted original bytes if the snapshot pathname is unlinked before bwrap mounts it', () => {
+    const root = realpathSync(dir);
+    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const scratch = mkdtempSync(join(tmpdir(), 'mutation-probe.'));
+    const snapshot = join(scratch, 'subject.txt.orig');
+    const bin = join(dir, 'bin');
+    const realBwrap = spawnSync('bash', ['-c', 'command -v bwrap'], { encoding: 'utf8' });
+    expect(realBwrap.status).toBe(0);
+    mkdirSync(admissionDir, { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(snapshot, ORIGINAL);
+    writeFileSync(subject, ORIGINAL.replace('beta', 'BETA'));
+    writeFileSync(join(admissionDir, 'original.manifest'),
+      [root, join(root, 'subject.txt'), snapshot, String(process.pid), ''].join('\0'));
+    // The real overlay has already validated the manifest when it execs this
+    // shim. Remove only this fixture's pathname, then exercise real bwrap.
+    writeFileSync(join(bin, 'bwrap'), '#!/usr/bin/env bash\nset -euo pipefail\n'
+      + 'rm -- "$PROBE_TEST_SNAPSHOT"\nexec "$PROBE_TEST_BWRAP" "$@"\n', { mode: 0o700 });
+    try {
+      const admitted = spawnSync('bash', [OVERLAY, root, '--', 'cat', subject], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PROBE_TEST_SNAPSHOT: snapshot,
+          PROBE_TEST_BWRAP: realBwrap.stdout.trim() },
+      });
+      expect(existsSync(snapshot)).toBe(false);
+      expect(admitted.status, admitted.stderr).toBe(0);
+      expect(admitted.stdout).toBe(ORIGINAL);
+      expect(read()).toContain('BETA');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it('admits a concurrent test against original bytes while the tracked subject is mutated', async () => {
     const mutantStarted = join(dir, 'mutant-started');
     const child = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,

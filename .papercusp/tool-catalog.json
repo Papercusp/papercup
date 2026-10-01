@@ -8495,7 +8495,7 @@
           "POST"
         ]
       },
-      "description": "Run one ledger anchoring pass for this workspace now: log new chain links, publish the completed hour's root (EAS on Base Sepolia), check cadence. Dry run unless confirm:true.",
+      "description": "Run one ledger anchoring pass for this workspace now: log new chain links, publish the completed hour's root (EAS on Base Sepolia), check cadence, then push the public transparency report. Dry run unless confirm:true.",
       "capabilities": [
         "harness:write"
       ],

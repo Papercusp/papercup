@@ -13,10 +13,14 @@
  * Publishing needs an anchor key (PAPERCUSP_LEDGER_ANCHOR_KEY_FILE, default
  * ~/.papercusp/secrets/base-sepolia-anchor-key). Without one the pass only
  * checks cadence; PAPERCUSP_LEDGER_ANCHOR_BACKEND=none turns anchoring off.
+ *
+ * Each tick then pushes the public transparency report (P-044, D-028:
+ * lib/cupboard/transparency-runtime.ts) as its own step.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { runLedgerAnchorPass } from '../cupboard/ledger-anchor-runtime';
+import { runTransparencyPass } from '../cupboard/transparency-runtime';
 
 export const LEDGER_ANCHOR_CRONTAB = '*/15 * * * *';
 
@@ -37,6 +41,23 @@ async function ledgerAnchorTickWf(): Promise<void> {
     // No step retry: a publication is not idempotent on chain, and the next
     // 15-minute tick retries a failed hour anyway.
     { name: 'ledger-anchor-pass', retriesAllowed: false },
+  );
+  // P-044 (D-028 §3): the public transparency report is rebuilt right after the
+  // anchor pass, so its latest anchored root is the one just published. A separate
+  // step: a Worker outage must never cost an anchor, and the next tick re-pushes.
+  await DBOS.runStep(
+    async () => {
+      const r = await runTransparencyPass();
+      const failed = r.workspaces.filter((w) => w.error || (!w.live.pushed && !r.workerUnavailable));
+      const drift = r.workspaces.filter((w) => w.drift);
+      if (failed.length || drift.length) {
+        console.log(
+          `[transparency] ${r.workspaces.length} workspace(s): ${failed.length} not pushed, ${drift.length} statement drift` +
+            failed.map((w) => ` | ${w.workspaceId}: ${w.error ?? (w.live.pushed ? '' : w.live.detail)}`).join(''),
+        );
+      }
+    },
+    { name: 'transparency-pass', retriesAllowed: false },
   );
 }
 

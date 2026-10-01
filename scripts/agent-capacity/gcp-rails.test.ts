@@ -5,11 +5,13 @@ import {
   committedWorstCaseCents,
   hourlyPriceUsd,
   LABEL_MAXCOST,
+  LABEL_PROVISIONING,
   LABEL_RUN,
   MAX_CONCURRENT_WORST_CASE_USD,
   parseMachineType,
   PLAN_SLUG,
   readCensus,
+  SPOT_PRICES_2026_10_01,
   teardownRun,
   TEST_PROJECT,
   worstCaseCents,
@@ -59,6 +61,28 @@ describe('buildCreateArgs', () => {
     expect(labels[LABEL_RUN]).toBe('cal-1');
     expect(labels.scenario).toBe('s7');
   });
+
+  it('starts a spot VM with the SPOT model, the same DELETE rail, and a spot-priced worst-case label', () => {
+    const args = buildCreateArgs({ ...spec, spot: true });
+    expect(args).toContain('--provisioning-model=SPOT');
+    expect(flagValue(args, 'instance-termination-action')).toBe('DELETE');
+    expect(flagValue(args, 'max-run-duration')).toBe('240m');
+    const labels = Object.fromEntries(flagValue(args, 'labels')!.split(',').map((kv) => kv.split('=')));
+    expect(labels[LABEL_PROVISIONING]).toBe('spot');
+    expect(labels[LABEL_MAXCOST]).toBe(String(worstCaseCents('e2-standard-4', 4, undefined, { spot: true })));
+    expect(Number(labels[LABEL_MAXCOST])).toBeLessThan(worstCaseCents('e2-standard-4', 4));
+  });
+
+  it('starts an on-demand VM without the SPOT model', () => {
+    const args = buildCreateArgs(spec);
+    expect(args.some((a) => a.startsWith('--provisioning-model'))).toBe(false);
+    const labels = Object.fromEntries(flagValue(args, 'labels')!.split(',').map((kv) => kv.split('=')));
+    expect(labels[LABEL_PROVISIONING]).toBe('standard');
+  });
+
+  it('refuses a spot VM in a family whose spot price was never read', () => {
+    expect(() => buildCreateArgs({ ...spec, machineType: 'n2d-standard-4', spot: true })).toThrow(/no measured spot price/);
+  });
 });
 
 describe('pricing', () => {
@@ -73,6 +97,12 @@ describe('pricing', () => {
     const expected = 4 * 0.02181159 + 16 * 0.00292353 + (50 * 0.1) / 730;
     expect(hourlyPriceUsd('e2-standard-4')).toBeCloseTo(expected, 8);
     expect(worstCaseCents('e2-standard-4', 4)).toBe(Math.ceil(expected * 4 * 100));
+  });
+
+  it('prices a spot e2 VM at the measured spot rate, with the disk at its normal price', () => {
+    const expected = 16 * SPOT_PRICES_2026_10_01.e2!.vcpuHour + 16 * SPOT_PRICES_2026_10_01.e2!.gbRamHour + (120 * 0.1) / 730;
+    expect(hourlyPriceUsd('e2-highcpu-16', 120, { spot: true })).toBeCloseTo(expected, 8);
+    expect(hourlyPriceUsd('e2-highcpu-16', 120, { spot: true })).toBeLessThan(hourlyPriceUsd('e2-highcpu-16', 120));
   });
 });
 

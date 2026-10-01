@@ -67,7 +67,11 @@ describe('capacity-table', () => {
     expect(row.sliceAnonMbPerAgent).toBeCloseTo(100, 6); // p95 anon net of the 100 MB t0, per agent
     expect(row.sessionPeakMiB).toEqual({ p50: 1024, p95: 3072 });
     expect(row.usdPerAgentMonth).toBeCloseTo((hourlyPriceUsd('e2-standard-4', 120) * 730) / 2, 9);
+    // Spot prices the same capacity at the measured spot rate; it never changes the capacity.
+    expect(row.usdPerAgentMonthSpot).toBeCloseTo((hourlyPriceUsd('e2-standard-4', 120, { spot: true }) * 730) / 2, 9);
+    expect(row.usdPerAgentMonthSpot!).toBeLessThan(row.usdPerAgentMonth!);
     expect(renderMarkdown([row])).toMatch(/\| e2-standard-4 \| mixed-normal \| 2 \| 4 \(wallSlowdown=1\.80\) \|/);
+    expect(renderMarkdown([row])).toMatch(/\| spot \$\/agent-month \|/);
   });
 
   it('marks a ramp that never saturated as censored: capacity is a floor and the cost an upper bound', () => {

@@ -12,16 +12,17 @@ vi.mock('../../claude-sessions', () => ({
   readClaudeSession: vi.fn(),
   allClaudeSessionMetas: vi.fn(),
 }));
+// The handler only destructures `sql` from getOrgPg(), so the factory hands back just that
+// member from a hoisted holder instead of casting a partial OrgPgHandle at the call site.
+const orgPg = vi.hoisted((): { sql: unknown } => ({ sql: null }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: vi.fn(),
+  getOrgPg: vi.fn(() => ({ sql: orgPg.sql })),
 }));
 
 import { allClaudeSessionMetas } from '../../claude-sessions';
-import { getOrgPg } from '@papercusp/db-org';
 
 const allMetasMock = vi.mocked(allClaudeSessionMetas);
-const getOrgPgMock = vi.mocked(getOrgPg);
 const tool = (await import('./claude_session')).default;
 
 type Out = { content: Array<{ text: string }>; isError?: boolean };
@@ -40,7 +41,7 @@ describe('dev:claude_session — indexed fallback', () => {
       { turn_idx: 1, speaker: 'assistant', ts: '2026-08-24T10:01:00.000Z', text: 'second turn' },
       { turn_idx: 0, speaker: 'user', ts: '2026-08-24T10:00:00.000Z', text: 'first turn' },
     ]);
-    getOrgPgMock.mockReturnValue({ sql } as never);
+    orgPg.sql = sql;
 
     const out = (await tool.handler(
       { op: 'read', sessionId },
