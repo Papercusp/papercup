@@ -10646,6 +10646,52 @@ export async function reportSessionRespawned(
   }
 }
 
+// Bumped by every durable respawn report in this process: a retry that sees a
+// newer value stops, so a late retry can never re-anchor the row back to an older id.
+let respawnReportGeneration = 0;
+const RESPAWN_REPORT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000];
+const sleepUnref = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+
+/**
+ * {@link reportSessionRespawned} that keeps retrying in the background until the
+ * operator accepts it (WI-10004917). A single 2s attempt was the only chance the
+ * successor got: one that landed while the operator was restarting left the adv row
+ * naming the predecessor, and no applied identity span ever named the live native id,
+ * so owner-by-native-session oracles read its turns as foreign. Resolves with the
+ * FIRST attempt's verdict, so a caller that gates on confirmation (the carry wake)
+ * keeps its ordering. Retry timers are unref'd and a newer respawn supersedes them.
+ */
+export function reportSessionRespawnedDurably(
+  advSessionId,
+  sessionId,
+  {
+    coordOwnerId = null,
+    reportImpl = reportSessionRespawned,
+    retryDelaysMs = RESPAWN_REPORT_RETRY_DELAYS_MS,
+    sleepImpl = sleepUnref,
+  } = {},
+) {
+  if (!sessionId || (!advSessionId && !coordOwnerId)) return Promise.resolve(false);
+  const generation = ++respawnReportGeneration;
+  const attempt = () =>
+    Promise.resolve()
+      .then(() => reportImpl(advSessionId, sessionId, { coordOwnerId }))
+      .then((ok) => ok === true, () => false);
+  const first = attempt();
+  void first.then(async (ok) => {
+    if (ok) return;
+    for (const delayMs of retryDelaysMs) {
+      await sleepImpl(delayMs);
+      if (generation !== respawnReportGeneration) return;
+      if (await attempt()) return;
+    }
+  });
+  return first;
+}
+
 /**
  * Complete a stale-host carry adoption's lifecycle report before announcing
  * `session:compacted`. The detached event wakes members that may immediately
