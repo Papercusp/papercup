@@ -7,6 +7,15 @@
  * tool self-registers via defineTool on import).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// WI-1074216/P-006: permanent wrong store adapters prove the literal launch
+// oracles fail without mutating production code. The lost-slot suppression
+// test bypasses both adapters and calibrates each focused control run.
+const idempotenceControls = ['initial-cas-loss', 'partial-exact-retry'] as const;
+const idempotenceControl = process.env.PAPERCUSP_FLEET_IDEMPOTENCE_CONTROL;
+if (idempotenceControl && !idempotenceControls.some((value) => value === idempotenceControl)) {
+  throw new Error(`Unknown permanent fleet idempotence control: ${idempotenceControl}`);
+}
 import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/spec-pool-preview';
 import { admissionPendingExplanation } from '../../../work-items-admission';
 
@@ -3678,7 +3687,9 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
     const releaseSlot = releaseFleetLaunchSlot as ReturnType<typeof vi.fn>;
     releaseSlot.mockClear();
-    launchTransaction.persist.mockResolvedValueOnce(false);
+    // Wrong adapter loses the store's CAS rejection; the expected rejection
+    // and zero-spawn oracle below remain literal and unchanged.
+    launchTransaction.persist.mockResolvedValueOnce(idempotenceControl === 'initial-cas-loss');
 
     const res = await invokeLaunchHandler(
       { name: 'CAS Loss Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
@@ -3686,7 +3697,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     );
     const responseText = (res as any).content[0].text as string;
 
-    expect((res as any).isError).toBe(true);
+    expect((res as any).isError, 'idempotence-contract:initial-cas-loss').toBe(true);
     expect(responseText).toContain('changed concurrently');
     expect(launchTransaction.persist).toHaveBeenCalledWith(expect.objectContaining({
       expectedRevision: null,
@@ -4287,6 +4298,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
   });
 
   it('a lost claim opens 0 members — spawnConsole is never called', async () => {
+    // Calibration: real suppression path, independent of either wrong adapter.
     const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
     (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
       won: false,
@@ -4343,6 +4355,9 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       .mockResolvedValueOnce({ won: false, priorAt: 1_000, priorCount: 3 })
       .mockResolvedValueOnce({ won: true, at: 2_000 });
     releaseSlot.mockClear();
+    // Wrong adapter corrupts one durable pre-pinned identity. Assertions keep
+    // the original identities, so a consistent but wrong retry still fails.
+    const firstRetryOwnerId = idempotenceControl === 'partial-exact-retry' ? 'su-wrong-retry-1' : 'su-retry-1';
     createFleetIfAbsentMock.mockResolvedValueOnce({
       record: {
         leaderOwnerId: 'owner-1',
@@ -4353,7 +4368,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
           state: 'partial',
           requestedAt: 500,
           updatedAt: 900,
-          requestedMemberIds: ['su-late-canary', 'su-retry-1', 'su-retry-2'],
+          requestedMemberIds: ['su-late-canary', firstRetryOwnerId, 'su-retry-2'],
           openedMemberIds: ['su-late-canary'],
           verifiedMemberIds: [],
           failed: [{ ownerId: 'su-late-canary', phase: 'verification', reason: 'bounded timeout' }],
@@ -4366,7 +4381,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
             },
           ],
           recovery: {
-            retryOwnerIds: ['su-late-canary', 'su-retry-1', 'su-retry-2'],
+            retryOwnerIds: ['su-late-canary', firstRetryOwnerId, 'su-retry-2'],
             nextAction: 'resume unresolved pre-pinned identities',
           },
         },
@@ -4383,7 +4398,16 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     const commands = spawnConsoleMock.mock.calls.map(
       (call) => (call[0].envelope as { greetingCmd: string }).greetingCmd,
     );
+    const persisted = launchTransaction.persist.mock.calls.at(-1)?.[0] as {
+      transaction: { transactionId: string; requestedMemberIds: string[]; openedMemberIds: string[] };
+    };
 
+    expect(payload.opened.map((member: { ownerId: string }) => member.ownerId),
+      'idempotence-contract:partial-exact-retry').toEqual(['su-retry-1', 'su-retry-2']);
+    expect(payload.launchTransaction.transactionId).toBe('partial-tx');
+    expect(persisted.transaction.transactionId).toBe('partial-tx');
+    expect(persisted.transaction.requestedMemberIds).toEqual(['su-late-canary', 'su-retry-1', 'su-retry-2']);
+    expect(persisted.transaction.openedMemberIds).toEqual(['su-late-canary', 'su-retry-1', 'su-retry-2']);
     expect(releaseSlot).toHaveBeenCalledWith(expect.objectContaining({ at: 1_000 }));
     expect(claimSlot).toHaveBeenCalledTimes(2);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
