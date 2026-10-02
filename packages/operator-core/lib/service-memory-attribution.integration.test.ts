@@ -2,7 +2,7 @@
  * This measures one request-only host, not the production six-worker/background cohort.
  * Allocation samples and completed query bytes do not prove a retained-state owner.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { HOST_MALLOC_ARENA_MAX } from '../../../apps/operator/bin/malloc-arena-reexec';
+import { createCdpClient, readProcessMemory, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
 
 const root = resolve(__dirname, '../../..');
 
@@ -107,6 +108,183 @@ async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
 }
 
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
+  it('attributes exercised content-lint transforms to matched request-host and executable descendant samples', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-content-lint-cohort-'));
+    const sourcePath = 'packages/operator-core/lib/content-lint/esbuild-transform.ts';
+    const sourceHash = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
+    const entry = join(dir, 'request-host.ts'), bundle = join(dir, 'request-host.cjs');
+    const meta = join(dir, 'metafile.json');
+    // Dynamic import resolves from the private bundle, independently of NODE_PATH.
+    symlinkSync(resolve(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
+    const fixtureSources = [
+      'packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts',
+      'packages/operator-core/lib/content-lint/esbuild-transform.ts',
+      'packages/operator-core/lib/harness/improvements/watchdog.ts',
+    ].map(path => ({ path, text: readFileSync(join(root, path), 'utf8') }));
+    const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const buildSha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const compilerPath = resolve(root, 'node_modules/@esbuild/linux-x64/bin/esbuild');
+    const compilerHash = hash(readFileSync(compilerPath));
+    const reports: any[] = [];
+    writeFileSync(entry, `
+      import { createServer } from 'node:http';
+      import { findEsbuildTransformError } from ${JSON.stringify(join(root, sourcePath))};
+      globalThis.p011Compiler = require('esbuild');
+      const mode = process.env.P011_COHORT_MODE;
+      createServer(async (request, response) => {
+        try {
+          let body = ''; for await (const chunk of request) body += chunk;
+          const value = JSON.parse(body);
+          const error = request.url === '/warm' || mode === 'transform'
+            ? await findEsbuildTransformError(value.path, value.text) : null;
+          response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ error, sourceBytes: Buffer.byteLength(value.text) }));
+        } catch (error) { response.statusCode = 500; response.end(String(error)); }
+      }).listen(0, '127.0.0.1', function () {
+        console.log(JSON.stringify({ pid: process.pid, port: this.address().port }));
+      });
+    `);
+    try {
+      // Compile the current application module into a private request fixture;
+      // the metafile and exact bytes identify this plane, not a deployed host.
+      const built = spawnSync(compilerPath, [entry, '--bundle', '--platform=node', '--format=cjs',
+        '--packages=external', '--outfile=' + bundle, '--metafile=' + meta], {
+        cwd: root, encoding: 'utf8', timeout: 20_000,
+      });
+      expect(built.status, built.stderr).toBe(0);
+      const graph = Object.keys(JSON.parse(readFileSync(meta, 'utf8')).inputs).map(path => {
+        const absolute = resolve(root, path);
+        return { path: absolute === entry ? '<private-request-fixture>' : path, sha256: hash(readFileSync(absolute)) };
+      });
+      expect(graph.some(row => row.path === sourcePath && row.sha256 === sourceHash)).toBe(true);
+      const sampleProcess = (pid: number) => {
+        const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
+        const tail = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        const executable = readlinkSync('/proc/' + pid + '/exe');
+        const rollup = readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8');
+        const kb = (name: string) => Number(new RegExp('^' + name + ':\\s+(\\d+)', 'm').exec(rollup)?.[1]);
+        return { pid, startTicks: tail[19], executable, executableSha256: hash(readFileSync('/proc/' + pid + '/exe')),
+          pssKb: kb('Pss'), anonymousKb: kb('Anonymous'), privateDirtyKb: kb('Private_Dirty') };
+      };
+      for (const mode of ['control', 'transform']) {
+        const host = spawn(process.execPath, ['--inspect=127.0.0.1:0', bundle], {
+          cwd: root, env: { ...process.env, NODE_PATH: join(root, 'node_modules'), P011_COHORT_MODE: mode },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '', stderr = '', client: ReturnType<typeof createCdpClient> | undefined;
+        let pauses = 0;
+        const seen = new Map<number, string>();
+        const report: any = { mode, samples: [], requests: [], windows: [], trace: null, reaped: false };
+        reports.push(report);
+        host.stdout.on('data', chunk => { stdout += chunk.toString(); });
+        host.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        const exited = new Promise<void>(resolve => host.once('exit', () => resolve()));
+        try {
+          const readyDeadline = Date.now() + 10_000;
+          while ((!stdout.includes('\n') || !inspectorEndpoints(stderr).length) && Date.now() < readyDeadline && host.exitCode === null) {
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
+          const ready = JSON.parse(stdout.trim().split('\n')[0]!);
+          expect(ready.pid).toBe(host.pid);
+          report.pid = ready.pid;
+          client = createCdpClient(inspectorEndpoints(stderr).at(-1)!);
+          await client.connect();
+          client.ws.on?.('message', data => { if (JSON.parse(String(data)).method === 'Debugger.paused') pauses++; });
+          const request = async (path: string, text: string, route = '/check') => {
+            const started = performance.now();
+            const response = await fetch('http://127.0.0.1:' + ready.port + route, {
+              method: 'POST', body: JSON.stringify({ path, text }), signal: AbortSignal.timeout(10_000),
+            });
+            const responseText = await response.text();
+            expect(response.status, responseText).toBe(200);
+            const value = JSON.parse(responseText);
+            expect(value.sourceBytes).toBe(Buffer.byteLength(text));
+            report.requests.push({ path, route, sourceSha256: hash(text), sourceBytes: Buffer.byteLength(text),
+              error: value.error, elapsedMs: performance.now() - started });
+            return value;
+          };
+          const sample = async (phase: string) => {
+            const memory = await readProcessMemory(client!, { expectedPid: ready.pid });
+            const parent = sampleProcess(ready.pid);
+            const children = readFileSync('/proc/' + ready.pid + '/task/' + ready.pid + '/children', 'utf8')
+              .trim().split(/\s+/).filter(Boolean).map(Number).map(sampleProcess);
+            for (const child of children) {
+              expect(child.executableSha256, 'Classify the executable, not a cmdline substring.').toBe(compilerHash);
+              seen.set(child.pid, child.startTicks);
+            }
+            expect(children).toHaveLength(1);
+            expect(parent.pssKb).toBeGreaterThan(0);
+            expect(memory.memory.heapUsed).toBeGreaterThan(0);
+            report.samples.push({ phase, at: new Date().toISOString(), parent, memory, children });
+          };
+          await request('warm.ts', 'export const warm = 1', '/warm');
+          await sample('warm-idle');
+          const traced = await withFunctionCallTrace(client, { expectedPid: ready.pid,
+            targets: [{ name: 'transform', expression: 'p011Compiler.transform' }],
+            durationMs: 20_000, maxCalls: 64, maxStacks: 4, maxStackChars: 2000,
+          }, async () => {
+            for (let window = 0; window < 3; window++) {
+              const start = performance.now();
+              const results = await Promise.all(fixtureSources.map(source => request(source.path, source.text)));
+              expect(results.every(value => value.error === null)).toBe(true);
+              report.windows.push({ window, concurrency: 3, completed: results.length, elapsedMs: performance.now() - start });
+              await sample('ordinary-' + window);
+            }
+          });
+          report.trace = traced.trace; report.traceLimits = traced.limits;
+          expect(traced.trace.calls.transform.calls).toBe(mode === 'transform' ? 9 : 0);
+          expect(traced.trace.limited).toBe(false);
+          if (mode === 'transform') expect(traced.trace.calls.transform.stacks.join('\n')).toContain('findEsbuildTransformError');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          await sample('one-second-idle');
+          // The real syntax diagnostic remains functional after the concurrent
+          // window. Its memory is deliberately outside the matched valid cohort.
+          const invalid = await request('invalid.ts', 'export const broken = ;');
+          expect(invalid.error === null).toBe(mode === 'control');
+          const roots = await client.evaluate("Object.keys(globalThis).filter(key => key.startsWith('__papercuspCdpTrace_'))", { returnByValue: true });
+          expect(roots.result.value).toEqual([]);
+          expect(pauses).toBe(0); report.pauses = pauses;
+        } finally {
+          client?.close();
+          host.kill('SIGTERM');
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([exited, new Promise<void>((_, reject) => {
+              cleanupTimer = setTimeout(() => { host.kill('SIGKILL'); reject(new Error('Private compiler host cleanup exceeded 3s')); }, 3000);
+            })]);
+          } finally { clearTimeout(cleanupTimer); }
+          const deadline = Date.now() + 3000;
+          const stillOwned = (pid: number, start: string) => {
+            try { return sampleProcess(pid).startTicks === start; } catch { return false; }
+          };
+          while ([...seen].some(([pid, start]) => stillOwned(pid, start)) && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
+          report.unreaped = [...seen].filter(([pid, start]) => stillOwned(pid, start));
+          report.reaped = host.exitCode !== null || host.signalCode !== null;
+          expect(report.unreaped).toEqual([]); expect(report.reaped).toBe(true);
+        }
+      }
+      expect(hash(readFileSync(join(root, sourcePath)))).toBe(sourceHash);
+      expect(reports[0].requests.map((row: any) => [row.path, row.sourceSha256, row.sourceBytes])).toEqual(
+        reports[1].requests.map((row: any) => [row.path, row.sourceSha256, row.sourceBytes]));
+      const report = { schemaVersion: 1, plane: 'current-source-private-content-lint-http-fixture', buildSha,
+        bundleHash: hash(readFileSync(bundle)), graph, compiler: { path: compilerPath, sha256: compilerHash },
+        workload: { windows: 3, requestsPerWindow: 3, concurrency: 3, inputFiles: fixtureSources.map(row => ({ path: row.path, sha256: hash(row.text) })) },
+        reports, limitations: [
+          'Current application source compiled into a private request fixture; not the deployed operator runtime.',
+          'One-second idle is bounded fixture evidence, not an ordinary production idle baseline.',
+          'V8 malloced/external counters and executable PSS are measured separately; no total native allocation estimate.',
+          'Named exercised content-lint caller does not attribute the historical 4.2 GiB production census.',
+          'Compiler trace adds bounded diagnostic overhead; control receives identical source bytes without transform work.',
+        ] };
+      if (process.env.PAPERCUSP_P011_CALLER_REPORT) writeFileSync(process.env.PAPERCUSP_P011_CALLER_REPORT, JSON.stringify(report, null, 2) + '\n');
+      console.log('P011_CONTENT_LINT_COHORT ' + JSON.stringify(reports.map(row => ({ mode: row.mode,
+        calls: row.trace.calls.transform.calls, parentPssKb: row.samples.map((sample: any) => sample.parent.pssKb),
+        compilerPssKb: row.samples.map((sample: any) => sample.children[0].pssKb), reaped: row.reaped }))));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 90_000);
+
   it('compares real closure and transform services in isolated processes and reaps their descendants', () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-esbuild-census-'));
     const script = String.raw`
