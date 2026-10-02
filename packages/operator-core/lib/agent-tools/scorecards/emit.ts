@@ -3110,6 +3110,21 @@ export async function emitScorecard(
     // anyone (a refused or re-read emit fires nothing), and fail-soft inside, so a failed
     // emit can never fail the scorecard write that already succeeded.
     if (result.created && result.issue?.id) {
+      // EI-24852356444105284: a settled grading audit also fires
+      // `scorecard:grading-audit:<audited id>` — the audited card is already terminal,
+      // so no work-item status event can tell its author the verdict landed.
+      const settledStamp = auditContext && auditSettlement?.ok ? auditSettlement.gradingAudit : undefined;
+      const settledAudit =
+        auditContext && settledStamp && (settledStamp.state === 'passed' || settledStamp.state === 'failed')
+          ? {
+              issueId: auditContext.subjectIssueId,
+              state: settledStamp.state,
+              auditIssueId: settledStamp.auditIssueId ?? result.issue.id,
+              auditor: settledStamp.auditor ?? null,
+              auditedAt: settledStamp.auditedAt ?? null,
+              rubricRevision: settledStamp.rubricRevision ?? null,
+            }
+          : undefined;
       await emitScorecardEmitted(
         {
           issueId: result.issue.id,
@@ -3120,7 +3135,10 @@ export async function emitScorecard(
           createdBy: input.createdBy ?? null,
           hasAcceptance: Boolean(args.acceptance),
         },
-        input.workspaceId ? { workspaceId: input.workspaceId } : {},
+        {
+          ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+          ...(settledAudit ? { settledAudit } : {}),
+        },
       );
     }
     // P-013 backlog repair: every newly filed non-audit scorecard is a cheap,
