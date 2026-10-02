@@ -336,6 +336,9 @@ describe('sessions:list historical bounded census', () => {
     const distinctKeys = sql.indexOf('SELECT DISTINCT owner_id, session_id', mapStart);
     const lateralLookup = sql.indexOf('LEFT JOIN LATERAL', distinctKeys);
     const eventRejoin = sql.indexOf('FROM raw_events e', lateralLookup);
+    const sessionLookupEnd = sql.indexOf(') a ON true', lateralLookup);
+    const sessionLookup = sql.slice(lateralLookup, sessionLookupEnd);
+    const sessionLookupSelect = sessionLookup.slice(0, sessionLookup.indexOf('FROM harness_shared.adv_sessions'));
 
     expect(mapStart).toBeGreaterThanOrEqual(0);
     expect(distinctKeys).toBeGreaterThan(mapStart);
@@ -343,6 +346,9 @@ describe('sessions:list historical bounded census', () => {
     expect(eventRejoin).toBeGreaterThan(lateralLookup);
     expect(sql).toContain('a.raw_session_id IS NOT DISTINCT FROM e.session_id');
     expect(sql).toContain('count(*)::int AS event_count');
+    expect(sessionLookup).toContain("FROM harness_shared.adv_sessions");
+    expect(sessionLookupSelect).toContain("launch_spec->>'harnessSlug' AS harness_slug");
+    expect(sessionLookupSelect).not.toMatch(/,\s*harness_slug\s*,/);
   });
 
   it('supports the historical compatibility alias while retaining the same bounds', async () => {

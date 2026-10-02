@@ -181,7 +181,9 @@ async function readHistoricalCensus(
             FROM raw_events
         ) k
         LEFT JOIN LATERAL (
-          SELECT session_id, agent, first_seen_at, launch_spec, harness_slug, cwd
+          SELECT session_id, agent, first_seen_at, launch_spec,
+                 launch_spec->>'harnessSlug' AS harness_slug,
+                 cwd
             FROM harness_shared.adv_sessions
            WHERE coord_owner_id = k.owner_id
              AND (k.session_id IS NULL OR session_id = k.session_id)
