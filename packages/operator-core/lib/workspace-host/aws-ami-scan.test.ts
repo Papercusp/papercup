@@ -221,7 +221,7 @@ describe('papercusp-aws-ami-scan executable', () => {
  * `coldsnap` is a third-party tool, probed at runtime by probeAwsAmiExecutables.
  * PENDING is SHRINK-ONLY: an entry must still be missing, so implementing one forces its removal.
  */
-const PENDING: Readonly<Record<string, string>> = { 'papercusp-aws-ami-clean-account-canary': 'WI-10005604' };
+const PENDING: Readonly<Record<string, string>> = {};
 
 describe('AWS AMI release executables exist in-tree', () => {
   const inTree = Object.values(AWS_AMI_RELEASE_EXECUTABLES).filter((name) => name.startsWith('papercusp-'));
