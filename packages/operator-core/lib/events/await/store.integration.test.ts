@@ -1329,23 +1329,64 @@ describe('await-event store (PG)', () => {
     expect(await listOperatorCancelledAwaits('leader', [key])).toEqual([]);
   });
 
-  // EI-10541: on a successful claim, the claim path cancels the agent's stale idle-park
-  // `work-item:claimable` await(s) so they stop firing spurious timeout wakes while it works.
-  it("cancelClaimableAwaits cancels ONLY the caller's work-item:claimable await(s), key- and subscriber-scoped", async () => {
-    // sub-1's standing idle-park claimable await (once:false) — the one that lingers post-claim
-    await registerAwait({ subscriberId: 'sub-1', eventKey: 'work-item:claimable', once: false, timeoutSec: 1800 });
-    // sub-1's claimable await from a re-register (once:true variant) — also stale on claim
-    await registerAwait({ subscriberId: 'sub-1', eventKey: 'work-item:claimable', once: true });
-    // sub-1's await on an UNRELATED key → must survive (only claimable is mutually exclusive with a claim)
-    await registerAwait({ subscriberId: 'sub-1', eventKey: 'lock:grant:xyz' });
-    // a PEER's claimable await → subscriber-scoped, must survive
-    await registerAwait({ subscriberId: 'sub-2', eventKey: 'work-item:claimable', once: false });
+  // EI-10541: a successful claim retires its stale one-shot idle wait, while a reusable
+  // once:false watch remains armed. A paused fleet explicitly retires standing wake watches.
+  it('cancelClaimableAwaits cancels one-shot wake waits on claim and standing wake watches on pause', async () => {
+    const standingWake = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'wake',
+      once: false,
+      timeoutSec: 1800,
+    });
+    const oneShotWake = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'wake',
+      once: true,
+    });
+    const standingNotify = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'notify',
+      once: false,
+    });
+    const unrelated = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'lock:grant:xyz',
+      policy: 'wake',
+    });
+    const peerWake = await registerAwait({
+      subscriberId: 'sub-2',
+      eventKey: 'work-item:claimable',
+      policy: 'wake',
+      once: false,
+    });
 
-    expect(await cancelClaimableAwaits('sub-1')).toBe(2); // both of sub-1's claimable rows
-    expect(await cancelClaimableAwaits('sub-1')).toBe(0); // idempotent: already cancelled → no-op
+    // A successful claim removes the stale one-shot wake, not the reusable watch or inbox interest.
+    expect(await cancelClaimableAwaits('sub-1')).toBe(1);
+    expect(await cancelClaimableAwaits('sub-1')).toBe(0);
+    expect((await listActiveAwaits('sub-1')).map((r) => r.id).sort()).toEqual(
+      [standingWake.id, standingNotify.id, unrelated.id].sort(),
+    );
 
-    expect((await listActiveAwaits('sub-1')).map((r) => r.eventKey)).toEqual(['lock:grant:xyz']); // unrelated await kept
-    expect((await listActiveAwaits('sub-2')).map((r) => r.eventKey)).toEqual(['work-item:claimable']); // peer's kept
+    // Exact one-shot registrations supersede each other across policies, so add this
+    // notify wait after the wake wait is retired and verify claim cleanup leaves it alone.
+    const oneShotNotify = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'notify',
+      once: true,
+    });
+    expect(await cancelClaimableAwaits('sub-1')).toBe(0);
+
+    // A paused member must not be re-woken by future claimable transitions.
+    expect(await cancelClaimableAwaits('sub-1', { includeStanding: true })).toBe(1);
+    expect(await cancelClaimableAwaits('sub-1', { includeStanding: true })).toBe(0);
+    expect((await listActiveAwaits('sub-1')).map((r) => r.id).sort()).toEqual(
+      [standingNotify.id, oneShotNotify.id, unrelated.id].sort(),
+    );
+    expect((await listActiveAwaits('sub-2')).map((r) => r.id)).toEqual([peerWake.id]);
   });
 
   // EI-12457: cancelAwaitsForSubscribersOnKeys — the shared primitive behind sibling-

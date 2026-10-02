@@ -226,7 +226,7 @@ export default defineTool({
         // it (the admission gate only refuses the ensuing claim), burning a full
         // session-resume cycle on a pull this member is forbidden to make anyway.
         // Mirrors the same-purpose cancel on a successful claim below.
-        const claimableAwaitsCancelled = await cancelClaimableAwaits(assignee).catch(() => 0);
+        const claimableAwaitsCancelled = await cancelClaimableAwaits(assignee, { includeStanding: true }).catch(() => 0);
         const miss = fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
           pausedReason: pause.reason,
           claimableAwaitsCancelled,
@@ -712,8 +712,8 @@ export default defineTool({
         'workItem' in claimed
           ? { ok: true as const, workItem: claimed.workItem, claimedUnder: claimed.claimedUnder }
           : { ok: true as const, workItem: claimed };
-      // EI-10541: idle -> working transition — cancel this agent's stale `work-item:claimable`
-      // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
+      // EI-10541: idle -> working transition — cancel this agent's stale one-shot claimable wake
+      // (best-effort, see cancelClaimableAwaits); reusable standing watches remain armed.
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
       const [
@@ -783,7 +783,7 @@ export default defineTool({
       const miss = await missResult();
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ...miss, claimed }) }] };
     }
-    // EI-10541: claimed >=1 item — cancel this agent's stale `work-item:claimable` idle-park await(s).
+    // EI-10541: claimed >=1 item — cancel this agent's stale one-shot claimable wake wait(s).
     await cancelClaimableAwaits(assignee).catch(() => 0);
     const memory = await recallFor(claimed.map((c) => wiOf(c)));
     // EI-19387745408924340: attach each claimed item's governing plan decisions, same as

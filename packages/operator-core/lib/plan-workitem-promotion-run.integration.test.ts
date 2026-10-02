@@ -47,6 +47,7 @@ const h = vi.hoisted(() => ({
       created?: string | null;
       nowState?: string | null;
       opStatus?: string | null;
+      template?: string | null;
     }
   >(),
   flagOn: true,
@@ -198,6 +199,7 @@ vi.mock('./agent-tools/plans/source', async (importOriginal) => {
           created: p.created ?? null,
           nowState: p.nowState ?? null,
           opStatus: p.opStatus ?? null,
+          template: p.template ?? null,
           items: p.items.map((i) => ({
             id: i.id,
             status: i.status,
@@ -473,6 +475,45 @@ created: 2026-08-21
       specTriadMissing: expect.arrayContaining(['requirements', 'design']),
     });
     expect(await features()).toEqual([]);
+  });
+
+  // WI-10005441: the same non-executing, triad-less plan as the case above, but stored as an
+  // acceptance RUBRIC. Promotion must refuse it before any gate: no triad filing (25 were filed
+  // against rubric rows on 2026-10-02) and no criterion minted as a work-item. The case above
+  // is the calibration: without the template the identical plan reaches the triad gate.
+  it('refuses a rubric-template row before any gate: nothing minted, nothing filed', async () => {
+    h.plans.set(PLAN, {
+      created: '2026-08-21',
+      nowState: 'READY FOR EXECUTION',
+      opStatus: null,
+      template: 'rubric',
+      content: `---
+title: acceptance rubric
+slug: ${PLAN}
+status: ready
+created: 2026-08-21
+---
+
+## Now
+
+**State:** READY FOR EXECUTION
+**Next:** grade
+`,
+      items: [
+        { id: 'P-001', status: 'todo', text: 'R-1 criterion' },
+        { id: 'P-002', status: 'todo', text: 'R-2 criterion' },
+        { id: 'P-003', status: 'done', text: 'R-3 criterion' },
+      ],
+    });
+
+    const res = await run.promotePlanItems(base);
+
+    expect(res).toMatchObject({ promoted: 0, skipped: 2, templateExcluded: 'rubric' });
+    expect(res.specTriadBlocked).toBeUndefined();
+    expect(res.specTriadWorkItem).toBeUndefined();
+    const [{ n }] = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.work_items`;
+    expect(n).toBe(0);
   });
 
   it('mints one PLACEABLE feature work-item per OPEN item, tied to the plan; done/dropped are skipped', async () => {

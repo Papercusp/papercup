@@ -648,23 +648,29 @@ export async function cancelInboxWakeAwaits(subscriberId: string): Promise<numbe
   return rows.length;
 }
 
-/** Cancel a subscriber's standing `work-item:claimable` await(s) — called when the
- *  agent SUCCESSFULLY claims work (scheduler:get_next / work_items:claim_next). Holding a
- *  claim and waiting for claimable work are mutually exclusive: the documented idle model is
- *  serial (park ONE `work-item:claimable` await when a self-pull misses → wake → claim → work
- *  → re-park on the next miss), so a claimable await that outlives its claim is always stale.
- *  EI-10541: a pre-claim idle-park await that isn't cancelled when the agent later claims via a
- *  leader-fed spec bump keeps firing spurious ~30-min timeout wakes while the agent is busy,
- *  each costing a full re-orient turn. Subscriber-scoped (you can only cancel your own, like
- *  cancelInboxWakeAwaits); best-effort at the call site. Returns how many rows were cancelled. */
-export async function cancelClaimableAwaits(subscriberId: string): Promise<number> {
+/** Cancel a subscriber's pending one-shot `work-item:claimable` wake await(s) after a
+ *  successful claim. A one-shot idle wait is stale once the agent is working, but a standing
+ *  `once:false` watch is a reusable subscription and must survive claims. Notification-policy
+ *  rows are also independent of the agent's idle/working state and are preserved.
+ *
+ *  Paused-fleet paths pass `includeStanding:true` to retire every wake-policy claimable wait,
+ *  since the member must not be re-invoked for work it is forbidden to claim.
+ *  Subscriber-scoped (you can only cancel your own, like cancelInboxWakeAwaits); best-effort
+ *  at the call site. Returns how many rows were cancelled. */
+export async function cancelClaimableAwaits(
+  subscriberId: string,
+  options: { includeStanding?: boolean } = {},
+): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const includeStanding = options.includeStanding === true;
   const rows = await sql`
     UPDATE harness_shared.event_awaits
        SET cancelled_at = now()
      WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
        AND event_key = 'work-item:claimable'
+       AND policy = 'wake'
+       AND (once = true OR ${includeStanding})
        AND fired_at IS NULL AND cancelled_at IS NULL
     RETURNING id
   `;
