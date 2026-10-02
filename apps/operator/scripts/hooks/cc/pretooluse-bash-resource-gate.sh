@@ -3771,6 +3771,150 @@ except SystemExit:
 except Exception:
     pass  # a parse fault must never wedge a Bash call (fail-open)
 
+# ── FIFO-read hang guard (EI-24862273512503301) ──────────────────────────────
+# Claude Code RE-OPENS a path after a Bash command reads it (its file-read
+# tracking), AFTER the command has returned and OUTSIDE the Bash timeout.
+# open(2) of a FIFO blocks until a writer attaches. Measured 2026-10-02 in the
+# J5 outage drill (WI-10005395): a `cat` of a FIFO returned while its writer
+# was attached, the writer then closed, and Claude Code's re-open sat in the
+# kernel (wchan wait_for_partner) — the tool result never came back, and no
+# timeout covers that wait, so the session hung until it was killed.
+#
+# Deterministic and narrow. Judged: a LITERAL operand of a known reader command
+# at command position that `stat` (which never opens it) reports as a FIFO at
+# the moment of the call. Not judged:
+#   * redirect targets (`< fifo`): the SHELL opens those, not the reader, and
+#     the client re-open was only measured for named operands;
+#   * /dev, /proc, /sys: they resolve against THIS hook process — whose stdin
+#     IS a pipe — not against the command's shell, so judging them here would
+#     deny `cat /dev/stdin` for the hook's own reasons;
+#   * anything the hook cannot resolve ($VAR, globs, `~user`, a relative path
+#     with no stated cwd) — fail open, never guess;
+#   * Codex shells: the re-open is a Claude Code behaviour.
+_FF_DENY = (
+    'FIFO-read hang guard (EI-24862273512503301): `{cmd}` reads `{path}`, which '
+    'is a FIFO (named pipe). Claude Code RE-OPENS a path after a Bash command '
+    'reads it (file-read tracking) — after the command has returned and outside '
+    'the Bash timeout — and open(2) of a FIFO blocks until a writer attaches. '
+    'Once the writer has closed, that re-open never returns (wchan '
+    'wait_for_partner) and the tool result hangs until the session is killed. '
+    'Measured 2026-10-02 in the J5 outage drill (WI-10005395). Use a REGULAR '
+    'FILE as the channel instead: create it with `: > f`, have the writer '
+    'APPEND to it, and read it with `cat f` (or follow it in the background with '
+    '`tail -n +1 -f f | consumer`). To inspect the pipe itself, `ls -l`, `stat` '
+    'and `[ -p f ]` do not open it and are not gated.'
+)
+_FF_READERS = frozenset((
+    'cat', 'tac', 'head', 'tail', 'less', 'more', 'nl', 'wc', 'sed', 'awk',
+    'gawk', 'mawk', 'grep', 'egrep', 'fgrep', 'rg', 'cut', 'sort', 'uniq', 'od',
+    'xxd', 'hexdump', 'strings', 'base64', 'jq', 'diff', 'cmp', 'md5sum',
+    'sha1sum', 'sha256sum', 'sha512sum',
+))
+# Prefix commands that run their argument as the real command.
+_FF_WRAPPERS = frozenset(('sudo', 'command', 'nohup', 'time', 'exec', 'stdbuf'))
+_FF_PREFILTER = re.compile(
+    r'(?:^|[\s;&|(`])(?:[\w./-]*/)?(?:%s)(?=\s|$)'
+    % '|'.join(sorted(_FF_READERS, key=len, reverse=True)))
+_FF_UNRESOLVABLE = '$`*?[]{}'      # `~/` is expanded below; `~user` is refused
+_FF_HOOK_RELATIVE = ('/dev', '/proc', '/sys')
+
+
+def _ff_under_hook_relative(path):
+    return any(path == r or path.startswith(r + '/') for r in _FF_HOOK_RELATIVE)
+
+
+def _ff_fifo_operand(p, cwd):
+    """Return the resolved path when the literal operand *p* is a FIFO, else None."""
+    if (not p or p == '-' or p.startswith('-') or len(p) > 400
+            or any(c in p for c in _FF_UNRESOLVABLE)):
+        return None
+    if p == '~' or p.startswith('~/'):
+        p = os.path.expanduser(p)
+    elif p.startswith('~'):
+        return None
+    if not os.path.isabs(p):
+        if cwd is None:
+            return None
+        p = os.path.join(cwd, p)
+    full = os.path.normpath(p)
+    if _ff_under_hook_relative(full):
+        return None
+    try:
+        st = os.stat(full)          # stat never opens the file, so cannot block
+    except (OSError, ValueError):
+        return None
+    if not _ff_stat.S_ISFIFO(st.st_mode):
+        return None
+    if _ff_under_hook_relative(os.path.realpath(full)):
+        return None
+    return full
+
+
+try:
+    import stat as _ff_stat
+    if (tool_name.lower() == 'bash' and isinstance(command, str)
+            and len(command) <= 20000 and _FF_PREFILTER.search(command)):
+        _ff_tokens = _fa_shell_tokens(command)
+        # A subshell reorders what a `cd` applies to; after one, judge only
+        # absolute paths rather than resolve a relative one against a guess.
+        _ff_subshell = '(' in _ff_tokens or ')' in _ff_tokens
+        _ff_cwd = payload.get('cwd')
+        _ff_cwd = os.path.realpath(_ff_cwd) if _ff_cwd else None
+        if _ff_cwd is not None and not os.path.isdir(_ff_cwd):
+            _ff_cwd = None
+        _ff_segments, _ff_cur = [], []
+        for _t in _ff_tokens:
+            if _t in _FA_SEPARATORS or _t in ('(', ')'):
+                _ff_segments.append(_ff_cur)
+                _ff_cur = []
+            else:
+                _ff_cur.append(_t)
+        _ff_segments.append(_ff_cur)
+        for _ff_toks in _ff_segments:
+            _ff_i = 0
+            while (_ff_i < len(_ff_toks)
+                   and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', _ff_toks[_ff_i])):
+                _ff_i += 1
+            _ff_argv = _ff_toks[_ff_i:]
+            # Peel `sudo -E cat f`, `stdbuf -oL cat f`, `command cat f`.
+            while _ff_argv and _ff_argv[0].rsplit('/', 1)[-1] in _FF_WRAPPERS:
+                _ff_argv = _ff_argv[1:]
+                while _ff_argv and _ff_argv[0].startswith('-'):
+                    _ff_argv = _ff_argv[1:]
+            if not _ff_argv:
+                continue
+            _ff_name = _ff_argv[0].rsplit('/', 1)[-1]
+            if _ff_name == 'cd':
+                _ff_tgt = _ff_argv[1] if len(_ff_argv) > 1 else None
+                if (_ff_subshell or _ff_tgt is None
+                        or any(c in _ff_tgt for c in _FF_UNRESOLVABLE + '~')):
+                    _ff_cwd = None
+                    continue
+                _ff_next = (_ff_tgt if os.path.isabs(_ff_tgt)
+                            else os.path.join(_ff_cwd, _ff_tgt) if _ff_cwd
+                            else None)
+                _ff_cwd = (os.path.realpath(_ff_next)
+                           if _ff_next and os.path.isdir(_ff_next) else None)
+                continue
+            if _ff_name not in _FF_READERS:
+                continue
+            _ff_skip_next = False
+            for _ff_a in _ff_argv[1:]:
+                if _ff_skip_next:           # a redirect's target or delimiter
+                    _ff_skip_next = False
+                    continue
+                if _ff_a and all(c in '<>&' for c in _ff_a):
+                    _ff_skip_next = True
+                    continue
+                _ff_hit = _ff_fifo_operand(_ff_a, _ff_cwd)
+                if _ff_hit:
+                    deny(_FF_DENY.format(cmd=' '.join(_ff_argv)[:160],
+                                         path=_ff_hit[:200]))
+except SystemExit:
+    raise  # deny() exits through here — never swallow the verdict
+except Exception:
+    pass  # a parse fault must never wedge a Bash call (fail-open)
+
 # ── tauri-agent-tools target guard (EI-10939) ────────────────────────────────
 # SAFETY. `tauri-agent-tools` picks its target by scanning /tmp for
 # `tauri-dev-bridge-<pid>.token` files and taking THE FIRST LIVE ONE IT HAPPENS
