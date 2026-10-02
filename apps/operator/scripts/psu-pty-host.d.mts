@@ -785,9 +785,9 @@ export function readCodexTuiLogTail(codexHome: string | undefined, { readTail, m
     maxBytes?: number;
 }): CodexTuiLogTail | null;
 /** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
- * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail, startupOutput?: string }} [options]
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail, startupOutput?: string, screenDims?: { rows?: number, cols?: number } }} [options]
  */
-export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readLink, readTail, startupOutput, }?: {
+export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readLink, readTail, startupOutput, screenDims, }?: {
     rootPid?: number;
     codexHome?: string;
     platform?: string;
@@ -796,6 +796,10 @@ export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform
     readLink?: (path: string) => unknown;
     readTail?: SnapshotReadTail;
     startupOutput?: string;
+    screenDims?: {
+        rows?: number;
+        cols?: number;
+    };
 }): {
     rootPid: number | null | undefined;
     procs: any[];
@@ -803,6 +807,8 @@ export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform
     log: CodexTuiLogTail | null;
     footer: {
         state: string | null;
+        streamState: string | null;
+        screenFooter: string | null;
         footerMatchCount: number;
         lastMatches: {
             status: string;
@@ -2127,6 +2133,16 @@ export function makeScrollbackGuard(): {
     /** Flush whatever is held (child exit / teardown) so nothing is swallowed. */
     flush(): string;
 };
+export function renderTerminalScreen(output: any, { rows, cols }?: {
+    rows?: number | undefined;
+    cols?: number | undefined;
+}): string[];
+/** WI-10005178: the Codex footer state as the terminal shows it. The rendered
+ * screen decides; the flattened stream is only the fallback for a screen that
+ * holds no complete footer (the bounded startup buffer trimmed the full paint and
+ * left only cell diffs), the one case the screen cannot decide. Pass the child's
+ * PTY size: a CUP beyond the rendered grid is clamped onto the wrong cell. */
+export function codexFooterStateFromOutput(output: any, dims: any): string | null;
 /** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
  * from. Measured 2026-10-02T01:40-01:44Z (su-6a2603be, codex home session-32862):
  * the dropped child's own codex-tui.log shows session init, MCP resolution and the
@@ -2138,12 +2154,14 @@ export function makeScrollbackGuard(): {
  * separates them: `readyAfterLastFooter` true with state `starting` is the stale-read
  * signature; `mcpLines` names a server Codex was still waiting on. Bounded and
  * redacted, because host events reach a shared store. */
-export function codexStartingFooterEvidence(output: any, { maxMatches, tailChars, maxLineChars }?: {
+export function codexStartingFooterEvidence(output: any, { maxMatches, tailChars, maxLineChars, dims }?: {
     maxMatches?: number | undefined;
     tailChars?: number | undefined;
     maxLineChars?: number | undefined;
 }): {
     state: string | null;
+    streamState: string | null;
+    screenFooter: string | null;
     footerMatchCount: number;
     lastMatches: {
         status: string;
@@ -2161,7 +2179,7 @@ export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, 
     requireInitialOutput?: boolean | undefined;
     promptReady?: boolean | undefined;
 }): "ordinary-gate" | "composer-ready" | "wait-for-composer";
-export function startupOutputReady(agent: any, output: any): boolean;
+export function startupOutputReady(agent: any, output: any, dims: any): boolean;
 /** WI-10002745: the first thing a Codex TUI writes is a burst of terminal
  * capability queries (`ESC[?2004h ESC[>7u ESC[?1004h ESC[6n OSC10? OSC11?
  * ESC[?u ESC[c`). A headless PTY answers none of them, so Codex spends ~3.6s
@@ -2171,7 +2189,7 @@ export function startupOutputReady(agent: any, output: any): boolean;
  * request is the earliest byte that is unambiguously the Codex TUI rather than
  * the psu launcher's own banner. Pure and exported for tests. */
 export function codexTuiStartObserved(output: any): boolean;
-export function codexSessionFrameObserved(output: any, { probeAlreadySeen }?: {
+export function codexSessionFrameObserved(output: any, { probeAlreadySeen, dims }?: {
     probeAlreadySeen?: boolean | undefined;
 }): boolean;
 /** Has the startup-ready fallback window elapsed? For most backends it is

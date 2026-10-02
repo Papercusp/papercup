@@ -2979,6 +2979,13 @@ export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any,
  * successor and cleared the predecessor's context estimate. Exported for a
  * deterministic ordering regression test; both operations remain fail-soft.
  */
+/**
+ * EI-23076695727837648: the first turn a host-code-adopting predecessor owed its
+ * successor. The in-process respawn injects it after spawn; an adopting host exits
+ * first, so it travels in the handoff as `firstTurnText`. Returns null when absent,
+ * so a handoff written by an older host keeps the old behaviour (no kickoff).
+ */
+export function handoffFirstTurnText(handoff: any): string | null;
 export function announceAdoptedCarryRespawn(ownerId: any, advSessionId: any, nativeId: any, { reportImpl, emitImpl, }?: {
     reportImpl?: typeof reportSessionRespawnedDurably | undefined;
     emitImpl?: typeof fireSessionCompactedEvent | undefined;

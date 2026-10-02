@@ -434,7 +434,43 @@ describe('bootstrap-role', () => {
     const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup',
       feature: 'F-001', model: 'claude-sonnet-4-6' });
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: 'operation_model_denied' });
+    const body = await response.json();
+    expect(body).toMatchObject({ code: 'operation_model_denied',
+      error: 'requested model is outside the accepted exact model policy' });
+    // WI-10005197: the denial carries a RefusalContract beside the unchanged code/error.
+    expect(body.refusal.observed).toEqual({ role: 'worker', agent: 'claude',
+      requestedModel: 'claude-sonnet-4-6', policyMode: 'exact' });
+    expect(body.refusal.liftsWhen).toMatch(/omit `model`/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
+    expect(resolveAccountPinMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unauthorized worker binding with a RefusalContract before routing an account', async () => {
+    resolveAcceptedOperationWorkerBindingMock.mockRejectedValueOnce(
+      new Error('accepted blueprint operation does not authorize this worker role'));
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toMatchObject({ code: 'operation_worker_denied',
+      error: 'accepted blueprint operation does not authorize this worker role' });
+    expect(body.refusal.observed).toEqual({ harness: 'papercup', feature: 'F-001', role: 'worker' });
+    expect(body.refusal.liftsWhen).toMatch(/accepted blueprint operation/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
+    expect(resolveAccountPinMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unresolvable identity stack with a RefusalContract naming the stack', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockRejectedValueOnce(new Error('unknown stack ref domain:nope'));
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup',
+      feature: 'F-001', stack: ['domain:nope', 'client:x'] });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toMatchObject({ code: 'identity_model_default_denied', error: 'unknown stack ref domain:nope' });
+    expect(body.refusal.observed).toEqual({ harness: 'papercup', role: 'worker', stack: 'domain:nope,client:x' });
+    expect(body.refusal.liftsWhen).toMatch(/stack ref/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
     expect(resolveAccountPinMock).not.toHaveBeenCalled();
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });

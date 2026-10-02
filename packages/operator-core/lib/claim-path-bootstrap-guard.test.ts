@@ -33,6 +33,41 @@ const INLINE_DDL_RE = /\bCREATE\s+TABLE\b/i;
 const SCHEMA_FIXTURE_IMPORT_RE = /from\s+['"][^'"]*test\/_work-items-schema['"]/;
 
 /**
+ * Agent-tool modules whose handler calls a claim door. A test that imports one and calls
+ * `tool.handler(...)` reaches the claim path without naming a door in its own source
+ * (WI-10005225). Matched by RESOLVED path, not by specifier text: `./claim` also names
+ * unrelated modules (harness/routines/claim, the pot-wake claim), so a bare specifier
+ * match would over-flag.
+ */
+const CLAIM_TOOL_MODULES = [
+  'agent-tools/work_items/claim',
+  'agent-tools/work_items/claim_next',
+  'agent-tools/plan-items/claim',
+];
+const STATIC_IMPORT_RE = /\bimport\s+(type\s+)?[^;'"]*?\bfrom\s*(['"])([^'"\n]+)\2/g;
+const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*(['"])([^'"\n]+)\1\s*\)/g;
+
+/**
+ * True when `commentless` (comments removed, strings kept, since specifiers are string
+ * literals) imports a claim-tool module by value. Exported for the self-check below.
+ */
+export function importsClaimTool(commentless: string, fileName: string): boolean {
+  const specifiers: string[] = [];
+  for (const m of commentless.matchAll(STATIC_IMPORT_RE)) if (!m[1]) specifiers.push(m[3]);
+  for (const m of commentless.matchAll(DYNAMIC_IMPORT_RE)) specifiers.push(m[2]);
+  const dir = path.dirname(fileName);
+  return specifiers.some((spec) => {
+    if (!spec.startsWith('.')) return false;
+    const resolved = path
+      .resolve(dir, spec)
+      .replace(/\.(?:[cm]?[jt]s)$/, '')
+      .split(path.sep)
+      .join('/');
+    return CLAIM_TOOL_MODULES.some((mod) => resolved.endsWith(`/${mod}`));
+  });
+}
+
+/**
  * Files that call a claim door with a hand-built schema but are known not to reach a
  * claim-path read dependency. Each entry needs a reason; remove it once the file calls
  * applyClaimPathReadDeps.
@@ -50,11 +85,14 @@ export function classify(raw: string, fileName: string): Classification {
   // Calls and helper use: strings AND comments removed, so prose or a SQL literal that
   // names a door cannot count as a call.
   const code = stripCommentsAndStrings(raw, fileName) as string;
-  if (!CLAIM_DOOR_RE.test(code)) return { kind: 'not-claim-path' };
+  // Schema building and import specifiers live inside string literals, so for those
+  // only comments are removed.
+  const commentless = stripCommentsOnly(raw, fileName) as string;
+  if (!CLAIM_DOOR_RE.test(code) && !importsClaimTool(commentless, fileName)) {
+    return { kind: 'not-claim-path' };
+  }
   if (REAL_MIGRATIONS_RE.test(code)) return { kind: 'real-migrations' };
   if (HELPER_CALL_RE.test(code)) return { kind: 'ok' };
-  // Schema building: DDL lives inside template literals, so only comments are removed.
-  const commentless = stripCommentsOnly(raw, fileName) as string;
   const handBuilt = INLINE_DDL_RE.test(commentless) || SCHEMA_FIXTURE_IMPORT_RE.test(commentless);
   return handBuilt ? { kind: 'violation' } : { kind: 'not-claim-path' };
 }
@@ -73,7 +111,12 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
   const files = integrationTests(HERE);
   const results = files.map((full) => {
     const rel = path.relative(HERE, full);
-    return { rel, verdict: classify(readFileSync(full, 'utf8'), full) };
+    const raw = readFileSync(full, 'utf8');
+    return {
+      rel,
+      verdict: classify(raw, full),
+      viaTool: importsClaimTool(stripCommentsOnly(raw, full) as string, full),
+    };
   });
 
   it('scans a real population of claim-path fixtures (positive control)', () => {
@@ -81,6 +124,20 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
     // The sweep that introduced the helper converted ~38 files. A detector that silently
     // stops matching (a renamed door, a broken strip) would drop this to zero and pass.
     expect(covered).toBeGreaterThanOrEqual(30);
+  });
+
+  it('recognises tests that reach a claim door through a claim tool (positive control)', () => {
+    // work_items and plan-items tool suites import ./claim by path. If a tool module moves,
+    // this falls to zero and the tool-handler leg would pass vacuously.
+    const viaTool = results.filter((r) => r.viaTool).map((r) => r.rel);
+    expect(viaTool).toEqual(
+      expect.arrayContaining([
+        'agent-tools/work_items/work-items-tools.integration.test.ts',
+        'agent-tools/plan-items/claim-auto-convert.integration.test.ts',
+      ]),
+    );
+    // harness/routines has its own unrelated ./claim module; it must not count.
+    expect(viaTool.filter((rel) => rel.startsWith('harness/'))).toEqual([]);
   });
 
   it('every hand-built claim-path fixture calls applyClaimPathReadDeps', () => {
@@ -129,6 +186,37 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
     it('does not count a helper named only in a comment', () => {
       const src = `// ${helper}( is applied elsewhere\nawait db.sql.unsafe(\`${ddl}\`);\nawait ${door}({});\n`;
       expect(classify(src, 'fixture.ts').kind).toBe('violation');
+    });
+
+    // Tool-handler leg (WI-10005225): the door is reached through tool.handler, so the
+    // file names no door. Fixture paths place the source where the real suites live.
+    const toolDir = (sub: string) => path.join(HERE, sub, 'fixture.integration.test.ts');
+    const toolSrc = (spec: string) =>
+      `const { default: tool } = await import('${spec}');\n` +
+      `await db.sql.unsafe(\`${ddl}\`);\nawait tool.handler({ id: 'x' });\n`;
+
+    it('flags a claim-tool handler test on a hand-built schema without the helper', () => {
+      expect(classify(toolSrc('./claim'), toolDir('agent-tools/work_items')).kind).toBe('violation');
+      expect(classify(toolSrc('./claim_next.ts'), toolDir('agent-tools/work_items')).kind).toBe('violation');
+      expect(classify(toolSrc('./claim'), toolDir('agent-tools/plan-items')).kind).toBe('violation');
+    });
+
+    it('resolves a claim-tool specifier written from another directory', () => {
+      const src = `import tool from './agent-tools/plan-items/claim';\nawait db.sql.unsafe(\`${ddl}\`);\n`;
+      expect(classify(src, toolDir('.')).kind).toBe('violation');
+    });
+
+    it('passes a claim-tool handler test that calls the helper', () => {
+      const src = `${toolSrc('./claim')}await ${helper}((d) => db.sql.unsafe(d).simple());\n`;
+      expect(classify(src, toolDir('agent-tools/work_items')).kind).toBe('ok');
+    });
+
+    it('ignores an unrelated ./claim, a type-only import and an import in a comment', () => {
+      expect(classify(toolSrc('./claim'), toolDir('harness/routines')).kind).toBe('not-claim-path');
+      const typeOnly = `import type { X } from './claim';\nawait db.sql.unsafe(\`${ddl}\`);\n`;
+      expect(classify(typeOnly, toolDir('agent-tools/work_items')).kind).toBe('not-claim-path');
+      const commented = `// await import('./claim')\nawait db.sql.unsafe(\`${ddl}\`);\n`;
+      expect(classify(commented, toolDir('agent-tools/work_items')).kind).toBe('not-claim-path');
     });
   });
 });

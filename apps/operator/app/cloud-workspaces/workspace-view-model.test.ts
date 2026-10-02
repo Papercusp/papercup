@@ -447,9 +447,17 @@ describe("readiness checklist", () => {
     expect(
       readinessChecks({
         ...ready(),
-        connection: connection({ target: "aws" }),
+        connection: connection({ target: "azure" }),
       }).find((check) => check.id === "provider-supported")?.ok,
     ).toBe(false);
+  });
+
+  it("admits AWS only when its required launch metadata is present", () => {
+    const incomplete = readinessChecks({ ...ready(), connection: connection({ target: "aws" }) });
+    expect(incomplete.find((check) => check.id === "provider-supported")?.ok).toBe(true);
+    expect(canProvision(incomplete)).toBe(false);
+    const configured = connection({ target: "aws", provider: { vpcId: "vpc-01234567", securityGroupIds: ["sg-01234567"], launchTemplateId: "lt-01234567" } });
+    expect(canProvision(readinessChecks({ ...ready(), connection: configured }))).toBe(true);
   });
 
   it("blocks while URL-backed selections are still settling", () => {

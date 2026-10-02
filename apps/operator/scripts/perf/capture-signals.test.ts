@@ -136,4 +136,20 @@ describe("capture-signals.py IO-stall attribution", () => {
       files: ["2026-10-02T020000Z-cron-incident-io-pressure.json", "2026-10-02T020000Z-cron.json"],
     });
   });
+
+  it("prunes its own io-pressure incident copies past retention (no crit edge ever prunes them)", () => {
+    const out = runPy([
+      "old = os.path.join(root, '2026-09-01T000000Z-scheduled-incident-io-pressure.json')",
+      "open(old, 'w').write('{}')",
+      "os.utime(old, (1, 1))",
+      "src = os.path.join(root, '2026-10-02T020000Z-scheduled.json')",
+      "open(src, 'w').write('{}')",
+      "made = cs.maybe_preserve_io_incident({'io': {'full': {'avg10': 25.0}}}, root, src)",
+      "print(json.dumps({'made': os.path.basename(made or ''), 'files': sorted(os.listdir(root))}))",
+    ].join("\n"));
+    expect(out).toEqual({
+      made: "2026-10-02T020000Z-scheduled-incident-io-pressure.json",
+      files: ["2026-10-02T020000Z-scheduled-incident-io-pressure.json", "2026-10-02T020000Z-scheduled.json"],
+    });
+  });
 });

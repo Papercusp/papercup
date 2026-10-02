@@ -21,6 +21,21 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 const live = process.env.PAPERCUSP_P010_LIVE_PROBE === '1';
+const LIVE_BENCHMARK_TIMEOUT_MS = 7_100_000;
+const LIVE_MATRIX_RUNNER_TIMEOUT_MS = LIVE_BENCHMARK_TIMEOUT_MS + 100_000;
+
+function validateFullMatrixBudget(
+  liveProbe: boolean, windows: number, requests: number,
+  env: Record<string, string | undefined>,
+): void {
+  if (!liveProbe || windows !== 10 || requests !== 100) return;
+  const budget = env.PAPERCUSP_TEST_FILE_TIMEOUT_MS?.trim() ?? '';
+  if (!/^\d+$/.test(budget) || Number(budget) < LIVE_MATRIX_RUNNER_TIMEOUT_MS) {
+    throw new Error(`Full live P010 matrix requires PAPERCUSP_TEST_FILE_TIMEOUT_MS=${LIVE_MATRIX_RUNNER_TIMEOUT_MS}; ` +
+      'the default file-run deadline is shorter than the measured matrix.');
+  }
+}
+
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
   liveness: new Map<string, any>(), frozenLiveness: false, missingLiveness: new Set<string>(),
   privateFleet: [] as any[], privateSessionState: 'live' }));
@@ -173,6 +188,16 @@ afterAll(async () => {
 });
 
 describe('matched plan coverage phase benchmark', () => {
+  it('refuses an undersized full-matrix deadline before database work', () => {
+    for (const budget of [undefined, '600000', '7199999', 'invalid']) {
+      expect(() => validateFullMatrixBudget(true, 10, 100,
+        { PAPERCUSP_TEST_FILE_TIMEOUT_MS: budget })).toThrow('PAPERCUSP_TEST_FILE_TIMEOUT_MS=7200000');
+    }
+    expect(() => validateFullMatrixBudget(true, 10, 100,
+      { PAPERCUSP_TEST_FILE_TIMEOUT_MS: '7200000' })).not.toThrow();
+    expect(() => validateFullMatrixBudget(true, 1, 2, {})).not.toThrow();
+    expect(() => validateFullMatrixBudget(false, 10, 100, {})).not.toThrow();
+  });
   it('accepts a different serving commit only when the measured source bytes match', () => {
     const files = { 'plan-item-coverage.ts': Buffer.from('reader'), 'fleet/assignments.ts': Buffer.from('assignments') };
     const fingerprints = Object.fromEntries(Object.entries(files)
@@ -213,6 +238,13 @@ describe('matched plan coverage phase benchmark', () => {
     const diagnostic = process.env.PAPERCUSP_P010_DIAGNOSTIC === '1';
     expect(!diagnostic || live).toBe(true);
     const plan = process.env.PAPERCUSP_P010_PLAN ?? 'p010-benchmark';
+    // Validate the launch before opening a connection or starting measured work.
+    // A bounded preflight retains its actual bounds and uses the normal runner budget.
+    const windows = live ? Number(process.env.PAPERCUSP_P010_WINDOWS ?? 10) : 2;
+    const requests = live ? Number(process.env.PAPERCUSP_P010_REQUESTS ?? 100) : 4;
+    expect(Number.isInteger(windows) && windows >= 1 && windows <= 10).toBe(true);
+    expect(Number.isInteger(requests) && requests >= 1 && requests <= 100).toBe(true);
+    if (!diagnostic) validateFullMatrixBudget(live, windows, requests, process.env);
     if (live) {
       root = postgres(getHarnessAdminUrl(), { max: 1, onnotice: () => {} });
     } else {
@@ -240,13 +272,6 @@ describe('matched plan coverage phase benchmark', () => {
             CASE WHEN n <= 8 THEN ${plan} ELSE 'unrelated-benchmark' END,'item_id','P-' || n),
             '_claimHold', n % 5 = 0),100 FROM generate_series(1,128) n`;
     }
-    // A small explicit preflight checks live identity/isolation before the
-    // expensive matrix. Its actual bounds are retained; it cannot masquerade
-    // as the ten-window, hundred-request acceptance measurement.
-    const windows = live ? Number(process.env.PAPERCUSP_P010_WINDOWS ?? 10) : 2;
-    const requests = live ? Number(process.env.PAPERCUSP_P010_REQUESTS ?? 100) : 4;
-    expect(Number.isInteger(windows) && windows >= 1 && windows <= 10).toBe(true);
-    expect(Number.isInteger(requests) && requests >= 1 && requests <= 100).toBe(true);
     const samples: any[] = [];
     const fingerprints = fingerprintSources();
     let fingerprintsAfter: Record<string, string> | undefined;
@@ -455,5 +480,5 @@ describe('matched plan coverage phase benchmark', () => {
     persist(true);
     console.log(JSON.stringify({ mode: report().mode, samples: outcomes.length, failures: outcomes.filter(s => !s.ok).length,
       selectedRefs: expected!.length, stampRows: { control: stampRows('control'), candidate: stampRows('candidate') } }));
-  }, live ? 7_100_000 : 120_000);
+  }, live ? LIVE_BENCHMARK_TIMEOUT_MS : 120_000);
 });

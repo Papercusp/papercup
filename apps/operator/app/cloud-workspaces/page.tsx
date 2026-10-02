@@ -25,7 +25,7 @@ import { Modal } from "@/app/harness/Modal";
 import { RadioGroup } from "@/app/harness/RadioGroup";
 import { TextInput } from "@/app/harness/TextInput";
 import { WorkspaceRail } from "./WorkspaceRail";
-import { ConnectStage, EMPTY_CONNECT_DRAFT, type ConnectDraft } from "./ConnectStage";
+import { ConnectStage, EMPTY_CONNECT_DRAFT, connectionActionFromDraft, type ConnectDraft } from "./ConnectStage";
 import { ConfigureStage } from "./ConfigureStage";
 import { HOST_TABS, OperateStage, type HostTab } from "./OperateStage";
 import { Field } from "./stage-primitives";
@@ -404,16 +404,11 @@ export default function CloudWorkspacesPage() {
 
   const handleConnect = useCallback(
     (target: ProviderTarget) => {
+      const request = connectionActionFromDraft(target, connectDraft);
+      if (!request) return;
       void perform(
         "connect",
-        {
-          action: "connect",
-          target,
-          label: connectDraft.label.trim(),
-          credentialRef: connectDraft.credentialRef.trim(),
-          projectId: connectDraft.projectId.trim(),
-          serviceAccountEmail: connectDraft.serviceAccountEmail.trim(),
-        },
+        request,
         `${connectDraft.label.trim()} connected`,
       ).then((ok) => {
         if (ok) closeConnectPanel();
@@ -437,7 +432,7 @@ export default function CloudWorkspacesPage() {
     if (
       !canProvision ||
       !selectedConnection ||
-      selectedConnection.target !== "gcp" ||
+      (selectedConnection.target !== "gcp" && selectedConnection.target !== "aws") ||
       !selectedScope ||
       !selectedRegion ||
       !selectedZone ||
@@ -459,8 +454,8 @@ export default function CloudWorkspacesPage() {
          * data{volumeGiB,encrypted} / provider{network{mode}}. */
         desired: {
           hostId: workspaceHostIdFromName(nameParam),
-          target: "gcp",
-          scope: { kind: "project", id: selectedScope.id },
+          target: selectedConnection.target,
+          scope: { kind: selectedConnection.target === "aws" ? "account" : "project", id: selectedScope.id },
           region: selectedRegion.id,
           zone: selectedZone,
           size: selectedSize.id,
@@ -471,7 +466,9 @@ export default function CloudWorkspacesPage() {
               : {}),
           },
           data: { volumeGiB: diskGiB, encrypted: true },
-          provider: { network: { mode: "managed" } },
+          provider: selectedConnection.target === "aws"
+            ? { subnetId: selectedNetwork.id }
+            : { network: { mode: "managed" } },
         },
       },
       `Provisioning ${nameParam.trim()}`,

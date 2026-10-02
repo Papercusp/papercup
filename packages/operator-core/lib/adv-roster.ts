@@ -59,8 +59,8 @@ import {
 } from './native-session-handles';
 import { resolveSpawnBackendModel } from './harness-invoke-once';
 import {
-  getAllWakeModeOverrides,
   getDefaultWakeMode,
+  getWakeModeOverridesFor,
   resolveWakeModeFrom,
   type WakeMode,
 } from './agent-tools/coordination/wake-mode';
@@ -1484,14 +1484,20 @@ async function spawnedAgentRunInfoByOwner(): Promise<Map<string, { runId: string
  * a FALLBACK (spawned-run harness still wins when both exist) so the
  * thinking-stream's own runId-paired semantics are undisturbed.
  */
-async function sessionBriefHarnessByOwner(): Promise<Map<string, string>> {
+export async function sessionBriefHarnessByOwner(ownerIds: readonly string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
+  // Owner-scoped (WI-10005228): session_briefs keeps one row per owner EVER seen
+  // (14,160 on 2026-10-02 against ~100 live), and this join is only ever looked
+  // up by the roster's own presence owners — so read exactly those (a PK probe).
+  const ids = [...new Set(ownerIds.filter((id) => id))];
+  if (ids.length === 0) return out;
   try {
     const { sql } = getOrgPg();
     const rows = (await sql`
       SELECT owner_id, harness_slug
         FROM harness_shared.session_briefs
-       WHERE harness_slug IS NOT NULL
+       WHERE owner_id = ANY(${ids}::text[])
+         AND harness_slug IS NOT NULL
     `) as unknown as Array<{ owner_id: string | null; harness_slug: string | null }>;
     for (const r of rows) {
       if (r.owner_id && r.harness_slug) out.set(r.owner_id, r.harness_slug);
@@ -1669,19 +1675,16 @@ export async function mergeRosterWithAssignments(
     advByOwner,
     assignmentRows,
     sessionsByOwner,
-    wakeModesByOwner,
     defaultWakeMode,
     pendingWakesByOwner,
     runInfoByOwner,
     loopArmedOwners,
     nurseryByOwner,
-    sessionBriefHarness,
   ] = await Promise.all([
     listPresence(),
     advSessionsByCoordOwner(),
     listFleetAssignments({ workspaceId }).catch(() => []),
     spawnedAgentNativeSessionsByOwner(),
-    getAllWakeModeOverrides().catch(() => new Map<string, WakeMode>()),
     getDefaultWakeMode().catch(() => 'auto' as WakeMode),
     countAllPendingWakes().catch(() => new Map<string, number>()),
     spawnedAgentRunInfoByOwner(),
@@ -1692,10 +1695,6 @@ export async function mergeRosterWithAssignments(
     // adds to the roster-merge baseline the search-transcripts endpoint pays
     // on every query).
     runningSpawnLivenessByOwner(os.hostname()),
-    // P-007 finding (see sessionBriefHarnessByOwner docblock): harnessSlug
-    // fallback for interactive psu/su sessions, which spawnedAgentRunInfoByOwner
-    // alone never covers.
-    sessionBriefHarnessByOwner(),
   ]);
   const localPresence = scopePresenceToWorkspace(presenceAll, workspaceId);
   // Shared-hive federation: when presence-gossip is on, fold in cross-machine agents
@@ -1718,10 +1717,13 @@ export async function mergeRosterWithAssignments(
   }
   // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping —
   // and the official standing-modes read (EI-7626), both batched, in parallel.
+  const presenceOwnerIds = presence.map((p) => p.ownerId);
   const [
     fleetInfoByOwner,
     modesByOwner,
     awaitByOwner,
+    wakeModesByOwner,
+    sessionBriefHarness,
     verdictByOwner,
     accountPinByOwner,
     displayNameByOwner,
@@ -1733,7 +1735,17 @@ export async function mergeRosterWithAssignments(
     // rather than awaited after — a serial hop would add to the roster-merge
     // baseline every caller pays (see the perf docs' serial-loop anti-pattern).
     // Scoped by the roster's OWNER IDS, not workspace — see openAwaitsByOwner.
-    openAwaitsByOwner(presence.map((p) => p.ownerId)),
+    openAwaitsByOwner(presenceOwnerIds),
+    // WI-10005228: both joins are only ever looked up by a presence owner
+    // (mergeRosterEntries keys them by p.ownerId), so they read exactly those
+    // owners here, after presence is known, instead of every row ever written
+    // (10,342 wake overrides / 14,160 briefs against ~100 live agents) in the
+    // first batch. Same batch as the other owner-scoped joins: no serial hop added.
+    getWakeModeOverridesFor(presenceOwnerIds).catch(() => new Map<string, WakeMode>()),
+    // P-007 finding (see sessionBriefHarnessByOwner docblock): harnessSlug
+    // fallback for interactive psu/su sessions, which spawnedAgentRunInfoByOwner
+    // alone never covers.
+    sessionBriefHarnessByOwner(presenceOwnerIds),
     // WI-6636: the SHARED liveness oracle. This roster used to derive liveness
     // from heartbeat freshness alone and so disagreed with every other surface —
     // it read 110 parked agents as "Stalled" on the default HUD board while

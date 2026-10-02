@@ -166,13 +166,30 @@ export function shouldRediscoverOperatorUrl(args = {}, env = process.env) {
 
 /**
  * Pinned operator URLs are caller-selected endpoints, not managed launcher
- * routes. A dead pin must report its connection failure promptly instead of
- * spending the managed route's 120s recovery budget retrying an endpoint that
- * cannot be rediscovered or rebased. Managed/discoverable routes retain their
- * bounded retry loop for operator restarts.
+ * routes. Keep the selected host authoritative: a retry may reconnect to that
+ * same local direct operator, but must never rediscover or move to a fallback.
+ * Remote pins and local proxy pins keep one initialize attempt; a direct local
+ * operator gets a short retry window for brief listener restarts, separate
+ * from the managed route's 120s recovery budget.
  */
 export function ptoolConnectionRetryOptions(args = {}, env = process.env) {
-  return shouldRediscoverOperatorUrl(args, env) ? {} : { maxAttempts: 1 };
+  if (shouldRediscoverOperatorUrl(args, env)) return {};
+
+  let pinnedUrl = '';
+  try {
+    pinnedUrl = typeof args.url === 'string' && args.url.trim()
+      ? args.url.trim()
+      : resolvePtoolOperatorBase(env);
+    if (ptoolConnectAttemptTimeoutMs(pinnedUrl, env) < PTOOL_CONNECT_TIMEOUT_MS) {
+      return {
+        maxAttempts: PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
+        totalTimeoutMs: PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
+      };
+    }
+  } catch {
+    // Preserve fast failure for malformed pins; connect() owns the diagnostic.
+  }
+  return { maxAttempts: 1 };
 }
 
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
@@ -1287,6 +1304,20 @@ export function ptoolConnectAttemptTimeoutMs(operatorUrl, env = process.env) {
 export const PTOOL_CONNECT_RETRY_DELAY_MS = 1_000;
 export const PTOOL_CONNECT_MAX_ATTEMPTS = Math.ceil(
   PTOOL_CONNECT_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
+) + 1;
+
+// Explicit/local direct URLs remain pinned, but a hard operator restart can
+// briefly refuse connections. Give those pins one short recovery window: one
+// direct-handshake timeout plus five paced retry intervals (20s with the
+// current budgets), bounded independently from the managed/proxy 120s window.
+// Proxy pins keep their longer initialize contract and are excluded above by
+// ptoolConnectAttemptTimeoutMs.
+export const PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS = Math.min(
+  PTOOL_CONNECT_TIMEOUT_MS,
+  PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS + (5 * PTOOL_CONNECT_RETRY_DELAY_MS),
+);
+export const PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS = Math.ceil(
+  PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
 ) + 1;
 
 // A proxy-generated handshake 502 already represents the proxy exhausting its

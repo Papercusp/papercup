@@ -72,6 +72,8 @@ import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-fili
 import { planDrainTransitionMutation } from './plan-drain-transition';
 import { reevaluateBarReadinessOnScopeWrite, type BarReadinessResult } from './plan-scope-cascade';
 import { defaultBarReadinessDeps } from './plan-scope-cascade-deps';
+import { attestLandedPlanItemStatus } from './plan-item-consumer-view';
+import { planItemConsumerReaderFor } from './plan-item-consumer-read';
 
 // Most-permissive (owner directive 2026-06-25): open to every role; the capability envelope is the
 // real backstop. Was [...SU_ROLES, 'bee'].
@@ -2059,6 +2061,22 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     );
   }
 
+  // WI-10005199 (generalizing EI-23770243810745552): `ok` here proves only that the plan BODY
+  // write landed. Every consumer (plans:get-item / plans:items / lane derivation / the ship
+  // gate) reads the derived `items` index + blocked-by graph instead, so re-read it the way a
+  // consumer does and surface a `consumerView` ONLY when it disagrees with what was written.
+  // One bounded, fail-soft read per landed flip (never memoized across a batch — item N+1's
+  // write invalidates a row cached after N); exception-only so an agreeing flip is unchanged.
+  const consumerAttestation = result.value.ok
+    ? await attestLandedPlanItemStatus({
+        slug: it.slug,
+        itemId: it.itemId,
+        status: it.status,
+        read: planItemConsumerReaderFor(sctx),
+      })
+    : undefined;
+  markPhase('consumerView');
+
   markPhase('finalize');
   const totalMs = Math.round(Math.max(0, lastPhaseAtMs - startedAtMs));
   const slowPathTiming = totalMs >= 10_000 ? { totalMs, phasesMs } : null;
@@ -2090,6 +2108,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     ...(residualWarning ? { residualWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(barReadiness ? { barReadiness } : {}),
+    ...(consumerAttestation ?? {}),
     ...(slowPathTiming ? { slowPathTiming } : {}),
     ...(noteTruncated
       ? {

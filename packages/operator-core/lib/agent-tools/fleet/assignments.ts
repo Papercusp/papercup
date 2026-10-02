@@ -51,8 +51,8 @@ import {
   type HolderActivity,
 } from '../../fleet/assignments';
 import {
-  getAllWakeModeOverrides,
   getDefaultWakeMode,
+  getWakeModeOverridesFor,
   resolveWakeModeFrom,
   type WakeMode,
 } from '../coordination/wake-mode';
@@ -644,7 +644,7 @@ export async function decorateMemberVerdicts<
 >(
   agents: T[],
   fetchLastToolCalls: (ownerIds: string[]) => Promise<Map<string, string>> = lastToolCallAtByOwner,
-  fetchWakeModeOverrides: () => Promise<Map<string, WakeMode>> = getAllWakeModeOverrides,
+  fetchWakeModeOverrides: (ownerIds: string[]) => Promise<Map<string, WakeMode>> = getWakeModeOverridesFor,
   fetchDefaultWakeMode: () => Promise<WakeMode> = getDefaultWakeMode,
   nowMs: number = Date.now(),
   // WI-42457: appended AFTER `nowMs` on purpose — inserting it earlier would
@@ -656,7 +656,8 @@ export async function decorateMemberVerdicts<
   if (agents.length === 0) return agents;
   const [lastCalls, overrides, defaultMode, productiveCallsOrUnknown] = await Promise.all([
     fetchLastToolCalls(agents.map((a) => a.agentId)),
-    fetchWakeModeOverrides(),
+    // WI-10005228: only the members being decorated, never every override ever written.
+    fetchWakeModeOverrides(agents.map((a) => a.agentId)),
     fetchDefaultWakeMode(),
     // A THROWN fetch is "unknown", not "nobody worked": resolving it to null for
     // every member would flip a whole healthy fleet to `joined`. Unknown feeds
@@ -1277,10 +1278,10 @@ export default defineTool({
             () => lastToolCallAtByOwner(ids),
             new Map<string, string>(),
           ),
-        () =>
+        (ids) =>
           boundedRead(
             'wakeModeOverrides',
-            () => getAllWakeModeOverrides(),
+            () => getWakeModeOverridesFor(ids),
             new Map<string, WakeMode>(),
           ),
         () =>

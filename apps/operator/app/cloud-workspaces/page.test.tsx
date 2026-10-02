@@ -149,6 +149,7 @@ import CloudWorkspacesPage, {
   workspaceHostIdFromName,
 } from "./page";
 import { focusSafely } from "./stage-primitives";
+import { EMPTY_CONNECT_DRAFT, connectionActionFromDraft } from "./ConnectStage";
 
 const cloudPageCss = readFileSync(
   "app/cloud-workspaces/cloud-workspaces.module.css",
@@ -683,6 +684,92 @@ describe("CloudWorkspacesPage — mutation seam", () => {
   });
 });
 
+const awsConnectionRow = {
+  ...connectionRow,
+  id: "aws-main",
+  target: "aws",
+  label: "Production AWS",
+  provider: { vpcId: "vpc-0123456789abcdef0", securityGroupIds: ["sg-0123456789abcdef0"], launchTemplateId: "lt-0123456789abcdef0" },
+  scopes: [{ id: "123456789012", label: "AWS account 123456789012" }],
+  regions: [{ id: "us-east-1", label: "us-east-1", zones: ["us-east-1a"] }],
+  sizes: [{ id: "m6i.xlarge", label: "m6i.xlarge", vcpu: 4, memoryGiB: 16 }],
+  images: [{ id: "ami-0123456789abcdef0", label: "Ubuntu 24.04" }],
+  networks: [{ id: "subnet-0123456789abcdef0", label: "Private subnet" }],
+} satisfies CloudWorkspacesControlRow;
+
+describe("CloudWorkspacesPage — AWS parity", () => {
+  it("collects AWS launch resources and SDK references without GCP fields", async () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Amazon Web Services" }));
+    expect(screen.queryByRole("textbox", { name: "Runtime service account email" })).toBeNull();
+    const submit = screen.getByRole("button", { name: "Connect and validate" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    for (const [label, value] of [
+      ["Connection label", "Production AWS"],
+      ["Injected credential reference", "resolver://aws/default"],
+      ["AWS account ID", "123456789012"],
+      ["VPC ID", "vpc-0123456789abcdef0"],
+      ["Private subnet ID", "subnet-0123456789abcdef0"],
+      ["Security group IDs", "sg-0123456789abcdef0, sg-0123456789abcdef0"],
+      ["Launch template ID", "lt-0123456789abcdef0"],
+      ["AMI ID", "ami-0123456789abcdef0"],
+      ["Instance profile ARN", "arn:aws:iam::123456789012:instance-profile/host"],
+      ["KMS key ARN", "arn:aws:kms:us-east-1:123456789012:key/host-key"],
+    ]) fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({
+      action: "connect", target: "aws", label: "Production AWS", credentialRef: "resolver://aws/default",
+      accountId: "123456789012", region: "us-east-1", vpcId: "vpc-0123456789abcdef0",
+      subnetId: "subnet-0123456789abcdef0", securityGroupIds: ["sg-0123456789abcdef0"],
+      launchTemplateId: "lt-0123456789abcdef0", imageId: "ami-0123456789abcdef0",
+      instanceProfileArn: "arn:aws:iam::123456789012:instance-profile/host",
+      kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/host-key",
+      credentialSource: { environment: "local", method: "default-chain" },
+    }));
+  });
+
+  it.each(["shared-profile", "assume-role"] as const)("uses the %s source without unrelated credential fields", (credentialMethod) => {
+    const draft = { ...EMPTY_CONNECT_DRAFT, label: "AWS", credentialRef: "resolver://aws/local", accountId: "123456789012",
+      vpcId: "vpc-01234567", securityGroupIds: "sg-01234567", subnetId: "subnet-01234567", launchTemplateId: "lt-01234567",
+      imageId: "ami-01234567", instanceProfileArn: "arn:aws:iam::123456789012:instance-profile/host",
+      kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/host", credentialMethod, profile: " production ",
+      roleArn: " arn:aws:iam::123456789012:role/host ", externalIdRef: " env:AWS_EXTERNAL_ID " };
+    expect(connectionActionFromDraft("aws", { ...draft, profile: "", roleArn: "" })).toBeNull();
+    expect(connectionActionFromDraft("aws", draft)).toMatchObject({ credentialSource: credentialMethod === "shared-profile"
+      ? { environment: "local", method: credentialMethod, profile: "production" }
+      : { environment: "local", method: credentialMethod, roleArn: "arn:aws:iam::123456789012:role/host", sourceProfile: "production", externalIdRef: "env:AWS_EXTERNAL_ID" } });
+    expect(connectionActionFromDraft("aws", draft)).not.toHaveProperty("projectId");
+  });
+
+  it("provisions the AWS account and subnet from the settled catalog", async () => {
+    H.rows = [awsConnectionRow];
+    H.queryDefaults = { step: "configure" };
+    render(<CloudWorkspacesPage />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Workspace name" }), { target: { value: "aws-research" } });
+    const submit = screen.getByRole("button", { name: "Provision workspace" }) as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    fireEvent.click(submit);
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "provision", connectionId: "aws-main", name: "aws-research",
+      desired: { hostId: "host-aws-research", target: "aws", scope: { kind: "account", id: "123456789012" },
+        region: "us-east-1", zone: "us-east-1a", size: "m6i.xlarge", image: { id: "ami-0123456789abcdef0" },
+        data: { volumeGiB: 100, encrypted: true }, provider: { subnetId: "subnet-0123456789abcdef0" } } }));
+  });
+
+  it("validates AWS and snapshots an AWS host through the shared mutation seam", async () => {
+    H.rows = [awsConnectionRow, { ...workspaceRow, target: "aws", connectionId: "aws-main" }];
+    H.queryDefaults = { step: "connect" };
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Validate Amazon Web Services connection" }));
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "validate-connection", connectionId: "aws-main" }));
+    fireEvent.click(screen.getByRole("button", { name: /^03 Operate:/ }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for research-control" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Snapshot" }));
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "snapshot", workspaceId: "host-1" }));
+  });
+});
+
 describe("CloudWorkspacesPage — 01 Connect", () => {
   it("collects the complete supported GCP connection admission contract", async () => {
     H.rows = [];
@@ -848,10 +935,11 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     expect(
       (
         screen.getByRole("button", {
-          name: "Amazon Web Services connection is not available",
+          name: "Microsoft Azure connection is not available",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
+    expect((screen.getByRole("button", { name: "Connect Amazon Web Services" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

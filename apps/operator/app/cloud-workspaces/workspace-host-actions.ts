@@ -17,11 +17,30 @@ import { resolveBrowserApiTransport } from "../../lib/hosted-browser-api";
 export type WorkspaceHostActionArgs =
   | {
       action: "connect";
-      target: ProviderTarget;
+      target: "gcp";
       label: string;
       credentialRef: string;
       projectId: string;
       serviceAccountEmail: string;
+    }
+  | {
+      action: "connect";
+      target: "aws";
+      label: string;
+      credentialRef: string;
+      accountId: string;
+      region: string;
+      subnetId: string;
+      imageId: string;
+      kmsKeyArn: string;
+      instanceProfileArn: string;
+      vpcId: string;
+      securityGroupIds: string[];
+      launchTemplateId: string;
+      credentialSource:
+        | { environment: "local"; method: "default-chain" }
+        | { environment: "local"; method: "shared-profile"; profile: string }
+        | { environment: "local"; method: "assume-role"; roleArn: string; sourceProfile?: string; externalIdRef?: string };
     }
   | { action: "validate-connection"; connectionId: string }
   | {
@@ -30,15 +49,16 @@ export type WorkspaceHostActionArgs =
       name: string;
       desired: {
         hostId: string;
-        target: ProviderTarget;
-        scope: { kind: "project"; id: string };
+        target: "gcp" | "aws";
+        scope: { kind: "project" | "account"; id: string };
         region: string;
         zone: string;
         size: string;
         image: { id: string; version?: string };
         data: { volumeGiB: number; encrypted: true };
         provider: {
-          network: { mode: "managed" };
+          network?: { mode: "managed" };
+          subnetId?: string;
         };
       };
     }
@@ -88,7 +108,7 @@ export const PROVIDERS: readonly {
   label: string;
   scope: string;
   accent: string;
-  /** Only GCP has an admission path in this build; the rest are planned. */
+  /** Targets with a registered connection and provisioning path. */
   supported: boolean;
 }[] = [
   {
@@ -103,7 +123,7 @@ export const PROVIDERS: readonly {
     label: "Amazon Web Services",
     scope: "Account",
     accent: "AWS",
-    supported: false,
+    supported: true,
   },
   {
     target: "azure",

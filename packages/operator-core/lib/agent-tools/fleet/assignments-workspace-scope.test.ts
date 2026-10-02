@@ -51,7 +51,7 @@ vi.mock('../coordination/self-marker', () => ({
 vi.mock('../coordination/presence-wakeability', () => ({ fetchWakeability: vi.fn(async () => new Map()) }));
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), recordedLiveOwnerIds: vi.fn(async () => new Set()) }));
 vi.mock('../coordination/wake-mode', () => ({
-  getAllWakeModeOverrides: vi.fn(async () => new Map()),
+  getWakeModeOverridesFor: vi.fn(async () => new Map()),
   getDefaultWakeMode: vi.fn(async () => 'auto'),
   resolveWakeModeFrom: vi.fn(() => 'auto'),
 }));

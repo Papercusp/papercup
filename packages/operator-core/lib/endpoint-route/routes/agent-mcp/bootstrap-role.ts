@@ -317,23 +317,52 @@ const post = defineTool({
         : null;
     } catch (error) {
       return jsonRes({ status: 'error', code: 'operation_worker_denied',
-        error: error instanceof Error ? error.message : String(error) }, 400);
+        error: error instanceof Error ? error.message : String(error),
+        refusal: {
+          observed: { harness: harnessSlug, feature, role },
+          liftsWhen:
+            'the launch matches an accepted blueprint operation: the work-item (`feature`) exists in this ' +
+            'harness, `role` is a worker role that operation authorizes, and its pinned worker identity ' +
+            'resolves unchanged (`error` names which check failed). Retrying the identical request cannot ' +
+            'lift it: relaunch with a feature/role the accepted operation authorizes, or have the owner ' +
+            're-accept the operation or repin its worker identity',
+          whoCanMakeItTrue: ['self', 'owner'],
+        } }, 400);
     }
     let identityModelDefault: string | null;
+    const identityStack = acceptedOperation?.stack ?? body.stack;
     try {
       identityModelDefault = await resolveLaunchIdentityModelDefault({
         cwd: harnessSlug ? await resolveProjectDir(harnessSlug, workspace) ?? '' : papercuspPathForWorkspace(workspace),
-        harnessSlug, role, stack: acceptedOperation?.stack ?? body.stack,
+        harnessSlug, role, stack: identityStack,
       });
     } catch (error: any) {
-      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error) }, 400);
+      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error),
+        refusal: {
+          observed: { harness: harnessSlug, role, stack: identityStack?.join(',') ?? null },
+          liftsWhen:
+            'the selected launch identity stack resolves against this harness\'s blueprint source: every ' +
+            'stack ref (and a `composition:` root) exists and loads, so its model default can be read ' +
+            '(`error` names the failing ref). Retrying the identical request cannot lift it: correct the ' +
+            'stack ref or repair the identity definition',
+          whoCanMakeItTrue: ['self', 'owner'],
+        } }, 400);
     }
     let modelSelection;
     try {
       modelSelection = selectAcceptedOperationWorkerModel(acceptedOperation, requestedModel, agent);
     } catch (error) {
       return jsonRes({ status: 'error', code: 'operation_model_denied',
-        error: error instanceof Error ? error.message : String(error) }, 409);
+        error: error instanceof Error ? error.message : String(error),
+        refusal: {
+          observed: { role, agent, requestedModel, policyMode: acceptedOperation?.modelPolicy?.mode ?? null },
+          liftsWhen:
+            'the requested model is one the accepted operation\'s model policy admits on this backend: omit ' +
+            '`model` to take the policy\'s first accepted model, or request a listed model at the policy\'s ' +
+            'reasoning effort. An OMP backend is never admissible for a policy-bound worker: launch on claude ' +
+            'or codex. Retrying the identical request cannot lift it; widening the policy needs the owner',
+          whoCanMakeItTrue: ['self', 'owner'],
+        } }, 409);
     }
     let model = modelSelection?.model ?? requestedModel ?? identityModelDefault ?? suppliedModel;
     let modelSource: 'explicit' | 'inherited' | 'configured-default' | null = null;

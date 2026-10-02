@@ -56,7 +56,7 @@ vi.mock('../../adv-sessions', async (importOriginal) => ({
   endedRecordedOwnerIds: mocks.recordedEnded,
 }));
 vi.mock('../coordination/wake-mode', () => ({
-  getAllWakeModeOverrides: mocks.wakeModeOverrides,
+  getWakeModeOverridesFor: mocks.wakeModeOverrides,
   getDefaultWakeMode: mocks.defaultWakeMode,
   resolveWakeModeFrom: vi.fn(() => 'auto'),
 }));

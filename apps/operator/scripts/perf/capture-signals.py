@@ -817,7 +817,7 @@ def _dstate_comm_key(comm):
     return re.sub(r"^kworker/[^+]*", "kworker/*", comm)
 
 
-def dstate_tasks(budget_sec=3.0, max_tasks=200000, top_n=15, proc_root=None,
+def dstate_tasks(budget_sec=5.0, max_tasks=200000, top_n=15, proc_root=None,
                  monotonic_fn=time.monotonic):
     """Census of tasks in uninterruptible sleep (state D) at capture time.
 
@@ -900,11 +900,13 @@ def dstate_tasks(budget_sec=3.0, max_tasks=200000, top_n=15, proc_root=None,
 
 IO_PSI_INCIDENT_FULL_AVG10 = 20.0   # host io `full avg10` that marks an IO-stall capture
 IO_INCIDENT_MIN_GAP_SEC = 1800       # at most one io-pressure incident copy per 30 min
+IO_INCIDENT_RETENTION_SEC = 14 * 86400  # matches perf-budgets INCIDENT_CAPTURE_RETENTION_DAYS
 
 
 def maybe_preserve_io_incident(host_psi, out_dir, path,
                                threshold=IO_PSI_INCIDENT_FULL_AVG10,
-                               min_gap_sec=IO_INCIDENT_MIN_GAP_SEC, now_fn=time.time):
+                               min_gap_sec=IO_INCIDENT_MIN_GAP_SEC,
+                               retention_sec=IO_INCIDENT_RETENTION_SEC, now_fn=time.time):
     """Keep this capture past rotation when host IO is stalled.
 
     The infra panel's crit edge (compute.ts -> preserveIncidentCapture) fires on
@@ -920,8 +922,15 @@ def maybe_preserve_io_incident(host_psi, out_dir, path,
             return None
         now = now_fn()
         for name in os.listdir(out_dir):
-            if name.endswith("-incident-io-pressure.json") and \
-                    now - os.path.getmtime(os.path.join(out_dir, name)) < min_gap_sec:
+            if not name.endswith("-incident-io-pressure.json"):
+                continue
+            existing = os.path.join(out_dir, name)
+            age = now - os.path.getmtime(existing)
+            if age > retention_sec:
+                # perf-budgets prunes *-incident-* only on an infra-crit edge, which an
+                # IO-only stall never raises, so this writer bounds its own copies.
+                os.remove(existing)
+            elif age < min_gap_sec:
                 return None
         base = os.path.basename(path)
         stem = base[:-len(".json")] if base.endswith(".json") else base

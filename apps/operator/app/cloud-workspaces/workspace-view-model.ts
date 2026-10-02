@@ -67,6 +67,9 @@ export interface WorkspaceHostConnectionRow {
   provider?: {
     projectId?: string;
     serviceAccountEmail?: string;
+    vpcId?: string;
+    securityGroupIds?: string[];
+    launchTemplateId?: string;
   };
   scopes: CatalogOption[];
   regions: RegionOption[];
@@ -521,9 +524,15 @@ export function readinessChecks(
     {
       id: "provider-supported",
       label: "Provider is supported",
-      ok: !connection || connection.target === "gcp",
-      fix: "choose a supported Google Cloud connection",
+      ok: !connection || connection.target === "gcp" || connection.target === "aws",
+      fix: "choose a supported Google Cloud or AWS connection",
     },
+    ...(connection?.target === "aws" ? [{
+      id: "aws-launch-resources",
+      label: "AWS launch resources configured",
+      ok: Boolean(connection.provider?.vpcId && connection.provider?.launchTemplateId && connection.provider?.securityGroupIds?.length),
+      fix: "reconnect AWS with a VPC, security groups, and launch template",
+    }] : []),
     {
       id: "connection-validated",
       label: "Provider connection validated",
