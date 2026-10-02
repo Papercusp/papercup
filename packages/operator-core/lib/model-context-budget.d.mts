@@ -26,6 +26,15 @@ export function resolveCodexModelSelection(model: unknown, { source }?: {
     source: CodexModelSource;
 };
 /**
+ * Claude Code's Opus 5 family rejects `xhigh` and advertises `max` instead.
+ * The bare `opus` alias currently resolves into that family. Keep this
+ * normalization at Claude launch boundaries: OMP and Codex have independent
+ * effort contracts and must preserve their requested `xhigh` values.
+ * @param {string} spec
+ * @returns {string}
+ */
+export function normalizeClaudeModelEffortSpec(spec: string): string;
+/**
  * Render the root model settings that must survive a model-less resume.  The
  * model id and effort are separated because Codex's TOML schema accepts the
  * effort as `model_reasoning_effort`, not as part of `model`.

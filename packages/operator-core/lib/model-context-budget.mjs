@@ -121,6 +121,22 @@ export function resolveCodexModelSelection(model, { source = 'explicit' } = {}) 
   return { model: resolveCodexModel(raw), source };
 }
 
+const CLAUDE_OPUS_5_MODEL_ID_RE = /^(?:opus|claude-opus-5(?:[-.]\d+)*)(?:\[1m\])?$/i;
+
+/**
+ * Claude Code's Opus 5 family rejects `xhigh` and advertises `max` instead.
+ * The bare `opus` alias currently resolves into that family. Keep this
+ * normalization at Claude launch boundaries: OMP and Codex have independent
+ * effort contracts and must preserve their requested `xhigh` values.
+ * @param {string} spec
+ * @returns {string}
+ */
+export function normalizeClaudeModelEffortSpec(spec) {
+  const match = /^(.+):xhigh$/i.exec(spec);
+  if (!match || !CLAUDE_OPUS_5_MODEL_ID_RE.test(match[1])) return spec;
+  return `${match[1]}:max`;
+}
+
 /** Alias with an assertion-oriented name for request-boundary callers. */
 export const assertCodexModelAllowed = resolveCodexModel;
 

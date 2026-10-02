@@ -139,6 +139,7 @@ import {
   CODEX_DENIED_MODEL_IDS,
   resolveCodexModel,
   resolveCodexModelSelection,
+  normalizeClaudeModelEffortSpec,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 // D-002: the argv allowlist the workspace host applies to a psu it starts for a customer.
 import {
@@ -1642,7 +1643,9 @@ export function modelArgsFor(agent, model) {
       ? normalizeCodexCliModel(model)
       : agent === "omp"
         ? normalizeOmpModelSpec(model)
-        : model;
+        : agent === "claude"
+          ? normalizeClaudeModelEffortSpec(model)
+          : model;
   const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(effectiveModel);
   if (agent === "codex") {
     // Extended-window models are launched with the exact top-level opt-in and
