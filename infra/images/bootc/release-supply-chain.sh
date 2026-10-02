@@ -228,7 +228,7 @@ echo "attested provenance to $REF"
 # ---------------------------------------------------------------------------------------------
 if [ "$SKIP_SCAN" -eq 1 ]; then
   step "5/6  SBOM + scan SKIPPED (--skip-scan)"
-  SBOM_PKGS="skipped"; ACTIONABLE="skipped"; VENDOR_PENDING="skipped"; VENDOR_CHECK="skipped"
+  SBOM_PKGS="skipped"; ACTIONABLE="skipped"; VENDOR_PENDING="skipped"; VENDOR_CHECK="skipped"; STALE_OBJECTS="skipped"
 else
   [ -n "$SYFT" ] && [ -x "$SYFT" ]   || die "syft not found (set SYFT_BIN)" 2
   [ -n "$GRYPE" ] && [ -x "$GRYPE" ] || die "grype not found (set GRYPE_BIN)" 2
@@ -299,9 +299,17 @@ else
       ((.type // "") | ascii_downcase) == "rpm"
       and ($paths | length > 0 and all(.[]; rpmdb_path));
     def finding_paths: [(.artifact.locations // [])[] | (.path // "")];
-    def vendor_owned($owned):
+    def ostree_object: test("^/sysroot/ostree/repo/objects/[0-9a-f]{2}/[0-9a-f]{62}\\.file$");
+    def effective_paths($idx):
+      [finding_paths[] as $p
+        | ((($idx[$p] // {}).livePaths) // []) as $live
+        | if ($live | length) > 0 then $live[] else $p end];
+    def stale_object($idx):
+      finding_paths | length > 0
+        and all(.[]; ostree_object and (($idx[.] // {}) | .stale == true and (((.livePaths // []) | length) == 0)));
+    def vendor_owned($owned; $idx):
       (.artifact | installed_rpm([(.locations // [])[] | (.path // "")]))
-      or (finding_paths | length > 0 and all(.[]; $owned[.] == true));
+      or (effective_paths($idx) | length > 0 and all(.[]; $owned[.] == true));
   '
   GENERIC_KERNEL_CPE_EXCLUDED=$(jq "$JQ_GATE_DEFS"'
     [.matches[] | select(fixed_crit_high) | select(generic_kernel_cpe)] | length
@@ -318,38 +326,54 @@ else
     | unique | map({key: ., value: true}) | from_entries
   ' "$OUTDIR/sbom.syft.json" > "$OUTDIR/rpm-owned-paths.json" \
     || die "could not derive RPM file ownership from the SBOM"
-  jq --slurpfile owned "$OUTDIR/rpm-owned-paths.json" "$JQ_GATE_DEFS"'
-    [.matches[]
-      | select(fixed_crit_high) | select(generic_kernel_cpe | not) | select(vendor_owned($owned[0]))
-      | { id: .vulnerability.id, severity: .vulnerability.severity,
-          namespace: .vulnerability.namespace, fixedIn: (.vulnerability.fix.versions // []),
-          artifact: { name: .artifact.name, version: .artifact.version, type: .artifact.type },
-          paths: finding_paths }]
-  ' "$OUTDIR/vulns.json" > "$OUTDIR/vendor-pending-candidates.json" \
-    || die "could not classify vendor-owned findings"
-  VENDOR_CANDIDATES=$(jq 'length' "$OUTDIR/vendor-pending-candidates.json")
+  # D-029: syft locates a base-layer binary the build did not replace at its ostree OBJECT
+  # (/sysroot/ostree/repo/objects/xx/<sha>.file — the base layer hardlinks the live path to it),
+  # so the probe below resolves each object-located finding to the live path(s) with identical
+  # content, or proves it has none (a stale base copy the deployed tree never references).
+  OBJECT_PATHS=$(jq -r "$JQ_GATE_DEFS"'
+    [.matches[] | select(fixed_crit_high) | select(generic_kernel_cpe | not)
+      | finding_paths[] | select(ostree_object)] | unique | .[]
+  ' "$OUTDIR/vulns.json") || die "could not list ostree-object findings"
+  OWNED_BEFORE=$(jq --slurpfile owned "$OUTDIR/rpm-owned-paths.json" "$JQ_GATE_DEFS"'
+    [.matches[] | select(fixed_crit_high) | select(generic_kernel_cpe | not)
+      | select(vendor_owned($owned[0]; {}))] | length
+  ' "$OUTDIR/vulns.json") || die "could not classify vendor-owned findings"
 
   # (b) does the vendor already ship something newer? Asked only when a candidate exists, inside
   # the image at this DIGEST, against the repos the image itself is configured with.
-  VENDOR_CHECK="not-needed"; VENDOR_PENDING=0
-  if [ "$VENDOR_CANDIDATES" -gt 0 ]; then
+  VENDOR_CHECK="not-needed"; VENDOR_PENDING=0; VENDOR_NOTHING_NEWER=0
+  echo '{}' > "$OUTDIR/ostree-object-index.json"
+  if [ "$OWNED_BEFORE" -gt 0 ] || [ -n "$OBJECT_PATHS" ]; then
     VENDOR_CHECK_SH=$(cat <<'SH'
 dnf -q --refresh check-update; rc=$?
 echo "VENDOR_CHECK_UPDATE_EXIT=$rc"
 echo "VENDOR_ENABLED_REPOS=$(dnf -q -C repolist --enabled 2>/dev/null | awk 'NR > 1 && NF' | wc -l)"
 echo "VENDOR_AVAILABLE_PACKAGES=$(dnf -q -C repoquery --available --qf '%{name}\n' 2>/dev/null | sort -u | wc -l)"
+printf '%s\n' "${PAPERCUSP_OSTREE_OBJECTS:-}" > /tmp/objects
+while IFS= read -r obj; do
+  [ -n "$obj" ] || continue
+  if [ ! -f "$obj" ]; then echo "OSTREE_OBJECT_MISSING $obj"; continue; fi
+  sum=$(sha256sum "$obj" | cut -d' ' -f1); live=0
+  find / -xdev \( -path /sysroot -o -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /tmp \) \
+    -prune -o -type f -size "$(stat -c %s "$obj")c" -print 2>/dev/null > /tmp/same-size
+  while IFS= read -r f; do
+    if [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then echo "OSTREE_OBJECT_LIVE $obj $f"; live=1; fi
+  done < /tmp/same-size
+  [ "$live" -eq 1 ] || echo "OSTREE_OBJECT_STALE $obj $sum"
+done < /tmp/objects
+echo "OSTREE_OBJECT_DONE"
 SH
 )
     VC_RC=0
-    "${PODMAN[@]}" run --rm --network host "${TLS_ARGS[@]}" --entrypoint /bin/sh "$REF" \
-      -c "$VENDOR_CHECK_SH" > "$OUTDIR/vendor-check.log" 2>&1 || VC_RC=$?
+    "${PODMAN[@]}" run --rm --network host "${TLS_ARGS[@]}" -e PAPERCUSP_OSTREE_OBJECTS="$OBJECT_PATHS" \
+      --entrypoint /bin/sh "$REF" -c "$VENDOR_CHECK_SH" > "$OUTDIR/vendor-check.log" 2>&1 || VC_RC=$?
     vc_field() { sed -n "s/^$1=\([0-9][0-9]*\)\$/\1/p" "$OUTDIR/vendor-check.log" | tail -1; }
     CU_EXIT=$(vc_field VENDOR_CHECK_UPDATE_EXIT)
     VC_REPOS=$(vc_field VENDOR_ENABLED_REPOS)
     VC_AVAIL=$(vc_field VENDOR_AVAILABLE_PACKAGES)
     if [ "$VC_RC" -eq 0 ] && [ "$CU_EXIT" = "0" ] && [ "${VC_REPOS:-0}" -ge 1 ] \
        && [ "${VC_AVAIL:-0}" -ge "$MIN_AVAILABLE_PACKAGES" ]; then
-      VENDOR_CHECK="no-updates"; VENDOR_PENDING=$VENDOR_CANDIDATES
+      VENDOR_CHECK="no-updates"; VENDOR_NOTHING_NEWER=1
     elif [ "$CU_EXIT" = "100" ]; then
       VENDOR_CHECK="updates-available"
     else
@@ -363,13 +387,48 @@ SH
          checkUpdateExit: ($cu | tonumber? // null), enabledRepos: ($repos | tonumber? // null),
          availablePackages: ($avail | tonumber? // null), availablePackagesFloor: $floor }' \
       > "$OUTDIR/vendor-updates.json" || die "could not record vendor-updates.json"
+    # Complete only when the container exited 0, reached its end marker, and gave EVERY object a
+    # verdict; an incomplete probe relocates nothing and proves nothing stale.
+    jq -Rn --arg digest "$DIGEST" --arg wanted "$OBJECT_PATHS" --argjson rc "$VC_RC" '
+      [inputs | capture("^(?<kind>OSTREE_OBJECT_[A-Z]+)(?: (?<path>[^ ]+)(?: (?<other>.*))?)?$")] as $lines
+      | [$wanted | split("\n")[] | select(length > 0)
+         | . as $p
+         | { path: $p,
+             livePaths: [$lines[] | select(.kind == "OSTREE_OBJECT_LIVE" and .path == $p) | .other],
+             stale: any($lines[]; .kind == "OSTREE_OBJECT_STALE" and .path == $p),
+             sha256: (first($lines[] | select(.kind == "OSTREE_OBJECT_STALE" and .path == $p) | .other) // null) }
+        ] as $objects
+      | { digest: $digest, objects: $objects,
+          complete: ($rc == 0 and any($lines[]; .kind == "OSTREE_OBJECT_DONE")
+                     and all($objects[]; (.livePaths | length) > 0 or .stale)) }
+    ' "$OUTDIR/vendor-check.log" > "$OUTDIR/ostree-objects.json" || die "could not record ostree-objects.json"
+    jq 'if .complete then (.objects | map({key: .path, value: .}) | from_entries) else {} end' \
+      "$OUTDIR/ostree-objects.json" > "$OUTDIR/ostree-object-index.json" || die "could not index ostree objects"
   fi
-  if [ "$VENDOR_PENDING" -gt 0 ]; then
+  # Classify with the probe's index: a stale base object first (D-029), then vendor ownership over
+  # the relocated paths (D-027/D-028). Both lists are written whatever the verdict, so the counts
+  # below are always backed by a file a reviewer can read.
+  JQ_LIST='{ id: .vulnerability.id, severity: .vulnerability.severity,
+             namespace: .vulnerability.namespace, fixedIn: (.vulnerability.fix.versions // []),
+             artifact: { name: .artifact.name, version: .artifact.version, type: .artifact.type },
+             paths: finding_paths, livePaths: effective_paths($idx[0]) }'
+  jq --slurpfile idx "$OUTDIR/ostree-object-index.json" "$JQ_GATE_DEFS"'
+    [.matches[] | select(fixed_crit_high) | select(generic_kernel_cpe | not)
+      | select(stale_object($idx[0])) | '"$JQ_LIST"']
+  ' "$OUTDIR/vulns.json" > "$OUTDIR/stale-base-objects.json" || die "could not classify stale base objects"
+  jq --slurpfile owned "$OUTDIR/rpm-owned-paths.json" --slurpfile idx "$OUTDIR/ostree-object-index.json" "$JQ_GATE_DEFS"'
+    [.matches[] | select(fixed_crit_high) | select(generic_kernel_cpe | not)
+      | select(stale_object($idx[0]) | not) | select(vendor_owned($owned[0]; $idx[0])) | '"$JQ_LIST"']
+  ' "$OUTDIR/vulns.json" > "$OUTDIR/vendor-pending-candidates.json" || die "could not classify vendor-owned findings"
+  STALE_OBJECTS=$(jq 'length' "$OUTDIR/stale-base-objects.json")
+  VENDOR_CANDIDATES=$(jq 'length' "$OUTDIR/vendor-pending-candidates.json")
+  if [ "$VENDOR_NOTHING_NEWER" -eq 1 ]; then
+    VENDOR_PENDING=$VENDOR_CANDIDATES
     cp "$OUTDIR/vendor-pending-candidates.json" "$OUTDIR/vendor-pending.json"
   else
     echo '[]' > "$OUTDIR/vendor-pending.json"
   fi
-  ACTIONABLE=$((ACTIONABLE - VENDOR_PENDING))
+  ACTIONABLE=$((ACTIONABLE - VENDOR_PENDING - STALE_OBJECTS))
   # ⛔ D-289: the raw total is not a verdict. Measured on the P-306 image, 4 kernel RPMs each
   # reported an IDENTICAL 5,395 matches — one kernel's CVE set counted four times under four
   # names — so ~95% of a 29,872 headline was a single component counted repeatedly. Print the
@@ -378,6 +437,7 @@ SH
   echo "GRYPE_TOP_COMPONENT=$(jq -r '.matches | group_by(.artifact.name) | max_by(length) | "\(.[0].artifact.name)=\(length)"' "$OUTDIR/vulns.json")"
   echo "GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=$GENERIC_KERNEL_CPE_EXCLUDED   (EL9 upstream CPE matches; vendor namespaces remain actionable)"
   echo "GRYPE_VENDOR_PENDING=$VENDOR_PENDING   (of $VENDOR_CANDIDATES RPM-owned; vendor check: $VENDOR_CHECK; listed in vendor-pending.json — D-027)"
+  echo "GRYPE_STALE_BASE_OBJECTS=$STALE_OBJECTS   (base-layer ostree objects with no live copy in the image; listed in stale-base-objects.json — D-029)"
   case "$VENDOR_CHECK" in
     updates-available) echo "  the image's repos ship NEWER RPMs (vendor-check.log): re-bake so the Containerfile's dnf upgrade takes them; nothing is pending" ;;
     error) echo "  the vendor check did not complete (vendor-check.log): every RPM-owned finding stays actionable" ;;
@@ -438,6 +498,7 @@ cat > "$OUTDIR/supply-chain-summary.json" <<SUM
   "actionableCriticalHighWithFix": "$ACTIONABLE",
   "vendorPending": "$VENDOR_PENDING",
   "vendorCheck": "$VENDOR_CHECK",
+  "staleBaseObjects": "$STALE_OBJECTS",
   "secretScan": "$SECRET_SCAN",
   "verifiedFromRegistry": true
 }

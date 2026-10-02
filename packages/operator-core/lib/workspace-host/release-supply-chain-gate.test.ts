@@ -410,12 +410,61 @@ describe('release supply-chain vendor-pending classification (D-027, WI-10005719
     expect(readOut(result, 'vendor-updates.json').verdict).toBe(verdict);
   });
 
-  it('does not run the vendor check when no finding is RPM-owned', () => {
-    const result = runGate([goInOstreeObject, goInPapercuspBinary], { sbom: vendorSbom, vendorCheckOutput: NOTHING_NEWER });
+  it('does not run the image probe when no finding is RPM-owned or object-located', () => {
+    const result = runGate([goInPapercuspBinary], { sbom: vendorSbom, vendorCheckOutput: NOTHING_NEWER });
 
     expect(result.status, result.output).toBe(3);
     expect(result.output).toContain('vendor check: not-needed');
-    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=2');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
     expect(result.podmanCalls.some((call) => call.includes('check-update'))).toBe(false);
+  });
+
+  // D-029. Measured on the P-012 AWS disk: object 83de1547 is /usr/bin/toolbox (live, RPM-owned),
+  // the other four are old podman/skopeo copies the deployed commit never references.
+  const liveObject = '/sysroot/ostree/repo/objects/83/' + 'a'.repeat(62) + '.file';
+  const staleObject = '/sysroot/ostree/repo/objects/9e/' + 'b'.repeat(62) + '.file';
+  const objectSbom = {
+    artifacts: [
+      { ...installedSkopeo, metadata: { files: [{ path: '/usr/bin/skopeo' }, { path: '/usr/bin/toolbox' }] } },
+      ...Array.from({ length: 50 }, () => ({})),
+    ],
+  };
+  const probe = (lines: string[]) => NOTHING_NEWER + lines.join('\n') + '\n';
+
+  it('relocates a live object to its path, and lists a stale one, only on a complete probe', () => {
+    const result = runGate([goFinding(liveObject, 'GO-LIVE'), goFinding(staleObject, 'GO-STALE'), goInPapercuspBinary], {
+      sbom: objectSbom,
+      vendorCheckOutput: probe([
+        `OSTREE_OBJECT_LIVE ${liveObject} /usr/bin/toolbox`,
+        `OSTREE_OBJECT_STALE ${staleObject} ${'c'.repeat(64)}`,
+        'OSTREE_OBJECT_DONE',
+      ]),
+    });
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('GRYPE_VENDOR_PENDING=1');
+    expect(result.output).toContain('GRYPE_STALE_BASE_OBJECTS=1');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
+    expect(readOut(result, 'vendor-pending.json')[0]).toMatchObject({ id: 'GO-LIVE', livePaths: ['/usr/bin/toolbox'] });
+    expect(readOut(result, 'stale-base-objects.json').map((f: { id: string }) => f.id)).toEqual(['GO-STALE']);
+    expect(readOut(result, 'ostree-objects.json')).toMatchObject({ digest: DIGEST, complete: true });
+    expect(readOut(result, 'supply-chain-summary.json')).toMatchObject({ staleBaseObjects: '1', vendorPending: '1' });
+  });
+
+  it.each([
+    ['no end marker', [`OSTREE_OBJECT_STALE ${staleObject} ${'c'.repeat(64)}`]],
+    ['an object without a verdict', [`OSTREE_OBJECT_LIVE ${liveObject} /usr/bin/toolbox`, 'OSTREE_OBJECT_DONE']],
+    ['an object missing from the image', [`OSTREE_OBJECT_MISSING ${staleObject}`, `OSTREE_OBJECT_LIVE ${liveObject} /usr/bin/toolbox`, 'OSTREE_OBJECT_DONE']],
+  ])('relocates nothing and proves nothing stale on an incomplete probe (%s)', (_label, lines) => {
+    const result = runGate([goFinding(liveObject, 'GO-LIVE'), goFinding(staleObject, 'GO-STALE')], {
+      sbom: objectSbom,
+      vendorCheckOutput: probe(lines),
+    });
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('GRYPE_STALE_BASE_OBJECTS=0');
+    expect(result.output).toContain('GRYPE_VENDOR_PENDING=0');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=2');
+    expect(readOut(result, 'ostree-objects.json').complete).toBe(false);
   });
 });
