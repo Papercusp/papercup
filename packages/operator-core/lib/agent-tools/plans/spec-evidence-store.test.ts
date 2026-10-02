@@ -753,6 +753,46 @@ describe('listSpecEvidence timestamp normalization', () => {
     expect(query?.values).toContainEqual([]);
   });
 
+  it('limits withdrawn-binding audits to their as-of time while the ordinary read still excludes withdrawals', async () => {
+    const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
+    const selectors = {
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'],
+      specIds: ['SPEC-001-01'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+      evidenceRefs: ['vitest:shared-ref'],
+    };
+
+    await listSpecEvidence({
+      ...selectors,
+      includeRetracted: true,
+      auditAsOf,
+    });
+    const auditQuery = h.queries.find(({ sql }) => sql.includes('b.created_at <='));
+    expect(auditQuery?.sql).toContain('b.created_at <=');
+    expect(auditQuery?.sql).toContain('b.retracted_at IS NULL OR b.retracted_at >');
+    expect(auditQuery?.values).toContain(auditAsOf);
+    expect(auditQuery?.values).toContain(true);
+
+    await listSpecEvidence(selectors);
+    const currentQuery = h.queries.filter(({ sql }) => sql.includes('FROM harness_shared.spec_evidence_bindings')).at(-1);
+    expect(currentQuery?.sql).toContain('b.retracted_at IS NULL');
+    expect(currentQuery?.values).toContain(false);
+  });
+
+  it('refuses an audit-as-of cutoff without explicit withdrawn-row visibility', async () => {
+    await expect(
+      listSpecEvidence({
+        harnessSlug: 'papercusp',
+        planSlugs: ['plan-one'],
+        includeRetracted: false,
+        auditAsOf: new Date('2026-10-02T00:14:36.135Z'),
+      }),
+    ).rejects.toThrow('auditAsOf requires includeRetracted:true');
+  });
+
   it('surfaces provisional scorecard proof bases on the returned binding row', async () => {
     h.rows = [
       {
