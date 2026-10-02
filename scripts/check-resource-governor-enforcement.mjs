@@ -2404,12 +2404,18 @@ function hasResourceStart(code) {
 // it turns ordinary domain words such as `spawnRowKind` into false starts.
 const ALIAS_BIND =
   /\b([A-Za-z_$][\w$]*)\s*[=:]\s*(?:promisify\s*\(\s*)?(?:spawn|spawnSync|fork|execFile|execFileSync)\s*[,\)\s;}]/g;
+// Lazy wrappers avoid eagerly promisifying an undefined test mock. They still
+// invoke the same child-process primitive; Reflect.apply is not an exemption.
+const LAZY_PROMISIFY_ALIAS_BIND =
+  /\b([A-Za-z_$][\w$]*)\s*=\s*\(\s*\([^)]*\)\s*=>\s*Reflect\.apply\s*\(\s*\(\s*[A-Za-z_$][\w$]*\s*\?\?=\s*promisify\s*\(\s*(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\)\s*\)/g;
 function hasCalledResourceStartAlias(code) {
   const aliases = new Set();
-  for (const match of code.matchAll(ALIAS_BIND)) {
-    const name = match[1];
-    if (/^(?:spawn|spawnSync|fork|execFile|execFileSync)$/.test(name)) continue;
-    aliases.add(name);
+  for (const pattern of [ALIAS_BIND, LAZY_PROMISIFY_ALIAS_BIND]) {
+    for (const match of code.matchAll(pattern)) {
+      const name = match[1];
+      if (/^(?:spawn|spawnSync|fork|execFile|execFileSync)$/.test(name)) continue;
+      aliases.add(name);
+    }
   }
   for (const name of aliases) {
     const escaped = name.replace(/\$/g, "\\$");
