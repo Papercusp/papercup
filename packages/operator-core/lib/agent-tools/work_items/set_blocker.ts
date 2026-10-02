@@ -34,7 +34,8 @@ import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
 import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
-import { linkWorkItemRefDependencies, workItemRefDependencyRefusal } from './work-item-ref-blocker-edges';
+import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
+import { workItemRefDependencyRefusal } from './work-item-ref-dependency-refusal';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but

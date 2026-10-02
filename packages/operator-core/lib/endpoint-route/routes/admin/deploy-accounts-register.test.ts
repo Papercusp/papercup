@@ -5,7 +5,7 @@
  * so the Accounts tab refreshes after an add (P-002 UI wiring). The fs write +
  * account-pool logic are mocked; we assert what reaches registerAccount.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   registerAccount: vi.fn((pool: { accounts: unknown[] }, input: Record<string, unknown>) => ({
@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   updateAccountPool: vi.fn(async (mutator: (p: { accounts: unknown[] }) => unknown) => mutator({ accounts: [] })),
   accountStatus: vi.fn(async () => [] as unknown[]),
   notifySyncInvalidate: vi.fn(),
+  gatewayFetch: vi.fn(),
   writeFile: vi.fn(),
   mkdir: vi.fn(),
   chmod: vi.fn(),
@@ -47,6 +48,9 @@ function lastRegisterInput() {
 }
 
 beforeEach(() => {
+  h.gatewayFetch.mockReset();
+  h.gatewayFetch.mockResolvedValue(new Response(JSON.stringify({ ok: true, changed: true, version: 7, accounts: ['aviynw_3'] })));
+  vi.stubGlobal('fetch', h.gatewayFetch);
   h.registerAccount.mockClear();
   h.updateAccountPool.mockClear();
   h.accountStatus.mockClear();
@@ -59,6 +63,10 @@ beforeEach(() => {
   h.mkdir.mockResolvedValue(undefined);
   h.chmod.mockReset();
   h.chmod.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su-c7b4c)', () => {
@@ -114,11 +122,41 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
     );
   });
 
+  it('hot-applies an updated Codex account to the live gateway after saving it', async () => {
+    const { status, body } = await post({
+      accountId: 'aviynw_3',
+      provider: 'codex',
+      value: 'env:PAPERCUSP_TEST_OPENAI_KEY',
+    });
+    expect(status).toBe(200);
+    expect(h.gatewayFetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:8788/admin/reload',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(body?.gatewayReload).toEqual({ appliedLive: true, changed: true, version: 7 });
+  });
+
+  it('keeps a durable registration successful and reports when live apply fails', async () => {
+    h.gatewayFetch.mockRejectedValueOnce(new Error('connection refused'));
+    const { status, body } = await post({
+      accountId: 'aviynw_3',
+      provider: 'codex',
+      value: 'env:PAPERCUSP_TEST_OPENAI_KEY',
+    });
+    expect(status).toBe(200);
+    expect(body?.ok).toBe(true);
+    expect(body?.gatewayReload).toMatchObject({
+      appliedLive: false,
+      warning: expect.stringMatching(/next ~60s pool poll/),
+    });
+  });
+
   it('400s an invalid accountId without writing anything', async () => {
     const { status } = await post({ accountId: 'bad id!', value: OAT });
     expect(status).toBe(400);
     expect(h.registerAccount).not.toHaveBeenCalled();
     expect(h.notifySyncInvalidate).not.toHaveBeenCalled();
+    expect(h.gatewayFetch).not.toHaveBeenCalled();
   });
 
   // 2026-07-03 hardening: the two ways a paste goes wrong.

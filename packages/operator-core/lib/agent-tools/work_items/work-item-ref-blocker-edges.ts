@@ -13,6 +13,7 @@ import type { ObjectRef } from '@papercusp/coordination/capabilities';
 import { linkWorkItem, resolveWorkItemRef } from '../../work-items';
 import { guardFeatureBlockEdgeAcyclic } from '../../dbos/feature-blockers-edges';
 import type { RefusalContract } from '../../capability-envelope/identity-refusal-contract';
+import { workItemRefDependencyRefusal } from './work-item-ref-dependency-refusal';
 
 export interface WorkItemRefEdge {
   /** The referent that must finish first (edge source). */
@@ -24,26 +25,6 @@ export interface WorkItemRefEdge {
 export type WorkItemRefEdgeResult =
   | { ok: true; edges: WorkItemRefEdge[] }
   | { ok: false; code: 'work_item_ref_dependency_refused'; error: string; refusal: RefusalContract };
-
-/**
- * The lift condition for a refused work-item dependency (WI-10005197, WI-10005192 ratchet).
- * One shared builder so every refusal site — the edge writer below and the legacy-migration
- * summary in `set_blocker.ts` — states the same thing. `dependent` is the work-item that
- * would have waited; `blockers` names the referent(s) the write could not accept (null when
- * the refusal is about the dependent itself).
- */
-export function workItemRefDependencyRefusal(dependent: string, blockers: string | null): RefusalContract {
-  return {
-    observed: { dependent, blockers },
-    liftsWhen:
-      'the dependent and every named blocker resolve to existing work-items, no blocker is the dependent ' +
-      'itself, and each `blocks` edge is admissible (acyclic, and accepted by the link guard) — `error` ' +
-      'names which check failed. Retrying the identical request cannot lift it: correct the ids, name a ' +
-      'different blocker, or remove the edge that closes the cycle. No dependency was written beyond any ' +
-      'edge `error` lists as already written',
-    whoCanMakeItTrue: ['self', 'another-agent'],
-  };
-}
 
 function refused(error: string, dependent: string, blockers: string | null): WorkItemRefEdgeResult {
   return {

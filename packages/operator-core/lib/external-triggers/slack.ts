@@ -2,6 +2,8 @@
 import type postgres from 'postgres';
 import type { TokenStorage } from '../oauth/token';
 import { fsTokenStorage } from '../oauth/storage-fs';
+import { SLACK_SOCKET_PLUGIN, slackSocketCredentialRef, slackSocketCredentialField } from './slack-credential-ref';
+export { SLACK_SOCKET_PLUGIN, slackSocketCredentialRef, slackSocketCredentialField } from './slack-credential-ref';
 import {
   ingestExternalTriggerEvent,
   type IngestExternalTriggerInput,
@@ -13,10 +15,8 @@ import {
   updateExternalTriggerSourceSyncState,
 } from './source-store';
 
-export const SLACK_SOCKET_PLUGIN = 'slack-socket';
 export const SLACK_HISTORY_MIN_INTERVAL_MS = 60_000;
 const SLACK_API_ORIGIN = 'https://slack.com';
-const FIELD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export const SLACK_APP_MANIFEST_TEMPLATE = {
   _metadata: { major_version: 2 },
@@ -77,19 +77,6 @@ export interface SlackNormalizedEvent {
 }
 
 type Ingest = (sql: postgres.Sql, input: IngestExternalTriggerInput) => Promise<IngestExternalTriggerResult>;
-
-export function slackSocketCredentialRef(field: string): string {
-  if (!FIELD.test(field)) throw new Error('slack_socket_credential_field_invalid');
-  return `${SLACK_SOCKET_PLUGIN}:${field}`;
-}
-
-export function slackSocketCredentialField(ref: string | null): string {
-  const prefix = `${SLACK_SOCKET_PLUGIN}:`;
-  if (!ref?.startsWith(prefix) || !FIELD.test(ref.slice(prefix.length))) {
-    throw new Error('slack_socket_credential_ref_invalid');
-  }
-  return ref.slice(prefix.length);
-}
 
 function assertToken(value: string, prefix: 'xapp-' | 'xoxb-', name: string): string {
   const token = value.trim();
