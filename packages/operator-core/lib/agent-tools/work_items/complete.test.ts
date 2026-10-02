@@ -100,6 +100,9 @@ vi.mock('../../work-items', () => ({
   resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
   linkWorkItem: (...a: unknown[]) => linkWorkItem(...a),
   subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
+  // D-035 agent-work door gate (work-nature/agent-work-door-gate): null = the row IS agent
+  // work, so every existing completion case reaches its own write path unchanged.
+  readNonAgentWorkCategory: vi.fn(async () => null),
   // Real constant (not a spy) — complete.ts sources its terminal-state check from this
   // single source of truth (EI-18127483322976472); mirrors work-items.ts's actual value.
   SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
