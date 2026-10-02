@@ -1094,6 +1094,7 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
     await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
       retired: [],
       leftArmed: [],
+      awaitsCancelled: 0,
     });
     expect((await goalModeRows(goalId)).map((row) => row.owner_id).sort()).toEqual([
       'su-first',
@@ -1105,6 +1106,7 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
     await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
       retired: ['su-first', 'su-second'],
       leftArmed: [],
+      awaitsCancelled: 0,
     });
     const rows = await goalModeRows(goalId);
     expect(rows.map((row) => row.owner_id)).toEqual(['su-third']);
@@ -1116,7 +1118,72 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
     await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
       retired: [],
       leftArmed: [],
+      awaitsCancelled: 0,
     });
+  }, 60_000);
+
+  it('cancels exactly the retired holders\' goal-scoped awaits, and nothing else', async () => {
+    // Measured 2026-10-02 18:03Z: one goal:plan-placement fire resumed six superseded
+    // 60d3a8 holders headless, and each re-armed within a minute. Retiring the GOAL
+    // row alone leaves that wake source live, so the reaper must cancel it too.
+    const goalId = 'goal-superseded-awaits';
+    const planSlug = 'goal-superseded-awaits-plan';
+    const otherPlan = 'unrelated-plan-awaits';
+    const placementKey = `goal:plan-placement:${goalId}`;
+    const acceptanceKey = `plan:acceptance:${planSlug}`;
+    await rootSql`DELETE FROM harness_shared.event_awaits WHERE event_key LIKE ${'%' + goalId + '%'} OR event_key LIKE ${'%' + otherPlan + '%'}`;
+    await rootSql`DELETE FROM harness_shared.harness_plans WHERE plan_slug IN (${planSlug}, ${otherPlan})`;
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, goal_id)
+      VALUES (${WS}, 'papercusp', ${planSlug}, ${goalId}), (${WS}, 'papercusp', ${otherPlan}, NULL)`;
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-first', goalId);
+    await attachHolder('su-second', goalId, 'su-first');
+    await attachHolder('su-third', goalId, 'su-second');
+
+    async function arm(subscriber: string, key: string, fired = false): Promise<number> {
+      const [row] = await rootSql<{ id: number }[]>`
+        INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, policy, once, fired_at)
+        VALUES ('default', ${subscriber}, ${key}, 'wake', true, ${fired ? new Date() : null})
+        RETURNING id`;
+      return Number(row!.id);
+    }
+    const cancelled = [
+      await arm('su-first', placementKey),
+      await arm('su-first', acceptanceKey),
+      await arm('su-second', placementKey),
+    ];
+    const kept = [
+      // The elected holder keeps its wake source.
+      await arm('su-third', placementKey),
+      // A retired holder's await on a key this goal does not own is not goal residue.
+      await arm('su-first', `plan:acceptance:${otherPlan}`),
+      await arm('su-first', 'work-item:done:WI-unrelated'),
+      // A non-holder awaiting the goal's plan acceptance (a grader) is untouched.
+      await arm('su-grader', acceptanceKey),
+    ];
+    // An already-fired registration is history, not a pending wake.
+    const fired = await arm('su-second', placementKey, true);
+
+    // Inside the handoff window: nothing retired, so nothing cancelled.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 0,
+    });
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: ['su-first', 'su-second'],
+      leftArmed: [],
+      awaitsCancelled: 3,
+    });
+
+    const state = await rootSql<{ id: number; cancelled_at: Date | null }[]>`
+      SELECT id, cancelled_at FROM harness_shared.event_awaits
+       WHERE id = ANY(${rootSql.array([...cancelled, ...kept, fired])}::bigint[])`;
+    const byId = new Map(state.map((row) => [Number(row.id), row.cancelled_at]));
+    for (const id of cancelled) expect(byId.get(id), `await ${id} should be cancelled`).not.toBeNull();
+    for (const id of [...kept, fired]) expect(byId.get(id), `await ${id} should survive`).toBeNull();
   }, 60_000);
 
   it('the respawner sweep retires superseded rows on a healthy goal without launching', async () => {
