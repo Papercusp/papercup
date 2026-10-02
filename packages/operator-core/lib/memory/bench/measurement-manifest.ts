@@ -11,7 +11,8 @@ import { z } from 'zod';
 import { validateEmbedderProfile, EMBEDDER_DIM_SPECS, CANDIDATE_DIM_SPECS, MDENSEON_REVISION,
   gemmaPrompt, harrierPrompt, mdenseOnPrompt, embedRequestedExecution,
   type EmbedderProfileSpec, type SidecarEmbedResponse } from '@papercusp/memory';
-import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { ORT_SESSION_OPTIONS, validNativeRuntimeSample, type WorkerNativeInferenceTrace }
+  from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import type { CorpusEntry, GoldQuery } from '@papercusp/memory/bench';
 
 export const MEASUREMENT_BARS = ['relevance', 'reference', 'hybrid', 'performance', 'boundaries', 'reliability', 'answers'] as const;
@@ -426,6 +427,82 @@ export function inspectNativeLoaderActivity(stderr: string, windows: NativeProfi
     noLoaderActivityDuringPopulation: activity.length === 0,
     completeBeforeInferenceClosureVerified: false as const,
     scope: 'glibc loader stderr ordering from first native Run start through last Run end' };
+}
+/** Join every still-loaded, generated glibc link map before the first Run to
+ * its recorded file identity, using BOTH actual ELF addresses. glibc's `base`
+ * is l_addr (load bias), not necessarily a mapped address for prelinked ELFs.
+ * Names alone cannot distinguish duplicate basenames or loader namespaces.
+ * This qualifies the generated-object population, not the main executable,
+ * interpreter, vDSO, or completeness/EOF of the caller's retained stderr. */
+export function bindNativeLoaderMappedObjects(stderr: string, windows: NativeProfilerRequestWindow[],
+  firstRun: WorkerNativeInferenceTrace) {
+  const activity = inspectNativeLoaderActivity(stderr, windows);
+  const firstWindow = windows.reduce((a,b) => BigInt(a.startMonotonicNs) < BigInt(b.startMonotonicNs) ? a : b);
+  if (!validNativeRuntimeSample(firstRun) || firstRun.phase !== 'start'
+    || firstRun.processId !== firstWindow.processId || firstRun.nativeThreadId !== firstWindow.nativeThreadId
+    || firstRun.runTag !== firstWindow.runTag || firstRun.monotonicNs !== firstWindow.startMonotonicNs) {
+    throw new Error('native loader pre-Run map sample does not bind first request');
+  }
+  const libraries = firstRun.runtime!.libraries;
+  const ranges = libraries.flatMap(file => {
+    if (!file.mappedRanges?.length) throw new Error('native loader address ranges missing');
+    return file.mappedRanges.map(range => ({ file, start: BigInt('0x'+range.startAddress), end: BigInt('0x'+range.endAddress) }));
+  }).sort((a,b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+  for (let i=1; i<ranges.length; i++) if (ranges[i].start < ranges[i-1].end) {
+    throw new Error('native loader map addresses ambiguous');
+  }
+  type ObjectMap = { object: string; namespace: string; loadBias: string; mappedSize: string;
+    dynamicAddress: string; programHeaderAddress: string; line: number };
+  const active = new Map<string, ObjectMap>(), retired: ObjectMap[] = [];
+  let pending: Partial<ObjectMap> | undefined;
+  const lines = stderr.split('\n'), firstMarker = lines.findIndex(line => line.startsWith('PC_NATIVE_RUN\t'));
+  for (const [index,line] of lines.entries()) {
+    if (index >= firstMarker) break;
+    const row = line.match(/^\s*(\d+):\s*(.*)$/);
+    if (!row || Number(row[1]) !== firstWindow.processId || !row[2].trim()) continue;
+    const text = row[2].trim(), generated = text.match(/^file=(.+) \[(\d+)\];\s+generating link map$/);
+    const destroyed = text.match(/^file=(.+) \[(\d+)\];\s+destroying link map$/);
+    const dynamic = text.match(/^dynamic:\s+(0x[\da-f]+)\s+base:\s+(0x[\da-f]+)\s+size:\s+(0x[\da-f]+)$/i);
+    const phdr = text.match(/^entry:\s+0x[\da-f]+\s+phdr:\s+(0x[\da-f]+)\s+phnum:\s+(\d+)$/i);
+    if (generated && !pending) {
+      pending = { object: generated[1], namespace: generated[2], line: index+1 };
+    } else if (pending && dynamic && pending.dynamicAddress === undefined) {
+      if (BigInt(dynamic[1]) === 0n || BigInt(dynamic[3]) === 0n) throw new Error('native loader invalid ELF addresses');
+      Object.assign(pending, { dynamicAddress: dynamic[1], loadBias: dynamic[2], mappedSize: dynamic[3] });
+    } else if (pending && phdr && pending.dynamicAddress !== undefined) {
+      if (BigInt(phdr[1]) === 0n || !/^[1-9]\d*$/.test(phdr[2])) throw new Error('native loader invalid ELF headers');
+      const object = { ...pending, programHeaderAddress: phdr[1] } as ObjectMap;
+      const key = object.namespace+'\0'+object.object;
+      if (active.has(key)) throw new Error('native loader generated object repeated');
+      active.set(key, object); pending = undefined;
+    } else if (!pending && destroyed) {
+      const key = destroyed[2]+'\0'+destroyed[1], object = active.get(key);
+      if (!object) throw new Error('native loader destruction does not bind generated object');
+      retired.push(object); active.delete(key);
+    } else if (pending || /generating link map|destroying link map|^dynamic:|^entry:|error:|fatal:/i.test(text)) {
+      throw new Error('native loader incomplete or unsupported object evidence');
+    }
+  }
+  if (pending || !active.size) throw new Error('native loader generated object population incomplete');
+  const joinedAddresses = new Set<string>();
+  const objectMapJoins = [...active.values()].map(object => {
+    const dynamic = BigInt(object.dynamicAddress), phdr = BigInt(object.programHeaderAddress);
+    const dynamicMaps = ranges.filter(range=>range.start <= dynamic && dynamic < range.end);
+    const headerMaps = ranges.filter(range=>range.start <= phdr && phdr < range.end);
+    if (dynamicMaps.length !== 1 || headerMaps.length !== 1 || dynamicMaps[0].file !== headerMaps[0].file) {
+      throw new Error('native loader ELF addresses do not bind one fingerprinted file');
+    }
+    const addressKey = dynamic.toString()+':'+phdr.toString();
+    if (joinedAddresses.has(addressKey)) throw new Error('native loader namespaces reuse ambiguous ELF addresses');
+    joinedAddresses.add(addressKey);
+    return { ...object, file: dynamicMaps[0].file };
+  });
+  const joinedFiles = new Set(objectMapJoins.map(join=>join.file.path));
+  return { processId: firstRun.processId, runTag: firstRun.runTag, objectMapJoins, retiredBeforeFirstRun: retired,
+    unjoinedMappedFiles: libraries.filter(file=>!joinedFiles.has(file.path)),
+    noLoaderActivityDuringPopulation: activity.noLoaderActivityDuringPopulation,
+    completeBeforeInferenceClosureVerified: false as const,
+    scope: 'generated glibc objects active before first Run, joined by dynamic and ELF-header addresses to retained maps' };
 }
 export interface NativeProfilerLaunch {
   processId: number; nativeThreadId: number; correlationId: number; startNs: string; endNs: string;
