@@ -62,6 +62,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import type { ActiveOperationWorkerClaimRead } from './blueprint/operation-worker-binding';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import {
   admittedWhereSql,
@@ -8450,6 +8451,8 @@ export async function claimNextIssueWorkItem(
   opts: {
     /** Optional caller-owned client; scheduler:get_next uses its isolated claim pool. */
     client?: OrgSql;
+    /** Reuse the scheduler's bounded authority read across candidate families. */
+    operationClaimRead?: ActiveOperationWorkerClaimRead;
     issueKinds?: readonly IssueStoreKind[];
     ids?: readonly string[];
     /** WI-5258: ids the caller's spec NEGATIVELY excludes (e.g. `not:{id in [...]}` —
@@ -8546,7 +8549,7 @@ export async function claimNextIssueWorkItem(
   // live 2026-07-17, WI-5261).
   const issueWs = resolveIssuesScopeWorkspace(explicitActiveWorkspaceId || undefined);
   const operationClaims = await import('./blueprint/operation-worker-binding');
-  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(
+  const operationClaimRead = opts.operationClaimRead ?? await operationClaims.readActiveOperationWorkerClaimBinding(
     explicitActiveWorkspaceId, filter.assignee,
   );
   if (operationClaimRead.status === 'unavailable') {
