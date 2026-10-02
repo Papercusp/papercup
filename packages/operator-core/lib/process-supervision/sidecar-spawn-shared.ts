@@ -330,6 +330,16 @@ export interface SidecarShutdownHooksOpts {
    * (`() => true`) — preserves prior behavior for a caller that doesn't pass one.
    */
   isFatalException?: (err: unknown) => boolean;
+  /**
+   * EI-24863236643374267: asked at SIGTERM/SIGINT time. When it returns true the
+   * signal listener does NOT stop the sidecar; the caller has arranged a later stop
+   * (the spawner registers one with shutdown-state's onBeforeHostExit, which the
+   * host's graceful drain runs right before it exits). Without this the sidecar is
+   * stopped BEFORE the drain starts, because this listener is registered at spawn
+   * time, ahead of the drain's own — and every git call made during the drain then
+   * forks on the host's main thread. Default: never defer.
+   */
+  deferStopToHostExit?: () => boolean;
 }
 
 const hooksRegisteredFor = new Set<string>();
@@ -361,14 +371,16 @@ export function registerSidecarShutdownHooks(opts: SidecarShutdownHooksOpts): vo
     });
   }
 
-  process.on('SIGTERM', async () => {
-    console.log(`[${opts.label}] SIGTERM received, shutting down sidecar`);
+  const onSignal = async (sig: 'SIGTERM' | 'SIGINT'): Promise<void> => {
+    if (opts.deferStopToHostExit?.()) {
+      console.log(`[${opts.label}] ${sig} received, keeping sidecar up until the host drain exits`);
+      return;
+    }
+    console.log(`[${opts.label}] ${sig} received, shutting down sidecar`);
     await opts.stop();
-  });
-  process.on('SIGINT', async () => {
-    console.log(`[${opts.label}] SIGINT received, shutting down sidecar`);
-    await opts.stop();
-  });
+  };
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
   const isFatal = opts.isFatalException ?? (() => true);
   process.on('uncaughtException', async (err) => {
     if (!isFatal(err)) {

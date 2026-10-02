@@ -18,10 +18,12 @@ function parsePinnedLimits(raw?: string): PinnedLimits | undefined {
   if (!raw) return undefined;
   const value = JSON.parse(raw);
   const allowed = ['maxSlots', 'maxObjects', 'maxEntries', 'maxFields', 'maxDepth', 'budgetMs',
-    'maxCacheEntries', 'maxEntryEntries', 'maxEntryObjects', 'maxKeyCodeUnits'];
+    'maxCacheEntries', 'maxEntryEntries', 'maxEntryObjects', 'maxKeyCodeUnits', 'cacheEntryOffset', 'cacheKeyDigests'];
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).some(key => !allowed.includes(key) ||
-        !Number.isInteger(value[key]) || value[key] < 1)) {
+        (key === 'cacheKeyDigests' ? !Array.isArray(value[key]) || value[key].length < 1 ||
+          value[key].some((digest: unknown) => typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) :
+          !Number.isInteger(value[key]) || value[key] < (key === 'cacheEntryOffset' ? 0 : 1)))) {
     throw Error('Pinned limits must contain only positive integer reader limits');
   }
   // The maintained reader enforces its upper bounds before evaluating the target.
@@ -66,8 +68,11 @@ describe('actual current-build operator memory baseline', () => {
   it('keeps PID and exact owner selection outside configurable traversal limits', () => {
     expect(parsePinnedLimits('{"maxDepth":8,"maxEntries":32768,"budgetMs":200}'))
       .toEqual({ maxDepth: 8, maxEntries: 32768, budgetMs: 200 });
+    expect(parsePinnedLimits('{"cacheEntryOffset":0,"cacheKeyDigests":["' + 'a'.repeat(64) + '"]}'))
+      .toEqual({ cacheEntryOffset: 0, cacheKeyDigests: ['a'.repeat(64)] });
     for (const raw of ['{"expectedPid":7}', '{"owners":["other"]}', '[]', 'null',
-      '{"operatorCacheEntries":true}', '{"maxDepth":0}', '{"budgetMs":"200"}']) {
+      '{"operatorCacheEntries":true}', '{"maxDepth":0}', '{"budgetMs":"200"}',
+      '{"cacheEntryOffset":-1}', '{"cacheKeyDigests":["private-key"]}']) {
       expect(() => parsePinnedLimits(raw)).toThrow('only positive integer reader limits');
     }
   });

@@ -43,7 +43,7 @@
 
 import { mkdirSync } from 'node:fs';
 import { closeAllBootedHarnesses, dropAllReplicationLivenessTracking } from './sync/hyperbee/boot-all';
-import { markShuttingDown } from './shutdown-state';
+import { markGracefulDrainInstalled, markShuttingDown, runBeforeHostExitHooks } from './shutdown-state';
 import { isLoopElevated } from './event-loop-lag-monitor';
 import { papercuspPath } from './papercusp-root';
 
@@ -53,6 +53,13 @@ export interface RecycleServerLike {
 }
 
 export interface GracefulRecycleOpts {
+  /**
+   * EI-24863236643374267: synchronous work to run right before the process exits
+   * (before `killSelf` / `exit`). Default: `runBeforeHostExitHooks` from
+   * shutdown-state.ts, where children that must outlive the drain (the spawner
+   * sidecar) register their stop. Overridden in tests.
+   */
+  beforeExit?: () => void;
   server: RecycleServerLike;
   /** Hard-exit backstop if the drain or the substrate teardown hangs. Default 8000. */
   hardExitMs?: number;
@@ -183,9 +190,18 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const reason = opts.reason ?? 'a recycle';
 
   let exited = false;
+  const beforeExit = opts.beforeExit ?? runBeforeHostExitHooks;
   const exitOnce = (code: number) => {
     if (exited) return;
     exited = true;
+    // EI-24863236643374267: stop children that were kept alive THROUGH the drain
+    // (the spawner sidecar serves git off the main thread until here). This is the
+    // last point that can act: the SIGKILL below never fires Node's 'exit' event.
+    try {
+      beforeExit();
+    } catch {
+      /* runBeforeHostExitHooks already isolates each hook; never block the exit */
+    }
     // EI-10702: skip Node's env teardown — that is where a native addon
     // (onnxruntime-node / node-pty / sharp) throws the uncaught Napi::Error →
     // SIGABRT (exit 134). A SIGKILL to self runs no destructor/callback, so the
@@ -335,6 +351,9 @@ export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
   const on = opts.on ?? ((sig: NodeJS.Signals, cb: () => void) => void process.on(sig, cb));
   const signals = opts.signals ?? (['SIGTERM', 'SIGINT'] as const);
   const log = opts.log ?? ((m: string) => console.log(m));
+  // EI-24863236643374267: tell listeners that run BEFORE ours (a sidecar's SIGTERM
+  // hook, registered at spawn time) that this drain will run and stop them at exit.
+  markGracefulDrainInstalled();
 
   let draining = false;
   const drainAndExit = (sig: NodeJS.Signals): void => {

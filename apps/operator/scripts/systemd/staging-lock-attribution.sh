@@ -150,8 +150,9 @@ staging_lock_reuse_complete_generation() {
      -f "$operator_root/bin/bundle-host-freshness.mjs" ]] || return 1
   node "$repo_root/scripts/npm-install-safe.mjs" --repo-root "$repo_root" --exec-under-lock -- \
     node "$operator_root/bin/bundle-host-freshness.mjs" check \
-    --repo-root "$repo_root" --entry bin/hono-host.ts --outfile dist-host/hono-host.mjs \
-    --manifest dist-host/.bundle-fresh.json >/dev/null
+    --repo-root "$repo_root" --entry "$operator_root/bin/hono-host.ts" \
+    --outfile "$operator_root/dist-host/hono-host.mjs" \
+    --manifest "$operator_root/dist-host/.bundle-fresh.json" >/dev/null
 }
 
 staging_lock_api_pre() {

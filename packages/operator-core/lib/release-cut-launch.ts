@@ -450,6 +450,9 @@ export function buildCutArgv(
     `--unit=${unit}`,
     `--slice=${TASK_ROOT_SLICE}`,
     '--property=Type=notify',
+    // READY comes from the shell's systemd-notify child, not the main bash PID.
+    // Without this, systemd discards it and kills a running cut at its startup deadline.
+    '--property=NotifyAccess=all',
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
     'bash',

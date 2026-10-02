@@ -93,16 +93,20 @@ export async function readProcessMemory(client, { expectedPid } = {}) {
  * Opt-in operator-cache attribution visits each L1 value at depth zero with
  * fair per-value quotas. Keys leave the target only as bounded SHA-256 digests
  * and validated tool namespaces; shared values count at their first entry.
+ * Offset pages use current insertion order, not a stable multi-read snapshot.
+ * Digest selection and skipped page edges consume the same global work budget.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
  * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
  *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
  *   owners?: string[], operatorCacheEntries?: boolean, maxCacheEntries?: number,
- *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number }} options
+ *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number,
+ *   cacheEntryOffset?: number, cacheKeyDigests?: string[] }} options
  */
 export async function readPinnedState(client, {
   expectedPid, maxSlots = 256, maxObjects = 4096, maxEntries = 8192,
   maxFields = 32, maxDepth = 5, budgetMs = 50, owners, operatorCacheEntries = false,
   maxCacheEntries = 64, maxEntryEntries = 2048, maxEntryObjects = 1024, maxKeyCodeUnits = 16384,
+  cacheEntryOffset = 0, cacheKeyDigests,
 }) {
   const limits = { maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs,
     maxCacheEntries, maxEntryEntries, maxEntryObjects, maxKeyCodeUnits };
@@ -112,6 +116,12 @@ export async function readPinnedState(client, {
       maxFields > 64 || maxDepth > 8 || budgetMs > 200 ||
       typeof operatorCacheEntries !== 'boolean' || maxCacheEntries > 256 ||
       maxEntryEntries > 32768 || maxEntryObjects > 16384 || maxKeyCodeUnits > 65536 ||
+      !Number.isInteger(cacheEntryOffset) || cacheEntryOffset < 0 || cacheEntryOffset > 32768 ||
+      (cacheKeyDigests !== undefined && (!Array.isArray(cacheKeyDigests) || cacheKeyDigests.length < 1 ||
+        cacheKeyDigests.length > 256 || new Set(cacheKeyDigests).size !== cacheKeyDigests.length ||
+        cacheKeyDigests.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) ||
+        cacheEntryOffset !== 0)) ||
+      ((!operatorCacheEntries) && (cacheEntryOffset !== 0 || cacheKeyDigests !== undefined)) ||
       (owners !== undefined && (!Array.isArray(owners) || owners.length < 1 || owners.length > 64 ||
         new Set(owners).size !== owners.length || owners.some(name => typeof name !== 'string' ||
           name.length < 1 || name.length > 512)))) throw new TypeError('invalid pinned-state limits/PID/owners');
@@ -119,6 +129,7 @@ export async function readPinnedState(client, {
     if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
     const limits = ${JSON.stringify(limits)}, owners = ${JSON.stringify(owners ?? null)}, start = performance.now();
     const operatorCacheEntries = ${JSON.stringify(operatorCacheEntries)};
+    const cacheEntryOffset = ${JSON.stringify(cacheEntryOffset)}, cacheKeyDigests = ${JSON.stringify(cacheKeyDigests ?? null)};
     const types = process.getBuiltinModule('util').types;
     const mapSize = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
     const setSize = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
@@ -230,18 +241,31 @@ export async function readPinnedState(client, {
           found = data(found.value, field);
         }
         const cache = { path: 'cache.l1.map', status: found.status, population: null,
-          checked: 0, notChecked: null, values: [],
+          checked: 0, notChecked: null, scanned: 0, undigestibleKeys: 0, values: [],
+          selection: { mode: cacheKeyDigests ? 'digests' : 'offset', offset: cacheEntryOffset,
+            requestedKeyDigests: cacheKeyDigests, nextOffset: null, unresolvedKeyDigests: [],
+            unresolvedAreMissing: false, selectedNotChecked: null,
+            definition: 'Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.' },
           definition: 'Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes.' };
         rootRow.cacheEntries = cache;
         if (found.status === 'data' && found.value && !types.isProxy(found.value) && types.isMap(found.value)) {
           const map = found.value, count = mapSize.call(map);
           cache.status = 'map'; cache.population = count;
           rootRow.maps = 1; rootRow.mapEntries = count;
-          const selectedCount = Math.min(count, limits.maxCacheEntries);
+          const selectedCount = Math.min(cacheKeyDigests ? cacheKeyDigests.length : Math.max(0, count - cacheEntryOffset),
+            limits.maxCacheEntries);
+          const requested = cacheKeyDigests ? new Set(cacheKeyDigests) : null, matched = new Set();
           const crypto = process.getBuiltinModule('crypto');
           for (const [key, wrapper] of Map.prototype.entries.call(map)) {
             if (cache.checked >= selectedCount || entries >= rootEntryEnd || objects >= rootObjectEnd || rootExpired()) break;
-            entries++; rootRow.entries++; // The examined L1 map edge consumes global work too.
+            entries++; rootRow.entries++; cache.scanned++; // Every scanned L1 edge consumes global work, even when skipped.
+            if (!requested && cache.scanned <= cacheEntryOffset) continue;
+            const keyString = typeof key === 'string';
+            const boundedKey = keyString && key.length <= limits.maxKeyCodeUnits;
+            const digest = boundedKey ? crypto.createHash('sha256').update(key).digest('hex') : null;
+            if (!boundedKey) cache.undigestibleKeys++;
+            if (requested && (!digest || !requested.has(digest))) continue;
+            if (digest) matched.add(digest);
             const valueStart = performance.now(), remaining = Math.max(1, selectedCount - cache.checked);
             const valueQuota = {
               entries: Math.min(limits.maxEntryEntries, Math.floor((rootEntryEnd - entries) / remaining)),
@@ -249,13 +273,11 @@ export async function readPinnedState(client, {
               budgetMs: Math.max(0, (quota.budgetMs - (valueStart - rootStart)) / remaining) };
             entryEnd = entries + valueQuota.entries; objectEnd = objects + valueQuota.objects;
             valueDeadline = valueStart + valueQuota.budgetMs;
-            const keyString = typeof key === 'string';
-            const boundedKey = keyString && key.length <= limits.maxKeyCodeUnits;
             const nul = boundedKey ? key.indexOf('\u0000') : -1;
             const pipe = nul > 0 ? key.indexOf('|', nul + 1) : -1;
             const namespace = pipe > nul + 1 && pipe - nul <= 121 ? key.slice(nul + 1, pipe) : null;
             const validNamespace = namespace !== null && /^[a-z][a-z0-9_.-]*:[a-z][a-z0-9_.-]*$/.test(namespace);
-            const metadata = { keyDigest: boundedKey ? crypto.createHash('sha256').update(key).digest('hex') : null,
+            const metadata = { keyDigest: digest,
               keyDigestUnavailable: boundedKey ? null : keyString ? 'key-length-limit' : 'non-string-key',
               keyCodeUnits: keyString ? key.length : null,
               keyFormat: validNamespace ? 'workspace-nul-tool-pipe' : 'unknown',
@@ -279,6 +301,12 @@ export async function readPinnedState(client, {
             }
           }
           cache.notChecked = count - cache.checked;
+          cache.selection.nextOffset = !requested && cache.scanned < count && cache.scanned > cacheEntryOffset
+            ? cache.scanned : null;
+          cache.selection.selectedNotChecked = selectedCount - cache.checked;
+          cache.selection.unresolvedKeyDigests = cacheKeyDigests?.filter(digest => !matched.has(digest)) ?? [];
+          cache.selection.unresolvedAreMissing = Boolean(requested && cache.scanned === count && cache.undigestibleKeys === 0);
+          cache.selection.scanComplete = cache.scanned === count;
           if (cache.notChecked > 0) rootRow.traversalLimited = limited = true;
         } else if (found.status === 'data') {
           cache.status = found.value && types.isProxy(found.value) ? 'proxy-skipped' : 'not-map';

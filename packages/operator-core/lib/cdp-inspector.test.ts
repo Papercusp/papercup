@@ -122,11 +122,79 @@ describe('named pinned payload attribution on a real Node inspector', () => {
       const capped = await readPinnedState(client, { ...options, maxCacheEntries: 2 });
       expect(capped.roots[0].cacheEntries).toMatchObject({ population: 8, checked: 2, notChecked: 6 });
       expect(capped.limited).toBe(true);
+      const page = await readPinnedState(client, { ...options, maxCacheEntries: 2, cacheEntryOffset: 5 });
+      expect(page.roots[0].cacheEntries).toMatchObject({ scanned: 7, checked: 2,
+        selection: { mode: 'offset', offset: 5, nextOffset: 7, selectedNotChecked: 0, scanComplete: false } });
+      expect(page.roots[0].cacheEntries.values[0].keyFormat).toBe('unknown');
+      const digest = cache.values[1].keyDigest;
+      const selected = await readPinnedState(client, { ...options, cacheKeyDigests: [digest] });
+      expect(selected.roots[0].cacheEntries).toMatchObject({ scanned: 2, checked: 1,
+        selection: { mode: 'digests', nextOffset: null, unresolvedKeyDigests: [] } });
+      expect(selected.roots[0].cacheEntries.values[0]).toMatchObject({ keyDigest: digest,
+        toolNamespace: 'orders:list', stringCodeUnits: 6, byteViewExtents: 19 });
+      const unresolved = await readPinnedState(client, { ...options, cacheKeyDigests: ['f'.repeat(64)] });
+      expect(unresolved.roots[0].cacheEntries).toMatchObject({ scanned: 8, checked: 0, undigestibleKeys: 2,
+        selection: { scanComplete: true, unresolvedKeyDigests: ['f'.repeat(64)], unresolvedAreMissing: false } });
+      for (const invalid of [{ cacheEntryOffset: -1 }, { cacheEntryOffset: 32769 },
+        { cacheKeyDigests: [] }, { cacheKeyDigests: ['private-payload'] },
+        { cacheKeyDigests: [digest, digest] }, { cacheKeyDigests: [digest], cacheEntryOffset: 1 },
+        { cacheKeyDigests: [digest], operatorCacheEntries: false }]) {
+        await expect(readPinnedState(client, { ...options, ...invalid })).rejects.toThrow('limits');
+      }
       await expect(readPinnedState(client, { ...options, maxEntryEntries: 0 })).rejects.toThrow('limits');
       await expect(readPinnedState(client, { ...options, expectedPid: child.pid! + 1 })).rejects.toThrow('PID mismatch');
       await client.evaluate('hideMap()');
       expect((await readPinnedState(client, options)).roots[0].cacheEntries.status).toBe('accessor-skipped');
       expect((await client.evaluate('effectCount()', { returnByValue: true })).result.value).toBe(0);
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+  }, 20_000);
+
+  it('reaches cache values beyond the prefix cap and charges skipped edges to the unchanged work budget', async () => {
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
+      const map = new Map(Array.from({ length: 300 }, (_, index) =>
+        ['private-workspace\\0coord:inbox|private-payload-' + index, { value: { payload: 'row-' + index } }]));
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+        ['@papercusp/operator-core.operatorCache', { value: { cache: { l1: { map } } } }]
+      ]);
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      const options = { expectedPid: child.pid!, owners: ['@papercusp/operator-core.operatorCache'],
+        operatorCacheEntries: true, maxEntries: 512, maxCacheEntries: 8, budgetMs: 200 };
+      const page = await readPinnedState(client, { ...options, cacheEntryOffset: 256 });
+      expect(page.roots[0].cacheEntries).toMatchObject({ population: 300, scanned: 264, checked: 8,
+        selection: { nextOffset: 264, scanComplete: false, selectedNotChecked: 0 } });
+      expect(page.roots[0].cacheEntries.values[0]).toMatchObject({ stringCodeUnits: 7,
+        keyDigest: createHash('sha256').update('private-workspace\u0000coord:inbox|private-payload-256').digest('hex') });
+      const digest = createHash('sha256').update('private-workspace\u0000coord:inbox|private-payload-299').digest('hex');
+      const selected = await readPinnedState(client, { ...options, cacheKeyDigests: [digest] });
+      expect(selected.roots[0].cacheEntries).toMatchObject({ scanned: 300, checked: 1,
+        selection: { unresolvedKeyDigests: [], selectedNotChecked: 0, scanComplete: true } });
+      expect(selected.entries).toBe(301);
+      expect(selected.roots[0].cacheEntries.values[0].keyDigest).toBe(digest);
+      const partial = await readPinnedState(client, { ...options, maxEntries: 12, cacheKeyDigests: [digest] });
+      expect(partial.entries).toBe(12);
+      expect(partial.roots[0].cacheEntries).toMatchObject({ scanned: 12, checked: 0,
+        selection: { unresolvedKeyDigests: [digest], unresolvedAreMissing: false, scanComplete: false } });
+      const missing = await readPinnedState(client, { ...options, cacheKeyDigests: ['f'.repeat(64)] });
+      expect(missing.roots[0].cacheEntries).toMatchObject({ scanned: 300, checked: 0,
+        selection: { unresolvedAreMissing: true, scanComplete: true } });
+      const pastEnd = await readPinnedState(client, { ...options, cacheEntryOffset: 300 });
+      expect(pastEnd.roots[0].cacheEntries).toMatchObject({ scanned: 0, checked: 0,
+        selection: { nextOffset: null, selectedNotChecked: 0 } });
+      expect(JSON.stringify([page, selected, partial, missing])).not.toMatch(/private-workspace|private-payload/);
     } finally {
       client?.close();
       if (child.exitCode === null && child.signalCode === null) {

@@ -42,6 +42,7 @@ vi.mock('../agent-tools/coordination/escalations', () => ({ openEscalation: esca
 import { computeGoalSpendRollup, runGoalSpendRollupOnce, sessionSpendForGoal } from './spend-rollup';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { GOAL_MODE } from '../modes/goal-session';
+import { resolveGoalLaunchForGoal } from '../goal-launch-settings';
 
 const WS = 'default';
 const GOAL = 'goal-rollup-1';
@@ -72,6 +73,9 @@ beforeAll(async () => {
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.goals (
       id text PRIMARY KEY, workspace_id text NOT NULL,
+      title text NOT NULL DEFAULT 'Measured launch budget', body text,
+      kill_criterion text, standing boolean NOT NULL DEFAULT false,
+      launch_settings jsonb,
       status text NOT NULL DEFAULT 'active',
       metadata jsonb, budget_cents bigint,
       -- budget_window_sec: migration 914, the DENOMINATOR for budget_cents
@@ -143,7 +147,12 @@ beforeAll(async () => {
     )`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.session_briefs (
-      owner_id text PRIMARY KEY, workspace_id text NOT NULL, goal_id text
+      owner_id text PRIMARY KEY, workspace_id text NOT NULL, goal_id text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.coord_presence (
+      owner_id text PRIMARY KEY, heartbeat_at timestamptz, fleet_slug text
     )`);
 }, 90_000);
 
@@ -259,6 +268,41 @@ async function seedPartitionFixture() {
 }
 
 describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
+  describe.each(['snapshot', 'launch-time'] as const)('measured launch admission through %s', (measurement) => {
+    it.each([
+      { spentCents: 2_000, scenario: 'at-ceiling-refused', refused: true },
+      { spentCents: 1_999, scenario: 'under-ceiling-admitted', refused: false },
+    ])('$scenario with real attributed spend', async ({ spentCents, refused }) => {
+      await seedGoal({ budgetCents: 2_000 });
+      await sample({ goalId: GOAL, usd: spentCents / 100 });
+      if (measurement === 'snapshot') {
+        await runGoalSpendRollupOnce(rootSql);
+        const metadata = await goalMetadata();
+        expect(metadata?.spentCents).toBe(spentCents);
+        expect(metadata?.spentCentsSource).toBe(GOAL_SPEND_SNAPSHOT_SOURCE);
+        expect(metadata?.spentCentsFreshness).toMatchObject({ status: 'fresh' });
+      } else {
+        expect(await goalMetadata()).toBeNull();
+      }
+
+      // Compose the real ledger reader/snapshot writer with the real launch
+      // resolver. A rollup-only assertion cannot prove admission enforces it.
+      const launch = await resolveGoalLaunchForGoal({
+        workspaceId: WS, goalId: GOAL, sql: rootSql, launcherOwnerId: 'su-budget-test',
+      });
+      expect(launch.degradedReasons).toEqual([]);
+      expect(launch.headcount.total).toBe(0);
+      if (refused) {
+        expect(launch.refusal).toMatchObject({
+          reason: 'goal_budget_exceeded', limit: 2_000, current: 2_000,
+        });
+      } else {
+        expect(launch.refusal).toBeNull();
+        expect(launch.ceilings.maxAgents).toBeGreaterThan(0);
+      }
+    });
+  });
+
   it('lineage is authoritative and cross-cuts an exact pot + session partition', async () => {
     await seedPartitionFixture();
     const r = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });

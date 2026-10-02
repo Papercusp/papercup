@@ -203,6 +203,28 @@ describe('buildCutArgv', () => {
     expect(argv).toContain('--working-directory=/root/papercusp-desktop');
     expect(argv).toContain('--setenv=PATH=/usr/bin:/bin');
   });
+  it.each([undefined, ...PLATFORMS])('accepts the readiness child for platform %s', (platform) => {
+    for (const releaseTaskId of [undefined, 'readinesstask']) {
+      const readinessArgv = buildCutArgv(
+        root, '0.0.8', 'alpha', {}, sourceSha, '/usr/bin:/bin',
+        {
+          ownerName: 'Avi',
+          releaseTaskId,
+          releaseOperationId: releaseTaskId ? 'readiness-operation' : undefined,
+        },
+        platform,
+      );
+      // systemd defaults Type=notify to NotifyAccess=main, which rejects the
+      // systemd-notify child and times out even after the cutter has started.
+      expect(readinessArgv).toContain('--property=Type=notify');
+      expect(readinessArgv).toContain('--property=NotifyAccess=all');
+      const command = readinessArgv.at(-1)!;
+      const notifyAt = command.indexOf('systemd-notify --ready || exit $?;');
+      expect(notifyAt).toBeGreaterThan(command.indexOf(`> ${cutStartedFor(platform, root)}`));
+      expect(notifyAt).toBeGreaterThan(command.indexOf('flock -n 9'));
+      expect(notifyAt).toBeLessThan(command.indexOf('PAPERCUSP_PUBLISH_GITHUB='));
+    }
+  });
   it('runs the cutter LOCAL-only, clears the stale sentinel, records the exit code', () => {
     expect(inner).toContain(`rm -f ${rootDone}`);
     expect(inner).toContain(`> ${rootStarted}`);

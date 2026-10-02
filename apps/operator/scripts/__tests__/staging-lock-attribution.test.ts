@@ -71,10 +71,14 @@ function completeGenerationFixture(dir: string) {
   const rebuilt = join(dir, "bundle-rebuilt");
   const proofValid = join(dir, "proof-valid");
   mkdirSync(join(operator, "bin"), { recursive: true });
+  mkdirSync(join(operator, "dist-host"));
   mkdirSync(join(repo, "scripts"), { recursive: true });
   mkdirSync(binDir);
   writeFileSync(join(generation, ".ready"), sha + "\n");
   writeFileSync(proofValid, "valid\n");
+  writeFileSync(join(operator, "bin/hono-host.ts"), "export const ready = true;\n");
+  writeFileSync(join(operator, "dist-host/hono-host.mjs"), "export const ready = true;\n");
+  writeFileSync(join(operator, "dist-host/.bundle-fresh.json"), "{}\n");
   writeFileSync(join(binDir, "git"), `#!/usr/bin/env bash\nprintf '%s\\n' '${sha}'\n`, { mode: 0o700 });
   mockSystemctl(binDir, "ActiveState=activating\nSubState=start-pre\nMainPID=0\nType=notify\nResult=success");
   // Exercise the pre-start protocol without constructing the entire host graph.
@@ -83,11 +87,13 @@ function completeGenerationFixture(dir: string) {
     'import { spawnSync } from "node:child_process";\n' +
     'const args = process.argv.slice(2); const command = args.slice(args.indexOf("--") + 1);\n' +
     'if (args[0] !== "--repo-root" || args[2] !== "--exec-under-lock") process.exit(64);\n' +
-    'const result = spawnSync(command[0], command.slice(1), { stdio: "inherit" });\n' +
+    'const result = spawnSync(command[0], command.slice(1), { stdio: "inherit", cwd: args[1] });\n' +
     'process.exit(result.status ?? 1);\n');
   writeFileSync(join(operator, "bin/bundle-host-freshness.mjs"),
     'import { existsSync, writeFileSync } from "node:fs";\n' +
+    'const args = process.argv.slice(2);\n' +
     `writeFileSync(${JSON.stringify(probe)}, JSON.stringify(process.argv.slice(2)));\n` +
+    'if (!["--entry", "--outfile", "--manifest"].every(flag => existsSync(args[args.indexOf(flag) + 1]))) process.exit(1);\n' +
     `process.exit(existsSync(${JSON.stringify(proofValid)}) ? 0 : 1);\n`);
   const bundle = join(operator, "bin/bundle-host.sh");
   writeFileSync(bundle, `#!/usr/bin/env bash\nprintf rebuilt > '${rebuilt}'\n`, { mode: 0o700 });
@@ -118,8 +124,9 @@ describe("staging lock attribution", () => {
       expect(result.status).toBe(0);
       expect(existsSync(fixture.rebuilt)).toBe(false);
       expect(JSON.parse(readFileSync(fixture.probe, "utf8"))).toEqual([
-        "check", "--repo-root", fixture.repo, "--entry", "bin/hono-host.ts",
-        "--outfile", "dist-host/hono-host.mjs", "--manifest", "dist-host/.bundle-fresh.json",
+        "check", "--repo-root", fixture.repo, "--entry", join(fixture.operator, "bin/hono-host.ts"),
+        "--outfile", join(fixture.operator, "dist-host/hono-host.mjs"),
+        "--manifest", join(fixture.operator, "dist-host/.bundle-fresh.json"),
       ]);
       expect(result.stderr).toContain("lock_scope=immutable_generation");
       // A physical lock probe distinguishes reuse from merely waiting for the

@@ -377,6 +377,53 @@ describe('registerSidecarShutdownHooks', () => {
     process.removeAllListeners('uncaughtException');
   });
 
+  // EI-24863236643374267: a sidecar whose caller arranged a stop at host exit must
+  // stay up through the drain — measured on bg-host, stopping it at SIGTERM sent every
+  // git call of the ~10 s drain to a 256-512 ms main-thread fork.
+  it('deferStopToHostExit=true: SIGTERM and SIGINT leave the sidecar running', async () => {
+    let stopped = 0;
+    registerSidecarShutdownHooks({
+      label: 'test-defer',
+      stop: async () => {
+        stopped += 1;
+      },
+      deferStopToHostExit: () => true,
+    });
+    for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+      const listeners = process.listeners(sig);
+      const newest = listeners[listeners.length - 1] as (...a: unknown[]) => unknown;
+      await newest();
+    }
+    expect(stopped).toBe(0);
+    process.removeAllListeners('SIGTERM');
+    process.removeAllListeners('SIGINT');
+    process.removeAllListeners('uncaughtException');
+  });
+
+  it('deferStopToHostExit is asked AT SIGNAL TIME — false then still stops at once', async () => {
+    let drainArmed = false;
+    let stopped = 0;
+    registerSidecarShutdownHooks({
+      label: 'test-defer-late',
+      stop: async () => {
+        stopped += 1;
+      },
+      deferStopToHostExit: () => drainArmed,
+    });
+    const listeners = process.listeners('SIGTERM');
+    const newest = listeners[listeners.length - 1] as (...a: unknown[]) => unknown;
+    await newest();
+    expect(stopped).toBe(1);
+    // The drain is installed AFTER registration in the real host; the predicate must
+    // be read when the signal arrives, not captured when the hook was registered.
+    drainArmed = true;
+    await newest();
+    expect(stopped).toBe(1);
+    process.removeAllListeners('SIGTERM');
+    process.removeAllListeners('SIGINT');
+    process.removeAllListeners('uncaughtException');
+  });
+
   it("sync-with-exit mode: registers an 'exit' listener too, fire-and-forget", () => {
     let called = 0;
     registerSidecarShutdownHooks({ label: 'test-sync', stop: () => { called += 1; }, mode: 'sync-with-exit' });

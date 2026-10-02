@@ -23,13 +23,16 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * Opt-in operator-cache attribution visits each L1 value at depth zero with
  * fair per-value quotas. Keys leave the target only as bounded SHA-256 digests
  * and validated tool namespaces; shared values count at their first entry.
+ * Offset pages use current insertion order, not a stable multi-read snapshot.
+ * Digest selection and skipped page edges consume the same global work budget.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
  * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
  *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
  *   owners?: string[], operatorCacheEntries?: boolean, maxCacheEntries?: number,
- *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number }} options
+ *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number,
+ *   cacheEntryOffset?: number, cacheKeyDigests?: string[] }} options
  */
-export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs, owners, operatorCacheEntries, maxCacheEntries, maxEntryEntries, maxEntryObjects, maxKeyCodeUnits, }: {
+export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs, owners, operatorCacheEntries, maxCacheEntries, maxEntryEntries, maxEntryObjects, maxKeyCodeUnits, cacheEntryOffset, cacheKeyDigests, }: {
     expectedPid: number;
     maxSlots?: number;
     maxObjects?: number;
@@ -43,6 +46,8 @@ export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>,
     maxEntryEntries?: number;
     maxEntryObjects?: number;
     maxKeyCodeUnits?: number;
+    cacheEntryOffset?: number;
+    cacheKeyDigests?: string[];
 }): Promise<any>;
 /** @typedef {{ pid: number, startedAt: number, until: number, endedAt: number,
  *   total: number, observerMs: number, limited: boolean,
