@@ -53,7 +53,12 @@ node_modules.old*/
 /.tmp-*
 /.tsx-tmp
 /scratch
-/scratchpad
+/scratchpad/*
+# Exception: tracked tests in packages/operator-core/lib/dream/dream-study-*.test.ts
+# import these study modules, so a clean checkout (the release gate's) must have
+# them. Ignoring them stranded those imports at candidate 6ca43115 (WI-10005450).
+# Remove this exception once the modules move into a tracked package directory.
+!/scratchpad/dream-study-2026-09-09/
 /scratch-*
 # Stray nested lockfiles (workspace members must ride the root lock) stay
 # ignored, but the ROOT lockfile is the npm-ci source of truth for CI +
