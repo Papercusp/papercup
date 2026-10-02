@@ -277,6 +277,33 @@ describe('dispatchConsultResponder — the fork leg', () => {
     expect(calls.verify[0]).toMatchObject({ ownerId: 'su-answer-1', timeoutMs: DISPATCH_VERIFY_TIMEOUT_MS });
   });
 
+  it('stamps the fork identity before spawnHeadless can process a first reply', async () => {
+    const { deps } = makeFakes();
+    let responderId = 'su-expert';
+    let replyDuringSpawn: 'accepted' | 'not_a_participant' = 'not_a_participant';
+    const spawn = deps.spawnHeadless!;
+    deps.spawnHeadless = async (options) => {
+      // A newly forked child can take its first turn before spawnHeadless
+      // returns its kickoff receipt. Model the consult reply gate at that point.
+      replyDuringSpawn = responderId === options.coordOwnerId ? 'accepted' : 'not_a_participant';
+      return spawn(options);
+    };
+
+    const r = await dispatchConsultResponder(
+      {
+        ...OPTS,
+        onAnsweringOwner: async (ownerId) => {
+          responderId = ownerId;
+        },
+      },
+      CTX,
+      deps,
+    );
+
+    expect(replyDuringSpawn).toBe('accepted');
+    expect(r).toMatchObject({ dispatched: true, operation: 'fork', answeringOwnerId: 'su-answer-1' });
+  });
+
   it('publishes the fork responder before startup verification can admit a first reply', async () => {
     const { deps, calls } = makeFakes();
     const order: string[] = [];

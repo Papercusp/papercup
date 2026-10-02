@@ -829,11 +829,10 @@ export async function dispatchConsultResponder(
      */
     brief: string | ((operation: DispatchOperation) => string);
     /**
-     * Called with the answering identity the INSTANT that session is running
-     * with its brief submitted — before the bounded verification wait, because
-     * the session can post during it and the consult's reply gate refuses an
-     * author the row does not name yet. The caller persists the identity here;
-     * the post-dispatch stamp remains the backstop, so a throw is swallowed.
+     * Called with the answering identity before a fork is launched, because
+     * the child can post while spawnHeadless is still waiting for its kickoff
+     * receipt. For conversions, the identity is already known and is stamped
+     * after launch. The caller persists it here; failures are best-effort.
      */
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
   },
@@ -1225,6 +1224,20 @@ async function launchAnsweringSession(
   // read that exact root, so carry it through the detached psu boundary or psu
   // can resume against a different home and report the source rollout missing.
   const codexHome = target.agent === 'codex' ? codexHomeForSessionKey(target.advSessionId) : null;
+  // A fork can run its first turn before spawnHeadless returns: it starts the
+  // child, then waits for boot/kickoff receipts. Publish the new identity before
+  // crossing that boundary so consult:reply already recognizes the child.
+  // Keep the post-receipt write below as a retry if this best-effort stamp fails.
+  let answeringOwnerStamped = false;
+  if (operation === 'fork' && opts.onAnsweringOwner) {
+    try {
+      await opts.onAnsweringOwner(answeringOwnerId);
+      answeringOwnerStamped = true;
+    } catch {
+      /* retry after the kickoff receipt */
+    }
+  }
+
   const spawn = await d.spawnHeadless({
     envelope: {
       ...envelope,
@@ -1300,16 +1313,15 @@ async function launchAnsweringSession(
   // The first-turn wait below is bounded from this instant (WI-10004645).
   const kickoffSeenAtMs = d.nowMs();
 
-  // The brief is submitted and the session is running, so from HERE it can post
-  // — and the reply gate refuses an author the consult row does not name yet.
-  // Announce the answering identity BEFORE the verification wait (up to
-  // DISPATCH_VERIFY_TIMEOUT_MS), not after it, or a fast first turn races the
-  // stamp and is refused `not_a_participant` by its own launcher. Best-effort
-  // by contract: a persistence failure here must not fail a live dispatch.
-  try {
-    await opts.onAnsweringOwner?.(answeringOwnerId);
-  } catch {
-    /* the post-verify stamp is the backstop */
+  // Forks have already stamped before launch. Retry only if that best-effort
+  // write failed; conversions publish their existing identity here. Both paths
+  // still stamp before the bounded verification wait, whose session can post.
+  if (!answeringOwnerStamped) {
+    try {
+      await opts.onAnsweringOwner?.(answeringOwnerId);
+    } catch {
+      /* the caller's post-dispatch stamp is the backstop */
+    }
   }
 
   // Race host registration against a durable child-death observation, so the
