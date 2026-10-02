@@ -130,6 +130,20 @@ export interface SnapshotPayload {
    * compaction excludes nothing). `conflictingSnapshotExclusion` is the consumer.
    */
   excludeTables?: string[];
+  /**
+   * WI-10005425 — `true` ⇒ this set summarizes the prefix `[0, coversUpTo)` of the
+   * log that CARRIES it. ABSENT ⇒ unknown (and on a filtered set, assumed not).
+   *
+   * Stamped by `produceLogSnapshot` (the own-log producer) and only on a FILTERED
+   * set, so an unfiltered set stays byte-identical. Needed because `excludeTables`
+   * alone cannot say where a set lives: the seed producer
+   * (`produceFilteredSnapshotIntoLog`) writes a filtered set summarizing ANOTHER log,
+   * while the release cut (`boot.ts`) writes a filtered set summarizing the live own
+   * log it is appended to. `author_pubkey` cannot tell them apart either; both stamp
+   * the carrier's key. Read-merge's skip eligibility (`isSkipEligibleSnapshot`) is the
+   * consumer: without the marker every reader re-applied each release-cut set in full.
+   */
+  ownPrefix?: true;
 }
 
 /**
@@ -526,6 +540,8 @@ export function buildSnapshotChunkOp(opts: {
   ts: number;
   schema_version: number;
   excludeTables?: readonly string[];
+  /** The set summarizes the carrying log's own prefix; see `SnapshotPayload.ownPrefix`. */
+  ownPrefix?: boolean;
 }): PeerLogOp {
   const payload: SnapshotPayload = {
     coversUpTo: opts.coversUpTo,
@@ -537,6 +553,9 @@ export function buildSnapshotChunkOp(opts: {
   // what it was before this field existed. Sorted for a stable serialization.
   if (opts.excludeTables && opts.excludeTables.length > 0) {
     payload.excludeTables = [...opts.excludeTables].sort();
+    // Only a filtered set needs the marker: an unfiltered one is already skip-eligible,
+    // and leaving it unmarked keeps its bytes unchanged.
+    if (opts.ownPrefix) payload.ownPrefix = true;
   }
   return {
     type: 'put',
@@ -566,6 +585,8 @@ export function buildSnapshotOps(opts: {
   maxChunkBytes?: number;
   /** Recorded on every chunk; see `SnapshotPayload.excludeTables`. */
   excludeTables?: readonly string[];
+  /** Recorded on every chunk of a filtered set; see `SnapshotPayload.ownPrefix`. */
+  ownPrefix?: boolean;
 }): PeerLogOp[] {
   // EI-1688: pass `now` (= the snapshot ts) so old tombstones GC out at production.
   const rows = buildSnapshotRows(opts.ops, { now: opts.ts });
@@ -589,6 +610,8 @@ export function buildSnapshotOpsFromRows(opts: {
   maxChunkBytes?: number;
   /** Recorded on every chunk; see `SnapshotPayload.excludeTables`. */
   excludeTables?: readonly string[];
+  /** Recorded on every chunk of a filtered set; see `SnapshotPayload.ownPrefix`. */
+  ownPrefix?: boolean;
 }): PeerLogOp[] {
   const chunks = chunkSnapshotRows(opts.rows, opts.maxChunkBytes ?? SNAPSHOT_MAX_CHUNK_BYTES);
   const chunkCount = chunks.length;
@@ -602,6 +625,7 @@ export function buildSnapshotOpsFromRows(opts: {
       ts: opts.ts,
       schema_version: opts.schema_version,
       excludeTables: opts.excludeTables,
+      ...(opts.ownPrefix ? { ownPrefix: true } : {}),
     }),
   );
 }
@@ -1566,6 +1590,8 @@ export async function produceLogSnapshot(
       schema_version: opts.schemaVersion,
       maxChunkBytes: opts.maxChunkBytes,
       excludeTables: [...ownExcluded],
+      // WI-10005425: this set is appended to `ownLog` and summarizes its prefix.
+      ownPrefix: true,
     });
     if (opts.shouldAbort?.()) {
       throw new SnapshotAbortedError(
@@ -1686,6 +1712,8 @@ export interface SnapshotFoldWorkerLike {
     schema_version: number;
     maxChunkBytes?: number;
     excludeTables: readonly string[];
+    /** See `SnapshotPayload.ownPrefix`. */
+    ownPrefix?: boolean;
   }): Promise<{
     blocks: Uint8Array[];
     rowCount: number;
@@ -1909,6 +1937,8 @@ async function produceLogSnapshotOffloaded(
         schema_version: opts.schemaVersion,
         maxChunkBytes: opts.maxChunkBytes,
         excludeTables,
+        // WI-10005425: byte-identical to the inline path, which marks its own-log set too.
+        ownPrefix: true,
       });
       if (opts.shouldAbort?.()) {
         throw new SnapshotAbortedError(
