@@ -7,11 +7,19 @@
   "status": "baseline-qualified-full-memory-acceptance-open",
   "raw": {
     "path": "docs/evidence/papercusp-oct1-p011-live-baseline-r2-2026-10-02.json",
-    "bytes": 231465,
-    "sha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54",
+    "bytes": 230733,
+    "sha256": "ff780bdf6a585d5d9ec29aa59867597fa91daa4396ad831c2871763b0bbc726f",
     "incomplete": false,
     "startedAt": "2026-10-02T09:39:25.668Z",
-    "endedAt": "2026-10-02T09:39:37.050Z"
+    "endedAt": "2026-10-02T09:39:37.050Z",
+    "originalReceipt": {
+      "sha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54",
+      "bytes": 231465,
+      "artifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/originals/6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54.json"
+      }
+    }
   },
   "ledger": {
     "testRunId": 20506274,
@@ -77,13 +85,32 @@
     "rowsPerResponse": 32,
     "distinctResponseHashes": 24,
     "responseInterpretation": "The saved responses satisfy the bounded row shape; changing hashes under ambient writes do not establish response parity or equivalent intervention workloads.",
-    "pssBytesRange": [2920205312, 2931359744],
-    "heapUsedBytesRange": [1771816504, 1878003328],
-    "observerMsRange": [314.5429529999992, 921.3646679999999],
+    "pssBytesRange": [
+      2920205312,
+      2931359744
+    ],
+    "heapUsedBytesRange": [
+      1771816504,
+      1878003328
+    ],
+    "observerMsRange": [
+      314.5429529999992,
+      921.3646679999999
+    ],
     "definitions": "PSS is smaps_rollup kernel kB times 1024. V8/Node heap, external and ArrayBuffer counters overlap with PSS and each other; they do not form a disjoint native allocation partition.",
     "descendants": {
       "limitPerSample": 64,
-      "observedCounts": [64, 64, 64, 64, 64, 64, 64, 64, 64],
+      "observedCounts": [
+        64,
+        64,
+        64,
+        64,
+        64,
+        64,
+        64,
+        64,
+        64
+      ],
       "rawDescendantCappedSamples": 90,
       "rawCounterDefinition": "Despite its name, descendantCappedSamples increments per traversal visit excluded once remainingDescendants is zero; it is not a count of samples or a complete population census.",
       "scope": "Every sample reaches the cap. Descendant sums cannot be reported as complete service totals; descendants also include agent/runtime command trees, not only HTTP workers."
@@ -112,5 +139,11 @@
       "Paired intervention resource savings, non-defect disposition, or full P011 acceptance.",
       "Final independent acceptance or verified shipment."
     ]
+  },
+  "portableSourceQualification": {
+    "status": "historical-source-binding",
+    "bindingId": 21632,
+    "note": "Saved named test source subsequently changed at report serialization boundary under WI-10005429. Binding21632 describes earlier execution, not current-source/current-runtime acceptance. No measurement replay.",
+    "guardTestRunId": 20509966
   }
 }

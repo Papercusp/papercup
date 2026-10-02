@@ -12,7 +12,11 @@
     "historicalRevision": {
       "revision": 1,
       "fingerprint": "325a3240536eb81d70fc4fca6e7b8636db9f0b5e1e2dc3ae34fdb3b65f3faa31",
-      "bindings": [21377, 21383, 21384],
+      "bindings": [
+        21377,
+        21383,
+        21384
+      ],
       "scope": "Existing bindings remain at revision 1; this census update does not rebind or promote their historical proof."
     }
   },
@@ -30,13 +34,21 @@
     "evidencePlane": "live",
     "raw": {
       "path": "docs/evidence/papercusp-oct1-p011-live-baseline-r2-2026-10-02.json",
-      "sha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54"
+      "sha256": "ff780bdf6a585d5d9ec29aa59867597fa91daa4396ad831c2871763b0bbc726f",
+      "originalReceipt": {
+        "sha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54",
+        "bytes": 231465,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54.json"
+        }
+      }
     },
     "qualificationPath": "docs/evidence/papercusp-oct1-p011-live-baseline-r2-qualification-2026-10-02.json",
     "identity": "Saved staging main PID3857646/startTicks21953189/executableSHA7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627; health-loaded build247b9ed162. Disk bundle hash is separately recorded.",
     "coverage": "9 samples, three 2000ms idle windows, 24 workItems.byHarness(limit32) HTTP responses at concurrency2; no forced GC/profiler/Debugger/malloc_trim. Own inspector closed and process identity preserved.",
     "limits": "Main PID only, ambient workload uncontrolled; every sample reaches64-descendant cap. HTTP may run in sibling workers. The24 response hashes differ and are not parity proof. No complete service total, native residual, retained-owner or paired-savings inference.",
-    "sourceCurrentness": "Two named source/test SHA256 values match their saved receipt; full transitive executed-source currentness remains unknown. The test was stamped UNTRACKED at execution.",
+    "sourceCurrentness": "Historical binding21632 was current for two named source/test files when recorded. Test emitter subsequently changed under WI-10005429; saved measurement is historical source evidence. Full transitive executed-source and current-runtime acceptance remain unknown.",
     "acceptance": "Adds actual current-build baseline evidence to revision2's live plane. Retained-owner attribution, selected-intervention paired resources/functionality or non-defect dispositions, independent acceptance and shipment remain open."
   },
   "ordinaryBaseline": {
@@ -46,11 +58,27 @@
     "recordedTestLayer": "integration",
     "raw": {
       "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json",
-      "sha256": "02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694"
+      "sha256": "41caf25628f5f2f2a0b478990b50aaaa2d6f251ea3a8e1394590ae9d54a32d7d",
+      "originalReceipt": {
+        "sha256": "02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694",
+        "bytes": 491153,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694.json"
+        }
+      }
     },
     "qualification": {
       "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-qualification-2026-10-02.json",
-      "sha256": "48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd"
+      "sha256": "72c068c0fe6217f3c56e9fef48dd444964644c8d20e849f5d401c4f58d747cbd",
+      "originalReceipt": {
+        "sha256": "48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd",
+        "bytes": 3769,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd.json"
+        }
+      }
     },
     "buildSha": "5689cb42afea859733423d0a361c20e79078f4fa",
     "bundleSha256": "8a97736b596731b4acf603e37684396f33f0c51a598551ed1b201d2214fe14e8",
@@ -61,9 +89,18 @@
     "sampleDefinitions": "PSS is smaps_rollup kernel kB converted to bytes. Heap, external and ArrayBuffer are Node/V8 counters; they do not form a disjoint additive partition of PSS.",
     "unforcedIdleObservation": {
       "interval": "idle-2-start to idle-2-end",
-      "pssBytes": [962311168, 675415040],
-      "heapUsedBytes": [567014528, 422440600],
-      "arrayBufferBytes": [72542031, 1115965],
+      "pssBytes": [
+        962311168,
+        675415040
+      ],
+      "heapUsedBytes": [
+        567014528,
+        422440600
+      ],
+      "arrayBufferBytes": [
+        72542031,
+        1115965
+      ],
       "interpretation": "A bounded observation of counters decreasing during idle. No GC-cause, native-allocation, leak, or intervention-reduction conclusion follows."
     },
     "acceptance": "Supports the pinned private HTTP baseline only. Its integration execution layer matches revision 2's layer taxonomy, but its private evidence plane does not fulfill actual live/current-build memory acceptance. The sampler test changed after R2, so R2's named-test currentness is stale."
