@@ -660,8 +660,10 @@ function startupRenderFixture() {
   const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   let clock = 0;
   let target: unknown = null;
+  let subtitleTarget: unknown = null;
   let mutation: (() => void) | null = null;
-  let frame: (() => void) | null = null;
+  const frames = new Map<number, () => void>();
+  let nextFrame = 0;
   let deadline: (() => void) | null = null;
   let disconnected = 0;
   let rectReads = 0;
@@ -670,26 +672,31 @@ function startupRenderFixture() {
   const element = { parentElement: parent, isConnected: true,
     style: { display: 'block', visibility: 'visible', opacity: '1' },
     getBoundingClientRect: () => { rectReads++; return { width: 100, height: 30, top: 1, left: 1, right: 101, bottom: 31 }; } };
+  const subtitleParent = { ...parent, style: { ...parent.style, opacity: '1' } };
+  const subtitle = { ...element, parentElement: subtitleParent };
   const fonts = { status: 'loading', ready: Promise.resolve(),
     addEventListener: (name: string, fn: () => void) => listeners.set(name, fn),
     removeEventListener: (name: string) => listeners.delete(name) };
   const fakeWindow = { innerWidth: 1280, innerHeight: 720,
     MutationObserver: class { constructor(fn: () => void) { mutation = fn; }
       observe() {} disconnect() { disconnected++; mutation = null; } },
-    requestAnimationFrame: (fn: () => void) => { frame = fn; return 1; },
-    cancelAnimationFrame: () => { frame = null; },
+    requestAnimationFrame: (fn: () => void) => { const id = ++nextFrame; frames.set(id, fn); return id; },
+    cancelAnimationFrame: (id: number) => { frames.delete(id); },
     setTimeout: (fn: () => void) => { deadline = fn; return 2; },
     clearTimeout: () => { deadline = null; },
     getComputedStyle: (node: typeof element | typeof parent) => node.style,
   };
-  const values = { window: fakeWindow, document: { fonts, documentElement: {}, querySelector: () => target },
+  const values = { window: fakeWindow, document: { fonts, documentElement: {},
+    querySelector: (selector: string) => selector === '.pclsb-acct__foot' ? target : subtitleTarget },
     performance: { now: () => clock }, Storage: undefined };
   for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, value: values[name] });
-  return { fakeWindow, element, parent, fonts, listeners, tick: (ms: number) => { clock = ms; },
+  return { fakeWindow, element, parent, subtitle, subtitleParent, fonts, listeners, tick: (ms: number) => { clock = ms; },
     insert: () => { target = element; mutation?.(); }, replace: () => { target = { ...element }; mutation?.(); },
+    insertSubtitle: () => { subtitleTarget = subtitle; mutation?.(); },
+    replaceSubtitle: () => { subtitleTarget = { ...subtitle }; mutation?.(); },
     mutate: () => mutation?.(),
-    runFrame: () => { const fn = frame; frame = null; fn?.(); },
-    expire: () => deadline?.(), pendingFrame: () => frame !== null,
+    runFrame: () => { const pending = [...frames.values()]; frames.clear(); for (const fn of pending) fn(); },
+    expire: () => deadline?.(), pendingFrame: () => frames.size !== 0,
     disconnected: () => disconnected, rectReads: () => rectReads,
     restore: () => { for (const [name, descriptor] of originals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -709,7 +716,7 @@ test('bundled startup probe separates late DOM discovery, ancestor visibility an
     f.parent.style.opacity = '1';
     f.tick(1300); f.mutate();
     f.tick(1400); f.runFrame();
-    assert(f.disconnected() > 0, 'stop DOM observation after the first visible frame');
+    assert.equal(f.disconnected(), 0, 'the missing subtitle still needs DOM observation');
     f.tick(1600); f.fonts.status = 'loaded';
     await Promise.resolve();
     const report = probe.stop();
@@ -723,7 +730,67 @@ test('bundled startup probe separates late DOM discovery, ancestor visibility an
     assert.equal(report.render.fonts.initialStatus, 'loading');
     assert.equal(f.listeners.size, 0);
     assert.equal(f.pendingFrame(), false);
+    assert(f.disconnected() > 0);
     assert(!JSON.stringify(report.render).includes('textContent'));
+  } finally { f.restore(); }
+});
+
+test('bundled startup probe joins the actual subtitle independently of a later footer', () => {
+  const f = startupRenderFixture();
+  try {
+    Function(buildStartupStorageProbeScript())();
+    const probe = (f.fakeWindow as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe;
+    assert.deepEqual(probe.renderCandidateMatchesBySelector(f.subtitle), [
+      { selector: '.pclsb-acct__foot', matches: null },
+      { selector: '.plans-pane__masthead-subtitle', matches: null },
+    ]);
+    f.tick(1000); f.insertSubtitle();
+    assert.equal(f.rectReads(), 0);
+    f.tick(1100); f.runFrame();
+    assert.equal(f.disconnected(), 0, 'one eligible candidate must not end observation of the other');
+    f.tick(2000); f.insert();
+    f.tick(2100); f.runFrame();
+    f.parent.style.opacity = '1';
+    f.tick(2200); f.mutate(); f.runFrame();
+    const report = probe.stop();
+    assert.deepEqual(probe.renderCandidateMatchesBySelector(f.subtitle), [
+      { selector: '.pclsb-acct__foot', matches: false },
+      { selector: '.plans-pane__masthead-subtitle', matches: true },
+    ]);
+    assert.deepEqual(probe.renderCandidateMatchesBySelector(null).map((row) => row.matches), [null, null]);
+    assert.deepEqual(probe.renderCandidateMatchesBySelector({ ...f.subtitle }).map((row) => row.matches), [false, false]);
+    assert.equal(probe.renderCandidateMatches(f.subtitle), false, 'legacy field is still the footer join');
+    assert.deepEqual(report.render.candidates.map((row) => [row.selector, row.firstObservedAtMs, row.firstEligibleFrameAtMs]), [
+      ['.pclsb-acct__foot', 2000, 2200], ['.plans-pane__masthead-subtitle', 1000, 1100],
+    ]);
+    assert.equal(report.render.firstObservedAtMs, 2000, 'legacy timing is still the footer');
+    assert.equal(f.listeners.size, 0);
+    assert.equal(f.pendingFrame(), false);
+  } finally { f.restore(); }
+});
+
+test('replaced or unreadable subtitle fails closed without cancelling the footer observation', () => {
+  const f = startupRenderFixture();
+  try {
+    const probe = installStartupStorageProbe();
+    f.insertSubtitle(); f.replaceSubtitle();
+    assert.equal(f.pendingFrame(), false);
+    assert.equal(f.disconnected(), 0);
+    f.tick(3000); f.insert(); f.parent.style.opacity = '1'; f.runFrame();
+    const report = probe.stop();
+    assert.deepEqual(report.render.candidates.map((row) => row.stopReason), ['eligible-frame', 'candidate-replaced']);
+    assert.deepEqual(probe.renderCandidateMatchesBySelector(f.subtitle).map((row) => row.matches), [false, null]);
+    const failed = installStartupStorageProbe();
+    f.fakeWindow.getComputedStyle = (node) => {
+      if (node === f.subtitleParent) throw new Error('private subtitle style');
+      return node.style;
+    };
+    f.runFrame();
+    const failure = failed.stop();
+    assert.equal(failure.render.stopReason, 'eligible-frame');
+    assert.equal(failure.render.candidates[1].stopReason, 'unavailable');
+    assert(failure.render.candidates[1].unavailable.includes('frame-read'));
+    assert(!JSON.stringify(failure).includes('private subtitle style'));
   } finally { f.restore(); }
 });
 
