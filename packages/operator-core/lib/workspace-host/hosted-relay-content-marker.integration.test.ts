@@ -370,6 +370,9 @@ async function runAssembledByoc() {
       { sealed: true },
     );
     if (!app) throw new Error('sealed app channel did not open');
+    // Let relay.open build the host-side responder before delivering the
+    // initiator fragment that SecretStream emitted during construction.
+    await settle(pending);
     for (const packet of appPackets.splice(0)) {
       if (!app.send(packet)) throw new Error('sealed app handshake packet was refused');
     }
