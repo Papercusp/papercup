@@ -60,11 +60,13 @@ describe('P-005 applied identity capability grants', () => {
   });
 
   it('WI-10005197: every resolver refusal carries the lift condition for its cause', () => {
+    // The envelope is a union (`applied:false` carries no failures), so narrow before reading.
+    const failuresOf = (envelope: ReturnType<typeof resolveIdentityGrantEnvelope>) => envelope.applied ? envelope.failures : [];
     const failures = [
-      ...resolveIdentityGrantEnvelope({ ...fixture(), appliedSpecificationRevision: 'b'.repeat(64) }).failures ?? [], // stale-artifact
-      ...resolveIdentityGrantEnvelope({ ...fixture(), ceilings: null }).failures ?? [],                              // policy-unavailable
-      ...resolveIdentityGrantEnvelope({ ...fixture(), bindings: [] }).failures ?? [],                                // provider-unbound
-      ...resolveIdentityGrantEnvelope({ ...fixture(), bindings: [binding({ providerVersion: '2.0.0' })] }).failures ?? [], // provider-changed
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), appliedSpecificationRevision: 'b'.repeat(64) })), // stale-artifact
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), ceilings: null })),                              // policy-unavailable
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), bindings: [] })),                                // provider-unbound
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), bindings: [binding({ providerVersion: '2.0.0' })] })), // provider-changed
     ];
     expect(failures.map((failure) => failure.cause).sort())
       .toEqual(['policy-unavailable', 'provider-changed', 'provider-unbound', 'stale-artifact']);

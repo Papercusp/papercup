@@ -39,11 +39,6 @@ const SCHEMA_FIXTURE_IMPORT_RE = /from\s+['"][^'"]*test\/_work-items-schema['"]/
  */
 const ALLOW: ReadonlyMap<string, string> = new Map([
   [
-    'scheduler/claim-spec-store.integration.test.ts',
-    'hand-rolls its own work_items table inline and builds a second recovery database; ' +
-      'the helper has to run after both, which needs a per-site edit (WI-10005130 follow-up)',
-  ],
-  [
     'work-nature/agent-work-recurrence-guard.integration.test.ts',
     'in-flight file of WI-10005048 (another agent); its event-substrate migrations must ' +
       'run before the helper, so its owner adds the call',

@@ -132,7 +132,6 @@ beforeAll(async () => {
   db = await createFreshPgDb('admission-recovery-chain');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL);
   await applyMigrationForTest(db.sql, resolve(import.meta.dirname,
@@ -181,6 +180,9 @@ beforeAll(async () => {
       },
     ],
   });
+  // WI-10005130: shared claim-path read deps go LAST (all IF NOT EXISTS), after the
+  // hand-built adv_sessions and the migration-built event substrate above.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
     ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')})`;
 }, 60_000);

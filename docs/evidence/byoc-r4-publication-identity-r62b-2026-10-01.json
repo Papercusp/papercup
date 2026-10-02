@@ -63,6 +63,16 @@
       "evidence": "bin/node extracted from the retrieved archive: `bin/node --version` -> v24.18.1, exit 0; SBOM application component node version 24.18.1 -> agrees"
     }
   ],
+  "negativeControls": {
+    "purpose": "Positive control for the verifier (rev-7 vetting conv-muqaeg5s posts 1154639/1154645): the same minisign verification and digest comparison must FAIL on altered bytes and on a wrong key, recorded beside the passing measurement.",
+    "ranAt": "2026-10-02T01:36:36Z/2026-10-02T01:37:07Z",
+    "runBy": "su-9b75fa7c",
+    "log": "~/.papercusp/scratch/r4-verify-r62b/negctl.log",
+    "passControl": "minisign -V -p pinned.pub on the retrieved server.tgz: valid",
+    "tamperedByte": { "offset": 1048576, "from": "73", "to": "72", "tamperedSha256": "054dc2adb8c08fc05e270634c11a3ea0f8c3df0a2881da1d9650964aeda4c605", "expectedSha256": "dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8", "digestMatches": false, "signatureRc": 1, "signatureOutput": "Signature verification failed", "verdict": "rejected as required" },
+    "wrongKey": { "wrongPubSha256": "de0c58c969e5ec6f0bd1047df6b8b4a070843b82b11e007e47053f89520c732c", "pinnedPubSha256": "66bad893ed3a4140ea848787d1fd19d3673d5d1fdd92ae3434d67db5b6999bf8", "signatureRc": 1, "signatureOutput": "Signature key id in server.tgz.minisig is 5D3A7DD4A7089944 but the key id in the public key is 410F582998F1D04E", "verdict": "rejected as required" },
+    "note": "The tampered copy was made on /mnt/data and deleted afterwards; the published bytes were not modified."
+  },
   "limitations": [
     "The PostgreSQL 18.6 SBOM component was not exercised by a separate version probe. Its binary is covered only by the archive-membership byte check, not by executing it."
   ]

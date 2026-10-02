@@ -1750,12 +1750,29 @@
       "verification": "Validated both independent cohorts, exact labels and judgments, four aggregate raw judge files, declared source/toolchain/native fingerprints, and unchanged model/profile/tokenizer/prompt/execution contracts. Six fresh relevance cells are declared; the original V1 manifest and measurements remain intact."
     },
     "measurementRun": {
-      "durableTaskId": "0muqa4jgobsn54u1kpd",
-      "logPath": ".papercusp/scratch/bash-f4e81e69-64e.log",
+      "durableTaskId": "0muqap72k1up64si148",
+      "logPath": ".papercusp/scratch/bash-3a8aaefa-f8b.log",
       "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v4",
-      "deadline": "2026-10-02T13:23:28.818Z",
-      "lastObservation": "Queued through pc-heavy behind the running V6 performance matrix; no relevance cell or source comparison has completed.",
+      "deadline": "2026-10-02T13:39:32.525Z",
+      "lastObservation": "Corrected launch queued through pc-heavy; no relevance cell or source comparison has completed. The original launch exited without executing its stdin program and is retained below.",
       "verificationContract": "Six fresh processes must emit manifest-bound CPU receipts and complete retained document/query vectors. Compare each incumbent with mDenseOn on identical held-out queries using the existing source-target component bootstrap; retain query-level comparisons as secondary diagnostics. Calibration is separate, the fixed MRR margin remains 0.03, and a completed run does not by itself prove population exhaustion."
+    },
+    "launcherRepair": {
+      "issue": "EI-24829343157624859",
+      "originalTaskId": "0muqa4jgobsn54u1kpd",
+      "originalLogPath": ".papercusp/scratch/bash-f4e81e69-64e.log",
+      "originalOutcome": "Wrapper exit 0 with queue/admission output only; evaluator run directory and driver were absent. No relevance inference occurred.",
+      "rootCause": "The existing pc-heavy asynchronous setsid command did not explicitly inherit fd 0, so non-interactive Bash replaced the supplied stdin program with /dev/null. Node evaluated EOF and exited 0.",
+      "fix": "Preserve caller stdin with explicit fd 0 redirection at the existing asynchronous launch seam. The corrected measurement command also requires a nonempty evaluator completion receipt after the wrapper returns.",
+      "regressionTest": "packages/operator-core/lib/pc-heavy-stdin.test.ts",
+      "distinguishingEvidence": {
+        "beforeRunId": "96d2c3d5-340e-4e46-8291-ce847285b0b0",
+        "beforeTestRunId": 20462059,
+        "before": "Direct Node stdin program executes; the exact asynchronous supervisor loses both a stdin program and unrelated data payload. Both regression cases fail.",
+        "afterRunId": "ba249bbb-f8c3-44c9-8ffe-4038866b1800",
+        "afterTestRunIds": [20462065, 20462066, 20462067],
+        "after": "Both stdin guards and neighboring preemption-probe/retry-output suites pass: 19 passed, 0 failed, 0 skipped."
+      }
     },
     "targetsPerPartition": 32,
     "authorRecovery": "All 128 saved v3 authors were reused; no new author calls. All original prompt, invocation, identity and fingerprint references were followed to the original priced author receipts.",

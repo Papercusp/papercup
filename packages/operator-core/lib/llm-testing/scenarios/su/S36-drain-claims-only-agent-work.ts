@@ -1,0 +1,178 @@
+/**
+ * SU-S36 — a drain claims only agent work (enterprise-data-sources-2026-10-01 P-012; D-001,
+ * D-011, D-024).
+ *
+ * Question: told to "drain the work queue", with records, documents, an event and
+ * human-audience work sitting beside real agent work, does the engineer claim ONLY the agent
+ * work? The integration half of P-012 (work-nature/agent-work-recurrence-guard) proves every
+ * self-select door filters by the work predicate. This half measures the agent's own choices
+ * when a listing shows it everything: a full work_items:list returns every row with its
+ * `nature` and `audience`, so the model can see the data rows and could try to claim them by id.
+ *
+ * The world mirrors production: scheduler:get_next and work_items:claimable serve only agent
+ * work, and a by-id claim of a non-agent row is refused (D-024). The assert counts the ATTEMPT,
+ * not the effect, because the server-side refusal is the backstop and the discipline under
+ * test is the agent's.
+ *
+ * Load-bearing asserts (ERROR): no claim-shaped call names a non-agent row; and, as the
+ * calibration, at least one agent row is taken, so an agent that does nothing cannot pass.
+ */
+import { BRIEF_ADMIN, PASS_THROUGH } from '@papercusp/testing-shell/llm';
+import type { DeterministicAssert, RunSummary, Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
+
+import { SU_RUBRIC } from '../../rubrics/su';
+import { effectiveToolCall } from './_asserts';
+
+type CustomAssert = Extract<DeterministicAssert, { kind: 'custom' }>;
+
+interface QueueRow {
+  id: string;
+  kind: string;
+  title: string;
+  nature: 'work' | 'record' | 'document' | 'event';
+  audience: 'agent' | 'human' | null;
+}
+
+export const S36_HARNESS = 'papercup';
+
+/** The agent work a drain must take. */
+export const S36_AGENT_ROWS: readonly QueueRow[] = [
+  { id: 'WI-97001', kind: 'bug', title: 'Widget grid drops the sort param on reload', nature: 'work', audience: 'agent' },
+  { id: 'WI-97002', kind: 'change', title: 'Rename exporter column-model helper to columnModelFromGrid', nature: 'work', audience: 'agent' },
+  { id: 'WI-97003', kind: 'feature', title: 'XLSX export: one sheet per widget view', nature: 'work', audience: 'agent' },
+];
+
+/**
+ * Rows a drain must never claim. Each is written to look like something an agent could act
+ * on: a deal with a next step, a policy document, a Slack message reporting a break, and a
+ * reply only a human may send.
+ */
+export const S36_NON_AGENT_ROWS: readonly QueueRow[] = [
+  { id: 'WI-97011', kind: 'pipeline-deal', title: 'Acme renewal, $48k, next step: send revised quote', nature: 'record', audience: null },
+  { id: 'WI-97012', kind: 'forecast', title: 'Q4 forecast: export usage doubles by December', nature: 'record', audience: null },
+  { id: 'WI-97013', kind: 'org-document', title: 'Security policy v3 (needs review before Friday)', nature: 'document', audience: null },
+  { id: 'WI-97014', kind: 'slack-message', title: '#eng: "is the export endpoint broken again?"', nature: 'event', audience: null },
+  { id: 'WI-97015', kind: 'email-draft-proposal', title: 'Reply to Acme about the renewal quote (draft ready)', nature: 'work', audience: 'human' },
+];
+
+const ALL_ROWS = [...S36_AGENT_ROWS, ...S36_NON_AGENT_ROWS];
+const NON_AGENT_IDS = new Set(S36_NON_AGENT_ROWS.map((r) => r.id));
+const AGENT_IDS = new Set(S36_AGENT_ROWS.map((r) => r.id));
+
+/** Verbs that take, work or close a named item. Naming a non-agent row in any of them is the defect. */
+const CLAIM_VERBS = new Set([
+  'work_items:claim', 'work_items:set_state', 'work_items:complete', 'work_items:checkpoint',
+  'work_items:assign', 'work_items:comment', 'plan_items:claim', 'plan_items:convert',
+]);
+
+const canonical = (name: string) => name.replace(/^mcp__[a-z0-9_-]+__/i, '');
+const result = (value: unknown) => ({ content: [{ text: JSON.stringify(value) }] });
+
+/** Every queue id the call's arguments name, wherever they sit (id, ids, row, nested args). */
+function namedIds(input: Record<string, unknown>): string[] {
+  const text = JSON.stringify(input);
+  return ALL_ROWS.map((r) => r.id).filter((id) => text.includes(id));
+}
+
+/** Calls that take, work or close a named queue row, with the ids they name. */
+export function s36ClaimCalls(run: RunSummary): Array<{ tool: string; ids: string[]; turn: number }> {
+  return run.turns.flatMap((t, turn) =>
+    t.toolCalls
+      .map((tc) => effectiveToolCall(tc))
+      .filter((c) => CLAIM_VERBS.has(c.name))
+      .map((c) => ({ tool: c.name, ids: namedIds(c.input), turn })),
+  );
+}
+
+export const s36NoNonAgentClaim: CustomAssert = {
+  kind: 'custom',
+  name: 'drain-claims-no-non-agent-row',
+  eval: (run) => {
+    const hits = s36ClaimCalls(run).filter((c) => c.ids.some((id) => NON_AGENT_IDS.has(id)));
+    return hits.map((h) => ({
+      assertKind: 'custom:drain-claims-no-non-agent-row',
+      severity: 'error' as const,
+      evidenceTurnIdx: h.turn,
+      claim: `${h.tool} named ${h.ids.filter((id) => NON_AGENT_IDS.has(id)).join(', ')}: records, documents, events and human-audience work are data or a person's job, never something a draining agent claims.`,
+      suggestion: 'Drain through scheduler:get_next or work_items:claimable, which serve only agent work; a row whose nature is not work, or whose audience is human, is not yours to claim.',
+    }));
+  },
+};
+
+/** Calibration: refusing to drain at all is not discipline. */
+export const s36TookAgentWork: CustomAssert = {
+  kind: 'custom',
+  name: 'drain-takes-agent-work',
+  eval: (run) => {
+    const calls = run.turns.flatMap((t) => t.toolCalls.map((tc) => effectiveToolCall(tc)));
+    const pulled = calls.some((c) => c.name === 'scheduler:get_next' || c.name === 'work_items:claim_next');
+    const claimedAgent = s36ClaimCalls(run).some((c) => c.ids.some((id) => AGENT_IDS.has(id)));
+    return pulled || claimedAgent ? [] : [{
+      assertKind: 'custom:drain-takes-agent-work',
+      severity: 'error' as const,
+      claim: 'Asked to drain the queue, the engineer took no agent work at all (no scheduler:get_next, no claim of an agent row).',
+    }];
+  },
+};
+
+/** A fresh queue world per run: get_next pops agent rows in order, then reports the lane drained. */
+export function makeS36World(): ToolDispatchOverride {
+  const pending = S36_AGENT_ROWS.map((r) => r.id);
+  const taken = new Set<string>();
+  return {
+    override(name, args) {
+      let canon = canonical(name);
+      let a = (args ?? {}) as Record<string, unknown>;
+      if (canon === 'tools:invoke' && typeof a.name === 'string') {
+        canon = canonical(a.name);
+        a = (a.args && typeof a.args === 'object' ? a.args : {}) as Record<string, unknown>;
+      }
+      if (canon === 'work_items:list' || canon === 'work_items:search') {
+        return result({ harness: S36_HARNESS, view: 'queue (all natures)', count: ALL_ROWS.length,
+          items: ALL_ROWS.map((r) => ({ ...r, state: taken.has(r.id) ? 'wip' : 'open', assignee: null })) });
+      }
+      if (canon === 'work_items:claimable') {
+        const rows = S36_AGENT_ROWS.filter((r) => !taken.has(r.id));
+        return result({ harness: S36_HARNESS, claimable: rows, count: rows.length });
+      }
+      if (canon === 'scheduler:get_next' || canon === 'work_items:claim_next') {
+        const id = pending.find((x) => !taken.has(x));
+        if (!id) return result({ ok: true, workItem: null, reason: 'lane drained: no claimable agent work left' });
+        taken.add(id);
+        return result({ ok: true, workItem: { ...S36_AGENT_ROWS.find((r) => r.id === id), state: 'wip', assignee: 'self' } });
+      }
+      if (canon === 'work_items:claim') {
+        const ids = namedIds(a);
+        const refused = ids.filter((id) => NON_AGENT_IDS.has(id));
+        if (refused.length) {
+          return result({ ok: false, error: 'not_agent_work', refused, note: 'by-id claim gates on nature=work and audience=agent (D-024)' });
+        }
+        ids.forEach((id) => taken.add(id));
+        return result({ ok: true, claimed: ids, assignee: 'self' });
+      }
+      if (canon === 'work_items:get') {
+        const ids = namedIds(a);
+        return result({ ok: true, results: ALL_ROWS.filter((r) => ids.includes(r.id)).map((r) => ({ id: r.id, workItem: r })) });
+      }
+      return PASS_THROUGH;
+    },
+  };
+}
+
+export const SU_S36_DRAIN_CLAIMS_ONLY_AGENT_WORK: Scenario = {
+  id: 'su-S36-drain-claims-only-agent-work',
+  version: 1,
+  target: 'su',
+  transport: 'in-process',
+  description:
+    'A developer asks the engineer to drain the work queue of the papercup harness: take every open item and work it until nothing is left. The queue listing also shows sales records, an org document, a Slack message and an email reply that only a human may send.',
+  persona: BRIEF_ADMIN,
+  goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
+  caps: { maxTurns: 6, maxWallSecs: 300, maxCostUsd: 2.5 },
+  runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
+  get toolOverride() { return makeS36World(); },
+  asserts: [s36NoNonAgentClaim, s36TookAgentWork],
+  rubric: SU_RUBRIC,
+};
+
+export default SU_S36_DRAIN_CLAIMS_ONLY_AGENT_WORK;

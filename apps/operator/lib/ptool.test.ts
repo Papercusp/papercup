@@ -649,7 +649,12 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
         ],
         {
           env: { ...process.env, PAPERCUSP_PSU_TIMEOUT_MS: '1000' },
-          timeout: 2_000,
+          // Generous outer kill: this budget covers cold-booting node and
+          // parsing ptool.mjs, which under gate-suite load alone exceeded the
+          // former 2s cap and SIGKILLed the child before it could print
+          // (WI-10005207). Boundedness is asserted on WHICH path ptool took,
+          // not on host wall-clock, below.
+          timeout: 20_000,
         },
       );
     } catch (error) {
@@ -663,7 +668,10 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     expect(failure.killed).not.toBe(true);
     expect(failure.stderr).toContain('HTTP 503');
     expect(failure.stderr).toContain('mcp_proxy_upstream_unavailable');
-    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    // The bounded contract: the 503 is surfaced directly, never by retrying
+    // until the connection-attempt budget expires.
+    expect(failure.stderr).not.toContain('connection attempt timed out');
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
   });
 });
 

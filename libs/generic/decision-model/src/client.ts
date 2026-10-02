@@ -117,6 +117,35 @@ const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_BACKOFF_BASE_MS = 150;
 const DETAIL_MAX_CHARS = 300;
 
+/**
+ * The call's deadline, measured against the provider rather than against the
+ * caller's own event loop.
+ *
+ * `AbortSignal.timeout` fires in Node's timers phase, which runs BEFORE the poll
+ * phase that reads sockets. So when the calling thread is blocked past the
+ * deadline (a synchronous fs walk, a long GC, a fork on a large heap), a response
+ * that arrived during the block is still unread when the timer fires, and the call
+ * is aborted with its answer sitting in the socket buffer. Production measured that
+ * shape: timed-out memory-filter calls had the loop busy for 816 of their 838 ms
+ * (EI-24748208098755918, plan jev-memory-timeouts-to-zero-2026-10-01 D-002).
+ *
+ * The abort is therefore deferred to `setImmediate`, which runs after the poll
+ * phase of the same loop iteration: whatever already arrived is read first. A
+ * provider that genuinely has not answered still loses. The deferral is one loop
+ * phase, not a longer budget. Unref'd like `AbortSignal.timeout`, so a pending
+ * deadline never keeps the process alive.
+ */
+export function deadlineSignal(timeoutMs: number): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    setImmediate(() => {
+      controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    }).unref();
+  }, timeoutMs);
+  timer.unref();
+  return controller.signal;
+}
+
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve();
@@ -237,7 +266,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
     }
     if (!key) return inconclusive('no-key');
 
-    const deadline = AbortSignal.timeout(timeoutMs);
+    const deadline = deadlineSignal(timeoutMs);
     const signal = request.signal ? AbortSignal.any([deadline, request.signal]) : deadline;
     const whyAborted = (): InconclusiveReason => (request.signal?.aborted ? 'aborted' : 'timeout');
     const http = provider.buildRequest(request, key);

@@ -728,7 +728,32 @@ export const ADV_SESSIONS_CLAIM_MIN_DDL = `
     started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     ended_at timestamptz,
     ended_by text
-  )`;
+  );
+  -- WI-10005130: the lapse/takeover reads (shutdownAcceptedOwnerIds,
+  -- listRecordedLiveSessions) select these; ADD COLUMN IF NOT EXISTS so a fixture that
+  -- hand-built a narrower adv_sessions first is filled in too.
+  ALTER TABLE harness_shared.adv_sessions
+    ADD COLUMN IF NOT EXISTS plan_slug text,
+    ADD COLUMN IF NOT EXISTS shutdown_accepted_at timestamptz`;
+
+/**
+ * `fleet_membership_events` — the append-only fleet membership fact the claim path's
+ * fleet-scope admission reads (WI-10005130). Columns from the live table; the projection
+ * trigger and GRANTs are omitted (no fixture asserts the coord_presence projection here).
+ */
+export const FLEET_MEMBERSHIP_EVENTS_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.fleet_membership_events (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default',
+    owner_id text NOT NULL,
+    owner_label text,
+    fleet_slug text,
+    fleet_role text,
+    event text NOT NULL DEFAULT 'join',
+    at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS fleet_membership_events_owner_idx
+    ON harness_shared.fleet_membership_events (workspace_id, owner_id, id DESC)`;
 
 /**
  * `user_trust_list` DDL — the owner's trusted github user ids (migration 276,
@@ -1283,6 +1308,7 @@ export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
   ADV_SESSIONS_CLAIM_MIN_DDL,
+  FLEET_MEMBERSHIP_EVENTS_MIN_DDL,
   EVENT_AWAITS_MIN_DDL,
   SCOUT_ROUTED_IDEAS_MIN_DDL,
 ];

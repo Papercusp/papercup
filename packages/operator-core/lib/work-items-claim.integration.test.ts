@@ -141,7 +141,6 @@ beforeAll(async () => {
   // fixture so its claim assertions exercise the real schema instead of failing
   // before the floor can be evaluated.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   // P-007: claim authority reads the active role receipt. Narrow work-item
   // fixtures carry only the two columns sets that reader needs.
@@ -178,6 +177,10 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
   // WI-3649: the by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
   await ensureCoordCapabilityTables(db.sql);
+  // WI-10005130: the shared claim-path read deps (trust list, deps, adv_sessions, event
+  // tables, Scout ledger) go LAST — every statement is IF NOT EXISTS, so it only fills
+  // what the hand-built schema above (adv_sessions, event substrate) left out.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
