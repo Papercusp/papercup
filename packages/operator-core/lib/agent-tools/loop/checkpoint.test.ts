@@ -2315,6 +2315,24 @@ describe('EI-18833865002636933: rescue-by-parse of a tag-serialized structured w
 // repair that lost bytes, and keep rejecting what is genuinely undeclared (EI-10883).
 describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-field must not discard the note", () => {
   describe('row SHAPE coercion (the {status, evidence} confusion)', () => {
+    it('accepts and persists a canonical check-row falsifier', async () => {
+      const check = {
+        claim: 'checks rows preserve a declared falsifier',
+        recheck: 'parse and persist the check row',
+        falsifier: 'the parser rejects checks[0].falsifier as unrecognized',
+        verified: 'the handler parsed and persisted this row',
+      };
+      const parsed = parse({ checks: [check] }) as { checks: typeof check[] };
+
+      expect(parsed.checks).toEqual([check]);
+
+      const b = body(await call({ did: 'checkpointed the check-row contract', checks: [check] }));
+      expect(b).toMatchObject({ ok: true, checks: 1 });
+      expect(b.repairs).toBeUndefined();
+      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      expect(written).toContain(' — falsifier: the parser rejects checks[0].falsifier as unrecognized');
+    });
+
     it('maps {status, evidence} to `verified`, PRESERVING the evidence rather than dropping it', () => {
       const out = parse({
         checks: [{ claim: 'gate is green', recheck: 'state:read', status: 'verified', evidence: 'saw 30/30 pass' }],
