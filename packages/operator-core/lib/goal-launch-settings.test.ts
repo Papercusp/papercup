@@ -1754,6 +1754,22 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         toolCall: null,
       },
     });
+    expect(compileGoalPlanPlacement({
+      ...base,
+      source: {
+        claims: [{ ...lane, ownerId: 'su-solo', fleetSlug: null, workItemId: 'WI-alpha-solo' }],
+        goalHolderOwnerIds: ['su-goal'],
+      },
+    })).toMatchObject({
+      state: 'blocked',
+      activeLane: { ownerId: 'su-solo', ownerFleet: null, workItemId: 'WI-alpha-solo' },
+      reconciliation: {
+        consistent: false,
+        action: 'reconcile-plan-lane-holder',
+        reason: expect.stringContaining('su-solo'),
+        toolCall: null,
+      },
+    });
     expect(
       compileGoalPlanPlacement({
         ...base,

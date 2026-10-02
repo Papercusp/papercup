@@ -1273,12 +1273,15 @@ export function compileGoalPlanPlacement(args: {
     state = 'blocked';
     action = 'resolve-plan-blockers';
     reason = 'The plan has non-terminal work but no dependency-free todo item.';
-  } else if (!fleet && activeLane?.ownerFleet && !goalHolderOwnerIds.includes(activeLane.ownerId)) {
+  } else if (!fleet && activeLane && !goalHolderOwnerIds.includes(activeLane.ownerId)) {
     state = 'blocked';
     action = 'reconcile-plan-lane-holder';
+    const holder = activeLane.ownerFleet
+      ? `${activeLane.ownerId} in fleet ${activeLane.ownerFleet}`
+      : activeLane.ownerId;
     reason =
-      `The ${activeLane.itemId} lease is held by ${activeLane.ownerId} in fleet ${activeLane.ownerFleet}, ` +
-      `which is not a plan-scoped fleet for ${args.plan.slug}; reconcile that lease and do not launch a duplicate fleet.`;
+      `The ${activeLane.itemId} lease is held by ${holder}, outside the GOAL holders, and no plan-scoped fleet ` +
+      `exists for ${args.plan.slug}; reconcile that lease and do not launch a duplicate fleet.`;
   } else if (!activeLane && !fleet) {
     state = 'unplaced';
     action = 'launch-plan-fleet';
