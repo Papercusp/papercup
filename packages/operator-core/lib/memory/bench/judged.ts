@@ -620,12 +620,12 @@ export function selectBlindSourceTargets(snapshot: Snapshot, budget: BlindTarget
 export async function collectIndependentCohort(opts: { snapshot: string; out: string; llm: LlmCallFn;
   targetsPerPartition?: BlindTargetBudget; reuseAuthorsFrom?: string; log?: (message: string) => void }) {
   const targets = opts.targetsPerPartition ?? 16, log = opts.log ?? (() => {});
+  const root = path.resolve(opts.out), reuseRoot = opts.reuseAuthorsFrom ? path.resolve(opts.reuseAuthorsFrom) : undefined;
+  if (reuseRoot === root) throw new Error('authors-only recovery requires a new output directory');
   const snapshot = JSON.parse(fs.readFileSync(opts.snapshot, 'utf8')) as Snapshot;
   const sourceTargets = selectBlindSourceTargets(snapshot, targets);
   const snapshotFingerprint = await fingerprintFile(opts.snapshot), ownerId = measurementOwner();
   const sourceFingerprint = await fingerprintFile(new URL('./judged.ts', import.meta.url).pathname);
-  const root = path.resolve(opts.out), reuseRoot = opts.reuseAuthorsFrom ? path.resolve(opts.reuseAuthorsFrom) : undefined;
-  if (reuseRoot === root) throw new Error('authors-only recovery requires a new output directory');
   let authorReuse: { identity: Awaited<ReturnType<typeof fingerprintFile>>; identityHash: string } | undefined;
   const readAuthorIdentity = async (file: string, expected?: Awaited<ReturnType<typeof fingerprintFile>>) => {
     const actual = await fingerprintFile(file);
