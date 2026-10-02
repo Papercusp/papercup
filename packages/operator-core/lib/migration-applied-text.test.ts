@@ -72,6 +72,27 @@ describe('recoverAppliedMigrationText', () => {
     expect(got.ok === true && got.text).toBe(v[0]);
   });
 
+  it('keeps the event loop responsive while walking git history', async () => {
+    const versions = Array.from({ length: 8 }, (_, i) => `SELECT ${i};\n`);
+    const sqlDir = makeRepo('701-responsive.sql', versions);
+    let recoveryPending = true;
+    let timerRanDuringRecovery = false;
+    const heartbeat = setInterval(() => {
+      if (recoveryPending) timerRanDuringRecovery = true;
+    }, 1);
+
+    let got: Awaited<ReturnType<typeof recoverAppliedMigrationText>> | undefined;
+    try {
+      got = await recoverAppliedMigrationText(sqlDir, '701-responsive.sql', sha256(versions[0]));
+    } finally {
+      recoveryPending = false;
+      clearInterval(heartbeat);
+    }
+
+    expect(got?.ok).toBe(true);
+    expect(timerRanDuringRecovery).toBe(true);
+  });
+
   it('fails (never guesses) when no version matches the recorded hash', () => {
     // The real "edited inside the git-sync window" case: the applied bytes were
     // never committed, so they are simply not recoverable.

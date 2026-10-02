@@ -55,6 +55,17 @@ vi.mock('../coordination/identity', () => ({
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) =>
     value === 'self' ? callerOwnerId : value,
 }));
+// The directed target belongs to this private fixture roster. Keep the real
+// context-pressure predicate independent of live coordination identities.
+vi.mock('../coordination/recipient-resolve', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../coordination/recipient-resolve')>();
+  return { ...actual, resolveExplicitAgentOwnerId: vi.fn<typeof actual.resolveExplicitAgentOwnerId>(async (raw, caller) => {
+    const ownerId = raw === 'self' ? caller : raw;
+    return ownerId === caller || ownerId === 'su-someone-else'
+      ? { ok: true, ownerId }
+      : { ok: false, code: 'assignee_unknown', message: 'Agent is absent from the fixture roster.' };
+  }) };
+});
 
 vi.mock('../../work-item-claim-lease-wiring', () => ({
   workItemClaimLeaseEnabled: vi.fn(() => false),

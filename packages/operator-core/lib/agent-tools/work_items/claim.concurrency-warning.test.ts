@@ -58,6 +58,17 @@ vi.mock('../coordination/identity', () => ({
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
 }));
+// Placement validates the roster before the capacity decision. These fixtures
+// name one concrete member; they must not depend on the live workspace roster.
+vi.mock('../coordination/recipient-resolve', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../coordination/recipient-resolve')>();
+  return { ...actual, resolveExplicitAgentOwnerId: vi.fn<typeof actual.resolveExplicitAgentOwnerId>(async (raw, caller) => {
+    const ownerId = raw === 'self' ? caller : raw;
+    return ownerId === caller || ownerId === 'member-7'
+      ? { ok: true, ownerId }
+      : { ok: false, code: 'assignee_unknown', message: 'Agent is absent from the fixture roster.' };
+  }) };
+});
 // PARTIAL mock (importOriginal) — never a hand-listed factory. See the long note in
 // claim.test.ts: a forgotten export resolves to `undefined`, claim.ts throws on it, and every
 // test in the file fails with an assertion naming neither the export nor the mock.
