@@ -23,7 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const reconcileMocks = vi.hoisted(() => ({
   findAllLinkedWorkItems: vi.fn(async () => [] as Array<{ id: string; state: string; assignee?: string | null }>),
   resolveAgentIdentity: vi.fn(),
-  getClaim: vi.fn(async () => null),
+  getClaim: vi.fn<typeof import('../../plan-items/claims').getClaim>(async () => null),
 }));
 
 vi.mock('../_harness-scope', async (orig) => ({
@@ -200,12 +200,15 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
     reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([{ id: 'WI-37457', state: 'open' }]);
     reconcileMocks.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-agent' });
     reconcileMocks.getClaim.mockResolvedValue({
+      workspaceId: 'default', harnessSlug: 'papercup', planSlug: 'plan-a', itemId: 'P-012',
+      claimId: 'claim-peer', ownerName: null, livenessMode: 'activity', ttlSec: 300,
+      acquiredTs: '2026-10-01T12:00:00Z', lastActivityTs: '2026-10-01T12:00:00Z',
       owner: 'su-peer',
       ownerLabel: 'Peer',
       intent: 'verifying this plan item',
       expiresTs: '2099-01-01T00:00:00.000Z',
       expired: false,
-    } as never);
+    });
 
     const b = await body({
       slug: 'context-injection-retrieval-reach-and-visibility-2026-08-03',

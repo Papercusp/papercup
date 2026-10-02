@@ -753,14 +753,14 @@ describe('work_items:update field authority (enterprise-data-sources P-020)', ()
   });
 
   it('passes both title and body to the guard and writes when the item was not admitted', async () => {
-    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', title: 't' } } as never);
+    mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1', title: 't' }) });
     await body({ id: 'EI-1', title: 't', body: 'b' });
     expect(refuseM).toHaveBeenCalledWith('ws-test', 'EI-1', ['title', 'body']);
     expect(updM).toHaveBeenCalledTimes(1);
   });
 
   it('does not consult admissions for an edit that touches neither title nor body', async () => {
-    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
+    mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1' }) });
     await body({ id: 'EI-1', severity: 'major' });
     expect(refuseM).not.toHaveBeenCalled();
   });
