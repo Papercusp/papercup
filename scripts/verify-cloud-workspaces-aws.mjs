@@ -45,6 +45,8 @@ const poll = (selector, js, label) => {
 const click = (selector) => {
   command("bash", [required("VERIFY_TAURI_LIVENESS_CHECK")]);
   ev(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e || e.disabled)throw new Error('Missing/disabled target'); e.scrollIntoView({block:'center',behavior:'instant'}); return true; })()`);
+  evidence.pointerTargets ??= [];
+  evidence.pointerTargets.push(JSON.parse(ev(`(() => { const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2),grid=e.closest('[class*=configureColumns],[class*=connectLayout]'); return {selector:${JSON.stringify(selector)},rect:{x:r.x,y:r.y,width:r.width,height:r.height},hit:hit?.outerHTML.slice(0,600),gridColumns:grid?getComputedStyle(grid).gridTemplateColumns:null,gridWidth:grid?.getBoundingClientRect().width}; })()`)));
   poll(selector, `(() => { const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2); return r.width>0 && r.height>0 && !!hit && (hit===e || e.contains(hit)); })()`, `pointer target:${selector}`);
   const rect = JSON.parse(ev(`(() => { const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}; })()`));
   const env = { ...process.env, DISPLAY: display };
@@ -78,7 +80,7 @@ try {
   ev(`(() => {
     const original=window.fetch;
     window.__cwNative={original,rows:[],calls:[],queries:0};
-    const connection={kind:'connection',id:'aws-native',target:'aws',label:'AWS native fixture',status:'connected',credentialRef:'resolver://aws/native',scopes:[{id:'123456789012',label:'AWS account 123456789012'}],regions:[{id:'us-east-1',label:'Virginia',zones:['us-east-1a']}],sizes:[{id:'m6i.xlarge',label:'m6i.xlarge',vcpu:4,memoryGiB:16,hourlyUsd:0.19}],images:[{id:'ami-native',label:'Ubuntu 24.04'}],networks:[{id:'subnet-native',label:'Private subnet'}]};
+    const connection={kind:'connection',id:'aws-native',target:'aws',label:'AWS native fixture',status:'connected',credentialRef:'resolver://aws/native',provider:{vpcId:'vpc-native',securityGroupIds:['sg-native'],launchTemplateId:'lt-native'},scopes:[{id:'123456789012',label:'AWS account 123456789012'}],regions:[{id:'us-east-1',label:'Virginia',zones:['us-east-1a']}],sizes:[{id:'m6i.xlarge',label:'m6i.xlarge',vcpu:4,memoryGiB:16,hourlyUsd:0.19}],images:[{id:'ami-native',label:'Ubuntu 24.04'}],networks:[{id:'subnet-native',label:'Private subnet'}]};
     window.fetch=async function(input,init){
       const url=new URL(typeof input==='string'?input:input.url,location.href);
       const state=window.__cwNative;
