@@ -60,6 +60,11 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { SENTINEL_SAB_INT32_LEN, type LoopSentinelThresholds } from './event-loop-sentinel';
 import { STALL_PROFILE_DEFAULTS, type StallProfileConfig } from './event-loop-stall-profile';
 import type { SentinelWorkerData } from './event-loop-sentinel.worker';
+import {
+  createSyncSpawnStallReporter,
+  isSyncSpawnStallMessage,
+  type SyncSpawnStallMessage,
+} from './event-loop-sync-spawn-report';
 
 /**
  * Defaults.
@@ -247,6 +252,12 @@ export function startEventLoopSentinel(
      * Vitest cannot arm background intervals accidentally.
      */
     allowHeartbeatInTest?: boolean;
+    /**
+     * WI-10005253: receives the worker's `sync-spawn-stall` message (a stall profile whose hot
+     * stack sat in a synchronous child-process call). Defaults to a per-process reporter that
+     * files one deduped work item per producer.
+     */
+    onSyncSpawnStall?: (m: SyncSpawnStallMessage) => void;
   } = {},
 ): EventLoopSentinelHandle {
   const env = opts.env ?? process.env;
@@ -311,6 +322,24 @@ export function startEventLoopSentinel(
       '[event-loop-sentinel] worker EXITED on its own — the host is NO LONGER guarded against a blocked event loop',
       { code },
     );
+  });
+
+  // WI-10005253: the worker names a sync child-process producer after a stall profile. This runs on
+  // the main thread, so it fires once the blocked loop has turned again; filing is fire-and-forget.
+  const report = createSyncSpawnStallReporter();
+  const onSyncSpawnStall =
+    opts.onSyncSpawnStall ??
+    ((m: SyncSpawnStallMessage) => {
+      void report(m).then((outcome) => {
+        log('[event-loop-sentinel] sync child-process stall producer reported', {
+          producer: m.producer,
+          pct: m.pct,
+          outcome,
+        });
+      });
+    });
+  worker.on('message', (m: unknown) => {
+    if (isSyncSpawnStallMessage(m)) onSyncSpawnStall(m);
   });
 
   // Parent-side unref: the worker must not keep the process alive. This is the

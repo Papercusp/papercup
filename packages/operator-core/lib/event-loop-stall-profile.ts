@@ -232,3 +232,65 @@ export function hotStackFields(
   });
   return out;
 }
+
+/** Synchronous child-process primitives: a frame named one of these is a spawn block. */
+const SYNC_SPAWN_FRAME_NAMES: ReadonlySet<string> = new Set(['spawnSync', 'execFileSync', 'execSync']);
+
+/** A hot stack that blocked the main thread inside a synchronous child-process call. */
+export interface SyncSpawnProducer {
+  /** `fn@file` of the first named caller above the primitive: the code to fix. */
+  producer: string;
+  /** The producer's function name alone: stable across builds, so it is the dedupe identity. */
+  producerFn: string;
+  pct: number;
+  stack: string;
+}
+
+function frameName(frame: string): string {
+  const at = frame.indexOf('@');
+  return (at >= 0 ? frame.slice(0, at) : frame).trim();
+}
+
+/** `fn@file:12:3#L12` → `file`; '' for a native frame with no location. */
+function frameFileOf(frame: string): string {
+  const at = frame.indexOf('@');
+  if (at < 0) return '';
+  return frame.slice(at + 1).replace(/#L\d+$/, '').replace(/(?::\d+){1,2}$/, '');
+}
+
+/**
+ * Node's own frames: `node:child_process`, and `child_process` (what `formatFrame` leaves of
+ * `node:internal/child_process`). A frame with no location is native. None of these is a
+ * producer anyone can fix.
+ */
+function isNodeInternalFrame(frame: string): boolean {
+  const file = frameFileOf(frame);
+  return file === '' || file.startsWith('node:') || file === 'child_process';
+}
+
+/**
+ * The hottest stack (at or above `minPct` of samples) that sits in a synchronous child-process
+ * call, and the code that made the call (WI-10005253).
+ *
+ * The producer is the first frame above the OUTERMOST primitive, skipping Node internals and
+ * `(anonymous)` callbacks, so `spawnSync < execFileSync < defaultWorktreeStatus < resolveCutRoot`
+ * names `defaultWorktreeStatus`. Line and column are dropped because they move with every bundle
+ * build; the function name is what stays put. When the profile depth cut the stack off above the
+ * primitive, the producer reads `(above profile depth)` rather than guessing.
+ */
+export function syncSpawnProducer(summary: HotStackSummary, minPct = 10): SyncSpawnProducer | null {
+  for (const h of summary.hot) {
+    if (h.pct < minPct) continue;
+    const frames = h.stack.split(' < ');
+    let outermost = -1;
+    frames.forEach((f, i) => {
+      if (SYNC_SPAWN_FRAME_NAMES.has(frameName(f))) outermost = i;
+    });
+    if (outermost < 0) continue;
+    const callers = frames.slice(outermost + 1).filter((f) => !isNodeInternalFrame(f));
+    const caller = callers.find((f) => frameName(f) !== '(anonymous)') ?? callers[0];
+    const producer = caller ? `${frameName(caller)}@${frameFileOf(caller)}` : '(above profile depth)';
+    return { producer, producerFn: caller ? frameName(caller) : producer, pct: h.pct, stack: h.stack };
+  }
+  return null;
+}
