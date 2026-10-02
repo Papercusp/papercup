@@ -96,3 +96,20 @@ describe('bootc guest-tool contracts (WI-10005618)', () => {
     );
   });
 });
+
+describe('bootc base package freshness (WI-10005681)', () => {
+  const containerfile = readFileSync(CONTAINERFILE, 'utf8');
+  // Drop the inline `# ...` backtick comments so a comment that merely MENTIONS the command
+  // cannot satisfy the guard.
+  const executable = containerfile.replace(/`#[^`]*`/g, '');
+
+  it('upgrades the base image packages before the first package install', () => {
+    // `dnf install` never upgrades a package the base already carries, so without an upgrade the
+    // image ships whatever the base digest pinned (102 fixed high/critical on the P-012 AWS bake).
+    const upgrade = executable.search(/\bdnf -y upgrade --refresh\b/);
+    const firstListInstall = executable.search(/\bdnf -y install --setopt=install_weak_deps=False \\\s*\n\s*--enablerepo=google-compute-engine/);
+    expect(upgrade, 'workspace-host.Containerfile never runs `dnf -y upgrade --refresh`').toBeGreaterThanOrEqual(0);
+    expect(firstListInstall, 'the main package install block was not found').toBeGreaterThanOrEqual(0);
+    expect(upgrade).toBeLessThan(firstListInstall);
+  });
+});

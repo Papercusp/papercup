@@ -127,6 +127,12 @@ RUN set -eux; \
       'gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg' \
       > /etc/yum.repos.d/google-cloud.repo; \
     dnf -y install --setopt=install_weak_deps=False epel-release; \
+    `# Upgrade the BASE before installing (WI-10005681). dnf install never touches a package` \
+    `# the base already carries, so without this the image ships whatever the base digest` \
+    `# pinned: the P-012 AWS bake failed its trust report on 102 fixed high/critical findings` \
+    `# in base packages (openssl, libevent, sqlite-libs, podman, skopeo, ...) for which newer` \
+    `# Stream 9 builds were already published.` \
+    dnf -y upgrade --refresh --setopt=install_weak_deps=False; \
     dnf -y install --setopt=install_weak_deps=False \
          --enablerepo=google-compute-engine \
          `# system packages — WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES` \
