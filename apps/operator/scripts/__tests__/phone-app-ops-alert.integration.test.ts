@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { runPhoneOpsAlert } from '../../../../infra/phone-app/phone-ops-alert.mjs';
+import { join, resolve } from 'node:path';
+import { deliverPhoneOpsNotice, runPhoneOpsAlert } from '../../../../infra/phone-app/phone-ops-alert.mjs';
+
+const repoRoot = resolve(import.meta.dirname, '../../../..');
 
 const dirs: string[] = [];
 afterEach(() => { for (const path of dirs.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -25,6 +28,49 @@ function fixture() {
 }
 
 describe('Phone source operations alert delivery', () => {
+  it('uses the existing audited owner notification CLI with a stable scoped key, without sending', async () => {
+    const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    const notice = { dedupeKey: 'phone-ops:readiness:sip:2026-10-02', harness: 'papercusp',
+      title: 'Phone operations: readiness sip', body: 'Inspect the Phone media and SIP checks.',
+      importance: 'high', sourceRef: 'phone-ops-alert' };
+    await deliverPhoneOpsNotice(notice, async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { stdout: '{"ok":true}' };
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe(process.execPath);
+    expect(calls[0].args).toEqual([
+      join(repoRoot, 'scripts/mcp-call.mjs'), 'notifications:send_owner',
+      JSON.stringify(notice), '--client', 'phone-ops-alert', '--workspace',
+      'papercusp-workspace', '--harness', 'papercusp',
+    ]);
+    expect(calls[0].options).toMatchObject({ timeout: 15_000, maxBuffer: 16_384 });
+    await expect(deliverPhoneOpsNotice(notice, async () => { throw new Error('owner rail refused'); }))
+      .rejects.toThrow('owner rail refused');
+  });
+
+  it('keeps the installed timer and service valid with a precise 15-minute interval', () => {
+    const f = fixture();
+    const unitDir = join(f.dir, 'units');
+    const serviceName = 'papercusp-phone-ops-alert.service';
+    const timerName = 'papercusp-phone-ops-alert.timer';
+    const service = readFileSync(join(repoRoot, 'infra/phone-app/systemd', `${serviceName}.tmpl`), 'utf8')
+      .replaceAll('${PHONE_CONFIG_DIR}', f.dir)
+      .replaceAll('${PHONE_NODE_BIN}', process.execPath)
+      .replaceAll('${PHONE_ALERT_SCRIPT}', join(repoRoot, 'infra/phone-app/phone-ops-alert.mjs'));
+    const timer = readFileSync(join(repoRoot, 'infra/phone-app/systemd', timerName), 'utf8');
+    expect(timer).toContain('OnUnitActiveSec=15min');
+    expect(timer).toContain('AccuracySec=1s');
+    expect(timer).not.toContain('RandomizedDelaySec');
+    // Verify the rendered systemd pair in an isolated directory; no unit is installed or started.
+    mkdirSync(unitDir);
+    writeFileSync(join(unitDir, serviceName), service);
+    writeFileSync(join(unitDir, timerName), timer);
+    const verdict = spawnSync('systemd-analyze', ['verify', join(unitDir, serviceName), join(unitDir, timerName)],
+      { encoding: 'utf8' });
+    expect(verdict.status, verdict.stderr).toBe(0);
+  });
+
   it('delivers one actionable owner alert, dedupes repeats, reminds next day and stands down once', async () => {
     const f = fixture(); f.fail();
     const opts = { env: f.env, run: f.run, notify: f.notify, statePath: f.statePath };

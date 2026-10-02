@@ -36,10 +36,10 @@ async function execute(command, args, env) {
   }
 }
 
-async function deliver(input) {
+export async function deliverPhoneOpsNotice(input, invoke = execFile) {
   // The fixed operational identity cannot inherit an agent session's identity.
   // This call uses the sanctioned MCP CLI and the already-existing owner rail.
-  await execFile(process.execPath, [
+  await invoke(process.execPath, [
     join(repo, 'scripts/mcp-call.mjs'), 'notifications:send_owner',
     JSON.stringify(input), '--client', 'phone-ops-alert', '--workspace',
     'papercusp-workspace', '--harness', 'papercusp',
@@ -88,7 +88,7 @@ function conditions(name, result) {
 
 /** Inject runner/notifier for conventional isolated integration tests. */
 export async function runPhoneOpsAlert({
-  env = process.env, now = new Date(), run = execute, notify = deliver,
+  env = process.env, now = new Date(), run = execute, notify = deliverPhoneOpsNotice,
   statePath = join(env.PHONE_CONFIG_DIR || join(homedir(), '.config/papercusp-phone'), 'ops-alert-state.json'),
 } = {}) {
   const configDir = dirname(statePath);
