@@ -50,6 +50,12 @@ import {
   MAX_RESPAWN_ATTEMPTS,
 } from './spawner-sidecar-spawn';
 import { _resetSidecarShutdownHookRegistryForTests, respawnBackoffMs } from '../process-supervision/sidecar-spawn-shared';
+import {
+  __resetShutdownStateForTest,
+  markGracefulDrainInstalled,
+  markShuttingDown,
+  runBeforeHostExitHooks,
+} from '../shutdown-state';
 import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
 
 type FakeChild = EventEmitter & {
@@ -355,6 +361,72 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
       await newestUncaughtExceptionListener()(new TypeError('a real bug, not EPIPE'));
 
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      warn.mockRestore();
+    });
+  });
+
+  // EI-24863236643374267: measured 2026-10-02 11:49:26-33Z on bg-host — the sidecar
+  // was stopped by its own SIGTERM listener BEFORE the host drain began, so every git
+  // call of the ~10 s drain forked on the host's main thread (256-512 ms each).
+  describe('host drain keeps the sidecar up until exit (EI-24863236643374267)', () => {
+    beforeEach(() => {
+      _resetSidecarShutdownHookRegistryForTests();
+      __resetShutdownStateForTest();
+    });
+    afterEach(() => {
+      process.removeAllListeners('SIGTERM');
+      process.removeAllListeners('SIGINT');
+      process.removeAllListeners('uncaughtException');
+      __resetShutdownStateForTest();
+    });
+
+    const newestSigtermListener = (): (() => unknown) => {
+      const listeners = process.listeners('SIGTERM');
+      return listeners[listeners.length - 1] as () => unknown;
+    };
+
+    async function readySidecar(): Promise<FakeChild> {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+      return child;
+    }
+
+    it('with a drain armed, SIGTERM leaves the sidecar running; the before-exit hook stops it', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const child = await readySidecar();
+      registerSpawnerSidecarShutdownHooks();
+      markGracefulDrainInstalled();
+
+      await newestSigtermListener()();
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(isSpawnerSidecarRunning()).toBe(true);
+
+      runBeforeHostExitHooks();
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      log.mockRestore();
+    });
+
+    it('with NO drain armed (cluster primary, short-lived CLI), SIGTERM still stops it at once', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const child = await readySidecar();
+      registerSpawnerSidecarShutdownHooks();
+
+      await newestSigtermListener()();
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      log.mockRestore();
+    });
+
+    it('a sidecar crash DURING the drain is not respawned', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const child = await readySidecar();
+      markShuttingDown();
+
+      child.emit('exit', 1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(spawnMock).toHaveBeenCalledTimes(1); // the original spawn only
       warn.mockRestore();
     });
   });
