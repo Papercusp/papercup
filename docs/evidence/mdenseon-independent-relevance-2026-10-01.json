@@ -1737,6 +1737,18 @@
     "status": "completed exit 0 at 2026-10-01T23:27:30Z; independent labels frozen, expanded model comparisons and power analysis pending",
     "frozenAt": "2026-10-01T23:27:30.191Z",
     "identityHash": "74e512104a2f259c2f2a061511223e5ee82fc42843fceb8c3779f53c1917c72f",
+    "measurementManifest": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v4.json",
+      "sha256": "a1efd4689c5d244545382dcfeee83542fa074a3d6bfd80d4c7eae0d9226609ed",
+      "bytes": 118479
+    },
+    "freezeAudit": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/relevance-v4-freeze-audit.json",
+      "sha256": "871aa1cf9fa0ace558dff5457b37300e6dfa60cb6b8e0d0864d1693bfa291868",
+      "bytes": 3012,
+      "status": "manifest-qualified-inference-pending",
+      "verification": "Validated both independent cohorts, exact labels and judgments, four aggregate raw judge files, declared source/toolchain/native fingerprints, and unchanged model/profile/tokenizer/prompt/execution contracts. Six fresh relevance cells are declared; the original V1 manifest and measurements remain intact."
+    },
     "targetsPerPartition": 32,
     "authorRecovery": "All 128 saved v3 authors were reused; no new author calls. All original prompt, invocation, identity and fingerprint references were followed to the original priced author receipts.",
     "labels": {
@@ -1798,7 +1810,7 @@
     "Cosine-only rejection margins do not establish calibrated production hybrid/entity/filter/decay negative rejection; P-004 remains pending.",
     "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance."
   ],
-  "next": "Freeze a new relevance manifest bound to the completed V4 labels and judgments, preserve the original V1 measurements, and measure the expanded cohort before source-group power analysis. Continue P-005 executable-source isolation, P-006 and P-004 preparation under the existing plan; no superiority or census-exhaustion claim is established.",
+  "next": "Measure the six expanded relevance cells from the qualified V4 manifest, retain vectors for hybrid reuse, then perform source-group power analysis. P-005 V6 runs in the qualified frozen runtime; P-006 and P-004 remain open under the existing plan. No superiority or census-exhaustion claim is established.",
   "reproduction": {
     "modelRunner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --manifest <frozen manifest> --manifest-sha256 <recorded SHA256> --cell <declared cell> --legs <declared model> --corpus <declared corpus> --mdenseon-model <qualified export> --out <declared private output>",
     "analysisModule": "packages/operator-core/lib/memory/bench/paired-leg-report.ts: compareSourceGroupedLegs(primary) and compareLegs(secondary), fed exact receipt perQuery rows and independent heldout labels",
