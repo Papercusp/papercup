@@ -2,25 +2,25 @@
   "armId": "gitnexus-installed",
   "version": "1.6.9",
   "unavailable": null,
-  "treeFingerprint": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5+dirty",
+  "treeFingerprint": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
   "coldIndex": {
-    "wallMs": 889450,
-    "peakRssKb": 8354216,
+    "wallMs": 436040,
+    "peakRssKb": 10141156,
     "ok": true,
-    "loadAvg1": 95.64,
+    "loadAvg1": null,
     "error": null
   },
-  "indexBytes": 2893219483,
+  "indexBytes": 2889981522,
   "cases": [
     {
       "caseId": "selective-scheduler-edge",
       "intent": "callees",
-      "coldQueryMs": 6642,
-      "warmQueryMs": 6303,
+      "coldQueryMs": 5312,
+      "warmQueryMs": 4967,
       "warmSamplesMs": [
-        5565,
-        6303,
-        6469
+        4967,
+        5074,
+        4940
       ],
       "responseBytes": 33871,
       "estTokens": 8468,
@@ -50,15 +50,15 @@
     {
       "caseId": "selective-fingerprint-chain",
       "intent": "callees",
-      "coldQueryMs": 10099,
-      "warmQueryMs": 9666,
+      "coldQueryMs": 6819,
+      "warmQueryMs": 7187,
       "warmSamplesMs": [
-        10481,
-        9666,
-        9279
+        7000,
+        7777,
+        7187
       ],
-      "responseBytes": 29309,
-      "estTokens": 7328,
+      "responseBytes": 29029,
+      "estTokens": 7258,
       "correct": false,
       "recall": 0.5,
       "grade": {
@@ -85,12 +85,12 @@
     {
       "caseId": "selective-external-consumer",
       "intent": "callers",
-      "coldQueryMs": 5833,
-      "warmQueryMs": 5615,
+      "coldQueryMs": 4451,
+      "warmQueryMs": 4412,
       "warmSamplesMs": [
-        5643,
-        5615,
-        5471
+        4502,
+        4337,
+        4412
       ],
       "responseBytes": 14042,
       "estTokens": 3511,
@@ -138,12 +138,12 @@
     {
       "caseId": "selective-exact-index-symbol",
       "intent": "symbol-search",
-      "coldQueryMs": 2563,
-      "warmQueryMs": 2669,
+      "coldQueryMs": 2104,
+      "warmQueryMs": 2242,
       "warmSamplesMs": [
-        4613,
-        2655,
-        2669
+        2212,
+        2274,
+        2242
       ],
       "responseBytes": 59,
       "estTokens": 15,
@@ -165,13 +165,13 @@
     {
       "name": "edit",
       "pass": false,
-      "detail": "missing packages/operator-core/lib/scheduler/get-next.ts:3112 [engine note: gitnexus dispatch threw: gitnexus context exit 1: de_modules/gitnexus/dist/cli/tool.js:116:20)\n    at async Command.<anonymous> (~/.papercusp/vendor/gitnexus/node_modules/gitnexus/dist/cli/lazy-action.js:33:9)\n\nNode.js v25.9.0]",
+      "detail": "missing packages/operator-core/lib/scheduler/get-next.ts:3108 [engine note: gitnexus dispatch threw: gitnexus context exit 139: GitNexus: found 90371 byte lbug.wal without lbug.shadow before read-only open; will rely on LadybugDB replay/recovery instead of deleting pending WAL data.]",
       "refreshCost": {
-        "wallMs": 1812146.890135,
+        "wallMs": 1800855.3973730002,
         "peakRssKb": null,
         "ok": false,
         "error": "exit 124 (deadline: process group killed): 1.x can crash while installing gitnexus via npx (npm/arborist \"node.target is null\"). Prefer: pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze or npm install -g gitnexus@latest. See https://github.com/abhigyanpatwari/GitNexus/issues/1939",
-        "loadAvg1": 173.69
+        "loadAvg1": 53.88
       },
       "recoveryCost": null,
       "faultSurfaced": null
@@ -181,11 +181,11 @@
       "pass": false,
       "detail": "query FAILED (error and no sites) [engine note: gitnexus dispatch threw: gitnexus context exit 139: ]",
       "refreshCost": {
-        "wallMs": 1804488.8026979999,
+        "wallMs": 1811864.4249920002,
         "peakRssKb": null,
         "ok": false,
         "error": "exit 124 (deadline: process group killed): 1.x can crash while installing gitnexus via npx (npm/arborist \"node.target is null\"). Prefer: pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze or npm install -g gitnexus@latest. See https://github.com/abhigyanpatwari/GitNexus/issues/1939",
-        "loadAvg1": 81.09
+        "loadAvg1": 72.25
       },
       "recoveryCost": null,
       "faultSurfaced": null
@@ -193,22 +193,22 @@
     {
       "name": "refresh-failure",
       "pass": true,
-      "detail": "fault SURFACED; correct cold=2 while-broken=2 after-restore=2; recovery refresh ok=true",
+      "detail": "fault SILENT; correct cold=2 while-broken=2 after-restore=2; recovery refresh ok=true",
       "refreshCost": {
-        "wallMs": 1627622.357229,
-        "peakRssKb": 6063784,
-        "ok": false,
-        "error": "exit 1: ild=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze or npm install -g gitnexus@latest. See https://github.com/abhigyanpatwari/GitNexus/issues/1939\n\n  Analysis failed: Runtime exception: Failed calling LOWER: Invalid UTF-8.\nError: Runtime exception: Failed calling LOWER: Invalid UTF-8.",
-        "loadAvg1": 58.26
-      },
-      "recoveryCost": {
-        "wallMs": 551405.895525,
-        "peakRssKb": 8664928,
+        "wallMs": 821.7162430007011,
+        "peakRssKb": 134920,
         "ok": true,
         "error": null,
-        "loadAvg1": 71.39
+        "loadAvg1": 89.05
       },
-      "faultSurfaced": true
+      "recoveryCost": {
+        "wallMs": 749.7745509995148,
+        "peakRssKb": 135848,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 76.63
+      },
+      "faultSurfaced": false
     }
   ],
   "error": null

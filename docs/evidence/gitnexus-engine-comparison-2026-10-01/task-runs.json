@@ -29,7 +29,7 @@
     "harnessVersion": "rg rg",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:baseline-lsp-rg:selective-scheduler-edge",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -61,7 +61,7 @@
     "harnessVersion": "rg rg",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:baseline-lsp-rg:selective-fingerprint-chain",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -93,7 +93,7 @@
     "harnessVersion": "rg rg",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:baseline-lsp-rg:selective-external-consumer",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -125,7 +125,7 @@
     "harnessVersion": "rg rg",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:baseline-lsp-rg:selective-route-boundary",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -157,7 +157,7 @@
     "harnessVersion": "rg rg",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:baseline-lsp-rg:selective-exact-index-symbol",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -176,7 +176,7 @@
     "tokensTotal": 0,
     "costUsd": 0,
     "priceTableVersion": "none-tool-level",
-    "wallClockMs": 6642,
+    "wallClockMs": 5312,
     "turns": 4,
     "budgetTokens": null,
     "capped": false,
@@ -189,7 +189,7 @@
     "harnessVersion": "1.6.9",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-installed:selective-scheduler-edge",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -208,20 +208,20 @@
     "tokensTotal": 0,
     "costUsd": 0,
     "priceTableVersion": "none-tool-level",
-    "wallClockMs": 10099,
+    "wallClockMs": 6819,
     "turns": 4,
     "budgetTokens": null,
     "capped": false,
     "generationStatus": "error",
     "armMeta": {
-      "responseBytes": 29309,
-      "estTokens": 7328
+      "responseBytes": 29029,
+      "estTokens": 7258
     },
     "modelId": "none-tool-only",
     "harnessVersion": "1.6.9",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-installed:selective-fingerprint-chain",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -240,7 +240,7 @@
     "tokensTotal": 0,
     "costUsd": 0,
     "priceTableVersion": "none-tool-level",
-    "wallClockMs": 5833,
+    "wallClockMs": 4451,
     "turns": 4,
     "budgetTokens": null,
     "capped": false,
@@ -253,7 +253,7 @@
     "harnessVersion": "1.6.9",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-installed:selective-external-consumer",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -285,7 +285,7 @@
     "harnessVersion": "1.6.9",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-installed:selective-route-boundary",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -304,7 +304,7 @@
     "tokensTotal": 0,
     "costUsd": 0,
     "priceTableVersion": "none-tool-level",
-    "wallClockMs": 2563,
+    "wallClockMs": 2104,
     "turns": 4,
     "budgetTokens": null,
     "capped": false,
@@ -317,7 +317,7 @@
     "harnessVersion": "1.6.9",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-installed:selective-exact-index-symbol",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -349,7 +349,7 @@
     "harnessVersion": "1.6.12",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-candidate:selective-scheduler-edge",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -381,7 +381,7 @@
     "harnessVersion": "1.6.12",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-candidate:selective-fingerprint-chain",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -413,7 +413,7 @@
     "harnessVersion": "1.6.12",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-candidate:selective-external-consumer",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -445,7 +445,7 @@
     "harnessVersion": "1.6.12",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-candidate:selective-route-boundary",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -477,7 +477,7 @@
     "harnessVersion": "1.6.12",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:gitnexus-candidate:selective-exact-index-symbol",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -509,7 +509,7 @@
     "harnessVersion": "dev@339b3f40",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:codebase-memory:selective-scheduler-edge",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -541,7 +541,7 @@
     "harnessVersion": "dev@339b3f40",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:codebase-memory:selective-fingerprint-chain",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -573,7 +573,7 @@
     "harnessVersion": "dev@339b3f40",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:codebase-memory:selective-external-consumer",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -605,7 +605,7 @@
     "harnessVersion": "dev@339b3f40",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:codebase-memory:selective-route-boundary",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   },
   {
     "runId": "engine-comparison-2026-10-02",
@@ -637,6 +637,6 @@
     "harnessVersion": "dev@339b3f40",
     "preregHash": "7ff941b3e5366038",
     "rolloutId": "engine-comparison-2026-10-02:codebase-memory:selective-exact-index-symbol",
-    "createdAt": "2026-10-02T09:07:34.917Z"
+    "createdAt": "2026-10-02T16:37:34.722Z"
   }
 ]

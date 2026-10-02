@@ -56,9 +56,14 @@
     },
     {
       "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
-      "bytes": 5291,
-      "sha256": "702c6dd661d4370ecbba96c74b722b6c4b3342cce71235c309093315883297ff",
-      "matchesRunStartCommit": false
+      "bytes": 5193,
+      "sha256": "ab2bb0141e1afa87e2aaefa2b097eb60157e97e2f3079ea6b60e2924ffea85e3",
+      "matchesRunStartCommit": false,
+      "runStartReceipt": {
+        "bytes": 5291,
+        "sha256": "702c6dd661d4370ecbba96c74b722b6c4b3342cce71235c309093315883297ff"
+      },
+      "currentGuardTestRunId": 20553587
     },
     {
       "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
@@ -102,12 +107,23 @@
   },
   "guard": {
     "file": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
-    "testRunId": 20549659,
+    "testRunId": 20553587,
     "passed": 4,
     "skipped": 0,
     "source": "local",
     "layer": "unit",
-    "localUntrackedAtRun": true
+    "localUncommittedAtRun": true,
+    "sourceReceipt": {
+      "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+      "bytes": 5193,
+      "sha256": "ab2bb0141e1afa87e2aaefa2b097eb60157e97e2f3079ea6b60e2924ffea85e3"
+    },
+    "logReceipt": {
+      "path": "/tmp/su-7db4f-p011-heap-census-guard-r4.log",
+      "bytes": 4956,
+      "sha256": "7d663ee141bb6a874e1afe9cdef24b30dd45104057201f6f866091204a3f968b"
+    },
+    "reason": "Credential-shaped fixture marker replaced by the conventional low-entropy payload marker; runtime analyzer/cohort sources unchanged and R2 retained."
   },
   "snapshot": {
     "bytes": 570841109,
@@ -401,5 +417,14 @@
     "No complete executable source graph is claimed.",
     "Production/native/worker memory savings and parent P011/R8/R9 acceptance remain open.",
     "Post-snapshot PSS is perturbed by capture and cannot establish ordinary steady-state footprint."
-  ]
+  ],
+  "previousGuard": {
+    "file": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+    "testRunId": 20549659,
+    "passed": 4,
+    "skipped": 0,
+    "source": "local",
+    "layer": "unit",
+    "localUntrackedAtRun": true
+  }
 }

@@ -41,9 +41,14 @@
     },
     {
       "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
-      "bytes": 5291,
-      "sha256": "702c6dd661d4370ecbba96c74b722b6c4b3342cce71235c309093315883297ff",
-      "matchesRunStartCommit": false
+      "bytes": 5193,
+      "sha256": "ab2bb0141e1afa87e2aaefa2b097eb60157e97e2f3079ea6b60e2924ffea85e3",
+      "matchesRunStartCommit": false,
+      "runStartReceipt": {
+        "bytes": 5291,
+        "sha256": "702c6dd661d4370ecbba96c74b722b6c4b3342cce71235c309093315883297ff"
+      },
+      "currentGuardTestRunId": 20553587
     },
     {
       "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
@@ -90,6 +95,16 @@
       "path": "/tmp/su-7db4f-p011-heap-census-r2.log",
       "bytes": 15533,
       "sha256": "ab76493648e3ab435576578686138e8c35b7d1ff6536d206a6ca038c3f30c166"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-heap-census-guard-r4.log",
+      "bytes": 4956,
+      "sha256": "7d663ee141bb6a874e1afe9cdef24b30dd45104057201f6f866091204a3f968b"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-heap-types-r3.log",
+      "bytes": 977,
+      "sha256": "418edadcd4d6b9f9be3357a9a7c7d18dee8c8ebbc326216415b384b0eb60238f"
     }
   ],
   "rootCause": {
@@ -106,9 +121,15 @@
   },
   "verification": {
     "guard": {
-      "testRunId": 20549659,
+      "testRunId": 20553587,
       "passed": 4,
-      "skipped": 0
+      "skipped": 0,
+      "sourceReceipt": {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "bytes": 5193,
+        "sha256": "ab2bb0141e1afa87e2aaefa2b097eb60157e97e2f3079ea6b60e2924ffea85e3"
+      },
+      "localUncommittedAtRun": true
     },
     "private": {
       "testRunId": 20553546,
@@ -129,14 +150,81 @@
     "focusedTypes": {
       "result": "0 errors in two named test files",
       "log": {
-        "path": "/tmp/su-7db4f-p011-heap-types-r2.log",
-        "bytes": 976,
-        "sha256": "9dcad763012c2b8e8a02801b6cd194dc7ad797a98c6d4d192a2c273b4f5ae602"
+        "path": "/tmp/su-7db4f-p011-heap-types-r3.log",
+        "bytes": 977,
+        "sha256": "418edadcd4d6b9f9be3357a9a7c7d18dee8c8ebbc326216415b384b0eb60238f"
       },
-      "runHead": "9ee59efec5",
-      "at": "2026-10-02T17:57:46.308Z",
-      "limitation": "Saved before the final aggregation-guard test addition; no new runtime code change after it."
-    }
+      "runHead": "e3eda7d6c1",
+      "at": "2026-10-02T18:15:36.388Z",
+      "checkedFiles": [
+        "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "packages/operator-core/lib/service-memory-attribution.integration.test.ts"
+      ],
+      "scope": "Two named files and direct type consumers; not a full repository compile."
+    },
+    "previousGuard": {
+      "testRunId": 20549659,
+      "passed": 4,
+      "skipped": 0
+    },
+    "contentLint": [
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "ranCount": 6,
+        "exitCode": 0,
+        "flagged": []
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "ranCount": 4,
+        "exitCode": 0,
+        "flagged": []
+      },
+      {
+        "path": "tsconfig.declarations.json",
+        "ranCount": 4,
+        "exitCode": 0,
+        "flagged": []
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "ranCount": 9,
+        "exitCode": 0,
+        "flagged": [],
+        "earlierFailure": "Secret assignment detector rejected the old privacy marker; final plain marker reached nine detectors with zero flags."
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "ranCount": 9,
+        "exitCode": 0,
+        "flagged": []
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-heap-census-r1-2026-10-02.json",
+        "ranCount": 4,
+        "exitCode": 0,
+        "flagged": []
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-heap-census-r2-2026-10-02.json",
+        "ranCount": 4,
+        "exitCode": 0,
+        "flagged": []
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-heap-census-r2-qualification-2026-10-02.json",
+        "ranCount": 4,
+        "exitCode": 0,
+        "flagged": []
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-heap-census-verification-2026-10-02.json",
+        "ranCount": 4,
+        "exitCode": 0,
+        "flagged": []
+      }
+    ],
+    "scopedDiffCheck": "pass"
   },
   "acceptanceBoundary": "Narrow heap census/tooling child only. Parent exclusive ownership, physical/native intervention, historical compiler explanation, R8/R9, independent acceptance and shipment remain open."
 }
