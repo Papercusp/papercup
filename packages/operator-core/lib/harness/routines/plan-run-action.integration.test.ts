@@ -27,7 +27,10 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { handlePlanRun, resetManualTokenCounterForTests, runScheduledPlanFire } from './plan-run-action';
 import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
-import { observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
+import { assignAndWakeActionableWorkItems } from '../../agent-tools/coordination/actionable-work-item-dispatch';
+import { getWorkItem, observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
+import { emitUnblockedOnEdgeRemoved } from '../../work-items-events';
+import { FEATURE_KIND } from '../../issue-blocks-merge';
 import { recordAdvSession } from '../../adv-sessions';
 import { adoptAgentName } from '../../plan-items/agent-names';
 import { drainDetached } from '../../detached-imports';
@@ -209,6 +212,20 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
     } as never,
   )) as { data?: { results?: Record<string, unknown>[] } };
   return response.data?.results?.[0] ?? {};
+}
+
+/** WI-10004815: a wake-count mismatch must name the writer of every wake. */
+function describeDeliveries(rows: Awaited<ReturnType<typeof listRecentDeliveries>>): string {
+  return JSON.stringify(
+    rows.map((row) => ({
+      source: row.source,
+      summary: row.summary,
+      workItemIds: (row.payload as { workItemIds?: unknown } | null)?.workItemIds,
+      createdAt: row.createdAt,
+    })),
+    null,
+    2,
+  );
 }
 
 describe('runScheduledPlanFire (system:plan-run)', () => {
@@ -830,12 +847,47 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       expect(childAfter?.item).toMatchObject({ state: 'open', assignee: 'email-agent' });
 
       const successorDeliveries = await listRecentDeliveries(wakeOwner);
-      expect(successorDeliveries).toHaveLength(beforeSuccessorWake + 1);
+      expect(successorDeliveries, describeDeliveries(successorDeliveries)).toHaveLength(beforeSuccessorWake + 1);
       expect(successorDeliveries[0]).toMatchObject({
         eventKey: inboxWakeKey(wakeOwner),
         payload: { kind: 'actionable-work-item-dispatch', workItemIds: [child.id] },
       });
       expect(await listRecentDeliveries(genericWaiter)).toHaveLength(0);
+
+      // WI-10004815: two writers dispatch a released successor — the settle
+      // path (work-items-events) and the plan-lane restore. The settle path
+      // reads the dependent BEFORE it dispatches, so when the lane path
+      // assigns and wakes the stable agent inside that window, the settle path
+      // still holds a snapshot with no assignee. Replay exactly that order:
+      // the dispatch must find the row already retained and spend no 2nd wake.
+      const assignedChild = await getWorkItem(child.id, APP_HARNESS);
+      expect(assignedChild?.assignee).toBe('email-agent');
+      const staleSnapshot = { ...assignedChild!, assignee: null };
+      const staleGetItem = (async (id: string, harness?: string) =>
+        id === child.id ? staleSnapshot : getWorkItem(id, harness)) as typeof getWorkItem;
+      const childRef = { kind: FEATURE_KIND, ref: `${APP_HARNESS}#${child.id}` };
+      await emitUnblockedOnEdgeRemoved(childRef, root.id, { getItem: staleGetItem });
+      await drainDetached();
+      const afterStaleSettle = await listRecentDeliveries(wakeOwner);
+      expect(afterStaleSettle, describeDeliveries(afterStaleSettle)).toHaveLength(successorDeliveries.length);
+      expect(await listRecentDeliveries(genericWaiter)).toHaveLength(0);
+
+      // CONTROL: the same replay with the pre-fix dispatch (which also wakes a
+      // row the target already retains) must add exactly one wake. Without
+      // this, the assertion above would also pass if the stale snapshot never
+      // reached the dispatch at all.
+      await emitUnblockedOnEdgeRemoved(childRef, root.id, {
+        getItem: staleGetItem,
+        dispatchActionable: ((args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) =>
+          assignAndWakeActionableWorkItems({ ...args, wakeRetained: undefined })) as typeof assignAndWakeActionableWorkItems,
+      });
+      await drainDetached();
+      const afterLegacyControl = await listRecentDeliveries(wakeOwner);
+      expect(afterLegacyControl, describeDeliveries(afterLegacyControl)).toHaveLength(successorDeliveries.length + 1);
+      expect(afterLegacyControl[0]).toMatchObject({
+        source: 'system:plan-run-successor-dispatch',
+        payload: { kind: 'actionable-work-item-dispatch', workItemIds: [child.id] },
+      });
 
       const ledger = await sql<Array<{ harness: string }>>`
         SELECT harness_slug AS harness FROM harness_shared.plan_runs
