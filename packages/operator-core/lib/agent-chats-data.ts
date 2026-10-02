@@ -9,6 +9,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { harnessQuery } from '@papercusp/db-org';
+import {
+  projectChatFailureTranscript,
+  type ChatModelFailureCode,
+} from './chat-model-failure';
 import { getKnownRoles } from './known-roles';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -52,11 +56,18 @@ export interface TranscriptTurn {
   tools?: TranscriptToolCall[];
   /**
    * Marks an assistant turn that FAILED (rate-limit, backend error, dispatch
-   * error) instead of producing a reply. `content` holds the failure message.
+   * error) instead of producing a reply. New rows keep a safe sentence in
+   * `content`; actionable failure details use stable fields below.
    * Persisted so a reload / second viewer sees the failure instead of a silent
    * gap (the live sender also gets the inline error banner). jsonb — no migration.
    */
   error?: boolean;
+  /** Stable viewer-safe failure classification; never raw backend prose. */
+  code?: ChatModelFailureCode;
+  /** Provider-named account reset instant, when known. */
+  resetAt?: number;
+  /** Backend retry delay, when known. */
+  retryAfterMs?: number;
   /** Number of terminal usage frames whose cost/token fields were absent. */
   unreportedFrames?: number;
   /** Stable idempotency key for a server-to-server external turn (P-010). */
@@ -185,10 +196,11 @@ function msToIsoNullable(v: unknown): string | null {
 }
 
 export function rowToChat(r: Record<string, unknown>): ChatRow {
-  const transcript: TranscriptTurn[] =
+  const storedTranscript: TranscriptTurn[] =
     typeof r.transcript === 'string'
       ? JSON.parse(r.transcript)
       : ((r.transcript as TranscriptTurn[] | undefined) ?? []);
+  const transcript = projectChatFailureTranscript(storedTranscript) as TranscriptTurn[];
   const usageComplete =
     typeof r.usage_complete === 'boolean'
       ? r.usage_complete

@@ -584,6 +584,64 @@ export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, ret
     retryCount?: number | undefined;
     maxRetries?: number | undefined;
 }): boolean;
+/** WI-10004943: the per-host retry budget for a launch kickoff's fresh-child
+ *  replacement. A missing, empty, or malformed value keeps the default; an explicit
+ *  integer >= 0 wins, so `0` is the kill switch. Pure; exported for tests.
+ * @param {unknown} value
+ * @param {number} [fallback]
+ */
+export function codexLaunchStartingRetryMax(value: unknown, fallback?: number): number;
+/** WI-10004943: should an undelivered launch kickoff be retried on a fresh child?
+ *  Only a plain fresh Codex launch qualifies: a managed kickoff (session-port seed)
+ *  has a native-transcript proof that owns its own timeout and child kill, and a
+ *  resume/fork may already be running a turn. Only the stuck `Starting` footer
+ *  qualifies, because that state belongs to the child: every measured drop had other
+ *  sessions' Codex children booting in under 60s alongside it. Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.agent]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.isResume]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ */
+export function shouldRetryLaunchKickoffOnFreshChild({ agent, reason, managedKickoff, isResume, retryCount, maxRetries, }?: {
+    agent?: string | undefined;
+    reason?: string | undefined;
+    managedKickoff?: boolean | undefined;
+    isResume?: boolean | undefined;
+    retryCount?: number | undefined;
+    maxRetries?: number | undefined;
+}): boolean;
+/** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
+ *  fresh-child retry remains, give up early on a child still at `Starting` after
+ *  `stuckMs` so the host can replace it (the WI-10005106 carry remedy). The last
+ *  attempt, and any launch that cannot be retried, keeps the (d) hold for the frame.
+ *  Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.agent]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.isResume]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ * @param {number} [opts.stuckMs]
+ * @param {number} [opts.holdCeilingMs]
+ */
+export function launchKickoffCodexStartingOptions({ agent, managedKickoff, isResume, retryCount, maxRetries, stuckMs, holdCeilingMs, }?: {
+    agent?: string | undefined;
+    managedKickoff?: boolean | undefined;
+    isResume?: boolean | undefined;
+    retryCount?: number | undefined;
+    maxRetries?: number | undefined;
+    stuckMs?: number | undefined;
+    holdCeilingMs?: number | undefined;
+}): {
+    codexStartingStuckMs: number;
+    codexStartingHoldCeilingMs?: undefined;
+} | {
+    codexStartingHoldCeilingMs: number;
+    codexStartingStuckMs?: undefined;
+};
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId: any): string;

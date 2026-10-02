@@ -37,10 +37,10 @@ interface CallSite {
 }
 
 /** Return every call of CALLEE in `source` (not its definition) and whether it names harnessSlug. */
-function findLifecycleCalls(source: string, fileName: string): CallSite[] {
+function findLifecycleCalls(source: string, fileName: string, callee: string = CALLEE): CallSite[] {
   const masked: string = stripCommentsAndStrings(source, fileName);
   const calls: CallSite[] = [];
-  const re = new RegExp(`\\b${CALLEE}\\s*\\(`, 'g');
+  const re = new RegExp(`\\b${callee}\\s*\\(`, 'g');
   for (let match = re.exec(masked); match; match = re.exec(masked)) {
     const before = masked.slice(Math.max(0, match.index - 40), match.index);
     if (/\bfunction\s+$/.test(before)) continue;
@@ -104,5 +104,47 @@ describe('acceptance-BAR lifecycle reads are harness-scoped (WI-10005140)', () =
     expect(total).toBeGreaterThanOrEqual(8);
     const counts = Object.fromEntries(Object.entries(unscoped).map(([file, lines]) => [file, lines.length]));
     expect(counts, `unscoped lifecycle reads: ${JSON.stringify(unscoped)}`).toEqual(KNOWN_UNSCOPED);
+  });
+});
+
+// WI-10005167: plan_items is keyed (workspace, harness, slug, item), so an unscoped
+// getPlanItemStatuses(slug) MERGES two harnesses' same-slug plans. A caller may pass
+// harnessSlug only when it holds the plan's OWN harness (a wrong one answers [] and the
+// callers fail open), so the remaining sites are tracked, not forced.
+const ITEM_READ_CALLEE = 'getPlanItemStatuses';
+
+/** Lib-relative file → unscoped call count. Shrink-only; WI-10005174 drives it to {}. */
+const KNOWN_UNSCOPED_ITEM_READS: Readonly<Record<string, number>> = {
+  'agent-tools/plans/audit.ts': 2,
+  'agent-tools/plans/supersede-item-gate.ts': 1,
+};
+
+describe('plan-item reads are harness-scoped (WI-10005167)', () => {
+  it('the detector flags an unscoped item read and passes a scoped one (calibration)', () => {
+    const sample = [
+      `export async function ${ITEM_READ_CALLEE}(planSlug: string, scope = {}) {}`,
+      `await ${ITEM_READ_CALLEE}(slug);`,
+      `await ${ITEM_READ_CALLEE}(slug, { harnessSlug: planHarnessSlug });`,
+    ].join('\n');
+    expect(findLifecycleCalls(sample, 'sample.ts', ITEM_READ_CALLEE).map((c) => c.scoped)).toEqual([false, true]);
+  });
+
+  it('every production caller passes the plan harness, except the shrink-only WI-10005174 sites', () => {
+    const unscoped: Record<string, number[]> = {};
+    let total = 0;
+    for (const file of productionSources(LIB_ROOT)) {
+      const source = readFileSync(file, 'utf8');
+      if (!source.includes(ITEM_READ_CALLEE)) continue;
+      for (const call of findLifecycleCalls(source, file, ITEM_READ_CALLEE)) {
+        total++;
+        if (call.scoped) continue;
+        const rel = path.relative(LIB_ROOT, file).split(path.sep).join('/');
+        (unscoped[rel] ??= []).push(call.line);
+      }
+    }
+    // Positive control: emit x1 + ship gate x2 + audit x2 + supersede x1.
+    expect(total).toBeGreaterThanOrEqual(6);
+    const counts = Object.fromEntries(Object.entries(unscoped).map(([file, lines]) => [file, lines.length]));
+    expect(counts, `unscoped plan-item reads: ${JSON.stringify(unscoped)}`).toEqual(KNOWN_UNSCOPED_ITEM_READS);
   });
 });

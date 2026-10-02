@@ -21,6 +21,7 @@
  */
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { projectChatFailureTranscript } from '../../../chat-model-failure';
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
   try {
@@ -77,7 +78,10 @@ async function dispatch(req: Request, ctx: RouteContext): Promise<Response> {
           FROM harness_shared.agent_chats_consolidated
          WHERE id = ${id}
          LIMIT 1`;
-      return Response.json({ chat: rows[0] ?? null });
+      const row = rows[0];
+      return Response.json({
+        chat: row ? { ...row, transcript: projectChatFailureTranscript(row.transcript) } : null,
+      });
     }
 
     // ── deliberation threads — coord:thread / deliberate / vote posts, attached

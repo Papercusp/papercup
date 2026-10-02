@@ -899,6 +899,9 @@ export function defaultIntakePromotionDeps(): IntakePromotionDeps {
         ...(input.severity ? { severity: input.severity as never } : {}),
         createdBy: input.createdBy,
         payload: input.payload,
+        // The recorded decision and sealed acceptance contract already reviewed this work.
+        admission: 'auto',
+        admittedBy: 'bypass:intake-decision',
       });
       return toIntakeWorkItem(created);
     },

@@ -30,6 +30,52 @@ dependency_generation_log() {
   fi
 }
 
+# WI-10005159: ONE generation store per integration root. bg-host sets
+# PAPERCUSP_DEPENDENCY_GENERATION_ROOT for the scheduled gate, but a manual
+# `systemd-run --unit` gate run, install:safe and an agent's hand prewarm do not
+# inherit that env, so each fell back to the tree-local store the gate never
+# reads (exit 74 "no prewarmed dependency generation" while the generation sat in
+# the other store). The env-named root is therefore recorded under the
+# integration root, and every env-less caller on that root follows the record.
+# Precedence: explicit CLI root > env > record > tree-local default.
+dependency_generation_root_record() {
+  printf '%s\n' "$1/.papercusp/dependency-generation-root"
+}
+
+dependency_generation_resolve_root() {
+  local integration_root="$1" explicit="${2:-}" record recorded='' configured
+  if [ -n "$explicit" ]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+  record="$(dependency_generation_root_record "$integration_root")"
+  if [ -f "$record" ]; then
+    IFS= read -r recorded < "$record" || true
+  fi
+  case "$recorded" in
+    /*) ;;
+    *) recorded='' ;;
+  esac
+  configured="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
+  if [ -n "$configured" ]; then
+    if [ "$recorded" != "$configured" ]; then
+      [ -z "$recorded" ] || dependency_generation_log \
+        "generation root record $record named $recorded; PAPERCUSP_DEPENDENCY_GENERATION_ROOT=$configured replaces it"
+      { mkdir -p "$(dirname "$record")" \
+          && printf '%s\n' "$configured" > "$record.tmp.$$" \
+          && mv -f "$record.tmp.$$" "$record"; } 2>/dev/null \
+        || dependency_generation_log "WARNING: could not record generation root $configured at $record"
+    fi
+    printf '%s\n' "$configured"
+    return 0
+  fi
+  if [ -n "$recorded" ]; then
+    printf '%s\n' "$recorded"
+    return 0
+  fi
+  printf '%s\n' "$integration_root/.papercusp/dependency-generations"
+}
+
 # Writer-owned monotonic-enough wall clock for phase telemetry. GNU date gives
 # millisecond resolution; BSD date prints the unsupported %N literally, so fall
 # back to whole seconds expressed as milliseconds. Durations are diagnostic and
@@ -812,7 +858,7 @@ dependency_generation_select_input_fingerprint() {
   selector="$generation_root/.inputs/$input_fingerprint"
   if [ ! -f "$selector" ]; then
     dependency_generation_log \
-      "FATAL: no prewarmed dependency generation for input fingerprint $input_fingerprint"
+      "FATAL: no prewarmed dependency generation for input fingerprint $input_fingerprint (generation_root=$generation_root)"
     return 74
   fi
   schema="$(dependency_generation_read_field "$selector" schema)"
@@ -2208,7 +2254,7 @@ dependency_generation_ensure() {
 
 dependency_generation_ensure_once() {
   local integration_root="$1"
-  local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
+  local generation_root="${2:-$(dependency_generation_resolve_root "$integration_root")}"
   local source_before='' source_after='' identity generation build tree nm rel snapshot marker
   local quarantine before_manifest='' after_manifest='' tree_manifest='' tree_manifest_digest=''
   local publication_token='' created_ns=''
@@ -2702,7 +2748,7 @@ dependency_generation_find_equivalent_prewarm() {
 
 dependency_generation_stage_exact_ref_inputs() {
   local integration_root="$1" ref="$2" exact_input="$3"
-  local generation_root="${4:-$integration_root/.papercusp/dependency-generations}"
+  local generation_root="${4:-$(dependency_generation_resolve_root "$integration_root")}"
   local parent scratch have ref_manifest live_manifest verdict rc
   local helper="${DEPENDENCY_GENERATION_LOCK_EQUIVALENCE:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-equivalence.mjs}"
   DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
@@ -2761,7 +2807,7 @@ dependency_generation_stage_exact_ref_inputs() {
 # trees (a typed miss that names why); any other non-zero = the build itself failed.
 dependency_generation_prepare_exact_ref_root() {
   local integration_root="$1" ref="$2" exact_input="$3"
-  local generation_root="${4:-$integration_root/.papercusp/dependency-generations}"
+  local generation_root="${4:-$(dependency_generation_resolve_root "$integration_root")}"
   local scratch verdict rc line drop trees=0
   rc=0
   dependency_generation_stage_exact_ref_inputs \
@@ -2859,9 +2905,10 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   build_root="$integration_root"
-  # Preserve an explicit CLI root, then honor the service-level override before
-  # falling back to the integration checkout's local generation store.
-  generation_root="${generation_root:-${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-$integration_root/.papercusp/dependency-generations}}"
+  # Preserve an explicit CLI root, then honor the service-level override, then
+  # the root that override recorded for this integration root (WI-10005159),
+  # before falling back to the integration checkout's local generation store.
+  generation_root="$(dependency_generation_resolve_root "$integration_root" "$generation_root")"
   if [ -n "$prune_only" ]; then
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {

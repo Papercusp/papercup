@@ -1301,3 +1301,123 @@ describe('P-003 idle answering sessions end at the consult window (WI-10003199)'
     expect(String((await attemptsOf(id)).at(-1)?.detail)).toContain('stop threw: ledger down');
   });
 });
+
+// ── a requester's proceed-reconciliation survives the sweep's terminal writes ──
+// EI-23764501791910357 slice 3. `outcome.reconciliation` (written by consult:reconcile)
+// is what discharges a proceed-consult's reconciliation obligation. The sweep's two
+// outcome-REPLACING terminal writers — the cascade-exhausted expiry and the P-014
+// review-conversion flip — must carry it forward, or a sweep landing after the
+// requester reconciled would silently RE-OPEN the debt.
+describe('sweepExpiredConsults — carries a recorded reconciliation through the terminal write (EI-23764501791910357)', () => {
+  const RECONCILIATION = {
+    disposition: 'rescoped',
+    note: 'kept going on my assumption, narrowed scope when the answer arrived',
+    by: 'req-1',
+    at: PAST,
+    consult_state: 'awaiting_responder',
+  };
+  const cand = (ownerId: string, score: number, similarity: number) => ({
+    ownerId,
+    score,
+    relevance: score,
+    signals: { similarity },
+    liveness: 'live',
+  });
+
+  async function reconcileRow(id: string) {
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET outcome = ${rootSql.json({ reconciliation: RECONCILIATION } as never)}
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+  }
+  async function outcomeOf(id: string) {
+    const rows = (await rootSql`
+      SELECT state, outcome FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`) as unknown as Array<{ state: string; outcome: unknown }>;
+    const row = rows[0]!;
+    return { state: row.state, outcome: typeof row.outcome === 'string' ? JSON.parse(row.outcome) : row.outcome };
+  }
+
+  it('terminal expiry WITH collected answers: the answered-flavored outcome lands BESIDE the reconciliation', async () => {
+    const routing = {
+      relevanceFloor: 0.5,
+      simFloor: 0.4,
+      candidates: [cand('ans-a', 0.9, 0.8), cand('exp-b', 0.8, 0.7)],
+      selection: {
+        min: 1,
+        max: 2,
+        selected: ['ans-a', 'exp-b'].map((ownerId) => ({
+          ownerId, via: 'floor', score: 0.8, relevance: 0.8, similarity: 0.7, liveness: 'live',
+        })),
+      },
+    };
+    const id = await seedConsult({ latency: 'hard-blocked', routing, cascadeCursor: 1 });
+    await setDigest(id, [{ ownerId: 'ans-a', kind: 'answer', at: PAST, excerpt: 'a real answer' }]);
+    await reconcileRow(id);
+    const { deps } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+
+    expect(await outcomeOf(id)).toEqual({
+      state: 'expired',
+      outcome: {
+        disposition: 'cascade_exhausted_with_answers',
+        answers: 1,
+        answered_by: ['ans-a'],
+        reconciliation: RECONCILIATION,
+      },
+    });
+  });
+
+  it('terminal expiry with ZERO answers: the reconciliation-only outcome is left intact (a NULL new outcome must not erase it)', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['only-r']) });
+    await reconcileRow(id);
+    const { deps } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+
+    expect(await outcomeOf(id)).toEqual({ state: 'expired', outcome: { reconciliation: RECONCILIATION } });
+  });
+
+  it('CONTROL: terminal expiry with zero answers and NO reconciliation still writes a NULL outcome (not "{}" or a JSON null)', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['only-r']) });
+    const { deps } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+
+    const [{ sql_null }] = (await rootSql`
+      SELECT outcome IS NULL AS sql_null FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`) as unknown as Array<{ sql_null: boolean }>;
+    expect(sql_null).toBe(true);
+  });
+
+  it('P-014 review conversion: the converted_to_review_work_item outcome lands BESIDE the reconciliation', async () => {
+    seq += 1;
+    const id = `conv-recon-review-${seq}`;
+    const at = (offsetMin: number) => new Date(NOW.getTime() + offsetMin * 60_000).toISOString();
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, expires_at, routing, cascade_cursor, exchanges_used, created_at, updated_at, outcome)
+      VALUES
+        (${WS}, ${id}, 'req-1', 'resp-1', 'awaiting_responder', 'Vet acceptance rubric R rev 2',
+         'proceed', ${at(50)}::timestamptz,
+         ${rootSql.json({ policy: 'rubric-vetting', ...menuSnapshot(['resp-1', 'resp-2']) } as never)}, 0, 0,
+         ${at(-70)}::timestamptz, ${at(-70)}::timestamptz,
+         ${rootSql.json({ reconciliation: RECONCILIATION } as never)})`;
+    await rootSql`
+      INSERT INTO harness_shared.coord_conversations (workspace_id, id, kind, state, updated_at)
+      VALUES (${WS}, ${id}, 'consult', 'open', ${at(-70)}::timestamptz)`;
+    const base = makeDeps({ withReach: true });
+    base.deps.fileReviewWorkItem = async (req) => ({ id: `WI-review-${req.conversationId}` });
+    await sweepExpiredConsults(base.deps);
+
+    expect(await outcomeOf(id)).toEqual({
+      state: 'expired',
+      outcome: {
+        disposition: 'converted_to_review_work_item',
+        work_item_id: `WI-review-${id}`,
+        review_kind: 'rubric-vetting',
+        silent_responder: 'resp-1',
+        reconciliation: RECONCILIATION,
+      },
+    });
+  });
+});

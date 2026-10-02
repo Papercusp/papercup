@@ -2930,10 +2930,13 @@ export async function emitScorecard(
           // the judge's own contract treats an empty planItems list as "not supplied"
           // (never as "the plan has no items"), so a transient read failure degrades to
           // the pre-P-016 behaviour instead of convicting every target.
+          // Item rows are owned per (harness, slug), so scope them to the subject plan's
+          // harness (WI-10005167). The two audit reads stay (workspace, slug): plan_audits
+          // is keyed that way and its harness_slug is only a citation context.
           const [activationAudit, itemAudits, planItems] = await Promise.all([
             getLatestActivationAudit(requirementsPlan),
             getEffectiveItemAudits(requirementsPlan),
-            getPlanItemStatuses(requirementsPlan),
+            getPlanItemStatuses(requirementsPlan, { harnessSlug: rubric.subjectHarnessSlug }),
           ]);
           const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
             ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', {

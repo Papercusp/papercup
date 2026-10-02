@@ -104,6 +104,9 @@ const {
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
   shouldRetryCarryOnFreshEpoch,
+  shouldRetryLaunchKickoffOnFreshChild,
+  launchKickoffCodexStartingOptions,
+  codexLaunchStartingRetryMax,
   signalNameFromCode,
   resolveTeardownSignal,
   reapDetachedPtyScopeResidue,
@@ -3260,6 +3263,58 @@ describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
       retryCount: 1,
       maxRetries: 1,
     })).toBe(false);
+  });
+});
+
+describe('launch kickoff fresh-child retry (WI-10004943)', () => {
+  const plain = { agent: 'codex', managedKickoff: false, isResume: false, maxRetries: 1 };
+  const stuck = 'codex-startup-still-starting';
+
+  it('retries only a plain fresh Codex launch whose child stayed at Starting, within the bound', () => {
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: stuck })).toBe(true);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, agent: ' Codex ', reason: stuck })).toBe(true);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: stuck, retryCount: 1 })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, maxRetries: 0, reason: stuck })).toBe(false);
+    // Other drop reasons are not a per-child boot state.
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: 'never-settled' })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: 'superseded' })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: 'fresh-child-owner-input' })).toBe(false);
+    // A managed kickoff's proof owns its own child kill; a resume/fork may be mid-turn.
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, managedKickoff: true, reason: stuck })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, isResume: true, reason: stuck })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, agent: 'claude', reason: stuck })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild()).toBe(false);
+  });
+
+  it('arms the early Starting drop only while a retry remains; the last attempt holds', () => {
+    const limits = { stuckMs: 180_000, holdCeilingMs: 1_800_000 };
+    expect(launchKickoffCodexStartingOptions({ ...plain, ...limits, retryCount: 0 }))
+      .toEqual({ codexStartingStuckMs: 180_000 });
+    expect(launchKickoffCodexStartingOptions({ ...plain, ...limits, retryCount: 1 }))
+      .toEqual({ codexStartingHoldCeilingMs: 1_800_000 });
+    expect(launchKickoffCodexStartingOptions({ ...plain, ...limits, managedKickoff: true }))
+      .toEqual({ codexStartingHoldCeilingMs: 1_800_000 });
+    expect(launchKickoffCodexStartingOptions({ ...plain, ...limits, isResume: true }))
+      .toEqual({ codexStartingHoldCeilingMs: 1_800_000 });
+    expect(launchKickoffCodexStartingOptions({ ...plain, ...limits, maxRetries: 0 }))
+      .toEqual({ codexStartingHoldCeilingMs: 1_800_000 });
+    // Never both: an early drop would cut the hold short, and a hold would
+    // outlast the point where the child should have been replaced.
+    for (const retryCount of [0, 1, 2]) {
+      expect(Object.keys(launchKickoffCodexStartingOptions({ ...plain, ...limits, retryCount }))).toHaveLength(1);
+    }
+  });
+
+  it('reads the per-host retry budget with a default of one and 0 as the kill switch', () => {
+    expect(codexLaunchStartingRetryMax(undefined)).toBe(1);
+    expect(codexLaunchStartingRetryMax('')).toBe(1);
+    expect(codexLaunchStartingRetryMax('  ')).toBe(1);
+    expect(codexLaunchStartingRetryMax('abc')).toBe(1);
+    expect(codexLaunchStartingRetryMax('-1')).toBe(1);
+    expect(codexLaunchStartingRetryMax('1.5')).toBe(1);
+    expect(codexLaunchStartingRetryMax('0')).toBe(0);
+    expect(codexLaunchStartingRetryMax('2')).toBe(2);
+    expect(codexLaunchStartingRetryMax(3)).toBe(3);
   });
 });
 

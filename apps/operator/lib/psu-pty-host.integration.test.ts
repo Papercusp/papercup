@@ -1074,7 +1074,8 @@ describe('session-port managed seed + native persistence helpers', () => {
   // footer still read `Starting` (`codex-startup-still-starting`), discarding the
   // session's first turn. Production footers read `Starting` for 10-20 minutes and
   // then painted the frame. The kickoff must be HELD for the frame up to a ceiling.
-  const codexStartingChild = (readyAtMs: number | null, exitAtMs: number) =>
+  // `readyAtMs` may also be a JS expression string, evaluated inside the child.
+  const codexStartingChild = (readyAtMs: number | string | null, exitAtMs: number) =>
     "process.stdout.write('psu: launcher banner\\n');" +
     "process.stdin.setEncoding('utf8');let swallowing=false;let b='';" +
     "process.stdin.on('data',d=>{if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}" +
@@ -1106,6 +1107,9 @@ describe('session-port managed seed + native persistence helpers', () => {
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        // These cases exercise the (d) hold, which a retryable launch reaches
+        // only on its last attempt (WI-10004943); the fresh-child case opts in.
+        PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '0',
         TERM: 'xterm-256color',
         ...env,
       },
@@ -1197,6 +1201,63 @@ describe('session-port managed seed + native persistence helpers', () => {
   // that decide this but did not record them. This child repaints `Ready` ONLY
   // when input arrives, so the record must show the write began before the frame,
   // with the footer still reading `Starting`.
+  // WI-10004943: the (d) hold rescued 0 of 3 stuck launches in production (all still
+  // `Starting` at the ceiling), while a fresh child boots in seconds. A plain fresh
+  // Codex launch whose child is still `Starting` after the stuck threshold gets a
+  // fresh child and the same kickoff, without printing the parsed DROPPED receipt.
+  it('replaces a fresh Codex launch child stuck at Starting and delivers the kickoff on the fresh child', async () => {
+    const mark = join(tmpdir(), `codex-stuck-once-${process.pid}-${Math.floor(performance.now())}`);
+    const markLit = JSON.stringify(mark);
+    // The first child marks the file and never leaves `Starting`; its successor
+    // paints Ready shortly after it boots.
+    const childCode =
+      `const __first=!require('fs').existsSync(${markLit});` +
+      `if(__first)require('fs').writeFileSync(${markLit},'1');` +
+      codexStartingChild('(__first?1e9:300)', 20_000);
+    const stderrWrite = vi.spyOn(process.stderr, 'write');
+    const run = runCodexStartingKickoff('starting-fresh-child', childCode, {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '8000',
+      PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS: '1500',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '15000',
+      PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '1',
+    });
+    try {
+      await vi.waitFor(() => expect(run.captured()).toContain('ECHO:KICKOFF-HELD'), { timeout: 20_000 });
+      expect(run.captured()).not.toContain('SWALLOWED:');
+      const events = run.hostEvents();
+      expect(events.find((e) => e.kind === 'codex-starting-stuck-early-drop'))
+        .toMatchObject({ label: 'launch kickoff', stuckMs: 1500 });
+      const dropped = events.filter((e) => e.kind === 'startup-turn-dropped');
+      expect(dropped).toHaveLength(1);
+      expect(dropped[0]).toMatchObject({
+        label: 'launch kickoff',
+        reason: 'codex-startup-still-starting',
+        earlyStuck: true,
+      });
+      expect(events.find((e) => e.kind === 'launch-kickoff-fresh-child-retry'))
+        .toMatchObject({ label: 'launch kickoff', reason: 'codex-startup-still-starting', attempt: 1, maxRetries: 1 });
+      expect(events.find((e) => e.kind === 'respawned'))
+        .toMatchObject({ mode: 'launch-fresh-child', firstPrompt: false });
+      expect(events.some((e) => e.kind === 'launch-kickoff-fresh-child-failed')).toBe(false);
+      expect(events.some((e) => e.kind === 'host-code-adopting')).toBe(false);
+      const written = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(written).toMatchObject({ label: 'launch kickoff' });
+      // The acceptance grader retires a judge on this line; the retried launch
+      // above did deliver, so it must never have been printed.
+      const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
+      expect(printed.some((line) => line.includes('launch kickoff DROPPED'))).toBe(false);
+    } finally {
+      stderrWrite.mockRestore();
+      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      await run.done;
+      rmSync(mark, { force: true });
+    }
+  }, 45_000);
+
   it('records the write-time footer and the write-to-frame gap for a Codex turn inject', async () => {
     const ownerId = `su-codex-provoked-frame-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);

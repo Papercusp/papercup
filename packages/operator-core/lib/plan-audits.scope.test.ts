@@ -15,7 +15,7 @@ vi.mock("./workspace-registry", async (importOriginal) => ({
   activeWorkspaceId: M.activeWorkspaceId,
 }));
 
-import { getLatestActivationAudit, getLatestPlanAudit } from "./plan-audits";
+import { getLatestActivationAudit, getLatestPlanAudit, getPlanItemStatuses } from "./plan-audits";
 
 const row = {
   plan_slug: "scoped-plan",
@@ -121,5 +121,47 @@ describe("getLatestPlanAudit workspace scope", () => {
     // against a real database even though this row is the canonical audit.
     expect(M.sql.mock.calls[0]?.[3]).toBeNull();
     expect(M.sql.mock.calls[0]?.[4]).toBeNull();
+  });
+});
+
+// WI-10005167: plan_items IS keyed by the plan's own harness, unlike plan_audits.
+describe("getPlanItemStatuses harness scope", () => {
+  beforeEach(() => {
+    M.sql.mockReset();
+    M.activeWorkspaceId.mockClear();
+  });
+
+  // Applies the real WHERE predicate shape to fixture rows, so a dropped or
+  // inverted filter changes the RESULT, not just the bound values.
+  const twoHarnessItems = [
+    { harness_slug: "email", plan_slug: "shared-slug", item_id: "P-001", status: "done", item_text: "email item" },
+    { harness_slug: "papercusp", plan_slug: "shared-slug", item_id: "P-001", status: "todo", item_text: "papercusp item" },
+  ];
+  const applyPredicate = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join("?");
+    const harness = values[2] as string | null;
+    const filtered = text.includes("harness_slug =")
+      ? twoHarnessItems.filter((r) => harness === null || r.harness_slug === harness)
+      : twoHarnessItems;
+    return Promise.resolve(filtered.filter((r) => r.plan_slug === values[1]));
+  };
+
+  it("returns only the named harness's items for a slug two harnesses share", async () => {
+    M.sql.mockImplementation(applyPredicate);
+
+    const items = await getPlanItemStatuses("shared-slug", { harnessSlug: "email" });
+
+    expect(items).toEqual([{ itemId: "P-001", status: "done", itemText: "email item" }]);
+    expect(M.sql.mock.calls[0]?.[3]).toEqual("email");
+  });
+
+  it("keeps the unscoped (workspace, slug) read when no harness is supplied", async () => {
+    M.sql.mockImplementation(applyPredicate);
+
+    const items = await getPlanItemStatuses("shared-slug", { harnessSlug: null });
+
+    expect(items).toHaveLength(2);
+    expect(M.sql.mock.calls[0]?.[1]).toEqual("ambient-workspace");
+    expect(M.sql.mock.calls[0]?.[3]).toBeNull();
   });
 });

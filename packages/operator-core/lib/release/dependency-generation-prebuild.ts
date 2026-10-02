@@ -17,6 +17,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -118,17 +119,42 @@ export interface DependencyPrebuildReadyState extends DependencyPrebuildBase {
 }
 
 /**
+ * Where dependency-generation.sh records the env-named store for an integration
+ * root, so env-less callers (a manual `systemd-run --unit` gate run, install:safe,
+ * an agent's hand prewarm) resolve the same store as bg-host (WI-10005159).
+ */
+export function dependencyGenerationRootRecord(integrationRoot: string): string {
+  return join(integrationRoot, '.papercusp/dependency-generation-root');
+}
+
+function readRecordedDependencyGenerationRoot(integrationRoot: string): string | null {
+  let text: string;
+  try {
+    text = readFileSync(dependencyGenerationRootRecord(integrationRoot), 'utf8');
+  } catch {
+    return null;
+  }
+  // bash `IFS= read -r` takes the first line verbatim; only an absolute path counts.
+  const recorded = text.split('\n', 1)[0] ?? '';
+  return isAbsolute(recorded) ? recorded : null;
+}
+
+/**
  * Effective dependency-generation store for an integration root — the TS mirror
- * of dependency-generation.sh / setup-release-checkout.sh
- * (`${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-$integration_root/.papercusp/dependency-generations}`;
- * bash `:-` treats an empty value as unset, hence `||`).
+ * of `dependency_generation_resolve_root` in dependency-generation.sh: env, then
+ * the root recorded under the integration root, then the tree-local store (bash
+ * `:-` treats an empty value as unset, hence `||`).
  */
 export function resolveDependencyGenerationRoot(
   integrationRoot: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const configured = env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT?.trim();
-  return resolve(configured || join(integrationRoot, '.papercusp/dependency-generations'));
+  return resolve(
+    configured ||
+      readRecordedDependencyGenerationRoot(integrationRoot) ||
+      join(integrationRoot, '.papercusp/dependency-generations'),
+  );
 }
 
 export interface DependencyPrebuildFailedState extends DependencyPrebuildBase {

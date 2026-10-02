@@ -921,7 +921,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const itemGate = await getFlag(FLAGS.PLAN_ITEM_COMPLETION_GATE, 'system').catch(() => true);
   const gradingRecruitmentTail = new Set<string>();
   if (itemGate) {
-    const items = await getPlanItemStatuses(planSlug);
+    // planHarnessSlug is the positively selected plan row's own harness (ambiguity is
+    // refused above), so it is safe to scope the per-(harness, slug) item rows to it.
+    const items = await getPlanItemStatuses(planSlug, { harnessSlug: planHarnessSlug });
     const unfinished = items.filter((i) => (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status));
     if (unfinished.length > 0) {
       const recruitmentTail =
@@ -974,7 +976,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       // evidence with the current tree. A narrow re-audit therefore cannot make all
       // the unchanged items disappear, and carrying an item cannot re-stamp it.
       const [items, effectiveAudits] = await Promise.all([
-        getPlanItemStatuses(planSlug),
+        getPlanItemStatuses(planSlug, { harnessSlug: planHarnessSlug }),
         getEffectiveItemAudits(planSlug),
       ]);
       const effectiveByItem = new Map(effectiveAudits.map((entry) => [entry.entry.itemId, entry]));

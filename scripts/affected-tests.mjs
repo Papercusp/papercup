@@ -116,6 +116,14 @@ import {
   formatRetryPoolLine,
 } from "./lib/retry-failure-shape.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
+// P-008 (gitnexus-selective-hardening-and-comparison-2026-09-13): snapshot-bound,
+// source-corroborated graph dependency SUGGESTIONS. Superset-only and file-read-only — see
+// the module header. Nothing here may remove a workspace the baseline selected.
+import {
+  computeGraphSuggestions,
+  formatSuggestionLine,
+  unionSuperset,
+} from "./lib/graph-dependency-suggestions.mjs";
 import { emptySuiteGuardArgs, scriptRunsZeroFilesAsPass } from "./lib/empty-suite-guard.mjs";
 // EI-21082046676950143: the lint:declared-consumed guard entry below keys on the guard's OWN
 // declaring-path set rather than restating any of it — fields (`declaredIn`), columns (their
@@ -4770,6 +4778,44 @@ function affectedWorkspaces() {
 // The path-set -> workspace-set rule, factored out so the --changed-paths probe
 // (and its guard test) exercise the SAME code the real git-diff path does. Two
 // copies of this that could drift would make the test prove nothing.
+/**
+ * P-008 graph suggestions for `changed`, read from a PRE-COMPUTED snapshot FILE — never a live
+ * graph. Default path is under the gitignored `.papercusp/`, so an ordinary gate checkout has
+ * no snapshot and the selector degrades to the baseline (`status=unavailable`, silent).
+ *   PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT     snapshot file (default .papercusp/graph-snapshot/dependency-snapshot.json)
+ *   PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS  `0` disables suggestions entirely
+ *   PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS   snapshot age ceiling (default 24h)
+ *   PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT  where importer SOURCE is read for corroboration (hermetic-test seam; default repo root)
+ */
+function graphSuggestionsFor(changed) {
+  if (process.env.PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS === "0") {
+    return { status: "unavailable", reason: "disabled", workspaces: [], accepted: 0, rejected: 0, index: null };
+  }
+  const snapshotPath =
+    process.env.PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT ||
+    join(ROOT, ".papercusp", "graph-snapshot", "dependency-snapshot.json");
+  const sourceRoot = process.env.PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT || ROOT;
+  const maxAge = Number(process.env.PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS);
+  return computeGraphSuggestions({
+    changed,
+    snapshotPath,
+    readFile: (p) => readFileSync(p, "utf8"),
+    readSource: (rel) => {
+      try {
+        return readFileSync(join(sourceRoot, rel), "utf8");
+      } catch {
+        return null;
+      }
+    },
+    ownerOfPath: (file) =>
+      [...wsByDir.values()]
+        .filter((ws) => file === ws.dir || file.startsWith(`${ws.dir}/`))
+        .map((ws) => ws.name),
+    now: Date.now(),
+    maxAgeMs: Number.isFinite(maxAge) && maxAge > 0 ? maxAge : undefined,
+  });
+}
+
 function resolveAffected(changed) {
   const directlyChanged = new Set();
   for (const file of changed) {
@@ -4795,6 +4841,18 @@ function resolveAffected(changed) {
       if (!file.startsWith(route.prefix)) continue;
       if (wsByName.has(route.workspace)) directlyChanged.add(route.workspace);
     }
+  }
+
+  // Graph dependency suggestions (P-008): ADD workspaces owning verified importers of the
+  // changed files, as extra seeds for the closure below. Seeds only ever grow the closure
+  // (monotone), so the final set is a superset of the baseline by construction;
+  // `unionSuperset` additionally asserts it. Stale/invalid/absent snapshot => nothing added.
+  const baselineSeeds = new Set(directlyChanged);
+  const graphReport = graphSuggestionsFor(changed);
+  const merged = unionSuperset(baselineSeeds, graphReport.workspaces);
+  for (const name of merged.names) directlyChanged.add(name);
+  if (graphReport.status !== "unavailable" || process.env.PAPERCUSP_AFFECTED_GRAPH_TRACE === "1") {
+    errSync(formatSuggestionLine(graphReport, merged.added));
   }
 
   // Walk reverse-deps transitively

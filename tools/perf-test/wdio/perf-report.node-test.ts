@@ -655,6 +655,124 @@ test('early serialized storage probe measures native getters/calls, preserves se
   }
 });
 
+function startupRenderFixture() {
+  const globals = ['window', 'document', 'performance', 'Storage'] as const;
+  const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  let clock = 0;
+  let target: unknown = null;
+  let mutation: (() => void) | null = null;
+  let frame: (() => void) | null = null;
+  let deadline: (() => void) | null = null;
+  let disconnected = 0;
+  let rectReads = 0;
+  const listeners = new Map<string, () => void>();
+  const parent = { parentElement: null, style: { display: 'block', visibility: 'visible', opacity: '0' } };
+  const element = { parentElement: parent, isConnected: true,
+    style: { display: 'block', visibility: 'visible', opacity: '1' },
+    getBoundingClientRect: () => { rectReads++; return { width: 100, height: 30, top: 1, left: 1, right: 101, bottom: 31 }; } };
+  const fonts = { status: 'loading', ready: Promise.resolve(),
+    addEventListener: (name: string, fn: () => void) => listeners.set(name, fn),
+    removeEventListener: (name: string) => listeners.delete(name) };
+  const fakeWindow = { innerWidth: 1280, innerHeight: 720,
+    MutationObserver: class { constructor(fn: () => void) { mutation = fn; }
+      observe() {} disconnect() { disconnected++; mutation = null; } },
+    requestAnimationFrame: (fn: () => void) => { frame = fn; return 1; },
+    cancelAnimationFrame: () => { frame = null; },
+    setTimeout: (fn: () => void) => { deadline = fn; return 2; },
+    clearTimeout: () => { deadline = null; },
+    getComputedStyle: (node: typeof element | typeof parent) => node.style,
+  };
+  const values = { window: fakeWindow, document: { fonts, documentElement: {}, querySelector: () => target },
+    performance: { now: () => clock }, Storage: undefined };
+  for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, value: values[name] });
+  return { fakeWindow, element, parent, fonts, listeners, tick: (ms: number) => { clock = ms; },
+    insert: () => { target = element; mutation?.(); }, replace: () => { target = { ...element }; mutation?.(); },
+    mutate: () => mutation?.(),
+    runFrame: () => { const fn = frame; frame = null; fn?.(); },
+    expire: () => deadline?.(), pendingFrame: () => frame !== null,
+    disconnected: () => disconnected, rectReads: () => rectReads,
+    restore: () => { for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    } },
+  };
+}
+
+test('bundled startup probe separates late DOM discovery, ancestor visibility and font readiness', async () => {
+  const f = startupRenderFixture();
+  try {
+    Function(buildStartupStorageProbeScript())();
+    const probe = (f.fakeWindow as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe;
+    f.tick(1000); f.insert();
+    assert.equal(f.rectReads(), 0, 'MutationObserver must not force layout');
+    f.tick(1200); f.runFrame();
+    f.parent.style.opacity = '1';
+    f.tick(1300); f.mutate();
+    f.tick(1400); f.runFrame();
+    assert(f.disconnected() > 0, 'stop DOM observation after the first visible frame');
+    f.tick(1600); f.fonts.status = 'loaded';
+    await Promise.resolve();
+    const report = probe.stop();
+    assert.equal(probe.renderCandidateMatches(f.element), true);
+    assert.equal(probe.renderCandidateMatches({ ...f.element }), false);
+    assert.equal(report.render.firstObservedAtMs, 1000);
+    assert.equal(report.render.firstFrameAtMs, 1200);
+    assert.equal(report.render.firstEligibleFrameAtMs, 1400);
+    assert.equal(report.render.stopReason, 'eligible-frame');
+    assert.equal(report.render.fonts.readyAtMs, 1600);
+    assert.equal(report.render.fonts.initialStatus, 'loading');
+    assert.equal(f.listeners.size, 0);
+    assert.equal(f.pendingFrame(), false);
+    assert(!JSON.stringify(report.render).includes('textContent'));
+  } finally { f.restore(); }
+});
+
+test('startup render observation bounds mutations, cancels frames and distinguishes missing from unavailable', () => {
+  const f = startupRenderFixture();
+  try {
+    const bounded = installStartupStorageProbe();
+    for (let i = 0; i < 1001; i++) f.mutate();
+    const capped = bounded.stop().render;
+    assert.equal(capped.stopReason, 'mutation-cap');
+    assert.equal(capped.firstObservedAtMs, null);
+    assert.equal(capped.mutationCallbacks, 1000);
+    const expired = installStartupStorageProbe();
+    f.tick(60_001); f.expire();
+    assert.equal(expired.stop().render.stopReason, 'deadline');
+    const pending = installStartupStorageProbe();
+    f.insert(); assert(f.pendingFrame());
+    pending.stop(); assert.equal(f.pendingFrame(), false);
+    (f.fakeWindow as unknown as { MutationObserver?: unknown }).MutationObserver = undefined;
+    const missing = installStartupStorageProbe().stop().render;
+    assert.equal(missing.stopReason, 'unavailable');
+    assert(missing.unavailable.includes('MutationObserver'));
+  } finally { f.restore(); }
+});
+
+test('startup render probe fails closed on candidate replacement, frame caps and failed reads', () => {
+  const f = startupRenderFixture();
+  try {
+    const replaced = installStartupStorageProbe();
+    assert.equal(replaced.renderCandidateMatches(f.element), null);
+    f.insert(); f.replace();
+    assert.equal(replaced.stop().render.stopReason, 'candidate-replaced');
+    assert.equal(f.pendingFrame(), false);
+    const bounded = installStartupStorageProbe();
+    for (let i = 0; i < 33; i++) { f.mutate(); f.runFrame(); }
+    const report = bounded.stop().render;
+    assert.equal(report.stopReason, 'frame-cap');
+    assert.equal(report.frameReads, 32);
+    assert.equal(report.firstEligibleFrameAtMs, null);
+    f.fakeWindow.getComputedStyle = () => { throw new Error('private style failure'); };
+    const failed = installStartupStorageProbe();
+    f.runFrame();
+    const failure = failed.stop().render;
+    assert.equal(failure.stopReason, 'unavailable');
+    assert(failure.unavailable.includes('frame-read'));
+    assert(!JSON.stringify(failure).includes('private style failure'));
+  } finally { f.restore(); }
+});
+
 test("startup trace separates completed-before-paint requests from later completions", async () => {
   const globals = ['window', 'document', 'performance', 'location', 'PerformanceObserver'] as const;
   const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);

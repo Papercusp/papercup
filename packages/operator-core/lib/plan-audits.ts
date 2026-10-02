@@ -1927,14 +1927,39 @@ export function prepareAuditPassEntries(input: {
  * and never as "the plan has no items" — validating an audit against an empty list
  * would accept every itemId, which is the opposite of this module's job.
  */
-export async function getPlanItemStatuses(planSlug: string): Promise<PlanItemStatus[]> {
+export interface PlanItemReadScope {
+  /**
+   * The plan's OWN harness — `harness_plans.harness_slug` of a positively
+   * resolved plan row, or an acceptance rubric's `subjectHarnessSlug`.
+   *
+   * Unlike `plan_audits` (keyed `(workspace_id, plan_slug, audit_seq)`, whose
+   * `harness_slug` is only the citation context — see `PlanAuditReadScope`),
+   * `plan_items` is keyed `(workspace_id, harness_slug, plan_slug, item_id)`: two
+   * harnesses may each own a plan with the same slug, and an unscoped read MERGES
+   * their item lists (WI-10005167; one live collision existed when this landed).
+   *
+   * ⚠ Pass ONLY a harness you resolved from the plan itself. A citation-context or
+   * ambient ctx harness can differ from the plan's home, and a wrong harness here
+   * answers `[]` — which every caller reads as "could not read the items" and
+   * FAILS OPEN on (the ship gate then sees nothing unfinished). Omit it rather than
+   * guess; the unscoped read is the pre-existing behaviour.
+   */
+  harnessSlug?: string | null;
+}
+
+export async function getPlanItemStatuses(
+  planSlug: string,
+  scope: PlanItemReadScope = {},
+): Promise<PlanItemStatus[]> {
   try {
     const { sql } = getOrgPg();
+    const harnessSlug = scope.harnessSlug?.trim() || null;
     const rows = await sql<{ item_id: string; status: string; item_text: string }[]>`
       SELECT item_id, status, item_text
         FROM harness_shared.plan_items
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
        ORDER BY seq`;
     return rows.map((r) => ({ itemId: r.item_id, status: r.status, itemText: r.item_text }));
   } catch {

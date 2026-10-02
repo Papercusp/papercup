@@ -46,6 +46,7 @@
 
 import { z } from 'zod';
 import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
+import { projectChatFailureTranscript } from '../chat-model-failure';
 // Flat-row sync reads carry page metadata (e.g. the true total) on row[0]._meta;
 // attachListMeta is the one place that convention lives. See ./list-meta.
 import { attachListMeta } from './list-meta';
@@ -7460,11 +7461,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, eq } = await import('drizzle-orm');
       const t = generated.agentChatsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
-      return db
+      const rows = await db
         .select()
         .from(t)
         .where(workspaceId ? and(eq(t.id, id), eq(t.workspaceId, workspaceId)) : eq(t.id, id))
-        .limit(1) as unknown as Promise<unknown[]>;
+        .limit(1);
+      return rows.map((row) => ({
+        ...row,
+        transcript: projectChatFailureTranscript(row.transcript),
+      })) as unknown[];
     },
   },
 
@@ -7776,7 +7781,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           FROM harness_shared.agent_chats_consolidated
          WHERE id = ${id}
          LIMIT 1`;
-      return rows;
+      return rows.map((row) => ({
+        ...row,
+        transcript: projectChatFailureTranscript(row.transcript),
+      }));
     },
   },
   // P-029 / cockpit D-004: the ONE typed conversation/context projection.

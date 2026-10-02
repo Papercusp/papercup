@@ -106,6 +106,8 @@ export default defineTool({
                 scope: `harness:${args.harness}`,
                 createdBy: actor,
                 assignee: actor,
+                admission: 'auto',
+                admittedBy: 'bypass:acceptance-canary',
               });
               return { id: issue.id };
             },

@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   acceptanceReadinessHold,
+  findOrFileAcceptanceRepairTask,
   incompleteAcceptanceBarsForItems,
   type AcceptanceReadinessHoldDeps,
   type AcceptanceRepairTaskInput,
+  type RepairTaskTx,
+  type RepairWorkItemInput,
 } from './acceptance-readiness-hold';
 
 type Bar = {
@@ -63,6 +66,29 @@ const item = (id: string, itemIds: string[] | null) => ({
 });
 
 const ctx = { by: 'su-test', workspaceId: 'ws-test' };
+
+describe('acceptance repair task admission', () => {
+  it('creates a reviewed repair already admitted, without making it depend on its own plan contract', async () => {
+    const createWorkItem = vi.fn(async (_input: RepairWorkItemInput) => ({ id: 'WI-REPAIR' }));
+    const tx = vi.fn(async () => []) as unknown as RepairTaskTx;
+    const result = await findOrFileAcceptanceRepairTask(
+      {
+        planSlug: PLAN, harness: 'papercusp', workspaceId: ctx.workspaceId, by: ctx.by,
+        heldBars: [{ barKey: 'R-1', itemIds: ['P-001'], codes: ['bar_snapshot_check_missing'] }],
+      },
+      { workspaceId: ctx.workspaceId, begin: (fn) => fn(tx), isTerminal: () => false, createWorkItem },
+    );
+    expect(result).toEqual({ id: 'WI-REPAIR', filed: true });
+    expect(createWorkItem).toHaveBeenCalledOnce();
+    expect(createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      admission: 'auto', admittedBy: 'bypass:acceptance-contract-repair',
+      payload: expect.objectContaining({ acceptanceContractRepairFor: PLAN }),
+    }));
+    const created = createWorkItem.mock.calls[0]![0] as unknown as Record<string, unknown>;
+    expect(created).not.toHaveProperty('sourcePlanSlug');
+    expect(created).not.toHaveProperty('sourcePlanItemIds');
+  });
+});
 
 /** Hold verdict, then the post-release routing the caller runs; returns the routing note. */
 async function route(wi: ReturnType<typeof item>, deps: Partial<AcceptanceReadinessHoldDeps>): Promise<string> {

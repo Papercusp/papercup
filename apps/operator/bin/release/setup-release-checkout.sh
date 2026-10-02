@@ -1203,7 +1203,7 @@ record_node_modules_copy_metadata() {
 if need_node_modules; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
-    DEPENDENCY_GENERATION_ROOT="${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}"
+    DEPENDENCY_GENERATION_ROOT="$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")"
     dependency_generation_configure_workspace_dirs \
       "$INTEGRATION_ROOT" "${NODE_MODULES_WORKSPACE_DIRS[@]}"
     if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
@@ -1354,7 +1354,7 @@ reconcile_pinned_lock_deps() {
     --pinned-lock "$pinned_lock" \
     --integration-lock "$INTEGRATION_ROOT/package-lock.json" \
     --release "$RELEASE_ROOT" \
-    --generations "${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}" \
+    --generations "$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")" \
     --backfill 2>&1)" && rc=0 || rc=$?
   rm -f "$pinned_lock"
   [ -z "$out" ] || while IFS= read -r line; do log "$line"; done <<<"$out"

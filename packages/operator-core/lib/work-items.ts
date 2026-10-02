@@ -1738,7 +1738,7 @@ export {
   type TerminalOwnerOriginHealReason,
 } from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
-import { ISSUE_FAMILY_ROUTE_KINDS, agentWorkCategoryWhereSql } from './work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_ROUTE_KINDS, agentWorkCategoryWhereSql, issueFamilyRouteSql } from './work-nature/agent-work-predicate';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare
@@ -7034,7 +7034,7 @@ export async function readUnresolvedDepBlockers(id: string, harness?: string): P
         ON d.workspace_id = 'default'
        AND d.dep_type = 'blocks'
        AND d.blocked_ref = CASE
-             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             WHEN ${issueFamilyRouteSql(sql, 'wi')} THEN wi.feature_id
              ELSE wi.harness_slug || '#' || wi.feature_id
            END
      WHERE wi.feature_id = ${id}

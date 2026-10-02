@@ -1840,6 +1840,89 @@ const CODEX_STARTING_KICKOFF_HOLD_CEILING_MS =
  *  replacing the child fixes it, while waiting cost 10-50 minutes. Env-overridable. */
 const CODEX_CARRY_STARTING_STUCK_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS) || 180_000;
+/** WI-10004943: how many times a plain fresh Codex LAUNCH KICKOFF may replace a
+ *  child still at the `Starting` footer after CODEX_CARRY_STARTING_STUCK_MS (the
+ *  same measured threshold, same env override) before its last attempt falls back
+ *  to the (d) hold. Measured 2026-10-01: the hold alone rescued 0 of 3 stuck
+ *  launches in 36h (all still `Starting` at the hold ceiling), while a fresh child
+ *  boots in seconds (see CODEX_CARRY_STARTING_STUCK_MS). Per-host override:
+ *  PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES; `0` turns the replacement off. */
+const CODEX_LAUNCH_STARTING_FRESH_CHILD_RETRIES = 1;
+
+/** WI-10004943: the per-host retry budget for a launch kickoff's fresh-child
+ *  replacement. A missing, empty, or malformed value keeps the default; an explicit
+ *  integer >= 0 wins, so `0` is the kill switch. Pure; exported for tests.
+ * @param {unknown} value
+ * @param {number} [fallback]
+ */
+export function codexLaunchStartingRetryMax(value, fallback = CODEX_LAUNCH_STARTING_FRESH_CHILD_RETRIES) {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+/** WI-10004943: should an undelivered launch kickoff be retried on a fresh child?
+ *  Only a plain fresh Codex launch qualifies: a managed kickoff (session-port seed)
+ *  has a native-transcript proof that owns its own timeout and child kill, and a
+ *  resume/fork may already be running a turn. Only the stuck `Starting` footer
+ *  qualifies, because that state belongs to the child: every measured drop had other
+ *  sessions' Codex children booting in under 60s alongside it. Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.agent]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.isResume]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ */
+export function shouldRetryLaunchKickoffOnFreshChild({
+  agent = '',
+  reason = '',
+  managedKickoff = false,
+  isResume = false,
+  retryCount = 0,
+  maxRetries = 0,
+} = {}) {
+  if (managedKickoff || isResume || retryCount >= maxRetries) return false;
+  if (String(agent ?? '').trim().toLowerCase() !== 'codex') return false;
+  return reason === 'codex-startup-still-starting';
+}
+
+/** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
+ *  fresh-child retry remains, give up early on a child still at `Starting` after
+ *  `stuckMs` so the host can replace it (the WI-10005106 carry remedy). The last
+ *  attempt, and any launch that cannot be retried, keeps the (d) hold for the frame.
+ *  Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.agent]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.isResume]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ * @param {number} [opts.stuckMs]
+ * @param {number} [opts.holdCeilingMs]
+ */
+export function launchKickoffCodexStartingOptions({
+  agent = '',
+  managedKickoff = false,
+  isResume = false,
+  retryCount = 0,
+  maxRetries = 0,
+  stuckMs = CODEX_CARRY_STARTING_STUCK_MS,
+  holdCeilingMs = CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+} = {}) {
+  const retryRemains = shouldRetryLaunchKickoffOnFreshChild({
+    agent,
+    managedKickoff,
+    isResume,
+    retryCount,
+    maxRetries,
+    reason: 'codex-startup-still-starting',
+  });
+  return retryRemains
+    ? { codexStartingStuckMs: stuckMs }
+    : { codexStartingHoldCeilingMs: holdCeilingMs };
+}
 /** Native transcript proof can lag a freshly painted TUI even after the
  *  verifier's raw-CR retry. Give the carry one fresh child epoch to retry the
  *  whole submission before recording a terminal drop. This is intentionally
@@ -8707,20 +8790,33 @@ export function hostThroughPty(o) {
     } catch {
       /* the drop trace must never break the session */
     }
+    // WI-10004943: an early `Starting` drop is armed only for a caller that
+    // replaces the child and retries (the carry's fresh epoch, the launch
+    // kickoff's fresh child), so it is not terminal. It must not print the
+    // DROPPED receipt: the acceptance grader treats `launch kickoff DROPPED`
+    // with no first-turn progress as a dead judge, and would retire one whose
+    // retry is about to land. A caller whose retry cannot run prints it.
+    const earlyStuck = codexStartingStuckReported && dropReason === 'codex-startup-still-starting';
     appendHostEvent(ownerId, 'startup-turn-dropped', {
       label,
       reason: dropReason,
       attempts,
       budgetMs,
+      ...(earlyStuck ? { earlyStuck: true } : {}),
     });
+    if (!earlyStuck) writeStartupTurnDroppedLine({ label, dropReason, budgetMs, attempts });
+    return { delivered: false, reason: dropReason, attempts, ...(earlyStuck ? { earlyStuck: true } : {}) };
+  };
+
+  // WI-10004926: the ONE writer of the parsed DROPPED receipt, pinned to the
+  // acceptance-grader parser by apps/operator/lib/psu-pty-host-drop-line-contract.test.ts.
+  // WI-10004943 adds a caller: a launch kickoff whose fresh-child retry cannot run.
+  const writeStartupTurnDroppedLine = ({ label, dropReason, budgetMs, attempts }) => {
     try {
-      // WI-10004926: one formatter, pinned to the acceptance-grader parser by
-      // apps/operator/lib/psu-pty-host-drop-line-contract.test.ts.
       process.stderr.write(formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }));
     } catch {
       /* never let a diagnostic write break the host */
     }
-    return { delivered: false, reason: dropReason, attempts };
   };
 
   // Scripted fresh launches and resumes share the managed first-turn seam;
@@ -8740,19 +8836,40 @@ export function hostThroughPty(o) {
       Boolean(leadingTurnOriginMarker(launchKickoff));
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
-      const r = await injectTurnAtPrompt({
+      const isResumeLaunch = args.some((arg) => arg === 'resume' || arg === 'fork');
+      const kickoffBudgetMs = headlessClaudeOnboardingEnabled(env)
+        ? Math.min(recycleCarryInjectBudgetMs, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS)
+        : recycleCarryInjectBudgetMs;
+      // WI-10004943: a plain fresh Codex launch whose child is still at the
+      // `Starting` footer after the stuck threshold gets a fresh child and the
+      // same kickoff (the WI-10005106 carry remedy). The (d) hold alone rescued
+      // 0 of 3 such launches; the last attempt still holds.
+      const freshChildRetry = {
+        agent: env.PAPERCUSP_AGENT,
+        managedKickoff: Boolean(managedKickoff),
+        isResume: isResumeLaunch,
+        maxRetries: codexLaunchStartingRetryMax(env.PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES),
+      };
+      let freshChildRetries = 0;
+      const injectLaunchKickoff = () => injectTurnAtPrompt({
         text: launchKickoff,
         label,
-        ...(headlessClaudeOnboardingEnabled(env)
-          ? { budgetMs: Math.min(recycleCarryInjectBudgetMs, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS) }
-          : {}),
+        budgetMs: kickoffBudgetMs,
         requireInitialOutput: true,
         verifyKickoffMarkerEcho,
-        // WI-10004943 (d): hold, don't drop, while the Codex footer reads Starting.
-        codexStartingHoldCeilingMs: positiveNumber(
-          env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
-          CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
-        ),
+        ...launchKickoffCodexStartingOptions({
+          ...freshChildRetry,
+          retryCount: freshChildRetries,
+          stuckMs: positiveNumber(
+            env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS,
+            CODEX_CARRY_STARTING_STUCK_MS,
+          ),
+          // WI-10004943 (d): hold, don't drop, while the Codex footer reads Starting.
+          holdCeilingMs: positiveNumber(
+            env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
+            CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+          ),
+        }),
         prepareBeforeWrite: requireRoleMcp ? async () => {
           const tap = makeOutputTap();
           try {
@@ -8772,8 +8889,9 @@ export function hostThroughPty(o) {
             tap.close();
           }
         } : null,
-        freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' &&
-          !args.some((arg) => arg === 'resume' || arg === 'fork')
+        // Read per attempt, so a replacement child is judged against the owner
+        // input generation current at its own kickoff.
+        freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' && !isResumeLaunch
           ? ownerInputGeneration
           : null,
         // The managed kickoff's native transcript proof owns its failure
@@ -8781,6 +8899,43 @@ export function hostThroughPty(o) {
         // down the host before that proof can observe a late marker.
         terminateOnSubmitVerifyExhaustion: !managedKickoff,
       });
+      let r = await injectLaunchKickoff();
+      while (
+        !r.delivered &&
+        shouldRetryLaunchKickoffOnFreshChild({ ...freshChildRetry, reason: r.reason, retryCount: freshChildRetries })
+      ) {
+        freshChildRetries += 1;
+        appendHostEvent(ownerId, 'launch-kickoff-fresh-child-retry', {
+          label,
+          reason: r.reason,
+          attempt: freshChildRetries,
+          maxRetries: freshChildRetry.maxRetries,
+        });
+        let replaced;
+        if (hostCleanedUp || shuttingDown) {
+          replaced = { spawned: false, reason: 'host-shutting-down' };
+        } else {
+          try {
+            replaced = await recycleChild('', { freshChildOnly: true });
+          } catch (error) {
+            replaced = { spawned: false, reason: `threw:${String(error?.message ?? error).slice(0, 120)}` };
+          }
+        }
+        if (!replaced?.spawned) {
+          appendHostEvent(ownerId, 'launch-kickoff-fresh-child-failed', {
+            label,
+            reason: replaced?.reason ?? 'no-recycle-result',
+            attempt: freshChildRetries,
+          });
+          // The early drop skipped the parsed DROPPED receipt on the promise of
+          // this retry. The retry cannot run, so the drop is terminal after all.
+          if (r.earlyStuck) {
+            writeStartupTurnDroppedLine({ label, dropReason: r.reason, budgetMs: kickoffBudgetMs, attempts: r.attempts });
+          }
+          break;
+        }
+        r = await injectLaunchKickoff();
+      }
       if (!managedKickoff) {
         if (!r.delivered) {
           // An opted-in detached caller must receive a terminal negative receipt
@@ -10865,6 +11020,9 @@ export function hostThroughPty(o) {
         sessionClass = '',
         quotaRecovery = null,
         carryProofRetryCount = 0,
+        // WI-10004943: spawn a fresh child on the launch argv and return without
+        // a first prompt; the launch closure re-delivers its own kickoff.
+        freshChildOnly = false,
       } = {},
     ) => {
       const settleQuotaRecovery = (delivered, reason, extra = {}) => {
@@ -10889,7 +11047,11 @@ export function hostThroughPty(o) {
       // carry-respawn (no drillId) completely invisible in the per-owner event log
       // — the P-018 successor-kill loop left ZERO durable trace outside journalctl.
       // Non-drill respawns now always leave generic respawned/failed/carry rows.
-      const respawnMode = systemPromptAddendum ? 'carry-respawn' : 'recycle';
+      const respawnMode = systemPromptAddendum
+        ? 'carry-respawn'
+        : freshChildOnly
+          ? 'launch-fresh-child'
+          : 'recycle';
       // WI-38292: a respawn replaces the CLI child but NOT this host process, so a
       // host fix committed after this process booted stays inert here — the live
       // reproduction was a continuation fix (d351ee3084) that a running host simply
@@ -10930,11 +11092,13 @@ export function hostThroughPty(o) {
             // ADDITIVE — absent on rows written by older hosts, so a reader must
             // treat `undefined` as "not recorded", never as false.
             adoptable,
-            willAdopt: adoptable && !quotaRecovery,
+            willAdopt: adoptable && !quotaRecovery && !freshChildOnly,
             notAdoptingReason: adoptable
               ? quotaRecovery
                 ? 'quota-recovery'
-                : null
+                : freshChildOnly
+                  ? 'launch-fresh-child'
+                  : null
               : bridgeTty
                 ? 'interactive-tty'
                 : !onReexec
@@ -11123,7 +11287,10 @@ export function hostThroughPty(o) {
       // never fires the session-compacted event. Reformatting it silently turns that
       // guard's indexOf into -1, which reads as the guard passing rather than failing.
       const allowInteractive = interactiveAdoptionOptIn();
-      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive })) {
+      // A launch fresh child (WI-10004943) stays in-process too: the launch closure
+      // that asked for it still owes the kickoff and its proof receipt, and a
+      // re-exec would end that closure before either is published.
+      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive }) && !freshChildOnly) {
         let hostCode = { stale: false };
         try {
           hostCode = hostCodeStalenessFn();
@@ -11465,6 +11632,9 @@ export function hostThroughPty(o) {
       // and can stay at Starting without accepting its carry. Announcing here
       // refreshed the predecessor's estimate and woke peers before delivery.
       recycling = false;
+      // WI-10004943: a launch fresh child has no carry. Report the spawn; the
+      // launch closure delivers its kickoff and publishes the proof receipt.
+      if (freshChildOnly) return { delivered: false, reason: 'fresh-child-spawned', spawned: true };
       if (!carryText) {
         if (drillId) {
           const dropExtra = {

@@ -148,6 +148,8 @@ export interface RepairWorkItemInput {
   harness?: string;
   workspaceId: string;
   createdBy: string;
+  admission: 'auto';
+  admittedBy: string;
   payload: Record<string, unknown>;
 }
 
@@ -192,6 +194,10 @@ export async function findOrFileAcceptanceRepairTask(
       harness: input.harness,
       workspaceId,
       createdBy: input.by,
+      // Derived from the measured contract gap; delaying its admission would also
+      // delay every reviewed item held behind the repair's blocks edge.
+      admission: 'auto',
+      admittedBy: 'bypass:acceptance-contract-repair',
       payload: {
         [ACCEPTANCE_REPAIR_PAYLOAD_KEY]: input.planSlug,
         heldBars: input.heldBars,

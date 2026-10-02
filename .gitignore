@@ -191,6 +191,8 @@ apps/operator/docs/plans/**/*.md
 # slash-anchored patterns miss the .papercusp dirs that appear inside packages/apps.
 .papercusp/dependency-generations/
 **/.papercusp/dependency-generations/
+# The env-named generation store recorded for env-less callers (WI-10005159).
+**/.papercusp/dependency-generation-root
 
 # git-sync-embedded-repo-strand fix (2026-06-30, joint w/ 2b1a8 / WI-1354): transient test-scratch
 # dirs that get a nested .git (an embedded repo). When ANY has NO commit checked out, `git add -A`

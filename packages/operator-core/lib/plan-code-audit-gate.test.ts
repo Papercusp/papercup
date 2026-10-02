@@ -173,6 +173,18 @@ describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
     expect(mockRubric).not.toHaveBeenCalled();
   });
 
+  // WI-10005167: plan_items is keyed per (harness, slug), so the gate must read the items of
+  // the plan row it selected, not every harness's plan that shares the slug.
+  it("reads plan items scoped to the selected plan row's own harness", async () => {
+    mockFlag.mockImplementation(async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE);
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: PLAN, harness_slug: 'email', template: null, template_slug: null }]));
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'terminal requirement' }]);
+
+    await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(mockPlanItems).toHaveBeenCalledWith(PLAN, { harnessSlug: 'email' });
+  });
+
   it('keeps the item family independently killable without reading plan-item state', async () => {
     mockFlag.mockResolvedValue(false);
     mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'todo', itemText: 'unfinished requirement' }]);

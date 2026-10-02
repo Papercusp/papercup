@@ -132,6 +132,24 @@ describe('rowToChat', () => {
     expect(c.usage_complete).toBe(true);
   });
 
+  it('redacts a legacy raw backend failure turn when loading a chat row', () => {
+    const rawError = 'codex exited 1: internal backend path and provider details';
+    const c = rowToChat({
+      id: 'legacy-error-chat',
+      role: 'worker',
+      transcript: [{ role: 'assistant', content: rawError, ts: '2026-09-27T16:01:00.000Z', error: true }],
+      created_at: 'c',
+      updated_at: 'u',
+    });
+
+    expect(c.transcript[0]).toMatchObject({
+      role: 'assistant',
+      content: 'That turn did not complete. Try asking again.',
+      error: true,
+    });
+    expect(c.transcript[0].content).not.toContain('internal backend path');
+  });
+
   it('defaults an absent transcript to []', () => {
     const c = rowToChat({ id: 'c3', role: 'worker', created_at: 'c', updated_at: 'u' });
     expect(c.transcript).toEqual([]);

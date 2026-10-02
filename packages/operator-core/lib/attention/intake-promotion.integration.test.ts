@@ -164,6 +164,9 @@ describe('promote / investigate', () => {
     const promoted = await getIssue(promotedId);
     expect(promoted?.kind).toBe('bug');
     expect(await isReadyAndQualifying(promotedId)).toBe(true);
+    const [admission] = await h.sql<{ admission: string; admitted_by: string }[]>`
+      SELECT admission, admitted_by FROM harness_shared.work_items WHERE feature_id = ${promotedId}`;
+    expect(admission).toEqual({ admission: 'auto', admitted_by: 'bypass:intake-decision' });
     expect(readIntakePromotionReceipt(promoted?.payload)).toMatchObject({
       key: intakePromotionKey(obs.id, decision.sourceRevision!),
       mode: 'distinct',
