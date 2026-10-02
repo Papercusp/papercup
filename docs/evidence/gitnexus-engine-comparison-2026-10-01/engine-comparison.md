@@ -43,7 +43,7 @@ created 2026-10-01T21:23:27.645Z · seed 0 · prereg 7ff941b3e5366038
 | baseline-lsp-rg | edit | yes | n/a | 0.0 | all 1 expected site(s) present |
 | baseline-lsp-rg | delete | yes | n/a | 0.0 | no site from the deleted file is returned |
 | baseline-lsp-rg | refresh-failure | NO | yes | 0.0 | fault SURFACED; correct cold=1 while-broken=0 after-restore=1; recovery refresh ok=true |
-| gitnexus-installed | edit | NO | n/a | 1812.1 | missing packages/operator-core/lib/scheduler/get-next.ts:3112 [engine note: gitnexus dispatch threw: gitnexus context exit 1: de_modules/gitnexus/dist/cli/tool.js:116:20) at async Command.<anonymous> (file:///home/marsh-office/.papercusp/vendor/gitnexus/node_modules/gitnexus/dist/cli/lazy-action.js:33:9) Node.js v25.9.0] |
+| gitnexus-installed | edit | NO | n/a | 1812.1 | missing packages/operator-core/lib/scheduler/get-next.ts:3112 [engine note: gitnexus dispatch threw: gitnexus context exit 1: de_modules/gitnexus/dist/cli/tool.js:116:20) at async Command.<anonymous> (~/.papercusp/vendor/gitnexus/node_modules/gitnexus/dist/cli/lazy-action.js:33:9) Node.js v25.9.0] |
 | gitnexus-installed | delete | NO | n/a | 1804.5 | query FAILED (error and no sites) [engine note: gitnexus dispatch threw: gitnexus context exit 139: ] |
 | gitnexus-installed | refresh-failure | yes | yes | 1627.6 | fault SURFACED; correct cold=2 while-broken=2 after-restore=2; recovery refresh ok=true |
 | gitnexus-candidate | edit | yes | n/a | 519.0 | all 1 expected site(s) present [engine note: gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current.] |
@@ -87,3 +87,4 @@ decision: **keep**
 - The tool-level comparison spends ZERO LLM tokens; `estTokens` is bytes/4 for every arm. This measures the engines, not agent task outcomes.
 - gitnexus-installed graph size from its cold analyze: 161,962 nodes / 357,805 edges.
 - gitnexus-candidate graph size from its cold analyze: 370,204 nodes / 1,207,016 edges.
+- FAIRNESS AUDIT (fairness-audit.json) is `allClear: false` and is disclosed here, not hidden: C1 and C10 PASS; C3, C6 and C8 WARN; C2, C4, C5, C7 and C9 NEEDS-EVIDENCE; NO criterion FAILs. `decideDisposition` does not read the audit, so the keep verdict is not derived from it; the acceptance bar R-8 reads it separately (marker 2) and requires this disclosure to stay present. The WARN and NEEDS-EVIDENCE criteria are residue about the harness, not a measured advantage for any arm.
