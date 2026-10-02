@@ -19,6 +19,15 @@ vi.mock('../../grading-audit-routing', () => ({ closeSourceAuditConsults }));
 const gateEnabled = vi.fn();
 const dispatchPendingGradingAudits = vi.fn();
 const readRunningGeneration = vi.fn();
+const replaySpecTestAdequacyForHistoricalAudit = vi.fn();
+
+vi.mock('../plans/evaluate-spec-test-adequacy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plans/evaluate-spec-test-adequacy')>();
+  return {
+    ...actual,
+    replaySpecTestAdequacyForHistoricalAudit: (...args: unknown[]) => replaySpecTestAdequacyForHistoricalAudit(...args),
+  };
+});
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -168,6 +177,7 @@ const RERUN_RECIPE = {
 
 const GRADED_CARD = {
   id: 'EI-CARD',
+  createdAt: '2026-10-02T00:14:36.135Z',
   createdBy: 'su-grader-author',
   payload: {
     observation: {
@@ -230,6 +240,30 @@ const replayConsistencyGradedCard = () => ({
   },
 });
 
+const legacyReplayConsistencyGradedCard = () => ({
+  ...replayConsistencyGradedCard(),
+  payload: {
+    observation: {
+      ...replayConsistencyGradedCard().payload.observation,
+      rerunRecipe: {
+        ...RERUN_RECIPE,
+        args: {
+          ...RERUN_RECIPE.args,
+          evidenceRefs: ['surface:reconnect'],
+          specRevision: 1,
+          specFingerprint: 'sha256:spec-v1',
+          replaySnapshot: true,
+          current: RERUN_RECIPE.current.fingerprints,
+        },
+        selection: {
+          ...RERUN_RECIPE.selection,
+          evidence: [{ evidenceKind: 'test', evidenceRef: 'surface:reconnect' }],
+        },
+      },
+    },
+  },
+});
+
 const targetReplay = (
   rating: 'pass' | 'fail',
   evaluatorBuild = RERUN_RECIPE.evaluatorBuild,
@@ -264,6 +298,7 @@ beforeEach(() => {
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
   readRunningGeneration.mockReset().mockResolvedValue(null);
+  replaySpecTestAdequacyForHistoricalAudit.mockReset();
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
@@ -799,6 +834,56 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(res.ok).toBe(true);
     expect(captureImprovement).toHaveBeenCalledOnce();
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+  });
+
+  it('falls back to a marked historical replay only when a legacy current read is selection_empty', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(legacyReplayConsistencyGradedCard());
+    const dispatchTool = vi.fn().mockResolvedValue({ ok: false, error: 'selection_empty', count: 0 });
+    replaySpecTestAdequacyForHistoricalAudit.mockResolvedValue({
+      ok: true,
+      evaluatorBuild: RERUN_RECIPE.evaluatorBuild,
+      rows: targetReplay('pass').rows,
+      historicalAuditOnly: {
+        provenance: 'historical-audit-only',
+        asOf: GRADED_CARD.createdAt,
+        freshness: 'audit-only',
+        bindings: [
+          {
+            id: 19999,
+            evidenceKind: 'test',
+            evidenceRef: 'surface:reconnect',
+            withdrawal: { at: '2026-10-02T01:00:00.000Z', reason: 'superseded by binding 21019' },
+          },
+        ],
+      },
+    });
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(dispatchTool).toHaveBeenCalledOnce();
+    expect(dispatchTool).toHaveBeenCalledWith(
+      'plans:evaluate-spec-test-adequacy',
+      expect.objectContaining({
+        evidenceRefs: ['surface:reconnect'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+      }),
+    );
+    expect(replaySpecTestAdequacyForHistoricalAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: expect.any(String),
+        auditAsOf: new Date(GRADED_CARD.createdAt),
+        selection: expect.objectContaining({ specId: 'SPEC-003-01', specRevision: 1 }),
+      }),
+    );
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
   it('defers the grading audit when the exact evaluator replay reports build drift', async () => {
