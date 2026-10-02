@@ -11,7 +11,9 @@ vi.mock('@huggingface/transformers', () => ({
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
-  validateNativeBoundaryRequest, nativeBoundaryPopulation, nativeInferenceTraceVerified, nativeRunTraceVerified, nativeRawClockTraceVerified, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
+  validateNativeBoundaryRequest, nativeBoundaryPopulation, nativeInferenceTraceVerified, nativeRunTraceVerified, nativeRawClockTraceVerified,
+  nativeRuntimeTraceVerified, nativeObservedLibraryClosureVerified, nativeGpuCapacityObserved,
+  summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
   type NativeBoundaryRequest, type NativeBoundaryRow, type NativeBoundaryBatchRow, type CandidateVectors } from './candidate-embedders';
 import { nativeBenchmarkOutputPaths } from './candidate-embedders';
 import { moduleRepoRoot } from '../../module-repo-root';
@@ -294,6 +296,45 @@ describe('native mDenseOn boundary evidence', () => {
       if (failure === 'version') events[0].rawClock.pythonVersion = 123;
       expect(nativeRawClockTraceVerified(events)).toBe(failure === 'valid');
     });
+  it.each(['valid','missing','hash','duplicate','before-after','outside','late-library','changed-library','unknown-capacity','wrong-gpu','probe-error'])
+    ('scopes native library/capacity observations and rejects %s evidence', (failure) => {
+      const library = { path: '/runtime/onnxruntime.so', bytes: 123, sha256: 'a'.repeat(64), mappedDevice: '08:01', mappedInode: '123' };
+      const memory = (beforeNs: string, afterNs: string) => ({ status: 'measured', scope: 'all-nvidia-smi-devices', beforeNs, afterNs,
+        executable: { path: '/usr/bin/nvidia-smi', bytes: 42, sha256: 'b'.repeat(64) }, cudaVisibleDevices: null,
+        devices: [{ uuid: 'GPU-test', pciBusId: '00000000:01:00.0', totalMiB: 100, usedMiB: 20, freeMiB: 70 }] });
+      const events: any[] = [
+        { phase: 'start', monotonicNs: '100', device: 'cuda', runtime: { platform: 'linux', clock: 'node-hrtime',
+          beforeNs: '10', afterNs: '90', libraries: [library], gpuMemory: memory('30','40') } },
+        { phase: 'end', monotonicNs: '200', device: 'cuda', runtime: { platform: 'linux', clock: 'node-hrtime',
+          beforeNs: '210', afterNs: '290', libraries: [{ ...library }], gpuMemory: memory('230','240') } },
+      ];
+      if (failure === 'missing') delete events[0].runtime;
+      if (failure === 'hash') events[1].runtime.libraries[0].sha256 = 'not-a-hash';
+      if (failure === 'duplicate') events[1].runtime.libraries.push({ ...library });
+      if (failure === 'before-after') events[0].runtime.beforeNs = '99';
+      if (failure === 'outside') events[1].runtime.beforeNs = '199';
+      if (failure === 'late-library') events[1].runtime.libraries.push({ ...library, path: '/runtime/cudnn.so', mappedInode: '456' });
+      if (failure === 'changed-library') events[1].runtime.libraries[0].sha256 = 'c'.repeat(64);
+      if (failure === 'unknown-capacity') events[0].runtime.gpuMemory = { status: 'unknown', beforeNs: '30', afterNs: '40', error: 'query failed' };
+      if (failure === 'wrong-gpu') events[0].runtime.gpuMemory.devices[0].freeMiB = 101;
+      if (failure === 'probe-error') events[1].runtimeProbeError = 'mapping failed';
+      const valid = ['valid','late-library','changed-library','unknown-capacity'].includes(failure);
+      expect(nativeRuntimeTraceVerified(events)).toBe(valid);
+      expect(nativeObservedLibraryClosureVerified(events)).toBe(['valid','unknown-capacity'].includes(failure));
+      expect(nativeGpuCapacityObserved(events)).toBe(['valid','late-library','changed-library'].includes(failure));
+    });
+  it('qualifies CPU maps without claiming GPU capacity or depending on JSON key order', () => {
+    const library = { path: '/runtime/ort.node', bytes: 123, sha256: 'a'.repeat(64), mappedDevice: '08:01', mappedInode: '123' };
+    const events: any[] = [
+      { phase: 'start', monotonicNs: '100', device: 'cpu', runtime: { platform: 'linux', clock: 'node-hrtime',
+        beforeNs: '10', afterNs: '90', libraries: [library], gpuMemory: { status: 'not-applicable' } } },
+      { phase: 'end', monotonicNs: '200', device: 'cpu', runtime: { platform: 'linux', clock: 'node-hrtime',
+        beforeNs: '210', afterNs: '290', libraries: [Object.fromEntries(Object.entries(library).reverse())], gpuMemory: { status: 'not-applicable' } } },
+    ];
+    expect(nativeRuntimeTraceVerified(events)).toBe(true);
+    expect(nativeObservedLibraryClosureVerified(events)).toBe(true);
+    expect(nativeGpuCapacityObserved(events)).toBe(false);
+  });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
     const { request, rows } = fixture();
     if (failure === 'partial') rows.pop();
