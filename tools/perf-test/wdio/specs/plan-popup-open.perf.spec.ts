@@ -51,6 +51,34 @@ const MAX_ROWS_TO_TRY = 5;
 // canonical constant — keep the two in sync when the budget changes.
 const PLAN_POPUP_OPEN_BUDGET_MS = 1500;
 
+/**
+ * A packaged desktop can navigate to the verifier host, which serves its own
+ * SPA index. For a font intervention, inspect the measured document itself:
+ * hashing the package index only proves what was on disk, not what WebKit used.
+ */
+async function verifyBodyFontTreatment(): Promise<void> {
+  const treatment = process.env.PAPERCUSP_PERF_BODY_FONT_TREATMENT;
+  if (treatment === undefined) return;
+  if (treatment !== 'plain' && treatment !== 'noto-sans') {
+    throw new Error(`unknown PAPERCUSP_PERF_BODY_FONT_TREATMENT: ${treatment}`);
+  }
+  const observed = await browser.execute(() => ({
+    href: location.href,
+    inlineStyle: document.body?.getAttribute('style') ?? null,
+    computedFontFamily: document.body ? getComputedStyle(document.body).fontFamily : null,
+  }));
+  const expectedStyle = treatment === 'noto-sans'
+    ? 'font-family: Noto Sans, sans-serif'
+    : null;
+  console.log(`[perf-runtime-treatment] ${JSON.stringify({ treatment, expectedStyle, ...observed })}`);
+  if (observed.inlineStyle !== expectedStyle) {
+    throw new Error(
+      `measured document missed ${treatment} font treatment: expected body style ` +
+      `${JSON.stringify(expectedStyle)}, got ${JSON.stringify(observed.inlineStyle)} at ${observed.href}`,
+    );
+  }
+}
+
 /** Run the shared quiet primitive inside the packaged webview. */
 async function waitForMainThreadQuietInPage(): Promise<void> {
   const result = (await browser.executeAsync(
@@ -102,6 +130,7 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       scopedUrl.hash = '';
       await browser.url(scopedUrl.toString());
     }
+    await verifyBodyFontTreatment();
     // 1. Wait for the operator UI to mount real app content.
     // URL discovery and the second navigation share one mount budget.
     await waitForAppMount(browser, Math.max(1, APP_MOUNT_TIMEOUT_MS - (Date.now() - mountStartedAt)));
