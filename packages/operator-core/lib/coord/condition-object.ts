@@ -204,9 +204,11 @@ export function resolveConditionObject(
  * forever merely because its issue-family row has no stored expiry. Reuse the shared
  * critical-claim progress lease for this read-only fallback. Missing progress and claim
  * anchors remain unmeasured (and therefore fail closed as held) unless the same holder
- * has a pending checkpoint await bound to an exact runId. That await supplies a temporary,
- * bounded lease extension; no generic issue row is mutated or assigned an expiry by this
- * policy.
+ * has a pending checkpoint await scoped to this pipeline's outcome keys. A pipeline-scoped
+ * key is already a precise condition match; a global outcome key needs an exact runId filter
+ * so a wait for another co-hosted pipeline cannot extend this claim. The await supplies a
+ * temporary, bounded lease extension; no generic issue row is mutated or assigned an expiry
+ * by this policy.
  */
 export function effectiveConditionLeaseExpiresAt(
   row: ConditionWorkItemRow,
@@ -224,10 +226,10 @@ export function effectiveConditionLeaseExpiresAt(
     if (lease.anchorMs !== null) baseExpiry = new Date(lease.anchorMs + lease.leaseMs).toISOString();
   }
 
-  // A precise pending checkpoint await proves the same holder is waiting on a
-  // specific in-flight verifier. Its timeout may be longer than the ordinary
-  // progress lease, but the effective condition lease is bounded both by that
-  // await's own deadline and by CHECKPOINT_RUN_LOCK_STALE_MS from await creation.
+  // A pending checkpoint await on this pipeline's outcome keys proves the same
+  // holder is waiting for the relevant gate result. Its timeout may be longer than
+  // the ordinary progress lease, but the effective condition lease is bounded both
+  // by that await's own deadline and by CHECKPOINT_RUN_LOCK_STALE_MS from creation.
   const awaitCreatedAtMs = row.checkpointAwaitCreatedAt ? Date.parse(row.checkpointAwaitCreatedAt) : NaN;
   if (!Number.isFinite(awaitCreatedAtMs) || awaitCreatedAtMs > nowMs) return baseExpiry;
   const awaitCapMs = awaitCreatedAtMs + CHECKPOINT_RUN_LOCK_STALE_MS;
@@ -358,7 +360,15 @@ export async function findConditionObjects(
             FROM harness_shared.event_awaits_effective a
            WHERE a.subscriber_id = w.taken_by
              AND (
-               a.event_key = ANY(${[...CHECKPOINT_AWAIT_GLOBAL_EVENT_KEYS]}::text[])
+               (
+                 a.event_key = ANY(${[...CHECKPOINT_AWAIT_GLOBAL_EVENT_KEYS]}::text[])
+                 -- A global outcome key can belong to any co-hosted pipeline, so it
+                 -- protects this condition only when the wait names its exact run.
+                 AND jsonb_typeof(a.payload_filter -> 'runId') = 'string'
+                 AND length(a.payload_filter ->> 'runId') >= 4
+               )
+               -- A pipeline-scoped outcome key already pins the wait to this
+               -- condition; generic events:await waits on these exact keys count too.
                OR a.event_key = ANY(ARRAY[
                  'release:green:' || split_part(l.dst_ref, ':', 2),
                  'green-checkpoint:red:' || split_part(l.dst_ref, ':', 2),
@@ -366,8 +376,6 @@ export async function findConditionObjects(
                  'green-checkpoint:held:' || split_part(l.dst_ref, ':', 2)
                ])
              )
-             AND jsonb_typeof(a.payload_filter -> 'runId') = 'string'
-             AND length(a.payload_filter ->> 'runId') >= 4
              AND a.fired_at IS NULL
              AND a.cancelled_at IS NULL
              AND a.superseded_at IS NULL
