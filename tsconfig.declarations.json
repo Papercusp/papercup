@@ -401,6 +401,7 @@
     // generator's export index is imported by borrowable-export-index.test.ts.
     "scripts/gen-borrowable-catalog.mjs",
     // Shared inspector client is imported by memory and transport contract tests.
-    "scripts/cdp-inspector.mjs"
+    "scripts/cdp-inspector.mjs",
+    "scripts/analyze-heap-snapshots.mjs"
   ]
 }

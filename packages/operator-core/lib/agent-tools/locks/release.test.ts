@@ -60,6 +60,8 @@ vi.mock('../../authority/file-lock-authority-ops', () => ({
 }));
 vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }));
 vi.mock('../../edit-attribution', () => ({ recordEditAttribution: vi.fn(async () => {}) }));
+// P-014: the pre-release restricted-edit hold. Default: an unrestricted owner (nothing written).
+vi.mock('../../personal-vault/git-sync-hold', () => ({ recordRestrictedEditBeforeRelease: vi.fn(async () => false) }));
 
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
@@ -72,6 +74,7 @@ import {
 } from './su-lock-store';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { recordEditAttribution } from '../../edit-attribution';
+import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
 
 const routeM = vi.mocked(routeFileLockOp);
 const releaseGranularM = vi.mocked(releaseGranular);
@@ -495,6 +498,39 @@ describe('locks:release — native edit attribution requires positive proof', ()
       files: ['a.ts'],
       agentId: 'me',
     }));
+  });
+
+  describe('P-014: a restricted owner’s edit is recorded BEFORE the lock is released', () => {
+    const preRecordM = vi.mocked(recordRestrictedEditBeforeRelease);
+    const proof = { success: true, source: 'claude', tool: 'Edit', paths: ['a.ts'] } as const;
+
+    it('writes the ledger row ahead of the release and does not write it again afterwards', async () => {
+      let routedBeforeRecord: number | null = null;
+      preRecordM.mockImplementationOnce(async () => {
+        routedBeforeRecord = routeM.mock.calls.length;
+        return true;
+      });
+      mockResolvedOnceTyped(routeM, { value: { ok: true, released: ['a.ts'] }, via: 'local-authority' });
+
+      await call({ lock_id: LOCK, native_edit_proof: proof });
+
+      expect(routedBeforeRecord).toBe(0);
+      expect(routeM).toHaveBeenCalled();
+      expect(preRecordM).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: 'dom', files: ['a.ts'], ownerId: 'me' }));
+      expect(recordAttributionM).not.toHaveBeenCalled();
+    });
+
+    it('keeps the lock (never routes the release) when the restricted record is refused', async () => {
+      preRecordM.mockRejectedValueOnce(new Error('disclosure_ledger_unavailable: down'));
+      await call({ lock_id: LOCK, native_edit_proof: proof }).catch(() => undefined);
+      expect(routeM).not.toHaveBeenCalled();
+    });
+
+    it('is not consulted for a release with no native-edit proof', async () => {
+      mockResolvedTyped(routeM, { value: { ok: true, released: ['a.ts'] }, via: 'local-authority' });
+      await call({ lock_id: LOCK });
+      expect(preRecordM).not.toHaveBeenCalled();
+    });
   });
 
   it.each([
