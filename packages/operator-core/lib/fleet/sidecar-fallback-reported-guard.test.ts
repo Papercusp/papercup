@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -104,6 +105,56 @@ describe('check-sidecar-fallback-reported guard', () => {
     const [first] = findUnreportedFallbacks(bad);
     expect(first?.line).toBeGreaterThan(0);
     expect(first?.call).toBe('runGitViaSpawnerSidecar');
+  });
+
+  it('accepts an injected callback whose production default calls the reporter', () => {
+    const source = `
+      function run(seams = {}) {
+        const report = seams.onFallback ?? ((e: unknown) => noteSidecarFallback('x', e));
+        try { return await runGitViaSpawnerSidecar(args, cwd); }
+        catch (e) { report(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
+    expect(findUnreportedFallbacks(source.replace('noteSidecarFallback', 'console.warn'))).toHaveLength(1);
+  });
+
+  it('accepts a const reporter alias in the governing lexical scope', () => {
+    const source = `
+      function run() {
+        const report = noteSidecarFallback;
+        try { return await runGitStdinViaSpawnerSidecar(args, cwd); }
+        catch (e) { report('x', e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
+    expect(findUnreportedFallbacks(source.replace('const report =', 'let report ='))).toHaveLength(1);
+  });
+
+  it('does not trust an unrelated or shadowed callback with the same name', () => {
+    const source = `
+      const report = noteSidecarFallback;
+      function run(report) {
+        try { return await runGitViaSpawnerSidecar(args, cwd); }
+        catch (e) { report(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(1);
+  });
+
+  it('does not count a reporter after the catch or inside an uncalled callback', () => {
+    const source = `
+      try { return await runGitViaSpawnerSidecar(args, cwd); }
+      catch (e) { const unused = () => noteSidecarFallback('x', e); }
+      noteSidecarFallback('other', new Error());
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(1);
+  });
+
+  it('recognizes the maintained watchdog callback and detects removal of its default reporter', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'packages/operator-core/lib/release/worktree-coverage-watchdog.ts'), 'utf8');
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
+    expect(findUnreportedFallbacks(source.replace("noteSidecarFallback('worktree-coverage', e)", 'console.warn(e)'))).toHaveLength(1);
   });
 });
 
