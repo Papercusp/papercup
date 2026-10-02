@@ -4,6 +4,41 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## Paired callback result and native session failure — 2026-10-02, Fire146
+
+Recovered r169 completed with verifier and suite exit 1; it was not replayed.
+The actual LCP node joined the Accounts footer at **4716 ms**, with FCP at
+1314 ms. Footer observation was at 3523 ms. Its paired requests were queued at
+3524 ms, the frame callback arrived at 4578 ms, the geometry read completed at
+4579 ms, and the companion timer arrived at 4723 ms. Both callbacks were late:
+1054 ms for the frame and 1199 ms for the timer. The first geometry read took
+1 ms. This contradicts the prompt-timer/frame-only hypothesis; it identifies
+paired scheduling behavior without establishing its initiating cause.
+
+WDIO then lost its session at spec line 121, before popup navigation. No popup
+duration, attempt timeout or late-total observation was collected. The driver's
+new timeout guard remains verified by its controlled tests, with native adoption
+unverified for that path. Bounded journal/coredump reads for the owned app and
+renderer during the failure window returned no records. The crash-or-hang label
+and missing appsink warning do not establish a signal or cause.
+
+All 16 prepared source fingerprints still match. The summary preserves the
+raw logs, native process trace, API identity and exact hashes. Five owned PIDs,
+the source snapshot and socket were absent before cleanup. The saved tmpfs
+device/inode and log fingerprints matched; only r169's private HOME, profiles
+and tmpfs logs were removed. Port 33700 refused at that cleanup check. The
+default IPC advert belonged to another runtime and was preserved.
+
+Evidence: `r169PairedTerminalFire146` in
+`p007-native-source-output-audit-2026-10-01.json`, backed by
+`$HOME/.papercusp/perf/p007-native-current/r169-native-summary.json`
+(`a6082fa59c8d…`) and `r169-cleanup-receipt.json` (`9defeea88e92…`).
+Current API identity, separate clocks, media suppression and observer work
+remain confounds. Before another native attempt, audit the maintained crash
+evidence path and add the justified causal detector or isolated preflight.
+No unchanged r169 or earlier replay; cause, initiating caller, product repair,
+R-7 and the frozen five-cold/five-warm cohort remain open.
+
 ## Popup timeout observation guard — 2026-10-02, Fire142
 
 The maintained driver had a confirmed observation race: an eight-second wait
