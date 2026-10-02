@@ -1,0 +1,178 @@
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const root = resolve(__dirname, '../../../..');
+const claimSource = 'packages/operator-core/lib/scheduler/get-next.ts';
+const hash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+
+// Reuse the maintained request-only profile: its PG, registry, identity, sidecar
+// and disabled background owners are private. No shared API or agent is touched.
+const journey = String.raw`
+import assert from 'node:assert/strict';
+import { appendFileSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { spawn, execFile } from 'node:child_process';
+import postgres from 'postgres';
+const dir = process.env.FLEET_FILTER_PROOF_DIR;
+const ws = process.env.PAPERCUSP_WORKSPACE_ID;
+const base = process.env.PAPERCUSP_OPERATOR_URL;
+assert.match(ws, /^test-runtime-/);
+assert.notEqual(new URL(process.env.HARNESS_ADMIN_DATABASE_URL).port, '5432');
+assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
+assert.equal(process.env.PAPERCUSP_DBOS_ENABLE, '0');
+const leader = 'su-fleet-filter-leader-' + randomUUID();
+const member = 'su-fleet-filter-member-' + randomUUID();
+const solo = 'su-fleet-filter-solo-' + randomUUID();
+writeFileSync(join(process.env.PAPERCUSP_HOME, 'superuser-token'), randomBytes(32).toString('hex'), { mode: 0o600 });
+const log = openSync(join(dir, 'host.log'), 'a');
+const host = spawn(process.execPath, [join(dir, 'hono-host.mjs')], { env: process.env, stdio: ['ignore', log, log] });
+const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL, { max: 1, onnotice: () => {} });
+const receipts = [];
+function call(owner, name, args, refusal = false) {
+  const start = performance.now();
+  return new Promise((resolve, reject) => {
+    const child = execFile(process.execPath, ['apps/operator/scripts/ptool.mjs', name,
+      '--url=' + base, '--workspace=' + ws, '--harness=' + ws, '--json', '-'], {
+      env: { ...process.env, PAPERCUSP_SID: owner, PAPERCUSP_HARNESS_SLUG: ws },
+      timeout: 45000, maxBuffer: 2000000,
+    }, (error, out, err) => {
+      const receipt = { name, args, code: error?.code ?? 0, durationMs: performance.now() - start, out, err };
+      appendFileSync(join(dir, 'requests.jsonl'), JSON.stringify(receipt) + '\n');
+      try {
+        assert.equal(receipt.code, refusal ? 5 : 0, err.slice(-1500));
+        const result = JSON.parse(out);
+        if (name === 'coord:whoami') {
+          assert.equal(result.ownerId, owner); assert.equal(result.workspaceId, ws);
+        } else {
+          assert.equal(result.ok, !refusal, out.slice(-1500));
+          if (refusal) assert.match(result.error, /no claimable work-item matched/);
+        }
+        resolve({ result, durationMs: receipt.durationMs });
+      } catch (error) { reject(new Error(name + ': ' + error + ' ' + out.slice(-1500))); }
+    });
+    child.stdin.end(JSON.stringify(args));
+  });
+}
+const claims = () => sql.unsafe('SELECT feature_id,taken_by FROM harness_shared.work_items WHERE workspace_id=$1 AND taken_by IS NOT NULL', [ws]);
+const settle = id => sql.unsafe('UPDATE harness_shared.work_items SET status=$3,taken_by=NULL,taken_at=NULL WHERE workspace_id=$1 AND feature_id=$2', [ws,id,'done']);
+const seed = (id, kind, title, order) => sql.unsafe('INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,origin,title,created_ts,updated_ts,feature_order) VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$7,$8)', [ws,id,kind,'open','local',title,Date.now(),order]);
+const spec = (id, filter, priority) => ({ specVersion:'1.0',specId:id,revision:6,
+  view:{filter},rank:{mode:'lexicographic',terms:priority
+    ? [{expr:'priority',dir:'desc'},{expr:'age',dir:'asc'}] : [{expr:'age',dir:'asc'}]},
+  limits:{maxConcurrentClaims:1},states:['open'] });
+const strictFilter = {all:[{field:'kind',op:'in',value:['feature']},
+  {not:{field:'title',op:'word',value:'p2p'}}]};
+try {
+  let health;
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    assert.equal(host.exitCode, null, 'Private host exited before readiness');
+    try {
+      const response = await fetch(base + '/api/health', {signal:AbortSignal.timeout(2000)});
+      if (response.ok) { health = await response.json(); break; }
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  assert.ok(health, 'Private host never became ready');
+  await call(leader,'coord:whoami',{});
+  const created = await call(leader,'fleet:create',{name:'private-filter-fleet'});
+  const fleet = created.result.fleet?.slug ?? created.result.slug;
+  assert.equal(fleet,'private-filter-fleet');
+  // Seed an admitted feature before authoring the standing fleet spec, avoiding
+  // the write-time empty-pool guard without overriding it.
+  await seed('F-FILTER-INSIDE','feature','Admitted feature',100);
+  await seed('WI-FILTER-OUTSIDE','change','Adjacent change',1);
+  await seed('F-FILTER-P2P','feature','p2p excluded feature',0);
+  await call(leader,'scheduler:set_claim_spec',{fleet,harness:ws,spec:spec('strict-feature-fleet',strictFilter,false)});
+  await call(member,'fleet:join',{fleet,as:'member'});
+  const inherited = await call(member,'scheduler:get_claim_spec',{cupId:member});
+  assert.equal(inherited.result.source,'fleet');
+  assert.equal(inherited.result.fleetSlug,fleet);
+  const positive = await call(member,'scheduler:get_next',{harness:ws});
+  assert.equal(positive.result.claimReceipt?.committed,true);
+  assert.equal(positive.result.workItem?.id,'F-FILTER-INSIDE');
+  assert.deepEqual((await claims()).map(row=>({...row})),[{feature_id:'F-FILTER-INSIDE',taken_by:member}]);
+  receipts.push({phase:'feature-pickup',durationMs:positive.durationMs,receipt:positive.result.claimReceipt});
+  await settle('F-FILTER-INSIDE');
+  for (const priority of [false,true]) {
+    if (priority) {
+      // The admitted row is only needed for the spec write, then settled before
+      // pulling. This leaves the higher-priority CHANGE and excluded P2P row.
+      await seed('F-FILTER-SPEC-WRITE','feature','Admitted write-time control',100);
+      await call(leader,'scheduler:set_claim_spec',{fleet,harness:ws,spec:spec('strict-feature-fleet',strictFilter,true)});
+      await settle('F-FILTER-SPEC-WRITE');
+    }
+    const miss = await call(member,'scheduler:get_next',{harness:ws},true);
+    assert.equal((await claims()).length,0,'A strict fleet miss must never claim adjacent work');
+    const [outside] = await sql.unsafe('SELECT taken_by,updated_ts,payload FROM harness_shared.work_items WHERE workspace_id=$1 AND feature_id=$2',[ws,'WI-FILTER-OUTSIDE']);
+    assert.equal(outside.taken_by,null);
+    assert.equal(outside.payload?.claim_history_post_id,undefined,'Post-claim rejection is too late');
+    receipts.push({phase:'strict-miss',priority,durationMs:miss.durationMs,noClaims:true,noClaimHistory:true});
+  }
+  const mixedFilter = {all:[{any:[{field:'kind',op:'=',value:'feature'},
+    {field:'id',op:'=',value:'WI-FILTER-OUTSIDE'}]},
+    {not:{field:'title',op:'word',value:'p2p'}}]};
+  await call(leader,'scheduler:set_claim_spec',{fleet,harness:ws,spec:spec('mixed-family-fleet',mixedFilter,true)});
+  const mixed = await call(member,'scheduler:get_next',{harness:ws});
+  assert.equal(mixed.result.workItem?.id,'WI-FILTER-OUTSIDE');
+  assert.equal(mixed.result.claimReceipt?.committed,true);
+  assert.deepEqual((await claims()).map(row=>({...row})),[{feature_id:'WI-FILTER-OUTSIDE',taken_by:member}]);
+  receipts.push({phase:'mixed-issue-pickup',durationMs:mixed.durationMs,receipt:mixed.result.claimReceipt});
+  await settle('WI-FILTER-OUTSIDE');
+  await seed('WI-FILTER-SOLO','change','Solo default fallback',1);
+  const soloClaim = await call(solo,'scheduler:get_next',{harness:ws});
+  assert.equal(soloClaim.result.workItem?.id,'WI-FILTER-SOLO');
+  assert.equal(soloClaim.result.claimReceipt?.committed,true);
+  assert.deepEqual((await claims()).map(row=>({...row})),[{feature_id:'WI-FILTER-SOLO',taken_by:solo}]);
+  receipts.push({phase:'solo-issue-pickup',durationMs:soloClaim.durationMs,receipt:soloClaim.result.claimReceipt});
+  const proof = {health,workspace:ws,privateDatabase:true,receipts};
+  writeFileSync(join(dir,'proof.json'),JSON.stringify(proof,null,2));
+  console.log('FLEET_FILTER_API_PROOF=' + JSON.stringify(proof));
+} finally {
+  await sql.end({timeout:3});
+  host.kill('SIGTERM');
+  await Promise.race([new Promise(resolve=>host.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,5000))]);
+  if(host.exitCode===null)host.kill('SIGKILL');
+}
+`;
+
+describe('WI-10002617: named fleet filtering through the private operator API', () => {
+  it('filters before claiming and preserves admitted feature, mixed issue and solo pickup', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-fleet-filter-api-'));
+    try {
+      symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
+      const before = hash(join(root, claimSource));
+      const build = spawnSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'),
+        'bin/hono-host.ts', join(dir, 'hono-host.mjs')], {
+        cwd: root, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024,
+      });
+      writeFileSync(join(dir, 'build.log'), (build.stdout ?? '') + (build.stderr ?? ''));
+      expect(build.status, 'Private bundle failed; evidence: ' + dir + '\n' + build.stderr?.slice(-1500)).toBe(0);
+      expect(hash(join(root, claimSource)), 'Claim source changed during bundle build').toBe(before);
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--', process.execPath, '--input-type=module', '-e', journey], {
+        cwd: root, encoding: 'utf8', timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, FLEET_FILTER_PROOF_DIR: dir },
+      });
+      writeFileSync(join(dir, 'journey.log'), (result.stdout ?? '') + (result.stderr ?? ''));
+      expect(result.status, 'Private API proof failed; evidence: ' + dir + '\n' + result.stderr?.slice(-2000)).toBe(0);
+      expect(hash(join(root, claimSource)), 'Claim source changed during API proof').toBe(before);
+      const proof = JSON.parse(readFileSync(join(dir, 'proof.json'), 'utf8'));
+      expect(proof.receipts.map((row: { phase: string }) => row.phase)).toEqual([
+        'feature-pickup', 'strict-miss', 'strict-miss', 'mixed-issue-pickup', 'solo-issue-pickup',
+      ]);
+      console.log('FLEET_FILTER_API_EVIDENCE=' + JSON.stringify({
+        dir, claimSourceSha256: before, bundleSha256: hash(join(dir, 'hono-host.mjs')), ...proof,
+      }));
+    } finally {
+      // Keep failed/successful receipts available for diagnosing the expensive
+      // journey. The maintained runner disposes all private runtime processes.
+      rmSync(join(dir, 'node_modules'), { force: true });
+    }
+  }, 560_000);
+});
