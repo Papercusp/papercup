@@ -37,8 +37,8 @@
     },
     "qualification": {
       "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-qualification-2026-10-02.json",
-      "bytes": 11538,
-      "sha256": "428a8e7cd11df9eeca72c72ea7b840979cdc262595d6e2acb5786a7e6223be23"
+      "bytes": 11603,
+      "sha256": "92dd036710ba15b19af37ef62e24bbfd190216c848d46587670746ed6faef0b2"
     },
     "coverage": "Two independent private HTTP hosts from one emitted bundle with one guarded historical cache-key intervention; each has eleven PID/startTicks-bound resource samples, three idle/workload windows and twenty-four responses at concurrency eight. Exact full raw input contents remain unchanged; both hosts are reaped with no observed descendants or debugger pauses.",
     "observedDifferenceInChanges": {
