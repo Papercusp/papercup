@@ -19,6 +19,7 @@ import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPo
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
+import { GOAL_OWNER_REPORT_HEADING_LIST } from './goal-owner-report';
 import type { PlanAcceptanceGateCode } from './plan-acceptance-gate';
 import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
@@ -877,7 +878,7 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
     evidence: [evidence(reportRef, input.observedAt, input.sourceGeneration, report.obligation)],
     action: {
       kind: 'report',
-      summary: 'send MOVED / COST / OWNER-WALLED / KILLED on a canonical owner-facing rail now',
+      summary: `send ${GOAL_OWNER_REPORT_HEADING_LIST} on a canonical owner-facing rail now`,
       tool: 'coord:send',
       args: { to: ['human'] },
     },

@@ -138,6 +138,7 @@ import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-o
 import {
   GOAL_OWNER_REPORT_FIELD,
   GOAL_OWNER_REPORT_FIELDS,
+  GOAL_OWNER_REPORT_HEADING_LIST,
   GOAL_OWNER_REPORT_HEADINGS,
   parseGoalOwnerReport,
   stampGoalOwnerReport,
@@ -945,7 +946,7 @@ export async function evaluateGoalOwnerReport(
   }
   const overCapNote = overCap
     ? ` The body has ${authoredBodyChars} characters, above the ${DEFAULT_INBOX_BODY_CAP}-character inbox cap. ` +
-      'A GOAL owner report must fit in one message so the four-section report is delivered as a unit. Nothing was sent; shorten it and retry.'
+      'A GOAL owner report must fit in one message so the whole report is delivered as a unit. Nothing was sent; shorten it and retry.'
     : '';
   if (!parsed.complete) {
     return {
@@ -963,8 +964,9 @@ export async function evaluateGoalOwnerReport(
           : {}),
         message:
           `GOAL owner report for ${goalId} is incomplete; nothing was sent. ` +
-          'Provide exactly one non-empty body section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
+          `Provide exactly one non-empty body section headed each of ${GOAL_OWNER_REPORT_HEADING_LIST}. ` +
           'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value. ' +
+          'NEXT WAKE names what will wake you next and roughly when (loop interval, awaited event, or owner reply). ' +
           `Missing: ${parsed.missing.join(', ') || 'none'}; empty: ${parsed.empty.join(', ') || 'none'}; ` +
           `duplicate: ${parsed.duplicate.join(', ') || 'none'}.` +
           overCapNote,
@@ -982,7 +984,7 @@ export async function evaluateGoalOwnerReport(
         bodyAuthoredChars: authoredBodyChars,
         bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP,
         message:
-          `GOAL owner report for ${goalId} is ${authoredBodyChars} characters; its four sections must fit ` +
+          `GOAL owner report for ${goalId} is ${authoredBodyChars} characters; its sections must fit ` +
           `one ${DEFAULT_INBOX_BODY_CAP}-character inbox message to update the reporting rail as a unit. ` +
           'Nothing was sent. Shorten the report and retry; put long supporting detail on its work-item.',
       },

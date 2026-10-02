@@ -32,6 +32,7 @@ import {
 } from '../../../events/await/predicate-watch';
 import {
   GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_HEADING_LIST,
   parseGoalOwnerReport,
   stampGoalOwnerReport,
   type GoalOwnerReportStamp,
@@ -365,7 +366,7 @@ export default defineTool({
                   duplicate: parsedGoalOwnerReport.duplicate,
                   message:
                     `GOAL owner report for ${goalId} is incomplete; nothing was escalated. ` +
-                    'Provide exactly one non-empty section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
+                    `Provide exactly one non-empty section headed each of ${GOAL_OWNER_REPORT_HEADING_LIST}. ` +
                     'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value.',
                 }),
               },
