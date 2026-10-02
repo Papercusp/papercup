@@ -273,6 +273,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     selfPath,
     devScriptPath: sidecarScript,
     bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+    bundledScriptName: 'spawner-sidecar.mjs',
     execPath: process.execPath,
     spawnerPid: process.pid,
   });
