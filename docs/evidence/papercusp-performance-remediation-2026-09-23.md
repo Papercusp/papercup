@@ -5098,3 +5098,61 @@ adoption, historical client-close cause/application impact and the remaining
 R-8 operational inputs are still unverified. Portal and harvested-item
 routing are now held by the fleet leader, as delivered in coordination.
 **P-008/R-8 remains open; no acceptance binding or shipment is claimed.**
+
+### Claude fork-seed owner attribution — October 2, current build
+
+The earlier duplicate-path hypothesis is now narrowed by identity evidence.
+The Claude adapter sorts candidate files newest first and takes the final
+`ownerBackfill` value for each native session ID. A managed fork can leave a
+same-ID seed copy under the fork's own owner directory. The launcher's
+first-write-wins `psu-session-owners` entry records the born owner and its
+resume path already uses that index when copies conflict. The ingest path did
+not read it, so a later seed in traversal order could overwrite the indexed
+turn owner.
+
+A read-only scan at 16:25:46Z applied the actual Claude adapter's 45-day,
+nonempty, newest-mtime candidate rules. It found 4,422 candidates, 519
+duplicate native IDs, 485 duplicates with a born-owner index, and five where
+the adapter's final path owner differed from that index; the indexed owner
+had a candidate file in all five. Source hash before and after was
+`83884d3931d290006a861c572296d43a4361469d043ab7188fc5059fa19a5f86`.
+A separate repeatable-read, read-only PG snapshot at 16:27:19Z used a five-ID
+sample with 5-second statement and 1-second lock timeouts and a closed
+dedicated client. All five had indexed turns attributed to the traversal
+winner; three also had `adv_sessions` rows naming the born owner. The sample
+contains 5, 16, 31, 28 and 22 stored turns respectively. Session IDs and
+owner IDs were hashed or reduced to role labels in the output. This confirms
+the attribution defect in that snapshot; neither scan is the actual historic
+natural sweep, and neither explains its slow UPDATE or application impact.
+
+The companion `session_turn_parts` snapshot showed canonical owners for four
+sample IDs but 196 parts attributed to the fork winner for the fifth. The
+parts index was therefore a separate repair target, not just a render concern.
+
+`session-ingest.ts` now reads the existing immutable birth index for managed
+Claude candidates, with a bounded 20,000-entry module-pinned cache and
+60-second negative expiry. The selected owner is used for ordinary sweeps,
+EOF-only turn and parts owner repair, single-file freshness ingest and
+historical parts backfill; sessions without an index keep their path-derived
+fallback. This extends the existing index and ingest paths without a new
+table, service or scheduled job. The private current-build regression makes
+a fork seed older than the born file, a case that previously let the Map's
+final write select the fork. It verifies initial insertion, EOF-only turn
+and parts repair, single-file tail and a final sweep after the born file is
+removed, including private database, HOME and port teardown.
+
+The final isolated integration file passed **2/2, zero skips, exit 0** at
+16:48:15Z on HEAD `a9d3048a08` plus local edits. The test route is
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file --
+packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`;
+its maintained child calls `scripts/with-test-pg.mjs --isolated-runtime`.
+The phase receipt unit file passed **5/5, zero skips, exit 0** at 16:48:50Z.
+Scoped `npm run lint:tsc -- --files=packages/operator-core/lib/search/session-ingest.ts,packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`
+reported zero errors, exit 0 at 16:48:36Z; scoped `git diff --check` passed.
+The source/test SHA-256s after verification were
+`b1dc08570e06561ec05147f8f43775b87526b116e89641e8876ca2fe26e1f18f` /
+`26ea067ae323670211d02c8d09f473faa0907ea9537d55ab6ad486131cfa0704`.
+These are local-current-build observations, not a shared bg-host adoption
+receipt. D-006 still reserves shared-host changes to the runtime owner's
+coordinated route. Historical wait cause, app impact, live adoption and
+R-8 acceptance remain open.
