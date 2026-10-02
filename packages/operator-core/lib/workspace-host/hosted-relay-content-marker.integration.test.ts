@@ -358,7 +358,7 @@ async function runAssembledByoc() {
       expectedRemotePublicKey: hostKey.publicKey,
       sendPacket: (packet) => {
         if (!app) appPackets.push(packet);
-        else if (!app.send(packet)) throw new Error('sealed app packet was refused');
+        else if (!app.send(packet as unknown as Record<string, unknown>)) throw new Error('sealed app packet was refused');
       },
       onFrame: () => {},
       onError: (error) => hostWarnings.push(`app sealed channel: ${error.message}`),
@@ -374,7 +374,7 @@ async function runAssembledByoc() {
     // initiator fragment that SecretStream emitted during construction.
     await settle(pending);
     for (const packet of appPackets.splice(0)) {
-      if (!app.send(packet)) throw new Error('sealed app handshake packet was refused');
+      if (!app.send(packet as unknown as Record<string, unknown>)) throw new Error('sealed app handshake packet was refused');
     }
     await settle(pending);
     await Promise.race([

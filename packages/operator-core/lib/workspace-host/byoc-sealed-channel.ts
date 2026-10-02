@@ -10,7 +10,7 @@
  */
 import { timingSafeEqual } from 'node:crypto';
 import SecretStream from '@hyperswarm/secret-stream';
-import { Duplex } from 'streamx';
+import { Duplex } from 'node:stream';
 
 export const BYOC_SEALED_PROTOCOL = 'papercusp-byoc-noise-xx.v1' as const;
 
@@ -62,11 +62,9 @@ class RelayPacketDuplex extends Duplex {
     super();
   }
 
-  override _read(callback: (error?: Error | null) => void): void {
-    callback(null);
-  }
+  override _read(_size: number): void {}
 
-  override _write(chunk: Buffer, callback: (error?: Error | null) => void): void {
+  override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     try {
       this.emitPacket(Buffer.from(chunk), this.contentType);
       callback(null);

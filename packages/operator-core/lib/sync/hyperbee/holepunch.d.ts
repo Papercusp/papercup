@@ -227,6 +227,10 @@ declare module '@hyperswarm/secret-stream' {
     constructor(isInitiator: boolean, rawStream?: unknown, opts?: Record<string, unknown>);
     /** Resolves when the Noise handshake completes. */
     readonly opened: Promise<boolean>;
+    /** Authenticated remote static key after the handshake. */
+    readonly remotePublicKey: Buffer | null;
+    /** Wait until encrypted bytes queued by write() reach the raw transport. */
+    flush(): Promise<void>;
     /** Where `corestore.replicate(stream)` attaches the shared muxer. */
     userData: unknown;
   }
