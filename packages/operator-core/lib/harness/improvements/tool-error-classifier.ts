@@ -99,6 +99,13 @@ export const CALLER_MESSAGE_PATTERN =
 export const RATE_LIMIT_MESSAGE_PATTERN =
   'openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests';
 
+/** The operator's own MCP admission bulkhead returns a retryable shed response
+ *  when the event loop is critical or its in-flight capacity is full. That is
+ *  backpressure from the shared admission gate, not a per-tool implementation
+ *  defect. */
+export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
+  'operator MCP admission is saturated|reason=(loop_pressure_critical|operator_admission_capacity)';
+
 /** Shared-infra exhaustion (PG `max_connections` / DB-unavailable), an operator
  *  shutdown-window response, and a stale-pooled-connection reset against
  *  PgBouncer. These recur identically in SHAPE across tools during a wedge /
@@ -156,6 +163,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'rate-limit',
     messagePattern: RATE_LIMIT_MESSAGE_PATTERN,
     why: 'an EXTERNAL provider rate-limit / quota (OpenAI embed TPM 429) — capacity, not a code bug',
+  },
+  {
+    class: 'transient',
+    messagePattern: OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN,
+    why: 'the operator MCP admission gate returned retryable backpressure under critical loop pressure or full capacity — not a per-tool defect',
   },
   {
     class: 'transient',

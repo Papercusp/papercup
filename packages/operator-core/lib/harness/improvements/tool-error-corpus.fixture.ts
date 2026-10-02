@@ -15,6 +15,8 @@
  * structural repair lane.
  * Kernel identity-ceiling refusals were added 2026-10-01 from a 24h sample
  * (n=33/16) to keep expected no-grant identities out of the structural lane.
+ * The operator admission-shed row was added 2026-10-02 from the retryable
+ * `loop_pressure_critical` response captured in EI-24856174754316507.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -98,6 +100,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'sidecar_required_unavailable: semantic search sidecar at http://127.0.0.1:3384 aborted; lexical-only fallback returned',
     expectedClass: 'transient',
     note: 'shared embedding sidecar outage — degraded lexical fallback is infrastructure availability, not a per-tool structural bug',
+  },
+  {
+    n: 1, errorCode: '-32000', status: 'request shed',
+    message: 'operator MCP admission is saturated — request shed; reason=loop_pressure_critical',
+    expectedClass: 'transient',
+    note: 'the operator admission gate explicitly shed this call for critical loop pressure; retryable shared backpressure, not a per-tool bug',
   },
 
   // ── rate-limit: external provider 429 (capacity, not a code bug) ────────────
