@@ -609,6 +609,35 @@ export async function refreshGoalTripwires(
 /** The identity every rollup-driven goal write is attributed to. */
 export const GOAL_SPEND_ROLLUP_ACTOR = 'goal-spend-rollup' as const;
 
+/** Decide whether the authoritative windowed spend requires a lifecycle pause. */
+export function goalSpendBreachDecision(
+  rollup: GoalSpendRollup,
+  breached: ReturnType<typeof breachedTripwires>,
+  budgetCents: number | null,
+): { judgedCents: number; budgetBreached: boolean; reasons: string[] } | null {
+  if (isInteractiveUsageUnmeasuredReason(rollup.unmeasuredReason)) return null;
+  // A partially priced lineage still has an enforceable priced floor.
+  const judgedCents = rollup.spentCents ?? rollup.lineageCents;
+  const budgetBreached = budgetCents !== null && judgedCents >= budgetCents;
+  if (!budgetBreached && breached.length === 0) return null;
+
+  const per = rollup.windowSec === null ? '' : ` per ${rollup.windowSec}s window`;
+  const reasons = [
+    ...(budgetBreached
+      ? [
+          rollup.spentCents !== null
+            ? `measured goal-attributed spend ${judgedCents}c reached budget ${budgetCents}c${per}`
+            : `goal-attributed spend floor ${judgedCents}c reached budget ${budgetCents}c${per} with ${rollup.lineage.unpricedSamples} unpriced sample(s)`,
+        ]
+      : []),
+    ...breached.map((b) => {
+      const pop = populationForMetric(b.metric);
+      return `${b.metric} ${b.current} reached threshold ${b.threshold}${pop ? ` [measured over ${pop}]` : ''}`;
+    }),
+  ];
+  return { judgedCents, budgetBreached, reasons };
+}
+
 /**
  * A spend ceiling breach is a control, not merely telemetry. The launch gate
  * prevents new work, but an active goal otherwise keeps its existing pots and
@@ -635,30 +664,9 @@ async function enforceGoalBreaches(
   budgetCents: number | null,
   nowMs: number = Date.now(),
 ): Promise<void> {
-  if (isInteractiveUsageUnmeasuredReason(rollup.unmeasuredReason)) return;
-  // A complete measurement is judged as is. An unpriced window still carries a
-  // priced FLOOR, and a floor that already reaches the ceiling breaches it
-  // whatever the unpriced samples cost.
-  const judgedCents = rollup.spentCents ?? rollup.lineageCents;
-  const budgetBreached = budgetCents !== null && judgedCents >= budgetCents;
-  if (!budgetBreached && breached.length === 0) return;
-
-  const per = rollup.windowSec === null ? '' : ` per ${rollup.windowSec}s window`;
-  const reasons = [
-    ...(budgetBreached
-      ? [
-          rollup.spentCents !== null
-            ? `measured goal-attributed spend ${judgedCents}c reached budget ${budgetCents}c${per}`
-            : `goal-attributed spend floor ${judgedCents}c reached budget ${budgetCents}c${per} with ${rollup.lineage.unpricedSamples} unpriced sample(s)`,
-        ]
-      : []),
-    ...breached.map((b) => {
-      // NAME THE POPULATION (P-004). `spend_usd 62 reached threshold 100` reads
-      // as a fact about the goal; name which measurement it is a fact about.
-      const pop = populationForMetric(b.metric);
-      return `${b.metric} ${b.current} reached threshold ${b.threshold}${pop ? ` [measured over ${pop}]` : ''}`;
-    }),
-  ];
+  const decision = goalSpendBreachDecision(rollup, breached, budgetCents);
+  if (!decision) return;
+  const { judgedCents, budgetBreached, reasons } = decision;
   const evidence = {
     reason: budgetBreached && rollup.spentCents === null ? 'spend-floor-goal-breach' : 'measured-goal-breach',
     at: new Date(nowMs).toISOString(),
