@@ -137,6 +137,9 @@ artifact_files_paths() {
     "$HERE/systemd/papercusp-phone-livekit.service"
     "$HERE/systemd/papercusp-phone-sip.service"
     "$HERE/systemd/$WORKER_UNIT.tmpl" "$HERE/systemd/$SIDECAR_UNIT.tmpl"
+    "$HERE/phone-ops-alert.mjs"
+    "$HERE/systemd/papercusp-phone-ops-alert.service.tmpl"
+    "$HERE/systemd/papercusp-phone-ops-alert.timer"
     "$LK_BIN" "$SIP_BIN" "$NODE_BIN"
   )
 }
@@ -409,6 +412,8 @@ render() {
   content="${content//'${PHONE_WORKER_DIR}'/$WORKER_DIR}"
   content="${content//'${PHONE_SIDECAR_DIR}'/$SIDECAR_DIR}"
   content="${content//'${PHONE_NODE_BIN}'/$NODE_BIN}"
+  content="${content//'${PHONE_ALERT_SCRIPT}'/$HERE/phone-ops-alert.mjs}"
+  content="${content//'${PHONE_CONFIG_DIR}'/$CONF_DIR}"
   # Only a real placeholder counts: ${UPPER_SNAKE}. Prose that merely mentions a
   # dollar-brace must not trip this, or the guard cries wolf on its own comments.
   local leftover
@@ -434,6 +439,9 @@ fi
 step "Install units"
 mkdir -p "$UNIT_DIR"
 for u in "${UNITS[@]}"; do install -m 644 "$HERE/systemd/$u" "$UNIT_DIR/$u"; say "installed $u"; done
+render "$HERE/systemd/papercusp-phone-ops-alert.service.tmpl" "$UNIT_DIR/papercusp-phone-ops-alert.service"
+chmod 644 "$UNIT_DIR/papercusp-phone-ops-alert.service"
+install -m 644 "$HERE/systemd/papercusp-phone-ops-alert.timer" "$UNIT_DIR/papercusp-phone-ops-alert.timer"
 
 # The worker unit is RENDERED (machine paths), and only when the worker tree is
 # actually present. Installing a unit whose WorkingDirectory does not exist buys
@@ -474,6 +482,8 @@ for u in "${UNITS[@]}"; do
   systemctl --user restart "$u"
   say "restarted $u"
 done
+systemctl --user enable --now papercusp-phone-ops-alert.timer
+say "armed Phone operations alerts; results require owner notification delivery"
 
 # ---------------------------------------------------------------- health
 step "Health"
