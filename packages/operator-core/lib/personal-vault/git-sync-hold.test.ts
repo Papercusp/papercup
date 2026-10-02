@@ -25,7 +25,7 @@ import {
 import { DisclosureRefused } from './disclosure-ledger';
 import { runGitSync } from '../harness/git-sync/run-git-sync';
 
-type FakeSql = Parameters<typeof readRestrictedEditHoldings>[0];
+type FakeSql = NonNullable<Parameters<typeof readRestrictedEditHoldings>[0]>;
 
 /** A tagged-template fake that records the statement text and answers with `rows`. */
 function fakeSql(answer: () => unknown[]): { sql: FakeSql; statements: string[] } {
