@@ -19,6 +19,8 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { readSupersededGoalHolderModes, readFormerGoalHolderAwaits } from './holder-authority';
+export { SUPERSEDED_GOAL_HOLDER_RETIRE_LIMIT } from './holder-authority';
 import {
   vacateDrainFleetLeadership,
   type DrainFleetVacancyOutcome,
@@ -149,9 +151,6 @@ export async function notifyGoalHolderHandoff(
   };
 }
 
-/** Upper bound on superseded rows retired per goal per sweep tick. */
-export const SUPERSEDED_GOAL_HOLDER_RETIRE_LIMIT = 50;
-
 export interface SupersededGoalHolderRetirement {
   /** Predecessors whose GOAL row was removed (or was already gone). */
   retired: string[];
@@ -202,30 +201,7 @@ export async function retireSupersededGoalHolderModes(
   goalId: string,
   setBy: string = HANDOFF_IDENTITY.ownerId,
 ): Promise<SupersededGoalHolderRetirement> {
-  const rows = await sql<Array<{ owner_id: string; goal_lease_epoch: string; elected_owner_id: string; elected_epoch: string }>>`
-    WITH elected AS (
-      SELECT owner_id, goal_lease_epoch, goal_handoff_expires_at
-        FROM harness_shared.agent_modes
-       WHERE workspace_id = ${workspaceId}
-         AND mode = ${GOAL_MODE}
-         AND subject = ${goalId}
-       ORDER BY goal_lease_epoch DESC NULLS LAST, set_at DESC, owner_id ASC
-       LIMIT 1
-    )
-    SELECT am.owner_id, am.goal_lease_epoch::text AS goal_lease_epoch,
-           e.owner_id AS elected_owner_id, e.goal_lease_epoch::text AS elected_epoch
-      FROM harness_shared.agent_modes am
-      CROSS JOIN elected e
-     WHERE am.workspace_id = ${workspaceId}
-       AND am.mode = ${GOAL_MODE}
-       AND am.subject = ${goalId}
-       AND am.owner_id <> e.owner_id
-       AND am.goal_lease_epoch IS NOT NULL
-       AND e.goal_lease_epoch IS NOT NULL
-       AND am.goal_lease_epoch < e.goal_lease_epoch
-       AND (e.goal_handoff_expires_at IS NULL OR e.goal_handoff_expires_at <= now())
-     ORDER BY am.goal_lease_epoch ASC, am.owner_id ASC
-     LIMIT ${SUPERSEDED_GOAL_HOLDER_RETIRE_LIMIT}`;
+  const rows = await readSupersededGoalHolderModes(sql, workspaceId, goalId);
   const retired: string[] = [];
   const leftArmed: string[] = [];
   for (const row of rows) {
@@ -279,25 +255,7 @@ export async function cancelFormerGoalHolderAwaits(
   goalId: string,
 ): Promise<number> {
   const keys = await goalScopedAwaitKeys(sql, workspaceId, goalId);
-  const rows = await sql<Array<{ subscriber_id: string }>>`
-    SELECT DISTINCT a.subscriber_id
-      FROM harness_shared.event_awaits a
-     WHERE a.workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND a.event_key = ANY(${sql.array(keys)}::text[])
-       AND a.policy <> 'announce'
-       AND a.fired_at IS NULL AND a.cancelled_at IS NULL
-       AND EXISTS (
-         -- Either side of a GOAL transition proves the owner held this goal: a
-         -- holder whose ENABLE row predates the subject column is still found by
-         -- the retire row that cleared it (migration 1346 + setMode's disable audit).
-         SELECT 1 FROM harness_shared.agent_mode_changes c
-          WHERE c.workspace_id = ${workspaceId} AND c.owner_id = a.subscriber_id
-            AND (c.new_mode = ${GOAL_MODE} OR c.old_mode = ${GOAL_MODE})
-            AND c.subject = ${goalId})
-       AND NOT EXISTS (
-         SELECT 1 FROM harness_shared.agent_modes m
-          WHERE m.workspace_id = ${workspaceId} AND m.owner_id = a.subscriber_id
-            AND m.mode = ${GOAL_MODE} AND m.subject = ${goalId})`;
+  const rows = await readFormerGoalHolderAwaits(sql, workspaceId, goalId, DEFAULT_COORD_WORKSPACE, keys);
   if (rows.length === 0) return 0;
   return await cancelAwaitsForSubscribersOnKeys(
     rows.map((row) => row.subscriber_id),
