@@ -63,7 +63,34 @@
     "j23HostB": { "operation": "p318-j23-r62b2-destroy-b-1", "status": "succeeded", "message": "Workspace-host discard teardown and evidence census completed" },
     "j23HostA": { "operation": "p318-j23-r62b2-destroy-a-1", "status": "failed", "message": "Workspace-host resources were deleted, but terminal evidence is incomplete", "providerAbsence": "gcloud: no instance, disk, network, firewall rule or router for papercusp_run_id=p318-j23a-20261001-r62b2", "tracking": "EI-24818981551847665" },
     "snapshot": { "name": "p318-j23-r62b2-a-snapshot-1", "status": "deleted" },
-    "finalCensus": { "at": "2026-10-02T00:28:44Z", "instances": 0, "disks": 0, "networks": 0, "firewallRules": 0, "routers": 0, "snapshotsMatchingP318J23": 2, "snapshotNote": "The two matches are p318-j23-r38-source-snapshot and p318-j23-r44-source-snapshot from 2026-09-22 and 2026-09-24 runs; neither belongs to this run." }
+    "finalCensus": { "at": "2026-10-02T00:28:44Z", "instances": 0, "disks": 0, "networks": 0, "firewallRules": 0, "routers": 0, "snapshotsMatchingP318J23": 2, "snapshotNote": "The two matches are p318-j23-r38-source-snapshot and p318-j23-r44-source-snapshot from 2026-09-22 and 2026-09-24 runs; neither belongs to this run." },
+    "eightKindCensus": {
+      "at": "2026-10-02T01:16:56Z",
+      "project": "active-alcove-504205-q3",
+      "kinds": ["vm", "disk", "firewall", "subnetwork", "network", "snapshot", "router", "nat"],
+      "kindsSource": "GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS in packages/operator-core/lib/workspace-host/gcp-safety.ts",
+      "method": "gcloud list per kind, matched by label papercusp-host-id=host-pc-<run> OR name~<run>; nat counted from routers nats list on each matching router",
+      "runs": {
+        "p318-j23a-20261001-r62b2": { "vm": 0, "disk": 0, "firewall": 0, "subnetwork": 0, "network": 0, "snapshot": 0, "router": 0, "nat": 0 },
+        "p318-j23b-20261001-r62b2": { "vm": 0, "disk": 0, "firewall": 0, "subnetwork": 0, "network": 0, "snapshot": 0, "router": 0, "nat": 0 }
+      },
+      "positiveControls": {
+        "labelFilterSnapshots": 2,
+        "projectNetworks": 3,
+        "preDestroyExistence": "Host A existed (snapshot op p318-j23-r62b2-snapshot-a-1 read its disk); host B existed (restore op p318-j23-r62b2-restore-b-1 succeeded and canary p318-j23b-20261001-r62b2 initialized on it) before destroy ops p318-j23-r62b2-destroy-a-1 and -destroy-b-1 ran."
+      },
+      "transcript": ".papercusp/scratch/p318-j23-census-8kind-2026-10-02.txt"
+    },
+    "leftoverSnapshots": {
+      "names": ["p318-j23-r38-source-snapshot", "p318-j23-r44-source-snapshot"],
+      "disposition": "Retained. They belong to the 2026-09-22 (r38) and 2026-09-24 (r44) P-318 runs (labels papercusp-host-id=host-pc-p318-canary-20260922-r38 / -20260924-r44), not to this run, so they are outside this run's zero-residue census. They are inadmissible as r62b evidence under D-425."
+    },
+    "hostADestroyRating": "Destroy op p318-j23-r62b2-destroy-a-1 ended failed|99 'terminal evidence incomplete' after deleting every provider resource (EI-24818981551847665). Rated: provider absence verified by the eight-kind census above; the missing committed census receipt for A is a recorded limitation, not a pass of the receipt itself. Host B's destroy p318-j23-r62b2-destroy-b-1 succeeded with its census receipt."
+  },
+  "rebootObservation": {
+    "required": false,
+    "decision": "D-447",
+    "note": "No reboot was observed on r62b. On hosted hosts every boot re-runs the bootstrap and restarts papercusp-workspace about 3 minutes after boot (WI-10004242; fix 0e239859 in no released bundle). D-447 descopes the reboot observation from R-6 for this cut and carries it on WI-10004242."
   },
   "budget": {
     "budgetEvidenceRef": "gcp://billing/billingAccounts/0113AC-50E9A0-8BB71D/budgets/a5775eed-11f0-4a22-83c8-08a8ca919379",

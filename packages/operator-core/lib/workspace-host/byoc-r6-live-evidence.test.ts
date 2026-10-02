@@ -14,6 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS } from './gcp-safety';
 
 const DEFAULT_PATH = resolve(
   __dirname,
@@ -107,6 +108,35 @@ describe('auto-bar-r-6-p-318: live lifecycle evidence for the R-4 release', () =
     for (const kind of ['instances', 'disks', 'networks', 'firewallRules', 'routers']) {
       expect(census[kind], kind).toBe(0);
     }
+  });
+
+  it('the eight-kind GCP census is zero for both run labels, with live-scanner positive controls', () => {
+    const c = doc.teardown.eightKindCensus;
+    expect([...c.kinds].sort()).toEqual([...GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS].sort());
+    const runs = Object.keys(c.runs);
+    expect(runs.sort()).toEqual(['p318-j23a-20261001-r62b2', 'p318-j23b-20261001-r62b2']);
+    for (const run of runs) {
+      for (const kind of GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS) {
+        expect(c.runs[run][kind], `${run}.${kind}`).toBe(0);
+      }
+    }
+    // An empty census is only a verdict if the scanner can see resources at all.
+    expect(c.positiveControls.labelFilterSnapshots).toBeGreaterThan(0);
+    expect(c.positiveControls.projectNetworks).toBeGreaterThan(0);
+    expect(c.positiveControls.preDestroyExistence).toMatch(/restore-b-1/);
+  });
+
+  it('records a disposition for leftover snapshots and a rating for the failed host-A destroy op', () => {
+    const { leftoverSnapshots, hostADestroyRating } = doc.teardown;
+    expect(leftoverSnapshots.names.length).toBeGreaterThan(0);
+    expect(leftoverSnapshots.disposition).toMatch(/not to this run/);
+    expect(hostADestroyRating).toMatch(/EI-24818981551847665/);
+  });
+
+  it('does not claim a reboot observation for this cut (descoped by D-447)', () => {
+    expect(doc.rebootObservation.required).toBe(false);
+    expect(doc.rebootObservation.decision).toBe('D-447');
+    expect(doc.rebootObservation.passed).toBeUndefined();
   });
 
   it('records budget caps within the USD 25 plan ceiling and measured spend', () => {
