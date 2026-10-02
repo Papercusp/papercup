@@ -1127,7 +1127,9 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       env: { ...process.env, TEST_NATIVE_HEAP_DECODER: process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER,
         TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs') },
     });
-    expect(result.status, result.stderr.slice(-1000)).toBe(0);
+    if (result.status !== 0) throw new Error('Native decoder boundary guard failed: ' +
+      JSON.stringify({ status: result.status, signal: result.signal, error: result.error?.code,
+        stdout: result.stdout.slice(-2000), stderr: result.stderr.slice(-2000) }));
     const line = result.stdout.split('\n').find(line => line.startsWith('NATIVE_DECODER_CONTROL '));
     expect(line).toBeDefined();
     const report = JSON.parse(line!.slice('NATIVE_DECODER_CONTROL '.length));
