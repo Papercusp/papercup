@@ -1362,6 +1362,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         }
         report.incomplete = false; phase('samples-complete');
       })().catch(error => { report.error = String(error); report.hostErrorTail = errors;
+        if (error.diagnostic) report.heapRetainerFailure = error.diagnostic;
         report.startupTail = startup.slice(-3000); process.exitCode = 1; publish(); })
       .finally(async () => {
         if (sampling && cdp) { try { await cdp.send('HeapProfiler.stopSampling'); } catch {} }

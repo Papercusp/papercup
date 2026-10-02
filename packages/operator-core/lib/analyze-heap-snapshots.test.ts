@@ -75,10 +75,15 @@ describe('private V8 heap snapshot census', () => {
 
   it('reports decode failures without quoting private input', async () => {
     const { summarizeHeapRetainers } = await import('../../../scripts/analyze-heap-snapshots.mjs');
+    const consoleError = console.error;
     await expect(summarizeHeapRetainers(Buffer.from('{"private":"DoNotExportThisPayload"}')))
       .rejects.toThrow('Heap retainer analysis failed at decode-bytes');
     try { await summarizeHeapRetainers(Buffer.from('{"private":"DoNotExportThisPayload"}')); }
-    catch (error) { expect(String(error)).not.toContain('DoNotExportThisPayload'); }
+    catch (error) {
+      expect(String(error)).not.toContain('DoNotExportThisPayload');
+      expect(JSON.stringify(error)).not.toContain('DoNotExportThisPayload');
+    }
+    expect(console.error).toBe(consoleError);
   });
 
   it('distinguishes exclusive large allocations from shared holders in a real dominator graph', async () => {
