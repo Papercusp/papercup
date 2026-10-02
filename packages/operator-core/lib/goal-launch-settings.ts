@@ -750,6 +750,17 @@ export type GoalPlanPlacementState =
   | 'working'
   | 'blocked'
   /**
+   * WI-10005657: every remaining dependency-free item of the plan is `needs-human`
+   * (the structural exit a plan Decision / steward uses to reserve work to the
+   * owner or a solo route). Nothing is launchable — a fleet cannot resolve an
+   * owner wall — so this is a CONSISTENT, no-action state, never `blocked`.
+   *
+   * ⚠ Do not fold this back into `blocked`/`resolve-plan-blockers`: that
+   * collapse is what made the obligation re-mandate `fleet:launch-on-plan` (and
+   * its watchdog twin re-wake the holder) for a plan only the owner can advance.
+   */
+  | 'owner-walled'
+  /**
    * Administratively complete — every item done/dropped, or the status says so —
    * but closure is NOT evidenced (P-026 / D-012). The plan STAYS in the worklist.
    *
@@ -791,6 +802,11 @@ export interface GoalPlanPlacementToolCall {
  */
 export interface GoalPlanPlacement {
   state: GoalPlanPlacementState;
+  /**
+   * WI-10005657: present exactly when `state === 'owner-walled'` — the
+   * needs-human frontier items the plan is waiting on. Omitted otherwise.
+   */
+  wall?: { kind: 'owner'; itemIds: string[] };
   fleet: {
     slug: string;
     controlState: string | null;
@@ -1155,6 +1171,14 @@ export function compileGoalPlanPlacement(args: {
    * closed" are the two readings this item exists to keep apart.
    */
   closure?: Pick<PlanClosureVerdict, 'state' | 'evidenceSatisfied' | 'reason' | 'legs'> | null;
+  /**
+   * WI-10005657: the plan's dependency-free frontier, when it consists ONLY of
+   * `needs-human` items. The caller (parsePortfolioWorklist) owns the frontier
+   * derivation; empty/omitted means "not owner-walled". Consulted only when the
+   * plan would otherwise compile as `blocked` for lack of a launchable item, so
+   * it can never hide a live lane, a fleet, or a startable todo.
+   */
+  ownerWalledItemIds?: readonly string[];
 }): GoalPlanPlacement {
   const source = portfolioObject(args.source) ?? {};
   const nowMs = (args.now ?? new Date()).getTime();
@@ -1242,6 +1266,7 @@ export function compileGoalPlanPlacement(args: {
   // compiler; only an approved/active plan may emit a fleet launch call.
   const planStartable = normalizedStatus === 'ready' || normalizedStatus === 'active' || normalizedStatus === 'started';
   const blocked = !administrativelyComplete && args.actionableItemId == null;
+  const ownerWalledItemIds = args.ownerWalledItemIds ?? [];
   const planHarness = args.plan.harness?.trim() || null;
   const planSlug = args.plan.slug.trim();
   const planIdentityProblem =
@@ -1294,6 +1319,15 @@ export function compileGoalPlanPlacement(args: {
     state = 'blocked';
     action = 'resolve-plan-blockers';
     reason = `The plan is ${normalizedStatus || 'unresolved'} and cannot launch until its lifecycle/start gate is satisfied.`;
+  } else if (blocked && ownerWalledItemIds.length > 0) {
+    // Not `blocked`: no agent can resolve it, so reporting it as a repairable
+    // blocker is what kept re-mandating a fleet launch the plan cannot accept.
+    state = 'owner-walled';
+    action = 'none';
+    reason =
+      `Every remaining dependency-free item (${ownerWalledItemIds.join(', ')}) is needs-human: ` +
+      'only the owner can advance this plan. Do not launch a fleet or spawn a leader for it; ' +
+      'report the wall in the owner report and move on to launchable plans.';
   } else if (blocked) {
     state = 'blocked';
     action = 'resolve-plan-blockers';
@@ -1360,6 +1394,7 @@ export function compileGoalPlanPlacement(args: {
 
   return {
     state,
+    ...(state === 'owner-walled' ? { wall: { kind: 'owner' as const, itemIds: [...ownerWalledItemIds] } } : {}),
     fleet,
     activeLane,
     launchTransaction,
@@ -1438,6 +1473,16 @@ function parsePortfolioWorklist(
     const nextIndex = resolvedItems.findIndex((item) =>
       item.effectiveStatus === 'todo' && item.unresolvedBlockers.length === 0 && !item.needsHuman);
     const nextRow = nextIndex >= 0 ? items[nextIndex] : undefined;
+    // WI-10005657: the dependency-free frontier — every non-terminal item whose
+    // blockers have all resolved. When it is NON-EMPTY and made ONLY of
+    // needs-human items, nothing an agent or fleet can do advances the plan; it
+    // is owner-walled. A frontier that also holds a todo/wip/stored-blocked item
+    // is NOT a wall (`needsHuman` items beside it are merely one of several
+    // open fronts), so only the all-needs-human case is passed through.
+    const frontier = resolvedItems.filter((item) =>
+      item.storedStatus !== 'done' && item.storedStatus !== 'dropped' && item.unresolvedBlockers.length === 0);
+    const ownerWalledItemIds =
+      frontier.length > 0 && frontier.every((item) => item.needsHuman) ? frontier.map((item) => item.id) : [];
     // A WIP item is the fleet's current lane. Only fall through to the next
     // dependency-free todo when nothing is already underway; otherwise a live
     // WIP lease would be hidden behind the subsequent todo and compile as a
@@ -1470,6 +1515,7 @@ function parsePortfolioWorklist(
           source: row.placement,
           now,
           closure: closures?.get(slug) ?? null,
+          ownerWalledItemIds,
         }),
       },
     ];
@@ -1499,6 +1545,7 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
   const priorities = brief.priorities.length
     ? brief.priorities.map((p, i) => `${i + 1}. ${p}`).join('\n')
     : '1. Re-read the goal before any write.';
+  const ownerWalledPlans = brief.worklist.filter((plan) => plan.placement.state === 'owner-walled');
   const mandatoryPlacement = brief.worklist.find((plan) => plan.placement.reconciliation.toolCall !== null);
   const mandatoryToolCall = mandatoryPlacement?.placement.reconciliation.toolCall ?? null;
   return [
@@ -1512,6 +1559,11 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     `Queue: total=${brief.queue.total}; terminal=${brief.queue.terminal}; in-flight=${brief.queue.inFlight}; blocked=${brief.queue.blocked}; needs-human=${brief.queue.needsHuman}; claimable=${brief.queue.claimable ?? 'unknown'} (${brief.queue.claimabilityScope})`,
     `Launch: intendedParallelPlanFleets=${brief.launch.intendedParallelPlanFleets ?? brief.launch.settings?.intendedParallelPlanFleets ?? 'undeclared'}; headcount=${brief.launch.headcount.total}; maxAgents=${brief.launch.ceilings.maxAgents ?? 'unlimited'}; maxPerFleet=${brief.launch.ceilings.maxPerFleet ?? 'unlimited'}`,
     `Independent plan-lane placement candidates: ${brief.worklist.filter((p) => p.placement.reconciliation.action === 'launch-plan-fleet').map((p) => p.ref).join(', ') || 'none'}. Verify exact admission, then place admissible lanes concurrently to the chosen width; ceilings are limits, not targets.`,
+    // WI-10005657: a plan only the owner can advance is named explicitly rather
+    // than left to read as an unplaced/blocked plan awaiting a launch.
+    ...(ownerWalledPlans.length
+      ? [`OWNER-WALLED placement (not launchable — a fleet cannot resolve it; carry into the owner report, never launch): ${ownerWalledPlans.map((p) => `${p.ref} (${p.placement.wall?.itemIds.join(', ') ?? 'needs-human'})`).join('; ')}.`]
+      : []),
     // P-004: NAME THE POPULATION. This line lands in the kickoff of every agent
     // that works the goal, which makes it the most-read rendering of this number
     // anywhere — and `spent=` unqualified reads as what the goal has cost. It is
