@@ -59,6 +59,14 @@ vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug:
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../pot/_resolve', () => ({ resolveHomePotSlug: vi.fn(async () => 'papercusp') }));
 vi.mock('../../session-brief', () => ({ getSessionBrief: vi.fn(async () => null) }));
+// WI-10005199: the control-anchor projection arm.ts attests. Default (see beforeEach) is a
+// FAITHFUL anchor — the projection reflects what materializeLoop was asked to persist — so
+// every pre-existing test sees an agreeing read and no `controlConsumerView`; the
+// diverging fixtures below override it per-test.
+const controlAnchorH = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock('../coordination/control-anchor', () => ({
+  refreshControlAnchorAfterMutation: controlAnchorH.refresh,
+}));
 // EI-21542193720279374 part (b): the cold-no-carry-note check. Defaults to an EXISTING
 // note (readFailed:false) so every pre-existing test — most of which never anticipate
 // this check — sees no unexpected coldNoCarryNoteWarning; per-test override simulates the
@@ -261,6 +269,55 @@ describe('loop:arm — plan progress before a main wait', () => {
   });
 });
 
+describe('loop:arm — consumerView on the control-anchor projection (WI-10005199)', () => {
+  it('stays silent when the projected loop agrees with what was persisted', async () => {
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b.ok).toBe(true);
+    expect(b).not.toHaveProperty('controlConsumerView');
+  });
+
+  it('DIVERGES — and says so on the payload — when the fail-soft refresh returned null', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce(null);
+    const b = body(await call({ intervalSec: 240 }));
+    // The arm itself still succeeded; the exception-only field is what tells the caller the
+    // consumer's read (control_state->loop) cannot be shown to reflect it.
+    expect(b.ok).toBe(true);
+    expect(b.loop.controlGeneration).toBeNull();
+    expect(b.controlConsumerView).toMatchObject({
+      readPath: 'harness_shared.session_briefs.control_state->loop',
+      value: { active: null, intervalSec: null },
+      divergedFromWrite: true,
+    });
+  });
+
+  it('DIVERGES when the projection still shows the loop inactive', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 5, state: { loop: { active: false, intervalSec: null } } });
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b.controlConsumerView).toMatchObject({ value: { active: false, intervalSec: null }, divergedFromWrite: true });
+  });
+
+  it('DIVERGES when the projection carries a stale interval', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 6, state: { loop: { active: true, intervalSec: 900 } } });
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b.controlConsumerView).toMatchObject({ value: { active: true, intervalSec: 900 }, divergedFromWrite: true });
+  });
+
+  it('compares against the interval materializeLoop PERSISTED, not the requested one', async () => {
+    // If materializeLoop normalised the interval, the projection reads the stored value.
+    mockResolvedOnceTyped(materializeM, {
+      id: 'loop-x',
+      name: 'loop-x',
+      nextFireAt: new Date('2026-01-01T00:00:00Z'),
+      targetRole: 'operator',
+      intervalSec: 300,
+      changed: true,
+    });
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 7, state: { loop: { active: true, intervalSec: 300 } } });
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b).not.toHaveProperty('controlConsumerView');
+  });
+});
+
 const monitorConfig = (overrides: Record<string, unknown> = {}) => ({
   predicateKey: 'release:green:papercusp',
   stopCondition: 'the exact green verdict is recorded',
@@ -344,6 +401,10 @@ beforeEach(() => {
   briefM.mockResolvedValue(null);
   potHomeM.mockReturnValue('papercusp');
   monitorAdmissionM.mockImplementation(async ({ monitor }) => prepareMonitorConfig(monitor));
+  controlAnchorH.refresh.mockImplementation(async () => ({
+    generation: 1,
+    state: { loop: { active: true, intervalSec: materializeM.mock.calls.at(-1)?.[0]?.intervalSec ?? null } },
+  }));
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
@@ -718,6 +779,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
       scoped: true,
       code: 'fleet_scope_violation',
       reason: "work-item WI-OUT does not match fleet spec 'fleet-x@rev7'",
+      refusal: { observed: {}, liftsWhen: 'the work-item matches the fleet claim spec', whoCanMakeItTrue: ['another-agent'] },
       scope: {
         ownerId: 'su-caller-own-id',
         fleetSlug: 'fleet-x',
@@ -773,6 +835,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
       revision: 3,
       reason:
         'work-item WI-1774 does not match active scheduler spec only-pui-su-session-runtime-correction@3 for su-caller-own-id; the loop auto-claim was refused before mutation',
+      refusal: { observed: {}, liftsWhen: 'the work-item matches the active scheduler spec', whoCanMakeItTrue: ['self', 'owner'] },
     });
 
     const b = body(await call({ carry: 'cold', goal: 'continue the scoped plan; ignore WI-1774' }));
