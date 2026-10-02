@@ -308,6 +308,17 @@ describe('device/plans', () => {
 });
 
 describe('device/attention', () => {
+  it('retains a failed canonical dispatch cause without reporting an empty healthy inbox', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.dispatchProjectedTool.mockResolvedValueOnce({ ok: false, error: { code: 'invalid_input', message: 'invalid page' } });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'attention_unavailable' });
+    expect(warning).toHaveBeenCalledWith('[device/attention] unavailable:', 'canonical_dispatch_failed', { code: 'invalid_input' });
+    expect(m.readWorkItemsPageFromStore).not.toHaveBeenCalled();
+  });
+
   it('keeps older actionable work beyond 200 recent non-attention rows and drains source pages', async () => {
     const recent = Array.from({ length: 200 }, (_, i) => ({
       id: `recent-${i}`, kind: 'task', family: 'issue', state: 'open', title: 'Delegated task',
@@ -369,15 +380,17 @@ describe('device/attention', () => {
   });
 
   it.each([
-    { groups: [], _projection: { truncated: true } },
-    { groups: [{ items: [], _meta: { total: 1, returned: 0, hasMore: false } }] },
-    { groups: [{ items: [{ id: 'a' }], _meta: { total: 2, returned: 1, hasMore: true, nextOffset: 0 } }] },
-  ])('returns unavailable for a truncated or inconsistent canonical group page %#', async (page) => {
+    [{ groups: [], _projection: { truncated: true } }, 'canonical_page_unavailable'],
+    [{ groups: [{ items: [], _meta: { total: 1, returned: 0, hasMore: false } }] }, 'canonical_total_mismatch'],
+    [{ groups: [{ items: [{ id: 'a' }], _meta: { total: 2, returned: 1, hasMore: true, nextOffset: 0 } }] }, 'canonical_page_cannot_advance'],
+  ])('returns unavailable for a truncated or inconsistent canonical group page %#', async (page, reason) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     m.dispatchProjectedTool.mockResolvedValueOnce({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify(page) }] } });
     const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
     const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'attention_unavailable' });
+    expect(warning).toHaveBeenCalledWith('[device/attention] unavailable:', reason, expect.any(Object));
   });
 
   it('declares device auth + cors', () => {
@@ -406,10 +419,14 @@ describe('device/attention', () => {
   });
 
   it.each(['releaseGateTile', 'poolTile'] as const)('returns unavailable when %s is unmeasured', async (source) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     m[source].mockResolvedValueOnce(null as never);
     const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
     const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'attention_unavailable' });
+    expect(warning).toHaveBeenCalledWith('[device/attention] unavailable:', 'system_source_unmeasured', {
+      gateMeasured: source !== 'releaseGateTile', poolMeasured: source !== 'poolTile',
+    });
   });
 });
