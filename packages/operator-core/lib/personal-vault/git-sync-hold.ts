@@ -30,11 +30,21 @@
  * failure, and locks:release refuses (keeping the lock) when the ledger row for a
  * restricted owner cannot be written.
  *
- * Not covered here, by design: writes that never pass through a native edit tool
- * (a Bash redirect or `sed -i`) leave no ledger row. Those bypass the edit-lock
- * hook too; native-tool binding is P-007's scope.
+ * WRITES WITH NO LEDGER ROW (WI-10005576). A Bash redirect, `sed -i`, a script or
+ * a background job writes without a native edit tool, so it leaves no ledger row
+ * and the rule above cannot see it. The second half of the census therefore works
+ * from the working tree, not the ledger: while ANY disclosure is unreleased, every
+ * changed or untracked file (superproject and submodules) whose mtime falls at or
+ * after the earliest unreleased delivery is held — unless a native edit by an
+ * editor with no active disclosure, recorded at or after that mtime, accounts for
+ * it (`readRestrictedWindowHoldings`). Unattributed writes by anyone in the window
+ * are held too: which session made them cannot be known, so the hold fails closed
+ * and lifts with the last release. Deletions are never held (they carry nothing
+ * off the machine). With no unreleased disclosure this half costs one query.
  */
 
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
@@ -132,23 +142,184 @@ export async function readRestrictedEditHoldings(sql: Db = getOrgPg().sql): Prom
   return restrictedHoldingsFromRows(rows);
 }
 
+// ── writes with no ledger row (WI-10005576) ───────────────────────────────
+
+/** The intent of a window hold. Shares the restricted prefix, so git-sync treats it as a hold, not a lock. */
+export const RESTRICTED_WINDOW_INTENT =
+  'restricted-disclosure hold (D-006/P-014, unattributed write): changed while a personal disclosure was active and not accounted for by a native edit of an unrestricted editor; held until every active disclosure is released';
+
+/** The census `owner` of a window hold: no single session can be named for an unattributed write. */
+export const RESTRICTED_WINDOW_OWNER = 'personal-disclosure-window';
+
+/** A native edit recorded this close to (or after) a file's mtime accounts for that write. */
+export const RESTRICTED_WINDOW_ATTRIBUTION_SLACK_MS = 2_000;
+
+export type HoldRunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** A changed or untracked file: the absolute repository root and the root-relative path. */
+export interface DirtyFile {
+  root: string;
+  path: string;
+}
+
 /**
- * git-sync's commit-gate census: every live edit lock plus every restricted hold.
- * Both halves are strict, so either read failing throws and git-sync fails the tick
- * closed rather than staging a held path. Used for the initial census AND the
+ * Every changed or untracked file of `repoPath` and its initialised submodules
+ * (`git submodule status --recursive`, the discovery git-sync itself uses).
+ * Deleted paths are skipped. Throws when any git call fails: an unlisted tree
+ * would read as "nothing to hold".
+ */
+export async function listDirtyFilesRecursive(runGit: HoldRunGit, repoPath: string): Promise<DirtyFile[]> {
+  const subs = await runGit(['submodule', 'status', '--recursive'], repoPath);
+  if (subs.code !== 0) throw new Error(`git submodule status failed in ${repoPath}: ${subs.stderr.trim()}`);
+  const submoduleRoots = subs.stdout
+    .split('\n')
+    .filter((line) => line.length > 1 && line[0] !== '-') // '-' = not initialised
+    .map((line) => line.slice(1).trim().split(/\s+/)[1])
+    .filter((p): p is string => Boolean(p))
+    .map((p) => path.join(repoPath, p));
+  const out: DirtyFile[] = [];
+  for (const root of [repoPath, ...submoduleRoots]) {
+    const status = await runGit(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all'], root);
+    if (status.code !== 0) throw new Error(`git status failed in ${root}: ${status.stderr.trim()}`);
+    const fields = status.stdout.split('\0');
+    for (let i = 0; i < fields.length; i += 1) {
+      const entry = fields[i];
+      if (entry.length < 4) continue;
+      const xy = entry.slice(0, 2);
+      // -z rename/copy: "XY <to>\0<from>\0" — the next field is the source path.
+      if (xy[0] === 'R' || xy[0] === 'C') i += 1;
+      if (xy.includes('D')) continue;
+      out.push({ root, path: entry.slice(3) });
+    }
+  }
+  return out;
+}
+
+export interface RestrictedWindowDeps {
+  sql?: Db;
+  /** The working tree's changed files (production: `listDirtyFilesRecursive`). */
+  listDirtyFiles: () => Promise<DirtyFile[]>;
+  /** A file's mtime in ms, or null when it no longer exists. */
+  mtimeMs?: (absPath: string) => Promise<number | null>;
+}
+
+async function fileMtimeMs(absPath: string): Promise<number | null> {
+  try {
+    return (await stat(absPath)).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hold every changed file written inside an active disclosure window that no
+ * unrestricted native edit accounts for (module header, WI-10005576). Throws
+ * `disclosure_ledger_unavailable` when the ledger or the tree cannot be read
+ * while a disclosure is active.
+ */
+export async function readRestrictedWindowHoldings(deps: RestrictedWindowDeps): Promise<RestrictedEditHolding[]> {
+  const sql = deps.sql ?? getOrgPg().sql;
+  let window: { since: Date | string | null; restricted: string[] | null } | undefined;
+  try {
+    [window] = await sql<Array<{ since: Date | string | null; restricted: string[] | null }>>`
+      SELECT min(delivered_at) AS since, array_agg(DISTINCT agent_owner_id) AS restricted
+        FROM harness_shared.personal_disclosures
+       WHERE released_at IS NULL`;
+  } catch (error) {
+    throw ledgerUnavailable('git-sync unattributed-write hold', error);
+  }
+  if (!window?.since) return [];
+  const sinceMs = new Date(window.since).getTime();
+  const restricted = new Set(window.restricted ?? []);
+
+  let dirty: DirtyFile[];
+  try {
+    dirty = await deps.listDirtyFiles();
+  } catch (error) {
+    throw new DisclosureRefused(
+      'disclosure_ledger_unavailable',
+      `git-sync unattributed-write hold: the working tree's changed files could not be listed while a personal disclosure is active (${(error as Error)?.message ?? error})`,
+    );
+  }
+  const mtimeOf = deps.mtimeMs ?? fileMtimeMs;
+  const candidates: Array<DirtyFile & { abs: string; mtimeMs: number }> = [];
+  for (const file of dirty) {
+    const abs = path.join(file.root, file.path);
+    const mtimeMs = await mtimeOf(abs);
+    if (mtimeMs !== null && mtimeMs >= sinceMs) candidates.push({ ...file, abs, mtimeMs });
+  }
+  if (!candidates.length) return [];
+
+  // A ledger row's file is relative to the lock's domain, which may be the
+  // superproject or the submodule, so query every root-relative spelling and
+  // match on the absolute path.
+  const roots = [...new Set(candidates.map((c) => c.root))];
+  const spellings = new Set<string>();
+  for (const c of candidates) {
+    for (const root of roots) if (c.abs.startsWith(`${root}${path.sep}`)) spellings.add(path.relative(root, c.abs));
+  }
+  let rows: Array<{ repo_root: string; file: string; agent_id: string | null; ts: Date | string }>;
+  try {
+    rows = await sql<Array<{ repo_root: string; file: string; agent_id: string | null; ts: Date | string }>>`
+      SELECT repo_root, file, agent_id, ts
+        FROM harness_shared.edit_attribution_ledger
+       WHERE repo_root = ANY(${roots}::text[])
+         AND file = ANY(${[...spellings]}::text[])
+         AND ts >= ${new Date(sinceMs - RESTRICTED_WINDOW_ATTRIBUTION_SLACK_MS)}`;
+  } catch (error) {
+    throw ledgerUnavailable('git-sync unattributed-write hold', error);
+  }
+  const latest = new Map<string, { agent: string; tsMs: number }>();
+  for (const row of rows) {
+    const abs = path.join(row.repo_root, row.file);
+    const tsMs = new Date(row.ts).getTime();
+    const prior = latest.get(abs);
+    if (!prior || tsMs > prior.tsMs) latest.set(abs, { agent: row.agent_id?.trim() ?? '', tsMs });
+  }
+
+  const out: RestrictedEditHolding[] = [];
+  for (const c of candidates) {
+    const edit = latest.get(c.abs);
+    const accounted =
+      edit !== undefined &&
+      edit.agent !== '' &&
+      !restricted.has(edit.agent) &&
+      edit.tsMs >= c.mtimeMs - RESTRICTED_WINDOW_ATTRIBUTION_SLACK_MS;
+    if (!accounted) out.push({ path: c.path, owner: RESTRICTED_WINDOW_OWNER, intent: RESTRICTED_WINDOW_INTENT, coordinationDomain: c.root });
+  }
+  return out;
+}
+
+/**
+ * git-sync's commit-gate census: every live edit lock, every restricted hold, and
+ * (given the tree to read) every unattributed write inside an active disclosure
+ * window. Every half is strict, so any read failing throws and git-sync fails the
+ * tick closed rather than staging a held path. Used for the initial census AND the
  * final-commit-seam refresh (git-sync-action.ts).
  */
 export async function readGitSyncCensusStrict(
   deps: {
     locks?: () => Promise<LiveLockHolding[]>;
     restricted?: () => Promise<RestrictedEditHolding[]>;
+    /** The tree git-sync is about to sweep. Production always passes it (git-sync-action.ts). */
+    window?: { repoPath: string; runGit: HoldRunGit } | (() => Promise<RestrictedEditHolding[]>);
   } = {},
 ): Promise<LiveLockHolding[]> {
-  const [locks, restricted] = await Promise.all([
+  const readWindow =
+    typeof deps.window === 'function'
+      ? deps.window
+      : deps.window
+        ? (() => {
+            const { repoPath, runGit } = deps.window;
+            return () => readRestrictedWindowHoldings({ listDirtyFiles: () => listDirtyFilesRecursive(runGit, repoPath) });
+          })()
+        : async () => [];
+  const [locks, restricted, windowHolds] = await Promise.all([
     (deps.locks ?? liveLockHoldingsStrict)(),
     (deps.restricted ?? (() => readRestrictedEditHoldings()))(),
+    readWindow(),
   ]);
-  return [...locks, ...restricted];
+  return [...locks, ...restricted, ...windowHolds];
 }
 
 /** Whether `ownerId` holds any unreleased disclosure. Throws `disclosure_ledger_unavailable`. */
