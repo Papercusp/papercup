@@ -284,6 +284,19 @@ describe('the trigger: a seam gained call sites', () => {
     ]);
   });
 
+  it('ignores loop-body exits for a one-shot call in a for initializer', () => {
+    const before = `
+      export function run(source: Source) {
+        for (const value = source(); value; value = false) {}
+      }
+    `;
+    const after = before.replace(
+      'for (const value = source(); value; value = false) {}',
+      'for (const value = source(); value; value = false) { if (value) break; }',
+    );
+    expect(changedSeamControlFlow(before, after, 'for-initializer.ts')).toEqual([]);
+  });
+
   it('does not compare same-named methods from different owners after an unrelated line insertion', () => {
     const before = `
       const firstSource = {

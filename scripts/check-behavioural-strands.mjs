@@ -1023,10 +1023,168 @@ function callableScopeLabel(node) {
   return null;
 }
 
+function isLoopStatement(node) {
+  return (
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isWhileStatement(node) ||
+    ts.isDoStatement(node)
+  );
+}
+
+function loopHeaderCallExecutesOnce(callNode, loopNode) {
+  if (ts.isForStatement(loopNode)) {
+    return Boolean(loopNode.initializer && isWithinNode(callNode, loopNode.initializer));
+  }
+  if (ts.isForInStatement(loopNode) || ts.isForOfStatement(loopNode)) {
+    return isWithinNode(callNode, loopNode.expression);
+  }
+  return false;
+}
+
+function isAbruptFlowNode(node) {
+  return (
+    ts.isReturnStatement(node) ||
+    ts.isThrowStatement(node) ||
+    ts.isBreakStatement(node) ||
+    ts.isContinueStatement(node)
+  );
+}
+
+function ifBranchFor(node, ifStatement) {
+  if (isWithinNode(node, ifStatement.thenStatement)) return 'then';
+  if (ifStatement.elseStatement && isWithinNode(node, ifStatement.elseStatement)) return 'else';
+  if (isWithinNode(node, ifStatement.expression)) return 'condition';
+  return null;
+}
+
+function mutuallyExclusiveIfBranches(a, b, functionNode) {
+  for (let parent = a.parent; parent && parent !== functionNode; parent = parent.parent) {
+    if (!ts.isIfStatement(parent)) continue;
+    const aBranch = ifBranchFor(a, parent);
+    const bBranch = ifBranchFor(b, parent);
+    if (
+      aBranch &&
+      bBranch &&
+      aBranch !== 'condition' &&
+      bBranch !== 'condition' &&
+      aBranch !== bBranch
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function abruptFlowTarget(node) {
+  const isBreak = ts.isBreakStatement(node);
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (isCallableNode(parent)) return null;
+    if (isBreak && ts.isSwitchStatement(parent)) return parent;
+    if (isLoopStatement(parent)) return parent;
+  }
+  return null;
+}
+
+function exitAffectsCall(exitNode, callNode, functionNode) {
+  if (ts.isReturnStatement(exitNode) || ts.isThrowStatement(exitNode)) {
+    return !mutuallyExclusiveIfBranches(exitNode, callNode, functionNode);
+  }
+  const target = abruptFlowTarget(exitNode);
+  return Boolean(
+    target &&
+      isWithinNode(callNode, target) &&
+      !mutuallyExclusiveIfBranches(exitNode, callNode, functionNode),
+  );
+}
+
+function exitAffectsLoopIterations(exitNode, loopNode) {
+  if (ts.isReturnStatement(exitNode) || ts.isThrowStatement(exitNode)) return true;
+  return abruptFlowTarget(exitNode) === loopNode;
+}
+
+function invocationFlowToken(node, child, sourceFile, fileName) {
+  if (ts.isIfStatement(node)) {
+    const condition = normalisedExpressionText(node.expression, sourceFile, fileName);
+    const branch = ifBranchFor(child, node) ?? 'outside';
+    return 'if:' + condition + ':' + branch;
+  }
+  const token = controlFlowToken(node, sourceFile, fileName);
+  if (!token) return null;
+  if (isLoopStatement(node)) {
+    return token + (isWithinNode(child, node.statement) ? ':body' : ':header');
+  }
+  return token;
+}
+
+function flowPathTokens(node, root, sourceFile, fileName, callNode = null) {
+  const tokens = [];
+  let child = node;
+  for (let parent = node.parent; parent && parent !== root; parent = parent.parent) {
+    const oneShotHeader = callNode && isLoopStatement(parent) && loopHeaderCallExecutesOnce(callNode, parent);
+    const token = oneShotHeader ? null : invocationFlowToken(parent, child, sourceFile, fileName);
+    if (token) tokens.push(token);
+    child = parent;
+  }
+  return tokens.reverse();
+}
+
+function seamInvocationContext(callNode, functionNode, flowNodes, sourceFile, fileName) {
+  const callStart = callNode.getStart(sourceFile);
+  const context = flowPathTokens(callNode, functionNode, sourceFile, fileName, callNode).map(
+    (token) => 'path:' + token,
+  );
+
+  for (const { node, token } of flowNodes) {
+    if (
+      !isAbruptFlowNode(node) ||
+      node.getStart(sourceFile) >= callStart ||
+      !exitAffectsCall(node, callNode, functionNode)
+    ) {
+      continue;
+    }
+    const path = flowPathTokens(node, functionNode, sourceFile, fileName);
+    context.push('prior-exit:' + [...path, token].join(' > '));
+  }
+
+  const enclosingLoops = flowNodes
+    .filter(
+      ({ node }) =>
+        isLoopStatement(node) &&
+        isWithinNode(callNode, node) &&
+        !loopHeaderCallExecutesOnce(callNode, node),
+    )
+    .sort((a, b) => a.node.getStart(sourceFile) - b.node.getStart(sourceFile));
+  for (const loop of enclosingLoops) {
+    for (const exit of flowNodes) {
+      if (
+        !isAbruptFlowNode(exit.node) ||
+        !isWithinNode(exit.node, loop.node.statement) ||
+        !exitAffectsLoopIterations(exit.node, loop.node)
+      ) {
+        continue;
+      }
+      const relation = exit.node.getStart(sourceFile) < callStart ? 'before' : 'after';
+      const path = flowPathTokens(exit.node, loop.node, sourceFile, fileName);
+      context.push(
+        'loop-exit:' +
+          loop.token +
+          ':' +
+          relation +
+          ':' +
+          [...path, exit.token].join(' > '),
+      );
+    }
+  }
+
+  return context;
+}
+
 /**
  * Summarise each function that calls an injected collaborator. Nested functions are recorded
  * independently; a captured outer parameter is still a seam in the nested function, while
- * control-flow tokens from the nested body do not contaminate the outer function's identity.
+ * control-flow context from the nested body does not contaminate the outer function's identity.
  */
 export function seamControlFlowRecords(text, fileName = 'file.ts') {
   let source;
@@ -1044,12 +1202,7 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
   const records = [];
   let anonymousOrdinal = 0;
   const visit = (node) => {
-    const isFunctionLike =
-      ts.isFunctionDeclaration(node) ||
-      ts.isFunctionExpression(node) ||
-      ts.isArrowFunction(node) ||
-      ts.isMethodDeclaration(node) ||
-      ts.isConstructorDeclaration(node);
+    const isFunctionLike = isCallableNode(node);
     if (isFunctionLike) {
       const name = callableIdentity(node, source, anonymousOrdinal++);
       const record = {
@@ -1060,6 +1213,10 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
         identity: [...callableScope, `function:${name}`].join('/'),
         seams: [],
         controlFlow: [],
+        seamContexts: [],
+        _node: node,
+        _flowNodes: [],
+        _seamOccurrences: [],
       };
       records.push(record);
       functionStack.push(record);
@@ -1072,10 +1229,16 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
     const current = functionStack.at(-1);
     if (current) {
       const token = controlFlowToken(node, source, fileName);
-      if (token) current.controlFlow.push(token);
+      if (token) {
+        current.controlFlow.push(token);
+        current._flowNodes.push({ node, token });
+      }
       if (ts.isCallExpression(node)) {
         const seam = seamSites.get(`${node.getStart(source)}:${node.getEnd()}`) ?? null;
-        if (seam) current.seams.push(seam);
+        if (seam) {
+          current.seams.push(seam);
+          current._seamOccurrences.push({ node, seam });
+        }
       }
     }
 
@@ -1085,7 +1248,24 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
     if (isFunctionLike) callableScope.pop();
   };
   ts.forEachChild(source, visit);
-  return records.filter((record) => record.seams.length > 0);
+  return records
+    .filter((record) => record.seams.length > 0)
+    .map((record) => ({
+      function: record.function,
+      identity: record.identity,
+      seams: record.seams,
+      controlFlow: record.controlFlow,
+      seamContexts: record._seamOccurrences.map(({ node, seam }) => ({
+        seam,
+        context: seamInvocationContext(
+          node,
+          record._node,
+          record._flowNodes,
+          source,
+          fileName,
+        ),
+      })),
+    }));
 }
 
 /**
@@ -1100,18 +1280,25 @@ export function changedSeamControlFlow(beforeText, afterText, fileName = 'file.t
   const rows = [];
   for (const record of after) {
     const prior = beforeByFunction.get(record.identity);
-    if (!prior || prior.controlFlow.join('\u0000') === record.controlFlow.join('\u0000')) continue;
+    if (!prior) continue;
     const beforeCounts = new Map();
     for (const seam of prior.seams) beforeCounts.set(seam, (beforeCounts.get(seam) ?? 0) + 1);
     const afterCounts = new Map();
     for (const seam of record.seams) afterCounts.set(seam, (afterCounts.get(seam) ?? 0) + 1);
     for (const [seam, count] of afterCounts) {
       if (count !== (beforeCounts.get(seam) ?? 0)) continue;
+      const beforeContexts = prior.seamContexts
+        .filter((entry) => entry.seam === seam)
+        .map((entry) => entry.context.join('\u0000'));
+      const afterContexts = record.seamContexts
+        .filter((entry) => entry.seam === seam)
+        .map((entry) => entry.context.join('\u0000'));
+      if (JSON.stringify(beforeContexts) === JSON.stringify(afterContexts)) continue;
       rows.push({
         function: record.function,
         seam,
-        before: prior.controlFlow,
-        after: record.controlFlow,
+        before: beforeContexts,
+        after: afterContexts,
         reason: 'control-flow-changed',
       });
     }
