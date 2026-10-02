@@ -110,6 +110,7 @@ import { TOOL_DELIVERY_BY_AGENT_KIND } from "./tool-delivery.generated.mjs";
 import {
   analyzeClaudeResumeTranscript,
   appendClaudeToolReferencesToSeed,
+  neutralizeForkSeedToolReferences,
 } from "../../../packages/operator-core/lib/claude-resume-tool-references.mjs";
 import {
   RECOVERY_CAPABILITY_DIAGNOSTIC,
@@ -13789,6 +13790,20 @@ export async function launchTrackedFork(
     console.error(
       `psu: could not seed the fork transcript (${e?.message ?? e}) — continuing; claude --resume may not find the original.`,
     );
+  }
+  // WI-10005612: the fork advertises its OWN tool set (headless, its own deny
+  // list and seed), so a tool_reference the source loaded can be absent here and
+  // the provider 400s the fork's first request. Drop them from the fork's seeded
+  // COPY only; the original transcript is untouched.
+  try {
+    const neutralized = neutralizeForkSeedToolReferences(dst, session.sessionId);
+    if (neutralized.rewritten > 0) {
+      console.error(
+        `psu: removed ${neutralized.rewritten} inherited tool reference(s) from the fork seed (${neutralized.toolNames.slice(0, 8).join(", ")}).`,
+      );
+    }
+  } catch (e) {
+    console.error(`psu: could not neutralize inherited tool references in the fork seed (${e?.message ?? e}).`);
   }
   // Resume the ORIGINAL's id, fork into the FORCED fork id. No playbook turn is
   // re-injected, but the fork's OWN render rides in argv (EI-24628537598753105):

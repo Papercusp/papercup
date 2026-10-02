@@ -554,6 +554,7 @@ export async function runGovernedTestProcess(options, run) {
  * @param {string[]} args
  * @param {Uint8Array} input
  * @param {{ timeoutMs: number, maxBuffer: number, namespace: string, workspaceId?: string, owner?: string, env?: NodeJS.ProcessEnv, executionApi?: any }} options
+ * @returns {Promise<{status: number|null, signal: NodeJS.Signals|null, stdout: string, stderr: string, error?: {code: string}, actualDemand: any}>}
  */
 export async function executeGovernedByteProcess(executable, args, input, options) {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 ||

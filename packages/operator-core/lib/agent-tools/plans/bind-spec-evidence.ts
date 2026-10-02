@@ -25,6 +25,11 @@ import { listScorecards } from '../../scorecards';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { unvettedRubricBindAdvisory, VET_BEFORE_PROOF_ORDER } from './bind-vetting-advisory';
 import {
+  rebindAttestationAdvisory,
+  retractionAttestationAdvisory,
+  type AttestationAdvisory,
+} from './adequacy-attestation-gap';
+import {
   expandTestRunBinding,
   testRunBindingSchema,
   type TestRunBindingError,
@@ -408,6 +413,24 @@ export async function mutationTargetingRefusal(
 
 const OK = new Set(['created', 'unchanged']);
 
+/**
+ * The attestation advisories are a READ after the write has committed; a failure to compute
+ * one must never turn a successful bind/retract into an error. It degrades to a visible
+ * "could not check" advisory instead of silence, so an absent warning still means "checked".
+ */
+async function attestationAdvisorySafely(
+  compute: () => Promise<AttestationAdvisory | null>,
+): Promise<AttestationAdvisory | { code: 'adequacy_attestation_unchecked'; message: string } | null> {
+  try {
+    return await compute();
+  } catch (error) {
+    return {
+      code: 'adequacy_attestation_unchecked',
+      message: `Could not check whether this call dropped design attestations (EI-24903278232142036): ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 export default defineTool({
   name: 'plans:bind-spec-evidence',
   description:
@@ -447,7 +470,26 @@ export default defineTool({
         },
         { keyOf: (item) => ({ bindingId: item.bindingId }) },
       );
-      return bulkContent(retractions);
+      // EI-24903278232142036: name any design attestation this retraction removed from its
+      // clause's LAST live carrier — the silent pass→unknown flip a freshness repair causes.
+      const lost = await attestationAdvisorySafely(() =>
+        retractionAttestationAdvisory(
+          harnessSlug,
+          retractions.results.flatMap((result) =>
+            result.ok && result.status === 'retracted' && result.binding
+              ? [
+                  {
+                    id: Number(result.binding.id),
+                    planSlug: result.binding.plan_slug,
+                    specId: result.binding.spec_id,
+                    specRevision: Number(result.binding.spec_revision),
+                  },
+                ]
+              : [],
+          ),
+        ),
+      );
+      return bulkContent({ ...retractions, ...(lost ? { advisories: [lost] } : {}) });
     }
     const requested = args.items ?? [args.binding!];
     // P-044: expand every `{ fromTestRun }` item into an ordinary binding FIRST, then re-validate
@@ -563,12 +605,36 @@ export default defineTool({
         },
       ),
     );
+    // EI-24903278232142036: computed BEFORE supersession, while the siblings that still carry
+    // the attestations are live — supersession would retract them and hide the gap.
+    const gap = await attestationAdvisorySafely(() =>
+      rebindAttestationAdvisory(
+        harnessSlug,
+        env.results.flatMap((result, index) => {
+          const binding = bindings[index];
+          if (!result.ok || !binding || typeof (result as { id?: unknown }).id !== 'number') return [];
+          const stored = result as unknown as { id: number; planSlug: string; specId: string; specRevision: number };
+          return [
+            {
+              id: stored.id,
+              planSlug: stored.planSlug,
+              specId: stored.specId,
+              specRevision: stored.specRevision,
+              evidenceKind: binding.evidenceKind,
+              evidenceRef: binding.evidenceRef,
+              adequacy: (binding.details as { adequacy?: unknown } | undefined)?.adequacy,
+            },
+          ];
+        }),
+      ),
+    );
     const supersession = args.supersedeAtRevision
       ? await supersedeSiblings({ bindings, results: env.results, harnessSlug, actorId })
       : undefined;
+    const advisories = [advisory, gap].filter(Boolean);
     return bulkContent({
       ...env,
-      ...(advisory ? { advisories: [advisory] } : {}),
+      ...(advisories.length > 0 ? { advisories } : {}),
       ...(supersession ? { supersession } : {}),
     });
   },

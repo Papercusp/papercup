@@ -32,3 +32,10 @@ export function analyzeClaudeResumeTranscriptFile(
 ): ClaudeResumeTranscriptAnalysis | null;
 export function __resetClaudeResumeTranscriptCacheForTests(): void;
 export function appendClaudeToolReferencesToSeed(seed: string | null | undefined, references: readonly string[]): string;
+export function neutralizeClaudeToolReferences(
+  jsonl: string,
+): { text: string; rewritten: number; toolNames: string[] };
+export function neutralizeForkSeedToolReferences(
+  projectsDir: string | null | undefined,
+  sessionId: string | null | undefined,
+): { files: number; rewritten: number; toolNames: string[] };

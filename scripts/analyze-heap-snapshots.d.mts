@@ -47,12 +47,12 @@ export function checkNativeHeapDecode(input: Uint8Array, executable: string): Pr
     inputBytes: number;
     inputSha256: string;
     elapsedMs: number;
-    status: any;
-    signal: any;
+    status: number | null;
+    signal: NodeJS.Signals | null;
     decoded: boolean;
     stdoutBytes: number;
     stderrBytes: number;
-    errorCode: any;
+    errorCode: string | null;
     definition: string;
 }>;
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.

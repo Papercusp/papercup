@@ -106,6 +106,7 @@ export function runGovernedTestProcess(options: any, run: any): Promise<any>;
  * @param {string[]} args
  * @param {Uint8Array} input
  * @param {{ timeoutMs: number, maxBuffer: number, namespace: string, workspaceId?: string, owner?: string, env?: NodeJS.ProcessEnv, executionApi?: any }} options
+ * @returns {Promise<{status: number|null, signal: NodeJS.Signals|null, stdout: string, stderr: string, error?: {code: string}, actualDemand: any}>}
  */
 export function executeGovernedByteProcess(executable: string, args: string[], input: Uint8Array, options: {
     timeoutMs: number;
@@ -115,7 +116,16 @@ export function executeGovernedByteProcess(executable: string, args: string[], i
     owner?: string;
     env?: NodeJS.ProcessEnv;
     executionApi?: any;
-}): Promise<any>;
+}): Promise<{
+    status: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+    error?: {
+        code: string;
+    };
+    actualDemand: any;
+}>;
 export const GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES: number;
 export const GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES: number;
 export const GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS: 16;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,6 +8,8 @@ import {
   appendClaudeToolReferencesToSeed,
   CLAUDE_TOOL_REFERENCE_POISON_TURNS,
   CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
+  neutralizeClaudeToolReferences,
+  neutralizeForkSeedToolReferences,
   __resetClaudeResumeTranscriptCacheForTests,
 } from './claude-resume-tool-references.mjs';
 
@@ -209,5 +211,108 @@ describe('Claude resume tool-reference recovery', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * WI-10005612: the exact record shape that made every acceptance-grading fork
+ * die on its first request (conv-murg7tb6, 2026-10-02): a server tool-search
+ * result in an ASSISTANT message whose `tool_references` named the native
+ * `EndConversation`, which the headless fork does not advertise.
+ */
+const serverToolSearch = (...names: string[]) => JSON.stringify({
+  type: 'assistant',
+  uuid: 'u-1',
+  message: {
+    role: 'assistant',
+    content: [{
+      type: 'tool_search_tool_result',
+      tool_use_id: 'srvtoolu_1',
+      content: {
+        type: 'tool_search_tool_search_result',
+        tool_references: names.map((tool_name) => ({ type: 'tool_reference', tool_name })),
+      },
+    }],
+  },
+});
+/** A client ToolSearch result: references inside a tool_result content array. */
+const clientToolSearch = (...names: string[]) => JSON.stringify({
+  type: 'user',
+  message: {
+    role: 'user',
+    content: [{
+      type: 'tool_result',
+      tool_use_id: 'toolu_1',
+      content: names.map((tool_name) => ({ type: 'tool_reference', tool_name })),
+    }],
+  },
+});
+
+describe('neutralizeClaudeToolReferences (fork seed)', () => {
+  it('empties a server tool-search result instead of leaving an unresolvable reference', () => {
+    const out = neutralizeClaudeToolReferences(serverToolSearch('Bash', 'EndConversation'));
+    expect(out.rewritten).toBe(2);
+    expect(out.toolNames).toEqual(['Bash', 'EndConversation']);
+    const record = JSON.parse(out.text);
+    expect(record.uuid).toBe('u-1');
+    expect(record.message.content[0].type).toBe('tool_search_tool_result');
+    // An empty match list is a valid search result; a text block in this array is not.
+    expect(record.message.content[0].content.tool_references).toEqual([]);
+    expect(out.text).not.toContain('tool_reference"');
+  });
+
+  it('turns a reference inside tool_result content into a text marker', () => {
+    const out = neutralizeClaudeToolReferences(clientToolSearch('mcp__papercusp-su__plans_audit'));
+    expect(out.rewritten).toBe(1);
+    const block = JSON.parse(out.text).message.content[0];
+    expect(block.type).toBe('tool_result');
+    expect(block.content).toEqual([
+      { type: 'text', text: '[tool reference mcp__papercusp-su__plans_audit was loaded here before this session was forked]' },
+    ]);
+  });
+
+  it('leaves lines without references, and unparseable lines, byte-identical', () => {
+    const plain = assistant('No references here.');
+    const broken = '{"type":"assistant","message":{"content":[{"type":"tool_reference"';
+    const jsonl = [plain, broken, serverToolSearch('EndConversation'), ''].join('\n');
+    const out = neutralizeClaudeToolReferences(jsonl);
+    const lines = out.text.split('\n');
+    expect(lines[0]).toBe(plain);
+    expect(lines[1]).toBe(broken);
+    expect(lines[3]).toBe('');
+    expect(out.rewritten).toBe(1);
+  });
+});
+
+describe('neutralizeForkSeedToolReferences', () => {
+  it("rewrites only the source session's seeded transcripts, in every encoded-cwd dir, idempotently", () => {
+    const projects = mkdtempSync(join(tmpdir(), 'fork-seed-'));
+    try {
+      const a = join(projects, '-home-a');
+      const b = join(projects, '-home-b');
+      mkdirSync(a);
+      mkdirSync(b);
+      const source = `${assistant('hello')}\n${serverToolSearch('EndConversation', 'WaitForMcpServers')}\n`;
+      writeFileSync(join(a, 'orig.jsonl'), source);
+      writeFileSync(join(b, 'orig.jsonl'), clientToolSearch('Monitor'));
+      writeFileSync(join(a, 'other.jsonl'), source);
+
+      const first = neutralizeForkSeedToolReferences(projects, 'orig');
+      expect(first).toMatchObject({ files: 2, rewritten: 3 });
+      expect(first.toolNames.sort()).toEqual(['EndConversation', 'Monitor', 'WaitForMcpServers']);
+      expect(readFileSync(join(a, 'orig.jsonl'), 'utf8')).not.toContain('"tool_reference"');
+      expect(readFileSync(join(b, 'orig.jsonl'), 'utf8')).not.toContain('"tool_reference"');
+      // Another session's transcript in the same dir is not the fork's source.
+      expect(readFileSync(join(a, 'other.jsonl'), 'utf8')).toBe(source);
+
+      expect(neutralizeForkSeedToolReferences(projects, 'orig')).toMatchObject({ files: 0, rewritten: 0 });
+    } finally {
+      rmSync(projects, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op for a missing dir or id', () => {
+    expect(neutralizeForkSeedToolReferences(join(tmpdir(), 'no-such-fork-seed-dir'), 'x')).toEqual({ files: 0, rewritten: 0, toolNames: [] });
+    expect(neutralizeForkSeedToolReferences(null, 'x')).toEqual({ files: 0, rewritten: 0, toolNames: [] });
   });
 });
