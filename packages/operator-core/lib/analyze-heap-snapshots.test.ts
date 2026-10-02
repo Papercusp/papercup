@@ -2,12 +2,30 @@ import { spawnSync } from 'node:child_process';
 import { createReadStream, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { summarizeHeapSnapshot, summarizeHeapSnapshotStream, summarizeHeapRetainers, checkNativeHeapDecode } from '../../../scripts/analyze-heap-snapshots.mjs';
 
 describe('private V8 heap snapshot census', () => {
+  const repository = fileURLToPath(new URL('../../../', import.meta.url));
+  const targetDirectory = resolve(repository, '.heap-retainers-cargo-target');
+  const nativeExecutable = join(targetDirectory, 'release/papercusp-heap-retainers');
+  beforeAll(() => {
+    // CI builds the exact pinned adapter too; these are real-suite guards, not
+    // an opt-in check against an unrelated/pre-existing native executable.
+    const build = spawnSync('cargo', ['build', '--locked', '--release', '--manifest-path',
+      resolve(repository, 'scripts/heap-retainers-native/Cargo.toml')], {
+      cwd: repository, env: { ...process.env, CARGO_TARGET_DIR: targetDirectory },
+      encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024,
+    });
+    expect(build.status, build.stderr).toBe(0);
+    const version = spawnSync(nativeExecutable, ['--version'], { encoding: 'utf8' });
+    expect(version.status).toBe(0);
+    expect(version.stdout.trim()).toBe('papercusp-heap-retainers 0.1.0');
+  }, 130_000);
+
   it('detects a real surviving large array without exporting private string payloads', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'p011-heap-census-'));
     try {
@@ -129,8 +147,82 @@ describe('private V8 heap snapshot census', () => {
       expect(JSON.stringify(report)).not.toMatch(/DoNotExportThisPayload|sensitive|heapsnapshot|P011_HEAP_DIR/);
       expect(report.definition).toContain('class retained sizes overlap');
       expect(report.groups.length).toBeLessThanOrEqual(30);
+      const native = await summarizeHeapRetainers(bytes, { top: 30, perClass: 4, retainerDepth: 1, nativeExecutable });
+      expect(native.native?.inputSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+      expect(native.native?.executableSha256).toBe(createHash('sha256').update(readFileSync(nativeExecutable)).digest('hex'));
+      expect(native.native?.stderrBytes).toBe(0);
+      expect(native.rootIndex).toBe(report.rootIndex);
+      const nativeExclusive = native.groups.find(group => group.class === 'ExclusiveHeapFixture');
+      expect(nativeExclusive?.nodes[0].index).toBe(exclusive?.nodes[0].index);
+      expect(nativeExclusive?.nodes[0].retainedSizeBytes).toBe(exclusive?.nodes[0].retainedSizeBytes);
+      const nativeShared = native.groups.find(group => group.class === 'SharedHeapFixture');
+      expect(nativeShared?.nodes.map(node => [node.index, node.retainedSizeBytes]).sort())
+        .toEqual(shared?.nodes.map(node => [node.index, node.retainedSizeBytes]).sort());
+      const nativeArray = native.groups.flatMap(group => group.nodes).find(node => node.index === retainedSharedArray!.index);
+      expect(nativeArray?.retainedSizeBytes).toBe(retainedSharedArray?.retainedSizeBytes);
+      expect(nativeArray?.retainers.filter(node => node.class === 'SharedHeapFixture')).toHaveLength(2);
+      expect(JSON.stringify(native)).not.toMatch(/DoNotExportThisPayload|sensitive|heapsnapshot|P011_HEAP_DIR/);
+      await expect(summarizeHeapRetainers(bytes, { nativeExecutable, retainerDepth: 2 })).rejects.toThrow('retainerDepth 1');
       await expect(summarizeHeapRetainers(Buffer.from('{"snapshot":'))).rejects.toThrow();
       await expect(summarizeHeapRetainers(bytes, { retainerDepth: 4 })).rejects.toThrow('Invalid');
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 75000);
+
+  it('bounds direct native parents, deduplicates properties and excludes weak/non-root shortcut edges', async () => {
+    const names = ['root', 'FixtureTarget', 'HolderA', 'HolderB', 'WeakOnly', 'ShortcutOnly',
+      'DoNotExportThisPayload', 'DoNotExportEdge'];
+    const types = ['hidden', 'array', 'string', 'object', 'code', 'closure', 'regexp', 'number', 'native', 'synthetic'];
+    const nf = 7;
+    const snapshot = { snapshot: { node_count: 7, edge_count: 12, meta: {
+      node_fields: ['type', 'name', 'id', 'self_size', 'edge_count', 'trace_node_id', 'detachedness'],
+      node_types: [types, 'string', 'number', 'number', 'number', 'number', 'number'],
+      edge_fields: ['type', 'name_or_index', 'to_node'],
+      edge_types: [['context', 'element', 'property', 'internal', 'hidden', 'shortcut', 'weak'], 'string_or_number', 'node'],
+      trace_function_info_fields: [], trace_node_fields: [], sample_fields: [], location_fields: [],
+    } }, nodes: [[9, 0, 1, 0, 5, 0, 0], [3, 1, 3, 100, 0, 0, 0],
+      [3, 2, 5, 24, 4, 0, 0], [3, 3, 7, 24, 1, 0, 0], [3, 4, 9, 24, 1, 0, 0],
+      [3, 5, 11, 24, 1, 0, 0], [2, 6, 13, 12, 0, 0, 0]].flat(),
+      edges: [...[2, 3, 4, 5, 6].map(index => [5, 7, index * nf]),
+        [2, 7, nf], [2, 7, nf], [6, 7, nf], [5, 7, nf],
+        [2, 7, nf], [6, 7, nf], [5, 7, nf]].flat(), strings: names };
+    const bytes = Buffer.from(JSON.stringify(snapshot));
+    const report = await summarizeHeapRetainers(bytes, { nativeExecutable, top: 30, perClass: 10, maxRetainers: 1 });
+    const target = report.groups.flatMap(group => group.nodes).find(node => node.class === 'FixtureTarget')!;
+    expect(target.retainerCount).toBe(2);
+    expect(target.retainersTruncated).toBe(true);
+    expect(target.retainers).toHaveLength(1);
+    expect(target.retainers[0].class).toBe('HolderA');
+    expect(target.retainers[0].edgeType).toBe('Property');
+    expect(report.groups.flatMap(group => group.nodes).find(node => node.type === 'String')?.class).toBe('(string)');
+    expect(JSON.stringify(report)).not.toMatch(/DoNotExportThisPayload|DoNotExportEdge/);
+    const bounded = await summarizeHeapRetainers(bytes, { nativeExecutable, top: 1, perClass: 1, maxRetainers: 1 });
+    expect(bounded.groups).toHaveLength(1);
+    expect(bounded.groups[0].nodes).toHaveLength(1);
+    await expect(summarizeHeapRetainers(bytes, { nativeExecutable, top: 31 })).rejects.toThrow('Invalid');
+    const direct = spawnSync(nativeExecutable, ['1', '1', '2', '1'], { input: bytes, encoding: 'utf8' });
+    expect(direct.status).toBe(1);
+    expect(direct.stderr).toBe('');
+    expect(JSON.parse(direct.stdout).error.kind).toBe('invalid-limits');
+    // Upstream indexes string-table names while grouping. Malformed indexes
+    // can panic; the process must still emit only the fixed phase/kind.
+    const corrupt = spawnSync(nativeExecutable, ['30', '10', '1', '1'], {
+      input: JSON.stringify({ ...snapshot, strings: [] }), encoding: 'utf8',
+    });
+    expect(corrupt.status).toBe(1);
+    expect(corrupt.stderr).toBe('');
+    expect(JSON.parse(corrupt.stdout).error).toEqual({ phase: 'class-dominators', kind: 'upstream-panic' });
+  });
+
+  it('redacts malformed native input and upstream panic output', async () => {
+    const bytes = Buffer.from('{"private":"DoNotExportThisPayload"}');
+    const direct = spawnSync(nativeExecutable, ['1', '1', '1', '1'], { input: bytes, encoding: 'utf8' });
+    expect(direct.status).toBe(1);
+    expect(direct.stderr).toBe('');
+    expect(JSON.parse(direct.stdout).error.phase).toBe('decode-bytes');
+    try { await summarizeHeapRetainers(bytes, { nativeExecutable }); throw Error('Expected failure'); }
+    catch (error) {
+      expect(String(error)).toContain('failed at decode-bytes');
+      expect(String(error) + JSON.stringify(error)).not.toContain('DoNotExportThisPayload');
+    }
+  });
 });

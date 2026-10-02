@@ -1109,15 +1109,25 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       (async () => {
         if (process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER)
           throw Error('Ambient control must be stripped');
+        if (process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER)
+          throw Error('Ambient adapter control must be stripped');
         if (!process.env.TEST_NATIVE_HEAP_DECODER) throw Error('Explicit decoder input was lost');
         phase = 'import';
-        const { checkNativeHeapDecode } = await import(require('node:url').pathToFileURL(process.env.TEST_HEAP_ANALYZER));
+        const { checkNativeHeapDecode, summarizeHeapRetainers } = await import(require('node:url').pathToFileURL(process.env.TEST_HEAP_ANALYZER));
         phase = 'snapshot';
         fs.mkdirSync(process.env.TMPDIR, { recursive: true });
         require('node:v8').writeHeapSnapshot(snapshot);
         phase = 'native-decode';
         const result = checkNativeHeapDecode(fs.readFileSync(snapshot), process.env.TEST_NATIVE_HEAP_DECODER);
         console.log('NATIVE_DECODER_CONTROL ' + JSON.stringify(result));
+        if (process.env.TEST_NATIVE_HEAP_ADAPTER) {
+          phase = 'native-retainers';
+          const report = await summarizeHeapRetainers(fs.readFileSync(snapshot), {
+            nativeExecutable: process.env.TEST_NATIVE_HEAP_ADAPTER, top: 2, perClass: 1, retainerDepth: 1,
+          });
+          console.log('NATIVE_ADAPTER_CONTROL ' + JSON.stringify({ native: report.native,
+            groups: report.groups.length, inputMatches: report.native.inputSha256 === result.inputSha256 }));
+        }
       })().catch(error => { console.error(JSON.stringify({ phase, errorClass: error.name, errorCode: error.code }));
         process.exitCode = 1; }).finally(() => fs.rmSync(snapshot, { force: true }));
     `;
@@ -1130,6 +1140,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         '--isolated-runtime=operator-api', '--', process.execPath, '-e', program], {
         cwd: root, timeout: 120_000, stdio: ['ignore', out, err],
         env: { ...process.env, TEST_NATIVE_HEAP_DECODER: process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER,
+          TEST_NATIVE_HEAP_ADAPTER: process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER ?? '',
           TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs') },
       });
       stdout = readFileSync(outPath, 'utf8');
@@ -1146,6 +1157,17 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       .update(readFileSync(process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER!)).digest('hex'));
     expect(report.inputBytes).toBeGreaterThan(0);
     expect(report.stdoutBytes).toBeLessThan(10);
+    if (process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER) {
+      const adapterLine = stdout.split('\n').find(line => line.startsWith('NATIVE_ADAPTER_CONTROL '));
+      expect(adapterLine).toBeDefined();
+      const adapter = JSON.parse(adapterLine!.slice('NATIVE_ADAPTER_CONTROL '.length));
+      expect(adapter.inputMatches).toBe(true);
+      expect(adapter.groups).toBe(2);
+      expect(adapter.native.status).toBe(0);
+      expect(adapter.native.stderrBytes).toBe(0);
+      expect(adapter.native.executableSha256).toBe(createHash('sha256')
+        .update(readFileSync(process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER)).digest('hex'));
+    }
   }, 150_000);
 
   it.each(['diagnostic', 'ordinary', ...(process.env.PAPERCUSP_P011_HEAP_CENSUS === '1' ? ['snapshot'] : []),
@@ -1157,6 +1179,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     expect(queryRoute.auth).toBe('loopback');
     const queryPath = '/api' + queryRoute.path;
     const nativeDecoder = mode === 'retainers' ? process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER : undefined;
+    const nativeAdapter = mode === 'retainers' ? process.env.PAPERCUSP_P011_NATIVE_HEAP_ADAPTER : undefined;
+    if (nativeAdapter) {
+      const preflight = spawnSync(nativeAdapter, ['--version'], { encoding: 'utf8', timeout: 5000 });
+      expect(preflight.status, 'Native adapter must be executable before runtime preparation').toBe(0);
+      expect(preflight.stdout.trim()).toBe('papercusp-heap-retainers 0.1.0');
+    }
     if (nativeDecoder) {
       const preflight = spawnSync(nativeDecoder, ['--version'], { encoding: 'utf8', timeout: 5000 });
       expect(preflight.status, 'Native decoder must be executable before runtime preparation').toBe(0);
@@ -1206,6 +1234,15 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       };
       // The maintained isolated-runtime route intentionally strips PAPERCUSP_*
       // ambient controls. Test inputs cross that boundary explicitly as TEST_*.
+      if (e.TEST_NATIVE_HEAP_ADAPTER) {
+        const preflight = require('node:child_process').spawnSync(e.TEST_NATIVE_HEAP_ADAPTER,
+          ['--version'], { encoding: 'utf8', timeout: 5000 });
+        if (preflight.status !== 0 || preflight.stdout.trim() !== 'papercusp-heap-retainers 0.1.0')
+          throw Error('Private native retainer adapter precondition failed');
+        report.nativeAdapterPreflight = { version: preflight.stdout.trim(),
+          sha256: createHash('sha256').update(readFileSync(e.TEST_NATIVE_HEAP_ADAPTER)).digest('hex') };
+        publish();
+      }
       if (e.TEST_NATIVE_HEAP_DECODER) {
         const preflight = require('node:child_process').spawnSync(e.TEST_NATIVE_HEAP_DECODER,
           ['--version'], { encoding: 'utf8', timeout: 5000 });
@@ -1412,7 +1449,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               const analysisStarted = Date.now();
               report.heapRetainers = { ...(await summarizeHeapRetainers(readFileSync(snapshotPath),
                 { top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32,
-                  decoderControl: e.TEST_NATIVE_HEAP_DECODER || undefined })),
+                  decoderControl: e.TEST_NATIVE_HEAP_DECODER || undefined,
+                  nativeExecutable: e.TEST_NATIVE_HEAP_ADAPTER || undefined })),
                 durationMs: Date.now() - analysisStarted, pid: host.pid };
               publish();
             }
@@ -1467,7 +1505,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           TEST_COHORT_MODE: mode, TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_TEST_BUILD_SHA: testBuildSha,
           TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX, TEST_QUERY_ROUTE: queryPath, TEST_REPORT_PATH: reportPath,
           TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs'),
-          TEST_NATIVE_HEAP_DECODER: nativeDecoder ?? '' },
+          TEST_NATIVE_HEAP_DECODER: nativeDecoder ?? '', TEST_NATIVE_HEAP_ADAPTER: nativeAdapter ?? '' },
       });
       const report = readCohortReport(reportPath, result);
       if (destination) writeFileSync(destination, serializeIdentitySafeJson(report));
@@ -1489,6 +1527,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           expect(report.heapRetainers.groups.length).toBeGreaterThan(0);
           expect(report.heapRetainers.groups.length).toBeLessThanOrEqual(20);
           expect(report.heapRetainers.definition).toContain('class retained sizes overlap');
+          if (nativeAdapter) {
+            expect(report.nativeAdapterPreflight.sha256).toBe(report.heapRetainers.native.executableSha256);
+            expect(report.heapRetainers.native.inputSha256).toBe(report.heapSnapshot.sha256);
+            expect(report.heapRetainers.native.inputBytes).toBe(report.heapSnapshot.bytes);
+            expect(report.heapRetainers.limits.retainerDepth).toBe(1);
+          }
         }
         expect(report.heapSnapshot.census.nodeCount).toBeGreaterThan(0);
         expect(report.heapSnapshot.census.totalSelfSizeBytes).toBeGreaterThan(0);
