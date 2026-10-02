@@ -57,7 +57,10 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Names that identify NOBODY: the stand-ins a test fixture or doc example uses on purpose,
@@ -807,4 +810,24 @@ export function serializeIdentitySafeJson(value, entries) {
   }, 2);
   if (json === undefined) throw new Error('Diagnostic report must be JSON-compatible');
   return json + '\n';
+}
+
+// Public evidence exports must use the same serializer as the distribution
+// guard. Read private JSON on stdin and emit only the sanitized copy on stdout;
+// the original receipt and its measured hashes remain untouched.
+// Usage: node scripts/lib/identity-leak-patterns.mjs --serialize-json < private.json
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv.length !== 3 || process.argv[2] !== '--serialize-json') {
+    console.error('Usage: node scripts/lib/identity-leak-patterns.mjs --serialize-json < private.json');
+    process.exitCode = 1;
+  } else {
+    try {
+      const publicJson = serializeIdentitySafeJson(JSON.parse(readFileSync(0, 'utf8')));
+      process.stdout.write(publicJson);
+    } catch {
+      // JSON parser errors can include private input snippets. Never echo them.
+      console.error('Identity-safe JSON export refused: invalid JSON or identity-bearing report keys');
+      process.exitCode = 1;
+    }
+  }
 }

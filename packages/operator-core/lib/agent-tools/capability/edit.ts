@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
 import { resolveCapabilityBaseDir } from './base-dir';
+import { refuseRestrictedRuntimeWrite } from './write';
 import { occurrences, spliceLiteral, squashWhitespace } from './text-splice';
 
 export default defineTool({
@@ -40,6 +41,9 @@ export default defineTool({
     if (args.old_string === args.new_string) return err('no_op', 'old_string and new_string are identical.');
     const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
+    // WI-10005589 / D-012 (BAR R-11): same runtime-file refusal as capability:write.
+    const runtimeRefusal = await refuseRestrictedRuntimeWrite(ctx, abs);
+    if (runtimeRefusal) return runtimeRefusal;
 
     // Lock the path we are ACTUALLY going to edit (`abs`), never the raw argument —
     // see the same note in write.ts (EI-20881501070735530).

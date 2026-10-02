@@ -21,7 +21,7 @@
  *     unreachable. The client-native Bash half (the PreToolUse rewrite) is proven
  *     with real bwrap in apps/operator/scripts/hooks/cc/__tests__/restricted-egress-guard.test.ts.
  */
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type postgres from 'postgres';
@@ -42,7 +42,11 @@ vi.mock('../agent-tools/coordination/identity', async (importOriginal) => ({
 }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
-const { checkRestrictedEgress, readSessionRestriction, EGRESS_REFUSAL_CODE } = await import('./binding-enforcement');
+const { checkRestrictedEgress, readSessionRestriction, isAgentRuntimePath, EGRESS_REFUSAL_CODE } = await import(
+  './binding-enforcement'
+);
+const { default: writeTool } = await import('../agent-tools/capability/write');
+const { default: editTool } = await import('../agent-tools/capability/edit');
 const { capabilityBwrapWorks } = await import('../agent-tools/capability/exec-sandbox');
 const { scrubProviderCredentials, findProviderEgressTargets, providerEgressRules } = await import('./provider-egress.mjs');
 const { sanitizeInheritedWakeEnv } = await import('../inference-gateway/spawn-env');
@@ -287,7 +291,9 @@ describe('R-11 network layer: a restricted session’s shell has no network; an 
           "    print('EGRESS=errno%d' % e.errno)",
         ].join('\n'),
       );
-      const ctx = { projectDir: dir, stateDir: dir, signal: new AbortController().signal, emit: () => {}, role: 'cup' };
+      // A TRUSTED (superuser) caller: a confined role already runs offline under the
+      // exec sandbox, so only a trusted caller shows the restriction is what removes the network.
+      const ctx = { projectDir: dir, stateDir: dir, signal: new AbortController().signal, emit: () => {}, isSuperuser: true };
       const run = async (owner: string) => {
         holder.ownerId = owner;
         const result = (await bashTool.handler({ command: 'python3 probe.py', cwd: dir }, ctx as never)) as {
@@ -301,14 +307,63 @@ describe('R-11 network layer: a restricted session’s shell has no network; an 
       const released = await run(RELEASED);
       const restricted = await run(RESTRICTED);
       for (const r of [unrestricted, released, restricted]) expect(r.netns, r.text).toMatch(/^net:\[\d+\]$/);
-      // Unrestricted sessions keep the host network namespace and its interfaces.
-      expect(released.netns, released.text).toBe(unrestricted.netns);
-      expect(unrestricted.ifaces?.split(',').some((i) => i !== 'lo'), unrestricted.text).toBe(true);
-      // The restricted session: a different, empty namespace — loopback only, and no route off the machine.
-      expect(restricted.netns, restricted.text).not.toBe(unrestricted.netns);
+      // Unrestricted sessions run in this process's own network namespace, interfaces and all.
+      const ownNetns = readlinkSync('/proc/self/ns/net');
+      expect(unrestricted.netns, unrestricted.text).toBe(ownNetns);
+      expect(released.netns, released.text).toBe(ownNetns);
+      expect(unrestricted.ifaces, unrestricted.text).toBe(released.ifaces);
+      // The restricted session: a FRESH namespace created for the command — loopback
+      // only, and no route off the machine for a host built at run time.
+      expect(restricted.netns, restricted.text).not.toBe(ownNetns);
       expect(restricted.ifaces, restricted.text).toBe('lo');
       expect(restricted.egress, restricted.text).toBe('errno101'); // ENETUNREACH
     },
     60_000,
   );
+
+  it('recognises the files the agent CLI executes', () => {
+    const home = '/home/u';
+    for (const p of [
+      `${home}/.claude/settings.json`,
+      `${home}/.claude.json`,
+      `${home}/.papercusp/hooks/cc/x.sh`,
+      '/repo/.claude/settings.local.json',
+      '/repo/.mcp.json',
+      '/repo/.git/hooks/post-commit',
+    ]) {
+      expect(isAgentRuntimePath(p, home), p).toBe(true);
+    }
+    for (const p of ['/repo/src/a.ts', `${home}/.papercusp/scratch/x`, '/repo/.git/config', '/repo/docs/claude.md']) {
+      expect(isAgentRuntimePath(p, home), p).toBe(false);
+    }
+  });
+
+  it('capability:write and capability:edit refuse a restricted session’s write of a runtime file, and only that', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'binding-runtime-'));
+    const ctx = { projectDir: dir, stateDir: dir, signal: new AbortController().signal, emit: () => {}, isSuperuser: true };
+    const settings = join(dir, '.claude', 'settings.json');
+    const gitHook = join(dir, '.git', 'hooks', 'post-commit');
+    const ordinary = join(dir, 'src', 'a.ts');
+    const write = (file_path: string) =>
+      writeTool.handler({ file_path, content: '{"hooks":{}}\n' }, ctx as never) as Promise<{ isError?: boolean; content: Array<{ text: string }> }>;
+
+    holder.ownerId = RESTRICTED;
+    for (const target of [settings, gitHook]) {
+      const refused = await write(target);
+      expect(refused.isError, target).toBe(true);
+      expect(JSON.parse(refused.content[0].text), target).toMatchObject({ ok: false, reason: EGRESS_REFUSAL_CODE });
+      expect(existsSync(target), target).toBe(false);
+    }
+    expect((await write(ordinary)).isError).toBeFalsy();
+
+    holder.ownerId = UNRESTRICTED;
+    expect((await write(settings)).isError).toBeFalsy();
+    holder.ownerId = RESTRICTED;
+    const edited = (await editTool.handler(
+      { file_path: settings, old_string: '{"hooks":{}}', new_string: '{"hooks":{"x":1}}' },
+      ctx as never,
+    )) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(edited.isError).toBe(true);
+    expect(JSON.parse(edited.content[0].text)).toMatchObject({ ok: false, reason: EGRESS_REFUSAL_CODE });
+  });
 });

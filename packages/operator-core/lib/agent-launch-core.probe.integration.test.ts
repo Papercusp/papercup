@@ -64,6 +64,52 @@ afterAll(async () => {
 });
 
 describe('fresh-launch tool-call attribution (real PG)', () => {
+  it('distinguishes an observed-silent boot from a still-signalling boot', async () => {
+    const workspaceId = 'ws-silence';
+    const ownerId = 'su-silence';
+    const launcherOwnerId = 'su-launcher-silence';
+    const since = Date.now() - 180_000;
+    const firstSeen = since + 1_500;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, session_id, coord_owner_id, workspace_id, first_seen_at, launch_spec, launch_argv)
+      VALUES (3, 'native-silence', ${ownerId}, ${workspaceId}, to_timestamp(${firstSeen / 1000}),
+              '{}'::jsonb, ${JSON.stringify(['psu', `--launched-by=${launcherOwnerId}`])}::jsonb)
+    `;
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at)
+      VALUES (${workspaceId}, ${ownerId}, 'ok', 'agent', 'activity:report',
+              to_timestamp(${(firstSeen + 100) / 1000}))
+    `;
+
+    const probe = () => probeFreshLaunchSessions({ workspaceId, launcherOwnerId, since });
+    const silent = await probe();
+    expect(silent).toHaveLength(1);
+    expect(silent[0]).toMatchObject({ successfulCalls: 0, hasPresence: false });
+    expect(silent[0]!.msSinceLastSignal).toBeGreaterThan(60_000);
+    const observedSilence = await verifyFreshLaunchStarted(
+      { workspaceId, launcherOwnerId, since, expected: 1 },
+      { probe, timeoutMs: 1, pollMs: 1, silenceMs: 60_000, sleep: async () => {} },
+    );
+    expect(observedSilence.agentStarted).toBe(false);
+    expect(observedSilence.note).toMatch(/went SILENT/);
+
+    await sql`
+      UPDATE harness_shared.tool_invocations SET invoked_at = now()
+      WHERE workspace_id = ${workspaceId} AND coord_owner_id = ${ownerId}
+    `;
+    const signalling = await probe();
+    expect(signalling[0]).toMatchObject({ successfulCalls: 0, hasPresence: false });
+    expect(signalling[0]!.msSinceLastSignal).toBeLessThan(60_000);
+    const stillSignalling = await verifyFreshLaunchStarted(
+      { workspaceId, launcherOwnerId, since, expected: 1 },
+      { probe, timeoutMs: 1, pollMs: 1, silenceMs: 60_000, sleep: async () => {} },
+    );
+    expect(stillSignalling.agentStarted).toBeNull();
+    expect(stillSignalling.note).toMatch(/still signalling/);
+  });
+
   it('does not credit same-owner predecessor calls to a successor with no native session or first turn', async () => {
     const since = Date.now() - 5_000;
     const firstSeen = since + 1_500;

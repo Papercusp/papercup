@@ -24,6 +24,8 @@
  * Callers: capability:bash (server side), and the PreToolUse hook for the
  * client-native Bash and WebFetch tools via POST /api/agent-mcp/restricted-egress-check.
  */
+import { homedir } from 'node:os';
+import { basename, join, resolve, sep } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { ownerHasActiveDisclosure } from './git-sync-hold';
 import { findProviderEgressTargets, type ProviderEgressTarget } from './provider-egress.mjs';
@@ -129,6 +131,44 @@ export async function readSessionRestriction(
   } catch {
     return null;
   }
+}
+
+/**
+ * Files the agent CLI itself executes or loads tools from: its settings and hooks,
+ * MCP server config, and git hooks (run host-side by git-sync). A restricted
+ * session that could write one would run code outside its network sandbox
+ * (WI-10005589, D-012). Mirrors the PreToolUse guard's `restrictedRuntimePaths`.
+ */
+export function isAgentRuntimePath(absPath: string, home: string = homedir()): boolean {
+  const p = resolve(absPath);
+  const under = (root: string) => p === root || p.startsWith(`${root}${sep}`);
+  if (under(join(home, '.claude')) || p === join(home, '.claude.json') || under(join(home, '.papercusp', 'hooks'))) {
+    return true;
+  }
+  const parts = p.split(sep);
+  if (parts.includes('.claude') || basename(p) === '.mcp.json') return true;
+  const git = parts.indexOf('.git');
+  return git >= 0 && parts[git + 1] === 'hooks';
+}
+
+/**
+ * capability:write / capability:edit refusal for a restricted caller writing an
+ * agent runtime file, or null to proceed. Unreadable ledger → refused (fail closed).
+ */
+export async function restrictedRuntimeWriteRefusal(
+  ownerId: string | null | undefined,
+  absPath: string,
+  deps: RestrictedEgressDeps = defaultRestrictedEgressDeps,
+): Promise<{ code: RestrictedEgressCode; message: string } | null> {
+  if (!isAgentRuntimePath(absPath)) return null;
+  const restricted = await readSessionRestriction(ownerId, deps);
+  if (restricted === false) return null;
+  return {
+    code: restricted === true ? EGRESS_REFUSAL_CODE : 'disclosure_ledger_unavailable',
+    message:
+      `${absPath} is an agent runtime file (settings, hooks, MCP config or git hooks): code there runs outside a ` +
+      `restricted session's network sandbox, and ${restricted === true ? 'this session has read restricted personal data' : "this session's disclosure ledger could not be read"}.`,
+  };
 }
 
 /** The capability:bash refusal payload for a refused verdict, or null to proceed. */
