@@ -18,7 +18,9 @@
  *    and a missing embedder degrades honestly while exposing only an explicit
  *    lexical fallback path (never semantic qualification).
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../test/_disclosure-ledger-fixture';
+import { D006_TRANSCRIPT_RULE } from '../personal-vault/transcript-exclusion';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
@@ -96,6 +98,8 @@ beforeAll(async () => {
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
+  // D-006: routing excludes experts who have held a disclosure; the ledger must exist.
+  await rootSql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
   // Only the columns the router reads. ⚠ These names MUST match the real
   // migration-owned schema exactly — a hand-rolled fixture that invents column
   // names makes this suite self-consistent and WRONG. That is not hypothetical:
@@ -641,6 +645,98 @@ describe('routeConsult — D-001 two-stage: recency compares, never qualifies', 
     )!;
     expect(stale.score).toBeLessThan(atDefault.score);
     expect(stale.relevance).toBe(atDefault.relevance); // …but qualification is untouched
+  });
+});
+
+// Plan personal-data-reader-set-labels-2026-10-01 P-013 / D-006 / D-009: consult
+// forks a routed expert's WHOLE transcript, so an expert who has EVER held a
+// disclosure is not routable at all, and the count it reports must not depend
+// on the question (a per-question count would confirm a guess about the text).
+describe('routeConsult — D-006 restricted experts are excluded in SQL', () => {
+  async function disclose(owner: string, released = false): Promise<void> {
+    await rootSql`
+      INSERT INTO harness_shared.personal_disclosures
+        (workspace_id, user_id, agent_owner_id, document_id, source, level, reader_set,
+         delivered_via, delivered_at, released_at, released_by, release_ref)
+      VALUES (${WS}, gen_random_uuid(), ${owner}, gen_random_uuid(), 'gmail', 'participants',
+              ${['owner@me.example']}::text[], 'personal:search', ${new Date(NOW.getTime() - 90 * DAY).toISOString()}::timestamptz,
+              ${released ? new Date(NOW.getTime() - 60 * DAY).toISOString() : null}::timestamptz,
+              ${released ? 'owner' : null}, ${released ? 'test-release' : null})`;
+  }
+  async function turnsOf(owner: string): Promise<number> {
+    const [row] = await rootSql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.session_turns
+       WHERE owner = ${owner} AND (workspace_id = ${WS} OR workspace_id = 'default')`;
+    return row!.n;
+  }
+  afterEach(async () => {
+    await rootSql`DELETE FROM harness_shared.personal_disclosures`;
+  });
+
+  it('never routes to an expert who held a disclosure and reports the same count for a near and a far question', async () => {
+    const before = await routeConsult(baseParams, deps(0));
+    expect(before.qualified[0]?.ownerId).toBe('agent-alpha');
+    expect(before.snapshot.withheld).toBeUndefined();
+
+    await disclose('agent-alpha');
+    const near = await routeConsult(baseParams, deps(0));
+    expect(near.snapshot.candidates.map((c) => c.ownerId)).not.toContain('agent-alpha');
+    expect(near.qualified.map((c) => c.ownerId)).not.toContain('agent-alpha');
+    expect(near.snapshot.withheld).toEqual({
+      restricted_turns: await turnsOf('agent-alpha'),
+      restricted_owners: 1,
+      rule: D006_TRANSCRIPT_RULE,
+    });
+    expect(near.snapshot.withheld!.restricted_turns).toBeGreaterThan(0);
+    // D-009: the count is a property of the ledger, never of the question.
+    const far = await routeConsult(baseParams, deps(-1.3));
+    expect(far.snapshot.withheld).toEqual(near.snapshot.withheld);
+  });
+
+  it('a released disclosure still excludes the expert — its transcript still holds the content', async () => {
+    await disclose('agent-alpha', true);
+    const r = await routeConsult(baseParams, deps(0));
+    expect(r.snapshot.candidates.map((c) => c.ownerId)).not.toContain('agent-alpha');
+    expect(r.snapshot.withheld?.restricted_owners).toBe(1);
+  });
+
+  it("does not count the requester's own disclosure against it", async () => {
+    await disclose('agent-self');
+    const r = await routeConsult(baseParams, deps(0));
+    expect(r.snapshot.withheld).toBeUndefined();
+    expect(r.qualified[0]?.ownerId).toBe('agent-alpha');
+  });
+
+  it('the lexical fallback excludes a restricted expert the same way', async () => {
+    const word = 'quokkafluxion';
+    await rootSql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+      VALUES ('default', 'claude', 'sess-lex-a', 1, ${NOW.toISOString()}::timestamptz, 'agent-lex-a', 'assistant', ${'the ' + word + ' detail'}),
+             ('default', 'claude', 'sess-lex-b', 1, ${NOW.toISOString()}::timestamptz, 'agent-lex-b', 'assistant', ${'another ' + word + ' detail'})`;
+    try {
+      const params = { ...baseParams, question: word };
+      const open = await routeConsult(params, deps(null));
+      expect(open.snapshot.candidates.map((c) => c.ownerId)).toEqual(expect.arrayContaining(['agent-lex-a', 'agent-lex-b']));
+
+      await disclose('agent-lex-a');
+      const closed = await routeConsult(params, deps(null));
+      const owners = closed.snapshot.candidates.map((c) => c.ownerId);
+      expect(owners).toContain('agent-lex-b');
+      expect(owners).not.toContain('agent-lex-a');
+      expect(closed.snapshot.withheld).toMatchObject({ restricted_owners: 1, restricted_turns: 1 });
+    } finally {
+      await rootSql`DELETE FROM harness_shared.session_turns WHERE owner IN ('agent-lex-a', 'agent-lex-b')`;
+    }
+  });
+
+  it('refuses rather than routing unfiltered when the ledger cannot be read', async () => {
+    await rootSql.unsafe('ALTER TABLE harness_shared.personal_disclosures RENAME TO personal_disclosures_gone');
+    try {
+      await expect(routeConsult(baseParams, deps(0))).rejects.toMatchObject({ code: 'disclosure_ledger_unavailable' });
+    } finally {
+      await rootSql.unsafe('ALTER TABLE harness_shared.personal_disclosures_gone RENAME TO personal_disclosures');
+    }
   });
 });
 
