@@ -50,7 +50,20 @@ it('builds the guarded standalone graph and preserves its prior bytes when compi
 it('serves packaged process and invokeOnce RPC through the maintained sibling with private state and graceful cleanup', () => {
   const output = mkdtempSync(join(tmpdir(), 'papercusp-spawner-runtime-'));
   try {
-    const command = 'source "$1"; bundle_host_spawner "$2" "$3" --external:typescript --external:esbuild --external:@papercusp/embedded-postgres-server --external:@embedded-postgres/* "${HOST_COMMON_EXTERNALS[@]}" "${NATIVE_PKGS[@]/#/--external:}" --log-limit=20';
+    // Execute the desktop builder's actual boundary and call, rather than a
+    // second hand-maintained list of externals/defines. Only output and release
+    // metadata are fixture inputs; the whole distribution need not be assembled.
+    const desktop = readFileSync(join(root, 'papercusp-desktop/bin/build-desktop-sidecar.sh'), 'utf8');
+    const externals = desktop.match(/^HOST_EXTERNALS=\([\s\S]*?^for np in .*$/m)?.[0];
+    const minify = desktop.match(/^MINIFY_ARGS=\(.*\)$/m)?.[0];
+    const version = desktop.match(/^  VERSION_DEFINE_ARGS=\([\s\S]*?^  \)/m)?.[0];
+    const spawner = desktop.match(/^bundle_host_spawner "\$REPO_ROOT" "\$SIDECAR_DIR"[\s\S]*?\|\| exit 1/m)?.[0];
+    expect({ externals, minify, version, spawner }).toEqual({
+      externals: expect.any(String), minify: expect.any(String), version: expect.any(String), spawner: expect.any(String),
+    });
+    const command = ['set -euo pipefail', 'source "$1"', 'REPO_ROOT="$2"', 'SIDECAR_DIR="$3"',
+      'PAPERCUSP_DESKTOP_VERSION=0.0.0-packaged-fixture', 'PAPERCUP_DOGFOOD_REPO_REF=packaged-fixture-ref',
+      externals, minify, version, spawner].join('\n');
     const build = spawnSync('bash', ['-c', command, 'spawner-runtime-test',
       join(root, 'apps/operator/bin/bundle-host-common.sh'), root, output], {
       cwd: join(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
