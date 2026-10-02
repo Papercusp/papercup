@@ -75,6 +75,7 @@ import {
   commentWorkItem,
   type TerminalCompletionConflict,
 } from '../../work-items';
+import { refuseNonAgentWorkAtDoor } from '../../work-nature/agent-work-door-gate';
 import {
   CompletionRecordSchema,
   CompletionVerificationEvidenceSchema,
@@ -3122,6 +3123,11 @@ async function completeOne(
 
   const existing = await getWorkItem(it.id, it.harness);
   if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
+  // D-035 (WI-10005358): before ANY completion record, evidence or state write — a row that is
+  // not agent work by category (record, document, event, human-audience) is refused exactly as
+  // the by-id claim refuses it (D-024). Typed, no agent-passable override.
+  const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:complete', it.id, it.harness);
+  if (notAgentWork) return notAgentWork;
   // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
   // creation (still-under-investigation federation/replay-provenance defect). Trusting it
   // ALONE strands the true author — check IDENTITY first: createdBy === the caller means

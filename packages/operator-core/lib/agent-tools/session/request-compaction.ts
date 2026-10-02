@@ -45,6 +45,7 @@ import { releaseOwnerHookFileLocks } from '../locks/release-hook-locks';
 import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
 import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
+import { clearPendingCarryRespawn, savePendingCarryRespawn } from '../../session-brief';
 import {
   getLoopStatus,
   materializeLoop,
@@ -813,6 +814,43 @@ export default defineTool({
     // an executable instruction and can strand compaction permanently.
     const hostCarryRefusal = frozenCompactionCarryRefusal(firstPrompt);
     if (hostCarryRefusal) return hostCarryRefusal;
+    // Persist the exact carry before the host can accept the socket request.
+    // A host may recover this same owner through a fresh bootstrap instead of
+    // its in-place respawn path, so socket-only delivery is not sufficient.
+    let pendingCarryRespawn: Awaited<ReturnType<typeof savePendingCarryRespawn>>;
+    try {
+      pendingCarryRespawn = await savePendingCarryRespawn(identity, {
+        firstPrompt,
+        systemPromptAddendum: spec.systemPromptAddendum,
+      });
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'carry_persist_failed',
+            note: `The carry-respawn was not sent because its durable continuation could not be saved: ${(error as Error)?.message ?? error}`,
+          }),
+        }],
+        isError: true,
+      };
+    }
+    if (!pendingCarryRespawn) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            requested: false,
+            error: 'carry_persist_failed',
+            note: 'The carry-respawn was not sent because its durable continuation could not be saved.',
+          }),
+        }],
+        isError: true,
+      };
+    }
     // EI-19480099650947832: read what happened to this session's PREVIOUS
     // carry-respawn BEFORE injecting this one, so the verdict describes prior
     // history rather than the request we are about to make. `respawn: true` only
@@ -835,6 +873,15 @@ export default defineTool({
       // CARRY_RESPAWN_SOCKET_TIMEOUT_MS's doc comment above.
       CARRY_RESPAWN_SOCKET_TIMEOUT_MS,
     );
+    if (!ok) {
+      // Clear only this attempt. A newer concurrent compaction request owns a
+      // different nonce and must survive this host refusal.
+      try {
+        await clearPendingCarryRespawn(identity.ownerId, pendingCarryRespawn.nonce);
+      } catch {
+        /* short expiry is the backstop if this best-effort cleanup misses */
+      }
+    }
     // EI-18676518990229124 (session-death-claim-release-2026-07-11 P-002 false
     // positive): the cut we just queued will end THIS process under the SAME
     // ownerId and relaunch it in seconds — the killed child's ordinary

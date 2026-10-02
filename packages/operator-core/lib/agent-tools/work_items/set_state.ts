@@ -16,6 +16,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { getWorkItem, setWorkItemStateWithAliasInfo, type TerminalCompletionConflict } from '../../work-items';
+import { refuseNonAgentWorkAtDoor } from '../../work-nature/agent-work-door-gate';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 // From the LEAF module, not '../../work-items': unit tests here mock that module
 // wholesale, which would make the guard `undefined` at exactly this call site.
@@ -286,6 +287,11 @@ export default defineTool({
       list,
       async (it) => {
         const harness = it.harness ?? args.harness;
+        // D-035 (WI-10005358): FIRST, before any arm/assumption/state write — a row that is not
+        // agent work by category (a record, document, event or human-audience row) is refused
+        // here exactly as the by-id claim refuses it (D-024). Typed, no agent-passable override.
+        const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:set_state', it.id, harness);
+        if (notAgentWork) return notAgentWork;
         if (String(it.state).trim().toLowerCase() === 'blocked') {
           const current = await getWorkItem(it.id, harness);
           if (current) {
