@@ -14,8 +14,12 @@ import {
   __setCachedReadEnabledForTests, getOperatorCache, resetOperatorCacheForTests,
 } from '../../cache';
 import { _refreshCacheLayerForTests } from '../../cache/instance';
+import { _refreshL2FlagForTests, getL2Store } from '../../cache/l2-tier';
+import { fireBuiltinReactionAction } from '../../events/builtin-actions';
 import { deriveAttentionCounts, deriveAttentionRefs } from '../../sync-resolver/attention-counts';
 import { cleanupPlans, seedPlan } from './__tests__/_pg-tool-fixture';
+import { readPlanBySlug } from './source';
+import { withPlanLock } from './with-plan-lock';
 import attention from './attention';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -34,12 +38,107 @@ const SOURCE_PATHS = [
   'packages/operator-core/lib/sync-resolver/attention-counts.ts',
   'packages/operator-core/lib/agent-tools/plans/attention.performance.integration.test.ts',
   'libs/flags/src/types.ts',
+  'packages/operator-core/lib/cache/cached-read.ts',
+  'packages/operator-core/lib/cache/l2-tier.ts',
+  'packages/operator-core/lib/cache/pg-l2-store.ts',
+  'packages/operator-core/lib/events/builtin-actions.ts',
+  'packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts',
+  'packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts',
 ];
 type Output = 'counts' | 'refs';
 type Arm = 'full-feed-consumer' | 'compact-consumer';
 interface ReadSample { phase: string; output: Output; ms: number; wireBytes: number; resultHash: string }
 interface Window { window: number; arm: Arm; samples: ReadSample[]; complete: boolean }
 let fx: BaselineCoordFixture;
+const pendingL2: Promise<unknown>[] = [];
+const ctx = { workspaceId: WS, harnessSlug: HARNESS, isSuperuser: true,
+  uiClientId: `su-r5-${RUN}`, metadata: vi.fn(), log: vi.fn(), progress: vi.fn() };
+
+async function settleL2() {
+  await Promise.all(pendingL2.splice(0));
+}
+async function invalidateAttention() {
+  // Exercise the actual write-bus action (L1 AND L2). Its durable delete is
+  // fire-and-forget in production; observe its completion without replacing it.
+  expect(await fireBuiltinReactionAction('cache.bumpTags', { tags: ['harness_plans'] }, WS)).toEqual({ ok: true });
+  await settleL2();
+}
+async function writeFirstItem(done: boolean) {
+  const result = await runWithWorkspace(WS, () => withPlanLock(ctx, {
+    workspaceId: WS, harnessSlug: HARNESS, slug: 'r5-plan-0', intent: 'R-5 private fixture content write',
+  }, async () => ({ newBody: body('r5-plan-0', done), value: null })));
+  expect(result.kind).toBe('applied');
+}
+function population() {
+  const refs = new Set(Array.from({ length: PLAN_COUNT }, (_, n) =>
+    Array.from({ length: ITEMS_PER_PLAN }, (_, i) => `plan-item:r5-plan-${n}:P-${String(i + 1).padStart(3, '0')}`)).flat());
+  const registryRefs = [...DARK_FLAGS].filter(([, entry]) => DARK_FLAGS_OWNER_CASES.has(entry.case))
+    .map(([key]) => `dark-flag-ratification:${key}`).sort();
+  for (const id of registryRefs) refs.add(id);
+  return { refs, registryRefs, counts: { decisionItems: PLAN_COUNT * ITEMS_PER_PLAN / 4 + registryRefs.length,
+    decisionPlans: PLAN_COUNT, alerts: 0, total: refs.size } };
+}
+
+async function invalidationPreflight() {
+  const expected = population();
+  const changedCounts = { ...expected.counts, decisionItems: expected.counts.decisionItems - 1, total: expected.counts.total - 1 };
+  const snapshots: Record<string, unknown>[] = [];
+  const report: Record<string, unknown> = { schemaVersion: 1, incomplete: true, sourceStart: hashes(), snapshots,
+    hypothesis: 'L1-only fixture invalidation reuses the old durable L2 value',
+    alternativeHypothesis: 'Unbumped seed version makes the production plan reader return old content' };
+  const publish = () => {
+    if (process.env.PAPERCUSP_R5_ATTENTION_INVALIDATION_REPORT) {
+      writeFileSync(process.env.PAPERCUSP_R5_ATTENTION_INVALIDATION_REPORT, JSON.stringify(report, null, 2) + '\n');
+    }
+  };
+  const counts = async (phase: string) => {
+    const result = await runWithWorkspace(WS, () => attention.handler({ output: 'counts', harnessSlug: HARNESS }, ctx as never));
+    const data = JSON.parse(JSON.stringify((result as { data: unknown }).data));
+    snapshots.push({ phase, data }); publish();
+    return data;
+  };
+  publish();
+  try {
+    await settleL2();
+    await invalidateAttention();
+    expect(await counts('baseline')).toEqual({ counts: expected.counts, degraded: false });
+    await settleL2();
+    const before = await readPlanBySlug('r5-plan-0', { workspaceId: WS, harnessSlug: HARNESS });
+    await seedPlan(fx.admin, WS, HARNESS, 'r5-plan-0', body('r5-plan-0', true));
+    const after = await readPlanBySlug('r5-plan-0', { workspaceId: WS, harnessSlug: HARNESS });
+    snapshots.push({ phase: 'direct-source-after-unversioned-seed', beforeVersion: before?.row.version,
+      afterVersion: after?.row.version, item: after?.parsed.items[0] }); publish();
+    expect(after?.row.version).toBe(before?.row.version);
+    expect(after?.parsed.items[0]?.storedStatus).toBe('done');
+    getOperatorCache().invalidateByTags(WS, ['harness_plans']);
+    expect(await counts('L1-only-negative-control')).toEqual({ counts: expected.counts, degraded: false });
+    __setCachedReadEnabledForTests(false);
+    try {
+      expect(await counts('uncached-source-control')).toEqual({ counts: changedCounts, degraded: false });
+    } finally { __setCachedReadEnabledForTests(true); }
+    await invalidateAttention();
+    expect(await counts('production-two-tier-invalidation')).toEqual({ counts: changedCounts, degraded: false });
+    const result = await runWithWorkspace(WS, () => attention.handler({ output: 'refs', harnessSlug: HARNESS }, ctx as never));
+    const refs = (result as { data: { refs: { id: string }[]; degraded: boolean } }).data;
+    expect(refs.degraded).toBe(false);
+    expect(new Set(refs.refs.map(row => row.id))).toEqual(new Set([...expected.refs].filter(id => id !== 'plan-item:r5-plan-0:P-001')));
+    await settleL2();
+    await writeFirstItem(false);
+    const restored = await readPlanBySlug('r5-plan-0', { workspaceId: WS, harnessSlug: HARNESS });
+    expect(restored?.row.version).toBe(after!.row.version + 1);
+    expect(restored?.parsed.items[0]?.storedStatus).toBe('needs-human');
+    await invalidateAttention();
+    expect(await counts('production-writer-restored')).toEqual({ counts: expected.counts, degraded: false });
+    await settleL2();
+    report.sourceEnd = hashes();
+    expect(report.sourceEnd).toEqual(report.sourceStart);
+    report.incomplete = false;
+    return report;
+  } catch (error) {
+    report.error = error instanceof Error ? error.stack : String(error);
+    throw error;
+  } finally { publish(); }
+}
 
 function body(slug: string, firstDone = false): string {
   const items = Array.from({ length: ITEMS_PER_PLAN }, (_, i) => {
@@ -72,13 +171,27 @@ beforeAll(async () => {
     const slug = `r5-plan-${i}`;
     await seedPlan(fx.admin, WS, HARNESS, slug, body(slug));
   }
-  setFlagOverridesForTest({ 'papercusp-cache-layer': true });
+  setFlagOverridesForTest({ 'papercusp-cache-layer': true, 'papercusp-cache-l2': true });
   resetOperatorCacheForTests();
   __setCachedReadEnabledForTests(true);
   await _refreshCacheLayerForTests();
+  await _refreshL2FlagForTests();
+  const store = getL2Store();
+  const set = store.set.bind(store);
+  const invalidate = store.invalidateByTags.bind(store);
+  vi.spyOn(store, 'set').mockImplementation((...args) => {
+    const pending = set(...args); pendingL2.push(pending); return pending;
+  });
+  vi.spyOn(store, 'invalidateByTags').mockImplementation((...args) => {
+    const pending = invalidate(...args); pendingL2.push(pending); return pending;
+  });
 }, 180_000);
 
 afterAll(async () => {
+  await settleL2();
+  if (fx) await getL2Store().invalidateByTags(WS, ['harness_plans']);
+  await settleL2();
+  vi.restoreAllMocks();
   resetOperatorCacheForTests();
   __setCachedReadEnabledForTests(false);
   setFlagOverridesForTest(null);
@@ -90,6 +203,7 @@ afterAll(async () => {
 });
 
 describe('R-5 real PostgreSQL attention macro', () => {
+  it('verifies both cache tiers independently before repeated measurements', invalidationPreflight, 180_000);
   it('compares semantic values without mistaking object insertion order for a result change', () => {
     expect(digest({ counts: { total: 2, alerts: 1 }, degraded: false }))
       .toBe(digest({ degraded: false, counts: { alerts: 1, total: 2 } }));
@@ -113,18 +227,10 @@ describe('R-5 real PostgreSQL attention macro', () => {
         writeFileSync(process.env.PAPERCUSP_R5_ATTENTION_REPORT, JSON.stringify(report, null, 2) + '\n');
       }
     };
-    const ctx = { workspaceId: WS, harnessSlug: HARNESS, isSuperuser: true,
-      uiClientId: `su-r5-${RUN}`, metadata: vi.fn(), log: vi.fn(), progress: vi.fn() };
-    const expectedRefs = new Set(Array.from({ length: PLAN_COUNT }, (_, n) =>
-      Array.from({ length: ITEMS_PER_PLAN }, (_, i) => `plan-item:r5-plan-${n}:P-${String(i + 1).padStart(3, '0')}`)).flat());
     // These source-code registry notices intentionally appear in every harness.
     // Freeze their exact independent IDs; never accept an unexplained count delta.
-    const registryRefs = [...DARK_FLAGS].filter(([, entry]) => DARK_FLAGS_OWNER_CASES.has(entry.case))
-      .map(([key]) => `dark-flag-ratification:${key}`).sort();
-    for (const id of registryRefs) expectedRefs.add(id);
+    const { refs: expectedRefs, registryRefs, counts: expectedCounts } = population();
     report.registryPopulation = registryRefs;
-    const expectedCounts = { decisionItems: PLAN_COUNT * ITEMS_PER_PLAN / 4 + registryRefs.length,
-      decisionPlans: PLAN_COUNT, alerts: 0, total: expectedRefs.size };
     const expected = new Map<Output, string>();
     const expectedValues = new Map<Output, unknown>();
     async function read(arm: Arm, output: Output, phase: string): Promise<ReadSample> {
@@ -168,6 +274,7 @@ describe('R-5 real PostgreSQL attention macro', () => {
     }
     publish();
     try {
+      report.invalidationPreflight = await invalidationPreflight();
       // Check both consumers before the repeated windows so population/schema
       // errors produce complete diagnostics after two reads, not after an arm.
       for (const output of ['counts', 'refs'] as const) {
@@ -209,8 +316,9 @@ describe('R-5 real PostgreSQL attention macro', () => {
 
       // Drive an actual PostgreSQL plan write, then the production tag-invalidation
       // seam used by the write bus; do not manufacture a new cache entry by reset.
-      await seedPlan(fx.admin, WS, HARNESS, 'r5-plan-0', body('r5-plan-0', true));
-      getOperatorCache().invalidateByTags(WS, ['harness_plans']);
+      await settleL2();
+      await writeFirstItem(true);
+      await invalidateAttention();
       const changed = await runWithWorkspace(WS, () => attention.handler({ output: 'counts', harnessSlug: HARNESS }, ctx as never));
       expect((changed as { data: unknown }).data).toEqual({ counts: {
         ...expectedCounts, decisionItems: expectedCounts.decisionItems - 1, total: expectedCounts.total - 1,
