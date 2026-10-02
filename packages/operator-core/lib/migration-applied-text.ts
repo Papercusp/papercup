@@ -44,7 +44,7 @@
  * is today's behavior (report the drift), never "no difference found".
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 /** The applied text, recovered from the git blob whose sha256 matches. */
@@ -77,7 +77,7 @@ export interface RecoverAppliedTextOptions {
 /**
  * A migration filename must be a bare `*.sql` leaf. Rejecting anything else
  * keeps a path traversal, a directory component, or a leading `-` (which git
- * could read as a flag) out of the argv below. `execFileSync` already runs
+ * could read as a flag) out of the argv below. `execFile` runs
  * without a shell, so this is defence in depth rather than the only guard.
  */
 function isSafeMigrationFilename(filename: string): boolean {
@@ -100,12 +100,12 @@ function isSafeMigrationFilename(filename: string): boolean {
  * `libs/papercusp` SUBMODULE, and `git -C <sqlDir>` correctly resolves that
  * submodule's own repository rather than the superproject.
  */
-export function recoverAppliedMigrationText(
+export async function recoverAppliedMigrationText(
   sqlDir: string,
   filename: string,
   recordedSha256: string,
   opts: RecoverAppliedTextOptions = {},
-): AppliedMigrationTextResult {
+): Promise<AppliedMigrationTextResult> {
   if (!isSafeMigrationFilename(filename)) {
     return { ok: false, reason: `unsafe migration filename: ${JSON.stringify(filename)}` };
   }
@@ -117,19 +117,28 @@ export function recoverAppliedMigrationText(
   const maxCommits = opts.maxCommits ?? DEFAULT_MAX_COMMITS;
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const git = (args: string[]): Buffer =>
-    execFileSync('git', ['-C', sqlDir, ...args], {
-      encoding: 'buffer',
-      timeout,
-      maxBuffer: MAX_BUFFER_BYTES,
-      // Inherit nothing, and never let git prompt for credentials.
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  const git = (args: string[]): Promise<Buffer> =>
+    new Promise<Buffer>((resolve, reject) => {
+      execFile(
+        'git',
+        ['-C', sqlDir, ...args],
+        {
+          encoding: 'buffer',
+          timeout,
+          maxBuffer: MAX_BUFFER_BYTES,
+          // Inherit nothing, and never let git prompt for credentials.
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        },
+        (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout as Buffer);
+        },
+      );
     });
 
   let commits: string[];
   try {
-    commits = git(['log', `--max-count=${maxCommits}`, '--pretty=%H', '--', `./${filename}`])
+    commits = (await git(['log', `--max-count=${maxCommits}`, '--pretty=%H', '--', `./${filename}`]))
       .toString('utf8')
       .split('\n')
       .map((s) => s.trim())
@@ -146,7 +155,7 @@ export function recoverAppliedMigrationText(
   for (const commit of commits) {
     let blob: Buffer;
     try {
-      blob = git(['show', `${commit}:./${filename}`]);
+      blob = await git(['show', `${commit}:./${filename}`]);
     } catch {
       // The path did not exist at that revision (a rename, or the commit that
       // deleted it) — not an error, just not a candidate.
