@@ -110,6 +110,11 @@ import {
 } from '../../../backend-feature-capabilities';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type SessionPortContractSummary } from '../../../session-port/types';
 import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
+import {
+  consumePendingCarryRespawn,
+  restorePendingCarryRespawn,
+  type PendingCarryRespawn,
+} from '../../../session-brief';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
 import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
@@ -2257,6 +2262,8 @@ export const bootstrapSu = defineTool({
     // durable idempotency surface for every launch path.
     let bootstrapClaimWon = false;
     let bootstrapCompleted = false;
+    let pendingCarryRespawnForBootstrap: PendingCarryRespawn | null = null;
+    let pendingCarryRespawnOwnerId: string | null = null;
     // EI-21365235532676472 recurrence: the bootstrap route records/adopts its
     // adv_sessions row BEFORE several later fallible artifact/presence writes.
     // If one of those throws, a same-key client replay is safe only after that
@@ -2423,6 +2430,24 @@ export const bootstrapSu = defineTool({
     // the false "not started by psu" path). omp's native handle is the
     // omp_thread_id (linked post-launch); codex resumes via its per-session
     // CODEX_HOME and can't have its rollout id forced — so both stay null.
+    // A fresh bootstrap is the durable fallback when the host cannot reuse the
+    // existing PTY incarnation. Consume only after the caller's owner id has
+    // passed stable-identity and liveness checks; a minted launch or prepared
+    // session-port transfer must not take another launch's carry.
+    if (requestedSid != null && !sessionPortContext) {
+      pendingCarryRespawnOwnerId = sid;
+      try {
+        pendingCarryRespawnForBootstrap = await consumePendingCarryRespawn(sid);
+      } catch (error) {
+        return jsonRes({
+          status: 'error',
+          error: 'pending_carry_respawn_unavailable',
+          detail: error instanceof Error ? error.message : String(error),
+        }, 503);
+      }
+      if (!pendingCarryRespawnForBootstrap) pendingCarryRespawnOwnerId = null;
+    }
+
     const nativeSessionId = backendFeatureGuard(agent, 'forced-native-session-id').supported ? randomUUID() : null;
 
     // launch-path-argv-reconstruction (WI-1343): the exact `psu …` invocation that
@@ -2932,6 +2957,12 @@ export const bootstrapSu = defineTool({
     });
     let promptText = overlaid.promptText;
     let instructionLint = overlaid.instructionLint;
+    if (pendingCarryRespawnForBootstrap) {
+      // Append the saved system carry after normal launch overlays, then audit
+      // those final bytes and include them in the immutable launch artifact.
+      promptText += '\n\n' + pendingCarryRespawnForBootstrap.systemPromptAddendum;
+      instructionLint = lintInstructionText(promptText, 20, instructionRuntime);
+    }
     if (
       instructionLint.conflicts.length > 0 ||
       instructionLint.staleRules.length > 0 ||
@@ -3373,9 +3404,11 @@ export const bootstrapSu = defineTool({
     // --no-kickoff); the server supplies the canonical text (deriveKickoffPrompt,
     // pure + tested) — shared with plans:launch's headless kickoff via
     // ./launch-prompt, so the two never drift.
-    const kickoffPrompt = sessionPortContext
-      ? null
-      : deriveKickoffPrompt({
+    const kickoffPrompt = pendingCarryRespawnForBootstrap
+      ? pendingCarryRespawnForBootstrap.firstPrompt
+      : sessionPortContext
+        ? null
+        : deriveKickoffPrompt({
           planSlug,
           harnessSlug,
           autoMode,
@@ -3451,6 +3484,21 @@ export const bootstrapSu = defineTool({
     incompleteBootstrapSessionId = null;
     return jsonRes(result);
     } finally {
+      if (pendingCarryRespawnForBootstrap && pendingCarryRespawnOwnerId && !bootstrapCompleted) {
+        try {
+          await restorePendingCarryRespawn(
+            pendingCarryRespawnOwnerId,
+            workspace,
+            pendingCarryRespawnForBootstrap,
+          );
+        } catch (error) {
+          process.stderr.write(
+            '[bootstrap-su] pending carry-respawn restore failed for ' +
+              pendingCarryRespawnForBootstrap.nonce + ': ' +
+              (error instanceof Error ? error.message : String(error)) + '\n',
+          );
+        }
+      }
       // A validation/storage exception after winning the claim must not strand
       // an empty replay row. EI-21365235532676472 recurrence: when the exception
       // happened AFTER recordAdvSession, releasing the claim first let the
