@@ -174,6 +174,43 @@ describe('blind label collection through the injected stateless transport', () =
       expect(noCalls).not.toHaveBeenCalled();
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
+  it('recovers a legacy malformed canonical donor only with a fresh exact-prompt judge response', async () => {
+    const f = fixture();
+    try {
+      const donor = path.join(f.root, 'legacy-malformed'), out = path.join(f.root, 'recovered-legacy');
+      let failed = false;
+      const malformed: LlmCallFn = async (opts) => {
+        if (failed) throw new Error('fixture legacy boundary');
+        const result = await f.llm(opts);
+        if (JSON.parse(opts.messages[0].content).questions) {
+          failed = true;
+          const json = result.json as { votes: Array<{ a?: boolean }> };
+          delete json.votes[2].a;
+          return { ...result, json, text: JSON.stringify(json) };
+        }
+        return result;
+      };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: donor, llm: malformed, targetsPerPartition: 1 }))
+        .rejects.toThrow('legacy boundary');
+      const canonical = path.join(donor, 'memory-judge-1-0.json');
+      fs.writeFileSync(canonical, fs.readFileSync(path.join(donor, 'memory-judge-1-0-attempt-1.json')));
+      const pin = await fingerprintFile(canonical), original = JSON.parse(fs.readFileSync(canonical, 'utf8'));
+      let replacement: unknown;
+      const llm: LlmCallFn = async (opts) => {
+        replacement ??= { model: opts.model, system: opts.system, messages: opts.messages };
+        return f.llm(opts);
+      };
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1, reuseCallsFrom: donor });
+      expect(replacement).toEqual({ model: original.model, system: original.system, messages: original.messages });
+      expect(await fingerprintFile(canonical)).toEqual(pin);
+      const rejected = JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0-rejected-donor.json'), 'utf8'));
+      expect(rejected).toMatchObject({ kind: 'rejected-call', origin: pin, invocationId: original.invocationId });
+      const selected = JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0.json'), 'utf8'));
+      expect(selected.invocationId).not.toBe(original.invocationId);
+      expect(selected.origin.path).toEndWith('memory-judge-1-0-attempt-2.json');
+      expect(JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8')).memory).toHaveLength(8);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
   it('bounds malformed response attempts across same-output interruption recovery', async () => {
     const f = fixture();
     try {
@@ -189,6 +226,9 @@ describe('blind label collection through the injected stateless transport', () =
       const noCalls: LlmCallFn = vi.fn(bad);
       await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: noCalls, targetsPerPartition: 1 }))
         .rejects.toThrow(/invalid blind.*3 attempts/);
+      expect(noCalls).not.toHaveBeenCalled();
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'successor'),
+        llm: noCalls, targetsPerPartition: 1, reuseCallsFrom: out })).rejects.toThrow(/invalid blind.*3 attempts/);
       expect(noCalls).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(false);
       expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
@@ -555,7 +595,7 @@ describe('blind label collection through the injected stateless transport', () =
         expect(proofs[corpus].excluded).toHaveLength(4);
         expect(proofs[corpus].formatAbstentions).toHaveLength(2);
         expect(proofs[corpus].agreement).toBe(15 / 16);
-        const raw = JSON.parse(fs.readFileSync(path.join(out, `${corpus}-judge-1-0.json`), 'utf8'));
+        const raw = JSON.parse(fs.readFileSync(path.join(out, `${corpus}-judge-1-0-attempt-1.json`), 'utf8'));
         expect(raw.result.json.votes[0]).toMatchObject({ d: [184], a: true });
       }
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
@@ -571,7 +611,7 @@ describe('blind label collection through the injected stateless transport', () =
         return { ...result, json, text: JSON.stringify(json) };
       };
       await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('document index 999 outside');
-      expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(true);
+      expect(fs.existsSync(path.join(out, 'memory-judge-1-0-attempt-1.json'))).toBe(true);
       expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
       expect(fs.existsSync(path.join(out, 'judgments.json'))).toBe(false);
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
