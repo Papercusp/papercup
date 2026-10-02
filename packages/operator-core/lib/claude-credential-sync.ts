@@ -57,7 +57,9 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
-import { readClaudeKeychainOAuthBundle, writeClaudeKeychainOAuthBundle } from './agent-auth-detect';
+// The ASYNC Keychain helpers: this reconcile runs on the operator main thread (boot, every watch
+// kick, every 5 min), where a spawnSync of `security` blocks the whole host (WI-10005231).
+import { readClaudeKeychainOAuthBundleAsync, writeClaudeKeychainOAuthBundleAsync } from './agent-auth-detect';
 import { subscriptionRelayAllowed } from './anthropic-auth-policy';
 
 /** Upper bound on a plausible interactive-OAuth `expiresAt` distance: real
@@ -256,7 +258,7 @@ async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileResult> {
   // read returns null and this is a no-op, leaving the pure-file behaviour byte-identical.
   let keychainCandidate: Candidate | null = null;
   if (platform === 'darwin') {
-    const kc = readClaudeKeychainOAuthBundle(platform);
+    const kc = await readClaudeKeychainOAuthBundleAsync(platform);
     if (kc) {
       const json = kc.bundle as Record<string, unknown>;
       keychainCandidate = {
@@ -330,7 +332,7 @@ async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileResult> {
     try {
       const account = opts.keychainAccount ?? userInfo().username;
       const merged = { ...keychainCandidate.json, claudeAiOauth: winningBundle };
-      const ok = writeClaudeKeychainOAuthBundle(
+      const ok = await writeClaudeKeychainOAuthBundleAsync(
         keychainCandidate.keychainService!,
         account,
         JSON.stringify(merged),

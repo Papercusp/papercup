@@ -98,15 +98,17 @@ describe('admission off-thread host (WI-10005223)', () => {
     expect(viaWorkerContainment[0]).toMatchObject({ path: 'a.txt', containedInJudgedSha: true });
   }, 60_000);
 
-  it('serializes jobs: a second admission job never starts before the first finishes', async () => {
-    const [first, second] = await Promise.all([
-      runAdmissionJob({ kind: 'git', argv: ['stamp'], cwd: repo }),
-      runAdmissionJob({ kind: 'git', argv: ['stamp'], cwd: repo }),
-    ]);
-    const span = (out: string) => out.trim().split('\n').map((n) => BigInt(n));
-    const [, firstEnd] = span(first.stdout);
-    const [secondStart] = span(second.stdout);
-    expect(secondStart >= firstEnd!).toBe(true);
+  it('applies fail-fast backpressure to overlapping jobs and accepts after the current job settles', async () => {
+    const first = runAdmissionJob({ kind: 'git', argv: ['stamp'], cwd: repo });
+    await expect(runAdmissionJob({ kind: 'git', argv: ['stamp'], cwd: repo })).rejects.toMatchObject({
+      name: 'AdmissionOffthreadBusyError',
+      code: 'ADMISSION_OFFTHREAD_BUSY',
+    });
+    await expect(first).resolves.toMatchObject({ status: 0 });
+    await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
+      status: 0,
+    });
+    expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
   }, 60_000);
 
   it('rethrows a builder exception with its message and a worker-thread stack frame', async () => {

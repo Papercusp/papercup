@@ -285,7 +285,14 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
     expect(script).toContain('install -m 0755 -o root -g root -- "$CLAUDE_REAL" "$TOOLCHAIN_NEXT/bin/claude"');
     expect(script).toContain('ln -s /usr/local/bin/omp "$TOOLCHAIN_NEXT/bin/omp"');
     const section = script.slice(toolchainAt, script.indexOf('customer agent toolchain path exposes the platform agent home'));
-    expect(section).not.toContain('RELEASE_DIR/');
+    // The ONLY release-tree reads are D-031's two heavy-admission scripts, COPIED root-owned
+    // by `install` (never linked, so the customer never needs to read the release tree).
+    const releaseLines = section.split('\n').filter((line) => line.includes('RELEASE_DIR/'));
+    expect(releaseLines.length).toBeGreaterThan(0);
+    for (const line of releaseLines) {
+      expect(line).toMatch(/^\s*(if \[\[ -f "\$RELEASE_DIR\/scripts\/heavy-admission\.cjs" && -f "\$RELEASE_DIR\/scripts\/pc-heavy\.sh" \]\]; then|install -m 0\d{3} -o root -g root -- "\$RELEASE_DIR\/scripts\/(heavy-admission\.cjs|pc-heavy\.sh)" "\$TOOLCHAIN_NEXT\/lib\/heavy-admission\/[a-z.-]+")$/);
+    }
+    expect(section).not.toMatch(/ln -s[^\n]*RELEASE_DIR/);
     expect(section).toContain('chown -R -h root:root -- "$TOOLCHAIN_NEXT"');
     expect(section).toContain('die "customer agent toolchain would publish an agent credential file"');
     // Swapped in whole, never edited in place.
@@ -301,6 +308,20 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
 
     const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
     expect(syntax.status, syntax.stderr).toBe(0);
+  });
+
+  // WI-10005296 (D-031 ruling 2): the toolchain carries the heavy-job admission pair when the
+  // release has both files, inside the staged toolchain (so the credential scan and the root
+  // chown/chmod cover it), and the log says which way it went.
+  it('publishes the heavy-job admission pair into the staged toolchain only when the release carries both', () => {
+    const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+    const guard = script.indexOf('if [[ -f "$RELEASE_DIR/scripts/heavy-admission.cjs" && -f "$RELEASE_DIR/scripts/pc-heavy.sh" ]]; then');
+    expect(guard).toBeGreaterThan(script.indexOf('TOOLCHAIN_NEXT="$TOOLCHAIN_ROOT.next"'));
+    expect(guard).toBeLessThan(script.indexOf('chown -R -h root:root -- "$TOOLCHAIN_NEXT"'));
+    expect(script).toContain('"$TOOLCHAIN_NEXT/lib/heavy-admission/heavy-admission.cjs"');
+    expect(script).toContain('install -m 0755 -o root -g root -- "$RELEASE_DIR/scripts/pc-heavy.sh" "$TOOLCHAIN_NEXT/lib/heavy-admission/pc-heavy.sh"');
+    expect(script).toContain('PAPERCUSP_HEAVY_ADMISSION status=installed');
+    expect(script).toContain('PAPERCUSP_HEAVY_ADMISSION status=absent');
   });
 
   it('publishes no customer agent toolchain on a host that installs no vendor runtime', () => {

@@ -9,9 +9,11 @@
  * The builders are unchanged. This host ships each call as a plain-data job
  * (admission-jobs.ts) to ONE persistent worker thread and awaits the result:
  *
- * - **Serialized.** Jobs are FIFO-chained and the worker runs one at a time, so the builders'
- *   documented invariant ("a sync sequence cannot be interleaved with a second admission in
- *   the same process") still holds — exactly one admission job is ever in flight per process.
+ * - **Serialized with fail-fast backpressure.** The builders' documented invariant ("a sync
+ *   sequence cannot be interleaved with a second admission in the same process") is enforced
+ *   with one in-flight job. Concurrent submissions are refused with
+ *   AdmissionOffthreadBusyError rather than retained in an unbounded in-memory Promise chain;
+ *   callers can retry after the current job settles.
  * - **Persistent, idle-reaped.** Loading the worker costs ~0.6-0.75s (tsx) or a bundle parse,
  *   so one worker serves every job and is terminated after `idleMs` with nothing pending.
  * - **Inline only on LOAD failure.** If the worker cannot start (missing entry, loader error,
@@ -67,19 +69,29 @@ export interface AdmissionOffthreadStats {
 }
 
 interface Pending {
+  id: number;
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
 }
 
 interface HostState {
   config: AdmissionOffthreadConfig;
-  tail: Promise<unknown>;
+  activeJob: Promise<unknown> | null;
   worker: Worker | null;
   ready: Promise<Worker> | null;
-  pending: Map<number, Pending>;
+  pending: Pending | null;
   nextId: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
   stats: AdmissionOffthreadStats;
+}
+
+export class AdmissionOffthreadBusyError extends Error {
+  readonly code = 'ADMISSION_OFFTHREAD_BUSY';
+
+  constructor() {
+    super('an admission job is already running in this process; retry after it settles');
+    this.name = 'AdmissionOffthreadBusyError';
+  }
 }
 
 const defaultConfig = (): AdmissionOffthreadConfig => ({
@@ -103,10 +115,10 @@ const freshStats = (): AdmissionOffthreadStats => ({
 // one-admission-in-flight invariant this module exists to preserve would silently break.
 const state = pinModuleState<HostState>('@papercusp/operator-core.release.admission-offthread', () => ({
   config: defaultConfig(),
-  tail: Promise.resolve(),
+  activeJob: null,
   worker: null,
   ready: null,
-  pending: new Map(),
+  pending: null,
   nextId: 1,
   idleTimer: null,
   stats: freshStats(),
@@ -131,9 +143,9 @@ export function admissionOffthreadStats(): AdmissionOffthreadStats {
   return { ...state.stats, workerLive: state.worker !== null };
 }
 
-/** Terminate the worker and restore defaults. Waits for queued jobs to settle first. */
+/** Terminate the worker and restore defaults. Waits for the active job to settle first. */
 export async function resetAdmissionOffthread(): Promise<void> {
-  await state.tail.catch(() => undefined);
+  await state.activeJob?.catch(() => undefined);
   await terminateWorker();
   state.config = defaultConfig();
   state.stats = freshStats();
@@ -144,12 +156,15 @@ export async function resetAdmissionOffthread(): Promise<void> {
  * with exactly what it throws (name/message/stack preserved across the thread boundary).
  */
 export function runAdmissionJob<K extends AdmissionJobKind>(job: AdmissionJobOf<K>): Promise<AdmissionJobResults[K]> {
-  const run = state.tail.then(
-    () => runOne(job),
-    () => runOne(job),
-  ) as Promise<AdmissionJobResults[K]>;
-  state.tail = run.catch(() => undefined);
-  return run;
+  if (state.activeJob !== null) return Promise.reject(new AdmissionOffthreadBusyError());
+  let active!: Promise<AdmissionJobResults[K]>;
+  active = Promise.resolve()
+    .then(() => runOne(job))
+    .finally(() => {
+      if (state.activeJob === active) state.activeJob = null;
+    }) as Promise<AdmissionJobResults[K]>;
+  state.activeJob = active;
+  return active;
 }
 
 async function runOne(job: AdmissionJob): Promise<unknown> {
@@ -234,15 +249,19 @@ function ensureWorker(): Promise<Worker> {
 
 function dispatch(worker: Worker, job: AdmissionJob): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
+    if (state.pending !== null) {
+      reject(new AdmissionOffthreadBusyError());
+      return;
+    }
     const id = state.nextId++;
     clearIdle();
-    state.pending.set(id, { resolve, reject });
+    state.pending = { id, resolve, reject };
     // Keep the process alive while a job is in flight; idle workers never do.
     worker.ref();
     try {
       worker.postMessage({ id, job } satisfies AdmissionWorkerRequest);
     } catch (err) {
-      state.pending.delete(id);
+      if (state.pending?.id === id) state.pending = null;
       settleIdle(worker);
       reject(err instanceof Error ? err : new Error(String(err)));
     }
@@ -250,9 +269,9 @@ function dispatch(worker: Worker, job: AdmissionJob): Promise<unknown> {
 }
 
 function onResult(worker: Worker, message: Extract<AdmissionWorkerResponse, { type: 'result' }>): void {
-  const pending = state.pending.get(message.id);
-  if (!pending) return;
-  state.pending.delete(message.id);
+  const pending = state.pending;
+  if (!pending || pending.id !== message.id) return;
+  state.pending = null;
   settleIdle(worker);
   if (message.ok) {
     pending.resolve(message.value);
@@ -273,14 +292,15 @@ function failWorker(worker: Worker, err: Error): void {
   state.worker = null;
   state.ready = null;
   clearIdle();
-  for (const [id, pending] of state.pending) {
-    state.pending.delete(id);
+  const pending = state.pending;
+  state.pending = null;
+  if (pending) {
     pending.reject(new Error(`admission worker failed mid-job: ${err.message}`));
   }
 }
 
 function settleIdle(worker: Worker): void {
-  if (state.pending.size > 0) return;
+  if (state.pending !== null) return;
   worker.unref();
   armIdle();
 }

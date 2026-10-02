@@ -7,9 +7,20 @@
  * hosts.yml must not count as signed in.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+
+/** Run `security` without blocking the event loop. Wrapped at CALL time (not a module-level
+ *  `promisify(execFile)`), so a test that mocks node:child_process without `execFile` still
+ *  imports this module; the missing function then surfaces inside the callers' try/catch. */
+function runSecurity(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('security', args, { encoding: 'utf8', timeout: 5000 }, (error, stdout) =>
+      error ? reject(error) : resolve(String(stdout)),
+    );
+  });
+}
 
 function anyExists(paths: readonly string[]): boolean {
   return paths.some((p) => existsSync(p));
@@ -139,10 +150,59 @@ const defaultKeychainAccess: KeychainAccess = {
   },
 };
 
+/**
+ * Non-blocking `security` shim for callers on an event loop (WI-10005231). The credential
+ * reconcile runs on the operator main thread at boot, on every watch kick and every 5 min; a
+ * `spawnSync('security', …)` there blocks the whole host for the length of the Keychain call. A
+ * sync {@link KeychainAccess} fake is assignable here, because `await` accepts plain values.
+ */
+export interface KeychainAccessAsync {
+  read(service: string): Promise<string | null> | string | null;
+  write(service: string, account: string, secret: string): Promise<boolean> | boolean;
+}
+
+const defaultKeychainAccessAsync: KeychainAccessAsync = {
+  async read(service) {
+    try {
+      const stdout = await runSecurity(['find-generic-password', '-s', service, '-w']);
+      if (stdout.trim()) return stdout;
+    } catch {
+      /* security absent / ACL-blocked / non-zero exit / timeout → treated as not-found */
+    }
+    return null;
+  },
+  async write(service, account, secret) {
+    try {
+      // `-U` updates the item in place if it exists (same service+account), else creates it.
+      await runSecurity(['add-generic-password', '-U', '-s', service, '-a', account, '-w', secret]);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+
 let keychainAccess: KeychainAccess = defaultKeychainAccess;
-/** Test seam — inject a fake Keychain (or null to restore the real `security` CLI). */
+let keychainAccessAsync: KeychainAccessAsync = defaultKeychainAccessAsync;
+/** Test seam — inject a fake Keychain (or null to restore the real `security` CLI). It backs both
+ *  the sync and the async helpers. */
 export function _setClaudeKeychainAccessForTests(access: KeychainAccess | null): void {
   keychainAccess = access ?? defaultKeychainAccess;
+  keychainAccessAsync = access ?? defaultKeychainAccessAsync;
+}
+/** Test seam for the async helpers only — e.g. a fake whose reads settle on a later tick. */
+export function _setClaudeKeychainAsyncAccessForTests(access: KeychainAccessAsync | null): void {
+  keychainAccessAsync = access ?? defaultKeychainAccessAsync;
+}
+
+function parseKeychainOAuthSecret(raw: string): ClaudeKeychainOAuthBundle | null {
+  try {
+    const parsed = JSON.parse(raw.trim()) as ClaudeKeychainOAuthBundle;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch {
+    /* not JSON */
+  }
+  return null;
 }
 
 /**
@@ -162,12 +222,28 @@ export function readClaudeKeychainOAuthBundle(
   for (const service of CLAUDE_KEYCHAIN_SERVICES) {
     const raw = keychainAccess.read(service);
     if (!raw) continue;
+    const bundle = parseKeychainOAuthSecret(raw);
+    if (bundle) return { bundle, service };
+  }
+  return null;
+}
+
+/** Non-blocking {@link readClaudeKeychainOAuthBundle} for event-loop callers (the credential
+ *  reconcile). Same contract: null on any miss, never throws. */
+export async function readClaudeKeychainOAuthBundleAsync(
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ bundle: ClaudeKeychainOAuthBundle; service: string } | null> {
+  if (platform !== 'darwin') return null;
+  for (const service of CLAUDE_KEYCHAIN_SERVICES) {
+    let raw: string | null = null;
     try {
-      const parsed = JSON.parse(raw.trim()) as ClaudeKeychainOAuthBundle;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { bundle: parsed, service };
+      raw = await keychainAccessAsync.read(service);
     } catch {
-      /* not JSON — try the next service label */
+      /* a throwing shim is a miss, never a failed launch */
     }
+    if (typeof raw !== 'string' || !raw) continue;
+    const bundle = parseKeychainOAuthSecret(raw);
+    if (bundle) return { bundle, service };
   }
   return null;
 }
@@ -210,6 +286,21 @@ export function writeClaudeKeychainOAuthBundle(
 ): boolean {
   if (platform !== 'darwin') return false;
   return keychainAccess.write(service, account, bundleJson);
+}
+
+/** Non-blocking {@link writeClaudeKeychainOAuthBundle} for event-loop callers. Never throws. */
+export async function writeClaudeKeychainOAuthBundleAsync(
+  service: string,
+  account: string,
+  bundleJson: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (platform !== 'darwin') return false;
+  try {
+    return (await keychainAccessAsync.write(service, account, bundleJson)) === true;
+  } catch {
+    return false;
+  }
 }
 
 export function claudeSignedIn(): boolean {

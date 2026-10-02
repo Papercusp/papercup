@@ -35,9 +35,16 @@ export type AdmissionDb = postgres.Sql | postgres.TransactionSql;
 export type BuiltinAdmissionSourceKind = 'record' | 'chat-message' | 'chat-thread';
 export type AdmissionSourceKind = BuiltinAdmissionSourceKind | (string & {});
 
-/** Who admitted: a person promoting by hand, or a per-data-source rule. */
+/**
+ * Who admitted: a person promoting by hand, or a per-data-source rule.
+ *
+ * `actorId` is the coord identity recorded as `admitted_by`. `principalUserId` is the local
+ * user (harness_shared.users.id) behind the call, when the verb could resolve one; resolvers
+ * that check the person's visibility of the source (chat channels, P-021) read it. A person
+ * admission without it is treated as having no personal or organization visibility.
+ */
 export type Admitter =
-  | { via: 'person'; actorId: string }
+  | { via: 'person'; actorId: string; principalUserId?: string }
   | { via: 'rule'; ruleId: string; dataSourceId: string };
 
 export interface AdmissionResolveContext {

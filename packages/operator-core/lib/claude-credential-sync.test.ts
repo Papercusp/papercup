@@ -24,7 +24,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileClaudeCredentials, startClaudeCredentialSync } from './claude-credential-sync';
-import { _setClaudeKeychainAccessForTests, type KeychainAccess } from './agent-auth-detect';
+import {
+  _setClaudeKeychainAccessForTests,
+  _setClaudeKeychainAsyncAccessForTests,
+  type KeychainAccess,
+} from './agent-auth-detect';
 
 const NOW = 1_780_000_000_000;
 const HOUR = 60 * 60 * 1000;
@@ -311,6 +315,37 @@ describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
     expect(r.winner?.path).toBe(globalPath());
     expect(r.keychainWriteBack).toBeNull();
     expect(keychainWrites).toEqual([]);
+  });
+
+  // WI-10005231: the reconcile runs on the operator main thread, so its Keychain calls must go
+  // through the NON-BLOCKING helpers. This fake exists only behind the async seam and settles on a
+  // later tick: a reconcile that still used the spawnSync helpers would never consult it (and would
+  // block the host for the `security` call on a real Mac), so the seeded global would be missing.
+  it('darwin: reads and writes the Keychain through the non-blocking helpers', async () => {
+    const asyncWrites: string[] = [];
+    const later = <T>(value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), 1));
+    _setClaudeKeychainAsyncAccessForTests({
+      read: (service) => later(service === 'Claude Code-credentials' ? kcSecret(NOW + 2 * HOUR, 'kc') : null),
+      write: (service) => {
+        asyncWrites.push(service);
+        return later(true);
+      },
+    });
+    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
+
+    const r = await runMac();
+
+    expect(r.winner?.path).toBe(sessionPath('su-fresh'));
+    expect(r.keychainWriteBack).toEqual({ service: 'Claude Code-credentials', expiresAt: NOW + 8 * HOUR });
+    expect(asyncWrites).toEqual(['Claude Code-credentials']);
+  });
+
+  it('the reconcile source never calls the blocking Keychain helpers', () => {
+    const source = readFileSync(fileURLToPath(new URL('./claude-credential-sync.ts', import.meta.url)), 'utf8');
+    expect(source).toMatch(/readClaudeKeychainOAuthBundleAsync\(/);
+    expect(source).not.toMatch(/\b(?:read|write)ClaudeKeychainOAuthBundle\(/);
+    // Call shapes only: prose in comments may name the primitive it is avoiding.
+    expect(source).not.toMatch(/\b(?:spawnSync|execFileSync|execSync)\s*\(/);
   });
 });
 

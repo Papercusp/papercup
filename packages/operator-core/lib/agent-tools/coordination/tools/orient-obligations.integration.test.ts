@@ -6,6 +6,9 @@ import { resolve } from 'node:path';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { assertFact } from '../../../agent-facts/store';
 import { runWithWorkspace } from '../../../workspace-als';
+import { resetOperatorCacheForTests } from '../../../cache';
+import { getL2Store } from '../../../cache/l2-tier';
+import { seedPlan } from '../../plans/__tests__/_pg-tool-fixture';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_baseline-coord-fixture';
 import { setMode } from '../../../modes/store';
 import * as obligationReader from '../../../agent-obligation-reader';
@@ -248,13 +251,22 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     for (const line of actionLines) expect(reinjectedAfterCold).toContain(line);
   }, 90_000);
 
-  it('preserves independently seeded facts and obligation states across real source writes before R-5 timing', async () => {
+  it('preserves representative facts, worklists and exact obligation actions before matched R-5 timing', async () => {
     const dueAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
     const realAgenda = obligationReader.readAgentObligationAgenda;
+    type Arm = 'shared-portfolio' | 'independent-portfolio';
+    let arm: Arm = 'shared-portfolio';
     // Only the supported observation clock is fixed. Every provider and store
     // remains real PostgreSQL; expected values below come from the seed contract.
     vi.spyOn(obligationReader, 'readAgentObligationAgenda')
-      .mockImplementation(input => realAgenda({ ...input, now: dueAt }));
+      .mockImplementation(input => {
+        // A current-code counterfactual: use the reader's production default
+        // portfolio read instead of orient's shared promise. No fake providers.
+        const { goalPortfolio: _shared, ...otherDeps } = input.deps ?? {};
+        return realAgenda({ ...input, now: dueAt,
+          ...(arm === 'independent-portfolio' ? { deps: otherDeps } : {}),
+        });
+      });
     const sources = [
       'packages/operator-core/lib/agent-tools/coordination/tools/orient.ts',
       'packages/operator-core/lib/agent-tools/coordination/tools/orient-obligations.integration.test.ts',
@@ -263,14 +275,25 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       'packages/operator-core/lib/agent-obligations.ts',
       'packages/operator-core/lib/agent-facts/store.ts',
       'packages/operator-core/lib/goal-launch-settings.ts',
+      'packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts',
+      'packages/operator-core/lib/agent-tools/plans/plan-admission-preflight.ts',
+      'packages/operator-core/lib/cache/instance.ts',
+      'packages/operator-core/lib/cache/pg-l2-store.ts',
     ];
     const hashes = () => sources.map(path => ({ path,
       sha256: createHash('sha256').update(readFileSync(resolve(__dirname, '../../../../../..', path))).digest('hex'),
     }));
     const snapshots: unknown[] = [];
-    const report: Record<string, unknown> = { schemaVersion: 1, incomplete: true,
+    const windows: Array<{ window: number; arm: Arm; samples: Array<{ phase: string; ms: number }>; complete: boolean }> = [];
+    const report: Record<string, unknown> = { schemaVersion: 2, incomplete: true,
       sourceStart: hashes(), snapshots,
-      scope: 'Production orient handler, real GOAL providers and fact store; phase guard only, no full R-5 or shipment claim.',
+      windows,
+      workload: { plans: 8, itemsPerPlan: 128, workItems: 128, visibleFacts: 3,
+        windows: 10, warmReads: 20, concurrency: 8 },
+      scope: 'Production orient handler with real GOAL providers, plan/queue sources and fact store. Orientation only; no whole R-5 or shipment claim.',
+      baselineDefinition: 'Current production reader performs its own portfolio read instead of sharing orient\'s promise. This is a source-read counterfactual, not a historical checkout.',
+      coldDefinition: 'Reset the operator L1 and clear this fixture workspace from durable L2. PostgreSQL buffers, connections, imports and independent source caches remain warm.',
+      limitations: ['Named hashes are not the complete imported graph.', 'The initial process read is recorded separately, not erased by warmup.', 'No HTTP transport, deployed-runtime or historical-source claim.'],
     };
     const publish = () => {
       if (process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
@@ -278,6 +301,26 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       }
     };
     const key = `r5-orient-${RUN}`;
+    const slugs = Array.from({ length: 8 }, (_, n) => `${key}-plan-${n}`);
+    const refs = slugs.map(slug => `plan:papercusp/${slug}`);
+    const seedPopulation = async () => {
+      for (const slug of slugs) {
+        const body = `---\ntitle: ${slug}\nstatus: draft\n---\n\n## Work\n` +
+          Array.from({ length: 128 }, (_, n) => `- **P-${String(n + 1).padStart(3, '0')}** \`todo\` Representative orientation item ${n}`).join('\n');
+        await seedPlan(fx.admin, WS, 'papercusp', slug, body);
+        await fx.admin`UPDATE harness_shared.harness_plans SET title = ${slug}, status = 'draft', goal_id = ${GOAL}
+          WHERE workspace_id = ${WS} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`;
+        await fx.admin`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, status, item_text)
+          SELECT ${WS}, 'papercusp', ${slug}, 'P-' || lpad(n::text, 3, '0'), n, 'todo', 'Representative orientation item ' || n
+          FROM generate_series(1, 128) n`;
+      }
+      await fx.admin`UPDATE harness_shared.goals SET properties = jsonb_set(COALESCE(properties, '{}'::jsonb), '{worklist}',
+        ${fx.admin.json({ value: refs })}::jsonb, true) WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      await fx.admin`INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, status, item_kind, goal_id)
+        SELECT ${WS}, 'papercusp', ${key} || '-WI-' || n, 'Representative goal queue item ' || n,
+          (ARRAY['open','blocked','done','needs-human'])[1 + (n % 4)], 'task', ${GOAL}
+        FROM generate_series(1, 128) n`;
+    };
     const fact = async (scope: 'owner' | 'harness', factKey: string, body: string, audienceScope?: string) => {
       const receipt = await assertFact({ workspaceId: WS, scope,
         scopeRef: scope === 'owner' ? OWNER : 'papercusp', key: factKey, body,
@@ -291,7 +334,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       { scope: 'owner', ref: OWNER, body: `R-5 owner guard rail ${key}` },
       { scope: 'harness', ref: 'papercusp', body: `R-5 harness fact ${key}` },
     ].sort((a, b) => a.body.localeCompare(b.body));
-    const read = async (phase: string, changed = false, paused = false) => {
+    const read = async (phase: string, changed = false, paused = false, record = true) => {
       const start = performance.now();
       const data = await readOrientation({ mode: 'full' });
       const ms = performance.now() - start;
@@ -299,27 +342,68 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
         .sort((a, b) => a.body.localeCompare(b.body));
       const states = data.obligations?.evaluations.map(row => ({ ruleId: row.ruleId, status: row.status }))
         .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
-      snapshots.push({ phase, ms, facts, states, primary: data.obligations?.primary.map(row => row.ruleId) });
-      publish();
+      if (record) {
+        snapshots.push({ phase, arm, ms, facts, states, obligations: data.obligations,
+          worklist: data.goalPortfolio?.worklist, queue: data.goalPortfolio?.queue });
+        publish();
+      }
       expect(data.factsNarrowed).toBeUndefined();
       expect(facts).toEqual(expectedFacts(changed));
       expect(data.goalPortfolio?.goal.id).toBe(GOAL);
       expect(data.goalPortfolio?.goal.status).toBe(paused ? 'paused' : 'active');
-      expect(data.goalPortfolio?.worklist).toEqual([]);
+      expect(data.goalPortfolio?.worklist.map(row => row.ref)).toEqual(refs);
+      for (const [n, plan] of data.goalPortfolio!.worklist.entries()) {
+        expect(plan).toMatchObject({ ordinal: n + 1, harness: 'papercusp', slug: slugs[n], title: slugs[n], status: 'draft',
+          counts: { todo: 128, wip: 0, blocked: 0, needsHuman: 0, done: 0 },
+          next: { id: 'P-001', blockedBy: [] } });
+      }
+      expect(data.goalPortfolio?.queue).toMatchObject({ total: 128, terminal: 32, inFlight: 0, blocked: 32, needsHuman: 32 });
       expect(states).toEqual([
         { ruleId: 'goal-owner-report', status: paused ? 'not-applicable' : 'due' },
-        { ruleId: 'goal-plan-placement', status: 'not-applicable' },
+        { ruleId: 'goal-plan-placement', status: paused ? 'not-applicable' : 'blocked' },
         { ruleId: 'goal-planning-needed', status: paused ? 'not-applicable' : 'due' },
         { ruleId: 'owner-directive-disposition', status: 'not-applicable' },
         { ruleId: 'waiting-on-progress', status: 'not-applicable' },
       ].sort((a, b) => a.ruleId.localeCompare(b.ruleId)));
       expect(data.obligations.evaluations.every(row => row.scope.workspaceId === WS && row.scope.ownerId === OWNER)).toBe(true);
       expect(data.obligations.primary.map(row => row.ruleId).sort())
-        .toEqual(paused ? [] : ['goal-owner-report', 'goal-planning-needed']);
+        .toEqual(paused ? [] : ['goal-owner-report', 'goal-plan-placement', 'goal-planning-needed']);
+      const byRule = new Map(data.obligations.evaluations.map(row => [row.ruleId, row]));
+      for (const row of data.obligations.evaluations) {
+        expect(row.responsibleOwnerId).toBe(OWNER);
+        expect(row.measurementFailure).toBeUndefined();
+        expect(row.sourceGeneration).toBeTruthy();
+        expect(row.id).toMatch(/^obl:/);
+        expect(row.evidence.every(e => !!e.ref && !!e.observedAt)).toBe(true);
+      }
+      expect(byRule.get('goal-owner-report')).toMatchObject({
+        authority: { kind: 'policy', sourceRef: 'system-health/goal-owner-report-watchdog' },
+        clearsWhen: { evidenceKind: 'delivery', sourceRef: 'makeReadGoalModeOwners:three-source-report-union' },
+      });
+      expect(byRule.get('goal-plan-placement')).toMatchObject({
+        authority: { kind: 'policy', sourceRef: 'goal-launch-settings+system-health/goal-drain-fleet-watchdog' },
+        clearsWhen: { sourceRef: 'GoalPortfolioBrief.worklist[].placement+resolvePlanClosure+resolveGoalLaunch+classifyGoalPlanFleetCoverage' },
+      });
+      expect(byRule.get('goal-planning-needed')).toMatchObject({
+        authority: { kind: 'policy', sourceRef: 'modes/registry:goal+scout_ticks.goalReview' },
+        clearsWhen: { sourceRef: 'scout_ticks.detail.goalReview+GoalPortfolioBrief' },
+      });
+      if (!paused) {
+        expect(byRule.get('goal-owner-report')?.action).toEqual({ kind: 'report',
+          summary: 'send MOVED / COST / OWNER-WALLED / KILLED on a canonical owner-facing rail now', tool: 'coord:send', args: { to: ['human'] } });
+        expect(byRule.get('goal-owner-report')?.evidence.map(row => row.ref)).toEqual([`goal-owner-report:${GOAL}:baseline`]);
+        expect(byRule.get('goal-plan-placement')?.action).toEqual({ kind: 'repair', targetRef: refs[0],
+          summary: 'run the existing plans:start promotion path after its normal review and approval gates, then recheck admission' });
+        expect(byRule.get('goal-planning-needed')?.action).toEqual({ kind: 'inspect', targetRef: `goal:${GOAL}`, recoveryRef: 'coord:orient',
+          summary: 'Review uncovered goal outcomes; staff executable plans first, then record a supported planning disposition.' });
+      } else {
+        for (const rule of ['goal-owner-report', 'goal-plan-placement', 'goal-planning-needed']) expect(byRule.get(rule)?.action).toBeUndefined();
+      }
       return ms;
     };
     publish();
     try {
+      await seedPopulation();
       await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
       await fact('owner', `guard-rail:${key}`, `R-5 owner guard rail ${key}`);
       await fact('harness', key, `R-5 harness fact ${key}`);
@@ -329,6 +413,40 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       await read('fact-write-guard', true);
       await fx.admin`UPDATE harness_shared.goals SET status = 'paused' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
       await read('goal-stop-guard', true, true);
+      await fx.admin`UPDATE harness_shared.goals SET status = 'active' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      arm = 'independent-portfolio';
+      await read('independent-source-guard', true);
+      report.phaseGuardsPassed = true;
+      const cold = async () => {
+        resetOperatorCacheForTests();
+        await getL2Store().clearWorkspace(WS);
+      };
+      for (let window = 0; window < 10; window++) {
+        const arms: Arm[] = window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
+        for (const nextArm of arms) {
+          arm = nextArm;
+          const row = { window, arm, samples: [] as Array<{ phase: string; ms: number }>, complete: false };
+          windows.push(row); publish();
+          await cold();
+          row.samples.push({ phase: 'cold', ms: await read('cold', true, false, false) });
+          for (let i = 0; i < 20; i++) row.samples.push({ phase: 'warm', ms: await read('warm', true, false, false) });
+          row.samples.push(...await Promise.all(Array.from({ length: 8 }, async () => ({ phase: 'warm-concurrent', ms: await read('warm-concurrent', true, false, false) }))));
+          await cold();
+          row.samples.push(...await Promise.all(Array.from({ length: 8 }, async () => ({ phase: 'cold-concurrent', ms: await read('cold-concurrent', true, false, false) }))));
+          row.complete = true; publish();
+        }
+      }
+      const summary = (['shared-portfolio', 'independent-portfolio'] as Arm[]).map(value => ({ arm: value,
+        phases: Object.fromEntries(['cold', 'warm', 'warm-concurrent', 'cold-concurrent'].map(phase => {
+          const times = windows.filter(row => row.arm === value).flatMap(row => row.samples).filter(s => s.phase === phase).map(s => s.ms).sort((a, b) => a - b);
+          return [phase, { reads: times.length, p95Ms: times[Math.ceil(times.length * .95) - 1], maxMs: times.at(-1) }];
+        })),
+      }));
+      report.summary = summary;
+      for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
+      await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
+      arm = 'shared-portfolio';
+      await read('final-fact-write-guard');
       report.sourceEnd = hashes();
       expect(report.sourceEnd).toEqual(report.sourceStart);
       report.incomplete = false;
@@ -339,8 +457,13 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       publish();
       await fx.admin`UPDATE harness_shared.goals SET status = 'active' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
       await fx.admin`DELETE FROM harness_shared.agent_facts WHERE created_by = ${OWNER} AND key IN (${key}, ${`guard-rail:${key}`}, ${`hidden-${key}`})`;
+      await fx.admin`UPDATE harness_shared.goals SET properties = COALESCE(properties, '{}'::jsonb) - 'worklist' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND goal_id = ${GOAL}`;
+      await fx.admin`DELETE FROM harness_shared.plan_items WHERE workspace_id = ${WS} AND plan_slug = ANY(${slugs})`;
+      for (const slug of slugs) await fx.admin`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`;
+      resetOperatorCacheForTests();
     }
-  }, 180_000);
+  }, 600_000);
 
   it('returns the canonical full agenda from the production handler', async () => {
     // Observe the real read without replacing it. A second read can legitimately

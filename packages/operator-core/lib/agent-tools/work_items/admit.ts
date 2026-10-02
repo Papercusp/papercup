@@ -17,6 +17,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { getSessionUserOrDefault } from '../../auth';
 import { ADMITTED_KINDS, admitWorkItem, writeBackAdmission } from '../../work-admission/admit';
 import { listAdmissionSourceKinds } from '../../work-admission/admission-sources';
 import {
@@ -127,11 +128,19 @@ async function runAdmitOp(args: AdmitToolArgs, ctx: AdmitToolCtx) {
         if (!args.harness) return need('harness');
         if (!args.source) return need('source');
         const ident = resolveAgentIdentity(ctx);
+        // The local user behind the call, for resolvers that check the person's visibility of
+        // the source (chat channels). Best-effort: without it the person has no personal or
+        // organization visibility, so such a resolver refuses rather than over-grants.
+        const user = await getSessionUserOrDefault().catch(() => null);
         const result = await admitWorkItem({
           workspaceId,
           harness: args.harness,
           source: args.source,
-          admitter: { via: 'person', actorId: ident.ownerId },
+          admitter: {
+            via: 'person',
+            actorId: ident.ownerId,
+            ...(user?.id ? { principalUserId: user.id } : {}),
+          },
           title: args.title,
           kind: args.kind,
         });
