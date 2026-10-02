@@ -28,8 +28,11 @@ describe('shouldCaptureStallProfile', () => {
     expect(shouldCaptureStallProfile({ ...base, cpuKind: 'partial' }, cfg)).toBe(true);
   });
 
-  it('never captures a parked or unknown thread: the inspector is not serviced in a syscall', () => {
-    expect(shouldCaptureStallProfile({ ...base, cpuKind: 'parked' }, cfg)).toBe(false);
+  it('probes a parked thread too: low CPU cannot distinguish idle from a native wait', () => {
+    expect(shouldCaptureStallProfile({ ...base, cpuKind: 'parked' }, cfg)).toBe(true);
+  });
+
+  it('never captures an unknown thread without a trustworthy CPU baseline', () => {
     expect(shouldCaptureStallProfile({ ...base, cpuKind: 'unknown' }, cfg)).toBe(false);
   });
 
