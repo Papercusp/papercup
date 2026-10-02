@@ -2847,6 +2847,52 @@
     },
     "next": "Verify clean committed test provenance; prove the four one-to-one scenario pairs using maintained controls. Both test-file changes require renewal of earlier P003 test bindings before any new current governing PASS claim. Preserve old binding17381 until selected replacement PASS and exact identity read; retain historical ledgers, D003 baseline, D013 real-goal FAIL and D016 history. No unchanged source-test rerun solely to reconstruct old receipts."
   },
+  "p003WindowSelectedFire192": {
+    "recordedAt": "2026-10-02T14:15:00Z",
+    "scope": "Eight selected WINDOW@3 bindings PASS and server-measured CURRENT on staging a27db452a1. Governing WINDOW, prior P003 renewal, whole-plan census and final acceptance remain open.",
+    "specId": "WOE-P003-WINDOW",
+    "specRevision": 3,
+    "specFingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+    "reuse": "Fire191 maintained unit and real-PG extensions were already present. Fire192 verified their committed f95526ac2645dec341571e13fdb0d4b00888e214 bytes using lint:as-committed and the existing dedicated native-PG helper. No production source change, parallel harness, shared restart or gate action.",
+    "cleanUnit": {
+      "testRunId": 20534705,
+      "result": "23 PASS, 0 skipped, exit 0, worktreeDirty=false, isScratchConfig=false",
+      "log": "/tmp/p006-fire192-window-clean-unit.log",
+      "cloneRoot": "/tmp/papercusp-lint-as-committed-f95526ac26-vOPePc"
+    },
+    "cleanIntegration": {
+      "testRunId": 20534918,
+      "result": "44 PASS, 0 skipped, exit 0, worktreeDirty=false, isScratchConfig=false",
+      "log": "/tmp/p006-fire192-window-clean-pg.log",
+      "summary": "/tmp/p006-fire192-window-clean-pg-summary.json",
+      "dataDir": "/tmp/papercusp-native-pg-wVqaLq",
+      "port": 43403,
+      "dataDirRemoved": true,
+      "portClosed": true
+    },
+    "causalPairs": {
+      "declared-window": { "negativeRun": 20536593, "negativeBinding": 21852, "repairedRun": 20534705, "repairedBinding": 21851, "observation": "Replacing the clock-derived lower bound with zero makes the observed three SQL parameter lists differ from 6400000. Independent CALIBRATION passes." },
+      "lifetime-fallback": { "negativeRun": 20535955, "negativeBinding": 21853, "repairedRun": 20534705, "repairedBinding": 21857, "observation": "Defaulting a null window to 3600 makes the null-window assertion fail. Independent CALIBRATION passes." },
+      "display-admission-breach-parity": { "negativeRun": 20536599, "negativeBinding": 21854, "repairedRun": 20534918, "repairedBinding": 21856, "observation": "Forcing lifetime measurement at launch refuses the 50-cent in-window goal because of 500 older cents. Independent partition calibration passes; clean full run also covers the 200-cent ceiling and pause." },
+      "pre-creation-excluded": { "negativeRun": 20537877, "negativeBinding": 21855, "repairedRun": 20534918, "repairedBinding": 21858, "observation": "Removing only the lineage creation-time clamp bills 10105 instead of 105 cents. Independent partition calibration passes." }
+    },
+    "controls": {
+      "unit": "Each baseline and unmutated copy: 2 PASS, 21 filtered skips. Each mutant: 1 intended FAIL, 1 calibration PASS, 21 filtered skips. Overlay caught; source byte-identical.",
+      "integration": "Each baseline and unmutated copy: 2 PASS, 42 filtered skips. Each mutant: 1 intended FAIL, 1 calibration PASS, 42 filtered skips. Overlay caught; source byte-identical; private cluster cleanup verified.",
+      "logs": ["/tmp/p006-fire192-window-declared-r2-control.log", "/tmp/p006-fire192-window-lifetime-r2-control.log", "/tmp/p006-fire192-window-parity-control.log", "/tmp/p006-fire192-window-precreation-r2-control.log"],
+      "summaries": ["/tmp/p006-fire192-window-parity-summary.json", "/tmp/p006-fire192-window-precreation-r2-summary.json"]
+    },
+    "retainedHarnessLimits": {
+      "firstDeclared": "Caught with 1 selected assertion but no calibration due lowercase filter; retained and not bound. Corrected calibrated run is the accepted negative.",
+      "firstLifetime": "Case-sensitive and overescaped filter selected zero tests; baseline exit 2, no mutant verdict. Retained, not bound.",
+      "firstPreCreation": "Multiline Perl -pe mutation changed nothing and was refused before testing; private HQ7uti/33819 removed and closed. Corrected BEGIN undef $/ expression was preflighted read-only: exactly one lineage clause changed before allocating another cluster.",
+      "bindingEndpoint": "Default tools endpoint refused all six clean-clone ledger mappings with test_run_file_outside_root. Same exact run IDs succeeded through the sanctioned staging :3170 mcp-call route. No tests were rerun to repair binding metadata; no code-cause claim inferred from the endpoint difference."
+    },
+    "selected": { "bindingIds": [21851,21852,21853,21854,21855,21856,21857,21858], "verdict": "PASS", "governing": false, "requiredProofFloor": "l3", "wouldBlock": [], "evaluatorBuild": { "sha": "a27db452a1", "version": "0.0.0" }, "receipt": "/tmp/p006-fire192-window-selected.json" },
+    "currentness": "Eight replacements server-measured CURRENT, exactly one negative and one recurrence per scenario and one causalPairId per binding. Exact old binding17381 remains source/test-stale and has not been withdrawn.",
+    "receipts": ["/tmp/p006-fire192-window-staging-unit-bind.json", "/tmp/p006-fire192-window-staging-five-bind.json", "/tmp/p006-fire192-window-derived-positives.json", "/tmp/p006-fire192-window-lifetime-fallback-positive-bind.json", "/tmp/p006-fire192-window-pre-creation-excluded-positive-bind.json", "/tmp/p006-fire192-window-current-eight.json"],
+    "next": "Re-read current eight replacement identities and old17381; selected PASS is saved. Withdraw only17381, preserving historical20323411 and D003/D013FAIL/D014/D016. Then run unfiltered governing WINDOW. Renew earlier NUMERATOR and MEASURED-ADMISSION bindings because both test files changed before a new whole-plan current census."
+  },
   "p003NumeratorFire188": {
     "recordedAt": "2026-10-02T13:29:00Z",
     "scope": "NUMERATOR@3 now governs PASS on the current staging evaluator. P006, independent rubric ratification, real-goal acceptance, closure audit and shipment remain open.",
