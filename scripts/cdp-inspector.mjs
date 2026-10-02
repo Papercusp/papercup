@@ -92,7 +92,9 @@ export async function readProcessMemory(client, { expectedPid } = {}) {
  * budgets are divided among remaining roots; enumeration can overrun time.
  * Opt-in operator-cache attribution visits each L1 value at depth zero with
  * fair per-value quotas. Keys leave the target only as bounded SHA-256 digests
- * and validated tool namespaces; shared values count at their first entry.
+ * and validated tool namespaces or known direct-writer families; shared values
+ * count at their first entry. A writer family identifies a key contract, not
+ * an allocation stack or exclusive retained ownership.
  * Offset pages use current insertion order, not a stable multi-read snapshot.
  * Digest selection and skipped page edges consume the same global work budget.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
@@ -276,12 +278,20 @@ export async function readPinnedState(client, {
             const nul = boundedKey ? key.indexOf('\u0000') : -1;
             const pipe = nul > 0 ? key.indexOf('|', nul + 1) : -1;
             const namespace = pipe > nul + 1 && pipe - nul <= 121 ? key.slice(nul + 1, pipe) : null;
-            const validNamespace = namespace !== null && /^[a-z][a-z0-9_.-]*:[a-z][a-z0-9_.-]*$/.test(namespace);
+            const validNamespace = namespace !== null && !namespace.startsWith('jev-memory:') &&
+              /^[a-z][a-z0-9_.-]*:[a-z][a-z0-9_.-]*$/.test(namespace);
+            // jevMemoryCacheKey writes directly through the operator Cache rather
+            // than cachedRead: workspace + NUL + jev-memory:<SHA256>. Validate the
+            // entire writer suffix; never return its digest or conversation data.
+            const directKey = nul > 0 ? key.slice(nul + 1) : null;
+            const jevWriter = directKey !== null && directKey.length === 75 &&
+              /^jev-memory:[a-f0-9]{64}$/.test(directKey);
             const metadata = { keyDigest: digest,
               keyDigestUnavailable: boundedKey ? null : keyString ? 'key-length-limit' : 'non-string-key',
               keyCodeUnits: keyString ? key.length : null,
-              keyFormat: validNamespace ? 'workspace-nul-tool-pipe' : 'unknown',
-              toolNamespace: validNamespace ? namespace : null, quota: valueQuota,
+              keyFormat: validNamespace ? 'workspace-nul-tool-pipe' : jevWriter ? 'workspace-nul-jev-memory-sha256' : 'unknown',
+              toolNamespace: validNamespace ? namespace : null,
+              cacheOwner: validNamespace ? namespace : jevWriter ? 'jev-memory' : null, quota: valueQuota,
               softExpiry: 'unknown', hardExpiry: 'unknown', valueStatus: 'missing' };
             if (wrapper && typeof wrapper === 'object' && !types.isProxy(wrapper)) {
               for (const [field, target] of [['softExpiresAt', 'softExpiry'], ['hardExpiresAt', 'hardExpiry']]) {

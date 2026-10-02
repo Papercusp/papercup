@@ -22,7 +22,9 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * budgets are divided among remaining roots; enumeration can overrun time.
  * Opt-in operator-cache attribution visits each L1 value at depth zero with
  * fair per-value quotas. Keys leave the target only as bounded SHA-256 digests
- * and validated tool namespaces; shared values count at their first entry.
+ * and validated tool namespaces or known direct-writer families; shared values
+ * count at their first entry. A writer family identifies a key contract, not
+ * an allocation stack or exclusive retained ownership.
  * Offset pages use current insertion order, not a stable multi-read snapshot.
  * Digest selection and skipped page edges consume the same global work budget.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
