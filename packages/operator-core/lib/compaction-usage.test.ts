@@ -189,9 +189,88 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
         JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: null } }),
       ].join('\n') + '\n',
     );
-    expect(codexContextSnapshotFromRollout(rollout)).toEqual({
+    expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
       tokens: 40_321,
       modelContextWindow: 258_400,
+    });
+  });
+
+  // WI-10005305: the sweep asks for the same rollout twice per pass (tokens, then
+  // window) and again every pass; an unchanged rollout must not be re-read.
+  describe('rollout snapshot memo (WI-10005305)', () => {
+    const tokenLine = (tokens: number) =>
+      `${JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: { last_token_usage: { total_tokens: tokens }, model_context_window: 258_400 },
+        },
+      })}\n`;
+    const countingOps = () => {
+      const open = vi.fn((p: fs.PathLike, flags?: string | number) => fs.promises.open(p, flags));
+      return { ops: { stat: fs.promises.stat, open } as Pick<typeof fs.promises, 'stat' | 'open'>, open };
+    };
+
+    it('reads an unchanged rollout once and serves the repeat from the memo', async () => {
+      const p = join(dir, 'memo-unchanged.jsonl');
+      writeFileSync(p, tokenLine(111_111));
+      const { ops, open } = countingOps();
+      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400 });
+      expect(await codexContextSnapshotFromRollout(p, ops)).toEqual({ tokens: 111_111, modelContextWindow: 258_400 });
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-reads after a new token_count event is appended', async () => {
+      const p = join(dir, 'memo-append.jsonl');
+      writeFileSync(p, tokenLine(111_111));
+      const { ops, open } = countingOps();
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(111_111);
+      appendFileSync(p, tokenLine(150_000));
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(150_000);
+      expect(open).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-reads a rollout replaced by rename even when size and mtime match', async () => {
+      const p = join(dir, 'memo-replaced.jsonl');
+      const fixedTime = new Date('2026-10-02T05:00:00Z');
+      writeFileSync(p, tokenLine(111_111));
+      utimesSync(p, fixedTime, fixedTime);
+      const { ops, open } = countingOps();
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(111_111);
+
+      const staged = join(dir, 'memo-replaced.staged');
+      writeFileSync(staged, tokenLine(222_222)); // same byte length as 111_111
+      utimesSync(staged, fixedTime, fixedTime);
+      const before = statSync(p);
+      fs.renameSync(staged, p);
+      const after = statSync(p);
+      // Only the inode differs, so this pins the ino component of the memo key.
+      expect(after.size).toBe(before.size);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(after.ino).not.toBe(before.ino);
+
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(222_222);
+      expect(open).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not remember a failed read', async () => {
+      const p = join(dir, 'memo-failed-read.jsonl');
+      writeFileSync(p, tokenLine(111_111));
+      const failing = {
+        stat: fs.promises.stat,
+        open: vi.fn(async () => {
+          throw Object.assign(new Error('EIO'), { code: 'EIO' });
+        }),
+      } as unknown as Pick<typeof fs.promises, 'stat' | 'open'>;
+      expect(await codexContextSnapshotFromRollout(p, failing)).toBeNull();
+
+      const { ops, open } = countingOps();
+      expect((await codexContextSnapshotFromRollout(p, ops))?.tokens).toBe(111_111);
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null for a missing rollout', async () => {
+      expect(await codexContextSnapshotFromRollout(join(dir, 'memo-missing.jsonl'))).toBeNull();
     });
   });
 

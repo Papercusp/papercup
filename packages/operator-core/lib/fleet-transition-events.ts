@@ -67,6 +67,7 @@
 
 import { emitAwaitedEvent } from './events/await/engine';
 import type { ContextPressureBucket } from './agent-tools/coordination/context-pressure';
+import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import type { WorkItem } from './work-items';
 
 /** The transition families this module publishes, as they appear in the key. */
@@ -834,17 +835,24 @@ export function emitFleetAdmissionTransitionEdge(
  */
 export function emitFleetClaimReleasedEvent(
   fleetSlug: string | null | undefined,
-  item: { id: string; title?: string | null; harness?: string | null },
+  item: {
+    id: string;
+    title?: string | null;
+    harness?: string | null;
+    state?: string | null;
+    sourcePlanSlug?: string | null;
+  },
   priorAssignee: string | null,
   deps: FleetTransitionEventsDeps = {},
 ): void {
   if (!fleetSlug) return;
   const emit = deps.emit ?? emitAwaitedEvent;
+  const disposition = claimReleasedDisposition(item.state);
   void Promise.resolve()
     .then(() =>
       emit({
         key: fleetTransitionKey(fleetSlug, 'claim-released'),
-        summary: `fleet ${fleetSlug}: ${item.id} released by ${priorAssignee ?? 'unknown'} — back to the pool`,
+        summary: claimReleasedSummary(fleetSlug, item, priorAssignee, disposition),
         payload: {
           fleetSlug,
           transition: 'claim-released',
@@ -852,11 +860,73 @@ export function emitFleetClaimReleasedEvent(
           title: item.title ?? null,
           harness: item.harness ?? null,
           priorAssignee,
+          // EI-23773284013147023: the leader reads this payload to decide whether to
+          // re-place the item. Without the item's STATE the only recommendation a
+          // leader could take from "released" was "re-place it" — which is exactly
+          // wrong for an item released while BLOCKED (a deliberate hygiene release
+          // that a recorded blocker or plan Decision may forbid rebuilding).
+          state: item.state ?? null,
+          disposition,
+          sourcePlanSlug: item.sourcePlanSlug ?? null,
         },
         source: 'fleet',
       }),
     )
     .catch((e: unknown) => failSoft(`claim-released for ${fleetSlug}/${item.id}`, e));
+}
+
+/**
+ * What a leader should DO with a just-released item, decided from its state AT
+ * RELEASE (EI-23773284013147023):
+ *  - `replaceable`      — claimable again (`open`/`failing`, the scheduler's own
+ *                         CLAIM_STATES_ALLOWLIST): genuinely re-placeable work.
+ *  - `held`             — released while `blocked`/`needs-human`: the release stopped the
+ *                         item reading as held, it did NOT make the work available.
+ *                         Re-placing it can contradict a recorded blocker or a plan
+ *                         Decision the leader never saw.
+ *  - `not-replaceable`  — any other state (settled, wip, …): not claimable from the pool.
+ *  - `unknown`          — the caller supplied no state; the old "back to the pool"
+ *                         wording is kept rather than guessing a disposition.
+ * Single-sourced on CLAIM_STATES_ALLOWLIST so "replaceable" cannot drift from what
+ * `scheduler:get_next` will actually hand out.
+ */
+export type ClaimReleasedDisposition = 'replaceable' | 'held' | 'not-replaceable' | 'unknown';
+
+const HELD_RELEASE_STATES: ReadonlySet<string> = new Set(['blocked', 'needs-human']);
+
+export function claimReleasedDisposition(state: string | null | undefined): ClaimReleasedDisposition {
+  if (typeof state !== 'string' || state.trim().length === 0) return 'unknown';
+  if ((CLAIM_STATES_ALLOWLIST as readonly string[]).includes(state)) return 'replaceable';
+  if (HELD_RELEASE_STATES.has(state)) return 'held';
+  return 'not-replaceable';
+}
+
+/** The leader-facing one-liner. The FIRST clause carries the verdict, so a leader
+ *  skimming only the head of the wake cannot read a blocked release as free work. */
+function claimReleasedSummary(
+  fleetSlug: string,
+  item: { id: string; state?: string | null; sourcePlanSlug?: string | null },
+  priorAssignee: string | null,
+  disposition: ClaimReleasedDisposition,
+): string {
+  const by = priorAssignee ?? 'unknown';
+  switch (disposition) {
+    case 'held': {
+      const plan = item.sourcePlanSlug ? ` and plan ${item.sourcePlanSlug}'s Decisions` : '';
+      return (
+        `fleet ${fleetSlug}: ${item.id} released by ${by} while ${item.state} — NOT re-placeable work: ` +
+        `released for hygiene, do NOT re-place it; read its checkpoint/blocker${plan} first`
+      );
+    }
+    case 'not-replaceable':
+      return (
+        `fleet ${fleetSlug}: ${item.id} released by ${by} in state ${item.state} — not claimable from the pool; ` +
+        `read work_items:get before re-placing`
+      );
+    case 'replaceable':
+    case 'unknown':
+      return `fleet ${fleetSlug}: ${item.id} released by ${by} — back to the pool`;
+  }
 }
 
 /**

@@ -238,6 +238,78 @@ describe('code_recipes store (real PG)', () => {
     expect(parseInt(runRows[0].count, 10)).toBe(2);
   });
 
+  it('revises a runtime-input contract atomically with the source under the same compare-and-swap', async () => {
+    const initial = await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'contract-revision',
+      title: 'Contract revision',
+      description: 'bind an invocation-scoped work item id',
+      script: 'return await tools.state.read({ cell: "old" });',
+    });
+    await recordRecipeRun(db.adminSql, {
+      recipeId: initial.id,
+      workspaceId: 'ws-contract-revise',
+      potSlug: null,
+      success: true,
+    });
+    const before = await getRecipe(db.adminSql, initial.id);
+    const bindingSchema = {
+      version: 1 as const,
+      properties: {
+        issueId: {
+          type: 'string' as const,
+          required: true,
+          description: 'Scorecard work-item id for this invocation.',
+          lifetime: { kind: 'invocation-ephemeral' as const },
+        },
+      },
+      additionalProperties: false as const,
+    };
+    const capabilityManifest = {
+      version: 1 as const,
+      representation: 'recipe-script' as const,
+      topology: { premises: ['host:same' as const] as ['host:same'] },
+      requirements: [{ capability: 'tools:state:read' as const }],
+      lifecycle: { allowed: ['foreground' as const], default: 'foreground' as const },
+      replay: { class: 'read-only' as const },
+      content: { emits: ['text' as const] },
+    };
+    const script = 'return await tools.state.read({ cell: inputs.issueId });';
+
+    const revised = await reviseRecipeSource(db.adminSql, {
+      id: initial.id,
+      script,
+      toolsUsed: ['state:read'],
+      contract: { bindingSchema, capabilityManifest },
+      expectedUpdatedAt: before!.updatedAt,
+    });
+    expect(revised.status).toBe('updated');
+    if (revised.status !== 'updated') throw new Error(`unexpected revision result: ${revised.status}`);
+    expect(revised.row).toMatchObject({
+      script,
+      bindingSchema,
+      capabilityManifest,
+      runCount: 1,
+      successCount: 1,
+    });
+
+    const stale = await reviseRecipeSource(db.adminSql, {
+      id: initial.id,
+      script: 'return "stale contract overwrite";',
+      toolsUsed: [],
+      contract: { bindingSchema: null, capabilityManifest: null },
+      expectedUpdatedAt: before!.updatedAt,
+    });
+    expect(stale.status).toBe('conflict');
+    await expect(getRecipe(db.adminSql, initial.id)).resolves.toMatchObject({
+      script,
+      bindingSchema,
+      capabilityManifest,
+      runCount: 1,
+      successCount: 1,
+    });
+  });
+
   it('round-trips the exact versioned recipe contract and clears it when a later revision omits it', async () => {
     const bindingSchema = {
       version: 1 as const,

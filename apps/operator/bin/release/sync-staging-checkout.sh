@@ -185,29 +185,45 @@ publish_staging_generation() {
   log "published staging generation $candidate_root through stable alias $STAGING_ROOT"
 }
 
+# WI-10005311: one pass over /proc for the whole host, not one per candidate.
+# The old check forked tr|grep|readlink for every process, once per candidate:
+# with ~7,000 processes and 13 candidates a single prune took minutes. Here one
+# grep reads every environ and one find reads every cwd, about 0.5s in total.
+# Each line of STAGING_GENERATION_REFS is a PAPERCUSP_INTEGRATION_ROOT value or
+# a process cwd. Unreadable or vanished processes are skipped.
+collect_staging_generation_refs() {
+  STAGING_GENERATION_REFS="$(
+    {
+      grep -sazho '^PAPERCUSP_INTEGRATION_ROOT=.*' /proc/[0-9]*/environ 2>/dev/null |
+        tr '\0' '\n' | sed 's/^PAPERCUSP_INTEGRATION_ROOT=//' || true
+      find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%l\n' 2>/dev/null || true
+    } | sort -u || true
+  )"
+}
+
 staging_generation_in_use() {
-  local root="$1" proc env_file cwd
-  for proc in /proc/[0-9]*; do
-    env_file="$proc/environ"
-    if [[ -r "$env_file" ]] &&
-      tr '\0' '\n' < "$env_file" 2>/dev/null | grep -Fxq "PAPERCUSP_INTEGRATION_ROOT=$root"; then
+  local root="$1" ref
+  while IFS= read -r ref; do
+    if [[ -n "$ref" && ( "$ref" == "$root" || "$ref" == "$root/"* ) ]]; then
       return 0
     fi
-    cwd="$(readlink -e "$proc/cwd" 2>/dev/null || true)"
-    if [[ "$cwd" == "$root" || "$cwd" == "$root/"* ]]; then
-      return 0
-    fi
-  done
+  done <<< "${STAGING_GENERATION_REFS:-}"
   return 1
 }
 
 prune_staging_generations() {
-  local current_root candidate_root resolved_root candidate_home
+  local current_root candidate_root resolved_root candidate_home refs_collected=0
   [[ -d "$STAGING_GENERATIONS_ROOT" ]] || return 0
   current_root="$(realpath -e "$STAGING_ROOT" 2>/dev/null || true)"
   while IFS= read -r -d '' candidate_root; do
     resolved_root="$(realpath -e "$candidate_root" 2>/dev/null || true)"
     [[ -n "$resolved_root" && "$resolved_root" != "$current_root" ]] || continue
+    # Scan /proc only when there is something to prune, so the every-tick prune
+    # at sync start costs nothing in the steady state.
+    if [[ "$refs_collected" -eq 0 ]]; then
+      collect_staging_generation_refs
+      refs_collected=1
+    fi
     if staging_generation_in_use "$resolved_root"; then
       log "retaining prior staging generation still referenced by a process: $resolved_root"
       continue
@@ -772,6 +788,16 @@ fi
 [ -d "$INTEGRATION_ROOT/.git" ] || { log "FATAL: integration root not a git repo: $INTEGRATION_ROOT"; exit 1; }
 staging_alias_bootstrap || { log "FATAL: could not bootstrap the stable staging alias"; exit 1; }
 
+# WI-10005311: prune superseded generations at the START of every tick. The two
+# post-publish prunes only run when a tick reaches its success exit. Every other
+# exit after a publish (the recent-restart grace skip, the git-sync deferral, a
+# refused restart, a readiness timeout) used to leave the superseded generation
+# on / forever. By 05:30Z on 2026-10-02, 13 generations of ~3G each had piled
+# up and git-sync stopped fleet-wide on a full disk. This tick holds the exclusive
+# lock, so no peer sync or release cut can be mid-create. The published
+# generation and any generation a process still references are retained.
+prune_staging_generations
+
 forward_compat_review_warnings
 
 # Fail BEFORE even the no-op/advance decision: a drifted launch command must be visible on the
@@ -1118,6 +1144,12 @@ while [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ]; do
   if health_sha_matches_target "$last_health_sha" "$target" &&
      { [ "$restart_pending" -eq 0 ] || staging_restart_is_observed "$main_pid" "$observed_main_pid" "$last_health_sha" "$target"; }; then
     log "✅ :3170 healthy on exact staging source ${last_health_sha}"
+    # WI-10005310: the SPA-only path prunes right after publishing, but a restart
+    # advance is the common case and used to prune nothing, so every superseded
+    # generation stayed on / (13 candidates, ~45G measured 2026-10-02). The old
+    # process has now been replaced, and the shared lock is still held, so no
+    # concurrent sync can be mid-create. In-use generations are still retained.
+    prune_staging_generations
     exit 0
   fi
   readiness_elapsed_sec=$(( $(date +%s) - readiness_started_at ))

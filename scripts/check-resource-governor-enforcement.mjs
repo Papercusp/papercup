@@ -1793,6 +1793,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for embedding-space-parity-cases.ts: censusFilterCallSites runs one awaited execFileSync(git grep --untracked -lE) over packages/apps/libs to enumerate call-site files for an in-process AST census. It is a bounded local metadata search that exits immediately and starts no detached worker or resident queue.",
   },
   {
+    path: "packages/operator-core/lib/release/admission-offthread.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for admission-offthread.ts: its Worker is a process-scoped execution host for the frozen-repair queue's synchronous builders, not a per-request worker. pinModuleState gives one HostState per process and ensureWorker shares state.ready; runAdmissionJob permits one active job and refuses overlap instead of retaining queued work; the worker is unrefed between jobs and terminated by the idle reaper, with failed starts and worker errors clearing shared state. It starts no detached worker or independent schedule. admission-offthread.test.ts covers fail-fast overlap, idle reaping, and a later fresh start.",
+  },
+  {
     path: "scripts/check-tracked-ignored.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

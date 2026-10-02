@@ -111,6 +111,18 @@ describe('admission off-thread host (WI-10005223)', () => {
     expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
   }, 60_000);
 
+  it('reaps an idle worker and starts a fresh worker for later work', async () => {
+    configureAdmissionOffthread({ idleMs: 10 });
+    await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
+      status: 0,
+    });
+    await vi.waitFor(() => expect(admissionOffthreadStats().workerLive).toBe(false), { timeout: 2_000, interval: 10 });
+    await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
+      status: 0,
+    });
+    expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+  }, 60_000);
+
   it('rethrows a builder exception with its message and a worker-thread stack frame', async () => {
     const failing = runAdmissionJob({
       kind: 'admit',

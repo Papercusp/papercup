@@ -10,8 +10,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   AUTHORED_UNCHECKED,
+  archiveTreeDiffs,
   executeCutReclaim,
   gatherCutReclaimPlan,
+  inspectAuthoredWork,
   isLeaseLive,
   lastReflogEntryMs,
   machineWrittenRule,
@@ -23,6 +25,7 @@ import {
   probeTree,
   renderReclaimPlan,
   resolveReclaimTargets,
+  scanProcHolders,
   type HolderScan,
   type ReclaimPlanInput,
   type ReclaimWorktree,
@@ -471,5 +474,85 @@ describe('gather + execute against a real temporary repo', () => {
     });
     expect(held).toMatchObject({ ok: true, results: [{ removed: false, reason: 'in use: pid 9 cwd' }] });
     expect(fs.existsSync(tree)).toBe(true);
+  });
+});
+
+// WI-10005315 (owner directive #1155): this module runs inside the operator host via
+// release:cut. On 2026-10-02 05:30Z its synchronous git (execFileSync per tree and per
+// submodule) held :3170's event loop for 24s and the sentinel SIGKILLed the host.
+describe('host event loop stays live during reclaim git + /proc work', () => {
+  let binDir: string;
+  let savedPath: string | undefined;
+  beforeEach(() => {
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-slow-git-'));
+    // A `git` that takes 300ms and fails: one call is enough to observe whether the
+    // caller blocks the event loop while the child runs.
+    fs.writeFileSync(path.join(binDir, 'git'), '#!/bin/sh\nsleep 0.3\nexit 1\n', { mode: 0o755 });
+    savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+  });
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  it('inspectAuthoredWork never blocks the event loop while git runs (a 20ms timer fires first)', async () => {
+    const order: string[] = [];
+    const timer = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        order.push('timer');
+        resolve();
+      }, 20),
+    );
+    // A synchronous spawn finishes the whole 300ms git call before the timer can run,
+    // so 'inspect' would come first; an async spawn lets the loop service the timer.
+    const result = await inspectAuthoredWork(binDir, binDir, VERSION_PATHS).then((r) => {
+      order.push('inspect');
+      return r;
+    });
+    await timer;
+    expect(order).toEqual(['timer', 'inspect']);
+    expect(result.ok).toBe(false); // the fake git exits 1 → fails CLOSED, as before
+  });
+
+  it('archiveTreeDiffs is async and rejects (not throws synchronously) on a git failure', async () => {
+    const pending = archiveTreeDiffs(binDir, path.join(binDir, 'out', 'a.patch'));
+    expect(pending).toBeInstanceOf(Promise);
+    await expect(pending).rejects.toThrow();
+  });
+});
+
+describe('scanProcHolders (async /proc walk) against a fabricated proc root', () => {
+  let proc: string;
+  let held: string;
+  beforeEach(() => {
+    proc = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-proc-'));
+    held = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-held-'));
+    const self = path.join(proc, String(process.pid));
+    fs.mkdirSync(path.join(self, 'fd'), { recursive: true });
+    fs.symlinkSync(fs.realpathSync(process.cwd()), path.join(self, 'cwd'));
+    fs.symlinkSync(path.join(held, 'data.bin'), path.join(self, 'fd', '7'));
+    fs.mkdirSync(path.join(proc, 'self'));
+    fs.writeFileSync(path.join(proc, 'self', 'status'), `Name:\tnode\nNSpid:\t${process.pid}\n`);
+    fs.mkdirSync(path.join(proc, '999999')); // an unreadable/exited process: no links at all
+  });
+  afterEach(() => {
+    fs.rmSync(proc, { recursive: true, force: true });
+    fs.rmSync(held, { recursive: true, force: true });
+  });
+
+  it('finds an fd holder, sees its own cwd as the positive control, and returns a Promise', async () => {
+    const pending = scanProcHolders([{ key: held, prefixes: [held] }], proc);
+    expect(pending).toBeInstanceOf(Promise);
+    const scan = await pending;
+    expect(scan.verified).toBe(true);
+    expect(scan.holders.get(held)).toEqual([`pid ${process.pid} fd`]);
+  });
+
+  it('refuses verification in a nested PID namespace (a confident false idle otherwise)', async () => {
+    fs.writeFileSync(path.join(proc, 'self', 'status'), `Name:\tnode\nNSpid:\t${process.pid}\t12\n`);
+    const scan = await scanProcHolders([{ key: held, prefixes: [held] }], proc);
+    expect(scan.verified).toBe(false);
+    expect(scan.verified === false && scan.reason).toMatch(/nested-pid-namespace/);
   });
 });

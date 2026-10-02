@@ -613,11 +613,11 @@ export async function scanProcHolders(targets: HolderTarget[], procRoot = '/proc
  * Authored work inside a tree, recursively through its submodules. Fails CLOSED: any git
  * error returns ok:false, which the planner turns into a protection.
  */
-export function inspectAuthoredWork(
+export async function inspectAuthoredWork(
   tree: string,
   canonicalRoot: string,
   releaseVersionPaths: readonly string[],
-): AuthoredWork {
+): Promise<AuthoredWork> {
   try {
     const authored: string[] = [];
     let machineWritten = 0;
@@ -628,18 +628,22 @@ export function inspectAuthoredWork(
         else authored.push(e.path);
       }
     };
-    judge(parsePorcelainV2(git(tree, ['status', '--porcelain=v2', '-z', '--ignore-submodules=none'])));
-    const head = git(tree, ['rev-parse', 'HEAD']).trim();
-    const containing = git(canonicalRoot, ['for-each-ref', '--count=1', `--contains=${head}`, '--format=%(refname)']).trim();
+    judge(parsePorcelainV2(await git(tree, ['status', '--porcelain=v2', '-z', '--ignore-submodules=none'])));
+    const head = (await git(tree, ['rev-parse', 'HEAD'])).trim();
+    const containing = (
+      await git(canonicalRoot, ['for-each-ref', '--count=1', `--contains=${head}`, '--format=%(refname)'])
+    ).trim();
     if (!containing) authored.push(`HEAD ${head.slice(0, 10)} (no ref contains it)`);
-    const subs = git(tree, ['submodule', 'status', '--recursive']);
+    const subs = await git(tree, ['submodule', 'status', '--recursive']);
     for (const line of subs.split('\n')) {
       const m = /^([ +\-U])([0-9a-f]{40}) (.+?)(?: \(.*\))?$/.exec(line);
       if (!m || m[1] === '-') continue;
       const [, , sha, rel] = m as unknown as [string, string, string, string];
-      judge(parsePorcelainV2(git(path.join(tree, rel), ['status', '--porcelain=v2', '-z', '--ignore-submodules=all']), rel));
+      judge(
+        parsePorcelainV2(await git(path.join(tree, rel), ['status', '--porcelain=v2', '-z', '--ignore-submodules=all']), rel),
+      );
       try {
-        git(path.join(canonicalRoot, rel), ['cat-file', '-e', `${sha}^{commit}`], 30_000);
+        await git(path.join(canonicalRoot, rel), ['cat-file', '-e', `${sha}^{commit}`], 30_000);
       } catch {
         authored.push(`${rel}@${sha.slice(0, 10)} (commit absent from canonical checkout)`);
       }
@@ -663,11 +667,11 @@ export interface GatherOptions {
   retentionDir?: string;
   minIdleHours?: number;
   nowMs?: number;
-  /** test seams */
-  listWorktrees?: (repoPath: string) => ReclaimWorktree[];
+  /** test seams (sync or async; the defaults are async so the host's event loop keeps running) */
+  listWorktrees?: (repoPath: string) => ReclaimWorktree[] | Promise<ReclaimWorktree[]>;
   probe?: (worktreePath: string) => TreeProbe;
-  scanHolders?: (targets: HolderTarget[]) => HolderScan;
-  authoredWork?: (tree: string, canonicalRoot: string) => AuthoredWork;
+  scanHolders?: (targets: HolderTarget[]) => HolderScan | Promise<HolderScan>;
+  authoredWork?: (tree: string, canonicalRoot: string) => AuthoredWork | Promise<AuthoredWork>;
   readLeases?: (dir: string) => { leases: RetentionLease[]; errors: string[] };
 }
 
@@ -679,9 +683,9 @@ export function defaultRetentionDir(): string {
  *  for the trees still standing. */
 export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<ReclaimPlan> {
   const nowMs = opts.nowMs ?? Date.now();
-  const worktrees = (opts.listWorktrees ?? ((r) => parseWorktreePorcelain(git(r, ['worktree', 'list', '--porcelain'], 10_000))))(
-    opts.repoPath,
-  );
+  const worktrees = await (
+    opts.listWorktrees ?? (async (r: string) => parseWorktreePorcelain(await git(r, ['worktree', 'list', '--porcelain'], 10_000)))
+  )(opts.repoPath);
   let rootDev: number | null = null;
   try {
     rootDev = fs.statSync('/').dev;
@@ -702,7 +706,7 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
     key,
     prefixes: [key, ...(p.realPath && p.realPath !== key ? [p.realPath] : [])],
   }));
-  const holders = (opts.scanHolders ?? scanProcHolders)(holderTargets);
+  const holders = await (opts.scanHolders ?? scanProcHolders)(holderTargets);
   const base = {
     nowMs,
     minIdleHours: opts.minIdleHours ?? DEFAULT_MIN_IDLE_HOURS,
@@ -721,7 +725,7 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
     const inspect =
       opts.authoredWork ?? ((tree: string, canon: string) => inspectAuthoredWork(tree, canon, opts.releaseVersionPaths));
     for (const v of cheap.verdicts) {
-      if (v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED) authored.set(v.path, inspect(v.path, canonicalRoot));
+      if (v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED) authored.set(v.path, await inspect(v.path, canonicalRoot));
     }
   }
   return planCutReclaim({ ...base, authored });
@@ -731,9 +735,9 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
 
 export interface ReclaimExecDeps {
   nowMs?: () => number;
-  scanHolders?: (targets: HolderTarget[]) => HolderScan;
-  archive?: (tree: string, outFile: string) => void;
-  gitCommonDir?: (canonicalRoot: string) => string;
+  scanHolders?: (targets: HolderTarget[]) => HolderScan | Promise<HolderScan>;
+  archive?: (tree: string, outFile: string) => void | Promise<void>;
+  gitCommonDir?: (canonicalRoot: string) => string | Promise<string>;
   rename?: (from: string, to: string) => void;
   unlink?: (p: string) => void;
   rmrf?: (p: string) => Promise<void>;
@@ -752,17 +756,17 @@ export interface ReclaimExecResult {
 
 /** Tracked diffs of the superproject and every initialized submodule, so a removal is
  *  recoverable at the patch level. Throws on any failure — the caller refuses removal. */
-export function archiveTreeDiffs(tree: string, outFile: string): void {
-  fs.mkdirSync(path.dirname(outFile), { recursive: true });
+export async function archiveTreeDiffs(tree: string, outFile: string): Promise<void> {
+  await fs.promises.mkdir(path.dirname(outFile), { recursive: true });
   const parts: string[] = [`# reclaim archive of ${tree} at ${new Date().toISOString()}\n`];
-  parts.push(`## HEAD ${git(tree, ['rev-parse', 'HEAD']).trim()}\n`, git(tree, ['diff', '--binary', 'HEAD']));
-  for (const line of git(tree, ['submodule', 'status', '--recursive']).split('\n')) {
+  parts.push(`## HEAD ${(await git(tree, ['rev-parse', 'HEAD'])).trim()}\n`, await git(tree, ['diff', '--binary', 'HEAD']));
+  for (const line of (await git(tree, ['submodule', 'status', '--recursive'])).split('\n')) {
     const m = /^([ +\-U])([0-9a-f]{40}) (.+?)(?: \(.*\))?$/.exec(line);
     if (!m || m[1] === '-') continue;
     const rel = m[3] as string;
-    parts.push(`\n## submodule ${rel} ${m[2]}\n`, git(path.join(tree, rel), ['diff', '--binary', 'HEAD']));
+    parts.push(`\n## submodule ${rel} ${m[2]}\n`, await git(path.join(tree, rel), ['diff', '--binary', 'HEAD']));
   }
-  fs.writeFileSync(outFile, parts.join(''));
+  await fs.promises.writeFile(outFile, parts.join(''));
 }
 
 export async function executeCutReclaim(
@@ -777,7 +781,9 @@ export async function executeCutReclaim(
   const now = deps.nowMs ?? Date.now;
   const commonDir = path.resolve(
     canonicalRoot,
-    (deps.gitCommonDir ?? ((r: string) => git(r, ['rev-parse', '--git-common-dir'], 10_000).trim()))(canonicalRoot),
+    await (deps.gitCommonDir ?? (async (r: string) => (await git(r, ['rev-parse', '--git-common-dir'], 10_000)).trim()))(
+      canonicalRoot,
+    ),
   );
   const archiveDir = deps.archiveDir ?? path.join(defaultRetentionDir(), 'reclaim-archive');
   const auditFile = deps.auditFile ?? path.join(defaultRetentionDir(), 'deletion-audit.tsv');
@@ -805,7 +811,7 @@ export async function executeCutReclaim(
       done({ removed: false, reason: 'refusing a path that overlaps the canonical tree or home' });
       continue;
     }
-    const fresh = (deps.scanHolders ?? scanProcHolders)([
+    const fresh = await (deps.scanHolders ?? scanProcHolders)([
       { key: v.path, prefixes: offloaded ? [v.path, real] : [v.path] },
     ]);
     if (!fresh.verified || (fresh.holders.get(v.path) ?? []).length) {
@@ -818,7 +824,7 @@ export async function executeCutReclaim(
     const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
     const archive = path.join(archiveDir, `${stamp}-${path.basename(v.path)}.patch`);
     try {
-      (deps.archive ?? archiveTreeDiffs)(real, archive);
+      await (deps.archive ?? archiveTreeDiffs)(real, archive);
     } catch (e) {
       done({ removed: false, reason: `archive failed: ${errText(e)}` });
       continue;

@@ -657,5 +657,50 @@
     "nativeKernelTrace": "still not exposed; input evidence does not establish CUDA compute-kernel execution",
     "gpuAcceptanceComplete": false
   },
+  "nativeRuntimeKernelPreparation": {
+    "status": "fresh native source/runtime content and profiler import/export preparation verified; actual GPU request-group/kernel run not yet launched",
+    "runtimeArtifact": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v2",
+      "receiptSha256": "d4162dd6d89b317d832254c97fe1bcefb2abb65cede82526dfa59b64955f05c1",
+      "receiptBytes": 4617,
+      "sourceRecordsChecked": 31404,
+      "dependencyRecordsChecked": 241451,
+      "overlays": 7,
+      "sourceGuardProof": "All four executed source overlays and three tests equal the previously verified 67-pass input-evidence preparation; no application source changed in this unit.",
+      "retainedNonEntrypoint": "node_modules/.bin/papercusp-omp has the same unresolved target in the baseline and clone. It is outside the declared direct Node/tsx/native route; exact link identity is retained, with no OMP executable-usability claim.",
+      "nativeCudaClosureQualified": false,
+      "modelInferencePerformed": false
+    },
+    "profilerPreparation": {
+      "issue": "EI-24843667343985893",
+      "capture": "/usr/bin/nsys",
+      "importer": "/usr/lib/nsight-systems/host-linux-x64/QdstrmImporter",
+      "version": "2022.4.2.50-32196742v0",
+      "captureBinarySha256": "ab73a9c7eb1f230edb4edf01b6a926fd59b1b5276eb6ba9e188d615fbeb99ff6",
+      "importerBinarySha256": "43b9c62ecc3f33c691266b9b759b98810f0ab491bc893fd5a95ac18bde5fe049",
+      "receipt": "cache:validation/mdenseon-boundary-WI10004540-20261001/nsys-preflight-v1/receipt.json",
+      "receiptSha256": "51a3673e7d9945f6d4dd6d88ff0bab5d89e5da8d1acd59b3d2d50a88cdc9fffe",
+      "verified": "Capture with CPU sampling/context-switch tracing disabled; explicitly import retained raw capture with the matching installed importer; export SQLite and observe integrity_check=ok.",
+      "scope": "No model or GPU inference; actual CUDA kernel capture and PID/sequence bindings remain unverified.",
+      "rootCause": "The default nsys binary resolves into a target-only multiarch directory, while the matching importer resides under a separate host directory. Automatic discovery failed despite an installed, runnable importer. The launch recipe pins the pair and requires a proven import/export receipt."
+    },
+    "preparedDiagnostic": {
+      "recipe": "cache:validation/mdenseon-boundary-WI10004540-20261001/launch-native-cuda-padded-v3.sh",
+      "sha256": "74d8c73a0c7408f771b7dedca63a6a30d6262c31d1d012960aa1a23ed664bee0",
+      "syntaxCheck": "bash -n exit 0",
+      "request": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-request-v3.json",
+      "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+      "referenceSummarySha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+      "selectedCell": "padded",
+      "precisionEnvironment": {
+        "NVIDIA_TF32_OVERRIDE": "0",
+        "scope": "isolated diagnostic only"
+      },
+      "execution": "Existing native runner with declared prerequisite singles and a Promise.all request group; actual inference batch size remains one.",
+      "preRunGuards": "Exclusive output root, completed content qualification, exact runtime/source/request/reference/profiler pins, repeated source check after admission, retained input traces, explicit report import/export and nonzero CUDA kernel-record check.",
+      "fullGpuPopulationComplete": false,
+      "inferencePerformed": false
+    }
+  },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }

@@ -649,6 +649,146 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
   });
 });
 
+describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)', () => {
+  const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'prune_staging_generations'];
+
+  it('removes superseded generations but keeps the current one and any a process still runs from', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-'));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const makeGeneration = (name: string) => {
+      const checkout = join(generationRoot, name, 'checkout');
+      mkdirSync(checkout, { recursive: true });
+      return realpathSync(checkout);
+    };
+    const current = makeGeneration('.candidate-aaaaaaaaaaaa.cur');
+    const inUse = makeGeneration('.candidate-bbbbbbbbbbbb.use');
+    const superseded = makeGeneration('.candidate-cccccccccccc.old');
+    symlinkSync(current, alias);
+    // A process whose environment pins the generation, the way the staging host does.
+    const holder = spawn('sleep', ['60'], { env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: inUse }, stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => holder.once('spawn', resolve));
+      const result = runFn(
+        PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations',
+        { env: { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root } },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`pruned unused staging generation ${superseded}`);
+      expect(result.stdout).toContain(`retaining prior staging generation still referenced by a process: ${inUse}`);
+      expect(() => realpathSync(join(generationRoot, '.candidate-cccccccccccc.old'))).toThrow();
+      expect(realpathSync(current)).toBe(current);
+      expect(realpathSync(inUse)).toBe(inUse);
+    } finally {
+      holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a generation a process runs inside (cwd), not only one pinned by environment', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-cwd-'));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const current = join(generationRoot, '.candidate-aaaaaaaaaaaa.cur', 'checkout');
+    const cwdPinned = join(generationRoot, '.candidate-dddddddddddd.cwd', 'checkout');
+    mkdirSync(current, { recursive: true });
+    mkdirSync(join(cwdPinned, 'apps/operator'), { recursive: true });
+    symlinkSync(realpathSync(current), alias);
+    // The process sits in a SUBDIRECTORY of the generation, as a host started
+    // from apps/operator does; the prefix match must still see it.
+    const env = { ...process.env };
+    delete env.PAPERCUSP_INTEGRATION_ROOT;
+    const holder = spawn('sleep', ['60'], { cwd: join(cwdPinned, 'apps/operator'), env, stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => holder.once('spawn', resolve));
+      const result = runFn(
+        PRUNE_FNS,
+        'log() { echo "$*"; }; prune_staging_generations',
+        { env: { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root } },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        `retaining prior staging generation still referenced by a process: ${realpathSync(cwdPinned)}`,
+      );
+      expect(realpathSync(cwdPinned)).toBeTruthy();
+    } finally {
+      holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scans /proc once per prune, however many generations it judges, and not at all in the steady state (WI-10005311)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-scan-'));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const current = join(generationRoot, '.candidate-aaaaaaaaaaaa.cur', 'checkout');
+    mkdirSync(current, { recursive: true });
+    symlinkSync(realpathSync(current), alias);
+    // Wrap the real collector so each invocation is counted on stderr.
+    const countingPrune = [
+      'eval "$(declare -f collect_staging_generation_refs | sed "1s/^collect_staging_generation_refs/real_collect_staging_generation_refs/")"',
+      'collect_staging_generation_refs() { echo SCAN >&2; real_collect_staging_generation_refs; }',
+      'log() { echo "$*"; }',
+      'prune_staging_generations',
+    ].join('\n');
+    const env = { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root };
+    try {
+      const steady = runFn(PRUNE_FNS, countingPrune, { env });
+      expect(steady.status).toBe(0);
+      expect(steady.stderr.match(/^SCAN$/gm) ?? []).toHaveLength(0);
+
+      const superseded = ['bbbbbbbbbbbb', 'cccccccccccc', 'dddddddddddd'].map((sha) => {
+        const checkout = join(generationRoot, `.candidate-${sha}.old`, 'checkout');
+        mkdirSync(checkout, { recursive: true });
+        return realpathSync(checkout);
+      });
+      const result = runFn(PRUNE_FNS, countingPrune, { env });
+      expect(result.status).toBe(0);
+      expect(result.stderr.match(/^SCAN$/gm) ?? []).toHaveLength(1);
+      for (const checkout of superseded) {
+        expect(result.stdout).toContain(`pruned unused staging generation ${checkout}`);
+      }
+      expect(realpathSync(current)).toBeTruthy();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('collects process references under the script\'s own set -euo pipefail without aborting', () => {
+    const result = runFn(
+      ['collect_staging_generation_refs'],
+      'set -euo pipefail; collect_staging_generation_refs; printf "%s\\n" "$STAGING_GENERATION_REFS"; echo COLLECTED',
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('COLLECTED');
+    // The calling shell's own cwd is a live process cwd, so a working scan must report it.
+    expect(result.stdout.split('\n')).toContain(realpathSync(process.cwd()));
+  });
+
+  it('prunes at the start of every tick, before any exit that follows a publish (WI-10005311)', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const bootstrap = script.indexOf('staging_alias_bootstrap || {');
+    expect(bootstrap).toBeGreaterThan(-1);
+    const firstNoOp = script.indexOf('already at ${target:0:10} — no-op', bootstrap);
+    const prepare = script.indexOf('prepare_staging_candidate "$target"', bootstrap);
+    expect(firstNoOp).toBeGreaterThan(bootstrap);
+    expect(prepare).toBeGreaterThan(bootstrap);
+    const startPrune = script.indexOf('\nprune_staging_generations\n', bootstrap);
+    expect(startPrune).toBeGreaterThan(bootstrap);
+    expect(startPrune).toBeLessThan(Math.min(firstNoOp, prepare));
+  });
+
+  it('prunes after a restart advance reports healthy, not only on the SPA-only path', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const healthy = script.indexOf('log "✅ :3170 healthy on exact staging source');
+    expect(healthy).toBeGreaterThan(-1);
+    const exitAfterHealthy = script.indexOf('exit 0', healthy);
+    expect(exitAfterHealthy).toBeGreaterThan(healthy);
+    expect(script.slice(healthy, exitAfterHealthy)).toContain('prune_staging_generations');
+  });
+});
+
 describe('sync-staging-checkout.sh staging unit generation contract (WI-10003262)', () => {
   it('accepts the stable alias for SPA and bundle paths while runtime readers use the physical root', () => {
     const alias = '/tmp/papercusp-staging.current';

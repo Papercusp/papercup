@@ -79,6 +79,7 @@ interface HostState {
   activeJob: Promise<unknown> | null;
   worker: Worker | null;
   ready: Promise<Worker> | null;
+  retiring: Promise<void> | null;
   pending: Pending | null;
   nextId: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -118,6 +119,7 @@ const state = pinModuleState<HostState>('@papercusp/operator-core.release.admiss
   activeJob: null,
   worker: null,
   ready: null,
+  retiring: null,
   pending: null,
   nextId: 1,
   idleTimer: null,
@@ -193,6 +195,10 @@ async function runOne(job: AdmissionJob): Promise<unknown> {
 }
 
 function ensureWorker(): Promise<Worker> {
+  if (state.retiring) {
+    const retiring = state.retiring;
+    return retiring.then(() => ensureWorker());
+  }
   if (state.ready) return state.ready;
   const entry = state.config.workerPath ?? admissionWorkerEntry();
   const ready = new Promise<Worker>((resolve, reject) => {
@@ -297,6 +303,7 @@ function failWorker(worker: Worker, err: Error): void {
   if (pending) {
     pending.reject(new Error(`admission worker failed mid-job: ${err.message}`));
   }
+  void retireWorker(worker);
 }
 
 function settleIdle(worker: Worker): void {
@@ -309,7 +316,7 @@ function armIdle(): void {
   clearIdle();
   const timer = setTimeout(() => {
     state.idleTimer = null;
-    if (state.pending.size === 0) void terminateWorker();
+    if (state.activeJob === null && state.pending === null) void terminateWorker();
   }, state.config.idleMs);
   timer.unref?.();
   state.idleTimer = timer;
@@ -322,8 +329,25 @@ function clearIdle(): void {
 
 async function terminateWorker(): Promise<void> {
   clearIdle();
+  if (state.retiring) {
+    await state.retiring;
+    return;
+  }
   const worker = state.worker;
   state.worker = null;
   state.ready = null;
-  if (worker) await worker.terminate().catch(() => undefined);
+  if (worker) await retireWorker(worker);
+}
+
+function retireWorker(worker: Worker): Promise<void> {
+  if (state.retiring) return state.retiring;
+  let retiring!: Promise<void>;
+  retiring = worker
+    .terminate()
+    .then(() => undefined, () => undefined)
+    .finally(() => {
+      if (state.retiring === retiring) state.retiring = null;
+    });
+  state.retiring = retiring;
+  return retiring;
 }

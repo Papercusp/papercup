@@ -1,6 +1,7 @@
 /** P-007: the advertised complete-agenda recovery must reach the real GOAL reader. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
@@ -293,8 +294,17 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     }));
     const snapshots: unknown[] = [];
     const windows: Array<{ window: number; arm: Arm; samples: Array<{ phase: string; ms: number }>; complete: boolean }> = [];
-    const report: Record<string, unknown> = { schemaVersion: 2, incomplete: true,
+    const report: Record<string, unknown> = { schemaVersion: 3, incomplete: true,
       sourceStart: hashes(), snapshots,
+      startedAt: new Date().toISOString(), phaseProgress: [],
+      buildIdentity: { pid: process.pid, parentPid: process.ppid, nodeVersion: process.version,
+        repositoryHead: execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: resolve(__dirname, '../../../../../..'), encoding: 'utf8',
+        }).trim(),
+        testRunGroup: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
+        ledgerHarness: process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
+        qualification: 'Named source hashes below identify the read files; repository HEAD alone does not identify dirty bytes or the full loaded import graph.',
+      },
       windows, mode: guardOnly ? 'guard-only' : 'guard-and-performance',
       workload: { plans: 8, itemsPerPlan: 128, workItems: 128, visibleFacts: 3,
         windows: windowCount, warmReads: 20, concurrency: 8 },
@@ -308,11 +318,17 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
         writeFileSync(process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT, JSON.stringify(report, null, 2) + '\n');
       }
     };
+    const progress = (phase: string) => {
+      report.currentPhase = phase;
+      (report.phaseProgress as Array<{ phase: string; at: string }>).push({ phase, at: new Date().toISOString() });
+      publish();
+    };
     const key = `r5-orient-${RUN}`;
     const slugs = Array.from({ length: 8 }, (_, n) => `${key}-plan-${n}`);
     const refs = slugs.map(slug => `plan:papercusp/${slug}`);
     const seedPopulation = async () => {
       for (const slug of slugs) {
+        progress(`seed-plan:${slug}`);
         const body = `---\ntitle: ${slug}\nstatus: draft\n---\n\n## Work\n` +
           Array.from({ length: 128 }, (_, n) => `- **P-${String(n + 1).padStart(3, '0')}** \`todo\` Representative orientation item ${n}`).join('\n');
         await seedPlan(fx.admin, WS, 'papercusp', slug, body);
@@ -332,13 +348,17 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       // The actual gate must independently reject these uncontracted seed plans.
       const { evaluatePlanAcceptanceGate } = await import('../../../plan-acceptance-gate');
       const observations = [];
+      report.closurePreflight = observations;
       for (const slug of slugs) {
+        progress(`closure-preflight-start:${slug}`);
+        const start = performance.now();
         const gate = await runWithWorkspace(WS, () => evaluatePlanAcceptanceGate(slug, { harnessSlug: 'papercusp' }));
-        observations.push({ slug, code: gate.code, satisfied: gate.satisfied });
+        observations.push({ slug, code: gate.code, satisfied: gate.satisfied, ms: performance.now() - start });
+        progress(`closure-preflight-observed:${slug}`);
         expect(gate.satisfied).toBe(false);
         expect(gate.code).toBe('acceptance_bar_contract_not_ready');
       }
-      report.closurePreflight = observations;
+      progress('closure-preflight-passed');
     };
     const fact = async (scope: 'owner' | 'harness', factKey: string, body: string, audienceScope?: string) => {
       const receipt = await assertFact({ workspaceId: WS, scope,
@@ -354,6 +374,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       { scope: 'harness', ref: 'papercusp', body: `R-5 harness fact ${key}` },
     ].sort((a, b) => a.body.localeCompare(b.body));
     const read = async (phase: string, changed = false, paused = false, record = true) => {
+      if (record) progress(`read-start:${phase}`);
       const start = performance.now();
       const data = await readOrientation({ mode: 'full' });
       const ms = performance.now() - start;
@@ -435,6 +456,14 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const settleL2 = async () => { await Promise.all(pendingL2.splice(0)); };
     publish();
     try {
+      progress('fixture-identity');
+      const [databaseIdentity] = await fx.admin`SELECT current_database() AS database,
+        current_user AS database_user, pg_backend_pid() AS backend_pid,
+        inet_server_addr()::text AS server_address, inet_server_port() AS server_port,
+        pg_postmaster_start_time()::text AS postmaster_started_at, version() AS server_version`;
+      report.databaseIdentity = databaseIdentity;
+      expect(databaseIdentity?.database).toBeTruthy();
+      progress('cache-setup');
       setFlagOverridesForTest({ 'papercusp-cache-layer': true, 'papercusp-cache-l2': true });
       resetOperatorCacheForTests();
       __setCachedReadEnabledForTests(true);
@@ -459,6 +488,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       arm = 'independent-portfolio';
       await read('independent-source-guard', true);
       report.phaseGuardsPassed = true;
+      progress('phase-guards-passed');
       const cold = async () => {
         await settleL2();
         resetOperatorCacheForTests();
@@ -468,6 +498,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
         const arms: Arm[] = window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
         for (const nextArm of arms) {
           arm = nextArm;
+          progress(`matrix-window:${window}:${arm}`);
           const row = { window, arm, samples: [] as Array<{ phase: string; ms: number }>, complete: false };
           windows.push(row); publish();
           await cold();
@@ -493,8 +524,11 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       report.sourceEnd = hashes();
       expect(report.sourceEnd).toEqual(report.sourceStart);
       report.incomplete = false;
+      report.completedAt = new Date().toISOString();
+      progress('completed');
     } catch (error) {
       report.error = error instanceof Error ? error.stack : String(error);
+      report.failedAt = new Date().toISOString();
       throw error;
     } finally {
       publish();

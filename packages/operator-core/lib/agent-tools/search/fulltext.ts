@@ -20,6 +20,12 @@ import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { scopeArg, DEFAULT_SCOPE } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import {
+  createStageAttempt,
+  traceStageAwait,
+  withStageAttempt,
+  type StageAttemptContext,
+} from '../../sync/hyperbee/stage-stall-log';
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
 // + judge (acceptance-rubric grading): the dedicated evaluator needs read-only
@@ -63,6 +69,7 @@ export default defineTool({
     const startedAt = performance.now();
     const stages: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
     const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata;
+    let queryAttempt: StageAttemptContext | undefined;
     // Reuse invocation metadata so a slow search distinguishes SQL retrieval
     // from the optional reranker; record a failed stage before propagating it.
     const measure = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
@@ -80,6 +87,12 @@ export default defineTool({
           timing: 'wall-time-sequential-stages',
           elapsedMs: Math.max(0, performance.now() - startedAt),
           stages: [...stages],
+          ...(queryAttempt ? { queryDiagnostics: {
+            ...queryAttempt,
+            stage: 'scope-query',
+            coverage: 'queries-created-during-retrieval',
+            timing: 'query-build-to-terminal-not-acquisition',
+          } } : {}),
         } });
       }
     };
@@ -109,17 +122,33 @@ export default defineTool({
       { workspaceId: ctx.workspaceId ?? '' },
     ));
 
-    const { results, totalHits } = await measure('retrieval', () => runFullTextSearch(sources, {
-      sql: ctx.tx,
-      query: args.query,
-      workspaceId: ctx.workspaceId ?? '',
-      scopeFilter: args.harness_slug ?? null,
-      // Stage B over-fetch — see the note in semantic.ts. `rerankPageHead`
-      // slices back to `limit`, including on the passthrough path.
-      limit: rerankCandidateCount(limit),
-      filters,
-      log: ctx.log,
-    }));
+    const { results, totalHits } = await measure('retrieval', async () => {
+      // The existing query diagnostic ring captures context when a query is
+      // created. Persist this local attempt identity in invocation metadata so
+      // those records can be joined without guessing from timestamps/session ids.
+      // The ledger invocation id does not exist yet; rowId stays explicitly unknown.
+      const attempt = metadata ? createStageAttempt({ rowId: '', onEvent: () => {} }) : undefined;
+      queryAttempt = attempt?.context;
+      let outcome: 'fulfilled' | 'rejected' = 'rejected';
+      try {
+        const result = await withStageAttempt(attempt, () => traceStageAwait('scope-query', () =>
+          runFullTextSearch(sources, {
+            sql: ctx.tx,
+            query: args.query,
+            workspaceId: ctx.workspaceId ?? '',
+            scopeFilter: args.harness_slug ?? null,
+            // Stage B over-fetch — `rerankPageHead` slices back to limit.
+            limit: rerankCandidateCount(limit),
+            filters,
+            log: ctx.log,
+          }),
+        ));
+        outcome = 'fulfilled';
+        return result;
+      } finally {
+        attempt?.finish(outcome);
+      }
+    });
 
     // Stage B: cross-encoder rerank. Fail-safe — no ZeroEntropy key → the
     // BM25 order unchanged (see ./rerank).

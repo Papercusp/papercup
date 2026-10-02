@@ -28,7 +28,15 @@
  * the scope→sources translation without a real PG handle.
  */
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import {
+  capturePgDiagnosticContext,
+  createPgDiagnosticHooks,
+  pgResultDiagnosticSnapshot,
+  resetAcquireRegistryForTest,
+  resetPgDiagnosticContextResolver,
+} from '@papercusp/db-org';
+import { installDbDiagnosticCorrelationWiring } from '../db-diagnostic-correlation-wiring';
 
 // --- Engine mock: records inputs, returns scripted hits. ---------------------
 interface EngineCall {
@@ -160,6 +168,8 @@ function payloadOf(res: { content: Array<{ type: string; text: string }> }) {
 }
 
 beforeEach(() => {
+  resetAcquireRegistryForTest();
+  installDbDiagnosticCorrelationWiring();
   ftCalls.length = 0;
   hybridCalls.length = 0;
   runFullTextSearch.mockClear();
@@ -167,6 +177,11 @@ beforeEach(() => {
   buildQueryEmbedder.mockClear();
   ftResult = { results: [], totalHits: 0 };
   hybridResult = { results: [], totalHits: 0, embedderAvailable: true };
+});
+
+afterEach(() => {
+  resetPgDiagnosticContextResolver();
+  resetAcquireRegistryForTest();
 });
 
 // =============================================================================
@@ -199,6 +214,15 @@ describe('search:fulltext — invocation stage attribution', () => {
           { name: 'retrieval', elapsedMs: 3000, status: 'ok' },
           { name: 'rerank', elapsedMs: 25, status: 'ok' },
         ],
+        queryDiagnostics: {
+          processInstanceId: expect.any(String),
+          buildSha: expect.toSatisfy((value: unknown) => value === null || typeof value === 'string'),
+          rowId: null,
+          attemptId: expect.any(String),
+          stage: 'scope-query',
+          coverage: 'queries-created-during-retrieval',
+          timing: 'query-build-to-terminal-not-acquisition',
+        },
       });
       expect(page).toHaveBeenCalledOnce();
     } finally {
@@ -217,6 +241,58 @@ describe('search:fulltext — invocation stage attribution', () => {
       { name: 'filters', elapsedMs: expect.any(Number), status: 'ok' },
       { name: 'retrieval', elapsedMs: expect.any(Number), status: 'error' },
     ]);
+    expect(capturePgDiagnosticContext().state).toBe('unobserved');
+  });
+
+  it('joins a completed query to this invocation without retaining search text or SQL values', async () => {
+    const tool = (await import('./fulltext')).default;
+    const metadata = vi.fn();
+    const hooks = createPgDiagnosticHooks('org-admin');
+    runFullTextSearch.mockImplementationOnce(async () => {
+      const context = hooks.onquerycontext();
+      hooks.onresult({ connectionId: 7, queryId: 23, backendPid: null,
+        query: "SELECT body FROM session_turns WHERE token = 'never-retain-secret'",
+        rowCount: 0, wireBytes: 0, elapsedMs: 42, status: 'ok', context });
+      return ftResult;
+    });
+    await tool.handler({ query: 'private-search-text', scope: ['session_turn'] } as never, CTX({ metadata }) as never);
+    const identity = metadata.mock.lastCall?.[0].searchFulltextRead.queryDiagnostics;
+    const result = pgResultDiagnosticSnapshot('org-admin').results[0];
+    expect(result.correlationState).toBe('linked');
+    expect(result.correlation).toMatchObject({ attemptId: identity.attemptId,
+      processInstanceId: identity.processInstanceId, rowId: null, stage: 'scope-query', boundary: 'await' });
+    expect(result.elapsedMs).toBe(42);
+    expect(JSON.stringify({ identity, result })).not.toContain('private-search-text');
+    expect(JSON.stringify({ identity, result })).not.toContain('never-retain-secret');
+    expect(capturePgDiagnosticContext().state).toBe('unobserved');
+  });
+
+  it('keeps concurrent searches from sharing or leaking query attribution', async () => {
+    const tool = (await import('./fulltext')).default;
+    const contexts: ReturnType<typeof capturePgDiagnosticContext>[] = [];
+    let release!: () => void;
+    const together = new Promise<void>((resolve) => { release = resolve; });
+    runFullTextSearch.mockImplementationOnce(async () => {
+      contexts[0] = capturePgDiagnosticContext();
+      await together;
+      expect(capturePgDiagnosticContext()).toEqual(contexts[0]);
+      return ftResult;
+    }).mockImplementationOnce(async () => {
+      contexts[1] = capturePgDiagnosticContext();
+      release();
+      await Promise.resolve();
+      expect(capturePgDiagnosticContext()).toEqual(contexts[1]);
+      return ftResult;
+    });
+    const first = vi.fn(), second = vi.fn();
+    await Promise.all([
+      tool.handler({ query: 'first' } as never, CTX({ metadata: first }) as never),
+      tool.handler({ query: 'second' } as never, CTX({ metadata: second }) as never),
+    ]);
+    const ids = [first, second].map((sink) => sink.mock.lastCall?.[0].searchFulltextRead.queryDiagnostics.attemptId);
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(contexts.map((context) => context.correlation?.attemptId)).toEqual(ids);
+    expect(capturePgDiagnosticContext().state).toBe('unobserved');
   });
 });
 

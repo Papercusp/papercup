@@ -45,6 +45,47 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__PAPERCUSP_HOSTED_BROWSER__; });
 describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
+  it("discloses cost before the user provisions and leaves the real provision action untouched by guide controls", async () => {
+    data.rows = [{ ...connection,
+      scopes: [{ id: "project", label: "Tutorial project" }],
+      regions: [{ id: "us-central1", label: "Iowa", zones: ["us-central1-a"] }],
+      sizes: [{ id: "small", label: "Small", hourlyUsd: 0.02 }],
+      images: [{ id: "ubuntu", label: "Ubuntu" }],
+      networks: [{ id: "private", label: "Private" }],
+    }];
+    mount("/cloud-workspaces?step=configure&connection=gcp&name=Cost%20review&scope=project&region=us-central1&size=small&image=ubuntu&network=private");
+    const guide = await screen.findByRole("region", { name: "First agent guide" });
+    await within(guide).findByRole("heading", { name: "Review configuration and cost" });
+    const estimate = screen.getByRole("group", { name: "Estimated workspace cost" });
+    expect(within(estimate).getByText("Estimated monthly cost")).toBeTruthy();
+    expect(within(estimate).getByText(/730 compute hours.*selected disk.*provider taxes and egress excluded/)).toBeTruthy();
+    expect(within(guide).getByText(/Google Cloud bills for provisioned resources, including retained disks/)).toBeTruthy();
+    const provision = screen.getByRole("button", { name: "Provision workspace" }) as HTMLButtonElement;
+    await waitFor(() => expect(provision.disabled).toBe(false));
+    for (const name of ["Show me", "Pause", "Resume guide"])
+      fireEvent.click(within(guide).getByRole("button", { name }));
+    expect(data.mutate).not.toHaveBeenCalled();
+    // Positive control: the maintained product action exists and dispatches
+    // only after the user operates its enabled control.
+    fireEvent.click(provision);
+    await waitFor(() => expect(data.mutate).toHaveBeenCalledWith(expect.objectContaining({ action: "provision" })));
+  });
+  it("explains unmet provisioning prerequisites and keeps the actual product action blocked", async () => {
+    data.rows = [connection];
+    mount("/cloud-workspaces?step=configure&name=Prerequisite%20review");
+    const guide = await screen.findByRole("region", { name: "First agent guide" });
+    await within(guide).findByRole("heading", { name: "Review configuration and cost" });
+    const provision = screen.getByRole("button", { name: "Provision workspace" }) as HTMLButtonElement;
+    expect(provision.disabled).toBe(true);
+    expect(provision.getAttribute("aria-describedby")).toBe("provision-readiness");
+    const readiness = document.getElementById("provision-readiness")!;
+    expect(within(readiness).getByText(/Provisioning blocked/)).toBeTruthy();
+    for (const name of ["Project, account, or subscription loaded", "Region loaded", "Machine size loaded", "Image loaded", "Network loaded"])
+      expect(within(readiness).getByText(name)).toBeTruthy();
+    fireEvent.click(within(guide).getByRole("button", { name: "Show me" }));
+    fireEvent.click(provision);
+    expect(data.mutate).not.toHaveBeenCalled();
+  });
   it("recognizes an existing healthy workspace, records real cost review and waits for the host-specific connector", async () => {
     data.rows = [connection, { ...workspace, health: { status: "healthy", checks: [] } }];
     mount("/cloud-workspaces?step=operate&host=customer");
