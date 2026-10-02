@@ -272,7 +272,13 @@ describe("cc PostToolUse locks-release hook — operator-independent paths", () 
     );
     const elapsed = Date.now() - t0;
     expect(r.status).toBe(0); // release is always best-effort — never blocks the turn
-    expect(r.stdout).toBe("");
+    // 9ae6b57aad: an unconfirmed release is surfaced to the agent as a
+    // LOCK MODE UPDATE (its lock may still be held), never a silent no-op.
+    const hookOutput = JSON.parse(r.stdout).hookSpecificOutput;
+    expect(hookOutput.hookEventName).toBe("PostToolUse");
+    expect(hookOutput.additionalContext).toContain("LOCK MODE UPDATE");
+    expect(hookOutput.additionalContext).toContain("manual");
+    expect(hookOutput.additionalContext).toContain("a.ts");
     expect(elapsed).toBeGreaterThan(1500); // proves the retry loop actually ran
     // EI-211603: an HTTP/transport failure is not a confirmed release. Keep the
     // token + paths so the parent exec-completion recovery can retry instead of
