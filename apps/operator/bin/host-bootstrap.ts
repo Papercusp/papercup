@@ -26,6 +26,12 @@ import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-s
 import { ensureHostedWorkspaceHostRuntime } from '@papercusp/operator-core/lib/workspace-host/hosted-workspace-host-runtime';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
+import {
+  MCP_PROXY_TENANT_SERVICE,
+  loopbackPortHeldByForeignUid,
+  pinTenantLoopbackPort,
+  pinTenantLoopbackPorts,
+} from '@papercusp/operator-core/lib/process-supervision/tenant-loopback-port';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
@@ -135,7 +141,17 @@ function startPackagedMcpProxy(): void {
     stop: stopPackagedMcpProxy,
   });
 
+  // WI-10005481: on a host shared by several Linux users, :9071 may be ANOTHER tenant's
+  // proxy. Pin this tenant's port first (moves PAPERCUSP_MCP_PROXY_PORT/BASE for every
+  // later reader and child), and never adopt a healthy proxy another uid owns.
+  pinTenantLoopbackPort(MCP_PROXY_TENANT_SERVICE);
   const port = Number(process.env.PAPERCUSP_MCP_PROXY_PORT || 9071);
+  if (loopbackPortHeldByForeignUid(port)) {
+    console.error(
+      `[host] packaged MCP proxy: :${port} belongs to another user — not adopting it and not starting one (WI-10005481)`,
+    );
+    return;
+  }
   void (async () => {
     if (BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) return;
     if (await packagedMcpProxyAlive(port)) return;
@@ -359,6 +375,16 @@ const CPU_WORKER_BREAKER_IDENTITY = {
 export function runBootstrap(): void {
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
+
+  // WI-10005481: decide this tenant's gateway / MCP-proxy ports by listener ownership
+  // BEFORE anything can spawn an agent, so no agent env ever carries a port another
+  // Linux user owns. Synchronous (/proc read), idempotent, a no-op when the defaults are
+  // free or ours. Never fatal: a failure leaves the pre-fix defaults in place.
+  try {
+    pinTenantLoopbackPorts();
+  } catch (err) {
+    console.warn('[host] tenant loopback port pin failed (non-fatal):', err instanceof Error ? err.message : err);
+  }
 
   // Request-only hosts serve the HTTP/tool plane but do not own the host-wide
   // warmers, voice transports, or credential refreshers. Keep this predicate
