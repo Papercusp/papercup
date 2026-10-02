@@ -35,6 +35,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'submit-verify-human-input-retry' ||
     kind === 'respawn-carry-fresh-epoch-retry' ||
     kind === 'respawn-carry-turn-start-retry' ||
+    // WI-10005472: a headless Claude child whose composer paint was never seen
+    // fell back to the ordinary busy gate instead of dropping its carry/kickoff.
+    kind === 'headless-claude-composer-unseen-ordinary-gate' ||
     kind === 'operator-pin-healed' ||
     // The same heal, resolved by routing through the staging proxy instead.
     kind === 'operator-pin-routed' ||
@@ -91,6 +94,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'turn-deferred-quota-blocked' ||
     kind === 'launch-kickoff-model-turn-absent' ||
     kind === 'launch-role-mcp-unavailable' ||
+    // The carry-respawn sibling of launch-role-mcp-unavailable (computed kind in
+    // psu-pty-host.mjs: result.ok ? 'respawn-carry-mcp-ready' : '...-unavailable').
+    kind === 'respawn-carry-mcp-unavailable' ||
     kind === 'busy-gate-expired' ||
     kind === 'codex-starting-stuck-early-drop' ||
     // A respawn whose compaction was never reported to the operator.

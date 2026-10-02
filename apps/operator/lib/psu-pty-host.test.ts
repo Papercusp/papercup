@@ -5,6 +5,7 @@
  * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
  */
 import { describe, it, expect, vi, afterAll } from 'vitest';
+import { readFileSync } from 'node:fs';
 import * as realHost from '../scripts/psu-pty-host.mjs';
 import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
 
@@ -1344,6 +1345,52 @@ describe('fresh headless Claude kickoff composer gate', () => {
       promptReady: false,
     })).toBe('ordinary-gate');
     expect(HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS).toBe(20_000);
+  });
+
+  it('falls back to the ordinary gate once onboarding expired without ever seeing the composer (WI-10005472)', () => {
+    // Captured 2026-10-02 (su-9ec5d030 carry-respawn, normalized PTY log): after
+    // the respawn the new child's whole startup output was this status-line
+    // fragment; no banner and no composer row ever reached the host, yet the
+    // next wake inject through the ordinary gate landed on its first poll. The
+    // old gate waited 600s and dropped the carry note.
+    const observedStartup =
+      '                                                           ◉ xhigh · /effort\n\nB\n';
+    const promptReady = freshChildPromptReady('claude', observedStartup);
+    expect(promptReady).toBe(false);
+    const onboarding = makeHeadlessClaudeOnboardingStateMachine({ startupMs: 30_000, now: () => 0 });
+    expect(onboarding.observe(observedStartup, 1_000)).toMatchObject({ action: 'none', active: true });
+    // Still inside the onboarding window: keep waiting for positive proof.
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true, requireInitialOutput: true, promptReady,
+      onboardingExpired: onboarding.status().expired,
+    })).toBe('wait-for-composer');
+    expect(onboarding.expire(30_000)).toMatchObject({ action: 'expired', expired: true });
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true, requireInitialOutput: true, promptReady,
+      onboardingExpired: onboarding.status().expired,
+    })).toBe('composer-unseen-ordinary-gate');
+    // Positive composer proof still wins, and the fallback never applies to
+    // non-headless or non-startup injects.
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true, requireInitialOutput: true, promptReady: true, onboardingExpired: true,
+    })).toBe('composer-ready');
+    expect(headlessClaudeKickoffReadiness({
+      enabled: false, requireInitialOutput: true, promptReady: false, onboardingExpired: true,
+    })).toBe('ordinary-gate');
+    expect(headlessClaudeKickoffReadiness({
+      enabled: true, requireInitialOutput: false, promptReady: false, onboardingExpired: true,
+    })).toBe('ordinary-gate');
+  });
+
+  it('wires the onboarding expiry into the startup kickoff gate (WI-10005472)', () => {
+    // The pure decision above only helps if the inject loop feeds it the CURRENT
+    // child's onboarding state and treats the fallback as "ask the busy gate".
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    expect(src).toMatch(/activeHeadlessClaudeOnboarding = headlessClaudeOnboarding;/);
+    expect(src).toMatch(/onboardingExpired: activeHeadlessClaudeOnboarding\?\.status\(\)\.expired === true/);
+    expect(src).toMatch(/appendHostEvent\(ownerId, 'headless-claude-composer-unseen-ordinary-gate'/);
+    // Only 'wait-for-composer' defers; every other readiness value reaches a write or the busy gate.
+    expect(src).toMatch(/claudeKickoffReadiness === 'wait-for-composer'\s*\?\s*\{ deferred: true, reason: 'headless-claude-composer-not-ready' \}\s*:\s*await agentBusyGate\.waitAtPrompt\(\)/);
   });
 });
 
