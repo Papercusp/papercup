@@ -1926,5 +1926,124 @@
     "nativeModelCompleteClosureVerified": false,
     "next": "Prepare independent R6 from completed R5, overlay the two verified repair pins plus retained current sources/fixtures, qualify FILE-worker before/after admission, then new full capture. Preserve failed native-cuda-full-v1."
   },
-  "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
+  "nativeRuntimeV6Preparation": {
+    "status": "Completed independent runtime qualification; no model inference during qualification",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v6",
+    "completedAt": "2026-10-02T17:15:18.652Z",
+    "qualification": {
+      "bytes": 7584,
+      "sha256": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f"
+    },
+    "baselineQualification": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345",
+    "sourceRecordsVerified": 31405,
+    "dependencyRecordsVerified": 241451,
+    "independentRegularFilesVerified": 272472,
+    "testedOverlays": 12,
+    "fileWorkerBootBeforeAndAfterAdmissionVerified": true,
+    "currentRepairPins": "nativeObservationChildEnvRepair.sources and tests",
+    "historicalDossierSnapshot": "R6 retains the pre-serialization-repair dossier snapshot. Its private qualification pins remain immutable; the subsequent public path correction changed no source or test content."
+  },
+  "nativeCudaFullV2Attempt": {
+    "status": "Partial measured outcome: six short inputs pass; actual8192 inference fails allocation; full population remains incomplete",
+    "workItem": "WI-10004540",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-full-v2",
+    "runtimeQualification": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f",
+    "startedAt": "2026-10-02T17:27:21.467Z",
+    "completedAt": "2026-10-02T17:27:59.009464Z",
+    "captureExitCode": 1,
+    "exportExitCode": 0,
+    "modelProcessId": 2190559,
+    "captureCompletion": {
+      "bytes": 4124,
+      "sha256": "5acf1511f9076ab69040095cac12aae2d3d3def5f81ebaf2aa42216aacd0c613",
+      "artifactsVerified": 25
+    },
+    "terminalReceipt": {
+      "bytes": 304,
+      "sha256": "377852adece997b8ce61396622ca79e3965813d5802b69a8ff4969373a2c4b29",
+      "source": "spawn-pipe",
+      "captureStartedBeforeExec": true,
+      "eof": true,
+      "exitCode": 1,
+      "signal": null
+    },
+    "stderr": {
+      "bytes": 47720,
+      "sha256": "d265687c5d29bf5f2a34d94570a35574eaa45a32394a8eef01fbadb41d303461"
+    },
+    "offlineAssessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-full-v2-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 638232,
+      "sha256": "a518ef34684482dc81bee273983993077da4c4ece6de8f2d89ef7c35995951b9",
+      "assessor": "cache:validation/mdenseon-boundary-WI10004540-20261001/assess-native-full-v2-v1.mjs",
+      "assessorSha256": "b348b42946862a87e2499098baa8df9d3350c971cc4a8c98fcd1991c0ab4ed5d",
+      "modelInferencePerformed": false,
+      "canonicalSource": "Qualified R6 candidate-embedders.ts and measurement-manifest.ts"
+    },
+    "completedSingles": [
+      "single-short-query",
+      "single-short-document",
+      "single-unicode",
+      "single-code",
+      "single-whitespace",
+      "single-empty"
+    ],
+    "shortInputAssessment": {
+      "passedFixedVectorGates": true,
+      "maximumAbsoluteError": 5.066394805908203e-7,
+      "tokenIdsEqual": true,
+      "actualWorkerInputsAndGraphNativeCallsVerified": true,
+      "rawClockSamplesVerified": true,
+      "observedLibraryMapsAndCapacitySamplesVerified": true,
+      "sixInputSubsetRankingsEqual": true,
+      "scope": "Six completed singles only; no eight-input ranking or complete loader closure claim"
+    },
+    "profilerAssessment": {
+      "version": "2026.3.2.476",
+      "databaseIntegrity": "ok",
+      "timeNormalize": false,
+      "timeShift": 0,
+      "cudaKernelRows": 5242,
+      "uniqueCudaLaunchRows": 5242,
+      "nativeRequestWindows": 7,
+      "kernelCountsInRequestOrder": [838, 882, 882, 882, 882, 838, 38],
+      "completeKernelProcessCensusVerified": true,
+      "uniqueKernelLaunchRequestBindingVerified": true,
+      "clockBasis": "MatchedR5 CUDA calibration plus unshifted session CLOCK_MONOTONIC origin and API launch intervals; no kernel completion-time join",
+      "includesFailed8192Request": true
+    },
+    "loaderAssessment": {
+      "loaderActivityGuardPassed": true,
+      "noLoaderActivityDuringMeasuredWindows": true,
+      "generatedObjectMapGuardPassed": true,
+      "generatedObjectMapJoins": 34,
+      "completeBeforeInferenceClosureVerified": false,
+      "completeClosureRefusal": "Canonical complete closure requires actual model exit0; preserved terminal receipt is exit1. Receipt was never rewritten."
+    },
+    "deviceCapacity": {
+      "uuid": "GPU-56997258-f6ca-96b7-ac4c-3fa3ec37db73",
+      "pciBusId": "00000000:51:00.0",
+      "profilerGpuId": 0,
+      "modelProcessDeviceBindingVerified": true,
+      "totalMiBReportedByNvidiaSmi": 24576,
+      "totalBytesReportedByProfiler": 25260720128,
+      "samples": "Every native start/end sample has the same UUID and PCI device, joined to TARGET_INFO_GPU and TARGET_INFO_CUDA_DEVICE for modelPID2190559",
+      "before8192FreeMiB": 8475,
+      "after8192FreeMiB": 3355,
+      "scope": "Before/after snapshots; neither available contiguous allocation nor external pressure is inferred. Profiler and nvidia-smi totals retain their respective reporting planes."
+    },
+    "failedCell": {
+      "id": "single-full-8192",
+      "actualInputShape": [1, 8192],
+      "node": "/layers.0/attn/Add_2",
+      "requestedBufferBytes": 3221225472,
+      "outcome": "Actual ORT allocation refusal; no successful8192 vector",
+      "shapeArithmetic": "1*12*8192*8192*4 equals the requested buffer size; arithmetic alone does not establish the allocator mechanism."
+    },
+    "notMeasured": ["single-over-limit", "padded", "mixed-length", "full-eight-input-ranking"],
+    "fullGpuPopulationComplete": false,
+    "next": "Audit allocation evidence before any further expensive attempt. Preserve V2; use existing cell selection only for a new named measurement of remaining cells, with actual terminal and profiler evidence."
+  },
+  "separateOpenDefect": "EI-24795092971119894 is DONE/COMMITTED for the independent-reference/failure-receipt detector repair. Actual8192 allocation compatibility remains owned by WI-10004540; no successful GPU8192 inference is claimed."
 }
