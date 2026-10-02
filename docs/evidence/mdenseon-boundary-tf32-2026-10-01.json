@@ -2311,6 +2311,205 @@
     "priorV2PaddedV7AndR6Preserved": true,
     "next": "Diagnose the owned teardown residue and actual native global logger filtering before another large instrumented attempt, or continue independent plan bars. No blind retry, pressure/fragmentation attribution, model/index/precision/production switch or live gate action."
   },
+  "nativeCudaHostDebuggerControls": {
+    "status": "Host debugger protocol measured; intermittent heap root cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-host-debugger-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 4923,
+      "sha256": "65dd3dec8d322ab916e9f1791d8f6b5376cb48a3758c049f6c07fe24227137d3"
+    },
+    "captures": [
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v4",
+        "artifact": "launch.json",
+        "bytes": 2701,
+        "sha256": "dd4b2744f44632f2f48ca2336dda829c1c4cd562d591e03038c1b2ea87d7611a"
+      },
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v5",
+        "artifact": "completion.json",
+        "bytes": 29582,
+        "sha256": "b2fcb09d2537bd032f1fbfd6f7c3412cc0e7af7dccd5d7271e88a49090e9e4d2"
+      }
+    ],
+    "controls": [
+      {
+        "version": 4,
+        "cell": "cpu-debugger-preflight",
+        "processId": 795519,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": false,
+        "inferiorSanitizerInitObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 2928,
+          "sha256": "667f3ad1b49420b7ae0628938ebf91cce26000d83fa606459d5eba7d38a508d2"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cpu-debugger-abort-control",
+        "processId": 887952,
+        "targetExitCode": null,
+        "targetSignal": "SIGABRT",
+        "hostBacktraceCaptured": true,
+        "intentionalAbort": true,
+        "instrumented": false,
+        "inferiorSanitizerInitObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 3000,
+          "sha256": "55a4cb1a09c244e14b965f85e3f47520f238c8638cd84f3d5dd60fb8b677a1a2"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-native-debugger-control",
+        "processId": 1042966,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": false,
+        "inferiorSanitizerInitObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4673,
+          "sha256": "e815305ab2d507fb84e778a7eb6a06eadafaae9fbd12a0178272f72042583f04"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-1",
+        "processId": 1046614,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "8e2668cc414675a854e01823a04724db970fe712a658b29a9811765fc8cd90e3"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-2",
+        "processId": 1051903,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "8923de244604fba18f08afd7817dbc5ae99bb4fca12d2f8b4e3e39fef0cea628"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-3",
+        "processId": 1057647,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "44c709dcade66b1157adf0c6e694562bcc5ebc8b6cd31d0df1dd88bd716384f3"
+        }
+      },
+      {
+        "version": 5,
+        "cell": "cuda-instrumented-debugger-4",
+        "processId": 1062396,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "hostBacktraceCaptured": false,
+        "intentionalAbort": false,
+        "instrumented": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "heapCorruptionMessage": false,
+        "completion": {
+          "bytes": 4986,
+          "sha256": "b0fe8f5aeedfa91f748d1b4eeccedd933490054f35701b75de494c814affcac3"
+        }
+      }
+    ],
+    "interpretation": {
+      "observed": "Real GDB CPU normal-exit and intentional SIGABRT controls qualify the inferior terminal/backtrace protocol. One uninstrumented and four instrumented CUDA shape-error/dispose/uncaught controls all exited1 normally; actual inferior sanitizer initialization and API summary0 verified on all four instrumented cells. No intermittent heap abort reproduced under GDB.",
+      "limits": [
+        "Debugger changes observation; no causal absence or fix inference",
+        "Intentional CPU abort is a protocol positive control, not a heap-corruption reproduction",
+        "Origin of historical heap corruption and full-model first logger initializer remain unresolved",
+        "No embedding-model inference or full GPU acceptance performed"
+      ]
+    },
+    "verification": {
+      "testRunGroup": "d319214e-78b9-4f5c-94a9-dccf5eac6b3c",
+      "testRunIds": [
+        20554496
+      ],
+      "passed": 27,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "checkedFiles": 1,
+        "errors": 0,
+        "semanticCheckIncomplete": false
+      },
+      "rawPinsVerified": 60,
+      "olderSmallControlRawPinsVerified": 76,
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 10793,
+          "sha256": "07acc0671de0b89dccaf0ff982006e23f43b6f837e3bce896566bb616a89558c"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.gdb",
+          "bytes": 2162,
+          "sha256": "661283659deb134395f59243209a506338f3573cbc723f1b1362bb535539ca6d"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.d.mts",
+          "bytes": 376,
+          "sha256": "3829bd75de0cf9205a2359e42f86d152608564d40b271b4fc74cbda52def8a15"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 14616,
+          "sha256": "fcd7ec8479b2825b80efc554c8c837ed0e2888d95bd52d04f4628e8225f82e8c"
+        }
+      ]
+    },
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "embeddingModelInferencePerformed": false,
+    "fullGpuPopulationComplete": false,
+    "next": "Keep the bug open; use a host allocator detector or initializer trace with new causal instrumentation rather than repeating this non-reproducing debugger batch or large inference."
+  },
   "nativeCudaTeardownControls": {
     "status": "Small native teardown reproduction and first-initializer logging control; heap root cause remains open",
     "workItem": "WI-10005599",
