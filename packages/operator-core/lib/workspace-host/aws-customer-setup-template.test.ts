@@ -7,7 +7,7 @@ import {
   awsCustomerSetupTemplate,
   awsWorkspaceHostLeastPrivilegePolicy,
 } from './aws-customer-setup-template';
-import { hostedAwsHostStackFragment } from './hosted-aws-host-stack';
+import { awsSpotServiceLinkedRoleStatement, hostedAwsHostStackFragment } from './hosted-aws-host-stack';
 
 const ACCOUNT = '123456789012';
 const REGION = 'eu-west-2';
@@ -49,10 +49,18 @@ describe('awsCustomerSetupTemplate — the customer-run (desktop) AWS setup temp
     const role = operatorRole(doc());
     expect(role.Policies).toHaveLength(1);
     const statements = role.Policies[0].PolicyDocument.Statement;
-    expect(statements).toHaveLength(1);
+    expect(statements).toHaveLength(2);
     expect(statements[0].Effect).toBe('Allow');
     expect([...statements[0].Action].sort()).toEqual([...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS].sort());
     expect(statements[0].Action.some((action) => action.includes('*'))).toBe(false);
+    // The only other grant: creating EC2's Spot service-linked role, which a spot host's first
+    // launch needs (WI-10005389). One role, one service, never a wildcard action.
+    expect(statements[1]).toEqual(awsSpotServiceLinkedRoleStatement('*'));
+    expect(statements[1]).toMatchObject({
+      Action: 'iam:CreateServiceLinkedRole',
+      Resource: 'arn:aws:iam::*:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot',
+      Condition: { StringEquals: { 'iam:AWSServiceName': 'spot.amazonaws.com' } },
+    });
     expect(awsWorkspaceHostLeastPrivilegePolicy()).toEqual(role.Policies[0].PolicyDocument);
   });
 
