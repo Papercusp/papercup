@@ -734,7 +734,22 @@ export const ADV_SESSIONS_CLAIM_MIN_DDL = `
   -- hand-built a narrower adv_sessions first is filled in too.
   ALTER TABLE harness_shared.adv_sessions
     ADD COLUMN IF NOT EXISTS plan_slug text,
-    ADD COLUMN IF NOT EXISTS shutdown_accepted_at timestamptz`;
+    ADD COLUMN IF NOT EXISTS shutdown_accepted_at timestamptz,
+    -- listRecordedLiveSessions selects these too. Without them it logs
+    -- 'column "agent" does not exist' (console.warn fails the file under
+    -- vitest-fail-on-console). Types match the live table.
+    ADD COLUMN IF NOT EXISTS agent text,
+    ADD COLUMN IF NOT EXISTS feature text,
+    ADD COLUMN IF NOT EXISTS mode text,
+    ADD COLUMN IF NOT EXISTS terminal_bin text,
+    ADD COLUMN IF NOT EXISTS pid integer,
+    ADD COLUMN IF NOT EXISTS window_id text,
+    ADD COLUMN IF NOT EXISTS omp_thread_id text,
+    ADD COLUMN IF NOT EXISTS label text,
+    ADD COLUMN IF NOT EXISTS cwd text,
+    ADD COLUMN IF NOT EXISTS session_id text,
+    ADD COLUMN IF NOT EXISTS exit_code integer,
+    ADD COLUMN IF NOT EXISTS ended_signal text`;
 
 /**
  * `fleet_membership_events` — the append-only fleet membership fact the claim path's
