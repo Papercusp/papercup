@@ -303,6 +303,40 @@ function defaultCompletionStatus(value: unknown): unknown {
   return record.status === undefined ? { ...record, status: 'done', __statusDefaulted: true } : value;
 }
 
+const completionInputSchema = CompletionRecordSchema.extend({
+  workItem: z.string().min(1).optional(),
+  // The preprocess below owns the default so Zod 4 does not publish this
+  // defaulted field as required to completion callers.
+  status: z.string().min(1).optional(),
+  // EI-24820676473298331: `treeStamp` and `settlementManifest` are SERVER-STAMPED.
+  // coerceCompletionShape deletes them before this schema runs, so publishing them
+  // in the caller INPUT schema only invited callers to send them and cost ~2.4 KB of
+  // tool-delivery floor bytes. The persisted record (CompletionRecordSchema) keeps them.
+  // The one-line describe keeps the caller contract EI-21310406381433990 pins
+  // (complete.test.ts) without re-publishing both subtrees.
+  verification: CompletionVerificationEvidenceSchema.omit({
+    treeStamp: true,
+    settlementManifest: true,
+  })
+    .describe(
+      'Server-stamped verification metadata: the server records `treeStamp` and `settlementManifest`; ' +
+        'callers must omit `treeStamp` and `settlementManifest`. Their persisted headSha is a full ' +
+        'lowercase 40- or 64-character commit SHA; short hashes are invalid.',
+    )
+    .optional(),
+  // EI-20724228359175431: 'truncated-json' marks a
+  // JSON-stringified completion whose tail was cut off and whose closers were
+  // rebuilt, so the caller can be told the record may be missing a field that
+  // never arrived.
+  __shapeCoercedFrom: z.literal('truncated-json').optional(),
+  // EI-15711: internal marker set by the preprocess above when it supplied the
+  // `status` default, so the close inference can tell an omitted status from an
+  // explicit `status:'done'`. Stripped before the record is stored or broadcast,
+  // exactly like __shapeCoercedFrom. `z.literal(true)` means a caller can only ever
+  // make this MORE conservative (suppressing their own inference), never less.
+  __statusDefaulted: z.literal(true).optional(),
+});
+
 const completionSpec = z
   .preprocess(
     (raw, ctx) => {
@@ -316,39 +350,7 @@ const completionSpec = z
       }
       return coerced;
     },
-    CompletionRecordSchema.extend({
-      workItem: z.string().min(1).optional(),
-      // The preprocess above owns the default so Zod 4 does not publish this
-      // defaulted field as required to completion callers.
-      status: z.string().min(1).optional(),
-      // EI-24820676473298331: `treeStamp` and `settlementManifest` are SERVER-STAMPED.
-      // coerceCompletionShape deletes them before this schema runs, so publishing them
-      // in the caller INPUT schema only invited callers to send them and cost ~2.4 KB of
-      // tool-delivery floor bytes. The persisted record (CompletionRecordSchema) keeps them.
-      // The one-line describe keeps the caller contract EI-21310406381433990 pins
-      // (complete.test.ts) without re-publishing both subtrees.
-      verification: CompletionVerificationEvidenceSchema.omit({
-        treeStamp: true,
-        settlementManifest: true,
-      })
-        .describe(
-          'Server-stamped verification metadata: the server records `treeStamp` and `settlementManifest`; ' +
-            'callers must omit `treeStamp` and `settlementManifest`. Their persisted headSha is a full ' +
-            'lowercase 40- or 64-character commit SHA; short hashes are invalid.',
-        )
-        .optional(),
-      // EI-20724228359175431: 'truncated-json' marks a
-      // JSON-stringified completion whose tail was cut off and whose closers were
-      // rebuilt, so the caller can be told the record may be missing a field that
-      // never arrived.
-      __shapeCoercedFrom: z.literal('truncated-json').optional(),
-      // EI-15711: internal marker set by the preprocess above when it supplied the
-      // `status` default, so the close inference can tell an omitted status from an
-      // explicit `status:'done'`. Stripped before the record is stored or broadcast,
-      // exactly like __shapeCoercedFrom. `z.literal(true)` means a caller can only ever
-      // make this MORE conservative (suppressing their own inference), never less.
-      __statusDefaulted: z.literal(true).optional(),
-    }),
+    completionInputSchema,
   )
   .describe(
     // EI-23379068490085254: this string is serialized TWICE (the single `completion`
@@ -5447,9 +5449,16 @@ async function completeOne(
 // Named so the args preprocess can reach its own inner schema at parse time (RSR-P-008-A).
 // gatherFlatCompletion consumes these legacy single-item aliases before this schema runs.
 // Declare them here too so the projected schema and invalid-argument help describe the
-// same input contract that the preprocess actually accepts.
+// same input contract that the preprocess actually accepts. Reuse the caller-facing
+// completion fields so legacy aliases such as `coordNotes` publish their real types;
+// `z.unknown()` was rendered by direct wrappers as an object and invited invalid calls.
+const completionInputFields = completionInputSchema.shape as Record<string, z.ZodTypeAny>;
 const flatCompletionAliasShape = Object.fromEntries(
-  COMPLETION_FIELDS.map((field) => [field, z.unknown().optional()]),
+  COMPLETION_FIELDS.map((field) => {
+    const schema = completionInputFields[field];
+    if (!schema) throw new Error(`Missing completion input schema for flat alias: ${field}`);
+    return [field, schema.optional()];
+  }),
 );
 
 const workItemsCompleteTool = defineTool({

@@ -277,6 +277,35 @@ export function compareSourceGroupedLegs(
   return { baseline, candidate, unit: 'source-target-component', decisionMargin: margin, byClass };
 }
 
+/** Planning only: extrapolate the existing bootstrap-derived MDE under stable
+ * paired variance and independent future components. Accessible source counts
+ * are an upper bound: co-relevance unions and label exclusions reduce them.
+ * Neither projection resolves a margin or changes the observed verdict. */
+export function planSourcePower(comparison: ReturnType<typeof compareSourceGroupedLegs>, accessibleTestSources: number) {
+  if (!Number.isSafeInteger(accessibleTestSources) || accessibleTestSources < 1
+    || comparison.unit !== 'source-target-component' || comparison.decisionMargin !== DECISION_RELEVANT_DELTA_MRR) throw new Error('invalid source power population/contract');
+  return Object.fromEntries(Object.entries(comparison.byClass).map(([cls, row]) => {
+    const { n, mde80, delta } = row.comparison;
+    if (n !== row.sourceTargets || n !== row.groups.length || n > accessibleTestSources
+      || !Number.isSafeInteger(n) || n < 1 || !Number.isFinite(mde80) || mde80 < 0
+      || !Number.isFinite(delta.point) || Math.abs(delta.point) > 1) throw new Error('invalid source power comparison');
+    const margin = comparison.decisionMargin, distance = Math.abs(Math.abs(delta.point) - margin);
+    const status = n < 2 ? 'insufficient-components' : mde80 === 0 ? 'zero-observed-variance-no-extrapolation' : 'conditional-variance-projection';
+    const project = (effect: number): number | null => {
+      if (status !== 'conditional-variance-projection' || effect === 0) return null;
+      const target = Math.ceil(n * (mde80 / effect) ** 2);
+      return Number.isSafeInteger(target) ? Math.max(n, target) : null;
+    };
+    return [cls, { sourceComponents: n, observedMde80: mde80, observedDelta: delta.point,
+      observedMarginDecision: row.marginDecision, decisionMargin: margin, marginBoundaryDistance: distance,
+      accessibleTestSourcesUpperBound: accessibleTestSources, status,
+      projectedComponentsForEffect03VsZero: project(margin),
+      projectedComponentsForObservedMarginDistance: project(distance),
+      projectedMde80AtSourceUpperBound: status === 'conditional-variance-projection' ? mde80 * Math.sqrt(n / accessibleTestSources) : null,
+      acceptanceEstablishedByProjection: false }];
+  }));
+}
+
 export function classesDisagree(cmp: LegComparison): boolean {
   const signs = new Set<string>();
   for (const [cls, row] of Object.entries(cmp.byClass)) {

@@ -83,19 +83,23 @@ export function summarizeHeapSnapshot(snap, { top = 30 } = {}) {
     definition: 'V8 snapshot node self_size, after snapshot GC; not retained/exclusive bytes or total native memory.' };
 }
 
-/** Private snapshot analysis using the maintained Rust/WASM dominator graph.
+/** @typedef {{parser: string, rootIndex: number, limits: {top: number, perClass: number, retainerDepth: number, maxRetainers: number}, groups: {class: string, count: number, selfSizeBytes: number, retainedSizeBytes: number, nodes: {index: number, id: number, type: string, class: string, selfSizeBytes: number, retainedSizeBytes: number, children: number, retainers: {index: number, id: number, type: string, class: string, selfSizeBytes: number, retainedSizeBytes: number, children: number, retainsIndex: number, edgeType: string}[], retainerCount: number, retainersTruncated: boolean}[]}[], definition: string, privacy: string, upstreamRevision?: string, retainerDefinition?: string, native?: {executableSha256: string, inputBytes: number, inputSha256: string, elapsedMs: number, status: number|null, signal: NodeJS.Signals|null, stdoutBytes: number, stderrBytes: number, errorCode: string|null}}} HeapRetainerReport */
+
+/** Private snapshot analysis using the maintained Rust native/WASM dominator graph.
  * Input remains bytes: constructing a V8 string would reject large snapshots.
  * Returned names contain only constructor/function labels, never string values
  * or edge/property names. Class retained sizes overlap and must not be added.
  * @param {Uint8Array} input
- * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number, decoderControl?: string }} [options]
+ * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number, decoderControl?: string, nativeExecutable?: string }} [options]
+ * @returns {Promise<HeapRetainerReport>}
  */
-export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, retainerDepth = 2, maxRetainers = 32, decoderControl } = {}) {
+export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, nativeExecutable, retainerDepth = nativeExecutable ? 1 : 2, maxRetainers = 32, decoderControl } = {}) {
   if (!(input instanceof Uint8Array) || !input.byteLength) throw new TypeError('Heap graph requires snapshot bytes');
   for (const [name, value, maximum] of [['top', top, 30], ['perClass', perClass, 10],
     ['retainerDepth', retainerDepth, 3], ['maxRetainers', maxRetainers, 100]]) {
     if (!Number.isInteger(value) || value < 1 || value > maximum) throw new TypeError('Invalid heap graph ' + name);
   }
+  if (nativeExecutable) return summarizeNativeHeapRetainers(input, nativeExecutable, { top, perClass, retainerDepth, maxRetainers });
   const heapParser = await import('@vscode/v8-heap-parser');
   const { decode_bytes, init_panic_hook, NodeType, EdgeType, WasmSortBy } = heapParser;
   // Without the upstream hook, a Rust panic loses its origin and becomes only
@@ -180,6 +184,35 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
         ...(decoderControl && phase === 'decode-bytes' ? { nativeControl: checkNativeHeapDecode(input, decoderControl) } : {}) },
     });
   } finally { console.error = consoleError; graph?.free(); }
+}
+
+/** Run the pinned native adapter without persisting the private snapshot.
+ * Build with cargo build --locked --release --manifest-path scripts/heap-retainers-native/Cargo.toml.
+ * @param {Uint8Array} input
+ * @param {string} executable
+ * @param {{ top: number, perClass: number, retainerDepth: number, maxRetainers: number }} limits
+ * @returns {HeapRetainerReport}
+ */
+function summarizeNativeHeapRetainers(input, executable, limits) {
+  if (limits.retainerDepth !== 1) throw new TypeError('Native heap graph supports retainerDepth 1 only');
+  const executableSha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
+  const started = Date.now();
+  const result = spawnSync(executable, [limits.top, limits.perClass, limits.retainerDepth, limits.maxRetainers].map(String),
+    { input, encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+  const receipt = { executableSha256, inputBytes: input.byteLength,
+    inputSha256: createHash('sha256').update(input).digest('hex'), elapsedMs: Date.now() - started,
+    status: result.status, signal: result.signal, stdoutBytes: Buffer.byteLength(result.stdout ?? ''),
+    stderrBytes: Buffer.byteLength(result.stderr ?? ''), errorCode: result.error?.code ?? null };
+  let report;
+  try { report = JSON.parse(result.stdout ?? ''); } catch {}
+  if (result.status !== 0 || result.error || report?.upstreamRevision !== '05edd8131a77790ab0e7bce2eedf5770d6bb83ae') {
+    const phase = ['preflight', 'read-input', 'decode-bytes', 'class-dominators', 'direct-retainers'].includes(report?.error?.phase)
+      ? report.error.phase : 'native-process';
+    throw Object.assign(new Error('Heap retainer analysis failed at ' + phase + ' (native)'), {
+      diagnostic: { phase, native: receipt },
+    });
+  }
+  return { ...report, native: receipt };
 }
 
 /** Compare the SAME bytes with the pinned upstream native v8-heap executable.

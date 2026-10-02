@@ -6467,6 +6467,40 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(text).toContain('not inside');
     });
 
+    it('publishes the flat coordNotes alias as a string and rejects object-shaped notes', () => {
+      const json = z.toJSONSchema(complete.args as never) as JsonSchemaDocument & {
+        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ properties?: Record<string, unknown> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const single = branches.find((branch) => Boolean(branch.properties?.id));
+      const coordNotes = resolveLocalSchemaRef(json, single?.properties?.coordNotes);
+
+      expect(coordNotes.type).toBe('string');
+
+      const invalid = (
+        complete.args as {
+          safeParse: (value: unknown) => {
+            success: boolean;
+            error?: { issues: Array<{ path: Array<string | number>; message: string }> };
+          };
+        }
+      ).safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        summary: 'fixed',
+        coordNotes: { note: 'this alias is free text' },
+      });
+
+      expect(invalid.success).toBe(false);
+      expect(
+        invalid.error?.issues.some(
+          (issue) => issue.path.join('.') === 'completion.coordNotes' && issue.message.includes('string'),
+        ),
+      ).toBe(true);
+    });
+
     it('documents that treeStamp is server-stamped and requires a full SHA when persisted (EI-21310406381433990)', () => {
       const json = z.toJSONSchema(complete.args as never);
       const text = JSON.stringify(json);
