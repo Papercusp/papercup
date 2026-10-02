@@ -1189,43 +1189,6 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }
   };
 
-  // WI-2156 (completion-integrity, terminal-flip holdership): a done/dropped flip by an
-  // AGENT who is NOT the item's live claim holder is REFUSED with the same per-item
-  // claim_conflict shape as the wip path — you cannot close (and silently void the lease
-  // on) an item a live peer is mid-verifying. Humans/principal callers are exempt
-  // (agentId is null for them, above). Read-then-decide: the plan lock below still
-  // serializes the actual byte write; this pre-lock read matches the wip path's own
-  // claim-before-flip ordering, and the TTL liveness means a dead peer's lapsed claim
-  // never wedges closure. A getClaim hiccup fails OPEN (holder null → allow) so a
-  // coordination-store blip never blocks a legitimate completion.
-  if (agentId && isTerminalStatus(it.status)) {
-    const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
-    const holder = await getClaim(scope.workspaceId, scope.harnessSlug, it.slug, it.itemId).catch(() => null);
-    const conflict = terminalFlipConflict({ status: it.status, agentOwnerId: agentId.ownerId, holder });
-    if (conflict) {
-      // P-027: the same disclosure on the TERMINAL-flip refusal. This is the
-      // sharper of the two cases — you believe the item is finished and the
-      // holder does not, so what they are still doing on it is exactly the
-      // disagreement to resolve before escalating.
-      const holderContext = await resolveHolderAdvisory({
-        holder: conflict.owner,
-        reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
-        // The qualified ref — same reason as the wip-claim path above.
-        subjectRef: planItemRef(it.slug, it.itemId),
-      });
-      return {
-        ok: false,
-        slug: it.slug,
-        itemId: it.itemId,
-        error: 'claim_conflict',
-        reason: `${it.status} refused — ${conflict.ownerLabel ?? conflict.owner} holds a live claim on this item; only the holder closes it`,
-        holder: conflict,
-        ...(holderContext ? { holderContext } : {}),
-        hint: 'a live peer is working this item — coordinate with the holder (coord:send) and let them close it, or pick another item; fleet:assignments { plan } shows who holds what',
-      };
-    }
-  }
-
   // EI-19972048649686949: dropping ONE work-item linked to a plan item must not
   // cascade `dropped` onto the plan item when ANOTHER non-terminal work-item still
   // covers it (e.g. dropping a hand-filed duplicate of an already-claimed
@@ -1269,6 +1232,44 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       }
     } catch (e) {
       console.warn(`[plans:set-status] coverage guard ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e);
+    }
+  }
+
+  // WI-2156 (completion-integrity, terminal-flip holdership): a done/dropped flip by an
+  // AGENT who is NOT the item's live claim holder is REFUSED with the same per-item
+  // claim_conflict shape as the wip path — you cannot close (and silently void the lease
+  // on) an item a live peer is mid-verifying. Humans/principal callers are exempt
+  // (agentId is null for them, above). This check follows the open-coverage guard so a
+  // harmless automated reflection can report `coverage_guard` before claim ownership is
+  // considered; it still runs before the plan lock and the actual status write.
+  // The TTL liveness means a dead peer's lapsed claim never wedges closure. A getClaim
+  // hiccup fails OPEN (holder null → allow) so a coordination-store blip never blocks a
+  // legitimate completion.
+  if (agentId && isTerminalStatus(it.status)) {
+    const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+    const holder = await getClaim(scope.workspaceId, scope.harnessSlug, it.slug, it.itemId).catch(() => null);
+    const conflict = terminalFlipConflict({ status: it.status, agentOwnerId: agentId.ownerId, holder });
+    if (conflict) {
+      // P-027: the same disclosure on the TERMINAL-flip refusal. This is the
+      // sharper of the two cases — you believe the item is finished and the
+      // holder does not, so what they are still doing on it is exactly the
+      // disagreement to resolve before escalating.
+      const holderContext = await resolveHolderAdvisory({
+        holder: conflict.owner,
+        reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
+        // The qualified ref — same reason as the wip-claim path above.
+        subjectRef: planItemRef(it.slug, it.itemId),
+      });
+      return {
+        ok: false,
+        slug: it.slug,
+        itemId: it.itemId,
+        error: 'claim_conflict',
+        reason: `${it.status} refused — ${conflict.ownerLabel ?? conflict.owner} holds a live claim on this item; only the holder closes it`,
+        holder: conflict,
+        ...(holderContext ? { holderContext } : {}),
+        hint: 'a live peer is working this item — coordinate with the holder (coord:send) and let them close it, or pick another item; fleet:assignments { plan } shows who holds what',
+      };
     }
   }
 

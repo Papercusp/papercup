@@ -9,6 +9,8 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+// Type-only: the contract SHAPE is shared with the identity gate; no runtime coupling.
+import type { RefusalActor, RefusalContract, RefusalObservation } from '../capability-envelope/identity-refusal-contract';
 import type { FleetAssignmentRow } from '../fleet/assignments';
 import {
   ISSUE_FAMILY_KINDS,
@@ -130,6 +132,8 @@ export type FleetScopeAdmission =
       scoped: true;
       code: 'fleet_scope_missing' | 'fleet_scope_violation' | 'fleet_winding_down';
       reason: string;
+      /** WI-10005197: what would LIFT this refusal, who can make that true, what was compared. */
+      refusal: RefusalContract;
       scope: FleetScopeContext;
       /** Server-derived original author, when the refused subject is an existing work-item. */
       reporter?: string | null;
@@ -548,12 +552,65 @@ export async function itemMatchesRawClaimSpec(
   return matchesWorkItemClaimSpec(item, spec);
 }
 
+/**
+ * WI-10005197: one lift condition per fleet-admission refusal code. The `Record` key
+ * type is the exhaustiveness guard — a new code that omits its lift condition fails to
+ * compile, the same shape as the identity gate's `IDENTITY_REFUSAL_LIFT`. Description
+ * only: nothing here widens or alters an admission decision.
+ */
+const FLEET_SCOPE_REFUSAL_LIFT: Readonly<Record<
+  Extract<FleetScopeAdmission, { allowed: false }>['code'],
+  { liftsWhen: string; whoCanMakeItTrue: readonly RefusalActor[] }
+>> = {
+  fleet_scope_missing: {
+    liftsWhen:
+      'this member has an explicit per-member or inherited fleet claim spec (scheduler:set_claim_spec). ' +
+      'Retrying cannot lift it: the member is deliberately kept off the generic backlog until the ' +
+      'leader authors a spec',
+    whoCanMakeItTrue: ['another-agent', 'owner'],
+  },
+  fleet_scope_violation: {
+    liftsWhen:
+      'the work-item matches the fleet\'s active claim spec. A member can pull an in-lane item ' +
+      '(work_items:claim_next); the leader can admit this one — preview with scheduler:preview_spec_delta, ' +
+      'widen with scheduler:set_claim_spec, or dispatch it to the fleet. A bug the fleet filed itself ' +
+      'is admitted without a spec change',
+    whoCanMakeItTrue: ['self', 'another-agent'],
+  },
+  fleet_winding_down: {
+    liftsWhen:
+      'the fleet leader resumes the fleet (fleet:resume, control_state=active). A release made during a ' +
+      'stand-down must not recruit the next member, so do not route around it',
+    whoCanMakeItTrue: ['another-agent', 'owner'],
+  },
+};
+
+/** The contract for a fleet-admission refusal, carrying what the gate compared. */
+export function fleetScopeRefusalContract(
+  code: Extract<FleetScopeAdmission, { allowed: false }>['code'],
+  scope: FleetScopeContext,
+  observed: RefusalObservation = {},
+): RefusalContract {
+  const lift = FLEET_SCOPE_REFUSAL_LIFT[code];
+  return {
+    observed: {
+      fleet: scope.fleetSlug,
+      member: scope.ownerId,
+      spec: formatSpecRef(scope.record.spec.specId, scope.record.spec.revision),
+      ...observed,
+    },
+    liftsWhen: lift.liftsWhen,
+    whoCanMakeItTrue: lift.whoCanMakeItTrue,
+  };
+}
+
 function denyMissing(scope: FleetScopeContext): FleetScopeAdmission {
   return {
     allowed: false,
     scoped: true,
     code: 'fleet_scope_missing',
     scope,
+    refusal: fleetScopeRefusalContract('fleet_scope_missing', scope),
     reason:
       `fleet member ${scope.ownerId} belongs to '${scope.fleetSlug}' but has no explicit per-member or inherited fleet claim spec; ` +
       'assignment refused instead of falling through to the generic backlog',
@@ -606,6 +663,7 @@ export async function fleetControlWindDownRefusal(
     scoped: true,
     code: 'fleet_winding_down',
     scope,
+    refusal: fleetScopeRefusalContract('fleet_winding_down', scope, { pauseReason: reason || null }),
     reason:
       `fleet '${scope.fleetSlug}' is winding-down (paused${reason ? `: ${reason}` : ''}); ` +
       `member ${scope.ownerId} may not acquire NEW work until a fleet:resume (control_state=active) lands. ` +
@@ -662,6 +720,10 @@ export async function admitWorkItemForFleetTarget(args: {
     scoped: true,
     code: 'fleet_scope_violation',
     scope,
+    refusal: fleetScopeRefusalContract('fleet_scope_violation', scope, {
+      workItem: item.id,
+      itemKind: item.kind == null ? null : String(item.kind),
+    }),
     // Preserve the item's server-derived author for the caller-facing refusal hint. A
     // cross-fleet tracker can be completed without acquiring the item, but only when the
     // claimant knows which reporter can close the ledger row against the result.
@@ -697,6 +759,8 @@ export type LoopWorkItemAdmission =
       scoped: false;
       code: 'scheduler_spec_violation';
       reason: string;
+      /** WI-10005197: what would LIFT this refusal, who can make that true, what was compared. */
+      refusal: RefusalContract;
       specId: string;
       revision: number | null;
     };
@@ -738,6 +802,18 @@ export async function admitWorkItemForLoopTarget(args: {
     code: 'scheduler_spec_violation',
     specId: record.spec.specId,
     revision: record.revision,
+    refusal: {
+      observed: {
+        target: args.target,
+        workItem: item.id,
+        spec: formatSpecRef(record.spec.specId, record.spec.revision),
+      },
+      liftsWhen:
+        'the work-item matches the active scheduler spec for this loop target, or the spec is revised ' +
+        '(scheduler:set_claim_spec) to admit it. The auto-claim was refused before any mutation, so ' +
+        'nothing needs undoing',
+      whoCanMakeItTrue: ['self', 'owner'],
+    },
     reason:
       `work-item ${item.id} does not match active scheduler spec ${formatSpecRef(record.spec.specId, record.spec.revision)} ` +
       `for ${args.target}; the loop auto-claim was refused before mutation`,
@@ -795,6 +871,9 @@ export async function admitSubjectForFleetTarget(args: {
     scoped: true,
     code: 'fleet_scope_violation',
     scope,
+    refusal: fleetScopeRefusalContract('fleet_scope_violation', scope, {
+      subjectKind: args.subject.kind == null ? null : String(args.subject.kind),
+    }),
     // The create+assign seam has no row yet, but its creator is server-derived and is the
     // same reporter that will be persisted if the item is downgraded to unassigned.
     reporter: args.createdBy ?? null,
@@ -1191,9 +1270,11 @@ export function fleetScopeLeaderRemedy(
           `body describes it as IMPLEMENTING one of that plan's items (never a blocker merely discovered while ` +
           `working the plan — leave that unlinked and route it via the options above instead), you may backfill ` +
           `it before changing the lane: work_items:update { id: "<work-item-id>", plan_item: { slug: ${planSlug}, ` +
-          `item: "<P-NNN>" } } — the existing claim can then succeed without a spec revision. ⚠ CONSEQUENCE: the ` +
-          `stamp creates a coverage edge, so closing that plan item later auto-resolves this work-item as residue ` +
-          `even if its own work was never done — a wrong stamp on a blocker silently makes the blocker disappear.`
+          `item: "<P-NNN>" } } — the existing claim can then succeed without a spec revision. ⚠ CONSEQUENCE: ` +
+          `completing the stamped work-item may reflect its plan item to \`done\` (or \`dropped\` for a dropped ` +
+          `completion), subject to the coverage guard. Closing that plan item later may also auto-resolve this ` +
+          `work-item as residue even if its own work was never done — a wrong stamp on a blocker can make it ` +
+          `disappear through either terminal reflection.`
         );
       })()
     : '';

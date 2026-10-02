@@ -22,6 +22,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const reconcileMocks = vi.hoisted(() => ({
   findAllLinkedWorkItems: vi.fn(async () => [] as Array<{ id: string; state: string; assignee?: string | null }>),
+  resolveAgentIdentity: vi.fn(),
+  getClaim: vi.fn(async () => null),
 }));
 
 vi.mock('../_harness-scope', async (orig) => ({
@@ -33,12 +35,9 @@ vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
-// No attributable agent identity → the claim/terminal-claim discipline is skipped
-// (mirrors set-status.bulk.test.ts); only the terminal-grip clear-assignment leg runs.
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => {
-    throw new Error('no identity in this test');
-  },
+  resolveAgentIdentity: () => reconcileMocks.resolveAgentIdentity(),
+  isEphemeralMcpCallIdentity: () => false,
 }));
 vi.mock('./with-plan-lock', () => ({
   withPlanLock: vi.fn(),
@@ -49,6 +48,9 @@ vi.mock('./source', () => ({
   resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
 }));
 vi.mock('../../plan-items/assignments', () => ({ unassignItem: vi.fn(async () => null) }));
+vi.mock('../../plan-items/claims', () => ({
+  getClaim: () => reconcileMocks.getClaim(),
+}));
 vi.mock('../../plan-items/reconcile-linked-work-items', async (orig) => ({
   ...(await orig<typeof import('../../plan-items/reconcile-linked-work-items')>()),
   findAllLinkedWorkItems: reconcileMocks.findAllLinkedWorkItems,
@@ -77,6 +79,10 @@ function lockReturnsMutatorValue(knownItems: Set<string>, currentStatus = 'wip')
 beforeEach(() => {
   vi.clearAllMocks();
   reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([]);
+  reconcileMocks.resolveAgentIdentity.mockImplementation(() => {
+    throw new Error('no identity in this test');
+  });
+  reconcileMocks.getClaim.mockResolvedValue(null);
 });
 
 describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
@@ -187,6 +193,29 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
     expect(b.results[0].coveredBy).toEqual(['WI-37457']);
     expect(b.results[0].reason).toMatch(/WI-37457/);
     // Never even entered the plan lock — a true no-op, not a write-then-revert.
+    expect(lockM).not.toHaveBeenCalled();
+  });
+
+  it('returns the terminal coverage skip before refusing an agent reflection for another live claim', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([{ id: 'WI-37457', state: 'open' }]);
+    reconcileMocks.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-agent' });
+    reconcileMocks.getClaim.mockResolvedValue({
+      owner: 'su-peer',
+      ownerLabel: 'Peer',
+      intent: 'verifying this plan item',
+      expiresTs: '2099-01-01T00:00:00.000Z',
+      expired: false,
+    } as never);
+
+    const b = await body({
+      slug: 'context-injection-retrieval-reach-and-visibility-2026-08-03',
+      item: 'P-012',
+      status: 'done',
+      onlyIfNoOtherOpenCoverage: true,
+    });
+
+    expect(b.results[0]).toMatchObject({ ok: true, skipped: 'coverage_guard', coveredBy: ['WI-37457'] });
+    expect(reconcileMocks.getClaim).not.toHaveBeenCalled();
     expect(lockM).not.toHaveBeenCalled();
   });
 

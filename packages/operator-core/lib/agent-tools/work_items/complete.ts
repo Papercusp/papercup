@@ -2655,6 +2655,8 @@ export interface FinishWorkReceipt {
   planItem: string;
   /** Present only when `planItem` did not reach the reflected status: what plans:set-status answered. */
   planItemReflection?: string;
+  /** True when a live plan-item claim blocked the terminal reflection and must be coordinated before replay. */
+  planItemClaimConflict?: boolean;
   claimRelease: 'not-linked' | 'released-or-absent' | 'failed';
   errors?: string[];
 }
@@ -2739,6 +2741,26 @@ function isBusyReactionBody(statusResult: { result?: unknown }): boolean {
   return Array.isArray(results) && results.some((r) => (r as { error?: unknown } | null)?.error === 'busy');
 }
 
+function isClaimConflictReactionBody(body: Record<string, unknown> | null): boolean {
+  if (!body) return false;
+  if (body.error === 'claim_conflict') return true;
+  const results = body.results;
+  return Array.isArray(results) && results.some(
+    (result) => result !== null && typeof result === 'object' &&
+      (result as { error?: unknown }).error === 'claim_conflict',
+  );
+}
+
+export function finishFailureRecoveryAdvice(finish: FinishWorkReceipt): string {
+  if (finish.planItemClaimConflict) {
+    return (
+      'Do not retry immediately: plans:set-status returned claim_conflict. Coordinate with the plan-item claim holder ' +
+      'via coord:send (or inspect claimHold provenance if present), then re-call the SAME completion only after the conflict clears.'
+    );
+  }
+  return 'Re-call the SAME completion; finish legs are retry-safe and resume the missing legs.';
+}
+
 function describeReactionResult(result: unknown): string {
   if (result === undefined || result === null) return '(no result payload)';
   const content = (result as { content?: Array<{ type?: string; text?: string }> }).content;
@@ -2820,6 +2842,7 @@ export async function synchronizeFinishWork(
 
   let planItem: FinishWorkReceipt['planItem'] = 'not-linked';
   let planItemReflection: string | undefined;
+  let planItemClaimConflict = false;
   let claimRelease: FinishWorkReceipt['claimRelease'] = 'not-linked';
   if (stamp && reflected) {
     const fireSetStatus = () => fire({
@@ -2888,9 +2911,14 @@ export async function synchronizeFinishWork(
           if (committedStatus !== reflected) {
             planItemReflection = describeReactionResult((statusResult as { result?: unknown }).result);
           }
-          if (committedStatus !== reflected && body && body.ok === false) {
+          if (
+            committedStatus !== reflected &&
+            body &&
+            (body.ok === false || isClaimConflictReactionBody(body))
+          ) {
             // `complete:false` tells the caller the saga did not converge (retry-safe).
             planItem = 'failed';
+            planItemClaimConflict = isClaimConflictReactionBody(body);
             errors.push(
               `plan-item reflection did not commit: ${stamp.plan_slug}#${stamp.item_id} is ` +
                 `'${committedStatus}', not '${reflected}'; plans:set-status returned ` +
@@ -2946,6 +2974,7 @@ export async function synchronizeFinishWork(
     checkpointCleared,
     planItem,
     ...(planItemReflection ? { planItemReflection } : {}),
+    ...(planItemClaimConflict ? { planItemClaimConflict: true } : {}),
     claimRelease,
     ...(errors.length ? { errors } : {}),
   };
@@ -5157,7 +5186,7 @@ async function completeOne(
     : undefined;
   const finishFailed = Boolean(finish && !finish.complete);
   const finishFailure = finishFailed
-    ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. Re-call the SAME completion; finish legs are retry-safe and resume the missing legs.`
+    ? `COMPLETION RECORDED AND ITEM CLOSED, BUT FINISH DID NOT FULLY CONVERGE — ${finish!.errors?.join('; ') ?? 'a finish leg failed'}. ${finishFailureRecoveryAdvice(finish!)}`
     : undefined;
 
   // EI-22701142802555885: a successor/boundary note is intentionally a THREAD post,

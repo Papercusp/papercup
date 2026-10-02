@@ -49,16 +49,8 @@
  * Keychain (best-effort) so the owner's direct `claude` — which reads the Keychain —
  * stays on the live token: one logical credential across Keychain + file + forks.
  */
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  watch,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, watch } from 'node:fs';
+import { lstat, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import chokidar, { type FSWatcher as ChokidarFSWatcher } from 'chokidar';
 import { managedSetInterval } from '@papercusp/scheduled-registry';

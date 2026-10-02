@@ -45,6 +45,7 @@ function refusal(
     scoped: true,
     code,
     reason: 'item does not match the fleet claim spec',
+    refusal: { observed: {}, liftsWhen: 'the item matches the fleet claim spec', whoCanMakeItTrue: ['another-agent'] },
     scope: {
       ownerId: 'su-member-0001',
       fleetSlug: 'opencode-omp-research',
