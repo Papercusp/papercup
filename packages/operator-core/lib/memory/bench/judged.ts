@@ -671,6 +671,32 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       return saved;
     };
     const isAuthor = system === BLIND_COHORT_CONTRACT.author && /^(memory|prose)-author-/.test(name);
+    const validatePayload = (saved: any) => {
+      const payload = parseLlmJson(saved.result);
+      if (isAuthor) {
+        const generated = blindQuestionSchema.parse(payload).queries;
+        if (new Set(generated.map((q) => q.class)).size !== 4) throw new Error('author omitted/duplicated a query class');
+      } else {
+        const submitted = input as { questions: Array<{ index: number }>; sources: Array<{ index: number }> };
+        parseBlindChunkVotes(payload, submitted.questions.map((q) => ({ id: `local-${q.index}` })),
+          submitted.sources.map((s) => ({ key: `local-${s.index}` })));
+      }
+    };
+    const attemptNames = [1, 2, 3].map((n) => `${name}-attempt-${n}.json`);
+    const resolveSelection = async (saved: any, expectedIdentity: string, directory: string) => {
+      if (saved.kind !== 'selected-call') return { saved, selection: undefined };
+      if (saved.identityHash !== expectedIdentity || saved.promptSha256 !== promptSha256
+        || !saved.origin || path.dirname(saved.origin.path) !== directory
+        || !attemptNames.includes(path.basename(saved.origin.path))
+        || path.dirname(fs.realpathSync(saved.origin.path)) !== fs.realpathSync(directory)
+        || hashJson(await fingerprintFile(saved.origin.path)) !== hashJson(saved.origin)) {
+        throw new Error('invalid recovered selected blind call reference');
+      }
+      const selected = JSON.parse(fs.readFileSync(saved.origin.path, 'utf8'));
+      if (selected.kind === 'selected-call' || selected.invocationId !== saved.invocationId
+        || selected.promptSha256 !== saved.promptSha256) throw new Error('invalid recovered selected blind invocation reference');
+      return { saved: selected, selection: saved };
+    };
     const recoverAuthor = async (origin: Awaited<ReturnType<typeof fingerprintFile>>) => {
       if ((!isAuthor && !reuseAllCalls) || !donor) throw new Error('invalid authors-only raw reference');
       let current = donor, target = origin;
@@ -678,8 +704,8 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       for (;;) {
         if (identities.has(current.reference.identity.path) || identities.size >= 64) throw new Error('cyclic or excessive recovery identity chain');
         identities.add(current.reference.identity.path);
-        const expectedPath = path.join(path.dirname(current.reference.identity.path), `${name}.json`);
-        if (target.path !== expectedPath) {
+        const directory = path.dirname(current.reference.identity.path);
+        if (path.dirname(target.path) !== directory) {
           // A partial donor may not yet have reached the prose author phase.
           // Follow its hash-pinned author ancestry, never a guessed file path
           // or judge ancestry with a different source/question population.
@@ -689,12 +715,15 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
           if (parent.reference.identityHash !== parentRef.identityHash) throw new Error('invalid authors-only parent identity');
           current = parent; continue;
         }
-        if (path.dirname(fs.realpathSync(target.path)) !== fs.realpathSync(path.dirname(expectedPath))) throw new Error('invalid authors-only raw reference path');
+        if (![`${name}.json`, ...attemptNames].includes(path.basename(target.path))
+          || path.dirname(fs.realpathSync(target.path)) !== fs.realpathSync(directory)) throw new Error('invalid authors-only raw reference path');
         const realPath = fs.realpathSync(target.path);
         if (seen.has(realPath) || seen.size >= 64) throw new Error('cyclic or excessive authors-only reference chain');
         seen.add(realPath);
         if (hashJson(await fingerprintFile(target.path)) !== hashJson(target)) throw new Error('invalid authors-only raw reference');
-        const saved = JSON.parse(fs.readFileSync(target.path, 'utf8'));
+        const resolved = await resolveSelection(JSON.parse(fs.readFileSync(target.path, 'utf8')), current.reference.identityHash, directory);
+        const saved = resolved.saved;
+        if (resolved.selection) references.push(resolved.selection);
         if (saved.kind !== 'reused-author' && saved.kind !== 'reused-call') {
           const original = validate(saved, current.reference.identityHash);
           if (references.some((ref) => ref.invocationId !== original.invocationId || ref.promptSha256 !== original.promptSha256)) throw new Error('invalid authors-only invocation reference');
@@ -710,17 +739,19 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
         current = parent; target = saved.origin;
       }
     };
+    const readLocal = async (file: string) => {
+      const resolved = await resolveSelection(JSON.parse(fs.readFileSync(file, 'utf8')), identityHash, root);
+      const saved = resolved.saved;
+      if (saved.kind !== 'reused-author' && saved.kind !== 'reused-call') return validate(saved, identityHash);
+      const referenceKey = saved.kind === 'reused-call' ? 'callReuse' : 'authorReuse';
+      if ((saved.kind === 'reused-call' && !reuseAllCalls) || saved.identityHash !== identityHash
+        || !saved[referenceKey] || hashJson(saved[referenceKey]) !== hashJson(authorReuse)) throw new Error('invalid authors-only recovery reference');
+      const original = await recoverAuthor(saved.origin);
+      if (saved.invocationId !== original.invocationId || saved.promptSha256 !== original.promptSha256) throw new Error('invalid authors-only invocation reference');
+      return original;
+    };
     if (fs.existsSync(file)) {
-      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (saved.kind === 'reused-author' || saved.kind === 'reused-call') {
-        const referenceKey = saved.kind === 'reused-call' ? 'callReuse' : 'authorReuse';
-        if ((saved.kind === 'reused-call' && !reuseAllCalls) || saved.identityHash !== identityHash
-          || !saved[referenceKey] || hashJson(saved[referenceKey]) !== hashJson(authorReuse)) throw new Error('invalid authors-only recovery reference');
-        const original = await recoverAuthor(saved.origin);
-        if (saved.invocationId !== original.invocationId || saved.promptSha256 !== original.promptSha256) throw new Error('invalid authors-only invocation reference');
-        return original;
-      }
-      return validate(saved, identityHash);
+      const saved = await readLocal(file); validatePayload(saved); return saved;
     }
     let oldAuthorFile = reuseRoot && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, `${name}.json`) : undefined;
     if (oldAuthorFile && !fs.existsSync(oldAuthorFile) && reuseAllCalls && isAuthor) {
@@ -736,23 +767,55 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
         parentRef = parent.saved.identity.authorReuse;
       }
     }
+    let rejectedDonor: { origin: Awaited<ReturnType<typeof fingerprintFile>>; saved: any } | undefined;
     if (oldAuthorFile && fs.existsSync(oldAuthorFile)) {
       const origin = await fingerprintFile(oldAuthorFile), saved = await recoverAuthor(origin);
-      write(file, { kind: isAuthor ? 'reused-author' : 'reused-call', identityHash,
-        ...(isAuthor ? { authorReuse } : { callReuse: authorReuse }), origin, invocationId: saved.invocationId, promptSha256 });
-      log(`blind ${name} reused original ${saved.invocationId} from ${origin.path}`);
-      return saved;
+      let rejection: string | undefined;
+      try { validatePayload(saved); } catch (error) { rejection = String(error); }
+      if (!rejection) {
+        write(file, { kind: isAuthor ? 'reused-author' : 'reused-call', identityHash,
+          ...(isAuthor ? { authorReuse } : { callReuse: authorReuse }), origin, invocationId: saved.invocationId, promptSha256 });
+        log(`blind ${name} reused original ${saved.invocationId} from ${origin.path}`);
+        return saved;
+      }
+      // The immutable donor remains evidence of failure, never an inferred vote.
+      rejectedDonor = { origin, saved };
+      const rejectedFile = path.join(root, `${name}-rejected-donor.json`);
+      const rejected = { kind: 'rejected-call', identityHash, origin, invocationId: saved.invocationId, promptSha256, rejection };
+      if (fs.existsSync(rejectedFile)) {
+        if (hashJson(JSON.parse(fs.readFileSync(rejectedFile, 'utf8'))) !== hashJson(rejected)) throw new Error('rejected blind donor changed');
+      } else write(rejectedFile, rejected);
     }
-    const invocationId = crypto.randomUUID(), startedAt = new Date().toISOString(), deadline = Date.now() + 240_000;
-    log(`blind ${name} started ${invocationId}`);
-    const result = await opts.llm({ model: BLIND_COHORT_CONTRACT.model, system, messages, responseFormat: 'json',
-      maxTokens: 16000, temperature: 0, ownerId, harnessSlug: 'papercusp', priority: 'su',
-      governorMaxWaitMs: 180_000, retryDeadlineMs: deadline, signal: AbortSignal.timeout(240_000) });
-    const saved = { identityHash, invocationId, startedAt, finishedAt: new Date().toISOString(),
-      model: BLIND_COHORT_CONTRACT.model, promptSha256, system, messages, result };
-    write(file, saved);
-    if (result.stopReason === 'max_tokens' || ![result.inputTokens, result.outputTokens, result.costUsd].every((n) => Number.isFinite(n) && n >= 0)) throw new Error(`incomplete/unpriced blind model result retained at ${file}`);
-    log(`blind ${name} finished ${invocationId}`); return saved;
+    let lastError: unknown;
+    for (const attemptName of attemptNames) {
+      const attemptFile = path.join(root, attemptName);
+      if (!fs.existsSync(attemptFile)) {
+        const donorAttempt = attemptName === attemptNames[0] && rejectedDonor ? rejectedDonor.origin.path
+          : reuseRoot && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, attemptName) : undefined;
+        if (donorAttempt && fs.existsSync(donorAttempt)) {
+          const origin = await fingerprintFile(donorAttempt), saved = await recoverAuthor(origin);
+          write(attemptFile, { kind: isAuthor ? 'reused-author' : 'reused-call', identityHash,
+            ...(isAuthor ? { authorReuse } : { callReuse: authorReuse }), origin, invocationId: saved.invocationId, promptSha256 });
+        } else {
+          const invocationId = crypto.randomUUID(), startedAt = new Date().toISOString(), deadline = Date.now() + 240_000;
+          log(`blind ${name} started ${invocationId} (${attemptName})`);
+          const result = await opts.llm({ model: BLIND_COHORT_CONTRACT.model, system, messages, responseFormat: 'json',
+            maxTokens: 16000, temperature: 0, ownerId, harnessSlug: 'papercusp', priority: 'su',
+            governorMaxWaitMs: 180_000, retryDeadlineMs: deadline, signal: AbortSignal.timeout(240_000) });
+          write(attemptFile, { identityHash, invocationId, startedAt, finishedAt: new Date().toISOString(),
+            model: BLIND_COHORT_CONTRACT.model, promptSha256, system, messages, result });
+        }
+      }
+      // Integrity, pricing and truncation failures remain hard refusals.
+      const saved = await readLocal(attemptFile);
+      try { validatePayload(saved); } catch (error) {
+        lastError = error; log(`blind ${name} rejected ${saved.invocationId}: ${String(error)}`); continue;
+      }
+      write(file, { kind: 'selected-call', identityHash, origin: await fingerprintFile(attemptFile),
+        invocationId: saved.invocationId, promptSha256 });
+      log(`blind ${name} finished ${saved.invocationId}`); return saved;
+    }
+    throw new Error(`invalid blind response after 3 attempts for ${name}: ${String(lastError)}`);
   };
   const allLabels: Record<string, HeldoutQuery[]> = {}, allProofs: Record<string, unknown> = {};
   for (const corpus of ['memory', 'prose'] as const) {
