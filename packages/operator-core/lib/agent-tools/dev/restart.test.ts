@@ -2354,7 +2354,7 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
     listeningSocketsM.mockResolvedValue(gatewayListenerResult(5252));
     mockResolvedTyped(gatewayHealthM, { reachable: true, detail: 'HTTP 200' });
-    guardM.mockImplementation(runGuard(fenceOk(31)) as never);
+    mockImplementationTyped(guardM, runGuard(fenceOk(31)));
 
     const b = body(
       await call({
@@ -2400,7 +2400,7 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
     listeningSocketsM.mockResolvedValue(gatewayListenerResult(5252));
     mockResolvedTyped(gatewayHealthM, { reachable: false, detail: 'ConnectionRefused' });
-    guardM.mockImplementation(runGuard(fenceOk(32)) as never);
+    mockImplementationTyped(guardM, runGuard(fenceOk(32)));
 
     const b = body(
       await call({
@@ -2506,7 +2506,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
   });
 
   it('claims the bg-host cooldown marker with the WIDENED ~13min TTL (780s), not the generic 120s one', async () => {
-    acquireM.mockResolvedValue({
+    mockResolvedTyped(acquireM, {
       ok: true,
       mode: 'exclusive',
       status: 'held',
@@ -2514,8 +2514,8 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
       expires_ts: new Date(),
       shared_holders: [],
       fence_seq: 1,
-    } as never);
-    guardM.mockImplementation(runGuard(fenceOk(11)) as never);
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(11)));
     mockResolvedTyped(probeM, { ok: true, mainPid: 7777, secondsSinceStart: 99999 });
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
@@ -2531,7 +2531,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
   });
 
   it("a restart request ~10min (600s) after a peer's real bg-host restart COALESCES under the widened window — the exact storm from EI-13307 (old 120s window would have fired a fresh restart here)", async () => {
-    acquireM.mockResolvedValue({
+    mockResolvedTyped(acquireM, {
       ok: false,
       reason: 'held_exclusive',
       holders: [
@@ -2544,7 +2544,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
           expires_ts: new Date(),
         },
       ],
-    } as never);
+    });
     // 600s ago: outside the OLD 120s window (would have been a phantom / real
     // restart under the pre-fix code) but well inside the NEW 780s window.
     mockResolvedTyped(probeM, { ok: true, mainPid: 8888, secondsSinceStart: 600 });
