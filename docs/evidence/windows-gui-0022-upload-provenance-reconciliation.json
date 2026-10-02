@@ -8,6 +8,8 @@
     "manifestPath": "papercusp-relcut-0022-green/papercusp-desktop/src-tauri/target/windows-vm/bundle/inno/build-provenance.json",
     "manifestSha256": "1df65afecaecaa8a8be8d844a27d9027bbd8eafc501d09b4c2e5190dec16976b",
     "version": "0.0.22",
+    "reused": false,
+    "signed": false,
     "buildSha": "56e3dd9b",
     "gitHead": "56e3dd9b23a0d289d001115163a93c1262acfdf2",
     "gitDirty": false,
@@ -50,6 +52,7 @@
   },
   "conclusion": "The retained Windows cut record, its current artifact, the preserved public installer and the September 28 publication ledger agree on the uploaded GUI identity. The shakedown inventory records a different digest and must not be used as the upload receipt for this object. The original inventory remains unchanged.",
   "limitations": [
+    "The recorded signed=false means Authenticode was not configured; artifactRecord.sig=true records co-located minisign signature presence at emit time, not a new cryptographic signature verification.",
     "The earlier shakedown digest origin is not established by this reconciliation.",
     "gitHead/buildSha are retained as recorded manifest fields; they are not substituted for a superproject sourceSha.",
     "gitDirtyAtEmit is true and remains distinct from gitDirty=false at accepted source; no clean-at-emit claim is made.",
