@@ -63,6 +63,7 @@ import {
   CONTEXT_GAUGE_CRITICAL_PCT,
   CONTEXT_GAUGE_LOUD_PCT,
   CONTEXT_GAUGE_QUIET_PCT,
+  type ContextGaugeReadingSource,
 } from "./inbox-context-usage";
 import { readFleetWindDownLoopEndAuthorization } from "./continuation-gate";
 import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
@@ -1474,6 +1475,8 @@ export default defineTool({
       // same sessions it was the only source for before).
       const live = await currentContextTokensForOwner(identity.ownerId);
       const tokens = live ?? pres?.contextTokens;
+      const readingSource: ContextGaugeReadingSource =
+        live != null ? 'live-transcript-bytes/4' : 'watchdog-cache';
       // WI-2143463: the watchdog mirrors the gateway's route-bound lowest
       // observed prompt into the existing hot cache. It is evidence about the
       // fixed-prefix ceiling / conservative usable runway, never a replacement
@@ -1508,6 +1511,7 @@ export default defineTool({
         selfCompactionAvailable,
         fleetWindDownLoopEndAuthorized,
         cachedUsage?.observedPromptFloor ?? null,
+        readingSource,
       );
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the
@@ -1522,6 +1526,7 @@ export default defineTool({
           selfCompactionAvailable,
           fleetWindDownLoopEndAuthorized,
           cachedUsage?.observedPromptFloor ?? null,
+          readingSource,
         );
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {

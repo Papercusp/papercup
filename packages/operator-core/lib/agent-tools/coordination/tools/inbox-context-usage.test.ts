@@ -46,6 +46,16 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     );
   });
 
+  it('labels the live transcript-size estimate used by the inbox gauge', () => {
+    const line = renderContextUsageLine(152_825, 250_000, null, null, null, 'live-transcript-bytes/4');
+    expect(line).toContain('count source: live transcript-size estimate (bytes/4)');
+  });
+
+  it('labels the watchdog cache fallback used when the live transcript is unavailable', () => {
+    const line = renderBandedContextGauge(249_043, 250_000, null, null, null, 'watchdog-cache');
+    expect(line).toContain('count source: watchdog-cached estimate');
+  });
+
   it('stays a bare fact JUST below the threshold', () => {
     // 84% < 85% → no hint
     const line = renderContextUsageLine(84, 100);
