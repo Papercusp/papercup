@@ -13,6 +13,7 @@ import { readFile } from "node:fs/promises";
 
 import type { WorkspaceHostProviderConnection } from "@papercusp/deployment-driver";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+import { coldsnapCompositionOption } from "@papercusp/operator-core/lib/workspace-host/coldsnap-pin";
 import {
   executeConfiguredAwsAmiRelease,
   probeAwsAmiCredential,
@@ -165,9 +166,8 @@ export function awsAmiReleaseCompositionOptions(
     ...(args.repositoryRoot ? { repositoryRoot: args.repositoryRoot } : {}),
     ...(guestToolVersions ? { guestToolVersions } : {}),
     ...(args.parameterPrefix ? { parameterPrefix: args.parameterPrefix } : {}),
-    ...(env.PAPERCUSP_AWS_COLDSNAP_EXECUTABLE
-      ? { coldsnapExecutable: env.PAPERCUSP_AWS_COLDSNAP_EXECUTABLE }
-      : {}),
+    // Override, else the checksum-pinned install (coldsnap-pin.ts), else bare `coldsnap` on PATH.
+    ...coldsnapCompositionOption(env),
     ...(env.PAPERCUSP_AWS_AMI_SCAN_EXECUTABLE
       ? { scanExecutable: env.PAPERCUSP_AWS_AMI_SCAN_EXECUTABLE }
       : {}),
