@@ -30,6 +30,9 @@ import {
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+  WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE,
+  WORKSPACE_HOST_TSC_SERVICE_UNIT_FILE,
+  WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE,
 } from '@papercusp/deployment-driver';
 import { setHostedAgentIdentityPsuSpec } from './hosted-agent-identity-psu-env';
 import { HOSTED_WORKSPACE_ACCOUNT_HOME, hostedWorkspaceSshArgs } from './hosted-session-host';
@@ -120,6 +123,25 @@ export function hostedHeavyAdmissionEnv(
   };
 }
 
+/**
+ * WI-10005362: route hosted agents' scoped `lint:tsc --files` to the shared typecheck service, one
+ * systemd user-unit instance per checkout (the checkout's scripts/lib/tsc-service.mjs starts it).
+ * Set only when the host bootstrap installed the template units, which it skips on hosts under
+ * 24 GiB; undefined otherwise, so the agent keeps today's full compile.
+ */
+export function hostedTscServiceEnv(
+  exists: (path: string) => boolean = existsSync,
+): Record<string, string> | undefined {
+  if (!exists(WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE) || !exists(WORKSPACE_HOST_TSC_SERVICE_UNIT_FILE)) return undefined;
+  return { PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE };
+}
+
+/** Every operator-fixed env a hosted agent runs with; undefined when there is none. */
+function hostedFixedEnv(toolchainBin: string, exists: (path: string) => boolean): Record<string, string> | undefined {
+  const env = { ...hostedHeavyAdmissionEnv(toolchainBin, exists), ...hostedTscServiceEnv(exists) };
+  return Object.keys(env).length > 0 ? env : undefined;
+}
+
 /** The customer's PATH: its toolchain first; the operator's PATH is never forwarded. */
 function hostedRemotePath(toolchainBin: string): string[] {
   return [toolchainBin, posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.local', 'bin'), '/usr/local/bin', '/usr/bin', '/bin'];
@@ -144,9 +166,9 @@ export function hostedCustomerAgentIdentitySpec(options: HostedCustomerAgentIden
   const stateRoots = [join(localHome, '.papercusp')];
   const papercuspHome = (options.baseEnv ?? process.env).PAPERCUSP_HOME?.trim();
   if (papercuspHome && !stateRoots.includes(papercuspHome)) stateRoots.push(papercuspHome);
-  const heavy = hostedHeavyAdmissionEnv(toolchainBin, options.exists);
+  const fixedEnv = hostedFixedEnv(toolchainBin, options.exists ?? existsSync);
   return {
-    ...(heavy ? { fixedEnv: heavy } : {}),
+    ...(fixedEnv ? { fixedEnv } : {}),
     v: 1,
     identity: HOSTED_IDENTITY,
     stageTransport: { command: '/usr/bin/ssh', args: hostedIdentitySshArgs(false) },
@@ -180,9 +202,9 @@ export function hostedCustomerAgentSpawnTransform(
   const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
   const exists = options.exists ?? existsSync;
   const nodePath = posix.join(toolchainBin, 'node');
-  const heavy = hostedHeavyAdmissionEnv(toolchainBin, exists);
+  const fixedEnv = hostedFixedEnv(toolchainBin, exists);
   const inner = buildLoopbackIdentitySpawn({
-    ...(heavy ? { fixedEnv: heavy } : {}),
+    ...(fixedEnv ? { fixedEnv } : {}),
     transportCommand: '/usr/bin/ssh',
     transportArgs: hostedIdentitySshArgs(false),
     identity: HOSTED_IDENTITY,

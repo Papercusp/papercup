@@ -12,12 +12,15 @@ import {
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+  WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE,
+  WORKSPACE_HOST_TSC_SERVICE_UNIT_FILE,
 } from '@papercusp/deployment-driver';
 import {
   hostedCustomerAgentCommand,
   hostedCustomerAgentIdentitySpec,
   hostedCustomerAgentSpawnTransform,
   hostedHeavyAdmissionEnv,
+  hostedTscServiceEnv,
   installHostedCustomerAgentIdentity,
   type HostedCustomerAgentIdentityOptions,
 } from './hosted-agent-identity';
@@ -269,5 +272,30 @@ describe('hosted heavy-job admission env (D-031)', () => {
     expect(parseAgentIdentitySpec(JSON.stringify(spec)).fixedEnv?.NODE_OPTIONS).toBe(`--require=${preload}`);
     const without = hostedCustomerAgentIdentitySpec({ localHome: '/var/lib/papercusp', baseEnv: {}, toolchainBin: bin, exists: () => false });
     expect(without.fixedEnv).toBeUndefined();
+  });
+});
+
+// WI-10005362: the shared typecheck service is advertised only when the bootstrap installed both
+// template units (it skips hosts under 24 GiB), and rides in the same operator-fixed env.
+describe('hosted shared typecheck service env (WI-10005362)', () => {
+  const bin = '/opt/tc/bin';
+  const units = (p: string) =>
+    p === WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE || p === WORKSPACE_HOST_TSC_SERVICE_UNIT_FILE || p.startsWith(`${bin}/`);
+
+  it('names the template only when both unit files exist', () => {
+    expect(hostedTscServiceEnv(units)).toEqual({ PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: 'papercusp-tsc-service' });
+    expect(hostedTscServiceEnv((p) => p === WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE)).toBeUndefined();
+    expect(hostedTscServiceEnv(() => false)).toBeUndefined();
+  });
+
+  it('reaches both agent paths, alone or beside heavy admission', () => {
+    const spec = hostedCustomerAgentIdentitySpec({ localHome: '/var/lib/papercusp', baseEnv: {}, toolchainBin: bin, exists: units });
+    expect(spec.fixedEnv).toEqual({ PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: 'papercusp-tsc-service' });
+    const h = header(hostedCustomerAgentSpawnTransform(withToolchain({ toolchainBin: bin, exists: units }))(codexRequest()).stdinPrelude);
+    expect(h.env.PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE).toBe('papercusp-tsc-service');
+
+    const all = (p: string) => units(p) || p.startsWith('/opt/tc/lib/heavy-admission/');
+    const both = hostedCustomerAgentIdentitySpec({ localHome: '/var/lib/papercusp', baseEnv: {}, toolchainBin: bin, exists: all });
+    expect(both.fixedEnv).toEqual({ ...hostedHeavyAdmissionEnv(bin, all), PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: 'papercusp-tsc-service' });
   });
 });
