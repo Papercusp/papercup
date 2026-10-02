@@ -26,6 +26,7 @@ import * as fs from 'node:fs';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 import { type CellUnknown, cellUnknown, formatCellUnknown } from './cell-contract';
 import { resolveReleaseRoot } from './release/release-root';
+import { type GitBatchResult, runGitBatch } from './git-batch';
 
 const pexec = promisify(execFile);
 
@@ -271,6 +272,73 @@ interface CommitRefResult {
   unknown: CellUnknown | null;
 }
 
+function commitRefArgs(ref: string): string[] {
+  return ['log', '-1', '--format=%H%n%ct%n%s', ref + '^{commit}'];
+}
+
+/**
+ * EI-24852529885337741: the local (sidecar-free) path runs each wave's reads in ONE `sh`
+ * instead of one host fork per read (~160 ms of main-thread time each at 1.7–2.2 GB RSS).
+ * The sidecar path is unchanged — it already keeps the forks off the host.
+ */
+function useLocalGitBatch(useSpawnerSidecar: boolean): boolean {
+  return !(useSpawnerSidecar && gitSidecarEnabled('PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR'));
+}
+
+const DEV_DEPLOY_BATCH_TIMEOUT_MS = 60_000;
+
+/** One `git log -1` result from a batch, classified exactly as {@link commitRef} does. */
+export function commitRefFromBatch(repo: string, ref: string, result: GitBatchResult | null): CommitRefResult {
+  if (!result) {
+    return { ref: null, unknown: classifyCommitRefFailure(ref, repo, 'git helper did not complete') };
+  }
+  if (result.code !== 0) {
+    const message = `git -C ${repo} ${commitRefArgs(ref).join(' ')} exited ${result.code}: ${result.stderr.trim()}`;
+    return { ref: null, unknown: classifyCommitRefFailure(ref, repo, message) };
+  }
+  const [sha, ct, ...rest] = result.stdout.trim().split('\n');
+  return {
+    ref: { sha, shortSha: sha.slice(0, 8), committedAtMs: Number(ct) * 1000, subject: rest.join('\n') },
+    unknown: null,
+  };
+}
+
+async function commitRefs(
+  specs: ReadonlyArray<readonly [repo: string, ref: string]>,
+  useSpawnerSidecar: boolean,
+): Promise<CommitRefResult[]> {
+  if (!useLocalGitBatch(useSpawnerSidecar)) {
+    return Promise.all(specs.map(([repo, ref]) => commitRef(repo, ref, useSpawnerSidecar)));
+  }
+  const results = await runGitBatch(
+    specs.map(([repo, ref]) => ({ repo, args: commitRefArgs(ref) })),
+    { label: 'dev-deploy-state', timeoutMs: DEV_DEPLOY_BATCH_TIMEOUT_MS },
+  );
+  return specs.map(([repo, ref], i) => commitRefFromBatch(repo, ref, results[i] ?? null));
+}
+
+/** `rev-list --count from..to` for each pair (null pair → null); one `sh` on the local path. */
+async function aheadCounts(
+  repo: string,
+  pairs: ReadonlyArray<readonly [from: string, to: string] | null>,
+  useSpawnerSidecar: boolean,
+): Promise<Array<number | null>> {
+  if (!useLocalGitBatch(useSpawnerSidecar)) {
+    return Promise.all(pairs.map((p) => (p ? aheadCount(repo, p[0], p[1], useSpawnerSidecar) : Promise.resolve(null))));
+  }
+  const live = pairs.flatMap((p, i) => (p ? [{ i, from: p[0], to: p[1] }] : []));
+  const results = await runGitBatch(
+    live.map(({ from, to }) => ({ repo, args: ['rev-list', '--count', from + '..' + to] })),
+    { label: 'dev-deploy-state', timeoutMs: DEV_DEPLOY_BATCH_TIMEOUT_MS },
+  );
+  const counts: Array<number | null> = pairs.map(() => null);
+  live.forEach(({ i }, k) => {
+    const r = results[k];
+    counts[i] = r && r.code === 0 ? Number(r.stdout.trim()) : null;
+  });
+  return counts;
+}
+
 async function commitRef(repo: string, ref: string, useSpawnerSidecar: boolean): Promise<CommitRefResult> {
   try {
     // ONE `git log -1` fork/exec resolves+peels the ref AND formats sha + committer
@@ -396,12 +464,15 @@ async function computeDevDeployState(opts: DevDeployStateOptions = {}): Promise<
   // EI-19341938682536275: `origin/<integrationBranch>` is resolved LOCALLY (the remote-tracking
   // ref a successful `git push` already updates as a side effect) — no network call, same cost
   // class as the other 3 resolves below.
-  const [stagingHeadR, greenPinR, deployedR, originHeadR] = await Promise.all([
-    commitRef(cfg.integrationRoot, cfg.integrationBranch, useSpawnerSidecar),
-    commitRef(cfg.integrationRoot, cfg.releaseRef, useSpawnerSidecar),
-    commitRef(cfg.releaseRoot, 'HEAD', useSpawnerSidecar),
-    commitRef(cfg.integrationRoot, `origin/${cfg.integrationBranch}`, useSpawnerSidecar),
-  ]);
+  const [stagingHeadR, greenPinR, deployedR, originHeadR] = await commitRefs(
+    [
+      [cfg.integrationRoot, cfg.integrationBranch],
+      [cfg.integrationRoot, cfg.releaseRef],
+      [cfg.releaseRoot, 'HEAD'],
+      [cfg.integrationRoot, `origin/${cfg.integrationBranch}`],
+    ],
+    useSpawnerSidecar,
+  );
   // Every downstream reader keeps the plain `CommitRef | null` shape it always
   // had — only `errors[]` (below) additionally consumes the `unknown` reason.
   const stagingHead = stagingHeadR.ref;
@@ -428,16 +499,20 @@ async function computeDevDeployState(opts: DevDeployStateOptions = {}): Promise<
   // All counts are measured in the integration tree (it has every object — the
   // release worktree shares its object store). deployed must be reachable there.
   // aheadCount(from, to) = `rev-list --count from..to` = commits `to` has that `from` lacks.
-  const [deployedBehindStaging, greenPinBehindStaging, deployedBehindGreenPin, stagingAheadOfOrigin] = await Promise.all([
-    // live :3070 → staging tip (spans the un-checkpointed buffer; not a fault on its own)
-    deployed && stagingHead ? aheadCount(cfg.integrationRoot, deployed.sha, stagingHead.sha, useSpawnerSidecar) : Promise.resolve(null),
-    // green pin (main) → staging tip = THE STAGING BUFFER (normal; not a deploy fault)
-    greenPin && stagingHead ? aheadCount(cfg.integrationRoot, greenPin.sha, stagingHead.sha, useSpawnerSidecar) : Promise.resolve(null),
-    // live :3070 → green pin (main) = THE REAL DEPLOY GAP (green but not shipped)
-    deployed && greenPin ? aheadCount(cfg.integrationRoot, deployed.sha, greenPin.sha, useSpawnerSidecar) : Promise.resolve(null),
-    // origin/<branch> → staging tip = THE SAFETY-CRITICAL UNPUSHED LEG (never "normal")
-    originHead && stagingHead ? aheadCount(cfg.integrationRoot, originHead.sha, stagingHead.sha, useSpawnerSidecar) : Promise.resolve(null),
-  ]);
+  const [deployedBehindStaging, greenPinBehindStaging, deployedBehindGreenPin, stagingAheadOfOrigin] = await aheadCounts(
+    cfg.integrationRoot,
+    [
+      // live :3070 → staging tip (spans the un-checkpointed buffer; not a fault on its own)
+      deployed && stagingHead ? [deployed.sha, stagingHead.sha] : null,
+      // green pin (main) → staging tip = THE STAGING BUFFER (normal; not a deploy fault)
+      greenPin && stagingHead ? [greenPin.sha, stagingHead.sha] : null,
+      // live :3070 → green pin (main) = THE REAL DEPLOY GAP (green but not shipped)
+      deployed && greenPin ? [deployed.sha, greenPin.sha] : null,
+      // origin/<branch> → staging tip = THE SAFETY-CRITICAL UNPUSHED LEG (never "normal")
+      originHead && stagingHead ? [originHead.sha, stagingHead.sha] : null,
+    ],
+    useSpawnerSidecar,
+  );
 
   return {
     ...cfg,
