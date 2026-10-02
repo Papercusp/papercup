@@ -460,6 +460,30 @@ function awsHarness(preflight: AwsWorkspaceHostPreflightClient = awsPreflightCli
 }
 
 describe('POST /workspace-hosts/connection — AWS target', () => {
+  it('retains desktop launch metadata through admission and validation', async () => {
+    const resources = { vpcId: 'vpc-01234567', securityGroupIds: ['sg-01234567', 'sg-01234567'], launchTemplateId: 'lt-01234567' };
+    const h = awsHarness();
+    expect((await post(h.dependencies, awsBody(resources))).status).toBe(200);
+    const admitted = h.upsertConnection.mock.calls[0]![0];
+    expect(admitted.provider).toMatchObject({ ...resources, securityGroupIds: ['sg-01234567'] });
+    h.readConnection.mockResolvedValue({ ...admitted, connection: { target: 'aws', scope: { kind: 'account', id: AWS_ACCOUNT },
+      cloudCredentialRef: { kind: 'cloud', ref: admitted.credentialRef }, provider: admitted.provider } } as StoredWorkspaceHostConnection);
+    expect((await post(h.dependencies, { action: 'validate-connection', connectionId: admitted.id })).status).toBe(200);
+    expect(h.upsertConnection.mock.calls[1]![0].provider).toMatchObject({ ...resources, securityGroupIds: ['sg-01234567'] });
+  });
+
+  it.each([
+    ['vpcId', 'not-a-vpc'], ['launchTemplateId', 'not-a-template'],
+    ['securityGroupIds', []], ['securityGroupIds', ['sg-01234567', 'public']],
+  ])('refuses malformed desktop launch metadata %s', async (field, value) => {
+    const h = awsHarness();
+    const response = await post(h.dependencies, awsBody({ [field]: value }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: `invalid AWS ${field}` });
+    expect(h.inspectConnection).not.toHaveBeenCalled();
+    expect(h.upsertConnection).not.toHaveBeenCalled();
+  });
+
   it('AWSP-P-004-connection-stored: stores an AWS connection with its AWS preflight verdict', async () => {
     const { dependencies, upsertConnection } = awsHarness();
     const response = await post(dependencies, awsBody());

@@ -76,6 +76,9 @@ const CONNECTION_FIELDS = [
   'kmsKeyArn',
   'instanceProfileArn',
   'credentialSource',
+  'vpcId',
+  'securityGroupIds',
+  'launchTemplateId',
 ] as const;
 type ConnectionFields = Partial<Record<(typeof CONNECTION_FIELDS)[number], unknown>>;
 
@@ -279,6 +282,25 @@ function parseAwsConnection(fields: ConnectionFields): Parsed {
   if (!AWS_KMS_KEY_ARN.test(kmsKeyArn)) return refused('invalid AWS kmsKeyArn');
   const instanceProfileArn = trimmed(fields.instanceProfileArn);
   if (!AWS_INSTANCE_PROFILE_ARN.test(instanceProfileArn)) return refused('invalid AWS instanceProfileArn');
+  // Preserve legacy admissions; new desktop connections provide the complete launch set.
+  const launchResources: Record<string, unknown> = {};
+  for (const [key, pattern] of [
+    ['vpcId', /^vpc-[0-9a-f]{8,17}$/],
+    ['launchTemplateId', /^lt-[0-9a-f]{8,17}$/],
+  ] as const) {
+    if (fields[key] !== undefined) {
+      const value = trimmed(fields[key]);
+      if (!pattern.test(value)) return refused(`invalid AWS ${key}`);
+      launchResources[key] = value;
+    }
+  }
+  if (fields.securityGroupIds !== undefined) {
+    if (!Array.isArray(fields.securityGroupIds) || fields.securityGroupIds.length === 0 ||
+        fields.securityGroupIds.some((value) => typeof value !== 'string' || !/^sg-[0-9a-f]{8,17}$/.test(value.trim()))) {
+      return refused('invalid AWS securityGroupIds');
+    }
+    launchResources.securityGroupIds = [...new Set(fields.securityGroupIds.map((value: string) => value.trim()))];
+  }
   if (!isRecord(fields.credentialSource)) return refused('invalid AWS credentialSource');
   const credentialSource = normalizeAwsCredentialSource(fields.credentialSource);
   if (typeof credentialSource === 'string') return refused(credentialSource);
@@ -310,7 +332,7 @@ function parseAwsConnection(fields: ConnectionFields): Parsed {
         quotas: AWS_WORKSPACE_HOST_ADMISSION_QUOTAS,
       },
     });
-    return { ok: true, connection };
+    return { ok: true, connection: { ...connection, provider: { ...connection.provider, ...launchResources } } };
   } catch (error) {
     return refused('invalid AWS connection', { problems: [error instanceof Error ? error.message : 'invalid'] });
   }
@@ -327,7 +349,7 @@ function storedConnectionFields(connection: WorkspaceHostProviderConnection): Co
   const fields: ConnectionFields = { credentialRef: connection.cloudCredentialRef.ref };
   if (connection.target === 'aws') {
     fields.accountId = connection.scope?.id;
-    for (const key of ['partition', 'region', 'subnetId', 'imageId', 'kmsKeyArn', 'instanceProfileArn', 'credentialSource'] as const) {
+    for (const key of ['partition', 'region', 'subnetId', 'imageId', 'kmsKeyArn', 'instanceProfileArn', 'credentialSource', 'vpcId', 'securityGroupIds', 'launchTemplateId'] as const) {
       fields[key] = provider[key];
     }
   } else {
