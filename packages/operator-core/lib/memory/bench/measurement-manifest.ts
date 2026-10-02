@@ -504,6 +504,118 @@ export function bindNativeLoaderMappedObjects(stderr: string, windows: NativePro
     completeBeforeInferenceClosureVerified: false as const,
     scope: 'generated glibc objects active before first Run, joined by dynamic and ELF-header addresses to retained maps' };
 }
+
+/** The launcher owns this receipt: install the pipe before spawning the target,
+ * drain it to EOF, and record its terminal status. A log tail or a successful
+ * profiler import is not an exec-to-EOF target stderr receipt. */
+export interface NativeLoaderCaptureReceipt {
+  source: 'spawn-pipe'; captureStartedBeforeExec: true; eof: true; processId: number;
+  exitCode: number; signal: string | null; bytes: number; sha256: string;
+}
+
+/** Close the file-backed glibc population, including exec/interpreter objects
+ * that `generating link map` need not print. vDSO is separately fingerprinted
+ * kernel memory, never described as an on-disk DLL. This does not qualify JIT,
+ * arbitrary mmap code, model vectors, CUDA kernels, or GPU device binding. */
+export function bindNativeLoaderClosure(stderrBytes: Buffer, windows: NativeProfilerRequestWindow[],
+  firstRun: WorkerNativeInferenceTrace, receipt: NativeLoaderCaptureReceipt) {
+  if (!Buffer.isBuffer(stderrBytes) || !receipt || receipt.source!=='spawn-pipe'
+    || receipt.captureStartedBeforeExec!==true || receipt.eof!==true || receipt.exitCode!==0 || receipt.signal!==null
+    || receipt.processId!==firstRun.processId || receipt.bytes!==stderrBytes.length || !stderrBytes.length
+    || receipt.sha256!==crypto.createHash('sha256').update(stderrBytes).digest('hex')) {
+    throw new Error('native loader complete stderr terminal receipt missing or mismatched');
+  }
+  const stderr=stderrBytes.toString('utf8');
+  if (!Buffer.from(stderr,'utf8').equals(stderrBytes)) throw new Error('native loader stderr encoding unsupported');
+  const mapped=bindNativeLoaderMappedObjects(stderr,windows,firstRun);
+  if (!mapped.noLoaderActivityDuringPopulation) throw new Error('native loader population changed during selected requests');
+  const process=firstRun.runtime!.loaderProcess, files=firstRun.runtime!.libraries;
+  const address=(value: unknown) => {
+    if (typeof value!=='string' || !/^[\da-f]+$/i.test(value) || BigInt('0x'+value)===0n) {
+      throw new Error('native loader process address invalid');
+    }
+    return BigInt('0x'+value);
+  };
+  if (!process || !Number.isSafeInteger(process.programHeaderCount) || process.programHeaderCount<1
+    || process.programHeaderCount>1024 || process.programHeaderEntryBytes!==56
+    || process.executablePath===process.interpreterPath) throw new Error('native loader process census incomplete or unsupported');
+  const fileAt=(at: bigint,length: bigint,permission: string) => {
+    const matches=files.filter(file=>file.mappedRanges!.some(range=>BigInt('0x'+range.startAddress)<=at
+      && at+length<=BigInt('0x'+range.endAddress) && range.permissions.includes(permission)));
+    if(matches.length!==1) throw new Error('native loader process address does not bind one fingerprinted file');
+    return matches[0];
+  };
+  const executable=fileAt(address(process.programHeaderAddress),BigInt(process.programHeaderCount*56),'r');
+  const entry=fileAt(address(process.entryAddress),1n,'x');
+  const interpreter=fileAt(address(process.interpreterBaseAddress),1n,'r');
+  if (executable!==entry || executable.path!==process.executablePath || interpreter.path!==process.interpreterPath
+    || !interpreter.mappedRanges!.some(range=>address(process.interpreterBaseAddress)===BigInt('0x'+range.startAddress)
+      && BigInt('0x'+range.fileOffset)===0n)) throw new Error('native loader executable/interpreter census mismatch');
+  const vdso=process.vdso;
+  if (!vdso || vdso.origin!=='kernel-auxv-AT_SYSINFO_EHDR' || vdso.permissions!=='r-xp'
+    || vdso.fileOffset!=='00000000' && vdso.fileOffset!=='0'
+    || !Number.isSafeInteger(vdso.bytes) || vdso.bytes<64 || vdso.bytes>65536
+    || typeof vdso.sha256!=='string' || !/^[a-f0-9]{64}$/.test(vdso.sha256)
+    || address(vdso.endAddress)-address(vdso.startAddress)!==BigInt(vdso.bytes)
+    || files.some(file=>file.mappedRanges!.some(range=>address(vdso.startAddress)<BigInt('0x'+range.endAddress)
+      && BigInt('0x'+range.startAddress)<address(vdso.endAddress)))) throw new Error('native loader kernel vDSO census invalid');
+  // Init diagnostics print loader names (often symlinks). Resolve aliases by
+  // actual inode/device/bytes/hash; neither a basename nor an unverified path
+  // substitution may establish a loaded-file identity.
+  const resolveFile=(name: string) => {
+    const exact=files.find(file=>file.path===name);
+    if (exact) return exact;
+    if (!path.isAbsolute(name)) throw new Error('native loader initialization path unresolved');
+    try {
+      const resolved=fs.realpathSync(name), candidates=files.filter(file=>fs.realpathSync(file.path)===resolved);
+      if(candidates.length!==1) throw new Error('ambiguous alias');
+      const file=candidates[0], descriptor=fs.openSync(name,'r');
+      try {
+        const stat=fs.fstatSync(descriptor,{bigint:true});
+        const major=((stat.dev>>8n)&0xfffn)|((stat.dev>>32n)&0xfffff000n);
+        const minor=(stat.dev&0xffn)|((stat.dev>>12n)&0xffffff00n);
+        const [mappedMajor,mappedMinor]=file.mappedDevice.split(':').map(x=>BigInt('0x'+x));
+        if(stat.ino!==BigInt(file.mappedInode) || stat.size!==BigInt(file.bytes)
+          || major!==mappedMajor || minor!==mappedMinor) throw new Error('alias identity changed');
+        const hash=crypto.createHash('sha256'), buffer=Buffer.allocUnsafe(1024*1024); let length,bytes=0;
+        while((length=fs.readSync(descriptor,buffer,0,buffer.length,null))>0) {hash.update(buffer.subarray(0,length));bytes+=length;}
+        const after=fs.fstatSync(descriptor,{bigint:true});
+        if(bytes!==file.bytes || hash.digest('hex')!==file.sha256 || after.size!==stat.size
+          || after.mtimeNs!==stat.mtimeNs || after.ctimeNs!==stat.ctimeNs) throw new Error('alias bytes changed');
+      } finally {fs.closeSync(descriptor);}
+      return file;
+    } catch {throw new Error('native loader initialization alias does not bind retained fingerprint');}
+  };
+  const firstMarker=stderr.split('\n').findIndex(line=>line.startsWith('PC_NATIVE_RUN\t'));
+  const initializationJoins: Array<{line:number;object:string;file:typeof executable;namespaces:string[]}> = [];
+  const retiredInitializationPaths: string[]=[]; let transfers=0;
+  for(const [index,line] of stderr.split('\n').entries()) {
+    const row=line.match(/^\s*(\d+):\s*(.*)$/);
+    if(!row || Number(row[1])!==firstRun.processId) continue;
+    if(/error:|fatal:/i.test(row[2])) throw new Error('native loader failed capture');
+    if(index>=firstMarker) continue;
+    const init=row[2].match(/^calling (?:preinit|init):\s+(.+)$/), transfer=row[2].match(/^transferring control:\s+(.+)$/);
+    if(transfer) {
+      if(resolveFile(transfer[1])!==executable) throw new Error('native loader control target differs from executable');
+      transfers++;
+    }
+    if(!init) continue;
+    // A destroyed, unmapped pre-Run object is outside the active closure.
+    if(mapped.retiredBeforeFirstRun.some(object=>object.object===init[1])
+      && !mapped.objectMapJoins.some(object=>object.object===init[1])) {retiredInitializationPaths.push(init[1]);continue;}
+    const file=resolveFile(init[1]);
+    const namespaces=mapped.objectMapJoins.filter(object=>object.file===file).map(object=>object.namespace);
+    if(file!==executable && file!==interpreter && !namespaces.length) throw new Error('native loader init-only file lacks generated object identity');
+    initializationJoins.push({line:index+1,object:init[1],file,namespaces:[...new Set(namespaces)]});
+  }
+  if(transfers!==1) throw new Error('native loader exec control transfer incomplete');
+  const covered=new Set([executable.path,interpreter.path,...mapped.objectMapJoins.map(object=>object.file.path)]);
+  const unjoinedMappedFiles=files.filter(file=>!covered.has(file.path));
+  if(unjoinedMappedFiles.length) throw new Error('native loader mapped file census has residue');
+  return {...mapped,executable,interpreter,vdso,initializationJoins,retiredInitializationPaths,unjoinedMappedFiles,
+    stderrReceipt:receipt,completeBeforeInferenceClosureVerified:true as const,
+    scope:'file-backed glibc ELF/addon closure before first selected Run; unchanged through last selected Run; vDSO separately fingerprinted kernel memory'};
+}
 export interface NativeProfilerLaunch {
   processId: number; nativeThreadId: number; correlationId: number; startNs: string; endNs: string;
 }
