@@ -40,6 +40,9 @@
  * same regression arriving through a different door and is invisible to a name count.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+// Reuse the guidance-budget suite's real catalog registration during collection.
+// Cold graph transformation belongs here, outside the timed test setup hook.
+import './index';
 import { listAllProjectedTools, compactWireBytes, type ProjectedTool } from '@papercusp/tooldef';
 import { advertisedWireBytes } from './tool-guidance-budget';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -173,9 +176,7 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
   let byName: Map<string, ProjectedTool>;
   let catalogSize = 0;
 
-  beforeAll(async () => {
-    // Side-effect import: registers the catalog listAllProjectedTools() reads.
-    await import('./index');
+  beforeAll(() => {
     const all = listAllProjectedTools();
     catalogSize = all.length;
     byName = new Map();

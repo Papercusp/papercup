@@ -318,6 +318,20 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('retires measurement-pin bypass after git reads moved to the replay helper', () => {
+    const path = 'packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.ts';
+    const key = `${path}::resource-start-outside-admission`;
+    const source = readFileSync(ROOT + path, 'utf8');
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(BYPASS_REGISTRY.has(key)).toBe(false);
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-014'], validateRegistry: true }),
+    ).not.toContain(`stale-bypass-registry:${key}:finding-absent`);
+    expect(
+      scanInventory([[path, source + "\nspawn('resident-worker', []);"]], { migrations: ['P-014'] }),
+    ).toContain(`${path}:resource-start-outside-admission`);
+  });
+
   it('retires credential-store bypass after keychain starts moved to the authentication helpers', () => {
     const path = 'packages/operator-core/lib/inference-gateway/credential-store.ts';
     const key = `${path}::resource-start-outside-admission`;

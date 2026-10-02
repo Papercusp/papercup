@@ -572,12 +572,13 @@ export interface MergeCursor {
    */
   readStalls?: Map<string, number>;
   /**
-   * P-203 / D-018: `${log.keyHex}:${position}` → late results from timed-out
-   * reads. A result that eventually arrives is consumed before another read is
-   * issued, while a never-settling attempt still permits the existing retry
+   * P-203 / D-018: `${log.keyHex}:${position}` → one late result from timed-out
+   * reads. Attempts for the same immutable log position are interchangeable;
+   * retain a served block in preference to an error, rather than accumulating
+   * duplicate results. A never-settling attempt still permits the existing retry
    * semantics on the next pass.
    */
-  lateReadResults?: Map<string, ReadAttemptResult[]>;
+  lateReadResults?: Map<string, ReadAttemptResult>;
   /**
    * p2p-join-catchup-speed P-004: per-log memo of the snapshot scan (keyHex →
    * what `[?, scannedTo)` held). A far-behind cursor looks for a set ahead of it on
@@ -1414,12 +1415,13 @@ export const SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS = 3 * 60_000;
  */
 function holdFreshSeed(cursor: MergeCursor, keyHex: string, maxMs: number, scan: SnapshotScanAnswer): boolean {
   if (maxMs <= 0) return false;
-  const pending = (cursor.snapshotSeedPending ??= new Map());
+  // Per-log hold metadata, not queued work; repeated scans update this same entry.
+  const seedHolds = (cursor.snapshotSeedPending ??= new Map());
   const now = Date.now();
-  const held = pending.get(keyHex);
+  const held = seedHolds.get(keyHex);
   const stuckMaxMs = Math.min(maxMs, SNAPSHOT_SEED_UNREADABLE_DEFER_MAX_MS);
   if (held === undefined) {
-    pending.set(keyHex, { sinceMs: now, progressLoggedAtMs: now });
+    seedHolds.set(keyHex, { sinceMs: now, progressLoggedAtMs: now });
     // console.info, not warn: a fresh joiner's scan routinely needs more than one pass.
     // Only the give-up below is an anomaly.
     console.info(
@@ -2324,8 +2326,10 @@ async function applyRecordingWinner(
   let batchOpId = 0;
   let timedOut = false;
   try {
-    const pending = (cursor.pendingApplies ??= new Map<string, PendingMergeApply>());
-    let physical = pending.get(ident);
+    // Single-flight identities for physical writes; admission controls their start
+    // and their actual result removes the entry, including after a caller timeout.
+    const inFlightApplies = (cursor.pendingApplies ??= new Map<string, PendingMergeApply>());
+    let physical = inFlightApplies.get(ident);
     if (!physical) {
       // WI-10003427: never wait for admission while holding an open batch transaction. The
       // gate is process-wide, so the wait can outlast Postgres's idle-in-transaction timeout;
@@ -2373,10 +2377,10 @@ async function applyRecordingWinner(
       }
       void admission.catch((err: unknown) => settleResult(Promise.reject(err)));
       physical = entry;
-      pending.set(ident, physical);
+      inFlightApplies.set(ident, physical);
       const current = physical;
       void result.finally(() => {
-        if (pending.get(ident) === current) pending.delete(ident);
+        if (inFlightApplies.get(ident) === current) inFlightApplies.delete(ident);
       }).catch(() => {});
     } else if (!physical.admitted && batch?.fold.holdsTransaction) {
       // The same rule for a queued write reused from an earlier pass.
@@ -4355,9 +4359,8 @@ async function mergeIncrementalPass(
       let op: PeerLogOp | null;
       try {
         const readIdent = `${log.keyHex}:${pos}`;
-        const lateQueue = cursor.lateReadResults?.get(readIdent);
-        const cached = lateQueue?.shift();
-        if (lateQueue && lateQueue.length === 0) cursor.lateReadResults?.delete(readIdent);
+        const cached = cursor.lateReadResults?.get(readIdent);
+        cursor.lateReadResults?.delete(readIdent);
         const peekedOp =
           cached || !peeked.has(pos) ? undefined : { kind: 'op' as const, op: peeked.get(pos) ?? null };
         peeked.delete(pos);
@@ -4370,9 +4373,10 @@ async function mergeIncrementalPass(
             // the same position. If another attempt already advanced it, drop
             // the stale result rather than applying it at a later position.
             if ((cursor.positions.get(log.keyHex) ?? 0) !== pos) return;
-            const queue = cursor.lateReadResults?.get(readIdent) ?? [];
-            queue.push(result);
-            (cursor.lateReadResults ??= new Map()).set(readIdent, queue);
+            const retained = cursor.lateReadResults?.get(readIdent);
+            if (!retained || (retained.kind === 'read-error' && result.kind === 'op')) {
+              (cursor.lateReadResults ??= new Map()).set(readIdent, result);
+            }
           }));
         // A cached result (or an immediate fresh result) owns this position;
         // any additional late results for it are stale once the cursor moves.
