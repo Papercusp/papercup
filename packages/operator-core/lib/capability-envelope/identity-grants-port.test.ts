@@ -700,12 +700,14 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       .filter((line) => !/^function denial\(/.test(line)) // the definition itself
       .map((line) => line.trim());
 
-    expect(callSites).toEqual(['return denial(cause, classRef, toolName, policyRevision);']);
+    // EI-23766133296678780: the chokepoint now also threads the values the gate compared
+    // (`observed`) into the refusal contract. Still exactly ONE call site.
+    expect(callSites).toEqual(['return denial(cause, classRef, toolName, policyRevision, observed);']);
 
     // ...and that sole call must live INSIDE the chokepoint, not in some later
     // function that merely happens to spell the same statement.
     const chokepoint = source.slice(source.indexOf('function denyUnlessRecoveryDoor('));
-    expect(chokepoint).toContain('return denial(cause, classRef, toolName, policyRevision);');
+    expect(chokepoint).toContain('return denial(cause, classRef, toolName, policyRevision, observed);');
   });
 
   // The companion half, and the one that keeps this a DOOR rather than a hole.
