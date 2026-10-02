@@ -292,8 +292,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                 reject: error => { clearTimeout(timer); reject(error); } });
               socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
             });
-            const fence = await rpc('spawn:cancel', {});
-            if (!fence.serverGeneration || !fence.connectionId) throw Error('Execution fence missing');
+            const control = await rpc('spawn:cancel', {});
+            const fence = control.processExecFence;
+            if (control.cancelled !== false || control.processExecCancellation !== true ||
+                typeof fence?.serverGeneration !== 'string' || typeof fence?.connectionId !== 'string')
+              throw Error('Execution capability/fence preflight failed: ' + JSON.stringify(control));
             cohort.fenceVerified = true;
             const run = async token => {
               const source = 'const start=Date.now();setTimeout(()=>process.stdout.write(JSON.stringify({token:' +
