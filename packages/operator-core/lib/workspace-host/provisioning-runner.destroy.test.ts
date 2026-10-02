@@ -193,7 +193,8 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
     target: 'gcp' as const,
     hostId: 'host-1',
     generatedAt: NOW,
-    steps: steps(request.host.resources),
+    // Only the provision variant of the request union lacks `host`; this fake only plans destroys.
+    steps: steps('host' in request ? request.host.resources : []),
     warnings: [],
   }));
   const provider = makeFakeWorkspaceHostProvider({
