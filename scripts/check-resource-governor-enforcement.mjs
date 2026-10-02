@@ -532,6 +532,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/lib/targeted-task-reuse.mjs: its only starts are synchronous `execFileSync` reads, `git` (120 s timeout, 64 MB maxBuffer) to fingerprint a task's inputs and `node -p process.version` (30 s timeout) to resolve the runner identity. Each is awaited to exit, not detached, and holds nothing after exit. Its callers are green-checkpoint.ts (`armTargetedTaskReuse`, inside the gate run) and scripts/affected-tests.mjs (inside a pc-heavy test slot or the gate run), both already admitted, so it adds no residency or queue of its own (EI-24538088938561684).",
   },
   {
+    path: "scripts/lib/restricted-hold-preflight.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/restricted-hold-preflight.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005713, WI-10005724): its only start is spawnCensus, ONE synchronous `spawnSync(process.execPath, ['--import', 'tsx', restricted-hold-preflight-cli.ts, ...])` (120 s timeout, 16 MiB maxBuffer) that reads the restricted-write census and refuses the test run while a disclosure is held. The parent blocks until the child exits, so it never runs concurrently with the work it guards, detaches nothing and holds nothing after exit. Its callers are scripts/test-files.mjs (spawned by testing:run's governed router start or a pc-heavy slot) and the vitest-root globalSetup in libs/test-config (inside runGovernedTestProcess or the gate run), each admitted, and each runs it at most once per process, so it adds no residency or queue of its own. Pinned by matchesSource to that one timeout-bounded start: a second start in this file falls out of the exemption.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+        /\bconst result = spawn\(process\.execPath,/.test(code) && /\btimeout:\s*timeoutMs\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "apps/operator/lib/release/cut-seed-cli.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1924,6 +1938,22 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "Reviewed bypass disposition for mutation-probe-fence.ts: committedUnchanged runs awaited `git ls-tree -z HEAD` and `git hash-object` metadata reads over the probe's finite path list via promisified execFile, each bounded by a 5-second timeout and 1 MiB output, with an outer 10-second deadline that keeps the fence in force on a stall. It detaches nothing and creates no resident queue.",
+    },
+  ],
+  // Same directory, same reason it lives here rather than in P016_REVIEWED_DISPOSITIONS.
+  [
+    "packages/operator-core/lib/agent-tools/testing/restricted-hold-fence.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for restricted-hold-fence.ts (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005634, WI-10005724): its only start is runGit, an awaited `execFile('git', ...)` (60-second GIT_TIMEOUT_MS, 64 MiB maxBuffer) used by listDirtyFilesRecursive for one `git submodule status --recursive` and then one `git status --porcelain` per repository, strictly sequential, so at most one git metadata read runs at a time. It runs inside one testing:run request, before the governed router start it gates. A timeout or failure throws, and the fence then refuses the run (fail-closed). It detaches nothing and creates no resident queue.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+          source.includes("execFile('git', args, { cwd, timeout: GIT_TIMEOUT_MS,") &&
+          !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+          !hasCalledResourceStartAlias(code);
+      },
     },
   ],
   [
