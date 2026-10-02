@@ -41,7 +41,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { diagnoseFleetScopeFeatureFamilyExclusions, diagnoseFleetScopeFeatureFamilyMatch } =
+const { diagnoseFleetScopeFeatureFamilyExclusions, diagnoseFleetScopeFeatureFamilyMatch, fleetScopedMiss } =
   await import('./fleet-scope-admission');
 
 const H = 'papercusp';
@@ -199,6 +199,35 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
       claimable: 0,
       excluded: { claimFloors: 1, reservedPlanLane: 1 },
     });
+  });
+
+  it.each(['claim-hold', 'peer-claim'] as const)('diagnoses a non-plan feature behind %s without an authoring false alarm', async (floor) => {
+    await seedItem('WI-held-feature', floor === 'claim-hold'
+      ? { payload: { _claimHold: true } }
+      : { takenBy: 'su-peer' });
+    // Negative controls exercise both the authored filter and the family boundary.
+    await seedItem('WI-p2p-feature');
+    await seedItem('EI-held-change', { itemKind: 'change' });
+    const scope = planScopeFor('su-member');
+    scope.record.spec.view.filter = { all: [
+      { field: 'kind', op: '=', value: 'feature' },
+      { field: 'id', op: 'in', value: ['WI-held-feature', 'EI-held-change'] },
+    ] };
+    const featureBreakdown = await diagnoseFleetScopeFeatureFamilyExclusions({ scope, harness: H, workspaceId: WS });
+    expect(featureBreakdown).toEqual({
+      matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0 },
+    });
+    const opts = {
+      featureBreakdown,
+      issueBreakdown: { matchedByFilter: 0, claimable: 0, excluded: {} } as never,
+    };
+    const miss = fleetScopedMiss(scope, [], opts);
+    expect(miss.reason).toBe('all_matches_gated');
+    expect(miss.claimability.population).toMatchObject({
+      basis: 'issue+feature-family', matchedByFilter: 1,
+      families: { feature: featureBreakdown },
+    });
+    expect(miss.advice).toContain('Do NOT re-author');
   });
 
   it('returns 0 (not null) for a plan with no promoted items at all — a genuine drain, not a diagnosis failure', async () => {

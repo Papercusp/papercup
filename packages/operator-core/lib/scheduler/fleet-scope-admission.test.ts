@@ -1625,6 +1625,84 @@ describe('fleet scope assignment admission (P-016)', () => {
       },
     };
 
+    describe('EI-24905216534076710: pre-floor feature matches survive miss diagnosis', () => {
+      const featureScope = {
+        ...planScope,
+        record: {
+          ...planScope.record,
+          spec: {
+            ...planScope.record.spec,
+            view: { filter: { all: [
+              { field: 'kind', op: '=' as const, value: 'feature' },
+              { field: 'id', op: 'in' as const, value: ['WI-held-feature'] },
+            ] } },
+          },
+        },
+      };
+      const heldFeature = {
+        matchedByFilter: 1,
+        claimable: 0,
+        excluded: { claimFloors: 1, reservedPlanLane: 0 },
+      };
+
+      it('reports a held feature as floor-gated without widening its non-plan spec', () => {
+        const opts = { issueBreakdown: zeroIssueFamilyBreakdown, featureBreakdown: heldFeature };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+
+        expect(miss.reason).toBe('all_matches_gated');
+        expect(miss.error).toContain('POOL BLOCKED, NOT SPEC-BROKEN');
+        expect(miss.error).not.toMatch(/SPEC MATCHES NOTHING|ORDINARY DRAIN/);
+        expect(miss.advice).toContain('Do NOT re-author');
+        expect(miss.claimability).toMatchObject({
+          value: 0,
+          population: { basis: 'issue+feature-family', matchedByFilter: 1 },
+          interpretation: { state: 'floor-gated' },
+        });
+        expect(miss.claimability.population.families.feature).toEqual(heldFeature);
+      });
+
+      it('combines disjoint families while preserving overlapping exclusion buckets', () => {
+        const opts = {
+          issueBreakdown: { ...zeroIssueFamilyBreakdown, matchedByFilter: 2 },
+          featureBreakdown: { ...heldFeature, matchedByFilter: 3, excluded: { claimFloors: 3, reservedPlanLane: 1 } },
+        };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.reason).toBe('all_matches_gated');
+        expect(miss.claimability.population.matchedByFilter).toBe(5);
+        expect(miss.claimability.population.families.feature).toEqual(opts.featureBreakdown);
+      });
+
+      it('keeps a claimable feature as a blind spot, with no stand-down', () => {
+        const opts = {
+          issueBreakdown: zeroIssueFamilyBreakdown,
+          featureBreakdown: { matchedByFilter: 2, claimable: 2, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
+        };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.reason).toBe('issue_family_diagnosis_blind_spot');
+        expect(miss.windDown).toBe(false);
+        expect(miss.claimability.value).toBe(2);
+      });
+
+      it('retains a genuine zero-match authoring verdict when both measured families are empty', () => {
+        const opts = {
+          issueBreakdown: zeroIssueFamilyBreakdown,
+          featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
+        };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.reason).toBe('spec_matches_nothing');
+        expect(miss.claimability.population.matchedByFilter).toBe(0);
+      });
+
+      it('keeps the pause verdict ahead of measured feature floors', () => {
+        const opts = { pausedReason: 'stand down', issueBreakdown: zeroIssueFamilyBreakdown, featureBreakdown: heldFeature };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.paused).toBe(true);
+        expect(miss.error).toContain('winding-down');
+        expect(miss.reason).not.toBe('all_matches_gated');
+        expect(miss.reason).not.toBe('spec_matches_nothing');
+      });
+    });
+
     it('suppresses specEmpty/spec_matches_nothing when a tier-1 (feature-family) match exists', () => {
       const miss = fleetScopedMiss(planScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
