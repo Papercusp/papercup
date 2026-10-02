@@ -92,7 +92,7 @@ vi.mock('../memory/conflict-judge', () => ({
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { discloseDocuments, assertDisclosurePermits, DisclosureRefused } = await import('./disclosure-ledger');
-const { sealSharedText, sharedSealRefOf } = await import('./shared-store-seal');
+const { sealSharedText, sharedSealRefOf, SEALED_FIELD_STUB } = await import('./shared-store-seal');
 const { setWorkItemCheckpointWithPrior } = await import('../work-item-checkpoint');
 const { workItemScope } = await import('../carry-note');
 const { assertFact } = await import('../agent-facts/store');
@@ -235,6 +235,49 @@ describe('facts (assertFact)', () => {
     const key = `seal-${randomUUID().slice(0, 8)}`;
     await assertFact({ workspaceId: WS, scope: 'workspace', key, body: SECRET, ttlSec: 3600, createdBy: READER, writerOwnerId: READER });
     expect(await factRow(key)).toContain('merger');
+    expect(await sealedRows('fact')).toEqual([]);
+  });
+
+  // WI-10005549: the body is not the only authored text on a fact row.
+  const authoredFields = {
+    settledBy: `${SECRET} — settles when the merger memo lands`,
+    recheck: { probe: `ask Alice whether the merger still closes`, falsifier: `the merger slips past Friday` },
+    claim: { says: `merger closes Friday` },
+    sourceRef: `mail: merger-friday-thread`,
+  };
+
+  it('seals every authored field of a restricted writer’s fact, not just the body', async () => {
+    await restrictSender();
+    const key = `seal-${randomUUID().slice(0, 8)}`;
+    const fact = await assertFact({
+      workspaceId: WS, scope: 'workspace', key, body: SECRET, ttlSec: 3600, createdBy: SENDER, writerOwnerId: SENDER,
+      kind: 'undecidable', ...authoredFields,
+    });
+
+    const row = await factRow(key);
+    expect(row).toContain('🔒 Sealed');
+    expect(row).not.toContain('merger');
+    expect(row).toContain(SEALED_FIELD_STUB); // the undecidable still reads as having an exit
+    expect((await sealedRows('fact'))[0]).toMatchObject({
+      writerOwnerId: SENDER,
+      content: { text: SECRET, fields: authoredFields },
+    });
+
+    // Opening returns the sealed fields with the body, and labels the opener.
+    const { data } = await openAs(READER, 'fact', sharedSealRefOf(fact.body)!.ref);
+    expect(data).toMatchObject({ ok: true, text: SECRET, fields: authoredFields, labelled: 1 });
+  });
+
+  it('keeps an unrestricted writer’s authored fields on the row', async () => {
+    const key = `seal-${randomUUID().slice(0, 8)}`;
+    await assertFact({
+      workspaceId: WS, scope: 'workspace', key, body: 'plain', ttlSec: 3600, createdBy: READER, writerOwnerId: READER,
+      kind: 'undecidable', ...authoredFields,
+    });
+    const row = await factRow(key);
+    for (const text of ['settles when the merger memo lands', 'ask Alice whether', 'merger closes Friday', 'merger-friday-thread']) {
+      expect(row).toContain(text);
+    }
     expect(await sealedRows('fact')).toEqual([]);
   });
 });

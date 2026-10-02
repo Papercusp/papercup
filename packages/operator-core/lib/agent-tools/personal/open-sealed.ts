@@ -62,6 +62,8 @@ export default defineTool({
         writerOwnerId: opened.writerOwnerId,
         text: typeof opened.content.text === 'string' ? opened.content.text : null,
         context: opened.content.context ?? null,
+        // A fact's other authored fields (settledBy, recheck, claim, sourceRef), sealed with its body.
+        fields: opened.content.fields ?? null,
         labelled: opened.labelled,
       },
     };
