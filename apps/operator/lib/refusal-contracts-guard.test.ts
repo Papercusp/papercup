@@ -31,7 +31,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import { findRefusalSites, scanTree } from '../../../scripts/check-refusal-contracts.mjs';
+import { findRefusalSites, scanTree, EXEMPT } from '../../../scripts/check-refusal-contracts.mjs';
 
 interface Site {
   line: number;
@@ -172,6 +172,57 @@ describe('refusal-contracts — predicate (known-negative controls)', () => {
   });
 });
 
+describe('refusal-contracts — exemptions (detector false positives, reasoned + counted + shrink-only)', () => {
+  type Exempt = Record<string, { sites: number; reason: string }>;
+  const exempt = EXEMPT as Exempt;
+
+  it('every exemption is well-formed: `<file>::<code>` key, a positive site count, a real reason', () => {
+    const entries = Object.entries(exempt);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [key, e] of entries) {
+      expect(key).toMatch(/^[\w./-]+\.tsx?::[\w-]+$/);
+      expect(Number.isInteger(e.sites) && e.sites >= 1).toBe(true);
+      // A reason is what separates an exemption from a silent bypass.
+      expect(e.reason.trim().length).toBeGreaterThanOrEqual(40);
+    }
+  });
+
+  it('no exemption is stale — every one still excuses the sites it claims', () => {
+    // SHRINK-ONLY: a deleted or newly-contracted site must take its exemption with it,
+    // or it leaves headroom a future uncontracted refusal at that path/code would spend.
+    const { staleExemptions } = scanTree();
+    expect(
+      (staleExemptions as Array<{ key: string; exempt: number; actual: number }>).map(
+        (s) => `${s.key} exempt ${s.exempt} now ${s.actual}`,
+      ),
+    ).toEqual([]);
+  });
+
+  it('is COUNTED, not blanket: claiming one more site than exists is reported stale', () => {
+    const [key] = Object.keys(exempt);
+    const inflated: Exempt = { ...exempt, [key]: { ...exempt[key], sites: exempt[key].sites + 1 } };
+    expect(
+      (scanTree({ exempt: inflated }).staleExemptions as Array<{ key: string }>).map((s) => s.key),
+    ).toEqual([key]);
+  });
+
+  it('excuses exactly the named key: dropping one exemption makes ONLY that key a violation', () => {
+    const [key] = Object.keys(exempt);
+    const without: Exempt = { ...exempt };
+    delete without[key];
+    const { violations } = scanTree({ baseline: {}, exempt: without });
+    expect((violations as Array<{ key: string }>).map((v) => v.key)).toEqual([key]);
+  });
+
+  it('an exempt key is not baselined (it would occupy headroom twice)', () => {
+    // A baseline entry for an exempt key reads as stale, because the exempt sites are
+    // subtracted before the baseline comparison — so the pair cannot both hold a site.
+    const [key] = Object.keys(exempt);
+    const { stale } = scanTree({ baseline: { [key]: exempt[key].sites } });
+    expect((stale as Array<{ key: string }>).map((s) => s.key)).toContain(key);
+  });
+});
+
 describe('refusal-contracts — the tree', () => {
   it('has no refusal site beyond the measured baseline (no NEW uncontracted refusal)', () => {
     const { violations } = scanTree();
@@ -204,21 +255,22 @@ describe('refusal-contracts — the tree', () => {
     // Falsifiability without touching the tree — the baseline is an injected argument.
     // If `violations` were computed so as to always be [], the real-tree test above
     // would stay green forever; this is the control that notices.
-    const { uncontracted, violations } = scanTree({ baseline: {} });
+    // `exempt: {}` too: the real tree is now fully contracted-or-exempt, so only the raw
+    // (un-excused) population has anything for an empty baseline to reject.
+    const { uncontracted, violations } = scanTree({ baseline: {}, exempt: {} });
     expect(uncontracted.size).toBeGreaterThan(0);
     expect(violations).toHaveLength(uncontracted.size);
   });
 
   it('the ratchet is SHRINK-ONLY: a baseline larger than the live count is reported stale', () => {
-    const { uncontracted, stale } = scanTree();
-    const [anyKey] = [...(uncontracted as Map<string, number>).keys()];
-    const inflated = Object.fromEntries(
-      [...(uncontracted as Map<string, number>)].map(([k, n]) => [k, n]),
-    );
+    const { stale } = scanTree();
+    const raw = scanTree({ baseline: {}, exempt: {} }).uncontracted as Map<string, number>;
+    const [anyKey] = [...raw.keys()];
+    const inflated = Object.fromEntries([...raw].map(([k, n]) => [k, n]));
     inflated[anyKey] += 1;
     expect(stale).toEqual([]);
     expect(
-      (scanTree({ baseline: inflated }).stale as Array<{ key: string }>).map((s) => s.key),
+      (scanTree({ baseline: inflated, exempt: {} }).stale as Array<{ key: string }>).map((s) => s.key),
     ).toEqual([anyKey]);
   });
 
