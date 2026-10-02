@@ -134,7 +134,7 @@ describe('blind label collection through the injected stateless transport', () =
       const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
       expect(labels.memory).toHaveLength(8); expect(labels.prose).toHaveLength(8);
       expect(f.calls).toBe(8);
-      const raw = JSON.parse(fs.readFileSync(path.join(path.dirname(receipt.labels.path), 'memory-judge-1-0.json'), 'utf8'));
+      const raw = JSON.parse(fs.readFileSync(path.join(path.dirname(receipt.labels.path), 'memory-judge-1-0-attempt-1.json'), 'utf8'));
       expect(raw.result.text).toContain('{ q: index, d: [] }');
       expect(raw.result.json).toBeUndefined();
       expect(raw.promptSha256).toBe(hashJson({ system: raw.system, messages: raw.messages, model: raw.model }));
@@ -146,6 +146,7 @@ describe('blind label collection through the injected stateless transport', () =
       const donor = path.join(f.root, 'donor'), out = path.join(f.root, 'recovered');
       let first = true;
       const malformed: LlmCallFn = async (opts) => {
+        if (!first) throw new Error('fixture interruption after malformed reply');
         const result = await f.llm(opts);
         if (JSON.parse(opts.messages[0].content).questions && first) {
           first = false;
@@ -153,7 +154,6 @@ describe('blind label collection through the injected stateless transport', () =
           delete payload.votes[2].a;
           return { ...result, json: undefined, text: `\`\`\`json\n${JSON.stringify(payload)}\n\`\`\`` };
         }
-        if (!first) throw new Error('fixture interruption after malformed reply');
         return result;
       };
       await expect(collectIndependentCohort({ snapshot: f.snapshot, out: donor, llm: malformed, targetsPerPartition: 1 }))
@@ -210,7 +210,7 @@ describe('blind label collection through the injected stateless transport', () =
             text: `\`\`\`json\n${failure === 'invalid-json' ? '{broken' : JSON.stringify(payload)}\n\`\`\`` };
         };
         await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 }))
-          .rejects.toThrow(/invalid blind|incomplete blind|outside|incomplete\/unpriced/);
+          .rejects.toThrow(/invalid blind|incomplete blind|outside|incomplete\/unpriced|invalid recovered/);
         expect(fs.existsSync(path.join(out, 'memory-judge-1-0-attempt-1.json'))).toBe(true);
         expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
         expect(fs.existsSync(path.join(out, 'judgments.json'))).toBe(false);
@@ -278,7 +278,8 @@ describe('blind label collection through the injected stateless transport', () =
           fs.writeFileSync(identityPath, JSON.stringify(saved));
         }
         if (failure === 'prompt') {
-          const raw = path.join(original, 'memory-judge-1-0.json'), body = JSON.parse(fs.readFileSync(raw, 'utf8'));
+          const ref = JSON.parse(fs.readFileSync(path.join(original, 'memory-judge-1-0.json'), 'utf8'));
+          const raw = ref.origin.path, body = JSON.parse(fs.readFileSync(raw, 'utf8'));
           body.messages[0].content += 'changed';
           fs.writeFileSync(raw, JSON.stringify(body));
         }
@@ -325,6 +326,12 @@ describe('blind label collection through the injected stateless transport', () =
       return f.llm(opts);
     };
     await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('fixture judge interruption');
+    // This donor fixture exercises the historical direct-raw author format.
+    for (const name of fs.readdirSync(out).filter((s) => /-author-[a-f0-9]+\.json$/.test(s))) {
+      const file = path.join(out, name), selected = JSON.parse(fs.readFileSync(file, 'utf8'));
+      fs.writeFileSync(file, fs.readFileSync(selected.origin.path));
+      fs.unlinkSync(selected.origin.path);
+    }
     return out;
   }
   it('exhausts unequal snapshot partitions and accepts explicit per-corpus budgets without changing source assignment', async () => {
