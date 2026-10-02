@@ -76,7 +76,7 @@ describe('coord:escalate GOAL owner-report boundary (P-006 / A-05)', () => {
       ok: false,
       error: 'goal-owner-report-incomplete',
       goalId,
-      missing: ['ownerWalled', 'killed'],
+      missing: ['ownerWalled', 'killed', 'nextWake'],
     });
     expect(h.openEscalation).not.toHaveBeenCalled();
   });
