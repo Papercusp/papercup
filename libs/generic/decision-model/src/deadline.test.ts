@@ -48,6 +48,17 @@ const request = {
 const DEADLINE_MS = 100;
 /** How long the event loop is held, well past the deadline. */
 const STALL_MS = 350;
+/**
+ * How long the 'slow' provider takes to answer. Deliberately FAR past the deadline:
+ * when parallel test files starve this process of CPU, wall-clock time can run
+ * hundreds of ms past the deadline even though the client never waited for the
+ * provider (EI-24855002327339692 measured 354 ms against an old bound of 250 ms,
+ * with the provider at only 350 ms). A client that waits for the provider takes
+ * at least this long, so the two stay distinguishable under contention.
+ */
+const SLOW_PROVIDER_MS = 3_000;
+/** Slack for a CPU-starved worker; still far below SLOW_PROVIDER_MS. */
+const STARVATION_SLACK_MS = 1_000;
 
 function blockEventLoop(ms: number): void {
   const end = performance.now() + ms;
@@ -58,6 +69,8 @@ function blockEventLoop(ms: number): void {
 
 type Mode = 'answer-then-stall' | 'slow';
 let mode: Mode = 'answer-then-stall';
+/** Pending 'slow' replies, cleared on teardown so none outlives the suite. */
+const pendingReplies = new Set<ReturnType<typeof setTimeout>>();
 let server: Server;
 let baseUrl = '';
 
@@ -72,7 +85,15 @@ beforeAll(async () => {
       };
       if (mode === 'slow') {
         // A provider that genuinely has not answered by the deadline; nothing blocks.
-        setTimeout(send, STALL_MS);
+        const timer = setTimeout(() => {
+          pendingReplies.delete(timer);
+          send();
+        }, SLOW_PROVIDER_MS);
+        pendingReplies.add(timer);
+        res.on('close', () => {
+          clearTimeout(timer);
+          pendingReplies.delete(timer);
+        });
         return;
       }
       send();
@@ -84,6 +105,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const timer of pendingReplies) clearTimeout(timer);
+  pendingReplies.clear();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
@@ -131,7 +154,9 @@ describe('decision deadline vs a blocked event loop', () => {
     const out = await client().decide(request);
     const elapsed = performance.now() - t0;
     expect(out).toMatchObject({ kind: 'inconclusive', reason: 'timeout' });
-    // Bounded by the deadline plus one loop phase, nowhere near the provider's delay.
-    expect(elapsed).toBeLessThan(STALL_MS - 100);
+    // Bounded by the deadline (plus slack for a CPU-starved worker), nowhere near the
+    // provider's delay: a client that waited for the provider would take >= SLOW_PROVIDER_MS.
+    expect(elapsed).toBeLessThan(DEADLINE_MS + STARVATION_SLACK_MS);
+    expect(DEADLINE_MS + STARVATION_SLACK_MS).toBeLessThan(SLOW_PROVIDER_MS);
   });
 });
