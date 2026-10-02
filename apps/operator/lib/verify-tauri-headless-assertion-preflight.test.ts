@@ -16,6 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = resolve(__dirname, '../../..');
@@ -75,6 +76,42 @@ function runAssertionPreflightOnly(assertionSource: string) {
     env: { ...process.env, VERIFY_TEST_ASSERTION_SOURCE: assertionSource },
     encoding: 'utf8',
   });
+}
+
+function runManifestPreflight(actual: string, claimed: string, claimedRoot?: string) {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-env-manifest.'));
+  const assertion = join(dir, 'assertion.sh');
+  const manifest = join(dir, 'manifest.json');
+  const source = [
+    '#!/usr/bin/env bash',
+    `# VERIFY_TAURI_ASSERTION_ENV_MANIFEST=${manifest}`,
+    `D=${dir}`,
+    'export GST_DEBUG_FILE="$D/' + actual + '"',
+    '',
+  ].join('\n');
+  writeFileSync(assertion, source);
+  writeFileSync(manifest, JSON.stringify({
+    assertionSha256: createHash('sha256').update(source).digest('hex'),
+    diagnosticEnv: { GST_DEBUG_FILE: join(dir, claimed) },
+    diagnosticLogRoot: claimedRoot ?? join(dir, 'current'),
+  }));
+  const start = src.indexOf('validate_assertion_command_preflight() {');
+  const end = src.indexOf('\n\nvalidate_assertion_command_preflight || exit $?', start);
+  const result = spawnSync('bash', ['-c', [
+    src.slice(start, end),
+    'ASSERTION_MODE=1',
+    'ASSERTION_ARGS=(bash "$VERIFY_TEST_ASSERTION_PATH")',
+    'validate_assertion_command_preflight',
+  ].join('\n')], {
+    env: {
+      ...process.env,
+      REPO_DIR: ROOT,
+      VERIFY_TEST_ASSERTION_PATH: assertion,
+    },
+    encoding: 'utf8',
+  });
+  rmSync(dir, { recursive: true, force: true });
+  return result;
 }
 
 describe('EI-21974634479405756 — assertion command preflight', () => {
@@ -178,5 +215,30 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('WI-10002829 — assertion environment manifest preflight', () => {
+  it('rejects an assertion copied from an older diagnostic before verifier preparation', () => {
+    const result = runManifestPreflight('old/gst.%p.log', 'current/gst.%p.log');
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('GST_DEBUG_FILE differs from manifest diagnosticEnv');
+    expect(src.indexOf('validate_assertion_command_preflight || exit $?'))
+      .toBeLessThan(src.indexOf('shared_schema_readiness_preflight || exit $?'));
+    expect(src.indexOf('validate_assertion_command_preflight || exit $?'))
+      .toBeLessThan(src.indexOf('WORK="$(mktemp -d'));
+    expect(src).toContain('sha256sum -- "$ASSERTION_ENV_MANIFEST_PATH" >> "$ASSERTION_INPUT_MANIFEST"');
+  });
+
+  it('rejects an internally inconsistent manifest even when the export agrees', () => {
+    const result = runManifestPreflight('current/gst.%p.log', 'current/gst.%p.log', '/dev/shm/other');
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('GST_DEBUG_FILE parent differs from manifest diagnosticLogRoot');
+  });
+
+  it('accepts a matching immutable assertion and manifest', () => {
+    const result = runManifestPreflight('current/gst.%p.log', 'current/gst.%p.log');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('VERIFY_TAURI_ASSERTION_ENV_OK 1 binding(s)');
   });
 });

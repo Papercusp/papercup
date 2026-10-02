@@ -648,6 +648,7 @@ export PATH VERIFY_TAURI_CARGO_BIN VERIFY_TAURI_CARGO_BIN_DIR
 # spends minutes building and booting a verifier. Preflight shell syntax and
 # tauri-agent-tools option ordering while the command is still cheap to reject.
 # The CLI's --pid/--port options belong to a subcommand, not the root command.
+ASSERTION_ENV_MANIFEST_PATH=""
 validate_assertion_command_preflight() {
   [ "${ASSERTION_MODE}" -eq 1 ] || return 0
 
@@ -698,6 +699,15 @@ validate_assertion_command_preflight() {
       echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: invalid shell syntax" >&2
       [ -n "$syntax_output" ] && printf '%s\n' "$syntax_output" >&2
       return 2
+    fi
+    # An assertion can opt in by naming its immutable experiment manifest in
+    # its header. Check every declared environment binding before preparation;
+    # the assertion itself cannot run yet because it needs the owned bridge.
+    local env_manifest
+    env_manifest="$(sed -n '1,12s/^# VERIFY_TAURI_ASSERTION_ENV_MANIFEST=//p' "$source_path")"
+    if [ -n "$env_manifest" ]; then
+      node "$REPO_DIR/scripts/lib/verify-tauri-assertion-env.mjs" "$source_path" "$env_manifest" || return 2
+      ASSERTION_ENV_MANIFEST_PATH="$env_manifest"
     fi
   fi
 
@@ -1204,6 +1214,12 @@ write_assertion_input_manifest() {
     sha256sum -- "$resolved" >> "$ASSERTION_INPUT_MANIFEST" || return 1
     ASSERTION_INPUT_COUNT=$((ASSERTION_INPUT_COUNT + 1))
   done
+  # The opt-in manifest was checked before preparation. Freeze those same bytes
+  # with the assertion inputs so a later edit cannot change its post-boot claim.
+  if [ -n "$ASSERTION_ENV_MANIFEST_PATH" ]; then
+    sha256sum -- "$ASSERTION_ENV_MANIFEST_PATH" >> "$ASSERTION_INPUT_MANIFEST" || return 1
+    ASSERTION_INPUT_COUNT=$((ASSERTION_INPUT_COUNT + 1))
+  fi
 
   if [ "$ASSERTION_INPUT_COUNT" -gt 0 ]; then
     log "assertion input snapshot captured before boot: $ASSERTION_INPUT_COUNT file-backed argument(s)"
