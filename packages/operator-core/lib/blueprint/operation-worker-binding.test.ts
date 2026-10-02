@@ -14,6 +14,13 @@ vi.mock('../work-items', () => ({ getWorkItem }));
 vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem }));
 vi.mock('../agent-identities/source', () => ({ getIdentitySource }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspace: string, run: () => unknown) => run() }));
+// getOrgPg is stubbed above, so the real pot lookup reads a stub, is reported as
+// unmeasured (console.warn, by design since WI-10004845), and vitest-fail-on-console
+// fails the case (WI-10005470). Pot resolution is not this file's subject.
+vi.mock('../pot-membership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pot-membership')>()),
+  workItemStorageSlug: async (slug: string) => slug,
+}));
 
 import { describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
 
