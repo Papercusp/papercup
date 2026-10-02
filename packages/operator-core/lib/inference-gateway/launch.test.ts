@@ -567,6 +567,9 @@ test('reloadPool follows the back-compat single resolveAccount path (re-resolves
 test('credit projection records depletion immediately even when the included meter is unchanged', async () => {
   const recorded = vi.spyOn(burnAlert, 'recordAccountWindowWithBurnAlert')
     .mockResolvedValue({ pool: { accounts: [] }, transition: null });
+  tempDir = mkdtempSync(join(tmpdir(), 'codex-gw-credit-projection-'));
+  const codexTokenPath = join(tempDir, 'codex.token');
+  writeFileSync(codexTokenPath, 'test-codex-token\n', { mode: 0o600 });
   let available = true;
   upstream = http.createServer((_req, res) => {
     res.writeHead(200, {
@@ -584,8 +587,8 @@ test('credit projection records depletion immediately even when the included met
   svc = await startGatewayService({
     port: 0, upstreamBase: base, log: () => {},
     resolveAccounts: async (_ws, provider) => [{
-      accountId: provider === 'codex' ? 'test-codex' : 'test-claude',
-      credentialRef: 'token:/test-credential', source: 'pool',
+    accountId: provider === 'codex' ? 'test-codex' : 'test-claude',
+      credentialRef: provider === 'codex' ? `token:${codexTokenPath}` : 'token:/test-credential', source: 'pool',
     }],
     makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'test-token', invalidate: () => {} }),
     observePool: () => () => {},
@@ -597,8 +600,8 @@ test('credit projection records depletion immediately even when the included met
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'gpt-6.1-sol', input: 'credit projection' }),
     });
-    assert.equal(response.status, 200);
-    await response.text();
+    const responseBody = await response.text();
+    assert.equal(response.status, 200, responseBody);
   };
   await send();
   await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 1));
