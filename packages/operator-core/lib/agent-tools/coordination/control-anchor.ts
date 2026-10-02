@@ -156,6 +156,12 @@ export interface ControlAnchor {
      */
     overBudget?: true;
   };
+  /**
+   * EI-23770243810745552: present ONLY when the enforcement port's read of the activation
+   * differs from what this write intended. Absence means the read agreed (or this anchor
+   * did not come from a write) — it is an exception report, not a per-write receipt.
+   */
+  consumerView?: ActivationConsumerView;
 }
 
 export type ControlTransitionOrigin = 'owner' | 'agent' | 'system';
@@ -209,12 +215,6 @@ export interface ControlTransitionDelivery extends ControlTransition {
      */
     overBudget?: true;
   };
-  /**
-   * EI-23770243810745552: present ONLY when the enforcement port's read of the activation
-   * differs from what this write intended. Absence means the read agreed (or this anchor
-   * did not come from a write) — it is an exception report, not a per-write receipt.
-   */
-  consumerView?: ActivationConsumerView;
 }
 
 /**
