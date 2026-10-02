@@ -238,6 +238,45 @@ export function parseSyftSbomFacts(document: unknown): {
   };
 }
 
+/** buildah/podman build's base-image annotations on the built image's own manifest. */
+export const OCI_BASE_NAME_ANNOTATION = "org.opencontainers.image.base.name";
+export const OCI_BASE_DIGEST_ANNOTATION = "org.opencontainers.image.base.digest";
+
+/**
+ * WI-10005711. The base image the bake was built FROM, read from the built image's own manifest,
+ * never from a hand-copied input. syft embeds that manifest (base64) in the SBOM; it counts only
+ * when its bytes hash to the digest the release signs, so the annotation is bound to the signed
+ * image. `sha256` is the per-platform manifest digest buildah resolved the FROM tag to.
+ * Returns null when the SBOM carries no manifest or the manifest carries no base annotations.
+ */
+export function signedBaseImage(sbom: unknown, digest: string): { reference: string; sha256: string } | null {
+  const source = isRecord(sbom) && isRecord(sbom.source) ? sbom.source : undefined;
+  const metadata = source && isRecord(source.metadata) ? source.metadata : undefined;
+  const encoded = metadata?.manifest;
+  if (encoded === undefined || encoded === null) return null;
+  if (typeof encoded !== "string" || !encoded) fail("syft SBOM source.metadata.manifest must be a base64 string");
+  const bytes = Buffer.from(encoded, "base64");
+  const manifestDigest = `sha256:${digestOf(bytes)}`;
+  if (manifestDigest !== digest) {
+    fail(`syft SBOM's embedded image manifest hashes to ${manifestDigest}, not the signed digest ${digest}`);
+  }
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    fail("syft SBOM's embedded image manifest is not valid JSON");
+  }
+  const annotations = isRecord(manifest) && isRecord(manifest.annotations) ? manifest.annotations : {};
+  const reference = annotations[OCI_BASE_NAME_ANNOTATION];
+  const baseDigest = annotations[OCI_BASE_DIGEST_ANNOTATION];
+  if (reference === undefined && baseDigest === undefined) return null;
+  if (typeof reference !== "string" || !reference) fail(`image manifest ${OCI_BASE_NAME_ANNOTATION} must be a non-empty string`);
+  if (typeof baseDigest !== "string" || !DIGEST.test(baseDigest)) {
+    fail(`image manifest ${OCI_BASE_DIGEST_ANNOTATION} must be a sha256 digest`);
+  }
+  return { reference, sha256: baseDigest.slice("sha256:".length) };
+}
+
 /**
  * The two artifact types an EL9 vendor kernel reaches grype as. `rpm` is the packaged kernel
  * (kernel, kernel-core, ...). `linux-kernel` is syft's binary cataloger reading the kernel image

@@ -17,6 +17,10 @@ describe("maintained operator integration suite routing", () => {
       expect.stringContaining("vitest-shims/radix-jsdom.ts"),
       expect.stringContaining("vitest-shims/resize-observer.ts"),
     ]));
-    expect(integration.test?.globalSetup).toHaveLength(2);
+    // The shared config prepends the vitest-root restricted-hold preflight (WI-10005724)
+    // ahead of this suite's own two global setups; it must run first.
+    const globalSetup = integration.test?.globalSetup as string[];
+    expect(globalSetup).toHaveLength(3);
+    expect(globalSetup[0]).toEqual(expect.stringContaining("host-preflight-global-setup.ts"));
   });
 });
