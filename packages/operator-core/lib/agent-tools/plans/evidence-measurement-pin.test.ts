@@ -21,8 +21,10 @@ vi.mock('../locks/su-lock-store', () => ({
   readQueue: vi.fn(async () => ({ active_locks: [], waiting: [], completed: [] })),
 }));
 
+import { gitReadMemoStats } from '../../sync-exec-replay';
 import {
   buildMeasurementPin,
+  defaultGitRunner,
   diffMeasuredFiles,
   explainMovedPaths,
   gitBlobId,
@@ -69,6 +71,41 @@ const recipe = {
   kind: 'repo-files' as const,
   sourcePaths: ['src/a.ts', 'libs/sub/sql/001.sql'],
 };
+
+describe('defaultGitRunner (EI-24852529885337741)', () => {
+  it('returns stdout on success and throws a Command failed error naming the argv otherwise', async () => {
+    const head = git(root, 'rev-parse', 'HEAD');
+    expect((await defaultGitRunner(root, ['rev-parse', 'HEAD'])).trim()).toBe(head);
+    await expect(defaultGitRunner(root, ['rev-parse', '--verify', '--quiet', `${'0'.repeat(40)}:missing.ts`])).rejects.toThrow(
+      /^Command failed \(exit 1\): git -C .* rev-parse --verify --quiet 0{40}:missing\.ts/,
+    );
+  });
+
+  it('shares one child between concurrent identical content-addressed reads', async () => {
+    const head = git(root, 'rev-parse', 'HEAD');
+    const args = ['rev-parse', '--verify', '--quiet', `${head}:src/a.ts`];
+    const before = gitReadMemoStats();
+    const [a, b] = await Promise.all([defaultGitRunner(root, args), defaultGitRunner(root, args)]);
+    const after = gitReadMemoStats();
+    expect(a).toBe(b);
+    expect(a.trim()).toBe(git(root, 'rev-parse', `${head}:src/a.ts`));
+    expect(after.misses - before.misses).toBe(1);
+    expect(after.hits - before.hits).toBe(1);
+  });
+
+  it('never shares a HEAD-relative read, so a commit made in between is seen at once', async () => {
+    const before = gitReadMemoStats();
+    const first = (await defaultGitRunner(root, ['rev-parse', 'HEAD'])).trim();
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'move HEAD');
+    const second = (await defaultGitRunner(root, ['rev-parse', 'HEAD'])).trim();
+    expect(second).not.toBe(first);
+    expect(second).toBe(git(root, 'rev-parse', 'HEAD'));
+    const after = gitReadMemoStats();
+    expect(after.misses - before.misses).toBe(0);
+    expect(after.hits - before.hits).toBe(0);
+  });
+});
 
 describe('evidence measurement pin (P-018)', () => {
   it('computes the same blob id as git hash-object', () => {

@@ -140,18 +140,48 @@ const GIT_READ_SUBCOMMANDS: ReadonlySet<string> = new Set([
 /** Above this many entries, a miss first drops every expired one (time-keyed argv never repeats). */
 const GIT_READ_MEMO_PRUNE_AT = 64;
 
-/** The git subcommand of `args` (after `-C <dir>` / `-c <k=v>` / `--no-pager`), or null. */
-export function gitSubcommand(args: readonly string[]): string | null {
+/** Index of the git subcommand in `args` (after `-C <dir>` / `-c <k=v>` / `--no-pager`), or -1. */
+function gitSubcommandIndex(args: readonly string[]): number {
   for (let i = 0; i < args.length; i++) {
-    const a = args[i];
+    const a = args[i]!;
     if (a === '-C' || a === '-c') {
       i++;
       continue;
     }
     if (a === '--no-pager' || a.startsWith('--git-dir=') || a.startsWith('--work-tree=')) continue;
-    return a.startsWith('-') ? null : a;
+    return a.startsWith('-') ? -1 : i;
   }
-  return null;
+  return -1;
+}
+
+/** The git subcommand of `args` (after `-C <dir>` / `-c <k=v>` / `--no-pager`), or null. */
+export function gitSubcommand(args: readonly string[]): string | null {
+  const i = gitSubcommandIndex(args);
+  return i < 0 ? null : args[i]!;
+}
+
+/** A full object id, optionally followed by `:<path>` (a blob or tree inside that commit). */
+const CONTENT_ADDRESSED_REV = /^[0-9a-f]{40}(?::.*)?$/;
+
+/**
+ * True when a read-only git call names ONLY immutable objects: every revision argument before
+ * `--` is a full 40-hex id (optionally `<id>:<path>`), and there is at least one. Its answer can
+ * never change, so sharing it cannot return a stale result, unlike `rev-parse HEAD` or
+ * `ls-tree HEAD`, whose answer moves with every commit. Fail-safe: an option VALUE passed as a
+ * separate argument (`-n 5`) does not look like an id, so such a call is reported false.
+ */
+export function gitReadIsContentAddressed(args: readonly string[]): boolean {
+  const at = gitSubcommandIndex(args);
+  if (at < 0 || !GIT_READ_SUBCOMMANDS.has(args[at]!)) return false;
+  let revisions = 0;
+  for (let i = at + 1; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === '--') break;
+    if (a.startsWith('-')) continue;
+    if (!CONTENT_ADDRESSED_REV.test(a)) return false;
+    revisions++;
+  }
+  return revisions > 0;
 }
 
 export interface GitReadMemoStats {

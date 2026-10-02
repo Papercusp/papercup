@@ -29,7 +29,7 @@ import { createHash } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { execFileResultShared } from '../../sync-exec-replay';
+import { execFileResult, execFileResultShared, gitReadIsContentAddressed } from '../../sync-exec-replay';
 
 export const MEASUREMENT_PIN_DETAILS_KEY = 'measurementPin';
 
@@ -76,17 +76,21 @@ export type GitRunner = (cwd: string, args: readonly string[]) => Promise<string
 const GIT_TIMEOUT_MS = 5_000;
 
 /**
- * Every call here is a read (`rev-parse`, `ls-tree`, `log`), so it goes through the
- * process-wide single-flight git-read memo (EI-24852529885337741). Each fork of the ~1.7 GB
- * operator costs ~160 ms of synchronous main-thread time, and an execve census of :3170
- * (2026-10-02 08:01-08:12Z) caught `plans:bind-from-test-run` issuing the same
- * `rev-parse --verify --quiet <sha>:<path>` twice within 0.3-0.5 s for each of its paths.
- * The contract is unchanged: stdout on exit 0, otherwise a thrown `Command failed: …` error
+ * EI-24852529885337741: each fork of the ~1.7 GB operator costs ~160 ms of synchronous
+ * main-thread time, and an execve census of :3170 (2026-10-02 08:01-08:12Z) caught
+ * `plans:bind-from-test-run` issuing the same `rev-parse --verify --quiet <sha>:<path>` twice
+ * within 0.3-0.5 s for each of its paths. Calls that name only immutable objects (a full sha,
+ * optionally `:<path>`) therefore go through the process-wide single-flight git-read memo.
+ * HEAD-relative reads (`rev-parse HEAD`, `ls-tree HEAD`, `log <pin>..HEAD`) do NOT: this module
+ * compares a pin against the CURRENT tree, and a reused answer up to 2 s old reads a commit made
+ * in between as an uncommitted edit (the submodule-attribution test catches exactly that).
+ * The contract is unchanged: stdout on exit 0, otherwise a thrown `Command failed …` error
  * whose first line names the argv (callers record `errorText(error)`, which reads it).
  */
 export const defaultGitRunner: GitRunner = async (cwd, args) => {
   const argv = ['-C', cwd, ...args];
-  const result = await execFileResultShared('git', argv, { timeout: GIT_TIMEOUT_MS });
+  const exec = gitReadIsContentAddressed(argv) ? execFileResultShared : execFileResult;
+  const result = await exec('git', argv, { timeout: GIT_TIMEOUT_MS });
   if (result.status === 0) return result.stdout;
   const why = result.status === null ? 'killed or timed out' : `exit ${result.status}`;
   throw new Error(`Command failed (${why}): git ${argv.join(' ')}\n${result.stderr}`);

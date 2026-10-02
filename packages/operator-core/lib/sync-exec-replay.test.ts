@@ -14,6 +14,7 @@ import {
   execFileResult,
   execFileResultShared,
   GIT_READ_MEMO_TTL_MS,
+  gitReadIsContentAddressed,
   gitReadMemoStats,
   gitSubcommand,
   runSyncWithAsyncExec,
@@ -283,5 +284,30 @@ describe('git-pipeline-position no longer spawns synchronously (WI-10005261 guar
       .join('\n');
     expect(code).toMatch(/runSyncWithAsyncExec/);
     expect(code.match(/\b(?:spawnSync|execFileSync|execSync)\b/g) ?? []).toEqual([]);
+  });
+});
+
+describe('gitReadIsContentAddressed (EI-24852529885337741)', () => {
+  const sha = 'a'.repeat(40);
+
+  it('accepts reads that name only full object ids, with or without :<path>', () => {
+    expect(gitReadIsContentAddressed(['-C', '/r', 'rev-parse', '--verify', '--quiet', `${sha}:src/a.ts`])).toBe(true);
+    expect(gitReadIsContentAddressed(['-C', '/r', 'ls-tree', sha, '--', 'libs/sub'])).toBe(true);
+    expect(gitReadIsContentAddressed(['cat-file', '-p', sha])).toBe(true);
+  });
+
+  it('rejects reads whose answer moves with the tree: symbolic refs, short ids, ranges', () => {
+    expect(gitReadIsContentAddressed(['-C', '/r', 'rev-parse', 'HEAD'])).toBe(false);
+    expect(gitReadIsContentAddressed(['-C', '/r', 'ls-tree', 'HEAD', '--', 'src/a.ts'])).toBe(false);
+    expect(gitReadIsContentAddressed(['rev-parse', '--verify', 'ready'])).toBe(false);
+    expect(gitReadIsContentAddressed(['rev-parse', 'abc1234:src/a.ts'])).toBe(false);
+    expect(gitReadIsContentAddressed(['log', '-n5', '--format=%H', `${sha}..HEAD`, '--', 'a'])).toBe(false);
+  });
+
+  it('rejects calls with no revision, writers, and option values passed as separate args', () => {
+    expect(gitReadIsContentAddressed(['rev-parse', '--path-format=absolute', '--git-common-dir'])).toBe(false);
+    expect(gitReadIsContentAddressed(['commit', '-m', sha])).toBe(false);
+    expect(gitReadIsContentAddressed(['log', '-n', '5', sha])).toBe(false);
+    expect(gitReadIsContentAddressed([])).toBe(false);
   });
 });
