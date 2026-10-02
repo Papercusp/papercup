@@ -1345,6 +1345,9 @@ _pc_heavy_internal_preempt_run() {
   # "child ... did not exit normally" after the monitor intentionally terminates
   # this group, which is an expected preemption outcome rather than a workload
   # diagnostic. The monitor itself remains the cleanup owner through its traps.
+  # An asynchronous command in non-interactive Bash otherwise receives
+  # /dev/null on fd 0. Preserve caller stdin explicitly: EOF can make a
+  # script-on-stdin workload exit zero without executing any of its program.
   setsid --wait bash -c '
     trap - PIPE
     _notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
@@ -1359,7 +1362,7 @@ _pc_heavy_internal_preempt_run() {
     shift
     printf "%s\n" "$$" > "$_pid_file"
     exec "$@"
-  ' _ "$_preempt_pid_file" "$@" &
+  ' _ "$_preempt_pid_file" "$@" <&0 &
   _preempt_wait_pid=$!
   _preempt_start_deadline=$(( ${EPOCHSECONDS:-$(date +%s)} + 5 ))
   while [ ! -s "$_preempt_pid_file" ]; do
