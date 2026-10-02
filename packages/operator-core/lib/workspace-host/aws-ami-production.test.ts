@@ -22,7 +22,7 @@ import {
 
 const KMS = 'arn:aws:kms:us-east-1:111111111111:key/abc';
 const SHA = 'a'.repeat(64);
-const TOOLS = ['aws-ssm-agent', 'openssh-server'];
+const TOOLS = ['amazon-ssm-agent', 'openssh-server'];
 
 type Call = { name: string; input: Record<string, unknown> };
 
@@ -81,7 +81,7 @@ function adapterWith(ec2Calls: Call[], runs: unknown[], ec2Responses: Record<str
       commands: fakeCommands('Uploaded snapshot snap-0abc123\n', runs),
       sleep: async () => {},
     },
-    { guestToolVersions: { 'aws-ssm-agent': '3.3.1', 'openssh-server': '9.6' } },
+    { guestToolVersions: { 'amazon-ssm-agent': '3.3.1', 'openssh-server': '9.6' } },
   );
 }
 
@@ -151,7 +151,7 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
   it('refuses when a required guest tool version is not pinned', async () => {
     const adapter = new SdkAwsAmiReleaseAdapter(
       { ec2: () => fakeSender({}, []), ssm: () => fakeSender({}, []), childCredentials: async () => ({}) },
-      { guestToolVersions: { 'aws-ssm-agent': '3.3.1' } },
+      { guestToolVersions: { 'amazon-ssm-agent': '3.3.1' } },
     );
     await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/not pinned for: openssh-server/);
   });
@@ -167,7 +167,7 @@ describe('SdkAwsAmiReleaseAdapter.inspectImage', () => {
             OwnerId: '111111111111',
             State: 'available',
             Architecture: 'x86_64',
-            Tags: [{ Key: 'papercusp:guest-tool:aws-ssm-agent', Value: '3.3.1' }, { Key: 'papercusp:managed', Value: 'true' }],
+            Tags: [{ Key: 'papercusp:guest-tool:amazon-ssm-agent', Value: '3.3.1' }, { Key: 'papercusp:managed', Value: 'true' }],
             BlockDeviceMappings: [{ Ebs: { SnapshotId: 'snap-0abc' } }],
           },
         ],
@@ -179,7 +179,7 @@ describe('SdkAwsAmiReleaseAdapter.inspectImage', () => {
     await expect(adapter.inspectImage('us-east-1', 'ami-0bbb')).resolves.toMatchObject({
       ownerAccountId: '111111111111',
       state: 'available',
-      guestTools: [{ name: 'aws-ssm-agent', version: '3.3.1' }],
+      guestTools: [{ name: 'amazon-ssm-agent', version: '3.3.1' }],
       launchAccountIds: ['222222222222', '333333333333'],
       snapshots: [{ snapshotId: 'snap-0abc', encrypted: true, kmsKeyArn: KMS, createVolumeAccountIds: ['222222222222'] }],
     });
