@@ -26,6 +26,11 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   readFleetPauseState: vi.fn(),
 }));
+// EI-23772523186892689: the caller-vs-fleet spec comparison reads the caller's latest fleet
+// membership (dynamic import inside the handler's per-agent-spec branch only).
+vi.mock('../../fleet-membership-store', () => ({
+  latestFleetMembership: vi.fn(),
+}));
 // EI-21834285144372521: the handler now runs the SAME post-claim plan-lane guard
 // scheduler:get_next uses, read-only, over plan-linked rows in the returned page. Mocked so
 // existing fixtures (WI-B carries plan:'p') keep their pre-fix "claimable" behaviour by
@@ -47,6 +52,7 @@ import {
   listFleetClaimSpecCandidates,
 } from '../../scheduler/claim-spec-store';
 import { readFleetPauseState } from '../../scheduler/fleet-scope-admission';
+import { latestFleetMembership } from '../../fleet-membership-store';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { materializeCountEvidence } from '../../count-evidence-contract';
@@ -57,6 +63,7 @@ const recM = vi.mocked(resolveFleetClaimSpec);
 const candM = vi.mocked(listFleetClaimSpecCandidates);
 const pauseM = vi.mocked(readFleetPauseState);
 const laneM = vi.mocked(planItemLaneBlockReason);
+const membershipM = vi.mocked(latestFleetMembership);
 
 const tool = (await import('./claimable')).default;
 
@@ -321,6 +328,130 @@ describe('work_items:claimable handler', () => {
     expect(out.rows).toEqual([]);
     expect(out.note).toContain('FLEET WINDING DOWN');
     expect(out.note).toContain('matchedByFilter is diagnostic only');
+  });
+
+  describe('EI-23772523186892689: a per-agent spec that overrides the caller\'s fleet spec is named in-band', () => {
+    const FLEET = 'goal-drain-work-on-everything-60d3a8';
+    const specWith = (specId: string, revision: number) => ({
+      ...DEFAULT_CLAIM_SPEC,
+      specId,
+      revision,
+      view: { filter: { field: 'goal', op: '=', value: 'g' } },
+      states: ['open'],
+    });
+    const cupRecord = (specId: string) => ({
+      source: 'cup' as const,
+      spec: specWith(specId, 3),
+      revision: 3,
+      updatedBy: null,
+      updatedAt: null,
+      harnessSlug: null,
+    });
+    const fleetResolved = (specId: string, matchedBy: 'fleet-slug' | 'spec-id' = 'fleet-slug') => ({
+      record: {
+        source: 'fleet' as const,
+        spec: specWith(specId, 3),
+        revision: 3,
+        updatedBy: null,
+        updatedAt: null,
+        harnessSlug: null,
+        fleetSlug: FLEET,
+      },
+      fleetSlug: FLEET,
+      matchedBy,
+    });
+
+    it('different spec ids: names BOTH lanes, says diverges, and the note refuses the "fleet has no work" reading', async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'leader' });
+      recM.mockResolvedValueOnce(fleetResolved('goal-fleet-lane'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(recM).toHaveBeenCalledWith({ spec: FLEET, workspaceId: 'ws-1' });
+      expect(out.spec).toMatchObject({ specId: 'plans-start-dry-run-lane', source: 'cup', matchedBy: 'caller-effective' });
+      expect(out.claimableCallerScope.fleetSpecComparison).toEqual({
+        fleetSlug: FLEET,
+        callerSpecId: 'plans-start-dry-run-lane',
+        fleetSpecId: 'goal-fleet-lane',
+        fleetSpecRevision: 3,
+        diverges: true,
+      });
+      expect(out.note).toContain("CALLER SPEC ≠ YOUR FLEET'S SPEC");
+      expect(out.note).toContain("'plans-start-dry-run-lane'");
+      expect(out.note).toContain("'goal-fleet-lane' rev 3");
+      expect(out.note).toContain('a 0 here does not mean the fleet has no work');
+      expect(out.note).toContain(`spec:'${FLEET}'`);
+    });
+
+    it('same spec id: reports diverges:false and adds NO warning', async () => {
+      recordM.mockResolvedValue(cupRecord('shared-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'member' });
+      recM.mockResolvedValueOnce(fleetResolved('shared-lane'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope.fleetSpecComparison.diverges).toBe(false);
+      expect(out.note).not.toContain('CALLER SPEC');
+    });
+
+    it("fleet spec unreadable: diverges is null (not false) and the note says it MAY differ", async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'leader' });
+      recM.mockResolvedValueOnce(null);
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope.fleetSpecComparison).toEqual({
+        fleetSlug: FLEET,
+        callerSpecId: 'plans-start-dry-run-lane',
+        fleetSpecId: null,
+        fleetSpecRevision: null,
+        diverges: null,
+      });
+      expect(out.note).toContain("CALLER SPEC MAY DIFFER FROM YOUR FLEET'S");
+    });
+
+    it('a match in the specId namespace is NOT this fleet\'s spec (some other row wearing a coincident name)', async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: FLEET, fleetRole: 'leader' });
+      recM.mockResolvedValueOnce(fleetResolved('someone-elses-lane', 'spec-id'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope.fleetSpecComparison.fleetSpecId).toBeNull();
+      expect(out.claimableCallerScope.fleetSpecComparison.diverges).toBeNull();
+    });
+
+    it('per-agent spec but no fleet membership (or an explicit leave): no comparison, no fleet lookup', async () => {
+      recordM.mockResolvedValue(cupRecord('solo-lane'));
+      membershipM.mockResolvedValueOnce({ fleetSlug: null, fleetRole: null });
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.claimableCallerScope).not.toHaveProperty('fleetSpecComparison');
+      expect(recM).not.toHaveBeenCalled();
+      expect(out.note).not.toContain('CALLER SPEC');
+    });
+
+    it('a failed membership read never fails the claimability read — the comparison is simply absent', async () => {
+      recordM.mockResolvedValue(cupRecord('plans-start-dry-run-lane'));
+      membershipM.mockRejectedValueOnce(new Error('pg down'));
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(out.ok).toBe(true);
+      expect(out.claimableCallerScope).not.toHaveProperty('fleetSpecComparison');
+    });
+
+    it('a fleet-inherited caller spec (source:fleet) never triggers the comparison', async () => {
+      recordM.mockResolvedValue({ ...cupRecord('goal-fleet-lane'), source: 'fleet' as const, fleetSlug: FLEET });
+
+      const out = await run({ harness: 'papercup' });
+
+      expect(membershipM).not.toHaveBeenCalled();
+      expect(out.claimableCallerScope).not.toHaveProperty('fleetSpecComparison');
+    });
   });
 
   it('emits self-identifying count evidence with an explicit no-cutoff contract', async () => {

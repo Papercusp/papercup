@@ -1905,6 +1905,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     let renewals = 0;
+    let markRenewedTwice!: () => void;
+    const renewedTwice = new Promise<void>((resolve) => {
+      markRenewedTwice = resolve;
+    });
     deps.readFrozenRepairQueue = async () => queue;
     deps.reserveFrozenRepairFixer = async (next) => {
       queue = {
@@ -1919,6 +1923,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     deps.renewFrozenRepairFixerReservation = async (current) => {
       renewals += 1;
+      if (renewals >= 2) markRenewedTwice();
       queue = {
         ...current,
         dispatchReservation: {
@@ -1930,9 +1935,18 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     deps.frozenRepairReservationHeartbeatMs = 5;
     // P-003 / D-010: there is no worktree to prepare any more, so the dispatch itself is
-    // the only slow step the reservation heartbeat has to outlast.
+    // the only slow step the reservation heartbeat has to outlast. It stays open until
+    // the heartbeat has renewed twice rather than for a fixed 30ms, which a loaded host
+    // could end after a single 5ms tick; the 2s cap keeps a dead heartbeat failing.
     deps.dispatchFrozenRepairFixer = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      let cap: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        renewedTwice,
+        new Promise((resolve) => {
+          cap = setTimeout(resolve, 2_000);
+        }),
+      ]);
+      clearTimeout(cap);
       return { spawnId: "fixer-slow", runId: "run-slow" };
     };
     deps.finalizeFrozenRepairFixer = async (current, fired) => {
