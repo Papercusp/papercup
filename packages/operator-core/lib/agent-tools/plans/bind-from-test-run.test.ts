@@ -478,8 +478,8 @@ describe('recorded test paths across worktrees', () => {
     for (let row = 0; row < 5; row += 1) {
       expect(await recordedTestPath(canonical, { root: nested, file_path: TEST }, counting)).toBe(`libs/child/${TEST}`);
     }
-    // One pass is 4 identity reads (canonical common dir, nested common dir, nested superproject,
-    // checkpoint common dir) + 1 top level; five rows must not cost five passes.
+    // One pass is 5 distinct identity reads (canonical common dir, nested common dir, nested
+    // superproject, checkpoint common dir, checkpoint top level); five rows must not cost five passes.
     expect(calls).toHaveLength(5);
     expect(new Set(calls).size).toBe(5);
   });
