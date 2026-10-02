@@ -939,7 +939,8 @@ describe('work_items:complete (keyed-array)', () => {
         'F-12',
         'successor: continue from the verified staging result',
         'su-tester',
-        { workspaceId: 'default', harness: 'papercup' },
+        // P-012 / D-006: the closer's own note is sealed while it holds a restricted disclosure.
+        { workspaceId: 'default', harness: 'papercup', writerOwnerId: 'su-tester' },
       );
       expect(commentWorkItem.mock.invocationCallOrder[0]).toBeGreaterThan(
         setWorkItemCheckpoint.mock.invocationCallOrder[0],

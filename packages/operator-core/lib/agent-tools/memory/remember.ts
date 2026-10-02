@@ -340,7 +340,7 @@ export default defineTool({
     // memory is read only by its owner and is never sealed.
     if (scope !== 'user') {
       try {
-        const sealed = await sealSharedText(getOrgPg().sql, {
+        const sealed = await sealSharedText(() => getOrgPg().sql, {
           workspaceId: ctx.principal?.workspaceId ?? ctx.workspaceId,
           writerOwnerId: disclosureSubject(ctx),
           store: 'memory',

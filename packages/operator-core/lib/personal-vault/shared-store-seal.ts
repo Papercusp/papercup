@@ -120,13 +120,18 @@ function ledgerUnavailable(params: SharedSealParams, error: unknown): Disclosure
  * Seal in a short transaction of its own on `sql`, with app.workspace_id set so
  * the ledger read is correct under RLS whichever role the handle connects as.
  * Use it where the shared write happens later in another transaction (a
- * comment's thread post, a memory backend write).
+ * comment's thread post, a memory backend write). `sql` may be a thunk, so a
+ * write that can never need a seal never touches the pool.
  */
-export async function sealSharedText(sql: postgres.Sql, params: SharedSealParams): Promise<SharedSealResult> {
+export async function sealSharedText(
+  sql: postgres.Sql | (() => postgres.Sql),
+  params: SharedSealParams,
+): Promise<SharedSealResult> {
   if (nothingToSeal(params)) return { sealed: false, text: params.text };
   const workspaceId = concreteWorkspace(params.workspaceId)!;
   try {
-    return (await sql.begin(async (tx) => {
+    const handle = typeof sql === 'function' && !('begin' in sql) ? (sql as () => postgres.Sql)() : (sql as postgres.Sql);
+    return (await handle.begin(async (tx) => {
       await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
       return sealSharedTextInTx(tx, params);
     })) as SharedSealResult;

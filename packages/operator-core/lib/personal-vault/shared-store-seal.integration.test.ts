@@ -18,7 +18,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 const WS = 'shared-seal-test';
 const HARNESS = 'seal-h';
@@ -29,7 +29,7 @@ const SECRET = 'Alice says the merger closes Friday';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
-  backendRemember: undefined as unknown as ReturnType<typeof import('vitest').vi.fn>,
+  backendRemember: undefined as unknown as Mock<(...args: unknown[]) => Promise<{ ids: string[] }>>,
 }));
 
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -121,7 +121,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  h.backendRemember = vi.fn(async () => ({ ids: [randomUUID()] }));
+  h.backendRemember = vi.fn(async (..._args: unknown[]) => ({ ids: [randomUUID()] }));
   await org.adminSql`DELETE FROM harness_shared.personal_sealed_contents WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_privacy_rules WHERE workspace_id = ${WS}`;
@@ -163,7 +163,7 @@ async function sealedRows(store: string) {
 }
 
 /** Every column of a shared row, as text — the R-8 falsifier reads the whole row. */
-async function rowText(query: Promise<unknown[]>): Promise<string> {
+async function rowText(query: PromiseLike<readonly unknown[]>): Promise<string> {
   return JSON.stringify(await query);
 }
 
