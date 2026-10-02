@@ -2122,5 +2122,194 @@
     "notMeasuredByThisCapture": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length", "full-eight-input-ranking"],
     "priorFailuresPreserved": "FullV2 remains exit1 on actual8192 allocation. PaddedV7 does not supersede that failed cell or promote it to success."
   },
+  "nativeCudaAllocatorCausalDiagnostic": {
+    "status": "Underlying CUDA allocation refusal observed directly in a new instrumented run; no full GPU acceptance",
+    "workItem": "WI-10004540",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-allocator-causal-v1",
+    "runtimeQualification": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f",
+    "captureCompletion": {
+      "bytes": 3856,
+      "sha256": "647a9319c8566e2a2fec9cf5141a6c83709b6c95f14325cdb48d7f253b9c2c0d"
+    },
+    "artifactsVerified": 24,
+    "modelProcessId": 1521875,
+    "modelTerminal": {
+      "eof": true,
+      "exitCode": null,
+      "signal": "SIGABRT",
+      "bytes": 46630,
+      "sha256": "18b5faa22f340512c8033c6f7eaac289c0028d5a9d0db4366b3f1f38f6a725b3"
+    },
+    "sanitizerLog": {
+      "bytes": 14695,
+      "sha256": "00409cb193ffd9c61ff9de3cf389a038fc3c66f1c2350529fab7b08470ef11d1"
+    },
+    "offlineAssessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-allocator-causal-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 13635,
+      "sha256": "3dc04c5ce1b93adb9ecea035bf5325ffa71b00ed4676b270ae4af43a2046a8e4",
+      "assessor": {
+        "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/assess-native-allocator-causal-v1.mjs",
+        "bytes": 7895,
+        "sha256": "30febd0b806eb6890316b5ffbd12fbc02968fdd49c75f96aadb7cf3fbd1bbdc0"
+      },
+      "modelInferencePerformed": false
+    },
+    "sourceIdentity": "Same frozen R6 model/reference/graph/input/source/precision as V2. Extra tested benchmark INFO preload and isolated NVIDIA API-error instrumentation; not a repeated capture for recovery.",
+    "instrumentation": {
+      "tool": "NVIDIA Compute Sanitizer",
+      "version": "2025.3.1.0 build36400806",
+      "archiveSha256": "8eeba425f66fdd17e78d0dff49baa8b3e4599fc0579984eab7ad9c486a95ebf2",
+      "runtimeReceipt": {
+        "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/sanitizer-runtime-v1/receipt.json",
+        "bytes": 35890,
+        "sha256": "3cb12adcca972035635ea08becc8b462fa642201e843acbf85b0fda284d17b32"
+      },
+      "kernelMemoryCheckingExcluded": true,
+      "apiErrors": "all",
+      "arithmeticAndProviderOptionsChanged": false
+    },
+    "modelFreeControl": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/allocator-sanitizer-control-v4",
+      "terminal": {
+        "bytes": 412,
+        "sha256": "026e52468a2156907eea4a0b79a220f8cde81f1b44a091f81be6c680801c2a04"
+      },
+      "qualified": true,
+      "targetReturnCode": 2,
+      "toolExitCode": 86,
+      "expectedFailureBeyondTotalCapacity": true,
+      "smallAllocationBytes": 32,
+      "priorFailedControlsPreserved": [
+        "v1 missing injection library",
+        "v2 no instrumented API from old tool",
+        "v3 removed binary-patching flag"
+      ]
+    },
+    "actualAllocationFailure": {
+      "underlyingApi": "cudaMalloc",
+      "returnCode": 2,
+      "allocationErrors": 3,
+      "propagatedErrors": 3,
+      "cudaProviderOffsets": [
+        "0x1ee77a",
+        "0x5cd142",
+        "0x1ee77a",
+        "0x5cd142",
+        "0x1ee77a",
+        "0x5cd142"
+      ]
+    },
+    "failedCell": {
+      "id": "single-full-8192",
+      "submittedShape": [
+        1,
+        8192
+      ],
+      "inputIdsMatchReference": true,
+      "node": "/layers.0/attn/Add_2",
+      "requestedBufferBytes": 3221225472
+    },
+    "nativeCalls": 7,
+    "sixShortFixedVectorGatesPassed": true,
+    "nativeLibraryPins": [
+      {
+        "library": "libonnxruntime_providers_cuda.so",
+        "bytes": 315724552,
+        "sha256": "3ca573cfc14f7b8efa8e4b987851d8958b22228a4a15be1e2609a81cfb641974"
+      },
+      {
+        "library": "libonnxruntime.so.1",
+        "bytes": 35164376,
+        "sha256": "92ba8e44d31b80a34f5e805076a044122c3be1fffe0d88ed790de7267b0b2682"
+      },
+      {
+        "library": "onnxruntime_binding.node",
+        "bytes": 384040,
+        "sha256": "a7191fbfe8045d4d5d312e5ecd8f5dd6970e804dd340c98be8a0af8daf7908cc"
+      }
+    ],
+    "nativeLibrariesMatchUninstrumentedV2": true,
+    "interpretation": {
+      "observed": "Instrumented model Run reports three underlying cudaMalloc error2 calls, plus three propagated errors, through actual ORT CUDA/provider and Node Run backtraces. The same failed8192 input/Add request is retained.",
+      "distinguishingAlternative": "An arena-limit-only rejection before reaching CUDA would not produce these native cudaMalloc error2 records.",
+      "notEstablished": [
+        "exact failed cudaMalloc sizes",
+        "actual arena configured memory limit",
+        "fragmentation",
+        "competing allocation cause",
+        "physical memory pressure",
+        "exact API-call timestamps/request attribution",
+        "source commit of the vendor binary",
+        "cause of instrumented teardown heap corruption"
+      ],
+      "loggingLimit": "The tested public INFO environments are configured, but no native BFCArena INFO lines were observed. Configuration alone is not proof those native logs were enabled.",
+      "instrumentationLimit": "Compute Sanitizer is an additional instrumented runtime. Its log has native Run/provider frames but no exact API timestamps; no new Nsight kernel join or complete loader qualification is inferred."
+    },
+    "nativeArenaInfoMessagesObserved": false,
+    "cleanupDefect": {
+      "id": "WI-10005599",
+      "assignee": "same session as parent",
+      "observed": "Actual EOF/SIGABRT after retained allocation exception; final stderr corrupted double-linked list",
+      "rootCauseConfirmed": false
+    },
+    "recurrenceGuard": {
+      "function": "inspectNativeCudaAllocationFailure",
+      "source": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+      "rejects": [
+        "generic arena error",
+        "propagation without cudaMalloc error",
+        "wrong CUDA error code",
+        "wrong provider",
+        "missing native Run frame",
+        "partial or absent terminal error census"
+      ]
+    },
+    "verification": {
+      "testRunGroup": "d774bd9b-8b1a-4595-ad5f-5823868ea317",
+      "testRunIds": [
+        20553645,
+        20553646
+      ],
+      "passed": 116,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "checkedFiles": 15,
+        "namedFiles": 2,
+        "errors": 0,
+        "semanticCheckIncomplete": false
+      },
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+          "bytes": 56298,
+          "sha256": "cd15b05b58dbd4cc271b799b740aab8c5c335cead6bccfaf6d5415d8adb03b83"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-cuda-clock-preflight.py",
+          "bytes": 6758,
+          "sha256": "f748d55efb4795d870db78d83be39d4000a0bf97826573089753e8dadcb09d9e"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-allocator-logging.mjs",
+          "bytes": 3853,
+          "sha256": "88bc45ee26fa21176b06e6324625dd86d1efa9bd7ccefd5b16ed56edba4362a8"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 8153,
+          "sha256": "72ef9db7f49cc16e758811a81a69344241de385e59b35cb74522b404a883bd3f"
+        }
+      ]
+    },
+    "fullGpuPopulationComplete": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "newProfilerKernelQualificationClaimed": false,
+    "priorV2PaddedV7AndR6Preserved": true,
+    "next": "Diagnose the owned teardown residue and actual native global logger filtering before another large instrumented attempt, or continue independent plan bars. No blind retry, pressure/fragmentation attribution, model/index/precision/production switch or live gate action."
+  },
   "separateOpenDefect": "EI-24795092971119894 is DONE/COMMITTED for the independent-reference/failure-receipt detector repair. Actual8192 allocation compatibility remains owned by WI-10004540; no successful GPU8192 inference is claimed."
 }
