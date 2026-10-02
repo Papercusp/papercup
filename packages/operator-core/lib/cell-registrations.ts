@@ -723,7 +723,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       },
       unmeasured: {
         meaning:
-          'The candidate is frozen but its failing-file set could not be read (test_runs unreachable, or the refs did not resolve).',
+          'The candidate is frozen but its failing-file set could not be read (test_runs unreachable, or the refs did not resolve) — OR a non-test leg was last measured red at an OLDER repairHead and the cycle never admitted it, so nothing is known about that leg at the current head (WI-10005727: before this, that shape read `none-failing`).',
         safeAction:
           'Read `unavailable` for the reason. Do NOT substitute a raw test_runs query — that population mixes the full suite (commit_sha=NULL) and dirty-tree runs, which is the original defect. Retry, or state the answer is unknown.',
       },

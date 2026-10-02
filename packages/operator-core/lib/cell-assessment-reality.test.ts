@@ -669,7 +669,7 @@ const CONTROLS: Record<string, readonly Control[]> = {
     // pure rule, so this row is computed rather than quoted.
     {
       label: 'no test file broken but a non-test leg is red with no landed fix',
-      expect: assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 }),
+      expect: assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0, staleUnadmittedLegs: 0 }),
     },
   ],
   'gate.greenCheckpoint.ownerBrief': [
