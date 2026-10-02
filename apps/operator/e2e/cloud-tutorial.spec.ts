@@ -151,10 +151,29 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
   await page.addInitScript(() => {
     const behaviors: Array<ScrollBehavior | undefined> = [];
     Object.defineProperty(window, '__tutorialScrollBehaviors', { value: behaviors });
+    const snapshots: unknown[] = [];
+    Object.defineProperty(window, '__tutorialFocusGeometry', { value: snapshots });
+    const snapshot = (event: string, stack?: string) => {
+      if (snapshots.length >= 80) return;
+      const input = document.querySelector<HTMLElement>('input[aria-label="Connection label"]');
+      const ancestors = [];
+      for (let node = input?.parentElement; node; node = node.parentElement) {
+        if (node.scrollHeight > node.clientHeight) ancestors.push({ tag: node.tagName, class: node.className,
+          scrollTop: node.scrollTop, height: node.clientHeight, scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY });
+      }
+      snapshots.push({ event, at: performance.now(), path: location.pathname + location.search,
+        active: document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName,
+        rect: input?.getBoundingClientRect().toJSON(), viewport: { width: innerWidth, height: innerHeight }, ancestors, stack });
+    };
+    document.addEventListener('focusin', () => snapshot('focusin'), true);
+    document.addEventListener('scroll', () => snapshot('scroll'), true);
     const scroll = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (options) {
       if (typeof options === 'object') behaviors.push(options.behavior);
+      snapshot(`scrollIntoView:${this.getAttribute('data-tutorial-target') ?? this.tagName}:before`, new Error().stack);
       scroll.call(this, options);
+      snapshot('scrollIntoView:after');
+      requestAnimationFrame(() => snapshot('scrollIntoView:next-frame'));
     };
   });
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
@@ -166,9 +185,14 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
   }
   await show.focus(); await page.keyboard.press('Enter');
   const label = page.getByRole('textbox', { name: 'Connection label' });
-  await expect(label).toBeFocused();
-  // Check before fill/Tab can scroll the newly mounted field into view.
-  await expect(label).toBeInViewport({ ratio: 1 });
+  try {
+    await expect(label).toBeFocused();
+    // Check before fill/Tab can scroll the newly mounted field into view.
+    await expect(label).toBeInViewport({ ratio: 1 });
+  } finally {
+    await test.info().attach('connection-focus-geometry', { contentType: 'application/json', body: JSON.stringify(
+      await page.evaluate(() => (window as unknown as { __tutorialFocusGeometry: unknown[] }).__tutorialFocusGeometry)) });
+  }
   await label.fill('Keyboard project'); await page.keyboard.press('Tab');
   const credential = page.getByRole('textbox', { name: 'Injected credential reference' });
   await expect(credential).toBeFocused();
