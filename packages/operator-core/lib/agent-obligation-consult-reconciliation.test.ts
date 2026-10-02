@@ -9,6 +9,7 @@
  * must not collapse into the empty case.
  */
 import { describe, expect, it } from 'vitest';
+import { formatAgentObligationLine } from './agent-obligations';
 import {
   buildAgentObligationAgenda,
   consultReconciliationObligations,
@@ -60,6 +61,15 @@ describe('consultReconciliationObligations', () => {
     expect(o?.dueAt).toBe('2026-10-02T00:00:00.000Z');
     expect(o?.title).toContain('consult-abc');
     expect(o?.reason).toContain('assume the migration number is 811');
+  });
+
+  it('names the discharge verb and gives a route for stale operator builds', () => {
+    const [obligation] = consultReconciliationObligations({ ...BASE, read: { status: 'known', value: [row()] } });
+    expect(obligation?.action?.tool).toBe('consult:reconcile');
+    if (!obligation) throw new Error('expected a consult reconciliation obligation');
+    const line = formatAgentObligationLine(obligation, 'action');
+    expect(line).toContain('consult:reconcile');
+    expect(line).toContain('if unavailable on this operator, use staging (:3170)');
   });
 
   it('an ANSWERED consult is due at high priority — the reply may falsify work already built', () => {

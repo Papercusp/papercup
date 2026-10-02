@@ -1724,7 +1724,9 @@ export function consultReconciliationObligations(input: ConsultReconciliationPro
       ],
       action: {
         kind: 'inspect',
-        summary: 'read the consult thread, then record confirmed|rescoped|reversed|moot',
+        summary:
+          'read the consult thread, then call consult:reconcile to record confirmed|rescoped|reversed|moot; if unavailable on this operator, use staging (:3170) until the release build is updated',
+        tool: 'consult:reconcile',
         targetRef: `consult:${row.consultId}`,
       },
       clearsWhen: {
