@@ -503,6 +503,7 @@
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "4.1.8",
     "@vitest/ui": "4.1.8",
+    "@vscode/v8-heap-parser": "0.1.0",
     "adm-zip": "^0.6.1",
     "concurrently": "^9.2.0",
     "drizzle-kit": "^0.31.10",

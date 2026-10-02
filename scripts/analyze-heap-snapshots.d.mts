@@ -15,6 +15,37 @@ export function summarizeHeapSnapshot(snap: any, { top }?: {
     topClasses: any[];
     definition: string;
 };
+/** Private snapshot analysis using the maintained Rust/WASM dominator graph.
+ * Input remains bytes: constructing a V8 string would reject large snapshots.
+ * Returned names contain only constructor/function labels, never string values
+ * or edge/property names. Class retained sizes overlap and must not be added.
+ * @param {Uint8Array} input
+ * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number }} [options]
+ */
+export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, retainerDepth, maxRetainers }?: {
+    top?: number;
+    perClass?: number;
+    retainerDepth?: number;
+    maxRetainers?: number;
+}): Promise<{
+    parser: string;
+    rootIndex: number;
+    limits: {
+        top: number;
+        perClass: number;
+        retainerDepth: number;
+        maxRetainers: number;
+    };
+    groups: {
+        class: string;
+        count: number;
+        selfSizeBytes: number;
+        retainedSizeBytes: number;
+        nodes: never[];
+    }[];
+    definition: string;
+    privacy: string;
+}>;
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
  * @param {import('node:stream').Readable} input
  * @param {{ top?: number }} [options] top=0 keeps all classes for multi-snapshot aggregation.

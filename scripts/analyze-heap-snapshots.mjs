@@ -108,7 +108,8 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
     // applying the same payload exclusion as the streaming self-size census.
     const typeLabel = type.toLowerCase();
     return { index: node.index, id: node.id, type,
-      class: classLabel(typeLabel, node.name()), selfSizeBytes: safeBytes(node.self_size),
+      class: typeLabel.includes('string') ? '(' + typeLabel + ')' : classLabel(typeLabel, node.name()),
+      selfSizeBytes: safeBytes(node.self_size),
       retainedSizeBytes: safeBytes(node.retained_size), children: node.children_len };
   };
   const genericLabels = new Set(['(system)', '(array)', '(string)', '(object)', '(compiled code)',
