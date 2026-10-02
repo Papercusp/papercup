@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { HOST_MALLOC_ARENA_MAX } from '../../../apps/operator/bin/malloc-arena-reexec';
 import { createCdpClient, readProcessMemory, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import type { PgResultDiagnostic } from '@papercusp/db-org';
 
 const root = resolve(__dirname, '../../..');
@@ -391,8 +392,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     finally {
       try {
         if (reportPath) writeFileSync(reportPath,
-          JSON.stringify(completeReport ?? { schemaVersion: 1, incomplete: true, buildSha, sourcePath, sourceHash,
-            error: String(failure), reports }, null, 2) + '\n');
+          serializeIdentitySafeJson(completeReport ?? { schemaVersion: 1, incomplete: true, buildSha, sourcePath, sourceHash,
+            error: String(failure), reports }));
       } catch (error) {
         throw new AggregateError(failure ? [failure, error] : [error], 'Compiler cohort evidence write failed');
       } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -486,7 +487,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       }
       // Report measured costs without turning fluctuating PSS into a leak assertion.
       const report = { schemaVersion: 1, definition: 'Isolated real closure versus transforms; one-second idle is not a production idle baseline.', reports };
-      if (reportPath) writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
+      if (reportPath) writeFileSync(reportPath, serializeIdentitySafeJson(report));
       console.log('P011_ESBUILD_CENSUS ' + JSON.stringify(reports.map(r => ({ mode: r.mode,
         pssKb: r.samples.map((s: any) => s.services[0].pssKb), unreaped: r.unreaped }))));
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -787,7 +788,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } }, logPath);
       const report = readCohortReport(reportPath, result);
       report.runner.log = result.log;
-      if (destination) writeFileSync(resolve(root, destination), JSON.stringify(report, null, 2) + '\n');
+      if (destination) writeFileSync(resolve(root, destination), serializeIdentitySafeJson(report));
       expect(result.status, existsSync(reportPath) ? report.error : result.stderr.slice(-2000)).toBe(0);
       expect(report.incomplete).toBe(false);
       expect(report.cohorts).toHaveLength(2);
@@ -1076,7 +1077,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX, TEST_QUERY_ROUTE: queryPath, TEST_REPORT_PATH: reportPath },
       });
       const report = readCohortReport(reportPath, result);
-      if (destination) writeFileSync(destination, JSON.stringify(report, null, 2) + '\n');
+      if (destination) writeFileSync(destination, serializeIdentitySafeJson(report));
       expect(result.status, report.phase + ': ' + (report.error ?? report.runner.error ?? result.stderr.slice(-3000))).toBe(0);
       expect(report.incomplete).toBe(false);
       expect(report.mode).toBe(mode);
