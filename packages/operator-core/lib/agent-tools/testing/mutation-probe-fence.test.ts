@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, fork, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { existsSync, mkdirSync,mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -7,6 +9,16 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { terminateSpawnTree } from '@papercusp/backup/hook';
+
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>();
+  return { ...actual, fork: vi.fn(actual.fork) };
+});
+vi.mock('@papercusp/backup/hook', async original => {
+  const actual = await original<typeof import('@papercusp/backup/hook')>();
+  return { ...actual, terminateSpawnTree: vi.fn(actual.terminateSpawnTree) };
+});
 
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
@@ -79,6 +91,50 @@ it('fails closed when the owned compiler worker errors or exits without evidence
   writeFileSync(worker, 'process.exit(0);');
   await expect(testImportClosures(dir, [], { workerPath: worker })).resolves.toMatchObject({ status: 'incomplete', reason: 'compiler worker exited before returning a closure (0)' });
 });
+
+function failedTransport(pid?: number) {
+  const child = Object.assign(new EventEmitter(), {
+    pid, exitCode: null as number | null, signalCode: null,
+    stdout: new PassThrough(), stderr: new PassThrough(),
+    send: vi.fn(() => queueMicrotask(() => child.emit('error', new Error('compiler IPC failed')))),
+  });
+  vi.mocked(fork).mockReturnValueOnce(child as unknown as ChildProcess);
+  return child;
+}
+
+it('waits for a spawned compiler to exit after an IPC error before returning or closing its streams', async () => {
+  const child = failedTransport(2_147_483_647);
+  let terminated!: () => void;
+  const cleanupStarted = new Promise<void>(resolve => { terminated = resolve; });
+  // No real process is signalled: this transport fixture controls exit independently.
+  vi.mocked(terminateSpawnTree).mockImplementationOnce(() => terminated());
+  let settled = false;
+  const outcome = testImportClosures(makeRoot(), []).then(result => { settled = true; return result; });
+  try {
+    await cleanupStarted;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(settled, 'IPC failure does not mean the owned worker has exited').toBe(false);
+    expect(child.stdout.destroyed).toBe(false);
+    expect(child.stderr.destroyed).toBe(false);
+    child.exitCode = 1;
+    child.emit('exit', 1, null);
+    await expect(outcome).resolves.toEqual({ status: 'incomplete', reason: 'compiler IPC failed' });
+    expect(child.stdout.destroyed).toBe(true);
+    expect(child.stderr.destroyed).toBe(true);
+  } finally {
+    child.emit('exit', 1, null);
+    await outcome;
+  }
+});
+
+it('returns promptly when a compiler fails to spawn and emits no exit event', async () => {
+  const child = failedTransport();
+  vi.mocked(terminateSpawnTree).mockImplementationOnce(() => undefined);
+  const outcome = testImportClosures(makeRoot(), [], { budgetMs: 50 });
+  await expect(outcome).resolves.toEqual({ status: 'incomplete', reason: 'compiler IPC failed' });
+  expect(child.stdout.destroyed).toBe(true);
+  expect(child.stderr.destroyed).toBe(true);
+}, 1000);
 
 afterEach(() => {
   readQueueMock.mockReset();

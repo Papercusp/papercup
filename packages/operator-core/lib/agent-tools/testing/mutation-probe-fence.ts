@@ -71,7 +71,12 @@ export async function testImportClosures(root: string, tests: string[],
   worker.stderr?.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(0, 1000); });
   worker.stdout?.resume();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const exited = new Promise<void>(resolve => { worker.once('exit', () => resolve()); worker.once('error', () => resolve()); });
+  const exited = new Promise<void>(resolve => {
+    worker.once('exit', () => resolve());
+    // Failed spawn emits error without exit. A later IPC/kill error on an
+    // existing child does not end its lifetime: cleanup must still await exit.
+    worker.once('error', () => { if (!worker.pid) resolve(); });
+  });
   try {
     return await new Promise<Closure>(resolve => {
       timer = setTimeout(() => resolve({ status: 'incomplete', reason: `closure exceeded ${budgetMs}ms` }), budgetMs);
