@@ -889,8 +889,9 @@ import './coordination/tools/topics-merge';
 import './coordination/tools/topics-tag';
 import './coordination/tools/topics-feed';
 
-// Conversations — questions + discussions on the substrate (the first consumer:
-// coordination-conversations-2026-06-03). coord:ask is knowledge-first.
+// Conversations — questions + discussions on the substrate
+// (coordination-conversations-2026-06-03). coord:ask is owner-UI-only; agents
+// contact peers with coord:send or coord:message-agent.
 import './coordination/tools/ask';
 import './coordination/tools/conversations-post';
 import './coordination/tools/conversations-answer';
