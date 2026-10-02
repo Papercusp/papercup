@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyClaimPathReadDeps } from '../test/_work-items-schema';
 import {
   ensureCoordCapabilityTables,
   PgEntitySubscriptionStore,
@@ -168,6 +169,8 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  // After the hand-built adv_sessions above: every statement is IF NOT EXISTS.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   // unify-work-items (142): adds the `kind` discriminator engineer_issues now carries.
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — ISSUE_COLS now
