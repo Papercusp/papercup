@@ -7,13 +7,23 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DESKTOP_VOICE_TENANT_SERVICE,
   GATEWAY_TENANT_SERVICE,
   MCP_PROXY_TENANT_SERVICE,
+  MOBILE_VOICE_TENANT_SERVICE,
+  TENANT_LOOPBACK_SERVICES,
   loopbackPortHeldByForeignUid,
   pinTenantLoopbackPort,
   pinTenantLoopbackPorts,
   resolveTenantLoopbackPort,
 } from './tenant-loopback-port';
+import { RESERVED_SERVICE_PORTS } from '../reserved-service-ports';
+import { _stopMobileVoiceWsForTests, getMobileVoicePort, startMobileVoiceWs } from '../device-voice-ws';
+import {
+  _stopDesktopVoiceWsForTests,
+  getDesktopVoicePort,
+  startDesktopVoiceWs,
+} from '../voice-node/desktop-voice-ws';
 import {
   _gatewaySidecarStateForTests,
   _resetGatewaySidecarStateForTests,
@@ -139,7 +149,8 @@ describe('pinTenantLoopbackPort(s)', () => {
     expect(env.PAPERCUSP_MCP_PROXY_BASE).toBe(`http://127.0.0.1:${proxy.port}`);
     // Idempotent: the second pin sees the explicit, now-own port and changes nothing.
     const again = pinTenantLoopbackPorts({ env, uid: T2, listenerUids: census({ 8788: [T1], 9071: [T1] }) });
-    expect(again.map((d) => d.reason)).toEqual(['explicit', 'explicit']);
+    // Gateway + proxy are now explicit; the voice defaults were free all along (WI-10005586).
+    expect(again.map((d) => d.reason)).toEqual(['explicit', 'explicit', 'default-free', 'default-free']);
     expect(env.PAPERCUSP_GATEWAY_PORT).toBe(String(gw.port));
   });
 
@@ -153,6 +164,93 @@ describe('pinTenantLoopbackPort(s)', () => {
     const env: NodeJS.ProcessEnv = {};
     pinTenantLoopbackPorts({ env, uid: T1, listenerUids: census({ 8788: [T1] }) });
     expect(env).toEqual({});
+  });
+});
+
+/** Ports the voice walk can land on from `base`: the base plus the next 7. */
+const WALK = 8;
+async function waitFor(pred: () => boolean, ms = 5_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (!pred()) {
+    if (Date.now() > until) throw new Error('waitFor timed out');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+describe('voice WS ports on a shared host (WI-10005586)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(async () => {
+    await _stopMobileVoiceWsForTests();
+    await _stopDesktopVoiceWsForTests();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('keeps every tenant range disjoint, below the ephemeral range, and clear of default and reserved ports', () => {
+    const ranges = TENANT_LOOPBACK_SERVICES.map((s) => ({ label: s.label, lo: s.rangeBase, hi: s.rangeBase + s.span - 1 }));
+    for (const r of ranges) expect(r.hi, r.label).toBeLessThan(32768);
+    for (let i = 0; i < ranges.length; i++) {
+      for (let j = i + 1; j < ranges.length; j++) {
+        const a = ranges[i]!;
+        const b = ranges[j]!;
+        expect(a.hi < b.lo || b.hi < a.lo, `${a.label} overlaps ${b.label}`).toBe(true);
+      }
+    }
+    const fixed = [...TENANT_LOOPBACK_SERVICES.map((s) => s.defaultPort), ...RESERVED_SERVICE_PORTS];
+    for (const r of ranges) for (const p of fixed) expect(p >= r.lo && p <= r.hi, `${p} inside ${r.label}`).toBe(false);
+  });
+
+  it('moves a tenant whose voice defaults another uid holds into its own ranges and pins the env the walks read', () => {
+    const held: Record<number, number[]> = {};
+    for (let p = 3068; p < 3084; p++) held[p] = [T1]; // pct1..pct8 already hold every walk port
+    const env: NodeJS.ProcessEnv = {};
+    const byLabel = new Map(
+      pinTenantLoopbackPorts({ env, uid: T2, listenerUids: census(held) }).map((d, i) => [TENANT_LOOPBACK_SERVICES[i]!.label, d]),
+    );
+    expect(byLabel.get('mobile-voice-ws')).toEqual({ port: 25800 + (T2 % 1000), reason: 'tenant-port', moved: true, foreignUids: [T1] });
+    expect(byLabel.get('desktop-voice-ws')).toEqual({ port: 26800 + (T2 % 1000), reason: 'tenant-port', moved: true, foreignUids: [T1] });
+    expect(env.MOBILE_VOICE_WS_PORT).toBe(String(25800 + (T2 % 1000)));
+    expect(env.DESKTOP_VOICE_WS_PORT).toBe(String(26800 + (T2 % 1000)));
+  });
+
+  it('gives 16 tenants booting one after another on one host 16 distinct voice ports (cap-p011, K=16)', () => {
+    const held: Record<number, number[]> = {};
+    const chosen = new Map<string, Set<number>>([['mobile-voice-ws', new Set()], ['desktop-voice-ws', new Set()]]);
+    for (let k = 0; k < 16; k++) {
+      const uid = 1002 + k;
+      const decisions = pinTenantLoopbackPorts({ env: {}, uid, listenerUids: census(held) });
+      decisions.forEach((d, i) => {
+        const label = TENANT_LOOPBACK_SERVICES[i]!.label;
+        expect(d.reason, `${label} uid ${uid}`).not.toBe('no-tenant-port-free');
+        (held[d.port] ??= []).push(uid); // this tenant now listens there
+        chosen.get(label)?.add(d.port);
+      });
+    }
+    expect(chosen.get('mobile-voice-ws')!.size).toBe(16);
+    expect(chosen.get('desktop-voice-ws')!.size).toBe(16);
+  });
+
+  it('the real mobile and desktop voice listeners bind the port each service pin names', async () => {
+    const holders = census({ 3068: [T1], 3076: [T1] });
+    const mobile = resolveTenantLoopbackPort(MOBILE_VOICE_TENANT_SERVICE, { env: {}, uid: T2, listenerUids: holders });
+    const desktop = resolveTenantLoopbackPort(DESKTOP_VOICE_TENANT_SERVICE, { env: {}, uid: T2, listenerUids: holders });
+    expect(mobile.moved && desktop.moved).toBe(true);
+    // Hand each module the pin through the service's OWN envVar: if a service names a
+    // variable its module does not read, the listener lands on 3068/3076 and this fails.
+    vi.stubEnv(MOBILE_VOICE_TENANT_SERVICE.envVar, String(mobile.port));
+    vi.stubEnv(DESKTOP_VOICE_TENANT_SERVICE.envVar, String(desktop.port));
+    startMobileVoiceWs();
+    startDesktopVoiceWs();
+    await waitFor(() => getMobileVoicePort() !== null && getDesktopVoicePort() !== null);
+    // The walk may step past a port something else on this machine happens to hold.
+    expect(getMobileVoicePort()).toBeGreaterThanOrEqual(mobile.port);
+    expect(getMobileVoicePort()).toBeLessThan(mobile.port + WALK);
+    expect(getDesktopVoicePort()).toBeGreaterThanOrEqual(desktop.port);
+    expect(getDesktopVoicePort()).toBeLessThan(desktop.port + WALK);
   });
 });
 
