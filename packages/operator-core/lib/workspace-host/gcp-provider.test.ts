@@ -51,6 +51,7 @@ import {
 } from './gcp-provider';
 import { GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS } from '../cloud-workspaces/gcp-preflight';
 import { gcpFirstWorkspaceDesiredSpec } from '../auth/hosted/first-workspace';
+import { buildHostedProviderDelegationOnboarding } from './hosted-provider-delegation';
 import { PAPERCUSP_HOSTED_HOST_PERMISSIONS, PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS } from './hosted-gcp-hosting';
 
 const NOW ='2026-08-22T08:30:00.000Z';
@@ -724,6 +725,60 @@ describe('GCP workspace-host provider planning', () => {
     expect(instance.disks[0].initializeParams.diskSizeGb).toBe(32);
     expect(client.insertNetworkCalls).toHaveLength(0);
     expect(client.insertDiskCalls).toHaveLength(0);
+  });
+
+  // WI-10005297: the provision and action routes spread stored connection config over the desired
+  // spec, and until 2026-10-02 every hosted connection stored the CONTROLLER email there.
+  it('a host reached through a hosted delegation holds no identity, even when the spec names one', async () => {
+    const { provider } = providerAndClient();
+    const { record } = buildHostedProviderDelegationOnboarding({
+      organizationId: 'org-a',
+      workspaceId: 'workspace-gcp-1',
+      connectionId: 'connection-gcp-1',
+      label: 'Customer project',
+      credentialRef: 'encrypted://workspace-gcp-1/cloud/connection-gcp-1',
+      now: '2026-10-02T06:00:00.000Z',
+      configuration: {
+        provider: 'gcp',
+        source: {
+          method: 'service-account-impersonation',
+          projectId: 'papercusp-dev-123',
+          serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com',
+          trustedPrincipal: 'principal://iam.googleapis.com/subject/control-plane',
+        },
+      },
+    });
+    const instanceRequest = async (extra: Record<string, unknown>) => {
+      const base = desired();
+      const plan = await provider.plan(
+        {
+          action: 'provision',
+          operationId: 'operation-identity',
+          idempotencyKey: 'operation-identity',
+          desired: { ...base, provider: { ...base.provider, ...extra } },
+        },
+        context({}, '#!/usr/bin/env bash\necho papercusp-bootstrap\n'),
+      );
+      return (plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as {
+        request: GcpInstanceInsertInput;
+      }).request;
+    };
+
+    // The legacy stored shape: the delegation plus the controller email beside it.
+    const hosted = await instanceRequest({
+      hostedDelegation: record,
+      serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com',
+    });
+    expect(hosted).not.toHaveProperty('serviceAccounts');
+    expect(gcpInstanceInsertPermissions(hosted)).not.toContain('iam.serviceAccounts.actAs');
+    expect(gcpInstanceInsertPermissions(hosted)).not.toContain('compute.instances.setServiceAccount');
+
+    // Control: the same spec without a delegation keeps the runtime identity it names.
+    const direct = await instanceRequest({});
+    expect(direct.serviceAccounts).toEqual([
+      { email: 'workspace-host@papercusp-dev-123.iam.gserviceaccount.com', scopes: [GCP_CLOUD_PLATFORM_SCOPE] },
+    ]);
+    expect(gcpInstanceInsertPermissions(direct)).toContain('iam.serviceAccounts.actAs');
   });
 
   it('builds a deterministic managed resource graph with RFC-4122 request UUIDs and hardened instance inputs', async () => {

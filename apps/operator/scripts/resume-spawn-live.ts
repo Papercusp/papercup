@@ -134,7 +134,7 @@ async function claudeLeg(): Promise<Leg> {
 
   const sid = `smoke-${randomUUID()}`;
   const sessionId = randomUUID(); // forced native session id (claude --session-id)
-  const { configDir } = writeInteractiveClaudeConfig({ sid }); // the real EI-155 dir
+  const { configDir } = await writeInteractiveClaudeConfig({ sid }); // the real EI-155 dir
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-claude-'));
   const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
   const env = {

@@ -1358,6 +1358,23 @@ export function gcpWorkspaceHostRequestUuid(idempotencyKey: string): string {
   return `${hex.slice(0, 8).join('')}-${hex.slice(8, 12).join('')}-${hex.slice(12, 16).join('')}-${hex.slice(16, 20).join('')}-${hex.slice(20).join('')}`;
 }
 
+/**
+ * The identity the VM itself runs as. A host reached through a hosted delegation holds NONE,
+ * whoever's project it runs in: the only GCP identity on that path is the CONTROLLER Papercusp
+ * acts as, and attaching it would hand every agent on the VM the controller's power over the
+ * project through the metadata server (no delegation grants actAs on it, so GCP also refuses the
+ * create with SERVICE_ACCOUNT_ACCESS_DENIED — measured 2026-10-02, WI-10005297).
+ *
+ * Dropped rather than refused: connection config is spread over every desired spec, and until
+ * 2026-10-02 every hosted connection stored the controller email there, as do the desired specs
+ * persisted from them. Refusing would strand plan, reconcile and destroy for those hosts; the
+ * invariant is that the hosted path never attaches an identity, wherever the field came from.
+ */
+function vmServiceAccountEmail(provider: Record<string, unknown>): string | undefined {
+  const email = optionalString(provider.serviceAccountEmail, 'gcp.desired.provider.serviceAccountEmail');
+  return provider.hostedDelegation === undefined ? email : undefined;
+}
+
 function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesiredProviderSettings {
   if (desired.target !== GCP_WORKSPACE_HOST_TARGET)
     throw new Error(`GCP provider cannot plan target '${desired.target}'`);
@@ -1431,7 +1448,7 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     imageId,
     network,
     access,
-    serviceAccountEmail: optionalString(provider.serviceAccountEmail, 'gcp.desired.provider.serviceAccountEmail'),
+    serviceAccountEmail: vmServiceAccountEmail(provider),
     serviceAccountScopes: stringArray(provider.serviceAccountScopes, 'gcp.desired.provider.serviceAccountScopes', [
       GCP_CLOUD_PLATFORM_SCOPE,
     ]),

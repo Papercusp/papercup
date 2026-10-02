@@ -303,7 +303,8 @@
 #                                (screenshots will be blank white — DOM/eval
 #                                via the bridge still work; agent-e2e.mdx §15.4)
 #   VERIFY_TAURI_PORT_LOCK_DIR  advisory-lock directory for concurrent verifier
-#                               launches (default: $TMPDIR/papercusp-tauri-port-locks)
+#                               launches (default: under the per-user runtime
+#                               directory, with a $HOME/.cache fallback)
 #   VERIFY_TAURI_PORT_STRAGGLER_WAIT
 #                               seconds teardown HOLDS the advisory port lock while
 #                                waiting for THIS run's sidecar to release its
@@ -345,7 +346,8 @@
 #                               directory for per-display advisory locks that
 #                                serialize candidate selection across concurrent
 #                                verifier launchers (default:
-#                                $TMPDIR/papercusp-tauri-display-locks; EI-21617008171422271).
+#                                under the per-user runtime directory, with a
+#                                $HOME/.cache fallback; EI-21617008171422271).
 #   PAPERCUSP_SID                required tracked agent/session identity. The
 #                                verifier refuses to hand back an unattributed
 #                                bridge when this is unset; this is the provenance
@@ -1452,7 +1454,10 @@ STALE_DISPLAY_MAX_AGE="${VERIFY_TAURI_STALE_DISPLAY_MAX_AGE_SEC:-3600}"
 # initialize GTK on the same display. Hold a per-display kernel flock from the
 # post-selection recheck through teardown. A lock file may remain after a crash;
 # flock ownership is the state, so a stale inode never blocks a later run.
-DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-display-locks}"
+# TMPDIR is private scratch for many verifier launches. Reservation locks must
+# share one stable per-user namespace across those isolated scratch roots.
+TAURI_VERIFIER_LOCK_ROOT="${XDG_RUNTIME_DIR:-${HOME:-/tmp}/.cache}/papercusp-tauri-verifier"
+DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-$TAURI_VERIFIER_LOCK_ROOT/display-locks}"
 DISPLAY_LOCK_FD=""
 DISPLAY_LOCK_PATH=""
 command -v flock >/dev/null 2>&1 || {
@@ -1649,7 +1654,7 @@ PORT_SLOT=$(( (DISPLAY_NUM - 90) % 60 ))
 [ "$PORT_SLOT" -ge 0 ] || PORT_SLOT=$(( PORT_SLOT + 60 ))   # bash % keeps the sign: a forced DISPLAY_NUM < 90 must not go negative
 PORT_BASE=$(( 33700 + PORT_SLOT * 10 ))
 [ "$PORT_BASE" -ge 33700 ] || PORT_BASE=33700   # a caller-forced low DISPLAY_NUM must not underflow into real ports
-PORT_LOCK_DIR="${VERIFY_TAURI_PORT_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-port-locks}"
+PORT_LOCK_DIR="${VERIFY_TAURI_PORT_LOCK_DIR:-$TAURI_VERIFIER_LOCK_ROOT/port-locks}"
 
 # pick_and_lock_ports — sets DEV_PORT/PTY_PORT to a fresh, advisory-locked pair,
 # walking PORT_BASE forward past anything already free-but-claimed. Factored out

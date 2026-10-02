@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   HostedProviderDelegationManager,
+  PostgresHostedProviderDelegationStore,
   bindPapercuspHostedDelegation,
   buildHostedProviderDelegationOnboarding,
   type HostedDelegationOrganization,
   type HostedProviderDelegationAdapter,
   type HostedProviderDelegationRecord,
+  type HostedProviderDelegationSqlRunner,
   type HostedProviderDelegationStore,
 } from './hosted-provider-delegation';
 import { organizationExternalId } from './hosted-aws-identity';
@@ -417,5 +419,57 @@ describe("Papercusp-hosted delegations (D-399)", () => {
     const { organizationId: _ignored, ...base } = common;
     await expect(bindPapercuspHostedDelegation(base, org, "x' || true || '")).rejects.toThrow();
     expect(org.reserved).toEqual([]);
+  });
+});
+
+describe('stored connection config (WI-10005297)', () => {
+  /** Captures the provider_config the store writes; the SQL itself is exercised live. */
+  function capturingRunner() {
+    const written: Array<Record<string, unknown>> = [];
+    const sql = Object.assign(
+      async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        for (const value of values) {
+          if (value && typeof value === 'object' && 'json' in value) {
+            written.push((value as { json: Record<string, unknown> }).json);
+          }
+        }
+        return [{ id: common.connectionId }];
+      },
+      { json: (value: Record<string, unknown>) => ({ json: value }) },
+    );
+    const run: HostedProviderDelegationSqlRunner = (fn) => fn(sql as never);
+    return { run, written };
+  }
+
+  // The connection config is spread over every desired spec, where the GCP provider reads
+  // `serviceAccountEmail` as the VM's own identity. The delegation's account is the CONTROLLER.
+  it.each([
+    ['service-account-impersonation', {
+      method: 'service-account-impersonation' as const,
+      projectId: 'customer-project-1',
+      serviceAccountEmail: 'papercusp-host-operator@customer-project-1.iam.gserviceaccount.com',
+      trustedPrincipal: 'principal://iam.googleapis.com/subject/control-plane',
+    }],
+    ['papercusp-hosted', {
+      method: 'papercusp-hosted' as const,
+      projectId: HOSTING_PROJECT,
+      serviceAccountEmail: 'pco-org-a@papercusp-identity.iam.gserviceaccount.com',
+      hostId: 'host-derived-1',
+    }],
+  ])('a %s delegation stores its project but never the controller identity', async (_method, source) => {
+    const { record } = buildHostedProviderDelegationOnboarding({
+      ...common,
+      configuration: { provider: 'gcp', source },
+    });
+    const { run, written } = capturingRunner();
+    await new PostgresHostedProviderDelegationStore(run, 'control-plane').save(record);
+
+    expect(written).toHaveLength(1);
+    expect(written[0]).toEqual({ hostedDelegation: record, projectId: source.projectId });
+    expect(written[0]).not.toHaveProperty('serviceAccountEmail');
+    // Positive control: the account is still on the delegation, where the credential resolver reads it.
+    expect((written[0].hostedDelegation as HostedProviderDelegationRecord).configuration).toMatchObject({
+      source: { serviceAccountEmail: source.serviceAccountEmail },
+    });
   });
 });

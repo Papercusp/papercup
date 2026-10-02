@@ -209,7 +209,12 @@ export async function completionHeadBlobMap(
         (field) => {
           if (field) fields.push(field);
         },
-        { ...opts, timeoutMs: opts.timeoutMs ?? 5000 },
+        // WI-10005340: this is the settlement reconciler's main per-row lookup, issued
+        // once or twice for every candidate on every git-sync pass. Forked locally it
+        // blocked bg-host's main thread ~86 ms per call (178 of ~236 forks in a 300 s
+        // trace). The read never stops early and already keeps every field, so the
+        // sidecar's buffered stdout changes nothing about what is returned.
+        { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
       );
       return outcome === 'complete' ? fields : undefined;
     };

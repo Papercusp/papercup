@@ -24,7 +24,10 @@ const src = readFileSync(SCRIPT, 'utf8');
 describe('EI-21617008171422271 — verify-tauri-headless atomically reserves displays', () => {
   it('uses a per-display flock and rechecks occupancy while holding it', () => {
     expect(src).toContain(
-      'DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-display-locks}"',
+      'TAURI_VERIFIER_LOCK_ROOT="${XDG_RUNTIME_DIR:-${HOME:-/tmp}/.cache}/papercusp-tauri-verifier"',
+    );
+    expect(src).toContain(
+      'DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-$TAURI_VERIFIER_LOCK_ROOT/display-locks}"',
     );
     expect(src).toMatch(/path="\$DISPLAY_LOCK_DIR\/display-\$n\.lock"/);
     expect(src).toContain('flock -n "$fd"');

@@ -196,13 +196,29 @@ export function ptyWriteChunks(value: any, maxCodeUnits?: number): string[];
  * Confirm a fresh Codex kickoff reached the visible composer before Enter can
  * submit it. A backend frame proves the TUI rendered; child.write only proves
  * the host attempted input. Neither proves the composer accepted the marker.
+ *
+ * @param {{
+ *   read?: () => unknown,
+ *   text?: string,
+ *   timeoutMs?: number,
+ *   pollMs?: number,
+ *   headLossGraceMs?: number,
+ *   shouldCancel?: () => boolean,
+ *   onPending?: (state: { elapsedMs: number, observedChars: number, markerTailSeen: boolean }) => void,
+ * }} [options]
  */
 export function waitForPtyTextEcho({ read, text, timeoutMs, pollMs, headLossGraceMs, shouldCancel, onPending, }?: {
-    timeoutMs?: number | undefined;
-    pollMs?: number | undefined;
-    headLossGraceMs?: number | undefined;
-    shouldCancel?: (() => boolean) | undefined;
-    onPending?: (() => void) | undefined;
+    read?: () => unknown;
+    text?: string;
+    timeoutMs?: number;
+    pollMs?: number;
+    headLossGraceMs?: number;
+    shouldCancel?: () => boolean;
+    onPending?: (state: {
+        elapsedMs: number;
+        observedChars: number;
+        markerTailSeen: boolean;
+    }) => void;
 }): Promise<{
     echoed: boolean;
     reason: string;

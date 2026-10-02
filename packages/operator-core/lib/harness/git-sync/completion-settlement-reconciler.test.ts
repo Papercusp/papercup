@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  batchHeadBlobLookup,
   normalizeStoredSettlementManifest,
   reconcileProposedCompletionsAtCommit,
   residualPathsForCommit,
@@ -396,24 +397,26 @@ describe('reconcileProposedCompletionsAtCommit — liveness', () => {
 
   it('settles independent candidates concurrently and reports completed work', async () => {
     const payload = { [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: manifest } };
+    // WI-10005285: the exact-tree read is now ONE call per pass, so the per-row stage whose
+    // overlap this measures is the write.
+    let active = 0;
+    let peak = 0;
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const query = strings.join('?');
       if (query.includes('SELECT feature_id, harness_slug, payload')) {
         return ['WI-FIRST', 'WI-SECOND'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp', payload }));
       }
-      if (query.includes('UPDATE harness_shared.work_items')) return [];
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        active -= 1;
+        return [];
+      }
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
     (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
-    let active = 0;
-    let peak = 0;
-    const lookup = vi.fn(async () => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      active -= 1;
-      return matchingLookup();
-    });
+    const lookup = vi.fn(async () => matchingLookup());
     const onProgress = vi.fn();
 
     const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
@@ -421,6 +424,7 @@ describe('reconcileProposedCompletionsAtCommit — liveness', () => {
     });
 
     expect(peak).toBe(2);
+    expect(lookup).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ inspected: 2, upgraded: [], residual: 0, unreadable: [] });
     expect(onProgress.mock.calls.map(([progress]) => progress.completed)).toEqual([1, 2]);
   });
@@ -946,6 +950,178 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
       key: 'work-item:settled:WI-FIXTURE',
       payload: expect.objectContaining({ commitSha: completeSha, generation: manifest.generation }),
     }));
+  });
+});
+
+describe('WI-10005285 — one exact-tree read per settlement pass', () => {
+  function gitFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'completion-settlement-batch-'));
+    TEMP_ROOTS.push(root);
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.test');
+    git('config', 'user.name', 'Settlement Fixture');
+    mkdirSync(join(root, 'dir'));
+    const blobs: Record<string, string> = {};
+    for (const path of ['a.ts', 'b.ts', 'c.ts', 'dir/e.ts']) {
+      writeFileSync(join(root, path), `export const v = ${JSON.stringify(path)};\n`);
+      blobs[path] = git('hash-object', path);
+    }
+    git('add', '.');
+    git('commit', '-q', '-m', 'fixture');
+    return { root, blobs, sha: git('rev-parse', 'HEAD') };
+  }
+
+  function rowsSql(rows: Array<{ id: string; paths: string[]; blobs: Record<string, string>; root: string }>) {
+    const updates: Array<{ id: string; residual: number }> = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?');
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        return rows.map(({ id, paths, blobs, root }) => ({
+          feature_id: id,
+          harness_slug: 'papercusp',
+          payload: {
+            [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
+              settlementManifest: {
+                ...manifest,
+                repositoryRoot: root,
+                normalizedPaths: paths,
+                contentIdentity: paths.map((path) => ({
+                  path,
+                  workingTreeBlobSha: blobs[path] ?? 'f'.repeat(40),
+                  headBlobSha: null,
+                })),
+              },
+            },
+          },
+        }));
+      }
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        // values: [payload, residualPaths.length, updated_ts, feature_id, ...]
+        const id = String(values[3]);
+        updates.push({ id, residual: Number(values[1]) });
+        return [{ feature_id: id, authority: values[1] === 0 ? 'committed' : 'proposed' }];
+      }
+      throw new Error(`unexpected SQL: ${query}`);
+    }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
+    (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+    return { sql, updates };
+  }
+
+  it('answers every row from one real git read, and isolates a row whose path git rejects', async () => {
+    const { root, blobs, sha } = gitFixture();
+    const calls: string[][] = [];
+    const lookup: NonNullable<CompletionSettlementReconcilerDeps['lookup']> = async (repoRoot, headSha, paths, opts) => {
+      calls.push([...paths]);
+      return completionHeadBlobMap(repoRoot, headSha, paths, opts ?? {});
+    };
+    const { sql, updates } = rowsSql([
+      { id: 'WI-AB', paths: ['a.ts', 'b.ts'], blobs, root },
+      { id: 'WI-C', paths: ['c.ts'], blobs, root },
+      // dir/e.ts settles; missing.ts is in no commit, so the row stays residual.
+      { id: 'WI-RESIDUAL', paths: ['dir/e.ts', 'missing.ts'], blobs, root },
+      // Measured live 2026-10-02: an out-of-repo path makes `git ls-tree` exit 128 for the
+      // WHOLE call. It must cost only this row, never the batch.
+      { id: 'WI-OUTSIDE', paths: ['a.ts', '/reports/rpt_fixture'], blobs, root },
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reconcileProposedCompletionsAtCommit(
+      sha,
+      { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
+      { sql, lookup, emit: settlementEmitMock() },
+    );
+    warn.mockRestore();
+
+    // One batched read over every safe declared path, plus ONE per-row read for the row that
+    // declared a path the batch leaves out. Before WI-10005285 this pass made four reads.
+    expect(calls).toEqual([
+      ['a.ts', 'b.ts', 'c.ts', 'dir/e.ts', 'missing.ts'],
+      ['a.ts', '/reports/rpt_fixture'],
+    ]);
+    expect(result.upgraded.sort()).toEqual(['WI-AB', 'WI-C']);
+    expect(result.residual).toBe(1);
+    expect(result.lookupUnavailable).toEqual(['WI-OUTSIDE']);
+    expect(updates.find((u) => u.id === 'WI-RESIDUAL')).toEqual({ id: 'WI-RESIDUAL', residual: 1 });
+  });
+
+  it('gives each row exactly the verdict a per-row read gives it', async () => {
+    const { root, blobs, sha } = gitFixture();
+    const rows = [
+      { id: 'WI-AB', paths: ['a.ts', 'b.ts'], blobs, root },
+      { id: 'WI-DIR', paths: ['dir', 'dir/e.ts'], blobs, root },
+      { id: 'WI-MISSING', paths: ['missing.ts', 'c.ts'], blobs, root },
+    ];
+    const run = async (rowSet: typeof rows) => {
+      const { sql, updates } = rowsSql(rowSet);
+      await reconcileProposedCompletionsAtCommit(
+        sha,
+        { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
+        { sql, lookup: (r, s, p, o) => completionHeadBlobMap(r, s, p, o ?? {}), emit: settlementEmitMock() },
+      );
+      return updates;
+    };
+    const batched = await run(rows);
+    // A single-row pass never batches, so this is the per-row reference answer.
+    const perRow = (await Promise.all(rows.map((row) => run([row])))).flat();
+    const byId = (list: Array<{ id: string; residual: number }>) => [...list].sort((x, y) => x.id.localeCompare(y.id));
+    expect(byId(batched)).toEqual(byId(perRow));
+    expect(byId(batched).map((u) => u.residual)).toEqual([0, 1, 1]);
+  });
+
+  it('falls back to one read per row when the batched read measures nothing, and says so', async () => {
+    const { sql, updates } = rowsSql([
+      { id: 'WI-ONE', paths: ['a.ts'], blobs: { 'a.ts': 'd'.repeat(40) }, root: '/repo' },
+      { id: 'WI-TWO', paths: ['nested/b.ts'], blobs: { 'nested/b.ts': 'e'.repeat(40) }, root: '/repo' },
+    ]);
+    const committed = new Map<string, HeadBlobResolution>([
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', resolved('e'.repeat(40))],
+    ]);
+    // The union read (two paths) measures nothing; each single-row read works.
+    const lookup = vi.fn(
+      async (_root: string, _sha: string, paths: readonly string[]): Promise<ReadonlyMap<string, HeadBlobResolution> | undefined> =>
+        paths.length > 1 ? undefined : new Map(paths.map((p) => [p, committed.get(p)!] as const)),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reconcileProposedCompletionsAtCommit(
+      SHA,
+      { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: '/repo' },
+      { sql, lookup, emit: settlementEmitMock() },
+    );
+
+    expect(lookup).toHaveBeenCalledTimes(3);
+    expect(result.upgraded.sort()).toEqual(['WI-ONE', 'WI-TWO']);
+    expect(updates).toHaveLength(2);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('batched exact-tree read'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('reads the union once for concurrent callers and hands each caller only the paths it asked for', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const base = vi.fn(async (_r: string, _s: string, paths: readonly string[]) => {
+      await gate;
+      return new Map(paths.map((p) => [p, resolved(p.padEnd(40, '0'))] as [string, HeadBlobResolution]));
+    });
+    const onUnavailable = vi.fn();
+    const lookup = batchHeadBlobLookup(base, '/repo', SHA, ['x', 'y', 'x'], undefined, onUnavailable);
+
+    const pending = [lookup('/repo', SHA, ['x']), lookup('/repo', SHA, ['y']), lookup('/repo', SHA, ['x', 'y'])];
+    release();
+    const [x, y, both] = await Promise.all(pending);
+
+    expect(base).toHaveBeenCalledTimes(1);
+    expect(base.mock.calls[0]![2]).toEqual(['x', 'y']);
+    expect([...x!.keys()]).toEqual(['x']);
+    expect([...y!.keys()]).toEqual(['y']);
+    expect([...both!.keys()]).toEqual(['x', 'y']);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    // A different commit is never served from this pass's tree.
+    await lookup('/repo', 'b'.repeat(40), ['x']);
+    expect(base).toHaveBeenCalledTimes(2);
   });
 });
 

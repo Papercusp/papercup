@@ -325,6 +325,89 @@ function confirmedTreeStampForSettlement(
   return { repositoryRoot: manifest.repositoryRoot, headSha: commitSha, contentIdentity };
 }
 
+/**
+ * A declared path git accepts as a pathspec inside the repository. `git ls-tree` exits 128
+ * on the whole call for a path outside the repository (`/reports/...` was measured in the
+ * live candidate set on 2026-10-02), so one such path would fail the batched read for every
+ * row. Rows that declare one fall through to their own per-row read.
+ */
+function batchSafeDeclaredPath(path: unknown): path is string {
+  if (typeof path !== 'string' || path.length === 0) return false;
+  if (path.startsWith('/') || path.startsWith(':') || path.includes('\0')) return false;
+  return !path.split('/').includes('..');
+}
+
+/**
+ * The declared paths of every candidate row, read straight from the stored manifest. This
+ * is only a prefetch hint: a path missing here makes that row read its own tree, so it skips
+ * the schema parse that settleRow does anyway.
+ */
+function declaredPathsForBatch(rows: readonly CandidateRow[]): string[] {
+  const paths = new Set<string>();
+  for (const row of rows) {
+    const payload = row.payload;
+    if (!payload || typeof payload !== 'object') continue;
+    const evidence = (payload as Record<string, unknown>)[TERMINAL_COMPLETION_EVIDENCE_KEY];
+    const manifest = evidence && typeof evidence === 'object'
+      ? (evidence as Record<string, unknown>).settlementManifest
+      : undefined;
+    const declared = manifest && typeof manifest === 'object'
+      ? (manifest as Record<string, unknown>).normalizedPaths
+      : undefined;
+    if (!Array.isArray(declared)) continue;
+    for (const path of declared) if (batchSafeDeclaredPath(path)) paths.add(path);
+  }
+  return [...paths];
+}
+
+/**
+ * WI-10005285: one exact-tree read per settlement pass instead of one per candidate row.
+ *
+ * Every row of a pass is checked against the SAME emitted commit in the SAME repository,
+ * but each used to run its own `git ls-tree` (plus a second one for gitlinks). bg-host
+ * forks those children from its multi-GB main thread at ~80 ms of frozen event loop each:
+ * a 180 s bpftrace on 2026-10-02 counted ~307 of bg-host's ~393 git forks as these reads.
+ * Reading the union of all rows' declared paths once (713 paths: 0.062 s, 83 KB) and
+ * answering each row from it removes them.
+ *
+ * Each path resolves independently of which other paths are read with it, so a row's
+ * answer is unchanged. A row is answered from the batch only when the batch resolved every
+ * path it asks about; otherwise (the batch failed or timed out, or the row declared a path
+ * left out of the batch) it does its own read exactly as before, so one bad row can never
+ * stall the others.
+ */
+export function batchHeadBlobLookup(
+  base: CompletionHeadBlobLookup,
+  repositoryRoot: string,
+  commitSha: string,
+  paths: readonly string[],
+  signal?: AbortSignal,
+  onBatchUnavailable?: () => void,
+): CompletionHeadBlobLookup {
+  const union = [...new Set(paths)];
+  let batch: Promise<ReadonlyMap<string, HeadBlobResolution> | undefined> | undefined;
+  return async (root, sha, requested, opts) => {
+    if (union.length === 0 || root !== repositoryRoot || sha !== commitSha) {
+      return opts ? base(root, sha, requested, opts) : base(root, sha, requested);
+    }
+    batch ??= (async () => {
+      try {
+        const tree = await (signal ? base(root, sha, union, { signal }) : base(root, sha, union));
+        if (!tree) onBatchUnavailable?.();
+        return tree;
+      } catch {
+        onBatchUnavailable?.();
+        return undefined;
+      }
+    })();
+    const tree = await batch;
+    if (tree && requested.every((path) => tree.has(path))) {
+      return new Map(requested.map((path) => [path, tree.get(path)!] as const));
+    }
+    return opts ? base(root, sha, requested, opts) : base(root, sha, requested);
+  };
+}
+
 export interface CompletionSettlementReconcilerDeps {
   /** Exact-tree lookup seam used by focused reconciliation tests. */
   lookup?: CompletionHeadBlobLookup;
@@ -481,7 +564,7 @@ async function reconcileProposedCompletionsCore(
     return { inspected: 0, upgraded: [], residual: 0, unreadable: [], floorRejected: [], stranded: [], lookupUnavailable: [] };
   }
   const sql = deps.sql ?? getOrgPg().sql;
-  const lookup = deps.lookup ?? completionHeadBlobMap;
+  const baseLookup = deps.lookup ?? completionHeadBlobMap;
   // A custom exact-tree lookup is the unit-test seam for the older tree-only
   // contract. Tests opt into history explicitly; production uses the safe Git reader.
   const historyLookup = deps.historyLookup ?? (deps.lookup ? undefined : completionBlobHistoryContains);
@@ -509,6 +592,15 @@ async function reconcileProposedCompletionsCore(
      LIMIT ${MAX_CANDIDATES}`;
 
   if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
+
+  // WI-10005285: every row is read against the same commit, so read the tree once per pass.
+  let batchUnavailable = false;
+  const lookup =
+    rows.length > 1
+      ? batchHeadBlobLookup(baseLookup, scope.repositoryRoot, commitSha, declaredPathsForBatch(rows), deps.signal, () => {
+          batchUnavailable = true;
+        })
+      : baseLookup;
 
   const upgradedByIndex: Array<string | undefined> = [];
   const residualByIndex: number[] = [];
@@ -742,6 +834,14 @@ async function reconcileProposedCompletionsCore(
   const stranded = strandedByIndex.filter((id): id is string => id !== undefined);
   const lookupUnavailable = lookupUnavailableByIndex.filter((id): id is string => id !== undefined);
   const residualCount = residualByIndex.reduce((sum, count) => sum + count, 0);
+  if (batchUnavailable) {
+    // Every row then did its own read: correct, but it is the per-row fork cost
+    // WI-10005285 removed, so it must not happen silently.
+    console.warn(
+      `[git-sync-completion-settlement] ${scope.installSlug}: the batched exact-tree read at ` +
+        `${commitSha.slice(0, 12)} measured nothing; ${rows.length} candidate(s) fell back to one git read each`,
+    );
+  }
   if (stranded.length > 0) {
     console.warn(
       `[git-sync-completion-settlement] ${scope.installSlug}: ${stranded.length} of ${rows.length} ` +

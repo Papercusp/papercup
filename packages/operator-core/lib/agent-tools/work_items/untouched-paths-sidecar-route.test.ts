@@ -82,3 +82,39 @@ describe('streamGitFields — preferSidecar routing', () => {
     expect(sidecar.run).not.toHaveBeenCalled();
   });
 });
+
+// WI-10005340: completionHeadBlobMap is the settlement reconciler's MAIN per-row
+// lookup. The two sibling reads above were routed on 2026-10-01 but this one was
+// not, and it stayed the largest source of bg-host main-thread forks (178 of ~236
+// in a 300 s trace). Pin it behaviourally: every ls-tree it issues reaches the
+// sidecar, and none falls through to a local fork.
+describe('completionHeadBlobMap — reconciler lookup runs in the sidecar', () => {
+  const SHA = 'a'.repeat(40);
+  const BLOB = 'b'.repeat(40);
+
+  it('resolves a committed path through ONE sidecar ls-tree, never a local fork', async () => {
+    const { completionHeadBlobMap } = await import('./completion-freshness');
+    sidecar.run.mockResolvedValue({ code: 0, stdout: `100644 blob ${BLOB}\tapps/x.ts\0`, stderr: '' });
+
+    const map = await completionHeadBlobMap('/repo', SHA, ['apps/x.ts']);
+
+    expect(map?.get('apps/x.ts')).toEqual({ status: 'resolved', sha: BLOB });
+    expect(sidecar.run).toHaveBeenCalledOnce();
+    expect(sidecar.run.mock.calls[0]![0]).toEqual(['-C', '/repo', 'ls-tree', '-r', '-z', SHA, '--', 'apps/x.ts']);
+    expect(sidecar.fallbacks).toEqual([]);
+  });
+
+  it('routes the gitlink-prefix read for a MISSING path to the sidecar too', async () => {
+    const { completionHeadBlobMap } = await import('./completion-freshness');
+    sidecar.run.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    const map = await completionHeadBlobMap('/repo', SHA, ['apps/gone.ts']);
+
+    expect(map?.get('apps/gone.ts')).toEqual({ status: 'absent' });
+    expect(sidecar.run.mock.calls.map((c) => c[0])).toEqual([
+      ['-C', '/repo', 'ls-tree', '-r', '-z', SHA, '--', 'apps/gone.ts'],
+      ['-C', '/repo', 'ls-tree', '-z', SHA, '--', 'apps'],
+    ]);
+    expect(sidecar.fallbacks).toEqual([]);
+  });
+});

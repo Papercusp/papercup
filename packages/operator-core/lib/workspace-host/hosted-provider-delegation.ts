@@ -257,7 +257,14 @@ function connectionProviderConfig(record: HostedProviderDelegationRecord): Recor
   const aws = record.configuration.provider === 'aws' ? record.configuration : undefined;
   const config = {
     hostedDelegation: record,
-    ...(gcp ? { projectId: gcp.projectId, serviceAccountEmail: gcp.serviceAccountEmail } : {}),
+    // Only the project. The delegation's `serviceAccountEmail` is the CONTROLLER identity
+    // Papercusp acts as, and connection config is spread over every desired spec (the provision
+    // and action routes), where the GCP provider reads `serviceAccountEmail` as the VM's own
+    // identity. Writing it here attached the controller to customer VMs: GCP refused each create
+    // with SERVICE_ACCOUNT_ACCESS_DENIED (no delegation grants actAs on it), and a create that
+    // succeeded would hand every agent on the VM the controller's power over the project
+    // (measured 2026-10-02, WI-10005297). The credential reference is how the identity travels.
+    ...(gcp ? { projectId: gcp.projectId } : {}),
     // The AWS provider composes from `credentialSource`; it refuses a hosted source unless this
     // delegation is verified (aws-configured-provider), which is where a revocation takes effect.
     ...(aws

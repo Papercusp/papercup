@@ -4,6 +4,7 @@ import {
   CONTEXT_GAUGE_CRITICAL_PCT,
   CONTEXT_GAUGE_LOUD_PCT,
   CONTEXT_GAUGE_QUIET_PCT,
+  contextGaugeReadingSource,
   contextGaugeBand,
   renderBandedContextGauge,
   renderContextUsageLine,
@@ -28,6 +29,12 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     expect(renderContextUsageLine(1000, null)).toBeNull();
     expect(renderContextUsageLine(1000, undefined)).toBeNull();
     expect(renderContextUsageLine(1000, 0)).toBeNull(); // 0 limit is falsy → no divide-by-zero
+  });
+
+  it('selects the live transcript source and falls back to the watchdog cache only when absent', () => {
+    expect(contextGaugeReadingSource(152_825)).toBe('live-transcript-bytes/4');
+    expect(contextGaugeReadingSource(null)).toBe('watchdog-cache');
+    expect(contextGaugeReadingSource(undefined)).toBe('watchdog-cache');
   });
 
   it('renders a bare fact BELOW the threshold (no affordance)', () => {

@@ -413,7 +413,25 @@ export const LEDGER_PROOF_HINT =
   'scripts/mutation-probe.sh with PAPERCUSP_TEST_RUN_HARNESS set records source=mutation-probe rows ' +
   "(listed only by testing:runs { source:'mutation-probe' }).";
 
-const DURABLE_WORK_ITEM_REF_RE = /\b(?:WI|EI|F)-\d+\b/i;
+/**
+ * A work-item id anchors a binding only when it IS the reference: its first
+ * token, optionally after a typed-prefix chain (`scorecard:EI-…`,
+ * `testing:run :: WI-…`), a tool-call verb (`work_items:get WI-…`), or a
+ * hyphen-joined kind (`work-item-thread-WI-…#post-…`). An id mentioned inside
+ * prose (`LIVE PLANE RE-VERIFICATION … (su-…, WI-…)`) names who did the work,
+ * not where the proof can be re-run, and must not make the row durable
+ * (WI-10005325).
+ */
+const DURABLE_WORK_ITEM_REF_RE =
+  /^(?:[a-z][\w-]*\s*:{1,2}\s*)*(?:[a-z][\w-]*:[a-z][\w-]*\s+)?(?:[a-z][a-z-]*-)?(?:WI|EI|F)-\d+\b/i;
+/**
+ * A repo file that LEADS the reference is a rerun anchor even when prose
+ * follows it (`apps/…/x.test.ts — 21 passed @ b97d892c71`). DURABLE_FILE_REF_RE
+ * already accepts a path followed by `#`/`:` and any text; this accepts the
+ * same path followed by whitespace, `,` or `;`.
+ */
+const DURABLE_LEADING_FILE_REF_RE =
+  /^(?:(?:file|path|repo-file):(?:\/\/)?)?(?:\.\.\/|\.\/)?(?:apps|packages|libs|scripts|src|lib|test|tests|bin|docs|rubrics)\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?=[\s,;#:]|$)/i;
 const DURABLE_ARTIFACT_REF_RE =
   /\b(?:artifact|artifact[-_ ]?ref|artifact[-_ ]?id)\s*(?:[:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
 const DURABLE_TEST_RUN_REF_RE =
@@ -453,6 +471,7 @@ export function classifySpecEvidenceLineage(
     DURABLE_TEST_RUN_REF_RE.test(evidenceRef) ||
     DURABLE_COVERAGE_REF_RE.test(evidenceRef) ||
     DURABLE_FILE_REF_RE.test(evidenceRef) ||
+    DURABLE_LEADING_FILE_REF_RE.test(evidenceRef) ||
     DURABLE_ABSOLUTE_FILE_REF_RE.test(evidenceRef)
   ) {
     return { lineage: 'durable', reason: 'explicit durable evidence reference' };

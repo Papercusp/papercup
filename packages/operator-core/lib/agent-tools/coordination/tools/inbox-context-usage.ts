@@ -22,6 +22,13 @@ export interface ObservedPromptFloor {
 /** Provenance for the numerator used by the live inbox gauge. */
 export type ContextGaugeReadingSource = 'live-transcript-bytes/4' | 'watchdog-cache';
 
+/** The live transcript estimate wins; the watchdog value is used only when it cannot be read. */
+export function contextGaugeReadingSource(
+  liveContextTokens: number | null | undefined,
+): ContextGaugeReadingSource {
+  return liveContextTokens == null ? 'watchdog-cache' : 'live-transcript-bytes/4';
+}
+
 /**
  * A conservative lower bound on conversation room. The observed floor can
  * include first-turn conversation content, so it may overstate the fixed prefix;

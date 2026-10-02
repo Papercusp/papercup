@@ -1113,11 +1113,12 @@ function suppressedAskDisclosure(defaultIfUnanswered: unknown, decideBy: string 
  */
 export function blockedSessionToAttention(g: BlockedSessionInput): AttentionItem {
   const actionability = g.actionability ?? classifyReadActionability(g.livenessState);
-  const projectedStatus = ownerGateStatus(actionability, g.livenessState, 'unknown');
   // A suppressed ask is a decision the OWNER owes by construction — the declaring session is
   // typically already gone, so its liveness says nothing about whether the owner must act. Forcing
-  // the tier here is what stops an `ended`/`unknown` asker demoting it to a mere alert.
+  // the tier AND the status here is what stops an `ended`/`unknown` asker demoting it to a mere
+  // alert stamped "STRANDED … needs a respawn" (the agent died by design; the decision stands).
   const suppressed = g.gateKind === 'suppressed_ask';
+  const projectedStatus = suppressed ? 'waiting' : ownerGateStatus(actionability, g.livenessState, 'unknown');
   const tier: AttentionTier = suppressed || actionability === 'actionable' ? 'decision' : 'alert';
   const label =
     g.gateKind === 'permission_wait' ? 'permission prompt' : suppressed ? 'suppressed question' : 'question';

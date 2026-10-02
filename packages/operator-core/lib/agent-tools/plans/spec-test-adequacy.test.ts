@@ -585,6 +585,73 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       'ephemeral',
     ],
     ['unanchored ref', { evidenceRef: 'surface:reconnect', coverageEvidenceRef: null, testRunId: null }, 'unknown'],
+    // WI-10005325: a work-item id anchors only as the reference's leading token.
+    [
+      'leading work-item ref with prose',
+      { evidenceRef: 'WI-2144847 terminal tree proof for AUTO-BAR-R-1', coverageEvidenceRef: null, testRunId: null },
+      'durable',
+    ],
+    [
+      'typed work-item ref',
+      { evidenceRef: 'scorecard:EI-22595744337561241', coverageEvidenceRef: null, testRunId: null },
+      'durable',
+    ],
+    [
+      'chained typed work-item ref',
+      { evidenceRef: 'testing:run :: WI-2144851 P-007 proof', coverageEvidenceRef: null, testRunId: null },
+      'durable',
+    ],
+    [
+      'tool-call work-item ref',
+      { evidenceRef: 'work_items:get WI-3849 → comment 2026-09-05', coverageEvidenceRef: null, testRunId: null },
+      'durable',
+    ],
+    [
+      'hyphen-joined work-item thread ref',
+      { evidenceRef: 'work-item-thread-WI-10000411#post-200196', coverageEvidenceRef: null, testRunId: null },
+      'durable',
+    ],
+    [
+      'parenthetical work-item mention',
+      {
+        evidenceRef: 'LIVE PLANE RE-VERIFICATION 2026-09-27 (su-f08bc8c5, WI-10002212) on the running operator',
+        coverageEvidenceRef: null,
+        testRunId: null,
+      },
+      'unknown',
+    ],
+    [
+      'mid-sentence work-item mention',
+      {
+        evidenceRef: 'live: Jev timeouts 0/984 after the fix (WI-10005319)',
+        coverageEvidenceRef: null,
+        testRunId: null,
+      },
+      'unknown',
+    ],
+    [
+      'work-item id after a prose word',
+      { evidenceRef: 'Note: see WI-10005319 for details', coverageEvidenceRef: null, testRunId: null },
+      'unknown',
+    ],
+    [
+      'leading test file followed by prose',
+      {
+        evidenceRef: 'apps/operator/app/settings/agent/assemble-config.test.ts — 21 passed @ b97d892c71',
+        coverageEvidenceRef: null,
+        testRunId: null,
+      },
+      'durable',
+    ],
+    [
+      'leading evidence file followed by prose',
+      {
+        evidenceRef: 'docs/evidence/pty-incident-census-2026-09-26.json — live census',
+        coverageEvidenceRef: null,
+        testRunId: null,
+      },
+      'durable',
+    ],
   ] as const)('classifies %s evidence lineage as %s', (_label, over, expected) => {
     expect(classifySpecEvidenceLineage(over).lineage).toBe(expected);
   });
