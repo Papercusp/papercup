@@ -16,6 +16,14 @@
  */
 
 .page {
+  /* Bind the maintained shared chat renderer to this dark Cloud host. */
+  --pc-chat-fg: var(--fg);
+  --pc-chat-fg-mute: var(--fg-dim);
+  --pc-chat-border: var(--border);
+  --pc-chat-bubble-assistant: var(--bg);
+  --pc-chat-bubble-assistant-fg: var(--fg);
+  --pc-chat-bubble-user: var(--bg-popover, var(--bg));
+  --pc-chat-bubble-user-fg: var(--fg);
   display: flex;
   flex-direction: column;
   gap: 18px;
