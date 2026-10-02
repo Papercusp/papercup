@@ -234,8 +234,8 @@ export async function readCoordFeed(
 
   // Union every surface. Tag each envelope with its origin surface.
   const tagged: CoordFeedRow[] = [];
-  // Push kinds/since_ts/plan_slug down to the store where the bounded methods
-  // support it — fewer rows fetched+held in memory, not just a bounded count.
+  // Push filters down to the store where the bounded methods support them —
+  // fewer rows fetched+held in memory, not just a bounded count.
   const kindsForPushdown = opts.kinds && opts.kinds.length > 0 ? opts.kinds : undefined;
 
   // Per-surface id-cursor state (WI-3880) — undefined cursor = read the
@@ -294,6 +294,7 @@ export async function readCoordFeed(
         ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
         ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),
         ...(opts.plan_slug ? { planSlug: opts.plan_slug } : {}),
+        ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
         ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
       });
       for (const row of page.rows) {
@@ -308,6 +309,7 @@ export async function readCoordFeed(
       const page = await coordLog.readEventsBoundedCursor(surface, {
         limit: RAW_SURFACE_FETCH_CAP,
         ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+        ...(opts.before_ts ? { beforeTs: opts.before_ts, beforeMsgId: opts.before_msg_id } : {}),
         ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
       });
       for (const row of page.rows) {

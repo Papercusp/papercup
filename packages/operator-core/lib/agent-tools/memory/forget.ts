@@ -28,7 +28,7 @@ export default defineTool({
   name: 'memory:forget',
   capability: 'memory:write',
   description:
-    'Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Default is a HARD delete (gone for good — the right call for privacy asks). Pass soft:true to instead close the memory\'s validity window (temporal-lite): it drops out of recall but stays retrievable via include_superseded / as_of on memory:search. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position. After a hard-delete timeout, the handler re-reads the row: confirmed absence returns ok:true with reconciledAfterTimeout:true; unresolved status returns { ok:false, reason:\'timeout_unknown\' } and should be checked before retrying.',
+    'Delete memories by `id` or `ids`. Default is a permanent hard delete (the privacy-safe choice). Set soft:true to end the validity window: the entry leaves recall but remains available through include_superseded / as_of on memory:search. Returns { ok, results, counts }; match each result by id. After a hard-delete timeout, it checks the row: absence returns ok:true with reconciledAfterTimeout:true; unknown status returns { ok:false, reason:\'timeout_unknown\' }—check before retrying.',
   guidance: {
     when:
       'When the user explicitly says "forget X" / "don\'t remember that anymore" / "that\'s wrong, drop it". Pass every id to drop at once via `ids`. Use soft:true when the fact STOPPED BEING TRUE but its history has value ("we no longer use gemma") — hard-delete (the default) when the user wants it GONE (privacy). Always inform the user out loud ("Removed that from memory").',

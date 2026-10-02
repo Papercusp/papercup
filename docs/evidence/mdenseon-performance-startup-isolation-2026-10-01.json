@@ -12,10 +12,31 @@
     "priorAcceptance": "diagnostic only: cancelled relevance inference overlapped performance-b2-gemma",
     "overlap": { "start": "2026-10-02T01:47:15.828Z", "end": "2026-10-02T01:49:04.884Z", "sampleIntervals": 225, "sequenceRange": [158, 382], "latencyEffectMeasured": false },
     "runId": "performance-cpu-v7",
-    "status": "running; first four randomized three-cell blocks and fifth-block mDenseOn receipt verified",
+    "status": "completed exit 0; all fifteen controlled CPU receipts and the five-block summary verified",
     "durableTaskId": "0muqcttoy1twa3cq2gm",
     "deadline": "2026-10-02T14:39:07.723Z",
     "admittedAt": "2026-10-02T02:54:16.311Z",
+    "controlledTerminalReceipt": {
+      "finishedAt": "2026-10-02T04:21:34.724Z",
+      "exitCode": 0,
+      "cells": 15,
+      "blocks": 5,
+      "samplesPerCell": 412,
+      "driverSha256": "06c167746b6c2581025ea3fc572fd0fbfdb33687aee57af549bf40607fc77a34",
+      "summarySha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
+      "summaryBytes": 137130,
+      "verification": "verifyCompletedPerformanceRun passed: exact terminal driver and randomized schedule, every raw fingerprint, and rederived summary match. All fifteen retained sample files match report samples by sequence; each trace contains 412 client sends, requests and responses, with zero client/server errors. Six idle-timeout events are retained. Verification performs no inference.",
+      "controlledMeasurementComplete": true,
+      "modelAdoptionAuthorized": false,
+      "subsequentRelevanceRun": {
+        "taskId": "0muqglgxk1aw5s6h0dv",
+        "runId": "independent-relevance-v5",
+        "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+        "admittedAt": "2026-10-02T04:24:44.145Z",
+        "status": "running; six-cell relevance results pending",
+        "serializedLaunchVerified": true
+      }
+    },
     "lastVerifiedProgress": {
       "observedAt": "2026-10-02T04:16:55Z",
       "completedCells": 13,

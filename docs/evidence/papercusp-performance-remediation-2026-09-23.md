@@ -4,6 +4,72 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## Popup timeout observation guard — 2026-10-02, Fire142
+
+The maintained driver had a confirmed observation race: an eight-second wait
+could expire before `endInteraction` emitted the completed measure and consumed
+its start mark. The subsequent diagnostic read omitted completed measures, then
+the classifier treated the absent mark as proof that timing never began. The
+driver also retained previous phase measures when a new click never began timing.
+This is a detector defect. The r168 log lacks the post-timeout total count and
+phase start times needed to establish whether this race occurred in that run.
+Its 13 saved raw-file fingerprints still match; no unchanged r168 was replayed.
+
+The fix extends the existing classifier and `app-mount` driver helpers. Each
+trigger clears prior phases and captures its page-clock boundary and synchronous
+start. A single follow-up read attributes totals and phases to that start,
+including their exact start times. Late completion retains its real duration.
+An observed begin or current phase with a missing start and no total now fails
+as inconclusive instead of being retried away as void. The generic failure text
+no longer claims a dashboard never opened. The product's mark writers are unchanged.
+
+Canonical classifier regressions reproduced **26 passed / 3 failed** before the
+fix, then passed **29/29**, zero skips. Existing mark-writer tests passed **14/14**.
+Maintained WDIO Node integration tests execute the serialized helpers against the
+real User Timing API and real begin/phase/end writers. The first run caught an
+injected `__name` dependency; inline callbacks removed it. The final suite passed
+**71/71**, zero skips, and package typecheck passed. It retains an exact 8637 ms
+completed measure after start consumption and excludes old or different-start
+phases. These are controlled guard tests, not a new native performance sample.
+
+Exact source/test/log fingerprints and commands are recorded under
+`attemptTimeoutGuardFire142` in `p007-native-source-output-audit-2026-10-01.json`.
+Next: prepare a fresh r169 payload/manifest with the current paired-timer sensor
+and this driver, verify the owned runtime route and exact fingerprints, then run
+one changed native diagnostic. P-007 cause, initiating caller, product repair,
+R-7 and the frozen cold/warm cohort remain open; no shipment is claimed.
+
+## Frame-first callback recovery — 2026-10-02, Fire139
+
+The one changed r168 native run reached a startup measurement. Its popup attempt
+timed out and its follow-up read found no start mark; it was classified
+**UNMEASURABLE**. That read did not collect a total-measure count.
+The pre-click scheduler log and request/preview phase measures are present, so
+the earlier claim that its row never opened a dashboard was wrong. The classifier's
+"never began timing" inference requires a writer/attempt-freshness audit; there is
+no accepted popup timing. FCP was 1807 ms and LCP was 6642 ms. The actual LCP
+node joined the Accounts footer: its frame request was at 4767 ms, callback at
+6283 ms, and read completion at 6284 ms. Its companion timer was cancelled at
+eligibility, so this run cannot compare timer and frame scheduling.
+
+That cancellation originated in the probe's eligibility cleanup and callback
+state check. The probe now preserves the independently queued timer after frame
+eligibility, while explicit stop, replacement and the existing deadline still
+cancel it. Two canonical regressions failed before the fix; **68 tests, zero
+skips**, and the package typecheck pass afterward. This fixes the sensor lifetime,
+not the product latency cause. The r168 payload and manifest remain dated proof;
+they do not contain this later fix.
+
+Exact runtime, raw hashes, cleanup and guard references are in
+[the source audit](p007-native-source-output-audit-2026-10-01.json),
+`r168PairedDiagnosticFire139`. Seven observed owned PIDs and the source/socket
+were absent; owned private profiles/home and tmpfs logs were removed after
+identity/hash checks. Port 33700 already accepted connections again at cleanup;
+no signals were sent and no peer runtime was touched. P-007/R7 and separate
+P-006/P-008 acceptance remain open. Audit current and selected frozen interaction
+mark cleanup, phase provenance and timeout classification before another expensive
+native run. The absence of a start mark at timeout does not establish no popup.
+
 ## Paired startup callback preparation — 2026-10-02, Fire135
 
 The existing early probe now records the first frame request, one companion
@@ -18,7 +84,7 @@ new regressions failed against the previous source; the package typecheck passed
 Source `921941fe76dd`, test `d717c2a5cd28` and final unit log `ff10bca4f775`
 bind this preparation. Fresh r168 early/Web Vitals payloads and an independent
 saved SPA are bound by manifest `bcad7d1075d5` and assertion `59d77782439a`.
-No r168 native run has started. Baseline preparation caught one insertion newline
+At that preparation boundary, no r168 native run had started. Baseline preparation caught one insertion newline
 before compilation; recovery used the exact saved raw baseline and added an
 assertion for its hash and absent probe marker.
 

@@ -144,6 +144,33 @@ describe('P-002 workflow measurements against frozen P-001 targets', () => {
     expect(await evaluateTool.handler(args, context)).toEqual(first);
   });
 
+  it('refuses a replay when expectedSpecSetHash differs from current clauses and returns no draft', async () => {
+    stores.readPlan.mockResolvedValue({
+      row: { items: [{ id: 'P-001' }], ...metadataInputSchema, templateData: { harness: 'fixture', attempts: 1 } },
+      parsed: { items: [{ id: 'P-001' }] },
+    });
+    stores.listRubrics.mockResolvedValue([{ classRef: 'plan-class-feature-ship' }]);
+    const expectedSpecSetHash = '0'.repeat(64);
+    const args = evaluateTool.args.parse({
+      harness: metadataHarness,
+      slug: metadataPlanSlug,
+      expectedSpecSetHash,
+    });
+
+    const result = await evaluateTool.handler(args, context);
+
+    expect(result).toMatchObject({ data: {
+      ok: false,
+      error: 'spec_set_hash_mismatch',
+      expectedSpecSetHash,
+      blockers: [expect.objectContaining({ check: 'clauses', state: 'blocked', code: 'spec_set_hash_mismatch' })],
+      wouldBlock: ['spec_set_hash_mismatch'],
+    } });
+    expect(result.data).toHaveProperty('specSetHash');
+    expect(result.data.specSetHash).not.toBe(expectedSpecSetHash);
+    expect(result).not.toHaveProperty('data.scorecardDraft');
+  });
+
   it.each([
     ['missing', [], 'spec_quality_class_missing'],
     ['ambiguous', [{ classRef: 'plan-class-feature-ship' }, { classRef: 'plan-class-bugfix' }], 'spec_quality_class_ambiguous'],

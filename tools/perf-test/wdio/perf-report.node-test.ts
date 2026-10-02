@@ -16,9 +16,88 @@ import {
   installPopupReactProbe,
   isTerminalWebDriverSessionError,
   readPlanPopupCandidates,
+  readPlanPopupAttemptInPage,
+  triggerPlanPopupAttemptInPage,
   waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
+import { classifyAttemptTimeout } from "../../../libs/generic/gui-readiness/src/interaction-measure";
+import { beginInteraction, endInteraction, markInteractionPhase } from "../../../apps/operator/app/_components/perf/perf-marks";
+
+test('popup timeout snapshot retains late completion after the real end consumes its start', () => {
+  const name = 'node-popup-late-completion';
+  const context = { performance, window: {}, document: {
+    querySelector: (selector: string) => selector === '[data-testid="plan-dash-open-full"]'
+      ? { click: () => beginInteraction(name) } : null,
+  }, name };
+  const attempt = runInNewContext(`(${triggerPlanPopupAttemptInPage.toString()})(name)`, context);
+  assert.equal(attempt.clicked, true);
+  assert.ok(attempt.startTimeMs >= attempt.triggerAtMs);
+  markInteractionPhase(name, 'request-started');
+  markInteractionPhase(name, 'preview-rendered');
+  assert.notEqual(endInteraction(name), null);
+  assert.equal(performance.getEntriesByName(`${name}:start`, 'mark').length, 0);
+  const snapshot = runInNewContext(`(${readPlanPopupAttemptInPage.toString()})(name, attempt)`, { ...context, attempt });
+  assert.equal(snapshot.startMarkAgeMs, null);
+  assert.equal(snapshot.measureCount, 1);
+  assert.equal(snapshot.measures[0].startTimeMs, attempt.startTimeMs);
+  assert.equal(snapshot.phases.length, 2);
+  assert.equal(classifyAttemptTimeout({
+    measureCount: snapshot.measureCount, beginObserved: true,
+    startMarkPresent: false, startMarkAgeMs: null, staleStartMs: 30_000,
+    phasesSeen: snapshot.phases.map((p: { name: string }) => p.name.slice(`${name}:phase:`.length)),
+    dispatchPhase: 'request-started', terminalPlaceholder: null,
+  }).verdict, 'measured');
+  performance.clearMeasures(name);
+  for (const phase of ['request-started', 'preview-rendered']) performance.clearMeasures(`${name}:phase:${phase}`);
+  performance.clearMarks(`${name}:trigger-return`);
+});
+
+test('popup attempt excludes old and different-start phases and retains exact late duration', () => {
+  const name = 'node-popup-phase-provenance';
+  const start = performance.now();
+  performance.mark(`${name}:start`, { startTime: start });
+  performance.measure(`${name}:phase:old`, { start: start - 1, duration: 8 });
+  performance.measure(`${name}:phase:request-started`, { start, duration: 66 });
+  performance.measure(`${name}:phase:other-begin`, { start: start + 1, duration: 5 });
+  performance.measure(name, { start: start - 1, duration: 1 });
+  performance.measure(name, { start, duration: 8637 });
+  performance.clearMarks(`${name}:start`);
+  const attempt = { clicked: true, triggerAtMs: start, startTimeMs: start };
+  const snapshot = runInNewContext(`(${readPlanPopupAttemptInPage.toString()})(name, attempt)`, {
+    name, attempt, performance, window: {}, document: { querySelector: () => null },
+  });
+  assert.equal(snapshot.measureCount, 1);
+  assert.equal(snapshot.measures[0].durationMs, 8637);
+  assert.equal(snapshot.phases.length, 1);
+  assert.equal(snapshot.phases[0].name, `${name}:phase:request-started`);
+  assert.equal(snapshot.phases[0].startTimeMs, start);
+  assert.equal(snapshot.phases[0].endTimeMs, start + 66);
+  performance.clearMeasures(name);
+  for (const phase of ['old', 'request-started', 'other-begin']) performance.clearMeasures(`${name}:phase:${phase}`);
+});
+
+test('popup trigger clears prior phases even when the new handler never begins timing', () => {
+  const name = 'node-popup-no-begin';
+  beginInteraction(name);
+  markInteractionPhase(name, 'request-started');
+  const context = { performance, window: {}, name, document: {
+    querySelector: (selector: string) => selector === '[data-testid="plan-dash-open-full"]'
+      ? { click: () => {} } : null,
+  } };
+  const attempt = runInNewContext(`(${triggerPlanPopupAttemptInPage.toString()})(name)`, context);
+  const snapshot = runInNewContext(`(${readPlanPopupAttemptInPage.toString()})(name, attempt)`, { ...context, attempt });
+  assert.equal(attempt.clicked, true);
+  assert.equal(attempt.startTimeMs, null);
+  assert.equal(snapshot.phases.length, 0);
+  assert.equal(snapshot.measureCount, 0);
+  assert.equal(classifyAttemptTimeout({
+    measureCount: 0, beginObserved: false, startMarkPresent: false,
+    startMarkAgeMs: null, staleStartMs: 30_000, phasesSeen: [],
+    dispatchPhase: 'request-started', terminalPlaceholder: null,
+  }).verdict, 'void');
+  performance.clearMarks(`${name}:trigger-return`);
+});
 
 function nativeProcFixture() {
   const files = new Map<string, string>([['/proc/sys/kernel/random/boot_id', 'boot-A'],

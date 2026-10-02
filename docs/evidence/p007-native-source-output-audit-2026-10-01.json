@@ -1,4 +1,160 @@
 {
+  "attemptTimeoutGuardFire142": {
+    "scope": "Fire142 current-source timeout detector and attempt provenance guard; no new native run or product/R7 acceptance",
+    "rootCause": "The wait may expire before endInteraction emits a measure and consumes its start. The follow-up driver snapshot omitted completed measures and phase startTime, and the classifier interpreted absent start as never began. Previous phases survived driver reset if the next handler never began.",
+    "alternativeHypothesis": "A truly void click has no current begin, phase or total; old or different-start entries cannot establish this attempt.",
+    "distinguishingTest": "Canonical classifier red cases plus maintained Node VM tests execute serialized driver helpers against the real User Timing API and real begin/phase/end writers. Complete after the wait boundary, consume the start, then read the attempt; compare with an unbound click and earlier/different starts.",
+    "predictedObservations": {
+      "hypothesis": "The old classifier discards a completed sample and phases cannot be attributed; the new observation retains the real total after consumption.",
+      "alternativeHypothesis": "The new unbound click clears prior phases and yields no current begin or measure, so it remains void."
+    },
+    "actualObservation": "Classifier26PASS3FAIL before fix ->29PASS0skip. Existing mark writers14PASS0skip. Node first pass68PASS3FAIL caught serialized __name dependency; corrected self-contained callbacks yield71PASS0skip. Exact 8637ms measure retained and old/different starts excluded. Package typecheckPASS.",
+    "fix": "Extend existing classifier with measured/inconclusive outcomes and observed-begin evidence; extend maintained app-mount driver helpers with synchronous trigger timestamp, captured start and attempt-scoped total/phase snapshot. Retain late completed duration, refuse ambiguous timing instead of void retry, and remove unsupported no-dashboard wording. No new service/table/timer or product mark change.",
+    "r168Limit": "Raw r168 has no post-timeout total count or phase startTime. Its13 raw hashes still match, but whether late completion, expired/cleared start or another mechanism caused that run remains unproven. Never replay unchanged r168.",
+    "sources": {
+      "libs/generic/gui-readiness/src/interaction-measure.ts": "9e11ce05f1fc2a350d0e5eb28a76bbf3d2ac03ef92a16d74f278c42a1bff0a7f",
+      "libs/generic/gui-readiness/src/interaction-measure.test.ts": "f0d1ea6888a01b59d5afb282484ec2e91f253354c423e7d1e2e35efae28f541d",
+      "tools/perf-test/wdio/app-mount.ts": "0b17d0a749e689152189bb8ab985d82901f3bc691fc23a2dda74a2d752699c29",
+      "tools/perf-test/wdio/specs/plan-popup-open.perf.spec.ts": "3edaed9f131ae3173e2575daa05d481a2a9cdf720caba1fd8b28035dce6fe309",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "e3b98fe8fae025338a05fed16574ff05de2c89082a6d9eddce190927774c1b06"
+    },
+    "logs": {
+      "/tmp/p007-fire142-attempt-race-red.log": "3d9cb421851024cf432aa6c01d9c53af5bd5b0a48999df3146003616122df317",
+      "/tmp/p007-fire142-attempt-race-green.log": "a672dc0e48c6c79f96cd8538ec9e64985bff6cee737e5aa9ac2d591549ffce9f",
+      "/tmp/p007-fire142-attempt-native-guards.log": "98d85a4f39e72c1901ca226f6258f7cd5292230d99190397f637deddd99aa8c8",
+      "/tmp/p007-fire142-attempt-native-guards-r2.log": "d8c56e565cd5037fe548abb6db9f36ed0377a01e51e3eb60b371b336a4e70332",
+      "/tmp/p007-fire142-attempt-typecheck-r2.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "commands": [
+      "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/generic/gui-readiness/src/interaction-measure.test.ts apps/operator/app/_components/perf/perf-marks.test.ts",
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "next": "Fresh successor verify source/log hashes, then prepare new r169 from maintained frozen artifacts with current paired-timer payload and updated driver. Verify independent manifest/source/index/payload/assertion hashes and owned native route before ONE changed run. Recover true total after wait expiry plus captured begin and phase startTime. No root/initiatingcaller/product/R7/frozen cohort claim from guards alone."
+  },
+  "r168PairedDiagnosticFire139": {
+    "scope": "Fire139 changed native r168 plus durable frame-first timer guard; not product/root/R7 acceptance",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r168-native-summary.json",
+    "summarySha256": "4eb476748242f2f862119bf4965541358eefdfe4d13f1f8c9a696b314dd909ee",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r168-cleanup-receipt.json",
+    "cleanupSha256": "f878a8035a620aa958420ab505c145887614f79cd8f2cbb32f3a5c502b3e0d6f",
+    "rawHashesVerified": 13,
+    "verifierRun": "20261002T033409Z-2146715",
+    "receipt": {
+      "id": "perfrun-1790912480746-sazn5x",
+      "recorded": 10,
+      "status": "fail"
+    },
+    "suiteExit": 1,
+    "webVitalsLine": "[0-0] web-vitals: ready — observed [FCP=1807 LCP=6642]; not-applicable [INP(interaction) CLS(unavailable) TTFB(unavailable)]",
+    "popup": {
+      "status": "UNMEASURABLE",
+      "reason": "attempt timeout without start mark; void sample",
+      "slug": "goal-agent-behavior-feedback-2026-09-06",
+      "popupNumber": null,
+      "attemptDiagnosis": {
+        "verdict": "void",
+        "reason": "no start mark exists, so this attempt never began timing"
+      },
+      "unfinished": {
+        "outcome": "timeout",
+        "placeholder": null,
+        "startMarkAgeMs": null,
+        "phases": [
+          {
+            "ms": 5486,
+            "name": "plan-popup-open:phase:styles-ready"
+          },
+          {
+            "ms": 68,
+            "name": "plan-popup-open:phase:detail-mounted"
+          },
+          {
+            "ms": 5457,
+            "name": "plan-popup-open:phase:content-ready"
+          },
+          {
+            "ms": 14,
+            "name": "plan-popup-open:phase:popup-render-started"
+          },
+          {
+            "ms": 43,
+            "name": "plan-popup-open:phase:detail-render-started"
+          },
+          {
+            "ms": 14,
+            "name": "plan-popup-open:phase:popup-module-ready"
+          },
+          {
+            "ms": 5287,
+            "name": "plan-popup-open:phase:response-ready"
+          },
+          {
+            "ms": 5488,
+            "name": "plan-popup-open:phase:renderer-ready"
+          },
+          {
+            "ms": 0,
+            "name": "plan-popup-open:phase:popup-url-update-queued"
+          },
+          {
+            "ms": 8637,
+            "name": "plan-popup-open:phase:preview-rendered"
+          },
+          {
+            "ms": 4840,
+            "name": "plan-popup-open:phase:response-headers"
+          },
+          {
+            "ms": 14,
+            "name": "plan-popup-open:phase:popup-module-requested"
+          },
+          {
+            "ms": 66,
+            "name": "plan-popup-open:phase:request-started"
+          },
+          {
+            "ms": 5459,
+            "name": "plan-popup-open:phase:data-ready"
+          }
+        ]
+      },
+      "schedulerBeforeClickLogged": true,
+      "limitations": "Generic suite error cannot establish the dashboard never appeared. No start mark means no timed interaction; no route or product cause established."
+    },
+    "pairedIntervals": {
+      "actualLcpCandidateJoin": true,
+      "firstFrameQueuedAtMs": 4767,
+      "firstFrameAtMs": 6283,
+      "firstFrameReadCompletedAtMs": 6284,
+      "queuedToFrameMs": 1516,
+      "frameReadMs": 1,
+      "timerAtMs": null,
+      "timerStopReason": "eligible-frame",
+      "conclusion": "Frame/read intervals observed; timer cancelled at eligibility, so no paired-callback discrimination."
+    },
+    "milestoneAttribution": "Actual LCP is Accounts footer; sidebar/container true, shell false, fallback null",
+    "cleanupScope": "Seven observed owned PIDs and source/socket/private home/profiles/tmpfs removed or absent. Port33700 already accepts connections again; no global port absence or peer cleanup claim. Work/logs preserved. No signals sent.",
+    "sourceGuard": {
+      "rootCause": "stopCandidate(eligible-frame) cleared the independently queued companion timer; callback also rejected eligible-frame state. This censored frame-first ordering. Not the product latency cause.",
+      "fix": "Preserve a pending timer after eligibility and accept its callback while the probe is active; explicit stop/replacement/deadline still cancel. No extra timer or layout read.",
+      "recurrenceGuard": "Direct and bundled canonical tests cover timer-first/frame-first order, max two timers, immutable first frame times and cancellation after eligibility.",
+      "red": "66PASS2FAIL0skip; both expected2 pending companions, actual0",
+      "green": "68PASS0FAIL0skip and package typecheckPASS",
+      "sourceSha256": {
+        "tools/perf-test/wdio/startup-storage-probe.ts": "4076bc7ce5e2181954d50a01c8999019ab78ff4c15805fc4017a4aa406aee227",
+        "tools/perf-test/wdio/perf-report.node-test.ts": "936f2951b5fa9af5149e7b22a6a7ebaa78f2aa91bdbd50bc1c49f1d84ff556f8"
+      },
+      "logSha256": {
+        "/tmp/p007-fire139-frame-first-red.log": "bd3d622dc8a4fb74bf745eba47b10afe8479500ad58eff760df5d0b95e2077eb",
+        "/tmp/p007-fire139-frame-first-green.log": "aaa6d2a926244eb36c6ba0f989b24226e58d8cf6de1f734c451877a7a385ed08",
+        "/tmp/p007-fire139-frame-first-typecheck.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+      }
+    },
+    "limitations": "Broad callback delay versus frame-specific delay remains unproven. No main-thread/import/paint cause, initiating caller or whole original SPA graph; new API9b403cf7 and clocks/media/observer confounds retained.",
+    "next": "Audit current AND selected frozen begin/phase/end/clear/cancel writers and attempt-scoped phase freshness, plus classifyAttemptTimeout no-start semantics BEFORE any new expensive run. Do not infer no popup from generic UNMEASURABLE wording. Source timer guard68PASS is separate; r168 payload/manifest is dated and must not be reused as current.",
+    "correction": "Earlier row-to-dashboard attribution was wrong: pre-click scheduler log and request/preview phases exist. Only absence of the start/total at timeout is established. The classifier inference never began conflicts with these phases; mechanism and attempt freshness need audit."
+  },
   "pairedFramePreparationFire135": {
     "scope": "Fire135 source/bundled guards and fresh r168 preparation; no new native run, root cause, product repair or R7 acceptance",
     "reused": "Existing installStartupStorageProbe lifetimes, MutationObserver/frame reads, compilation/index writers and canonical Node suite",

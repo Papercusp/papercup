@@ -1059,7 +1059,7 @@ export class PgCoordLog implements CoordEventLog {
    */
   async readEventsBoundedCursor(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; beforeId?: number },
+    opts: { limit: number; kinds?: string[]; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
   ): Promise<CoordLogCursorPage> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -1067,10 +1067,17 @@ export class PgCoordLog implements CoordEventLog {
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const beforeId =
       typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
+    const beforeTs = typeof opts.beforeTs === 'string' && opts.beforeTs ? opts.beforeTs : null;
+    const beforeTsPredicate = beforeTs
+      ? opts.beforeMsgId
+        ? sql`AND (body->>'ts')::timestamptz <= ${beforeTs}::timestamptz`
+        : sql`AND (body->>'ts')::timestamptz < ${beforeTs}::timestamptz`
+      : sql``;
     const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
+         ${beforeTsPredicate}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
        ORDER BY id DESC
        LIMIT ${limit + 1}
@@ -1090,10 +1097,18 @@ export class PgCoordLog implements CoordEventLog {
   }
 
   /** The line-surface sibling of {@link readEventsBoundedCursor} — same
-   *  `id < beforeId` cursor, plus the existing `sinceTs`/`planSlug` pushdowns. */
+   *  `id < beforeId` cursor, plus the existing time/plan pushdowns. */
   async readLinesBoundedCursor(
     surface: LineSurface,
-    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[]; beforeId?: number },
+    opts: {
+      limit: number;
+      sinceTs?: string;
+      planSlug?: string;
+      kinds?: string[];
+      beforeId?: number;
+      beforeTs?: string;
+      beforeMsgId?: string;
+    },
   ): Promise<CoordLogCursorPage> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -1103,12 +1118,21 @@ export class PgCoordLog implements CoordEventLog {
     const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
     const beforeId =
       typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
+    const beforeTs = typeof opts.beforeTs === 'string' && opts.beforeTs ? opts.beforeTs : null;
+    const beforeTsPredicate = beforeTs
+      ? opts.beforeMsgId
+        // Line-surface column ts is stamped from body.ts on write; keep the
+        // boundary bucket for the caller's exact composite msg_id tie-break.
+        ? sql`AND ts <= ${beforeTs}::timestamptz`
+        : sql`AND ts < ${beforeTs}::timestamptz`
+      : sql``;
     const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
          ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
          ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
+         ${beforeTsPredicate}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
        ORDER BY id DESC
        LIMIT ${limit + 1}
