@@ -104,6 +104,10 @@ export function installStartupStorageProbe() {
     firstCompanionTimerStopReason: null as string | null,
     firstFrameReadCompletedAtMs: null as number | null, firstFrameOutcome: null as string | null,
     frameTimingScope: 'first paired zero-delay timer/frame requests and callback/read times; not paint or a main-thread root cause',
+    firstFrameOperations: [] as Array<{ operation: string; ancestorDepth: number | null;
+      startedAtMs: number; completedAtMs: number; durationMs: number; threw: boolean }>,
+    maxFirstFrameOperations: 99, // connection + 32 * (style, visibility, parent) + rect + viewport
+    firstFrameOperationsScope: 'first-frame observer read intervals, including throwing reads; not forced-layout or product cause; timing overhead remains observer work',
     mutationCallbacks: 0, frameReads: 0, maxMutationCallbacks: 1000, maxFrameReads: 32,
     totalObserverWorkMs: 0, stopReason: 'collecting', unavailable: [] as string[],
     milestoneMatchesAtFirstObservation: [] as Array<{ selector: string; matches: boolean | null }>,
@@ -240,20 +244,39 @@ export function installStartupStorageProbe() {
         const beganFrame = performance.now();
         const firstFrame = render.frameReads === 0;
         const outcome = (reason: string) => { if (firstFrame) render.firstFrameOutcome = reason; };
+        // Time the reads already made by this observer, once per candidate.
+        // Property evaluation keeps its existing short-circuit order; no extra
+        // layout/style read, stack capture or DOM serialization is introduced.
+        const timedRead = <T>(operation: string, ancestorDepth: number | null, read: () => T): T => {
+          if (!firstFrame) return read();
+          const started = performance.now();
+          let threw = true;
+          try {
+            const value = read();
+            threw = false;
+            return value;
+          } finally {
+            const completed = performance.now();
+            render.firstFrameOperations.push({ operation, ancestorDepth, startedAtMs: started,
+              completedAtMs: completed, durationMs: completed - started, threw });
+          }
+        };
         render.frameReads++;
         render.firstFrameAtMs ??= beganFrame;
         try {
-          if (!element.isConnected) { outcome('disconnected'); return; }
+          if (!timedRead('connection-check', null, () => element.isConnected)) { outcome('disconnected'); return; }
           let ancestor: HTMLElement | null = element;
-          for (let depth = 0; ancestor && depth < 32; depth++, ancestor = ancestor.parentElement) {
-            const style = window.getComputedStyle(ancestor);
-            if (style.display === 'none' || style.visibility === 'hidden' ||
-                style.visibility === 'collapse' || Number(style.opacity) === 0) { outcome('hidden-ancestor'); return; }
+          for (let depth = 0; ancestor && depth < 32; depth++) {
+            const node: HTMLElement = ancestor;
+            const style = timedRead('computed-style', depth, () => window.getComputedStyle(node));
+            if (timedRead('visibility-check', depth, () => style.display === 'none' || style.visibility === 'hidden' ||
+                style.visibility === 'collapse' || Number(style.opacity) === 0)) { outcome('hidden-ancestor'); return; }
+            ancestor = timedRead('parent-element', depth, () => node.parentElement);
           }
           if (ancestor) { outcome('ancestor-depth'); render.unavailable.push('ancestor-depth'); stopCandidate(candidate, 'unavailable'); return; }
-          const rect = element.getBoundingClientRect();
-          if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
-              rect.top >= window.innerHeight || rect.left >= window.innerWidth) { outcome('outside-viewport'); return; }
+          const rect = timedRead('bounding-rect', null, () => element.getBoundingClientRect());
+          if (timedRead('viewport-check', null, () => rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
+              rect.top >= window.innerHeight || rect.left >= window.innerWidth)) { outcome('outside-viewport'); return; }
           outcome('eligible');
           render.firstEligibleFrameAtMs = performance.now();
           stopCandidate(candidate, 'eligible-frame');
@@ -340,11 +363,13 @@ export function installStartupStorageProbe() {
       installed, unavailable, rows: rows.slice(), dropped, totalObserverWorkMs,
       nativeStartup: { rows: nativeStartupRows.slice(), dropped: nativeStartupDropped, maxRows: 20 },
       render: { ...render, fonts: { ...fontsReport, events: fontsReport.events.slice() },
+        firstFrameOperations: render.firstFrameOperations.slice(),
         unavailable: render.unavailable.slice(),
         milestoneObserverWorkMs,
         milestoneScope: 'first DOM callback observation; containment at candidate discovery; not mount, import completion or paint',
         milestones: milestones.map(({ report }) => ({ ...report, unavailable: report.unavailable.slice() })),
-        candidates: renderCandidates.map((report) => ({ ...report, unavailable: report.unavailable.slice() })) } };
+        candidates: renderCandidates.map((report) => ({ ...report, firstFrameOperations: report.firstFrameOperations.slice(),
+          unavailable: report.unavailable.slice() })) } };
   } };
   (window as unknown as { __pcStartupStorageProbe: typeof probe }).__pcStartupStorageProbe = probe;
   return probe;

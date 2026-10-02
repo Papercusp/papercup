@@ -851,6 +851,8 @@ export default defineTool({
                     refId: g.ref_id,
                     gateKind: g.kind,
                     question: g.question,
+                    decideBy: g.decide_by,
+                    defaultIfUnanswered: g.default_if_unanswered,
                     ownerAgentId: g.owner_id,
                     harnessSlug: resolveHarness(g.harness_slug, null),
                     waitingHours,

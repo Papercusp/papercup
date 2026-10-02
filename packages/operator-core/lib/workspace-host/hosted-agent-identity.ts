@@ -90,7 +90,12 @@ const HOSTED_SPAWN_ROOT = posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.papercusp'
  * Profile: the dev-tower typecheck cgroup guard off (it would re-exec outside the agent's cgroup or
  * refuse pointing at Papercusp tools), no release-gate reserve or gate refusal (no gate runs on a
  * customer host), no cross-agent coalescing of identical commands, and a pool dir under the
- * customer's home so the D-030 job-peak ledger that sizes each slot survives reboots.
+ * customer's home so the D-030 job-peak ledger survives reboots.
+ *
+ * Memory reserve per admitted job is pinned to 4 GiB (D-033). Unpinned, pc-heavy reserves 14 GiB
+ * on a fresh host and then the ledger max (~10 GiB, set entirely by typechecks); on a spot
+ * e2-standard-16 that held 24 agents where 4 GiB held 32 with no OOM. A per-class reserve
+ * (typecheck vs everything else) replaces this pin once built.
  */
 export function hostedHeavyAdmissionEnv(
   toolchainBin: string,
@@ -111,6 +116,7 @@ export function hostedHeavyAdmissionEnv(
     PC_HEAVY_GATE_RESERVE: '0',
     PC_HEAVY_ALLOW_DURING_GATE: '1',
     PC_HEAVY_COALESCE: '0',
+    PC_HEAVY_MEM_PER_SLOT_GIB: '4',
   };
 }
 

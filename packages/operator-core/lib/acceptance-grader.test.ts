@@ -7,6 +7,7 @@ import {
   carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
   classifyAcceptanceGraderNoFirstTurnStall,
+  classifyAcceptanceGraderParkedWithoutEmit,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
@@ -1606,6 +1607,71 @@ describe('classifyAcceptanceGraderNoFirstTurnStall', () => {
         nowMs,
         staleAfterMs,
       }),
+    ).toBeNull();
+  });
+});
+
+describe('classifyAcceptanceGraderParkedWithoutEmit (WI-10005295)', () => {
+  const nowMs = Date.parse('2026-10-02T04:00:00.000Z');
+  const staleAfterMs = 15 * 60_000;
+  const stale = {
+    startedAt: new Date(nowMs - 40 * 60_000).toISOString(),
+    logMtimeMs: nowMs - staleAfterMs - 1,
+    nowMs,
+    staleAfterMs,
+  };
+  // Shape of task 0muqeanqadsbkcjglk2's log tail (Codex auditor, 2026-10-02 03:40Z):
+  // the turn ended without an emit and the session sat at its prompt.
+  const codexParked =
+    '\u001b[1m• Audit not emitted.\u001b[0m Current target state:\r\n' +
+    '  • gradingAudit.state: pending  › Ask Codex to do anything   Working · GPT-5.6-Sol high · Context 86% left\r\n' +
+    '  The required lease no longer matches because its reservation is absent.\r\n' +
+    '  Worked for 20m 18s • 11:40 PMReady ·GPT-5.6-Sol high ·Context 86% left ·sta';
+  const claudeParked =
+    '● papercusp.tools:invoke(scorecards:get)\n● I stopped: the target card did not match the brief.\n\n' +
+    '✻ Crunched for 4m 12s · done\n\n❯ ';
+
+  it('classifies a Codex or Claude judge parked at its prompt past the TTL', () => {
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexParked, stale)).toMatchObject({
+      code: 'parked_without_emit',
+      evidence: expect.stringContaining('Workedfor20m18s'),
+    });
+    expect(classifyAcceptanceGraderParkedWithoutEmit(claudeParked, stale)).toMatchObject({
+      code: 'parked_without_emit',
+    });
+  });
+
+  it('survives PTY redraws that strip the footer spacing', () => {
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit('● done reading\n✻Crunched fo 12s ·done2:29 PM\n❯', stale),
+    ).toMatchObject({ code: 'parked_without_emit' });
+  });
+
+  it('keeps a judge whose log is still moving or whose task is young', () => {
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(codexParked, { ...stale, logMtimeMs: nowMs - 60_000 }),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(codexParked, {
+        ...stale,
+        startedAt: new Date(nowMs - 5 * 60_000).toISOString(),
+        logMtimeMs: nowMs - 4 * 60_000,
+      }),
+    ).toBeNull();
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexParked, { ...stale, logMtimeMs: null })).toBeNull();
+  });
+
+  it('keeps a judge that never completed a turn or resumed after its last one', () => {
+    // Mid-turn, no completed-turn marker yet.
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit('Working (18m)\npapercusp.tools:invoke({})', stale),
+    ).toBeNull();
+    // A later turn started after the footer (woken by a coord message).
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(`${claudeParked}\n● Resuming the audit\n✢ Thinking… (esc to interrupt)`, stale),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderParkedWithoutEmit(`${codexParked}\n  Working · GPT-5.6-Sol high · Context 80% left`, stale),
     ).toBeNull();
   });
 });

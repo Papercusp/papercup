@@ -17,6 +17,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import {
   classifyAcceptanceGraderNoFirstTurnStall,
+  classifyAcceptanceGraderParkedWithoutEmit,
   detectAcceptanceGraderTerminalFailure,
   readAcceptanceGraderLogMtimeMs,
   readAcceptanceGraderLogTail,
@@ -854,6 +855,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
     `Dispatch lease: key 'grading-audit:${card.issueId}', reservedAt '${reservationReservedAt}'. Before reading criterion evidence, re-read the exact target and continue only if gradingAudit.state is 'pending' and dispatchReservation.key and dispatchReservation.reservedAt exactly match this lease. If either differs or is absent, report the current state and stop without grading or emitting.`,
+    'MCP result-shape safety: concurrent scorecards:get pages can be replaced inline by a recoverable `papercusp.output-envelope/v1` wrapper when the shared result-door budget is exceeded. Inspect the outer response before reading scorecard.criteria. If it is an output envelope, follow its content reference with capability:read and restore the underlying scorecards:get result; never pass the wrapper to a scorecard field reader or treat absent inline fields as missing evidence.',
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...}, gradingAuditReservation:{ key:'grading-audit:${card.issueId}', reservedAt:'${reservationReservedAt}' } }. Include concrete evidence for every criterion in the grading-integrity rubric. The gradingAuditReservation field is required for this active lease; copy both values exactly.`,
@@ -1263,12 +1265,18 @@ export async function dispatchPendingGradingAudits(
                 readLogTail(taskLogPath),
                 Promise.resolve(readLogMtimeMs(taskLogPath)),
               ]);
-              terminalFailure = classifyAcceptanceGraderNoFirstTurnStall(logTail, {
+              const quietWindow = {
                 startedAt: task.startedAt,
                 logMtimeMs,
                 nowMs: deps.now?.() ?? Date.now(),
                 staleAfterMs: GRADING_AUDIT_RESERVATION_TTL_MS,
-              });
+              };
+              // WI-10005295: a judge that finished its turn and parked without emitting
+              // (for a reason none of the explicit detectors recognise) is otherwise kept
+              // viable forever and every repair dedupes to it.
+              terminalFailure =
+                classifyAcceptanceGraderNoFirstTurnStall(logTail, quietWindow) ??
+                classifyAcceptanceGraderParkedWithoutEmit(logTail, quietWindow);
             } catch {
               // Missing/unreadable evidence is unknown, never permission to kill.
             }

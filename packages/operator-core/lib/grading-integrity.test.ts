@@ -777,6 +777,61 @@ describe('dispatchPendingGradingAudits', () => {
     }
   });
 
+  describe('a live auditor that completed its turn and parked without emitting (WI-10005295)', () => {
+    // Tail shape of task 0muqeanqadsbkcjglk2 (Codex auditor, 2026-10-02): it finished a
+    // turn, emitted nothing, and every repair deduped to it until a human killed it.
+    const parkedLog =
+      '• Audit not emitted. Current target state:\n' +
+      '  • gradingAudit.state: pending  › Ask Codex to do anything   Working · GPT-5.6-Sol high\n' +
+      '  Worked for 20m 18s • 11:40 PMReady ·GPT-5.6-Sol high ·Context 86% left';
+    const run = async (logQuietMs: number) => {
+      const d = deps();
+      const nowMs = Date.parse('2026-10-02T04:01:00.000Z');
+      d.listScorecards.mockResolvedValue([card('EI-parked-auditor')]);
+      d.listTasks.mockResolvedValue([{
+        taskId: 'task-parked-auditor',
+        state: 'running',
+        startedAt: new Date(nowMs - 41 * 60_000).toISOString(),
+        detail: { label: 'grading-audit:EI-parked-auditor' },
+        logPath: '/tmp/parked-auditor.log',
+      } as unknown as TaskRow]);
+      const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+      const result = await reconcilePendingGradingAudits(
+        { ctx, harness: 'papercusp' },
+        {
+          ...d,
+          killTask,
+          readLogTail: vi.fn(async () => parkedLog),
+          now: () => nowMs,
+          readLogMtimeMs: () => nowMs - logQuietMs,
+          terminalLogMaxRechecks: 0,
+        },
+      );
+      return { killTask, receipt: result.receipts[0] };
+    };
+
+    it('retires it once its log has been quiet past the reservation TTL and relaunches', async () => {
+      const { killTask, receipt } = await run(GRADING_AUDIT_RESERVATION_TTL_MS + 1);
+      expect(killTask).toHaveBeenCalledWith('task-parked-auditor', {
+        includeSubtree: true,
+        escalateAfterMs: 5_000,
+      });
+      expect(receipt).toMatchObject({
+        state: 'launched',
+        terminalRecovery: {
+          retiredTaskIds: ['task-parked-auditor'],
+          codes: ['parked_without_emit'],
+        },
+      });
+    });
+
+    it('still dedupes to it while its log moved inside the TTL', async () => {
+      const { killTask, receipt } = await run(GRADING_AUDIT_RESERVATION_TTL_MS - 60_000);
+      expect(killTask).not.toHaveBeenCalled();
+      expect(receipt).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
+    });
+  });
+
   it('retires a live auditor that explicitly finished without platform tools and launches a bounded fallback', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-tool-refusal')]);
@@ -975,6 +1030,10 @@ describe('dispatchPendingGradingAudits', () => {
 
     const brief = (d.launch.mock.calls[0]?.[0] as { brief: string }).brief;
     expect(brief).toContain('Before emitting, re-read the target with scorecards:get');
+    expect(brief).toContain('papercusp.output-envelope/v1');
+    expect(brief).toContain('Inspect the outer response before reading scorecard.criteria');
+    expect(brief).toContain('follow its content reference with capability:read');
+    expect(brief).toContain('never pass the wrapper to a scorecard field reader');
     // EI-24583166035391772: the brief must name fields scorecards:get actually returns.
     expect(brief).toContain('scorecard.auditTarget');
     expect(brief).toContain("gradingAudit.state is exactly 'pending'");

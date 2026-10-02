@@ -473,7 +473,9 @@ export default defineTool({
           `Explicit run_in_background calls default to ${DEFAULT_BACKGROUND_TIMEOUT_MS}. Maximum ${MAX_BACKGROUND_TIMEOUT_MS}. ` +
           `The whole confined task subtree IS terminated only at this execution deadline ` +
           `(systemd RuntimeMaxSec plus the local SIGTERM/SIGKILL path), ` +
-          `so raise this for a job that legitimately runs longer. Deliberately daemonized descendants remain tracked ` +
+          `so raise this for a job that legitimately runs longer. The deadline is FIXED AT LAUNCH and cannot be extended ` +
+          `on a running task (systemd 255 refuses a runtime RuntimeMaxSec change): size it for retries, or chain longer work as separate tasks. ` +
+          `Deliberately daemonized descendants remain tracked ` +
           `inside the same task and share its deadline; use a dedicated service launcher for a different lifetime. ` +
           `Work submitted to an external server can outlive the shell: killing psql does not prove its PostgreSQL query stopped. ` +
           `Use dev:pg_query for bounded diagnostic reads, or set and verify a server-side statement_timeout for native SQL.`,

@@ -311,6 +311,7 @@ export interface WithPlanLockOpts<T = unknown> {
     writtenBody: string,
     scope: { workspaceId: string; harnessSlug: string },
     writtenTemplateData: unknown,
+    writtenVersion?: number,
   ) => Promise<void>;
   /**
    * Strict post-mutation hook that runs BEFORE the transaction commits. Unlike
@@ -926,6 +927,7 @@ export async function withPlanLock<T>(
         writtenBody,
         { workspaceId, harnessSlug },
         writtenTemplateData,
+        newVersion,
       );
     }
 

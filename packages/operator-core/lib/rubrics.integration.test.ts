@@ -141,6 +141,32 @@ async function insertRubricPlan(
             'rubric', ${JSON.stringify(opts.data ?? rubricData)}::text::jsonb, ${opts.templateSlug ?? null}, 'local')`;
 }
 
+async function withPlanRevisionInsertFailure<T>(planSlug: string, run: () => Promise<T>): Promise<T> {
+  if (!/^[a-z0-9-]+$/.test(planSlug)) throw new Error(`unsafe test plan slug: ${planSlug}`);
+  const suffix = Math.random().toString(36).slice(2, 10);
+  const functionName = `rubric_revision_failure_${suffix}`;
+  const triggerName = `${functionName}_trigger`;
+  try {
+    await db.adminSql.unsafe(`
+      CREATE FUNCTION harness_shared.${functionName}() RETURNS trigger
+      LANGUAGE plpgsql AS $revision_failure$
+      BEGIN
+        IF NEW.plan_slug = '${planSlug}' THEN
+          RAISE EXCEPTION 'injected plan_revisions insert failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $revision_failure$`);
+    await db.adminSql.unsafe(`
+      CREATE TRIGGER ${triggerName} BEFORE INSERT ON harness_shared.plan_revisions
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.${functionName}()`);
+    return await run();
+  } finally {
+    await db.adminSql.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON harness_shared.plan_revisions`);
+    await db.adminSql.unsafe(`DROP FUNCTION IF EXISTS harness_shared.${functionName}()`);
+  }
+}
+
 beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
@@ -579,6 +605,24 @@ Preserve this plan body.
     const [activePlan] = await db.adminSql<{ content_hash: string }[]>`
       SELECT content_hash FROM harness_shared.harness_plans WHERE plan_slug = 'audited-rubric'`;
     expect(ratifyRev.content_hash).toBe(activePlan.content_hash);
+  });
+
+  it('rolls back a rubric plan write when its strict revision insert fails', async () => {
+    const rubricId = 'strict-revision-failure-rubric';
+    await expect(
+      withPlanRevisionInsertFailure(rubricId, () => rubrics.proposeRubric({
+        rubricId,
+        characteristic: 'hive-coordination',
+        title: 'Strict revision failure',
+        criteria: sampleCriteria,
+        by: 'failure-test',
+      })),
+    ).rejects.toThrow(/plan revision unavailable/);
+
+    const plans = await db.adminSql`SELECT 1 FROM harness_shared.harness_plans WHERE plan_slug=${rubricId}`;
+    const revisions = await db.adminSql`SELECT 1 FROM harness_shared.plan_revisions WHERE plan_slug=${rubricId}`;
+    expect(plans).toHaveLength(0);
+    expect(revisions).toHaveLength(0);
   });
 
   it('addresses committed rubric versions independently of the audit sequence', async () => {
@@ -1689,6 +1733,57 @@ describe('template_data persistence boundary — the set-template-data door', ()
     }
     return { ...seeded, workspaceId, subject };
   }
+
+  it('rolls back both BAR plan rows and the first revision when the subject revision insert fails', async () => {
+    const seeded = await seedBarContract('strict-bar-revision-failure-subject', { authorMethods: true });
+    const rubric = await rubrics.getRubric(seeded.rubricSlug);
+    if (!rubric) throw new Error(`seeded rubric '${seeded.rubricSlug}' did not resolve`);
+    const [rubricBefore] = await db.adminSql`
+      SELECT content, content_hash, version, template_data FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectBefore] = await db.adminSql`
+      SELECT content, content_hash, version, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+        FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const planSlugs = [seeded.rubricSlug, seeded.subject];
+    const revisionsBefore = await db.adminSql<{ plan_slug: string; seq: number; content_hash: string }[]>`
+      SELECT plan_slug, seq, content_hash FROM harness_shared.plan_revisions
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=ANY(${planSlugs}::text[]) ORDER BY plan_slug, seq`;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'revision-failure-amender',
+      reason: 'Verify the two-plan write rolls back when revision capture fails.',
+      criterion: {
+        key: rubric.criteria[0]!.key,
+        field: 'driftMarkers' as const,
+        mode: 'replace' as const,
+        text: 'The first outcome is missing after commit.',
+      },
+    };
+    const approvalRef = await postApproval(amendment, 'outside-reviewer');
+
+    await expect(
+      withPlanRevisionInsertFailure(seeded.subject, () =>
+        rubrics.amendRubric({ ...amendment, approvalRef, approvedBy: 'outside-reviewer' }),
+      ),
+    ).rejects.toThrow(/plan revision unavailable/);
+
+    const [rubricAfter] = await db.adminSql`
+      SELECT content, content_hash, version, template_data FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectAfter] = await db.adminSql`
+      SELECT content, content_hash, version, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+        FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const revisionsAfter = await db.adminSql<{ plan_slug: string; seq: number; content_hash: string }[]>`
+      SELECT plan_slug, seq, content_hash FROM harness_shared.plan_revisions
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=ANY(${planSlugs}::text[]) ORDER BY plan_slug, seq`;
+    expect(rubricAfter).toEqual(rubricBefore);
+    expect(subjectAfter).toEqual(subjectBefore);
+    expect(revisionsAfter).toEqual(revisionsBefore);
+  });
 
   it('names the offending BAR and missing Requirements record in an amendment refusal', async () => {
     const seeded = await seedBarContract('amendment-missing-requirement');

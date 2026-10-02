@@ -240,6 +240,8 @@ describe('hosted heavy-job admission env (D-031)', () => {
       PC_HEAVY_GATE_RESERVE: '0',
       PC_HEAVY_ALLOW_DURING_GATE: '1',
       PC_HEAVY_COALESCE: '0',
+      // D-033: pinned, so a fresh hosted host never starts at pc-heavy's 14 GiB default.
+      PC_HEAVY_MEM_PER_SLOT_GIB: '4',
     });
     expect(hostedHeavyAdmissionEnv(bin, (p) => p !== script)).toBeUndefined();
     expect(hostedHeavyAdmissionEnv(bin, (p) => p !== preload)).toBeUndefined();

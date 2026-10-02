@@ -204,7 +204,10 @@ test('popup timeout snapshot retains late completion after the real end consumes
 
 test('popup attempt excludes old and different-start phases and retains exact late duration', () => {
   const name = 'node-popup-phase-provenance';
-  const start = performance.now();
+  // Node derives duration by subtracting start from end. A fractional start
+  // can round an exact 8637 ms fixture to 8636.999999999998; use an integer
+  // fixture clock so the exact-duration assertion is deterministic.
+  const start = Math.floor(performance.now());
   performance.mark(`${name}:start`, { startTime: start });
   performance.measure(`${name}:phase:old`, { start: start - 1, duration: 8 });
   performance.measure(`${name}:phase:request-started`, { start, duration: 66 });
@@ -1143,6 +1146,111 @@ test('bundled startup frame timing separates a prompt timer from a delayed frame
     assert.equal(report.firstFrameOutcome, 'eligible');
     assert.equal(report.totalObserverWorkMs, 17);
     assert.equal(f.pendingCompanionTimers(), 0);
+  } finally { f.restore(); }
+});
+
+test('bundled startup first-frame operations distinguish style lookup, property, traversal and rectangle costs', () => {
+  const f = startupRenderFixture();
+  try {
+    Function(buildStartupStorageProbeScript())();
+    const probe = (f.fakeWindow as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe;
+    let clock = 1000;
+    const advance = (ms: number) => { clock += ms; f.tick(clock); };
+    const calls: string[] = [];
+    f.parent.style.opacity = '1';
+    Object.defineProperties(f.element.style, {
+      display: { get: () => { calls.push('display'); advance(2); return 'block'; } },
+      visibility: { get: () => { calls.push('visibility'); advance(3); return 'visible'; } },
+      opacity: { get: () => { calls.push('opacity'); advance(5); return '1'; } },
+    });
+    Object.defineProperty(f.element, 'parentElement', { get: () => { advance(4); return f.parent; } });
+    Object.defineProperty(f.parent, 'parentElement', { get: () => { advance(4); return null; } });
+    f.fakeWindow.getComputedStyle = (node) => { advance(5); return node.style; };
+    f.element.getBoundingClientRect = () => {
+      advance(7); return { width: 100, height: 30, top: 1, left: 1, right: 101, bottom: 31 };
+    };
+    Object.defineProperty(f.fakeWindow, 'innerHeight', { get: () => { advance(11); return 720; } });
+    Object.defineProperty(f.fakeWindow, 'innerWidth', { get: () => { advance(13); return 1280; } });
+    f.tick(clock); f.insert();
+    assert.deepEqual(calls, [], 'DOM discovery must not evaluate styles');
+    f.runFrame();
+    const report = probe.stop().render;
+    assert.deepEqual(report.firstFrameOperations.map((row) => [row.operation, row.ancestorDepth, row.durationMs, row.threw]), [
+      ['connection-check', null, 0, false],
+      ['computed-style', 0, 5, false], ['visibility-check', 0, 13, false], ['parent-element', 0, 4, false],
+      ['computed-style', 1, 5, false], ['visibility-check', 1, 0, false], ['parent-element', 1, 4, false],
+      ['bounding-rect', null, 7, false], ['viewport-check', null, 24, false],
+    ]);
+    assert.deepEqual(calls, ['display', 'visibility', 'visibility', 'opacity'], 'preserve native short-circuit evaluation');
+    assert.equal(report.firstFrameReadCompletedAtMs! - report.firstFrameAtMs!, 62);
+    assert.equal(report.firstFrameOperations.reduce((sum, row) => sum + row.durationMs, 0), 62);
+    for (const row of report.firstFrameOperations) assert.equal(row.completedAtMs - row.startedAtMs, row.durationMs);
+    assert.match(report.firstFrameOperationsScope, /observer.*not.*cause/);
+  } finally { f.restore(); }
+});
+
+test('startup operation timing retains thrown reads without geometry, retries or private error content', () => {
+  for (const operation of ['computed-style', 'visibility-check', 'parent-element', 'bounding-rect', 'viewport-check']) {
+    const f = startupRenderFixture();
+    try {
+      let clock = 200;
+      const fail = () => { f.tick(clock += 9); throw new Error('private operation failure'); };
+      f.parent.style.opacity = '1';
+      if (operation === 'computed-style') f.fakeWindow.getComputedStyle = fail;
+      if (operation === 'visibility-check') Object.defineProperty(f.element.style, 'display', { get: fail });
+      if (operation === 'parent-element') Object.defineProperty(f.element, 'parentElement', { get: fail });
+      if (operation === 'bounding-rect') f.element.getBoundingClientRect = fail;
+      if (operation === 'viewport-check') Object.defineProperty(f.fakeWindow, 'innerHeight', { get: fail });
+      const probe = installStartupStorageProbe();
+      f.tick(clock); f.insert(); f.runFrame();
+      const report = probe.stop().render;
+      assert.equal(report.stopReason, 'unavailable');
+      assert.equal(report.firstFrameOperations.at(-1)?.operation, operation);
+      assert.equal(report.firstFrameOperations.at(-1)?.durationMs, 9);
+      assert.equal(report.firstFrameOperations.at(-1)?.threw, true);
+      assert.equal(report.firstFrameOperations.filter((row) => row.threw).length, 1);
+      assert.equal(report.firstFrameReadCompletedAtMs, 209);
+      assert(!JSON.stringify(report).includes('private operation failure'));
+      assert.equal(f.pendingFrame(), false);
+    } finally { f.restore(); }
+  }
+});
+
+test('startup operation rows are bounded to the first frame and remain separate for each candidate', () => {
+  const f = startupRenderFixture();
+  try {
+    const probe = installStartupStorageProbe();
+    f.tick(300); f.insert(); f.insertSubtitle(); f.runFrame();
+    for (let i = 0; i < 31; i++) { f.tick(400 + i); f.mutate(); f.runFrame(); }
+    const reports = probe.stop().render.candidates;
+    assert.equal(reports[0].frameReads, 32);
+    assert.equal(reports[1].frameReads, 1);
+    assert.deepEqual(reports[0].firstFrameOperations.map((row) => row.operation), [
+      'connection-check', 'computed-style', 'visibility-check', 'parent-element', 'computed-style', 'visibility-check',
+    ]);
+    assert.equal(reports[1].firstFrameOperations.at(-2)?.operation, 'bounding-rect');
+    assert.equal(reports[1].firstFrameOperations.at(-1)?.operation, 'viewport-check');
+    assert(reports.every((report) => report.firstFrameOperations.every((row) => row.startedAtMs === 300)));
+    assert.notEqual(reports[0].firstFrameOperations, reports[1].firstFrameOperations);
+  } finally { f.restore(); }
+});
+
+test('startup ancestor cap prevents unbounded operation records and rectangle reads', () => {
+  const f = startupRenderFixture();
+  try {
+    f.parent.style.opacity = '1';
+    Object.defineProperty(f.parent, 'parentElement', { get: () => f.parent });
+    Function(buildStartupStorageProbeScript())();
+    const probe = (f.fakeWindow as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe;
+    f.insert(); f.runFrame();
+    const report = probe.stop().render;
+    assert.equal(report.firstFrameOutcome, 'ancestor-depth');
+    assert.equal(report.firstFrameOperations.length, 97);
+    assert.equal(report.firstFrameOperations.filter((row) => row.operation === 'computed-style').length, 32);
+    assert.equal(report.firstFrameOperations.at(-1)?.ancestorDepth, 31);
+    assert.equal(f.rectReads(), 0);
+    assert.equal(report.maxFirstFrameOperations, 99);
+    assert(report.firstFrameOperations.length <= report.maxFirstFrameOperations);
   } finally { f.restore(); }
 });
 

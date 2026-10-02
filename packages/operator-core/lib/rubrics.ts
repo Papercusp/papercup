@@ -112,7 +112,7 @@ import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
-import { recordPlanRevision } from './agent-tools/plans/revisions';
+import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './agent-tools/plans/revisions';
 import {
   applyPlanRevisionSnapshotRepair,
   readPlanRevisionRepairTarget,
@@ -2668,21 +2668,7 @@ export function preserveRubricPlanBody(
   return bumpUpdatedDate(body, opts.today ?? new Date());
 }
 
-/**
- * EI-10443 audit trail: build the `withPlanLock` afterWrite that appends ONE
- * `plan_revisions` row for a rubric propose/ratify write. The rubric write path went
- * through withPlanLock with NO afterWrite, so the plan revision spine had ZERO rows for
- * every rubric plan (`plan_slug='pot-coordination-health'` returned 0 revisions) — a
- * destructive rubric write (e.g. the loss-guard strip that filed this bug) left no audit
- * trail and could be neither detected nor recovered via `plans:revisions`. Wiring this in
- * gives rubric writes the SAME revision spine every other plans:* write already records.
- *
- * `by` is the acting identity (the proposer/ratifier ownerId the MCP handler resolves and
- * threads through); when absent the row is attributed to a stable system actor so the audit
- * row still lands (auditability > attribution precision). Best-effort by construction —
- * `recordPlanRevision` never throws, so this can never fail the rubric write (it runs
- * post-commit, and withPlanLock awaits it).
- */
+/** Strictly capture a rubric write's immutable revision inside its plan transaction. */
 export function formatRubricRevisionSnapshot(
   writtenBody: string,
   templateData: unknown,
@@ -2917,13 +2903,14 @@ async function rubricRevisionCriteriaHash(
   return rubric?.criteriaHash ?? null;
 }
 
-function rubricRevisionAfterWrite(
+function rubricRevisionInTransaction(
   rubricId: string,
   by: string | undefined,
   rationale: string,
   fallbackTemplateData?: unknown,
   compatibilityAudit?: () => RubricCompatibilityAudit | undefined,
 ): (
+  tx: PlanRevisionSql,
   writtenBody: string,
   scope: { workspaceId: string; harnessSlug: string },
   committedTemplateData: unknown,
@@ -2938,29 +2925,22 @@ function rubricRevisionAfterWrite(
     workspaceId: null,
     userId: null,
   };
-  return async (writtenBody, scope, committedTemplateData, committedVersion) => {
+  return async (tx, writtenBody, scope, committedTemplateData, committedVersion) => {
     const snapshotTemplateData =
       committedTemplateData !== undefined ? committedTemplateData : fallbackTemplateData;
     const criteriaHash = await rubricRevisionCriteriaHash(snapshotTemplateData, scope);
-    // Thread the (workspaceId, harnessSlug) withPlanLock resolved for THIS write so the
-    // revision lands on the rubric plan's own PK (recordPlanRevision re-resolves through
-    // the same resolvePlanScope — the operator-home short-circuit for the rubric harness).
-    await recordPlanRevision({
+    // withPlanLock has already resolved the concrete scope and holds the plan lock. Capture
+    // the revision in that same transaction so an insert failure rolls back the rubric.
+    await recordPlanRevisionInTransaction(tx, {
       planSlug: rubricId,
-      ...(scope?.harnessSlug ? { harnessSlug: scope.harnessSlug } : {}),
-      ...(scope?.workspaceId ? { workspaceId: scope.workspaceId } : {}),
-      // withPlanLock supplies the value committed by this exact transaction.
-      // The fallback keeps auditability best-effort for older callers/tests that
-      // invoke this helper without the third hook argument.
+      harnessSlug: scope.harnessSlug,
+      workspaceId: scope.workspaceId,
       content: formatRubricRevisionSnapshot(
         writtenBody,
         snapshotTemplateData,
         criteriaHash,
         committedVersion,
       ),
-      // The revision hash remains the canonical plan-body fingerprint used by
-      // activation/current-revision comparisons. Only content_snapshot is
-      // enriched with structured rubric data.
       contentHash: hashPlanContent(writtenBody),
       rationale: (() => {
         const compatibility = compatibilityAudit?.();
@@ -3123,7 +3103,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
       ...(input.by ? { actorId: input.by } : {}),
       ...scope,
       // EI-10443: record a plan_revisions audit row for the propose write.
-      afterWrite: rubricRevisionAfterWrite(
+      revisionInTransaction: rubricRevisionInTransaction(
         input.rubricId,
         input.by,
         `rubrics:propose (${rubricStatus})`,
@@ -4923,6 +4903,41 @@ async function amendAcceptanceBarRubric(
         template_data: guard.data,
       });
       if (!projected) throw new Error(`acceptance_bar_amendment: amended rubric failed projection`);
+      const criteriaHash = await rubricRevisionCriteriaHash(guard.data, rubricScope);
+      if (criteriaHash) projected.criteriaHash = criteriaHash;
+      const revisionIdentity: AgentIdentity = {
+        ownerId: actorId ?? input.by ?? 'rubrics:system',
+        ownerLabel: actorId ?? input.by ?? 'rubrics:system',
+        source: 'static-client',
+        workspaceId: null,
+        userId: null,
+      };
+      const revisionRationale = `acceptance BAR amendment ${idempotencyKey}`;
+      // The custom writer updates the rubric and subject plan under both locks. Keep
+      // both revision snapshots in this transaction too, so failure on either insert
+      // rolls back both plan rows and any earlier revision insert.
+      await recordPlanRevisionInTransaction(tx, {
+        planSlug: input.rubricId,
+        harnessSlug: rubricScope.harnessSlug,
+        workspaceId: rubricScope.workspaceId,
+        content: formatRubricRevisionSnapshot(
+          rubricBody,
+          guard.data,
+          criteriaHash,
+          nextRubricRevision,
+        ),
+        contentHash: hashPlanContent(rubricBody),
+        rationale: revisionRationale,
+        identity: revisionIdentity,
+      });
+      await recordPlanRevisionInTransaction(tx, {
+        planSlug: subjectPlanHint,
+        harnessSlug: subjectScope.harnessSlug,
+        workspaceId: subjectScope.workspaceId,
+        content: subjectBody,
+        rationale: revisionRationale,
+        identity: revisionIdentity,
+      });
       return {
         rubric: projected,
         decisionId,
@@ -4946,47 +4961,6 @@ async function amendAcceptanceBarRubric(
   );
   if (!txResult) return null;
   if (txResult.replayed || txResult.preview || txResult.methodOnly) return txResult;
-  // Revision rows are audit history.  The data transaction above remains the
-  // atomic source of truth; these best-effort records make both plans visible
-  // through the existing plan-revisions reader.
-  const identity: AgentIdentity = {
-    ownerId: input.actorId ?? input.by ?? 'rubrics:system',
-    ownerLabel: input.actorId ?? input.by ?? 'rubrics:system',
-    source: 'static-client',
-    workspaceId: null,
-    userId: null,
-  };
-  const criteriaHash =
-    txResult.rubricBody && txResult.templateData
-      ? await rubricRevisionCriteriaHash(txResult.templateData, rubricScope)
-      : null;
-  // The locked projection omits the delegated class revision. Return the same
-  // resolved identity we pin in history, so an amendment receipt agrees with
-  // an immediate getRubric read (EI-24352619832794123).
-  if (criteriaHash) txResult.rubric.criteriaHash = criteriaHash;
-  await Promise.all([
-    txResult.rubricBody && txResult.templateData
-      ? recordPlanRevision({
-          planSlug: input.rubricId,
-          harnessSlug: rubricScope.harnessSlug,
-          workspaceId: rubricScope.workspaceId,
-          content: formatRubricRevisionSnapshot(txResult.rubricBody, txResult.templateData, criteriaHash, txResult.rubricRevision),
-          contentHash: hashPlanContent(txResult.rubricBody),
-          rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
-          identity,
-        })
-      : Promise.resolve(null),
-    txResult.subjectBody
-      ? recordPlanRevision({
-          planSlug: subjectPlanHint,
-          harnessSlug: subjectScope.harnessSlug,
-          workspaceId: subjectScope.workspaceId,
-          content: txResult.subjectBody,
-          rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
-          identity,
-        })
-      : Promise.resolve(null),
-  ]);
   return txResult;
 }
 
@@ -5161,7 +5135,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       intent: `rubrics:amend ${input.rubricId}`,
       ...(input.by ? { actorId: input.by } : {}),
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(
+      revisionInTransaction: rubricRevisionInTransaction(
         input.rubricId,
         input.by,
         'rubrics:amend',
@@ -5318,7 +5292,7 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
       // EI-10443: record a plan_revisions audit row for the status-flip write. afterWrite
       // only fires when a body was actually written (a no-op ratify — no frontmatter status
       // line — returns newBody:null and records nothing).
-      afterWrite: rubricRevisionAfterWrite(
+      revisionInTransaction: rubricRevisionInTransaction(
         rubricId,
         by,
         'rubrics:ratify → active',
@@ -5364,7 +5338,7 @@ export async function retireAcceptanceRubricForPlan(
         slug: rubric.rubricId,
         intent: `acceptance-rubric retire (subject plan '${planSlug}' ${terminalStatus})`,
         ...scope,
-        afterWrite: rubricRevisionAfterWrite(
+        revisionInTransaction: rubricRevisionInTransaction(
           rubric.rubricId,
           by,
           `acceptance rubric retired with its ${terminalStatus} subject plan`,
@@ -5433,7 +5407,7 @@ export async function retireRubric(rubricId: string, by?: string, reason?: strin
       slug: rubricId,
       intent: `rubrics:retire ${rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:retire → retired${reason ? ` (${reason})` : ''}`),
+      revisionInTransaction: rubricRevisionInTransaction(rubricId, by, `rubrics:retire → retired${reason ? ` (${reason})` : ''}`),
     },
     async (current) => {
       if (current === null) return { newBody: null, value: false };
@@ -5491,7 +5465,7 @@ export async function setRubricHistoryReset(rubricId: string, at: string, by?: s
       slug: rubricId,
       intent: `rubrics:set-history-reset ${rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:set-history-reset → ${iso}`, {
+      revisionInTransaction: rubricRevisionInTransaction(rubricId, by, `rubrics:set-history-reset → ${iso}`, {
         ...rawData,
         historyResetAt: iso,
       }),

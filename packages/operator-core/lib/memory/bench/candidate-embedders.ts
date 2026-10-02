@@ -8,7 +8,24 @@ import { ORT_SESSION_OPTIONS, type WorkerInputTrace } from '../../../../../libs/
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
   shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS, buildMdenseOnEmbedder,
   embedExecutionTarget, MDENSEON_MODEL, MDENSEON_REVISION } from '@papercusp/memory';
-import { fingerprintFile, measurementPackageVersion } from './measurement-manifest';
+import { fingerprintFile, measurementPackageVersion, realDestination } from './measurement-manifest';
+
+/** A frozen source tree has no Git metadata. Qualify the benchmark's source
+ * layout rather than inheriting an unrelated ancestor checkout (e.g. home).
+ * Exported so launch recipes can reject bad paths before heavy admission. */
+export function nativeBenchmarkOutputPaths(outputFile: string, moduleUrl = import.meta.url): { repo: string; output: string } {
+  const sourceFiles = ['package.json', 'packages/operator-core/package.json',
+    'packages/operator-core/lib/memory/bench/candidate-embedders.ts',
+    'libs/generic/memory/src/local-embedder-worker.script.mjs'];
+  const hasSourceLayout = (root: string) => sourceFiles.every((file) => fs.existsSync(path.join(root, file)));
+  const sourceRoot = moduleRepoRoot(moduleUrl, hasSourceLayout);
+  if (!hasSourceLayout(sourceRoot)) throw new Error('native benchmark source layout not found');
+  const repo = fs.realpathSync(sourceRoot), output = realDestination(outputFile);
+  if (output === repo || output.startsWith(`${repo}${path.sep}`)) {
+    throw new Error('raw benchmark output must remain private outside source tree');
+  }
+  return { repo, output };
+}
 
 /** Independent pooling oracle for isolated qualification; production recipes
  * and profiles remain untouched. Padding must not contribute to the mean. */
@@ -174,9 +191,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
   }
   const device = process.env.PAPERCUSP_EMBED_DEVICE as 'cpu' | 'cuda';
   if (requested.device !== device) throw new Error('native boundary requested device mismatch');
-  const output = path.resolve(outputFile), repo = moduleRepoRoot(import.meta.url);
-  const parent = fs.realpathSync(path.dirname(output));
-  if (parent === repo || parent.startsWith(`${repo}${path.sep}`)) throw new Error('raw boundary output must stay private outside repository');
+  const { output, repo } = nativeBenchmarkOutputPaths(outputFile);
   const summaryPath = path.join(referenceDirectory, 'summary.json');
   if (!/^[a-f0-9]{64}$/.test(referenceSummarySha) || hash(summaryPath) !== referenceSummarySha) throw new Error('boundary reference summary SHA mismatch');
   const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
@@ -404,8 +419,7 @@ export async function qualifyIncumbentReferences(protocolFile: string, expectedS
   const protocol = JSON.parse(fs.readFileSync(protocolFile, 'utf8'));
   if (protocol.plan !== 'mdenseon-adoption-measurements-2026-10-01' || protocol.ownerId !== process.env.PAPERCUSP_SID) throw new Error('reference protocol owner/plan mismatch');
   if (embedRequestedExecution().device !== 'cpu') throw new Error('reference qualification requires explicit CPU; no fallback');
-  const output = path.resolve(outputFile), repo = moduleRepoRoot(import.meta.url);
-  if (output === repo || output.startsWith(`${repo}${path.sep}`)) throw new Error('raw reference vectors must remain private outside repository');
+  const { output, repo } = nativeBenchmarkOutputPaths(outputFile);
   const identities = ['gemma', 'harrier'].map((model) => {
     const arm = protocol.modelIdentities.find((a: any) => a.model === model);
     if (!arm || arm.profile.nativeDims !== (model === 'gemma' ? 768 : 1024)) throw new Error('reference native profile mismatch');

@@ -208,7 +208,7 @@ export function validateIndependentCohort(entries: FrozenEntry[], queries: Froze
 }
 
 /** Resolve through existing ancestors, including symlinks, before containment checks. */
-function realDestination(file: string): string {
+export function realDestination(file: string): string {
   const tail: string[] = []; let parent = path.resolve(file);
   while (!fs.existsSync(parent)) { tail.unshift(path.basename(parent)); const next = path.dirname(parent);
     if (next === parent) throw new Error('unresolvable output root'); parent = next; }

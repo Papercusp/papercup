@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ tokenizer: vi.fn(), model: vi.fn(), loadModel: vi.fn(), loadTokenizer: vi.fn() }));
@@ -12,7 +13,52 @@ vi.mock('@huggingface/transformers', () => ({
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
   validateNativeBoundaryRequest, nativeBoundaryPopulation, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
   type NativeBoundaryRequest, type NativeBoundaryRow, type NativeBoundaryBatchRow, type CandidateVectors } from './candidate-embedders';
+import { nativeBenchmarkOutputPaths } from './candidate-embedders';
+import { moduleRepoRoot } from '../../module-repo-root';
 import { incumbentReferenceFixture } from './fixtures/incumbent-reference';
+
+describe('native benchmark source and private output qualification', () => {
+  function withSourceTree(run: (root: string, tree: string, moduleUrl: string) => void) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-benchmark-root-'));
+    const tree = path.join(root, 'cache', 'runtime', 'tree');
+    try {
+      fs.mkdirSync(path.join(root, '.git'));
+      for (const file of ['package.json', 'packages/operator-core/package.json',
+        'packages/operator-core/lib/memory/bench/candidate-embedders.ts',
+        'libs/generic/memory/src/local-embedder-worker.script.mjs']) {
+        const target = path.join(tree, file); fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, file.endsWith('.json') ? '{}' : '// frozen source fixture');
+      }
+      run(root, tree, pathToFileURL(path.join(tree, 'packages/operator-core/lib/memory/bench/candidate-embedders.ts')).href);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+  it('qualifies a Git-free frozen source tree under an unrelated ancestor checkout', () => {
+    withSourceTree((root, tree, moduleUrl) => {
+      // Distinguishing control: the old checkout-only lookup inherits home.
+      expect(moduleRepoRoot(moduleUrl)).toBe(root);
+      const output = path.join(root, 'private', 'new-run', 'result.json');
+      expect(nativeBenchmarkOutputPaths(output, moduleUrl)).toEqual({ repo: fs.realpathSync(tree), output });
+      expect(fs.existsSync(path.dirname(output))).toBe(false); // preflight has no write side effects
+    });
+  });
+  it('rejects source-tree outputs and symlink destinations while accepting sibling prefixes', () => {
+    withSourceTree((root, tree, moduleUrl) => {
+      for (const output of [tree, path.join(tree, 'docs/evidence/raw.json')]) {
+        expect(() => nativeBenchmarkOutputPaths(output, moduleUrl)).toThrow('private outside source tree');
+      }
+      const alias = path.join(root, 'private-alias'); fs.symlinkSync(tree, alias, 'dir');
+      expect(() => nativeBenchmarkOutputPaths(path.join(alias, 'missing', 'raw.json'), moduleUrl)).toThrow('private outside source tree');
+      const output = path.join(`${tree}-private`, 'raw.json');
+      expect(nativeBenchmarkOutputPaths(output, moduleUrl).output).toBe(output);
+    });
+  });
+  it('fails preflight when the declared source layout is incomplete', () => {
+    withSourceTree((root, tree, moduleUrl) => {
+      fs.unlinkSync(path.join(tree, 'libs/generic/memory/src/local-embedder-worker.script.mjs'));
+      expect(() => nativeBenchmarkOutputPaths(path.join(root, 'private/raw.json'), moduleUrl)).toThrow('source layout not found');
+    });
+  });
+});
 
 describe('incumbent reference qualification', () => {
   it('resolves published locators locally and refuses machine-specific or escaping paths', () => {

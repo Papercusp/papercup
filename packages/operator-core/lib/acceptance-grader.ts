@@ -399,7 +399,13 @@ export type AcceptanceGraderTerminalFailureCode =
   /** A completed grading auditor turn explicitly says it could not reach platform tools. */
   | 'tool_surface_unavailable'
   /** A completed grading auditor turn explicitly declined to emit its audit. */
-  | 'grading_audit_refused';
+  | 'grading_audit_refused'
+  /**
+   * WI-10005295: the auditor finished a turn and then sat idle at its prompt past the
+   * reservation TTL while its card stayed pending, whatever the reason it stopped
+   * without emitting (misread target, tool error, unrecognised refusal wording).
+   */
+  | 'parked_without_emit';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -848,6 +854,40 @@ export function classifyAcceptanceGraderNoFirstTurnStall(
     staleAfterMs: number;
   },
 ): AcceptanceGraderTerminalFailure | null {
+  const quiet = measureAcceptanceGraderQuietWindow({ startedAt, logMtimeMs, nowMs, staleAfterMs });
+  if (!quiet) return null;
+
+  const normalized = normalizeAcceptanceGraderLog(rawLog);
+  if (!normalized.trim() || hasAcceptanceGraderFirstTurnProgress(normalized)) return null;
+
+  return {
+    code: 'startup_first_turn_stalled',
+    evidence:
+      `no first-turn progress; task age ${quiet.taskAgeMs}ms and ` +
+      `grading log quiet for ${quiet.quietMs}ms`,
+  };
+}
+
+interface AcceptanceGraderQuietWindowInput {
+  startedAt: string;
+  logMtimeMs: number | null;
+  nowMs: number;
+  staleAfterMs: number;
+}
+
+/**
+ * Both the task AND its log must be older than `staleAfterMs`, measured on sane clocks.
+ * A live judge keeps writing its log (Claude's spinner and Codex's `Working ·` status
+ * tick while a turn or a long tool call runs), so a quiet log is the precondition every
+ * TTL-bounded live-task classifier shares. Any unmeasurable input answers null, which
+ * keeps the task: missing evidence is never permission to kill.
+ */
+function measureAcceptanceGraderQuietWindow({
+  startedAt,
+  logMtimeMs,
+  nowMs,
+  staleAfterMs,
+}: AcceptanceGraderQuietWindowInput): { taskAgeMs: number; quietMs: number } | null {
   const startedAtMs = Date.parse(startedAt);
   const measuredLogMtimeMs =
     typeof logMtimeMs === 'number' && Number.isFinite(logMtimeMs) ? logMtimeMs : null;
@@ -865,15 +905,65 @@ export function classifyAcceptanceGraderNoFirstTurnStall(
   ) {
     return null;
   }
+  return {
+    taskAgeMs: Math.floor(nowMs - startedAtMs),
+    quietMs: Math.floor(nowMs - measuredLogMtimeMs),
+  };
+}
 
-  const normalized = normalizeAcceptanceGraderLog(rawLog);
-  if (!normalized.trim() || hasAcceptanceGraderFirstTurnProgress(normalized)) return null;
+/**
+ * Completed-turn markers of the two judge CLIs, matched on whitespace-stripped text
+ * because PTY redraws join and split words (WI-10003331). Claude ends a turn with
+ * `✻ <Verb> for <duration> · done`. Codex prints `Worked for <duration>` and flips its
+ * status bar to `Ready ·` (observed in task 0muqeanqadsbkcjglk2's log:
+ * `Worked for 20m 18s • 11:40 PMReady ·GPT-5.6-Sol high`).
+ */
+const COMPLETED_TURN_MARKERS: readonly RegExp[] = [
+  /✻[^●✻❯]{1,160}·done/gu,
+  /Workedfor\d+[hms][^●✻❯]{0,120}?Ready·/gu,
+];
+
+/** Turn activity that, AFTER the last completed-turn marker, means the judge resumed. */
+const RESUMED_TURN_ACTIVITY = /●|Working·|Working\(|Thinking·|Thinking\(|esctointerrupt/u;
+
+/**
+ * WI-10005295: a grading auditor that completed its turn and then sat idle at its prompt
+ * past `staleAfterMs`. Without this, a live-task guard keeps any such task "viable" and
+ * dedupes every later repair to it until a human kills it, whatever the reason the
+ * auditor stopped without emitting. The caller owns the "card still pending" premise:
+ * it only consults this for a pending audit's live task.
+ *
+ * Deliberately narrower than "idle": the latest turn-state in the log must be a
+ * completed-turn marker with no resumed activity after it, so a judge hung mid-turn
+ * (spinner frozen) or still inside a turn is not classified here.
+ */
+export function classifyAcceptanceGraderParkedWithoutEmit(
+  rawLog: string,
+  input: AcceptanceGraderQuietWindowInput,
+): AcceptanceGraderTerminalFailure | null {
+  const quiet = measureAcceptanceGraderQuietWindow(input);
+  if (!quiet) return null;
+
+  const compact = normalizeAcceptanceGraderLog(rawLog).replace(/\s+/g, '');
+  let markerStart = -1;
+  let markerEnd = -1;
+  for (const pattern of COMPLETED_TURN_MARKERS) {
+    for (const match of compact.matchAll(pattern)) {
+      const end = match.index + match[0].length;
+      if (end > markerEnd) {
+        markerStart = match.index;
+        markerEnd = end;
+      }
+    }
+  }
+  if (markerEnd < 0) return null;
+  if (RESUMED_TURN_ACTIVITY.test(compact.slice(markerEnd))) return null;
 
   return {
-    code: 'startup_first_turn_stalled',
+    code: 'parked_without_emit',
     evidence:
-      `no first-turn progress; task age ${Math.floor(nowMs - startedAtMs)}ms and ` +
-      `grading log quiet for ${Math.floor(nowMs - measuredLogMtimeMs)}ms`,
+      `completed its turn and parked without emitting; task age ${quiet.taskAgeMs}ms, ` +
+      `log quiet for ${quiet.quietMs}ms; last marker ${compact.slice(markerStart, markerEnd).slice(0, 120)}`,
   };
 }
 

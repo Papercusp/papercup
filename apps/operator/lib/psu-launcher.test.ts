@@ -713,14 +713,14 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     expect(tagged).toContain(row.nonce); // the typed envelope references the ledger row
   });
 
-  it("pins the launcher mirror to the canonical turn-provenance contract", () => {
+  it("pins the launcher mirror to the canonical turn-provenance contract", async () => {
     const sid = "su/kickoff .. id";
     const text = " Begin: advance this plan.\r\n";
     const nowMs = 1_760_000_000_000;
     const canonicalDir = mkdtempSync(join(tmpdir(), "kickoff-prov-ts-"));
     const mirrorDir = mkdtempSync(join(tmpdir(), "kickoff-prov-mjs-"));
     try {
-      const canonical = tagTurnForInjection({
+      const canonical = await tagTurnForInjection({
         sid,
         origin: "fleet-kickoff",
         text,
