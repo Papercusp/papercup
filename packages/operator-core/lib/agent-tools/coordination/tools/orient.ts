@@ -4049,7 +4049,7 @@ export default defineTool({
       try {
         const session = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
         if (session?.agent === 'codex') {
-          const [{ readCodexHomeDiagnostics }, { readCodexLockRuntimeVerdict }] = await Promise.all([
+          const [{ readCodexHomeDiagnostics }, { readCodexLockRuntimeVerdictAsync }] = await Promise.all([
             import('../../../role-codex-home'),
             import('../../../codex-lock-runtime'),
           ]);
@@ -4058,7 +4058,9 @@ export default defineTool({
             home.hooksExists &&
             home.diagnostics?.lockEnforcement === 'hooks-configured' &&
             (!home.diagnostics.lockOwnerSid || home.diagnostics.lockOwnerSid === ownerId);
-          codexLocks = readCodexLockRuntimeVerdict({ ownerId, hooksConfigured });
+          // Async: the markers sit in the contended locks-cache directory, and a
+          // sync read there parked the operator main thread for 10s (WI-10004754).
+          codexLocks = await readCodexLockRuntimeVerdictAsync({ ownerId, hooksConfigured });
         }
       } catch {
         /* fail-soft: prompt snapshot remains conservative/manual */

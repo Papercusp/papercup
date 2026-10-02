@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 940,
+  "count": 941,
   "tools": [
     {
       "name": "ablation:report",
@@ -4486,6 +4486,80 @@
         "when": "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
         "notWhen": "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config. Unsure your commit will be the EXACT judged candidate (a cron tick may race ahead) — omit candidateSha rather than bind to a sha that may never verdict; lineage-check with release:trace on wake.",
         "chaining": "checkpoint:await { candidateSha } → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail) for this pipeline/candidate; resume or go fix the red."
+      }
+    },
+    {
+      "name": "claims:retract",
+      "http": {
+        "path": "/api/agent-tools/claims/retract",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retract a carried claim by id (a checks[] row `id`, or `claim:<id>` in prose) with a reason — carry briefs then render it ⛔ RETRACTED instead of as a standing fact. Append-only; reinstate:true reverses it.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A claim you or a peer carried (a loop:checkpoint / work_items:checkpoint checks[] row with an id) turned out wrong. Retract it ONCE here instead of hand-writing \"retracted\" into titles/prose on each surface you remember — every surface you forget keeps serving the dead claim.",
+        "notWhen": "The claim is merely refined/updated — re-checkpoint the row with the same id. A row with no id has no identity to retract: re-checkpoint it WITH an id first.",
+        "chaining": "Give the check row an `id` at write time (checks: [{ id, claim, recheck }]); later claims:retract { claimId, because, supersededBy? }. Over-retracted? claims:retract { claimId, because, reinstate:true }."
       }
     },
     {

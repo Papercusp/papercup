@@ -290,8 +290,39 @@ forward_compat_review_warnings() {
     [ -n "$warning_line" ] && log "$warning_line"
   done <<< "$warning_report"
 
+  # An expiring sidecar is WORK, not news (WI-10005182). This alarm used to be
+  # only a one-shot `*` FYI broadcast: 987's warning went out ~26h before its
+  # reviewBy, nobody owned it, and the lapse froze :3170 fleet-wide exactly as
+  # 941's had (WI-10003591). File a claimable work-item that stays open until a
+  # sidecar is renewed. The broadcast is now only the fallback when filing
+  # fails, so delivery is never silently dropped.
   alert_status=failed
   if [ -f "$INTEGRATION_ROOT/scripts/mcp-call.mjs" ]; then
+    alert_body="$(PAPERCUSP_REVIEW_WARNING_REPORT="$warning_report" node -e '
+      const report = process.env.PAPERCUSP_REVIEW_WARNING_REPORT || "";
+      // One stable subject per (sidecar, reviewBy): the "is within N days" and
+      // "has passed" phrasings of the same expiry name the same work.
+      const due = [...report.matchAll(/(\S+?)\.sql\.forward-compat\.json reviewBy (\d{4}-\d{2}-\d{2})/g)]
+        .map((m) => `${m[1].replace(/^.*\//, "")} reviewBy ${m[2]}`);
+      const subjects = [...new Set(due)].sort().join(", ") || "see body";
+      process.stdout.write(JSON.stringify({
+        kind: "task",
+        title: `Renew or remove expiring migration forward-compat sidecar(s) before staging-sync freezes :3170: ${subjects}`,
+        body: `${report}\n\nAn expired reviewBy makes the staging-sync restart preflight fail closed, which keeps :3170 on its old build for every agent until the sidecar is fixed (WI-10003591, WI-10005182). If the sidecar requiresDeployedCommit is already in the deployed :3070 release, renew reviewBy; otherwise ship that commit first. Verify with: node scripts/check-migration-forward-compat.mjs`,
+      }));
+    ' 2>/dev/null || true)"
+    if [ -n "$alert_body" ] && (
+      cd "$INTEGRATION_ROOT" &&
+      timeout 30 node scripts/mcp-call.mjs work_items:create "$alert_body" \
+        --client system-staging-sync-review-alarm --harness papercusp --workspace papercusp-workspace >/dev/null
+    ); then
+      alert_status=sent
+      log "ALARM: filed a sidecar-renewal work-item for: $(printf '%s' "$alert_body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).title)}catch{}})' 2>/dev/null)"
+    else
+      log "ALARM: could not file the sidecar-renewal work-item; falling back to a workspace broadcast"
+    fi
+  fi
+  if [ "$alert_status" != sent ] && [ -f "$INTEGRATION_ROOT/scripts/mcp-call.mjs" ]; then
     alert_body="$(PAPERCUSP_REVIEW_WARNING_REPORT="$warning_report" node -e '
       const report = process.env.PAPERCUSP_REVIEW_WARNING_REPORT || "";
       process.stdout.write(JSON.stringify({
@@ -308,9 +339,9 @@ forward_compat_review_warnings() {
     ); then
       alert_status=sent
     else
-      log "ALARM DELIVERY FAILED: coord:send could not notify the Papercusp workspace; this condition will be retried tomorrow"
+      log "ALARM DELIVERY FAILED: neither work_items:create nor coord:send reached the Papercusp workspace; this condition will be retried tomorrow"
     fi
-  else
+  elif [ "$alert_status" != sent ]; then
     log "ALARM DELIVERY FAILED: scripts/mcp-call.mjs is unavailable; this condition will be retried tomorrow"
   fi
 

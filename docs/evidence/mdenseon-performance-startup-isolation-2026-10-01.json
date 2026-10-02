@@ -309,11 +309,43 @@
       "gitWorktreeCreated": false,
       "dependencyGeneration": "v1-52a79f5301b4f403217bb09495982ff83af0febceb76b238b24bbef01a184c8d",
       "dependencyMarkerSha256": "2943286afd69f2170b8de20059ec072460f38a5015d859889ac5be6167decacb",
-      "dependenciesMaterialized": false,
-      "completeExecutableRuntime": false
+      "dependenciesMaterialized": true,
+      "completeExecutableRuntime": true
+    },
+    "runtimeQualification": {
+      "status": "copied CPU runtime and actual fresh mDenseOn child verified",
+      "contentQualification": {
+        "path": "cache:validation/mdenseon-performance-WI10004539-20261001/runtime-source-v1/runtime-content-qualification.json",
+        "sha256": "5fdbe90f9acb1e3e0f6d3a62ff494acdef484e3f447f111fe965764e660709ff",
+        "sourceRecordsChecked": 31403,
+        "dependencyRecordsChecked": 241451,
+        "nodeVersion": "v25.9.0",
+        "nodeSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "nativeIdentity": "Copied ONNX and Rust tokenizer bindings were loaded; loaded disk libraries and the kernel virtual mapping were identified by content. This is CPU evidence."
+      },
+      "modelCacheIdentity": "Gemma was independently copied from the original cache. The original Harrier cache path was absent; an existing private desktop dependency copy matched every declared graph, external-weight, tokenizer and config fingerprint and was independently copied into the frozen loader's cache. No model was downloaded or changed.",
+      "freshChild": {
+        "taskId": "0muq8u3gm1on0cie18s",
+        "exitCode": 0,
+        "manifestSha256": "cd96bac8a64d76a0bfde9b1036f93c3fd4ea154007a0675d9a415502d97c0b3c",
+        "receipt": {
+          "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-runtime-probe-v1/performance-b0-mdenseon.json",
+          "sha256": "6c42042e8da99f0d2854cff3bc1a02123c976561abf9146194bb7028d52ae7c7",
+          "bytes": 19482
+        },
+        "samples": 12,
+        "device": "cpu",
+        "intraOpThreads": 4,
+        "interOpThreads": 1,
+        "workerFallback": false,
+        "artifactLockReleased": true,
+        "diagnosticOnly": true,
+        "fullPerformanceAcceptance": false
+      },
+      "preRunAudit": "Preflight native/config/model paths before expensive work; classify the kernel virtual mapping separately from disk files; preserve verified content phases; verify exact donor fingerprints and reuse completed copies; retain immutable failed-attempt logs."
     },
     "reuse": "Uses the existing manifest input/parameter fields, performance child admission, source materializer and immutable dependency-generation independent copier. No additional service, tool, table or runtime configuration surface is introduced.",
-    "next": "Finish independent dependency copying and content verification, qualify the copied worker/native/loader/node identity with a fresh child, then freeze a new matching-route manifest. Preserve the historical V5 receipts and changed-source identity separately.",
+    "next": "Freeze and run a new full matching-route manifest against the qualified private runtime and original request grid. Preserve the historical V5 receipts and changed-source identity separately.",
     "modelPerformanceAcceptance": false,
     "fixedThresholdsChanged": false,
     "modelAdoptionAuthorized": false

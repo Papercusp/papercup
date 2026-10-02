@@ -60,6 +60,10 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
     delegationOrganization: (organizationId) => ({
       organizationId,
       gcpTrustedPrincipal: async () => orgPrincipal(organizationId),
+      awsTrustedPrincipal: async () => ({
+        principalArn: `arn:aws:iam::999999999999:role/papercusp/orgs/pco-${organizationId}`,
+        externalIdRef: `resolver://aws-external-id/${organizationId}`,
+      }),
       gcpPapercuspHosting: async (hostId) => {
         reserved.push(hostId);
         return {
@@ -263,6 +267,9 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
         gcpPapercuspHosting: async () => {
           throw new Error('gcp_workspace_host_organization_identity_project_unconfigured');
         },
+        awsTrustedPrincipal: async () => {
+          throw new Error('aws_workspace_host_control_plane_account_unconfigured');
+        },
       }),
     });
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -389,6 +396,7 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
       gcpPapercuspHosting: async () => {
         throw error;
       },
+      awsTrustedPrincipal: async () => ({ principalArn: 'unused', externalIdRef: 'unused' }),
     });
     const lagging = harness({
       delegationOrganization: organization(new HostedGcpNotReadyError('policy_write_failed:400:Service account pco-x does not exist.')),

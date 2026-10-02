@@ -1297,9 +1297,9 @@ export async function getFeedbackCore(
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
       evidence: finalChosen.evidence,
-      // Stamp the answering identity the moment that session starts, not when
-      // the dispatcher returns: it can post during the verification wait, and
-      // the reply gate refuses an author the row does not name yet. The
+      // Stamp before a fork is launched: its first turn can reply while
+      // spawnHeadless is waiting for the kickoff receipt. Conversions retain
+      // their existing identity and stamp before verification; the
       // post-dispatch stamp below remains the backstop.
       onAnsweringOwner: (owner) =>
         stampAnsweringOwner(sql, req.workspaceId, opened.conversation_id, 0, owner),

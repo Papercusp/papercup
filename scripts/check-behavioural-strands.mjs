@@ -1009,6 +1009,20 @@ function callableIdentity(node, sourceFile, anonymousOrdinal) {
   return `<anonymous:${anonymousOrdinal}>`;
 }
 
+function callableScopeLabel(node) {
+  if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+    return `variable:${node.name.text}`;
+  }
+  if (ts.isPropertyAssignment(node)) {
+    const name = propertyNameText(node.name);
+    if (name) return `property:${name}`;
+  }
+  if ((ts.isClassDeclaration(node) || ts.isClassExpression(node)) && node.name) {
+    return `class:${node.name.text}`;
+  }
+  return null;
+}
+
 /**
  * Summarise each function that calls an injected collaborator. Nested functions are recorded
  * independently; a captured outer parameter is still a seam in the nested function, while
@@ -1026,6 +1040,7 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
     seamCallSites(text, fileName, source).map(({ start, end, seam }) => [`${start}:${end}`, seam]),
   );
   const functionStack = [];
+  const callableScope = [];
   const records = [];
   let anonymousOrdinal = 0;
   const visit = (node) => {
@@ -1036,14 +1051,23 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
       ts.isMethodDeclaration(node) ||
       ts.isConstructorDeclaration(node);
     if (isFunctionLike) {
+      const name = callableIdentity(node, source, anonymousOrdinal++);
       const record = {
-        function: callableIdentity(node, source, anonymousOrdinal++),
+        function: name,
+        // A display name alone is not unique: separate injected-search sources all
+        // have a `lexical` method. Include stable named containers so a harmless
+        // edit cannot compare one sibling's flow against another's.
+        identity: [...callableScope, `function:${name}`].join('/'),
         seams: [],
         controlFlow: [],
       };
       records.push(record);
       functionStack.push(record);
+      callableScope.push(`function:${name}`);
     }
+
+    const scopeLabel = isFunctionLike ? null : callableScopeLabel(node);
+    if (scopeLabel) callableScope.push(scopeLabel);
 
     const current = functionStack.at(-1);
     if (current) {
@@ -1056,7 +1080,9 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
     }
 
     ts.forEachChild(node, visit);
+    if (scopeLabel) callableScope.pop();
     if (isFunctionLike) functionStack.pop();
+    if (isFunctionLike) callableScope.pop();
   };
   ts.forEachChild(source, visit);
   return records.filter((record) => record.seams.length > 0);
@@ -1070,10 +1096,10 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
 export function changedSeamControlFlow(beforeText, afterText, fileName = 'file.ts') {
   const before = seamControlFlowRecords(beforeText, fileName);
   const after = seamControlFlowRecords(afterText, fileName);
-  const beforeByFunction = new Map(before.map((record) => [record.function, record]));
+  const beforeByFunction = new Map(before.map((record) => [record.identity, record]));
   const rows = [];
   for (const record of after) {
-    const prior = beforeByFunction.get(record.function);
+    const prior = beforeByFunction.get(record.identity);
     if (!prior || prior.controlFlow.join('\u0000') === record.controlFlow.join('\u0000')) continue;
     const beforeCounts = new Map();
     for (const seam of prior.seams) beforeCounts.set(seam, (beforeCounts.get(seam) ?? 0) + 1);

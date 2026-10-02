@@ -73,6 +73,32 @@ const HOSTED_OIDC = {
   subject: 'org:org-1',
 };
 
+/** A hosted customer-role connection as hosted-provider-delegation persists it (P-008). */
+function hostedCustomerRole(options: {
+  status?: 'pending' | 'verified' | 'revoked' | 'invalid';
+  provider?: 'aws' | 'gcp';
+  delegatedRoleArn?: string;
+} = {}): WorkspaceHostProviderConnection {
+  const base = connection(HOSTED_CUSTOMER_ROLE);
+  const provider = options.provider ?? 'aws';
+  return {
+    ...base,
+    provider: {
+      ...base.provider,
+      hostedDelegation: {
+        schemaVersion: 'hosted-provider-delegation-v1',
+        provider,
+        status: options.status ?? 'verified',
+        configuration: {
+          provider,
+          accountId: ACCOUNT,
+          source: { ...HOSTED_CUSTOMER_ROLE, roleArn: options.delegatedRoleArn ?? HOSTED_CUSTOMER_ROLE.roleArn },
+        },
+      },
+    },
+  } as WorkspaceHostProviderConnection;
+}
+
 function desired(): WorkspaceHostDesiredSpec {
   return {
     hostId: 'host-aws-configured-1',
@@ -169,14 +195,30 @@ describe('createConfiguredAwsWorkspaceHostProvider — composition', () => {
     );
   });
 
-  it('refuses a hosted customer-role source without an ExternalId resolver (D-001), and composes with one', () => {
-    expect(() => createConfiguredAwsWorkspaceHostProvider(connection(HOSTED_CUSTOMER_ROLE))).toThrow(
+  it('refuses a hosted customer-role source without an ExternalId resolver (D-001), and composes with one behind a verified delegation', () => {
+    expect(() => createConfiguredAwsWorkspaceHostProvider(hostedCustomerRole())).toThrow(
       'aws_workspace_host_external_id_resolver_required',
     );
-    const provider = createConfiguredAwsWorkspaceHostProvider(connection(HOSTED_CUSTOMER_ROLE), {
+    const provider = createConfiguredAwsWorkspaceHostProvider(hostedCustomerRole(), {
       resolveExternalId: async () => 'external-id-org-1',
     });
     expect(provider.target).toBe('aws');
+  });
+
+  it('P-008: a hosted customer role acts only through a VERIFIED delegation for that same role (revocation takes effect here)', () => {
+    const resolveExternalId = async () => 'external-id-org-1';
+    for (const status of ['pending', 'revoked', 'invalid'] as const) {
+      expect(() => createConfiguredAwsWorkspaceHostProvider(hostedCustomerRole({ status }), { resolveExternalId }))
+        .toThrow('aws_workspace_host_hosted_delegation_not_verified');
+    }
+    expect(() => createConfiguredAwsWorkspaceHostProvider(connection(HOSTED_CUSTOMER_ROLE), { resolveExternalId }))
+      .toThrow('aws_workspace_host_hosted_delegation_metadata_missing');
+    expect(() => createConfiguredAwsWorkspaceHostProvider(hostedCustomerRole({ provider: 'gcp' }), { resolveExternalId }))
+      .toThrow('aws_workspace_host_hosted_delegation_provider_mismatch');
+    expect(() => createConfiguredAwsWorkspaceHostProvider(
+      hostedCustomerRole({ delegatedRoleArn: `arn:aws:iam::${ACCOUNT}:role/PapercuspWorkspaceHost-other` }),
+      { resolveExternalId },
+    )).toThrow('aws_workspace_host_hosted_delegation_source_mismatch');
   });
 
   it('refuses a hosted OIDC source without a web-identity token source, and composes with one', () => {
@@ -263,6 +305,13 @@ describe('registerWorkspaceHostProviderFactories — the operator startup compos
     const provider = resolveWorkspaceHostProvider(connection());
     expect(provider).toBeInstanceOf(AwsWorkspaceHostProvider);
     expect(provider.target).toBe('aws');
+  });
+
+  it('P-008: the startup factory binds the organization ExternalId resolver, so a hosted customer role composes behind a verified delegation and refuses once revoked', () => {
+    registerWorkspaceHostProviderFactories({ resolveHostedGcpAuth: unusedHostedGcpAuth, obligationObservers: observersInto([]) });
+    expect(resolveWorkspaceHostProvider(hostedCustomerRole())).toBeInstanceOf(AwsWorkspaceHostProvider);
+    expect(() => resolveWorkspaceHostProvider(hostedCustomerRole({ status: 'revoked' })))
+      .toThrow('aws_workspace_host_hosted_delegation_not_verified');
   });
 
   it('AUTO-BAR-R-1-P-003: the registered aws factory drives the SDK-backed client — a create reaches EC2 as an SDK command and opens an obligation', async () => {

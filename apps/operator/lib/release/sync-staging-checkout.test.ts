@@ -40,7 +40,10 @@ import { createServer, connect, type Server, type Socket } from 'node:net';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // apps/operator/lib/release → apps/operator/bin/release/sync-staging-checkout.sh
-const SCRIPT_PATH = join(__dirname, '../../bin/release/sync-staging-checkout.sh');
+// Overridable so scripts/mutation-probe.sh can point this suite at a copy or a
+// historical snapshot without mutating the shared tree.
+const SCRIPT_PATH = process.env.SYNC_STAGING_SCRIPT_UNDER_TEST
+  ?? join(__dirname, '../../bin/release/sync-staging-checkout.sh');
 
 function runScriptArgs(
   args: string[],
@@ -300,7 +303,13 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
     expect(script).toContain('--sidecar-directory=$STAGING_ROOT/libs/papercusp/libs/db/sql');
   });
 
-  it('sends one workspace alarm for a stable warning set instead of repeating it every timer tick', () => {
+  /**
+   * Run forward_compat_review_warnings twice (two timer ticks) against a fake
+   * `node` that prints REVIEW_REPORT for the checker and records every
+   * mcp-call as `<tool>\t<json>`. FAIL_TOOL makes that one tool exit 5, the
+   * way mcp-call.mjs exits non-zero on a tool-level ok:false.
+   */
+  function runReviewAlarm(report: string, opts: { failTool?: string } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'staging-review-alarm-'));
     try {
       const bin = join(root, 'bin');
@@ -318,14 +327,14 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
         '  exit 0',
         'fi',
         'if [ "$1" = "scripts/mcp-call.mjs" ]; then',
-        '  printf "%s\\n" "$3" >> "$ALARM_TRACE"',
+        '  printf "%s\\t%s\\n" "$2" "$3" >> "$ALARM_TRACE"',
+        '  case " $FAIL_TOOL " in *" $2 "*) exit 5 ;; esac',
         '  exit 0',
         'fi',
         'exec "$REAL_NODE" "$@"',
         '',
       ].join('\n'), { mode: 0o700 });
 
-      const report = 'check-migration-forward-compat: WARNING 941-example.sql.forward-compat.json reviewBy 2026-10-28 is within 14 days';
       const r = runFn(['forward_compat_review_warnings'],
         'log() { printf "%s\\n" "$*"; }\nforward_compat_review_warnings\nforward_compat_review_warnings', {
           env: {
@@ -334,23 +343,68 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
             XDG_STATE_HOME: join(root, 'state'),
             REVIEW_REPORT: report,
             ALARM_TRACE: alarmTrace,
+            FAIL_TOOL: opts.failTool ?? '',
             REAL_NODE: process.execPath,
             PATH: `${bin}:${process.env.PATH}`,
           },
         });
-
-      expect(r.status).toBe(0);
-      const calls = readFileSync(alarmTrace, 'utf8').trim().split('\n');
-      expect(calls).toHaveLength(1);
-      const payload = JSON.parse(calls[0]);
-      expect(payload.to).toEqual(['*']);
-      expect(payload.expects).toBe('none');
-      expect(payload.summary).toMatch(/migration forward-compat reviews need attention/);
-      expect(payload.body[0].text).toMatch(/renew or remove each sidecar/i);
-      expect(r.stdout).toContain('ALARM: migration forward-compat sidecar review dates need attention');
+      const calls = readFileSync(alarmTrace, 'utf8').trim().split('\n').map((line) => {
+        const tab = line.indexOf('\t');
+        return { tool: line.slice(0, tab), payload: JSON.parse(line.slice(tab + 1)) };
+      });
+      return { r, calls };
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+
+  const withinReport = 'check-migration-forward-compat: WARNING: 941-example.sql.forward-compat.json reviewBy 2026-10-28 is within 14 days; renew or remove the sidecar before expiry.';
+  const passedReport = 'check-migration-forward-compat: WARNING: 941-example.sql.forward-compat.json reviewBy 2026-10-28 has passed; renew or remove the sidecar.';
+
+  it('files ONE claimable work-item for a stable warning set instead of an unowned broadcast (WI-10005182)', () => {
+    const { r, calls } = runReviewAlarm(withinReport);
+    expect(r.status).toBe(0);
+    // Two timer ticks, one filing: the state file de-duplicates the second tick.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].tool).toBe('work_items:create');
+    expect(calls[0].payload.kind).toBe('task');
+    expect(calls[0].payload.title).toContain('941-example reviewBy 2026-10-28');
+    expect(calls[0].payload.body).toContain(withinReport);
+    expect(calls[0].payload.body).toMatch(/requiresDeployedCommit/);
+    expect(r.stdout).toContain('ALARM: migration forward-compat sidecar review dates need attention');
+    expect(r.stdout).toContain('ALARM: filed a sidecar-renewal work-item');
+  });
+
+  it('names the same work for the "within N days" and "has passed" phrasings of one expiry', () => {
+    const before = runReviewAlarm(withinReport).calls[0].payload.title;
+    const after = runReviewAlarm(passedReport).calls[0].payload.title;
+    expect(after).toBe(before);
+  });
+
+  it('falls back to the workspace broadcast when the work-item cannot be filed, and still sends only once', () => {
+    const { r, calls } = runReviewAlarm(withinReport, { failTool: 'work_items:create' });
+    expect(r.status).toBe(0);
+    expect(calls.map((c) => c.tool)).toEqual(['work_items:create', 'coord:send']);
+    const broadcast = calls[1].payload;
+    expect(broadcast.to).toEqual(['*']);
+    expect(broadcast.expects).toBe('none');
+    expect(broadcast.summary).toMatch(/migration forward-compat reviews need attention/);
+    expect(broadcast.body[0].text).toMatch(/renew or remove each sidecar/i);
+    expect(r.stdout).toContain('falling back to a workspace broadcast');
+    expect(r.stdout).not.toContain('ALARM DELIVERY FAILED');
+  });
+
+  it('never reaches the broadcast when the work-item is filed', () => {
+    const { calls } = runReviewAlarm(withinReport, { failTool: 'coord:send' });
+    expect(calls.map((c) => c.tool)).toEqual(['work_items:create']);
+  });
+
+  it('reports a delivery failure when both routes fail, and does not retry on the same day', () => {
+    const { r, calls } = runReviewAlarm(withinReport, { failTool: 'work_items:create coord:send' });
+    expect(r.status).toBe(0);
+    // Tick 1 tries both routes; tick 2 (same UTC day, same warning set) is suppressed.
+    expect(calls.map((c) => c.tool)).toEqual(['work_items:create', 'coord:send']);
+    expect(r.stdout).toContain('ALARM DELIVERY FAILED: neither work_items:create nor coord:send');
   });
 });
 

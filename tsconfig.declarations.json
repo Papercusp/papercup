@@ -102,6 +102,10 @@
     // (D-004). Registered for the same reason as executed-source-map.mjs above: imported
     // directly by test-pass-reuse.test.ts.
     "scripts/lib/test-pass-reuse.mjs",
+    // gitnexus-selective-hardening-and-comparison-2026-09-13 P-008 — the pure snapshot-bound,
+    // source-corroborated graph-suggestion module behind the affected-test selector. Imported
+    // directly by affected-tests-graph-suggestions.test.ts.
+    "scripts/lib/graph-dependency-suggestions.mjs",
     // gate-test-reuse-yield-2026-10-01 P-007 (D-010) — per-table generated-schema drift. Imported
     // by test-pass-reuse.mjs and directly by schema-symbol-drift.test.ts.
     "scripts/lib/schema-symbol-drift.mjs",

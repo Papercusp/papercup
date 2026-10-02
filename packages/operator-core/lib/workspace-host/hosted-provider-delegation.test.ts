@@ -8,6 +8,7 @@ import {
   type HostedProviderDelegationRecord,
   type HostedProviderDelegationStore,
 } from './hosted-provider-delegation';
+import { organizationExternalId } from './hosted-aws-identity';
 
 const NOW = '2026-08-27T12:00:00.000Z';
 const TENANT = '11111111-1111-4111-8111-111111111111';
@@ -27,7 +28,14 @@ function organization(organizationId: string, principal: string): HostedDelegati
       reserved.push(hostId);
       return { projectId: HOSTING_PROJECT, serviceAccountEmail: principal.slice('serviceAccount:'.length) };
     },
+    awsTrustedPrincipal: async () => ({
+      principalArn: awsOrgPrincipal(organizationId),
+      externalIdRef: `resolver://aws-external-id/${organizationId}`,
+    }),
   };
+}
+function awsOrgPrincipal(organizationId: string): string {
+  return `arn:aws:iam::999999999999:role/papercusp/orgs/pco-${organizationId}`;
 }
 const ORGANIZATION = organization('org-a', ORG_PRINCIPAL);
 
@@ -257,6 +265,60 @@ describe('organization-bound delegations (D-397)', () => {
     expect(record.configuration.source).toMatchObject({ trustedPrincipal: ORG_PRINCIPAL });
     expect(JSON.stringify(template.document)).toContain(ORG_PRINCIPAL);
     expect(JSON.stringify(template.document)).not.toContain('attacker-chosen');
+  });
+
+  it("P-008: binds an AWS customer role to the organization's own role and ExternalId over whatever the caller sent", async () => {
+    const { store } = memoryStore();
+    const manager = new HostedProviderDelegationManager(store, adapters, ORGANIZATION, () => new Date(NOW));
+    const { record, template } = await manager.onboard({
+      ...common,
+      organizationId: 'org-victim',
+      configuration: {
+        provider: 'aws',
+        accountId: '123456789012',
+        source: {
+          environment: 'hosted',
+          method: 'customer-role',
+          roleArn: 'arn:aws:iam::123456789012:role/PapercuspWorkspaceHost-123456789012',
+          trustedPrincipalArn: 'arn:aws:iam::666666666666:role/attacker-chosen',
+          externalIdRef: 'resolver://aws-external-id/org-victim',
+        },
+      },
+    });
+    expect(record.organizationId).toBe('org-a');
+    expect(record.configuration.source).toMatchObject({
+      trustedPrincipalArn: awsOrgPrincipal('org-a'),
+      externalIdRef: 'resolver://aws-external-id/org-a',
+    });
+    const document = template.document as {
+      Parameters: { ExternalId: Record<string, unknown> };
+      Resources: Record<string, { Properties: { RoleName?: string } }>;
+    };
+    // The customer's stack is prefilled with the organization's ExternalId; it is not a secret (D-007).
+    expect(document.Parameters.ExternalId.Default).toBe(organizationExternalId('org-a'));
+    expect(document.Parameters.ExternalId).not.toHaveProperty('NoEcho');
+    expect(JSON.stringify(document)).toContain(awsOrgPrincipal('org-a'));
+    expect(JSON.stringify(document)).not.toContain('attacker-chosen');
+    expect(JSON.stringify(document)).not.toContain(organizationExternalId('org-victim'));
+    expect(Object.values(document.Resources).some((resource) => resource.Properties.RoleName === 'PapercuspWorkspaceHost-123456789012'))
+      .toBe(true);
+  });
+
+  it('P-008: refuses an AWS method no organization owns (hosted OIDC), before recording anything', async () => {
+    const { records, store } = memoryStore();
+    await expect(new HostedProviderDelegationManager(store, adapters, ORGANIZATION).onboard({
+      ...common,
+      configuration: {
+        provider: 'aws',
+        accountId: '123456789012',
+        source: {
+          environment: 'hosted', method: 'oidc', roleArn: 'arn:aws:iam::123456789012:role/PapercuspWorkspaceHost',
+          providerArn: 'arn:aws:iam::123456789012:oidc-provider/app.papercusp.com', issuer: 'https://app.papercusp.com/oidc',
+          audience: 'sts.amazonaws.com', subject: 'workspace:workspace-1',
+        },
+      } as never,
+    })).rejects.toThrow('hosted_provider_delegation_aws_method_not_organization_bound');
+    expect(records.size).toBe(0);
   });
 
   it("treats another organization's delegation as not found for every lifecycle verb", async () => {

@@ -194,9 +194,16 @@ export function buildTable(root: string, diskGb: number): CapacityRow[] {
     // A machine dir is any name gcp-rails can price (WI-10004380): a hand-kept family list here
     // silently dropped the t2d and c4a ramps from the table while gcp-rails already priced them.
     if (!existsSync(dir) || !isPricedMachineType(mt)) continue;
-    for (const log of readdirSync(dir).filter((n) => /^ramp-.+\.log$/.test(n))) {
-      const label = log.slice('ramp-'.length, -'.log'.length);
-      const steps = parseRampLog(readFileSync(path.join(dir, log), 'utf8'));
+    // A workload is the label on its RAMP_STEP_END lines, never the log's file name: a ramp extended
+    // by a continuation log (ramp-<label>-x.log, steps past the first list) must merge into the
+    // same row, and its runs are named p005-<label>-n<N> either way (WI-10004380). A log with no
+    // step verdict yet yields no row, rather than a "capacity 0, never saturated" one.
+    const allSteps = readdirSync(dir)
+      .filter((n) => /^ramp-.+\.log$/.test(n))
+      .sort()
+      .flatMap((log) => parseRampLog(readFileSync(path.join(dir, log), 'utf8')));
+    for (const label of [...new Set(allSteps.map((s) => s.label))]) {
+      const steps = allSteps.filter((s) => s.label === label).sort((a, b) => a.n - b.n);
       const probe = capacityRow(mt, label, steps, { capture: null, sessions: [] }, diskGb);
       const run = `p005-${label}-n${probe.capacity}`;
       const fp = path.join(dir, 'fp', `${run}.jsonl`);

@@ -1534,9 +1534,8 @@ export function makeConsultReachDispatcher(
   summary: string;
   body: string;
   evidence?: ConsultDispatchEvidenceRef[];
-  /** Persist the answering identity the moment the session starts — passed
-   *  straight through to `dispatchConsultResponder`, which calls it before the
-   *  verification wait so a fast first reply is not refused. */
+  /** Persist the answering identity before a fork is launched, or before a
+   *  conversion's verification wait, so the first reply is already authorized. */
   onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
 }) => Promise<{
   queued: number;

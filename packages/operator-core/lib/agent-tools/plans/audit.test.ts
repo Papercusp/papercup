@@ -39,6 +39,8 @@ vi.mock('../../plan-audits', async (orig) => {
   return {
     ...actual,
     getPlanItemStatuses: vi.fn(),
+    // The real helper reads harness_plans through getOrgPg (WI-10005174).
+    resolvePlanItemHomeHarness: vi.fn(),
     getEffectiveItemAudits: vi.fn(),
     getLatestActivationAudit: vi.fn(),
     repoCitationContextForHarness: vi.fn(),
@@ -85,6 +87,7 @@ import {
   recordCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
+  resolvePlanItemHomeHarness,
 } from '../../plan-audits';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
@@ -97,6 +100,7 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import tool from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
+const mockResolveHome = vi.mocked(resolvePlanItemHomeHarness);
 const mockPrevious = vi.mocked(getEffectiveItemAudits);
 const mockPreviousActivation = vi.mocked(getLatestActivationAudit);
 const mockContext = vi.mocked(repoCitationContextForHarness);
@@ -125,6 +129,7 @@ const body = async (items: Array<Record<string, unknown>>, over: Record<string, 
 beforeEach(() => {
   vi.clearAllMocks();
   mockItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' }]);
+  mockResolveHome.mockResolvedValue(null);
   mockSetSpecClause.mockResolvedValue({
     status: 'created',
     specId: 'AUTO-REQ-M-001-P-001',
@@ -310,6 +315,31 @@ describe('plans:audit D-008 writer contract', () => {
     expect(result.problems).toEqual(
       expect.arrayContaining([expect.objectContaining({ itemId: 'P-001', code: 'not_code_without_reason' })]),
     );
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  // WI-10005174: itemIds are validated against the items of the harness that OWNS the
+  // plan. A same-slug plan in another harness must not lend its item ids.
+  it('validates itemIds against the items of the resolved home harness only', async () => {
+    mockResolveHome.mockResolvedValue('email');
+    mockItems.mockImplementation(async (_slug, scope) =>
+      scope?.harnessSlug === 'email'
+        ? [{ itemId: 'P-001', status: 'done', itemText: 'email item' }]
+        : [
+            { itemId: 'P-001', status: 'done', itemText: 'email item' },
+            { itemId: 'P-009', status: 'done', itemText: 'other harness item' },
+          ],
+    );
+
+    const result = await body([
+      { itemId: 'P-009', verdict: 'not-code', citations: [], note: 'pure process item' },
+    ]);
+
+    expect(mockResolveHome).toHaveBeenCalledWith('plan-a', expect.anything());
+    expect(mockItems).toHaveBeenCalledWith('plan-a', { harnessSlug: 'email' });
+    // P-009 exists only in the other harness's same-slug plan, so it is unknown here.
+    expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+    expect(result.problems).toEqual([expect.objectContaining({ itemId: 'P-009', code: 'unknown_item' })]);
     expect(mockRecord).not.toHaveBeenCalled();
   });
 
@@ -878,10 +908,21 @@ describe('plans:audit phase:activation', () => {
     // filter. "Never called" was only ever a proxy for the invariant that MATTERS and is
     // asserted directly below: an activation audit's outcome does not depend on plan
     // items being readable. Read here, but only AFTER the audit is durably recorded.
-    expect(mockItems).toHaveBeenCalledWith('plan-a');
+    expect(mockItems).toHaveBeenCalledWith('plan-a', { harnessSlug: null });
     expect(mockRecordActivation.mock.invocationCallOrder[0]!).toBeLessThan(
       mockItems.mock.invocationCallOrder[0]!,
     );
+  });
+
+  // WI-10005174: the ctx harness is only a CANDIDATE; plan_items is keyed by the
+  // plan's own harness, so the derivation must read the RESOLVED home's items.
+  it('reads draft-derivation items from the home harness resolved for the plan', async () => {
+    mockResolveHome.mockResolvedValue('email');
+
+    await tool.handler(activationArgs() as never, ctx);
+
+    expect(mockResolveHome).toHaveBeenCalledWith('plan-a', expect.anything());
+    expect(mockItems).toHaveBeenCalledWith('plan-a', { harnessSlug: 'email' });
   });
 
   it('returns the side-effect-free plans:start consult preview after recording activation', async () => {

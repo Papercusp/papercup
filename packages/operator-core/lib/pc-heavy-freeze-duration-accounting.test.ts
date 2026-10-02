@@ -31,6 +31,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { pcHeavyFixtureOptions } from './testing/pc-heavy-fixture';
+
 // lib -> operator-core -> packages -> <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 // ⚠ Every reference to the subject MUST go through this constant — the mutation-probe
@@ -126,7 +128,7 @@ describe('pc-heavy PSI freeze accounting persists frozen wall-clock time (EI-219
     writeFileSync(psiOverrideFile, '10\n');
     const recordFile = recordFilePath();
 
-    const child = spawn('bash', [PC_HEAVY, 'sleep', '10'], { env: baseEnv() });
+    const child = spawn('bash', [PC_HEAVY, 'sleep', '10'], pcHeavyFixtureOptions(dir, baseEnv()));
     let exited = false;
     child.on('exit', () => {
       exited = true;
@@ -184,7 +186,7 @@ describe('pc-heavy PSI freeze accounting persists frozen wall-clock time (EI-219
     writeFileSync(psiOverrideFile, '0\n');
     const recordFile = recordFilePath();
 
-    const child = spawn('bash', [PC_HEAVY, 'sleep', '2'], { env: baseEnv() });
+    const child = spawn('bash', [PC_HEAVY, 'sleep', '2'], pcHeavyFixtureOptions(dir, baseEnv()));
     await new Promise((resolveExit) => child.on('exit', resolveExit));
 
     // A short-lived never-frozen child may exit before the PSI loop ever samples and writes a

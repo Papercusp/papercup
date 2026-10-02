@@ -15,6 +15,7 @@
 import { registerWorkspaceHostProviderFactory } from '@papercusp/deployment-driver';
 import { createConfiguredAwsWorkspaceHostProvider } from './aws-configured-provider';
 import { createConfiguredGcpWorkspaceHostProvider } from './gcp-provider';
+import { resolveOrganizationExternalIdRef } from './hosted-aws-identity';
 
 type GcpFactoryOptions = NonNullable<Parameters<typeof createConfiguredGcpWorkspaceHostProvider>[1]>;
 type AwsFactoryOptions = NonNullable<Parameters<typeof createConfiguredAwsWorkspaceHostProvider>[1]>;
@@ -44,11 +45,12 @@ export function registerWorkspaceHostProviderFactories(deps: WorkspaceHostProvid
       ...deps.obligationObservers('gcp'),
     }),
   );
-  // Hosted ExternalId / OIDC resolvers are not bound yet, so the AWS factory refuses a hosted
-  // connection with a named error at resolve time instead of failing mid-operation; local
-  // profile and assume-role credential sources compose.
+  // A hosted customer role resolves its ExternalId from the organization (P-008, D-007) and
+  // composes only behind a verified delegation; the hosted OIDC minter is not bound, so that
+  // method still refuses with a named error at resolve time instead of failing mid-operation.
   registerWorkspaceHostProviderFactory('aws', (connection) =>
     createConfiguredAwsWorkspaceHostProvider(connection, {
+      resolveExternalId: resolveOrganizationExternalIdRef,
       ...deps.awsTransport,
       ...deps.obligationObservers('aws'),
     }),

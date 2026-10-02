@@ -13,6 +13,7 @@ import { AWS_WORKSPACE_HOST_TARGET, type AwsWorkspaceHostCredentialSource } from
 import { AwsWorkspaceHostProvider } from './aws-provider';
 import { createAwsSdkWorkspaceHostClient, type AwsSdkWorkspaceHostClientOptions } from './aws-sdk-client';
 import type { WorkspaceHostResourceCreatedObserver, WorkspaceHostResourceDestroyedObserver } from './gcp-provider';
+import type { HostedProviderDelegationRecord } from './hosted-provider-delegation';
 
 export type ConfiguredAwsWorkspaceHostProviderOptions = Omit<AwsSdkWorkspaceHostClientOptions, 'connection'> & {
   onResourceCreated?: WorkspaceHostResourceCreatedObserver;
@@ -22,6 +23,27 @@ export type ConfiguredAwsWorkspaceHostProviderOptions = Omit<AwsSdkWorkspaceHost
 function credentialSourceOf(connection: WorkspaceHostProviderConnection): AwsWorkspaceHostCredentialSource | undefined {
   const source = connection.provider?.credentialSource;
   return source && typeof source === 'object' ? (source as AwsWorkspaceHostCredentialSource) : undefined;
+}
+
+/**
+ * A hosted customer role acts only through a VERIFIED delegation for that same role
+ * (aws-byoc-gcp-parity P-008, D-007). This is where a revocation takes effect: revoking flips the
+ * stored record off `verified`, so the next provider resolution for the connection refuses —
+ * the AWS twin of `gcp_workspace_host_hosted_delegation_not_verified` in hosted-gcp-auth.ts.
+ */
+function assertVerifiedHostedDelegation(connection: WorkspaceHostProviderConnection, roleArn: string): void {
+  const value = connection.provider?.hostedDelegation as Partial<HostedProviderDelegationRecord> | undefined;
+  if (!value || typeof value !== 'object' || value.schemaVersion !== 'hosted-provider-delegation-v1') {
+    throw new Error('aws_workspace_host_hosted_delegation_metadata_missing');
+  }
+  if (value.provider !== 'aws' || value.configuration?.provider !== 'aws') {
+    throw new Error('aws_workspace_host_hosted_delegation_provider_mismatch');
+  }
+  const delegated = value.configuration.source;
+  if (delegated.environment !== 'hosted' || delegated.method !== 'customer-role' || delegated.roleArn !== roleArn) {
+    throw new Error('aws_workspace_host_hosted_delegation_source_mismatch');
+  }
+  if (value.status !== 'verified') throw new Error('aws_workspace_host_hosted_delegation_not_verified');
 }
 
 /**
@@ -41,8 +63,9 @@ export function createConfiguredAwsWorkspaceHostProvider(
   }
   const source = credentialSourceOf(connection);
   if (!source) throw new Error('aws_workspace_host_credential_source_required');
-  if (source.environment === 'hosted' && source.method === 'customer-role' && !options.resolveExternalId) {
-    throw new Error('aws_workspace_host_external_id_resolver_required');
+  if (source.environment === 'hosted' && source.method === 'customer-role') {
+    if (!options.resolveExternalId) throw new Error('aws_workspace_host_external_id_resolver_required');
+    assertVerifiedHostedDelegation(connection, source.roleArn);
   }
   if (source.environment === 'hosted' && source.method === 'oidc' && !options.getWebIdentityToken) {
     throw new Error('aws_workspace_host_web_identity_token_source_required');

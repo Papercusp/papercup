@@ -174,7 +174,9 @@ export function verifyEdge(edge, { readSource }) {
 }
 
 /** Walk verified importers of `changed` files in `snapshot`. Never throws on bad data; the
- * only outputs are accepted importer files plus a full account of what was rejected. */
+ * only outputs are accepted importer files plus a full account of what was rejected.
+ * @param {{ changed: string[], snapshot: any, now: number, maxAgeMs?: number, readSource: (rel: string) => string | null }} args
+ */
 export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSource }) {
   if (!snapshot) return { status: "unavailable", suggestedFiles: [], accepted: [], rejected: [] };
   const generated = Date.parse(snapshot.generatedAt);
@@ -258,6 +260,7 @@ export function loadSnapshotFile(path, { readFile }) {
 /**
  * One-call integration seam for the selector: snapshot path in, workspace NAMES to add out.
  * `ownerOfPath(file)` maps a repo-relative file to the workspace names that own it.
+ * @param {{ changed: string[], snapshotPath: string, readFile: (p: string) => string, readSource: (rel: string) => string | null, ownerOfPath: (file: string) => string[], now: number, maxAgeMs?: number }} args
  */
 export function computeGraphSuggestions({ changed, snapshotPath, readFile, readSource, ownerOfPath, now, maxAgeMs }) {
   const loaded = loadSnapshotFile(snapshotPath, { readFile });

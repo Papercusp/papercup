@@ -38,6 +38,9 @@ import { operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { potSlugsForHarnesses } from '../memory/hive-scope';
 import { identityGrantToolFailure, resolveIdentityGrantEnvelope, type IdentityGrantFailure } from './blueprint-envelopes';
 import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
+import {
+  identityRefusalContract, renderRefusalContract, shortRevision, type RefusalObservation,
+} from './identity-refusal-contract';
 // The door's identity lives in a module with no imports, so the kernel resolver's
 // catch can reach it when THIS module is what failed to load. Importing the same
 // constants here keeps one source of truth rather than a second copy to drift.
@@ -501,15 +504,21 @@ function denial(
   classRef: string | null,
   toolName: string,
   policyRevision?: string | null,
+  observed?: RefusalObservation,
 ): KernelEnforcementResult {
+  // EI-23766133296678780: every denial carries what would lift it. The leading
+  // `Identity capability <class>: <cause> (<tool>)` is unchanged — the tool-error
+  // classifier keys on it — and the contract is appended after it.
+  const refusal = identityRefusalContract(cause, observed);
   const failure: IdentityGrantFailure = {
     code: 'capability_unsatisfied', cause, classRef, toolName,
     routes: ['operator-notify', 'suggest-provider', 'needs_human'],
+    refusal,
   };
   return {
     decision: 'deny', availability: 'available', applied: true,
     code: failure.code,
-    reason: `Identity capability ${classRef ?? '(unresolved)'}: ${cause} (${toolName})`,
+    reason: `Identity capability ${classRef ?? '(unresolved)'}: ${cause} (${toolName})${renderRefusalContract(refusal)}`,
     policyRevision,
     obligations: { capabilityUnsatisfied: failure },
   };
@@ -595,8 +604,29 @@ function staleArtifact(
   request: KernelEnforcementRequest,
   toolName: string = request.toolName,
   policyRevision?: string | null,
+  observed?: RefusalObservation,
 ): KernelEnforcementResult {
-  return denyUnlessRecoveryDoor(request, 'stale-artifact', null, toolName, policyRevision);
+  return denyUnlessRecoveryDoor(request, 'stale-artifact', null, toolName, policyRevision, observed);
+}
+
+/**
+ * The values a `stale-artifact` verdict compared, for its refusal contract: the
+ * applied/desired activation pair and the launch record's specification revision.
+ * `resolution` is the sub-reason `resolveIdentityArtifact` chose, or a site label
+ * where no resolution ran (no usable record, or an envelope that did not apply).
+ */
+function staleObservation(
+  state: IdentityGrantKernelState,
+  record: Record<string, unknown> | null,
+  resolution: string,
+): RefusalObservation {
+  const launch = typeof record?.specificationRevision === 'string' ? record.specificationRevision.slice(0, 8) : null;
+  return {
+    applied: shortRevision(state.activation?.applied ?? state.appliedRevision),
+    desired: shortRevision(state.activation?.desired),
+    launchSpec: launch,
+    resolution,
+  };
 }
 
 /**
@@ -623,6 +653,7 @@ function denyUnlessRecoveryDoor(
   classRef: string | null,
   toolName: string = request.toolName,
   policyRevision?: string | null,
+  observed?: RefusalObservation,
 ): KernelEnforcementResult {
   // Both the request's own name and the resolved MCP name are checked, and each
   // through the shared predicate — so the door opens whether the verb is named
@@ -645,7 +676,7 @@ function denyUnlessRecoveryDoor(
       ...(policyRevision !== undefined && policyRevision !== null ? { policyRevision } : {}),
     };
   }
-  return denial(cause, classRef, toolName, policyRevision);
+  return denial(cause, classRef, toolName, policyRevision, observed);
 }
 
 /**
@@ -729,7 +760,9 @@ export async function checkIdentityGrantKernel(
         request, 'no-launch-record', null, request.toolName, state.policyRevision,
       );
     }
-    return applied ? staleArtifact(request) : null;
+    return applied
+      ? staleArtifact(request, request.toolName, undefined, staleObservation(state, null, 'no-launch-record-body'))
+      : null;
   }
   // The decision itself lives in `resolveIdentityArtifact` (above) so the
   // WI-10002060 sweep can ask the same question instead of paraphrasing it.
@@ -748,14 +781,20 @@ export async function checkIdentityGrantKernel(
     const full = object(loaded?.record);
     // The row vanished or stopped being an object between the two reads:
     // exactly the "no usable record" outcome the header path would have given.
-    if (!full) return applied ? staleArtifact(request) : null;
+    if (!full) {
+      return applied
+        ? staleArtifact(request, request.toolName, undefined, staleObservation(state, null, 'launch-record-unreadable'))
+        : null;
+    }
     record = full;
     version = version && loaded?.rowVersion
       ? { sessionId: version.sessionId, rowVersion: loaded.rowVersion }
       : undefined;
   }
   resolution ??= resolveIdentityArtifactForKernel(record, applied, version);
-  if (resolution.kind === 'stale-artifact') return staleArtifact(request);
+  if (resolution.kind === 'stale-artifact') {
+    return staleArtifact(request, request.toolName, undefined, staleObservation(state, record, resolution.reason));
+  }
   if (resolution.kind === 'ungoverned') {
     // D-007: no live session carries configuration.grants, so without this
     // every identity-bearing invocation would persist with no row reference and
@@ -813,7 +852,11 @@ export async function checkIdentityGrantKernel(
     const envelope = resolveIdentityGrantEnvelope({
       specification, appliedSpecificationRevision: specification.specificationRevision, ...policy,
     });
-    if (!envelope.applied) return staleArtifact(request, toolName, policy.policyRevision);
+    if (!envelope.applied) {
+      return staleArtifact(
+        request, toolName, policy.policyRevision, staleObservation(state, record, 'envelope-not-applied'),
+      );
+    }
     const failure = envelope.failures[0];
     // The runtime-chosen cause: `IdentityGrantFailure['cause']` spans both
     // break-glass causes, so this site can emit one. It must consult the

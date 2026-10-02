@@ -258,6 +258,22 @@ describe('the trigger: a seam gained call sites', () => {
     expect(changedSeamControlFlow(CONTROL_FLOW_BEFORE, after, 'probe.ts')).toEqual([]);
   });
 
+  it('does not compare same-named methods from different owners after an unrelated line insertion', () => {
+    const before = `
+      const firstSource = {
+        lexical(input, probe: Probe) {
+          if (input.ready) return probe();
+          return undefined;
+        },
+      };
+      const secondSource = {
+        lexical(input, probe: Probe) { return probe(); },
+      };
+    `;
+    const after = `// unrelated import inserted above\n${before}`;
+    expect(changedSeamControlFlow(before, after, 'sources.ts')).toEqual([]);
+  });
+
   it('ignores a Promise executor callback when its control flow changes', () => {
     const before = `export function finish(run) { return new Promise((resolve) => { resolve(); }); }`;
     const after = `export function finish(run) { return new Promise((resolve) => { if (run) resolve(); }); }`;

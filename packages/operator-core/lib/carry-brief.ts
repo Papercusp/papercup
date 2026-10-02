@@ -1430,6 +1430,41 @@ async function bestEffort<T>(read: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
+/** Upper bound on distinct claim ids resolved per brief — one indexed lookup, never a scan. */
+export const MAX_CLAIM_IDS_PER_BRIEF = 200;
+
+/**
+ * EI-23765337478012299: every claim id the brief is about to render — check-row ids on
+ * the loop note and on each held item's checkpoint, plus `claim:<id>` mentions in that
+ * prose. PURE. Ids are normalized + de-duplicated, in first-seen order.
+ */
+export function collectClaimIds(brief: Pick<CarryBrief, 'loop' | 'checks' | 'heldItems'>): string[] {
+  const ids = new Set<string>();
+  const add = (raw: unknown): void => {
+    const id = normalizeClaimId(raw);
+    if (id) ids.add(id);
+  };
+  for (const c of brief.checks ?? []) add(c.id);
+  for (const id of extractClaimMentions(brief.loop?.carryNote)) ids.add(id);
+  for (const h of brief.heldItems ?? []) {
+    if (!h.checkpoint) continue;
+    for (const c of splitCarryNoteChecks(h.checkpoint).checks) add(c.id);
+    for (const id of extractClaimMentions(h.checkpoint)) ids.add(id);
+  }
+  return [...ids].slice(0, MAX_CLAIM_IDS_PER_BRIEF);
+}
+
+/** The `⛔ RETRACTED CLAIMS` section — a retraction recorded once by claim id, shown
+ *  wherever the brief carries that claim. PURE. Empty input renders nothing. */
+export function renderRetractedClaimsSection(retracted: readonly ClaimStanding[] | undefined): string[] {
+  if (!retracted || retracted.length === 0) return [];
+  return [
+    `⛔ RETRACTED CLAIMS — retracted by claim id (claims:retract). Treat each as FALSE wherever it is cited below — in checks, checkpoints or prose:\n${retracted
+      .map((s) => `  • [#${s.claimId}] ${renderRetractedMarker(s)}`)
+      .join('\n')}`,
+  ];
+}
+
 type CarryLoopRead = Pick<CarryBrief, 'loop' | 'walls'> & Partial<Pick<CarryBrief, 'checks'>>;
 
 /**
@@ -1693,6 +1728,26 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
   if (neverDropFacts !== undefined) brief.neverDropFacts = neverDropFacts;
   brief.awaits = awaits;
   brief.fleet = fleet;
+
+  // EI-23765337478012299: resolve the CURRENT standing of every claim id this brief
+  // carries, so a retraction recorded once (claims:retract) reaches every surface that
+  // renders the claim. Best-effort like every other leg: a failed read leaves the field
+  // absent (never a false all-clear).
+  const claimIds = collectClaimIds(brief);
+  if (claimIds.length > 0) {
+    const retractedClaims = await bestEffort(
+      async () => {
+        const standings = await readClaimStandings(
+          claimIds,
+          { workspaceId: concreteWorkspaceId ?? workspaceId },
+          opts.sql,
+        );
+        return [...standings.values()].filter(isRetracted);
+      },
+      [] as ClaimStanding[],
+    );
+    if (retractedClaims.length > 0) brief.retractedClaims = retractedClaims;
+  }
 
   return brief;
 }
@@ -2074,6 +2129,8 @@ export function renderCarryBriefColdExtras(
       );
     }
   }
+  sections.push(...renderRetractedClaimsSection(brief.retractedClaims));
+  const retractedById = new Map((brief.retractedClaims ?? []).map((s) => [s.claimId, s] as const));
   if (brief.checks && brief.checks.length > 0) {
     // P-001 delivery parity: same double-delivery rationale as walls — a carried
     // claim whose probe dissolves in a capped note is the phantom-re-anchor shape.
@@ -2094,7 +2151,11 @@ export function renderCarryBriefColdExtras(
         : '';
     sections.push(
       `🧪 CARRIED CHECKS (this LOOP's) — claims + their probes (✓ verified w/ evidence · ? PREDICTED — run the re-check before relying; clear via loop:checkpoint { checks }):\n${brief.checks
-        .map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`)
+        .map((c) => {
+          const line = `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`;
+          const retracted = retractedById.get(normalizeClaimId(c.id) ?? '');
+          return retracted ? `${line}\n      ↳ ${renderRetractedMarker(retracted)}` : line;
+        })
         .join('\n')}${alsoOnItems}`,
     );
   }

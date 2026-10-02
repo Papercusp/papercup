@@ -47,6 +47,29 @@ describe('capacity-table', () => {
     expect(c4a?.usdPerHour).toBeCloseTo(hourlyPriceUsd('c4a-standard-16', 120), 9);
   });
 
+  it('merges a continuation ramp log into its workload row by step label, not file name, and measures at the merged capacity', () => {
+    vm('t2d-standard-16', 'mixed-normal', [end('mixed-normal', 48, 'OK'), end('mixed-normal', 64, 'OK')]);
+    const dir = path.join(root, 't2d-standard-16');
+    writeFileSync(
+      path.join(dir, 'ramp-mixed-normal-x.log'),
+      ['RAMP_PREFLIGHT_OK ignored', end('mixed-normal', 128, 'OK'), end('mixed-normal', 160, 'SATURATED reason=failed=3')].join('\n') + '\n',
+    );
+    const run = 'p005-mixed-normal-n128';
+    writeFileSync(path.join(dir, 'fp', `${run}.jsonl`), capture(8, 1280));
+    mkdirSync(path.join(dir, 'runs', run), { recursive: true });
+    writeFileSync(path.join(dir, 'runs', run, 'agents.jsonl'), JSON.stringify({ memPeakBytes: 1024 * MiB, cpuUsec: 1 }) + '\n');
+    // A continuation that never ran (its marker has no step verdict) adds no row.
+    vm('c4a-standard-16', 'mixed-normal', [end('mixed-normal', 48, 'OK'), end('mixed-normal', 64, 'SATURATED reason=oom_kill=1')]);
+    writeFileSync(path.join(root, 'c4a-standard-16', 'ramp-mixed-normal-x.log'), 'EXT_SKIPPED_SATURATED\n');
+
+    const rows = buildTable(root, 120);
+    expect(rows.map((r) => `${r.machineType}/${r.label}`).sort()).toEqual(['c4a-standard-16/mixed-normal', 't2d-standard-16/mixed-normal']);
+    const t2d = rows.find((r) => r.machineType === 't2d-standard-16');
+    expect(t2d).toMatchObject({ capacity: 128, censored: false, saturatedAt: { n: 160, reason: 'failed=3' } });
+    expect(t2d?.coresPerAgent).toBeCloseTo(8 / 128, 9); // measured at the merged capacity step
+    expect(rows.find((r) => r.machineType === 'c4a-standard-16')).toMatchObject({ capacity: 48, saturatedAt: { n: 64, reason: 'oom_kill=1' } });
+  });
+
   it('reports the share of tool-diverged replays at the capacity step, so a capacity resting on unfaithful replays is visible', () => {
     vm('e2-standard-8', 'mixed-normal', [end('mixed-normal', 4, 'OK'), end('mixed-normal', 8, 'SATURATED reason=wallSlowdown=1.90')], {
       n: 4,

@@ -79,7 +79,7 @@ describe('graph-dependency-suggestions — pure module', () => {
     );
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
-      expect(parsed.snapshot.edges).toHaveLength(1);
+      expect(parsed.snapshot?.edges).toHaveLength(1);
       expect(parsed.droppedMalformed).toBe(3);
     }
   });
