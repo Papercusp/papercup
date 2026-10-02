@@ -363,10 +363,10 @@ describe('goals:start — the happy path', () => {
   });
 
   it('returns in-progress for a duplicate while the first request is still spawning', async () => {
-    let finishSpawn: ((result: SpawnConsoleResult) => void) | null = null;
+    const finishSpawn: { resolve?: (result: SpawnConsoleResult) => void } = {};
     spawnConsoleMock.mockImplementationOnce(() =>
       new Promise((resolve) => {
-        finishSpawn = resolve;
+        finishSpawn.resolve = resolve;
       }),
     );
     const firstPromise = call({ requestKey: 'composer-request-3' });
@@ -377,8 +377,8 @@ describe('goals:start — the happy path', () => {
     expect(textOf(duplicate)).toContain('already in progress');
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
 
-    if (!finishSpawn) throw new Error('spawn resolver was not installed before the duplicate check');
-    finishSpawn(okSpawn());
+    if (!finishSpawn.resolve) throw new Error('spawn resolver was not installed before the duplicate check');
+    finishSpawn.resolve(okSpawn());
     expect(isError(await firstPromise)).toBe(false);
   });
 
@@ -949,6 +949,8 @@ describe('the kickoff brief', () => {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
       budgetWindowSec: null,
     },
     tripwires: [],

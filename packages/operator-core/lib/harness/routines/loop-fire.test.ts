@@ -603,7 +603,7 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       warn.mockRestore();
     });
 
-    it('an active blocking await → fire WITHHELD, no wake, nothing recorded (silent, benign skip)', async () => {
+    it('an active blocking await → fire WITHHELD, no wake, no fire recorded, withhold stamped', async () => {
       const deps = mkDeps({
         listBlockingAwaits: vi.fn(async () => [
           { eventKey: 'work-item:claimable', expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(), createdAt: new Date().toISOString() },
@@ -616,6 +616,32 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(deps.wake).not.toHaveBeenCalled();
       // Matches the fire-gate pattern: a deliberate, expected skip is not fire-history noise.
       expect(deps.recordFire).not.toHaveBeenCalled();
+      // WI-10005352: …but it IS stamped to last_withheld_*, so the stalled-loops guard's
+      // withheld-fire veto sees it. Without this stamp the guard read every suppressed fire
+      // as turnless and disarmed a session correctly parked on its await.
+      expect(deps.recordWithheld).toHaveBeenCalledTimes(1);
+      expect(deps.recordWithheld).toHaveBeenCalledWith(
+        'papercusp',
+        'loop-su-pinned',
+        'await-blocking',
+        expect.stringContaining('work-item:claimable'),
+      );
+    });
+
+    it('a failed re-arm that fails open delivers the wake and stamps NO withhold (WI-10005352)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          { eventKey: 'work-item:claimable', expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(), createdAt: new Date().toISOString() },
+        ]) as never,
+        rescheduleSuppressedWake: vi.fn(async () => false) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      // The wake was delivered, so a withhold stamp would wrongly veto a genuinely stalled loop.
+      expect(deps.recordWithheld).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
 
     it('no blocking awaits → fires normally (today’s behavior, unchanged)', async () => {

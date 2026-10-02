@@ -73,6 +73,8 @@ function portfolio(): GoalPortfolioBrief {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
       budgetWindowSec: 604_800,
     },
     tripwires: [],

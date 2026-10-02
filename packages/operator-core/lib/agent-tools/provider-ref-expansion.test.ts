@@ -162,14 +162,32 @@ describe('post-provider $ref survival (WI-10002405 / M-019)', () => {
         return;
       }
 
-      const baseline = await countTokens(null);
       const LOW = 2;
       const HIGH = 8;
 
-      const refLow = (await countTokens(toolFor(referencedSchema(LOW)))) - baseline;
-      const refHigh = (await countTokens(toolFor(referencedSchema(HIGH)))) - baseline;
-      const inlLow = (await countTokens(toolFor(inlinedSchema(LOW)))) - baseline;
-      const inlHigh = (await countTokens(toolFor(inlinedSchema(HIGH)))) - baseline;
+      // The beforeAll probe only proves the gateway answered ONCE. A transient
+      // upstream failure (e.g. a 502 "fetch failed") on any of the five
+      // measurement calls below is the same "could not measure" condition, so it
+      // gets the same LOUD skip — never a red leg, and never a vacuous pass:
+      // only GatewayUnreachable is converted, and every assertion still runs on
+      // a complete measurement set (WI-10005367).
+      let measured: { refLow: number; refHigh: number; inlLow: number; inlHigh: number };
+      try {
+        const baseline = await countTokens(null);
+        measured = {
+          refLow: (await countTokens(toolFor(referencedSchema(LOW)))) - baseline,
+          refHigh: (await countTokens(toolFor(referencedSchema(HIGH)))) - baseline,
+          inlLow: (await countTokens(toolFor(inlinedSchema(LOW)))) - baseline,
+          inlHigh: (await countTokens(toolFor(inlinedSchema(HIGH)))) - baseline,
+        };
+      } catch (err) {
+        if (!(err instanceof GatewayUnreachable)) throw err;
+        ctx.skip(
+          `inference gateway :${GATEWAY_PORT} failed mid-measurement — could not measure. ${err.message}`,
+        );
+        return;
+      }
+      const { refLow, refHigh, inlLow, inlHigh } = measured;
 
       const dN = HIGH - LOW;
       const refSlope = (refHigh - refLow) / dN;

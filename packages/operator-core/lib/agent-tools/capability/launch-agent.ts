@@ -422,7 +422,7 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. For an ordinary in-place `resume`, send `{ resume, brief }` and normally omit fresh-context `account`/`model` overrides; omitted values preserve the target's profile. `carry` is rejected for in-place resume/fork. Use `successor` for a fresh context retaining the predecessor identity when you need explicit `account`/`model`/`carry` settings. Explicit account/model resume overrides are supported when intentional, subject to saved fleet profile checks. Fresh plan-bound and per-member-with-briefs launches may omit `brief`. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
+    "Launch an ad-hoc agent, resume, or fork. `resume`/`fork` require a non-empty top-level `brief`; fresh plan-bound or successor launches may omit it. A spawn is not proof of registration, a first turn, or a work claim—read launch verification.",
   guidance: {
     when: 'AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.',
     notWhen:

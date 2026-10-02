@@ -1455,6 +1455,8 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       spentCentsAt: '2026-08-28T02:00:00Z',
       // The ordinary case: a rollup-written figure, so it carries the marker.
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
     },
     ceilings: { maxAgents: 12, maxPerFleet: 5 },
     headcount: { total: 3, fleet: 2 },
@@ -1602,7 +1604,9 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       },
       reporting: { draft: { fields: {
         moved: expect.stringContaining('no previous report watermark'),
-        cost: expect.stringContaining('coverage=measured'),
+        cost: expect.stringContaining(
+          'coverage=measured; source=goal-lineage-rollup; measured at=2026-08-28T02:00:00Z; read at=2026-08-28T02:30:00.000Z',
+        ),
         ownerWalled: expect.stringContaining('WI-43: provide billing access'),
         killed: 'none evidenced in the current portfolio',
       } } },
@@ -1615,6 +1619,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       'Triage 1 blocked/cursed queue item(s) and remove stranded blockers.',
       'Grade or route 2 pending Blender idea(s).',
     ]);
+    expect(brief?.reporting?.draft.fields.cost).not.toContain('unmeasured');
     expect(goalHoldersMock).toHaveBeenCalledWith(expect.anything(), {
       workspaceId: WS,
       goalId: 'goal-1',
@@ -1663,18 +1668,25 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
     expect(absent).toContain('Budget: spent=unknownc /');
     const kickoffEvidenceMarker = rendered.indexOf('GOAL KICKOFF EVIDENCE — REQUIRED BEFORE ANY PORTFOLIO MUTATION');
-    const ownerReportInstruction = rendered.indexOf(
-      `In the current GOAL window, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} on the goal's terms; ` +
-        'then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) that names the exact goal id "goal-1".',
+    const kickoffReadInstruction = rendered.indexOf(
+      `Before any portfolio mutation, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} against goal "goal-1" and use those current reads to choose this pass’s actions.`,
     );
-    const kickoffCompletionInstruction = rendered.indexOf(
-      'Only after those reads and the owner-facing report may you create, launch, or place portfolio work.',
+    const actionPrioritiesMarker = rendered.indexOf('CURRENT ACTION PRIORITIES');
+    const postActionReportMarker = rendered.indexOf('POST-ACTION OWNER REPORT — REQUIRED AFTER THE PASS ACTIONS');
+    const ownerReportRefreshInstruction = rendered.indexOf(
+      'After all selected actions have returned, fetch goals:get again for exact goal id "goal-1". Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.',
     );
     const mandatoryPlacementMarker = rendered.indexOf('MANDATORY NEXT PLAN PLACEMENT');
     expect(kickoffEvidenceMarker).toBeGreaterThanOrEqual(0);
-    expect(ownerReportInstruction).toBeGreaterThan(kickoffEvidenceMarker);
-    expect(kickoffCompletionInstruction).toBeGreaterThan(ownerReportInstruction);
-    expect(mandatoryPlacementMarker).toBeGreaterThan(kickoffCompletionInstruction);
+    expect(kickoffReadInstruction).toBeGreaterThan(kickoffEvidenceMarker);
+    expect(mandatoryPlacementMarker).toBeGreaterThan(kickoffReadInstruction);
+    expect(actionPrioritiesMarker).toBeGreaterThan(mandatoryPlacementMarker);
+    expect(postActionReportMarker).toBeGreaterThan(actionPrioritiesMarker);
+    expect(ownerReportRefreshInstruction).toBeGreaterThan(postActionReportMarker);
+    expect(rendered).toContain('OWNER REPORT DRAFT — provisional snapshot');
+    expect(rendered).toContain('only actions with a successful result already returned');
+    expect(rendered).toContain('every goal-scoped work item that reached a terminal state after the previous report watermark');
+    expect(rendered).toContain('When refreshed evidence says coverage=measured, do not describe spend as unmeasured');
     expect(rendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
     expect(rendered).toContain(
       'Use fleet:launch-on-plan with this plan/leader identity: {"name":"papercusp-alpha-plan-fleet","plan":"alpha","harness":"papercusp","leader":"spawn","headless":true}.',

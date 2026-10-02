@@ -1527,7 +1527,7 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
       ? [
           `Owner report cadence: ${brief.reporting.cadence?.obligation ?? 'unknown'}; due=${brief.reporting.cadence?.dueAt ?? 'unknown'}.`,
           `Owner report evidence: movement-truncated=${brief.reporting.movementTruncated}; killed-truncated=${brief.reporting.killedTruncated}; unread terminal artifacts=${brief.reporting.draft.unreadArtifacts.join(', ') || 'none'}.`,
-          'OWNER REPORT DRAFT — read each named terminal artifact before claiming its completion; then report the four fields on an owner-facing rail:',
+          'OWNER REPORT DRAFT — provisional snapshot, not a send-ready report; read each named terminal artifact after its recorded update, then refresh after this pass’s actions before sending:',
           brief.reporting.draft.text,
         ]
       : ['Owner report evidence unavailable; re-read the canonical goal portfolio before reporting.']),
@@ -1536,8 +1536,8 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
       : []),
     ...(brief.degradedReasons.length ? [`DEGRADED — ${brief.degradedReasons.join('; ')}`] : []),
     'GOAL KICKOFF EVIDENCE — REQUIRED BEFORE ANY PORTFOLIO MUTATION',
-    `In the current GOAL window, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} on the goal's terms; then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) that names the exact goal id "${brief.goal.id}".`,
-    'Only after those reads and the owner-facing report may you create, launch, or place portfolio work.',
+    `Before any portfolio mutation, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} against goal "${brief.goal.id}" and use those current reads to choose this pass’s actions.`,
+    'This portfolio snapshot and its owner-report draft predate this pass’s actions; do not send them as the final report.',
     ...(mandatoryPlacement && mandatoryToolCall
       ? [
           'MANDATORY NEXT PLAN PLACEMENT',
@@ -1550,6 +1550,12 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
       : []),
     'CURRENT ACTION PRIORITIES',
     priorities,
+    'POST-ACTION OWNER REPORT — REQUIRED AFTER THE PASS ACTIONS',
+    `After all selected actions have returned, fetch goals:get again for exact goal id "${brief.goal.id}". Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.`,
+    'MOVED must include only actions with a successful result already returned, plus every goal-scoped work item that reached a terminal state after the previous report watermark. Do not report planned, queued, admission-pending, refused, or not-yet-run actions as moved.',
+    'Read every named terminal artifact after its recorded update. If movement or killed evidence is truncated, degraded, or still unread, finish the missing reads or state the exact coverage gap.',
+    'COST comes from the refreshed canonical spend evidence: preserve its figure, coverage, source, measured-at timestamp, and assembled/read-at timestamp. When refreshed evidence says coverage=measured, do not describe spend as unmeasured; when it is unknown or unmeasured, preserve that uncertainty and never infer zero.',
+    `Only after that final refresh, send MOVED / COST / OWNER-WALLED / KILLED to ["human"] with coord:send or use coord:escalate, naming exact goal id "${brief.goal.id}".`,
     'This snapshot is orientation, not write authority: refresh the targeted canonical read immediately before each mutation.',
   ].join('\n');
 }
@@ -2126,6 +2132,7 @@ export async function readGoalPortfolioBrief(args: {
         budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
         source: launch.budget?.spentCentsSource ?? null,
         coverage: operatingInputs.spendCoverage,
+        measuredAt: launch.budget?.spentCentsAt ?? null,
         unmeasuredPricedSpend: launch.budget?.unmeasuredPricedSpend ?? false,
       },
       ownerWalls,
@@ -2220,6 +2227,8 @@ export async function readGoalPortfolioBrief(args: {
         unmeasuredPricedSpend: launch.budget?.unmeasuredPricedSpend ?? false,
         spentCentsAt: launch.budget?.spentCentsAt ?? null,
         spentCentsSource: launch.budget?.spentCentsSource ?? null,
+        interactiveUsageFreshnessStatus: launch.budget?.interactiveUsageFreshnessStatus ?? null,
+        interactiveUsageLastIngestedAtMs: launch.budget?.interactiveUsageLastIngestedAtMs ?? null,
         budgetWindowSec: launch.goalBrief.budgetWindowSec,
       },
       tripwires,
@@ -2287,6 +2296,8 @@ export async function readGoalPortfolioBrief(args: {
         unmeasuredPricedSpend: launch.budget?.unmeasuredPricedSpend ?? false,
         spentCentsAt: launch.budget?.spentCentsAt ?? null,
         spentCentsSource: launch.budget?.spentCentsSource ?? null,
+        interactiveUsageFreshnessStatus: launch.budget?.interactiveUsageFreshnessStatus ?? null,
+        interactiveUsageLastIngestedAtMs: launch.budget?.interactiveUsageLastIngestedAtMs ?? null,
         budgetWindowSec: launch.goalBrief.budgetWindowSec,
       },
       tripwires: [],

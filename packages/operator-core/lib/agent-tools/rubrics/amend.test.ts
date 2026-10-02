@@ -187,6 +187,33 @@ describe('rubrics:amend complete acceptance criteria input', () => {
 
     rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(new Error('unexpected database failure'));
     await expect(body({ rubricRef: 'acceptance-example', dryRun: true })).rejects.toThrow('unexpected database failure');
+
+    rubricsMocks.amendRubric.mockRejectedValueOnce(new Error('unexpected apply failure'));
+    await expect(body({
+      rubricRef: 'acceptance-example',
+      idempotencyKey: 'unrelated-apply-error',
+      criteria: [criterion],
+    })).rejects.toThrow('unexpected apply failure');
+  });
+
+  it('returns missing outside-lineage approval as a structured refusal instead of a tool error', async () => {
+    const error = new Error(
+      'acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON',
+    );
+    rubricsMocks.amendRubric.mockRejectedValueOnce(error);
+
+    const result = await body({
+      rubricRef: 'acceptance-example',
+      idempotencyKey: 'missing-approval-apply',
+      criteria: [criterion],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'acceptance_bar_approval_required',
+      error: error.message,
+      next: expect.stringContaining("reviewPreviewPost:'thread-post:<preview-id>'"),
+    });
   });
 
   it('accepts a full criterion set with structured checks', () => {

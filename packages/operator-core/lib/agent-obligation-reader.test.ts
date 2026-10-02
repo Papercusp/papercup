@@ -56,6 +56,8 @@ function portfolio(assembledAt = NOW.toISOString()): GoalPortfolioBrief {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
       budgetWindowSec: null,
     },
     tripwires: [],

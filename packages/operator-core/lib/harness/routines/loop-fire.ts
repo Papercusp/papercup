@@ -1206,13 +1206,17 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
         }
       }
       if (!rearmFailed) {
-        return {
-          fired: false,
-          reason: 'await-blocking',
-          detail:
-            `owner is parked on a blocking await (${decision.drivingEventKey ?? blockingAwaits[0]?.eventKey}) — ` +
-            `wake withheld until ${decision.resumeAtMs != null ? new Date(decision.resumeAtMs).toISOString() : 'it fires'}`,
-        };
+        const detail =
+          `owner is parked on a blocking await (${decision.drivingEventKey ?? blockingAwaits[0]?.eventKey}) — ` +
+          `wake withheld until ${decision.resumeAtMs != null ? new Date(decision.resumeAtMs).toISOString() : 'it fires'}`;
+        // WI-10005352: stamp the deliberate withhold exactly like the fire-gate branch does.
+        // claimDueRoutine already advanced routines.last_fired_at for this tick, so without a
+        // last_withheld_at >= last_fired_at the stalled-loops guard reads this by-design
+        // silent fire as a turnless one and, after enough of them, DISARMS a session that is
+        // correctly parked on its await (2026-10-02 01:25-02:07Z, su-ce50c06d). Only the
+        // separate last_withheld_* columns are written — never the backoff clock.
+        await recordWithheld(input.installSlug, input.routineName, 'await-blocking', detail).catch(() => {});
+        return { fired: false, reason: 'await-blocking', detail };
       }
     }
   }

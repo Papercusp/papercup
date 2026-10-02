@@ -25,7 +25,8 @@ function portfolio(populated = false, ready = true): GoalPortfolioBrief {
     queue: { total: 0, terminal: 0, inFlight: 0, blocked: 0, needsHuman: 0, claimable: 0, claimabilityScope: 'none' },
     launch: { settings: null, ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null } },
     budget: { budgetCents: null, spentCents: null, unmeasuredPricedSpend: false, spentCentsAt: null,
-      spentCentsSource: null, budgetWindowSec: null },
+      spentCentsSource: null, interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null, budgetWindowSec: null },
     tripwires: [], pending: { blenderIdeas: 0, acceptanceRubric: null },
     continuity: { checkpoint: null, lastOwnerReportAt: null }, priorities: [], degradedReasons: [],
   };

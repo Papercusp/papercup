@@ -212,7 +212,8 @@ function effectPortfolio(minute: number, workItemId: string | null = 'WI-member'
     queue: { total: 1, terminal: 0, inFlight: 1, blocked: 0, needsHuman: 0, claimable: 0, claimabilityScope: 'issue-family' },
     launch: { settings: null, ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 2, fleet: null } },
     budget: { budgetCents: null, spentCents: null, unmeasuredPricedSpend: false, spentCentsAt: null,
-      spentCentsSource: null, budgetWindowSec: null }, tripwires: [], pending: { blenderIdeas: 0, acceptanceRubric: null },
+      spentCentsSource: null, interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null, budgetWindowSec: null }, tripwires: [], pending: { blenderIdeas: 0, acceptanceRubric: null },
     continuity: { checkpoint: null, lastOwnerReportAt: null }, priorities: [], degradedReasons: [],
   };
 }

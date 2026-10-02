@@ -1312,6 +1312,8 @@ const GOAL_PORTFOLIO: GoalPortfolioBrief = {
     unmeasuredPricedSpend: false,
     spentCentsAt: null,
     spentCentsSource: null,
+    interactiveUsageFreshnessStatus: null,
+    interactiveUsageLastIngestedAtMs: null,
     budgetWindowSec: null,
   },
   tripwires: [],

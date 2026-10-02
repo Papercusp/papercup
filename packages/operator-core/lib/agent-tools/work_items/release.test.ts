@@ -521,10 +521,13 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     expect(b.results[0]).not.toHaveProperty('claimHold');
   });
 
-  it('claimHold:true releases AND applies a DURABLE park (parkedBy provenance, NOT a held_open lease), surfacing it in the result', async () => {
+  it('claimHold:true releases without a broad claimable wake before applying a DURABLE park', async () => {
     const b = await body({ id: 'WI-1', claimHold: true, reason: 'umbrella item' });
     expect(releaseM).toHaveBeenCalledWith('WI-1', {
       harness: undefined,
+      // releaseWorkItem emits from the pre-hold snapshot; the handler must keep the
+      // parked item out of the broad claimable pool wake.
+      announceClaimable: false,
       expectedAssignee: 'me',
       releasingOwnerId: 'me',
       onPriorState: expect.any(Function),

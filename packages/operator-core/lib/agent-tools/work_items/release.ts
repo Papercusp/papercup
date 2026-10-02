@@ -573,6 +573,11 @@ export default defineTool({
         // by someone else" — re-read to tell them apart and report an honest error.
         const workItem = await releaseWorkItem(it.id, {
           harness,
+          // The durable claim hold is applied after releaseWorkItem returns. Suppress its
+          // broad pool announcement here so the pre-hold snapshot cannot advertise work
+          // that this same release is about to park. The targeted claim:released:<id> event
+          // remains available to agents already waiting on this exact item.
+          ...(claimHold === true ? { announceClaimable: false } : {}),
           // Every cross-holder force is authorized against one exact pre-read holder.
           // Preserve that holder as the mutation CAS so a successor claim that races
           // the authorization can never be cleared.

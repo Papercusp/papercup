@@ -87,6 +87,8 @@ export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementPr
       unmeasuredPricedSpend: false,
       spentCentsAt: NOW,
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
     },
     refusal: null, degraded: false, degradedReasons: [],
   };
