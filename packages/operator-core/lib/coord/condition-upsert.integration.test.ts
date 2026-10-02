@@ -165,10 +165,9 @@ beforeAll(async () => {
   // The event tables come from the shared, audited event-substrate list (WI-10004700).
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'condition-upsert.integration',
+    // findConditionObjects LEFT JOINs the event_awaits_effective view (710); the
+    // substrate list carries it now (WI-10005224), so it is not repeated here.
     extra: [
-      // findConditionObjects LEFT JOINs event_awaits_effective (checkpoint-await lease
-      // extension); without the view the query throws and the read degrades to no-object.
-      '710-event-awaits-effective-deadline-view.sql',
       '741-work-items-condition-key-singleton.sql',
       '777-work-items-embedding-recipe-discriminator.sql',
       '1110-work-items-admission-flags-generated-columns.sql',

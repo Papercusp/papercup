@@ -73,19 +73,27 @@ export interface NativeBoundaryRow {
   id: string; inputIds: number[]; referenceInputIds: number[]; vector: number[]; referenceVector: number[];
   execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
 }
+export interface NativeBoundaryBatchRow {
+  id: string; submittedCaseIds: string[]; actualInferenceBatchSize: number; vectors: number[][];
+  execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
+}
 
 export function nativeBoundaryPopulation(request: NativeBoundaryRequest, selectedCell?: string) {
   validateNativeBoundaryRequest(request);
   const population = [...request.cases.map((c) => `single-${c.id}`), ...request.batches.map((b) => b.id)];
-  if (!selectedCell) return { cases: request.cases, diagnosticOnly: false, notChecked: [] as string[] };
+  if (!selectedCell) return { cases: request.cases, batches: request.batches, diagnosticOnly: false, notChecked: [] as string[] };
   const item = request.cases.find((c) => `single-${c.id}` === selectedCell);
-  if (!item) throw new Error('native diagnostic requires one declared single-input cell');
-  return { cases: [item], diagnosticOnly: true, notChecked: population.filter((id) => id !== selectedCell) };
+  const batch = request.batches.find((b) => b.id === selectedCell);
+  if (!item && !batch) throw new Error('native diagnostic requires one declared single-input cell or request group');
+  const cases = item ? [item] : request.cases.filter((c) => batch!.caseIds.includes(c.id));
+  const checked = new Set([selectedCell, ...cases.map((c) => `single-${c.id}`)]);
+  return { cases, batches: batch ? [batch] : [], diagnosticOnly: true, notChecked: population.filter((id) => !checked.has(id)) };
 }
 
 /** Recompute fixed gates and stable all-input rankings from the retained raw
  * arrays. A measured loss is an outcome; a missing/fallback row is not proof. */
-export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: NativeBoundaryRow[], device: 'cpu' | 'cuda', selectedCell?: string) {
+export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: NativeBoundaryRow[], device: 'cpu' | 'cuda', selectedCell?: string,
+  batchRows: NativeBoundaryBatchRow[] = []) {
   const selected = nativeBoundaryPopulation(request, selectedCell);
   if (JSON.stringify(rows.map((r) => r.id)) !== JSON.stringify(selected.cases.map((c) => c.id))) throw new Error('native boundary incomplete population');
   const comparisons = rows.map((row, i) => {
@@ -105,8 +113,29 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
   const actualRankings = ranks(rows.map((r) => r.vector)), referenceRankings = ranks(rows.map((r) => r.referenceVector));
   const rankingsEqual = selected.diagnosticOnly ? null : JSON.stringify(actualRankings) === JSON.stringify(referenceRankings);
   const vectorCompatible = comparisons.every((c) => c.passed && c.tokenIdsEqual);
+  if ((batchRows.length || (selectedCell && selected.batches.length))
+    && JSON.stringify(batchRows.map((b) => b.id)) !== JSON.stringify(selected.batches.map((b) => b.id))) {
+    throw new Error('native boundary incomplete request-group population');
+  }
+  const batchComparisons = batchRows.map((batch, index) => {
+    const declared = selected.batches[index];
+    if (JSON.stringify(batch.submittedCaseIds) !== JSON.stringify(declared.caseIds)
+      || batch.actualInferenceBatchSize !== 1 || batch.vectors.length !== declared.caseIds.length
+      || !batch.execution.verified || batch.execution.device !== device || !batch.worker.alive || batch.worker.disabled) {
+      throw new Error('native boundary request-group identity or worker mismatch');
+    }
+    const cases = batch.vectors.map((vector, i) => {
+      const single = rows.find((r) => r.id === declared.caseIds[i])!;
+      return { id: single.id, single: referenceVectorComparison(vector, single.vector, 768),
+        reference: referenceVectorComparison(vector, single.referenceVector, 768) };
+    });
+    return { id: batch.id, cases, passed: cases.every((c) => c.single.passed && c.reference.passed) };
+  });
+  const batchPopulationCompatible = batchRows.length === selected.batches.length && batchComparisons.every((b) => b.passed);
   return { comparisons, actualRankings, referenceRankings, rankingsEqual, diagnosticOnly: selected.diagnosticOnly,
-    notCheckedCells: selected.notChecked, diagnosticCompatible: selected.diagnosticOnly && vectorCompatible,
+    notCheckedCells: [...selected.notChecked, ...selected.batches.filter((b) => !batchRows.some((r) => r.id === b.id)).map((b) => b.id)],
+    batchComparisons, batchPopulationCompatible,
+    diagnosticCompatible: selected.diagnosticOnly && vectorCompatible && batchPopulationCompatible,
     passedFixedVectorGates: comparisons.every((c) => c.passed), tokenIdsEqual: comparisons.every((c) => c.tokenIdsEqual),
     singlePopulationCompatible: !selected.diagnosticOnly && rankingsEqual === true && vectorCompatible };
 }
@@ -171,7 +200,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
     tokenIdsProof: 'qualification-process Rust tokenizer; worker uses the same pinned recipe',
     actualWorkerTokenTrace: 'not-exposed-by-shipped-worker' };
   fs.writeFileSync(`${output}.request.json`, JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
-  const rows: NativeBoundaryRow[] = [], batches: unknown[] = [];
+  const rows: NativeBoundaryRow[] = [], batches: NativeBoundaryBatchRow[] = [];
   let activeCell = 'tokenizer-load';
   try {
     const { Tokenizer } = await import('tokenizers');
@@ -187,7 +216,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       console.log('native boundary cell', activeCell, inputIds.length, row.execution.device);
       if (!row.execution.verified || row.execution.device !== device || !row.worker.alive || row.worker.disabled) throw new Error('native boundary device fallback');
     }
-    for (const batch of selected.diagnosticOnly ? [] : request.batches) {
+    for (const batch of selected.batches) {
       activeCell = batch.id;
       // This is the same Promise.all of single-text calls as the HTTP sidecar,
       // not proof of a padded ONNX input tensor. Python retains that separate proof.
@@ -204,7 +233,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       fs.writeFileSync(`${output}.${batch.id}.json`, JSON.stringify({ ...identity, ...result }), { flag: 'wx', mode: 0o600 });
       console.log('native boundary request group', batch.id, 'single-text worker', result.passed);
     }
-    const measured = summarizeNativeBoundaries(request, rows, device, selectedCell);
+    const measured = summarizeNativeBoundaries(request, rows, device, selectedCell, batches);
     fs.writeFileSync(output, JSON.stringify({ ...identity, ...measured, batches, notChecked: ['native worker compute-kernel profile', 'native worker input tensor trace',
       'native padded/mixed ONNX tensors: worker accepts one text per call'] }), { flag: 'wx', mode: 0o600 });
   } catch (error) {

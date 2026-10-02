@@ -517,9 +517,14 @@ export type WorkspaceHostBootstrapPhase =
  *
  * - `gce-guest-attributes`: PUT to the GCE metadata server's guest attributes, which the
  *   controller reads through `compute.instances.getGuestAttributes`.
+ * - `ec2-console-output`: one marker line written to `/dev/console`, which EC2 captures as the
+ *   instance's serial console output; the controller reads it through `ec2:GetConsoleOutput` and
+ *   takes the LAST marker line ({@link parseEc2ConsoleBootstrapStatus}). EC2 has no guest-writable
+ *   metadata store, and the console is the one channel already granted for host-key pinning.
  */
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS = [
   'gce-guest-attributes',
+  'ec2-console-output',
 ] as const;
 export type WorkspaceHostBootstrapStatusChannel =
   (typeof WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS)[number];
@@ -528,6 +533,14 @@ export type WorkspaceHostBootstrapStatusChannel =
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE =
   'papercusp';
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY = 'bootstrap';
+
+/**
+ * The token that opens every `ec2-console-output` report line: `<marker> <report>`. The console
+ * also carries kernel, cloud-init and journal output, so the marker is what tells a report apart
+ * from anything else that happens to print the word `failed`.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER =
+  'PAPERCUSP_BOOTSTRAP_STATUS';
 
 /** The longest die() message a report carries; the serial console has the full log. */
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS = 300;
@@ -560,6 +573,28 @@ export function parseWorkspaceHostBootstrapReportedStatus(
     phase: match[2] || null,
     error: match[3] || null,
   };
+}
+
+/**
+ * Read the bootstrap's status from an EC2 instance's console output (the `ec2-console-output`
+ * channel). The LAST marker line wins, because every run opens with `running` and a later run's
+ * report supersedes an earlier one's. Serial consoles end lines with `\r\n` and may interleave
+ * kernel output before the marker, so the marker is found anywhere in the line and carriage
+ * returns are dropped. A last marker whose report does not parse yields null (keep waiting) —
+ * never an older report, which would resurrect a superseded outcome.
+ */
+export function parseEc2ConsoleBootstrapStatus(
+  consoleText: string,
+): WorkspaceHostBootstrapReportedStatus | null {
+  const token = `${WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER} `;
+  const lines = consoleText.split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].replace(/\r/g, '');
+    const at = line.lastIndexOf(token);
+    if (at < 0) continue;
+    return parseWorkspaceHostBootstrapReportedStatus(line.slice(at + token.length));
+  }
+  return null;
 }
 
 /**
@@ -2203,11 +2238,16 @@ function statusReportLines(
   const url =
     'http://169.254.169.254/computeMetadata/v1/instance/guest-attributes/' +
     `${WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE}/${WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY}`;
+  // The console report is ONE line: a die message with a newline would otherwise split the
+  // report and the parser would read only its head.
   const deliver =
     channel === 'gce-guest-attributes'
       ? 'report_status() { curl --silent --max-time 5 --output /dev/null --request PUT ' +
         `--header "Metadata-Flavor: Google" --data-binary "$1" ${shellQuote(url)} || true; }`
-      : 'report_status() { :; }';
+      : channel === 'ec2-console-output'
+        ? `report_status() { printf '%s %s\\n' ${WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER} ` +
+          `"\${1//[$'\\r\\n']/ }" > /dev/console 2>/dev/null || true; }`
+        : 'report_status() { :; }';
   return [
     'BOOTSTRAP_PHASE=""',
     'BOOTSTRAP_ERROR=""',

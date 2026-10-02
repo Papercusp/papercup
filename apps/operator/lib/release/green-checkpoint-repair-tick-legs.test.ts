@@ -379,7 +379,11 @@ describe("augmentWithRepairTickLegs", () => {
     const result = await augmentWithRepairTickLegs(holdResult(), { runRepairTickLegs, log });
     // A failing TEST FILE is the fixer's subject, not a cheap leg, so the asked-for set is
     // exactly the registry — this hold's queue holds `a/one.test.ts` and nothing re-runnable.
-    expect(runRepairTickLegs).toHaveBeenCalledWith(HEAD, Object.keys(NON_TEST_GATE_SCRIPTS));
+    // WI-10004340: the frozen queue's clock rides along, so a guard leg measured on the
+    // hold tick judges sidecar reviewBy as of the freeze, not the wall clock.
+    expect(runRepairTickLegs).toHaveBeenCalledWith(HEAD, Object.keys(NON_TEST_GATE_SCRIPTS), {
+      frozenCandidateOpenedAtMs: 1_000,
+    });
     expect(result.repairTickLegs).toEqual(measured);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("FAILING lint:tsc"));
   });

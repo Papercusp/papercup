@@ -82,14 +82,21 @@ describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () =>
   });
 
   it('bounds every gate-candidate probe and degrades a failed probe to null candidates', async () => {
-    childProcessMocks.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'timed out' });
+    childProcessMocks.execFile.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+        cb(Object.assign(new Error('timed out'), { code: 1 }), '', 'timed out');
+      },
+    );
 
     await expect(realResolveGateCandidates('/repo')).resolves.toEqual({
       judgingSha: null,
       nextCandidateSha: null,
     });
-    expect(childProcessMocks.spawnSync).toHaveBeenCalled();
-    for (const call of childProcessMocks.spawnSync.mock.calls) {
+    // WI-10005261: the probes run through async execFile; spawnSync here blocked the
+    // operator main thread (98.6% of a measured sentinel stall).
+    expect(childProcessMocks.spawnSync).not.toHaveBeenCalled();
+    expect(childProcessMocks.execFile).toHaveBeenCalled();
+    for (const call of childProcessMocks.execFile.mock.calls) {
       expect(call[2]).toEqual(
         expect.objectContaining({
           timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,

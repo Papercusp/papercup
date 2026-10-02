@@ -82,6 +82,7 @@ import {
 import { buildKey } from '../events/await/catalog';
 import type { EmitAwaitedEventOpts } from '../events/await/engine';
 import type { GateOwnershipAssessment } from '../coord/gate-ownership';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -3554,9 +3555,11 @@ export async function checkStrandedRepairQueue(
       ? await releaseFixerSpawnAlive(sql as never, queue.fixerSpawnId).catch(() => null)
       : null;
     const diag = diagnoseFrozenCandidateRepairQueue(queue, { nowMs: now, fixerAlive });
-    const gateOwnership = diag
-      ? await readGateOwnership({ harness: installSlug }).then((ownership) => ownership.assessment).catch(() => null)
+    const ownershipRead = diag
+      ? await readGateOwnership({ harness: installSlug }).catch(() => null)
       : null;
+    const gateOwnership = ownershipRead?.assessment ?? null;
+    const gateHolderSessionState = ownershipRead?.holderSessionState ?? null;
     const verdict = evaluateStrandedRepairQueue(
       diag
         ? {
@@ -3568,6 +3571,7 @@ export async function checkStrandedRepairQueue(
             fixerSpawnId: diag.fixerSpawnId,
             fixerAlive: diag.fixerAlive,
             gateOwnership,
+            gateHolderSessionState,
             decision: diag.decision,
             manifest: diag.manifestSummary,
           }

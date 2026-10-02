@@ -14,11 +14,24 @@ vi.mock('@dbos-inc/dbos-sdk', () => ({
 
 import { WORKSPACE_HOST_SPOT_RECLAIM_CRONTAB, WORKSPACE_HOST_STANDING_HEALTH_CRONTAB } from '../workspace-host/standing-health';
 import {
+  papercuspHostedRoleAttestationDbosRuntime,
   WORKSPACE_HOST_HEALTH_WORKFLOW_NAME,
   WORKSPACE_HOST_SPOT_RECLAIM_WORKFLOW_NAME,
   workspaceHostSpotReclaimSweepSummary,
   workspaceHostStandingHealthSummary,
 } from './workspace-host-health-workflow';
+
+describe('hosted GCP role attestation binding (WI-10005251)', () => {
+  it('attests the configured hosting project', () => {
+    const runtime = papercuspHostedRoleAttestationDbosRuntime({ PAPERCUSP_HOSTED_GCP_WORKSPACE_PROJECT: 'papercusp-hosted-workspaces' });
+    expect(runtime.projectId).toBe('papercusp-hosted-workspaces');
+  });
+
+  it('skips a controller with no hosting project, or an invalid one, instead of failing the health tick', () => {
+    expect(papercuspHostedRoleAttestationDbosRuntime({}).projectId).toBeNull();
+    expect(papercuspHostedRoleAttestationDbosRuntime({ PAPERCUSP_HOSTED_GCP_WORKSPACE_PROJECT: 'Not A Project' }).projectId).toBeNull();
+  });
+});
 
 describe('workspace-host standing health workflow', () => {
   it('is registered as a 15-minute DBOS schedule under its workflow name', () => {

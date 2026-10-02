@@ -766,9 +766,12 @@ test('startup paired callbacks distinguish both delayed from a cancelled or unav
 
     f.parent.style.opacity = '1';
     const frameFirst = installStartupStorageProbe(); f.tick(1000); f.runFrame();
-    const cancelled = frameFirst.stop().render;
-    assert.equal(cancelled.firstCompanionTimerAtMs, null, 'a cancelled timer is not a zero-delay observation');
-    assert.equal(cancelled.firstCompanionTimerStopReason, 'eligible-frame');
+    assert.equal(f.pendingCompanionTimers(), 2, 'eligible frames must preserve both pending companion observations');
+    f.tick(1250); f.runCompanionTimers();
+    const completed = frameFirst.stop().render;
+    assert.equal(completed.firstCompanionTimerAtMs, 1250);
+    assert.equal(completed.firstCompanionTimerStopReason, 'completed');
+    assert.equal(completed.firstFrameAtMs, 1000, 'a later timer must not replace the first frame timestamp');
     assert.equal(f.pendingCompanionTimers(), 0);
 
     const timerNative = f.fakeWindow.setTimeout;
@@ -804,6 +807,42 @@ test('startup companion timers are cancelled on replacement, explicit stop and d
     assert.equal(overdue.firstCompanionTimerStopReason, 'deadline');
     assert.equal(overdue.stopReason, 'deadline');
     assert.equal(f.pendingFrame(), false);
+  } finally { f.restore(); }
+});
+
+test('bundled frame-first companion observations survive eligibility but remain bounded by stop and deadline', () => {
+  const f = startupRenderFixture();
+  try {
+    f.parent.style.opacity = '1';
+    Function(buildStartupStorageProbeScript())();
+    const probe = (f.fakeWindow as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe;
+    f.tick(200); f.insert(); f.insertSubtitle();
+    f.tick(900); f.runFrame();
+    assert.equal(f.pendingCompanionTimers(), 2, 'frame completion must not censor a later timer callback');
+    assert.equal(f.pendingFrame(), false);
+    const reads = f.rectReads();
+    for (let i = 0; i < 20; i++) f.mutate();
+    assert.equal(f.pendingCompanionTimers(), 2, 'completed candidates never queue another companion');
+    f.tick(950); f.runCompanionTimers();
+    const rows = probe.stop().render.candidates;
+    assert.deepEqual(rows.map((row) => row.firstFrameAtMs), [900, 900]);
+    assert.deepEqual(rows.map((row) => row.firstCompanionTimerAtMs), [950, 950]);
+    assert.deepEqual(rows.map((row) => row.firstCompanionTimerStopReason), ['completed', 'completed']);
+    assert.equal(f.rectReads(), reads, 'the late timer performs no layout read');
+
+    const stopped = installStartupStorageProbe(); f.tick(1000); f.runFrame();
+    const cancelled = stopped.stop().render;
+    assert.equal(cancelled.firstCompanionTimerAtMs, null);
+    assert.equal(cancelled.firstCompanionTimerStopReason, 'stopped');
+    assert.equal(cancelled.stopReason, 'eligible-frame');
+    assert.equal(f.pendingCompanionTimers(), 0);
+
+    const expired = installStartupStorageProbe(); f.tick(1100); f.runFrame();
+    f.tick(61_000); f.expire();
+    const overdue = expired.stop().render;
+    assert.equal(overdue.firstCompanionTimerAtMs, null);
+    assert.equal(overdue.firstCompanionTimerStopReason, 'deadline');
+    assert.equal(f.pendingCompanionTimers(), 0);
   } finally { f.restore(); }
 });
 

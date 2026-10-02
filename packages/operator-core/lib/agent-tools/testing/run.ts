@@ -134,7 +134,7 @@ import {
 } from '../../resource-governor/execution';
 import type { ResourceDemand } from '../../resource-governor/admission';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
-import { resolveBashTaskProvenance } from '../capability/bash-task-provenance';
+import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import {
   prepareTestEvidence,
@@ -3411,7 +3411,7 @@ export async function runTestFilesCore(opts: {
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery, returns `detachedRunId`, and tells you to call `testing:run-status { runId }` for its snapshot. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
+    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery, returns `detachedRunId`, and tells you to call `testing:run-status { runId }` for its snapshot. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen:
@@ -3447,6 +3447,14 @@ export default defineTool({
       .optional()
       .describe(
         'Declare exact work-item/spec/test/correction mappings once; persisted before execution and returned as ledger-backed evidence for independent review. evidenceRef uses the original attempt ID and stays stable across timeout recovery; join testing:runs through rows[].testRunId or rows[].ledgerRunGroupId, which may name a detached group.',
+      ),
+    work_item_id: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Explicitly attribute this test run and its slow-attempt loop gate to a work-item you hold. Overrides the session goal stamp and uses the same held-claim validation as capability:bash.',
       ),
     recoverEvidence: recoverTestEvidenceSchema
       .optional()
@@ -3508,7 +3516,7 @@ export default defineTool({
     const handlerStartedAt = performance.now();
     const phaseTimingsMs = createTestingRunPhaseTimings();
     if (args.recoverEvidence) {
-      if (args.files || args.changedPaths || args.evidence || args.remeasureEvidence)
+      if (args.files || args.changedPaths || args.evidence || args.remeasureEvidence || args.work_item_id)
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
       if (!harnessSlug || !ctx.workspaceId || ctx.workspaceId === '*')
@@ -3530,7 +3538,7 @@ export default defineTool({
     // below — so it inherits every guard that path already has instead of forking one.
     let remeasure: Awaited<ReturnType<typeof buildTestEvidenceRemeasure>> | undefined;
     if (args.remeasureEvidence) {
-      if (args.files || args.changedPaths || args.evidence)
+      if (args.files || args.changedPaths || args.evidence || args.work_item_id)
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       const remeasureHarness = resolveConcreteHarnessSlug(args.harness, ctx);
       if (!remeasureHarness || !ctx.workspaceId || ctx.workspaceId === '*')
@@ -3557,6 +3565,19 @@ export default defineTool({
     }
     const evidenceRequest = args.evidence ?? remeasure?.request ?? undefined;
     const selectedFiles = args.files ?? remeasure?.files;
+    if (
+      args.work_item_id &&
+      evidenceRequest?.workItemId &&
+      args.work_item_id !== evidenceRequest.workItemId
+    ) {
+      return {
+        data: {
+          ok: false,
+          error: 'work_item_id_conflicts_with_evidence',
+          detail: 'Use the same work-item in `work_item_id` and `evidence.workItemId`, or omit the top-level `work_item_id`.',
+        },
+      };
+    }
     // Exactly one selector. Both branches REFUSE rather than defaulting, because every
     // default here is a silent wrong answer: picking `files` when both were sent would
     // ignore a radius the caller asked to see, and treating neither as "run everything"
@@ -3583,6 +3604,15 @@ export default defineTool({
       };
     }
     if (args.changedPaths !== undefined) {
+      if (args.work_item_id) {
+        return {
+          data: {
+            ok: false,
+            error: 'work_item_id_requires_files',
+            detail: '`work_item_id` attributes a test run; pass `files` instead of `changedPaths`.',
+          },
+        };
+      }
       if (args.evidence) return { data: { ok: false, error: 'evidence_requires_executed_files' } };
       // The plan path deliberately does NOT go through selectTestFileRoot: that resolver
       // answers "which checkout owns these TEST files", and changedPaths are source files
@@ -3634,14 +3664,31 @@ export default defineTool({
     setTestingRunPhaseDuration(phaseTimingsMs, 'preflightMs', handlerStartedAt);
     // expensive-verification-loops P-001: a run that outlives the foreground clamp
     // continues detached, and that detached run is the expensive attempt the loop
-    // detector counts per work-item. An evidence request names its item explicitly;
-    // otherwise use the caller's unambiguous held claim — the same rule capability:bash
-    // applies, so one agent's runs link identically through either door.
+    // detector counts per work-item. A top-level `work_item_id` uses capability:bash's
+    // held-claim check; otherwise the evidence request or unambiguous held claim supplies it.
     const provenanceStartedAt = performance.now();
-    const attemptWorkItemId =
-      evidenceRequest?.workItemId ??
-      (await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, harnessSlug ?? null)).workItemId ??
-      undefined;
+    let attemptWorkItemId: string | undefined;
+    if (evidenceRequest?.workItemId && !args.work_item_id) {
+      attemptWorkItemId = evidenceRequest.workItemId;
+    } else {
+      try {
+        attemptWorkItemId =
+          (await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, harnessSlug ?? null, undefined, {
+            explicitWorkItemId: args.work_item_id ?? null,
+          })).workItemId ?? undefined;
+      } catch (error) {
+        if (!(error instanceof BashProvenanceRefusal)) throw error;
+        return {
+          data: {
+            ok: false,
+            error: error.code,
+            message: error.message,
+            runId,
+            root: rootSelection.root,
+          },
+        };
+      }
+    }
     setTestingRunPhaseDuration(phaseTimingsMs, 'provenanceMs', provenanceStartedAt);
     const preparationStartedAt = performance.now();
     // P-002 (WI-10004175): the loop gate capability:bash and release:cut apply. Its budget is

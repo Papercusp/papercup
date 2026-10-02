@@ -433,8 +433,10 @@
     ],
     "sourceReceipt": {
       "path": "docs/evidence/papercusp-oct1-p010-source-preflight-meta-fixed-2026-10-02.json",
-      "sha256": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
-      "serialization": "Original OUT JSON plus a final LF; JSON values are unchanged. Raw OUT digest is retained under temporaryEvidenceSha256."
+      "sha256": "3e3d9e47b5d2e43ed867940e017def68d35da859ce8ecaddd6048eb2ff3f2301",
+      "originalSha256": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
+      "serialization": "Persisted OUT JSON after home-path shortening, plus a final LF. Captured sourceEvidence remains exact; the full JSON differs from the retained raw OUT in diagnostic paths. Raw OUT digest is retained under temporaryEvidenceSha256.",
+      "qualification": "Expanding the persisted file's shortened home paths exactly reproduces originalSha256. The repaired receipt identifies current persisted bytes only; it does not upgrade historical run provenance or source currentness."
     },
     "temporaryEvidenceSha256": {
       "/tmp/su-7db4f-p010-source-preflight-meta-fixed-out.json": "eb6eeeed78b6766db9514bc96df74a96babc75c4e2a04330d10bea538c5a1bd5",

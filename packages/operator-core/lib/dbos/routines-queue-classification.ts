@@ -80,6 +80,7 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
   'google-calendar-poll',
   'pr-poll',
   'facebook-personal-vault-poll',
+  'slack-org-sync',
 ]);
 
 /**

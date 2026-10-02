@@ -94,6 +94,10 @@ export const AWS_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'ssm:GetConnectionStatus',
   'ssm:StartSession',
   'ssm:TerminateSession',
+  // aws-byoc-gcp-parity D-013: the host bootstrap is pushed over Run Command after the data volume
+  // attaches (EC2 UserData's 16 KiB cap cannot carry it), and the push waits for its invocation.
+  'ssm:SendCommand',
+  'ssm:GetCommandInvocation',
   'iam:GetRole',
   'iam:GetInstanceProfile',
   'iam:PassRole',

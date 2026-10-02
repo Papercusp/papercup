@@ -377,6 +377,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Renews Gmail watches, reconciles Pub/Sub doorbells through history, and emits local trigger/vault deliveries',
   },
+  'system:slack-org-sync': {
+    spend: 'none',
+    why: 'Syncs Slack channel membership into permission lists and writes paced backfill pages as chat messages; no agent or model call',
+  },
   'system:personal-vault-import': {
     spend: 'none',
     why: 'Advances one bounded, checkpointed local archive-import batch; no agent or model call',

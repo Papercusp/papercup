@@ -61,6 +61,8 @@ export interface DecisionLedgerEntry {
   readonly loopBusyMs: number | null;
   /** `loopBusyMs` over the call window, in [0, 1]; null when not measured. */
   readonly loopUtilization: number | null;
+  /** Off-thread request-to-response time of the last answered attempt; null when not measured. */
+  readonly transportLatencyMs: number | null;
 }
 
 /**
@@ -162,6 +164,11 @@ export function toDecisionLedgerEntry(record: DecisionCallRecord, options: Decis
     stateSha256: stateSha256(request.state),
     startedAt: record.startedAt,
     ...hostLoadColumns(record),
+    // Same rule as the host-load columns: an out-of-range value is stored as not measured.
+    transportLatencyMs:
+      typeof record.transportLatencyMs === 'number' && Number.isFinite(record.transportLatencyMs) && record.transportLatencyMs >= 0
+        ? Math.round(record.transportLatencyMs)
+        : null,
   };
 
   if (outcome.kind === 'answered') {

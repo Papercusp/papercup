@@ -28,7 +28,9 @@
       "sourceGraph": {
         "baseReceipt": {
           "path": "docs/evidence/papercusp-oct1-p010-source-preflight-meta-fixed-2026-10-02.json",
-          "sha256": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
+          "sha256": "3e3d9e47b5d2e43ed867940e017def68d35da859ce8ecaddd6048eb2ff3f2301",
+          "originalSha256": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
+          "qualification": "Receipt repaired after home-path shortening. Expanding the current base file's shortened home paths exactly reproduces the original byte hash; the captured source graph is unchanged. This does not upgrade historical run or source currentness.",
           "selector": "rows[0].sourceEvidence.sources"
         },
         "added": [],
@@ -728,7 +730,9 @@
       "sourceGraph": {
         "baseReceipt": {
           "path": "docs/evidence/papercusp-oct1-p010-source-preflight-meta-fixed-2026-10-02.json",
-          "sha256": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
+          "sha256": "3e3d9e47b5d2e43ed867940e017def68d35da859ce8ecaddd6048eb2ff3f2301",
+          "originalSha256": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
+          "qualification": "Receipt repaired after home-path shortening. Expanding the current base file's shortened home paths exactly reproduces the original byte hash; the captured source graph is unchanged. This does not upgrade historical run or source currentness.",
           "selector": "rows[0].sourceEvidence.sources"
         },
         "added": [],

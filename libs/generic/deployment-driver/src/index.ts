@@ -434,7 +434,9 @@ export {
   WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE,
   WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY,
   WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER,
   parseWorkspaceHostBootstrapReportedStatus,
+  parseEc2ConsoleBootstrapStatus,
 } from "./workspace-host-bootstrap";
 export type {
   WorkspaceHostDesktopPackArtifact,

@@ -568,7 +568,7 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       // claim attempt fail with 42P01 before the test reaches its assertion.
       '675-normalize-plan-items-decisions.sql',
       '686-pots-canonical-home-slug-fk.sql',
-      '710-event-awaits-effective-deadline-view.sql',
+      // 710 (event_awaits_effective) arrives with EVENT_SUBSTRATE_MIGRATIONS (WI-10005224).
     ]),
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper.

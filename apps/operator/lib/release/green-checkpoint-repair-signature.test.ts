@@ -509,6 +509,26 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
     expect(refs).toEqual([HEAD]);
   });
 
+  // WI-10004340: repairHead 0d8ad5e3 stayed red on `<ws> :: lint:migration-forward-compat`
+  // because this runner judged sidecar reviewBy by the wall clock, not the queue's freeze.
+  it("hands the gate runner the queue's freeze time as its review clock", async () => {
+    const id = "@papercusp/operator-core :: lint:migration-forward-compat";
+    const queue = queueWith([entry({ kind: "workspace-task", id })], { openedAtMs: 1_790_851_192_720 });
+    const clocks: Array<number | undefined> = [];
+    const deps: RepairHeadVerificationDeps = {
+      runGateAtRef: async (head, ids, opts) => {
+        clocks.push(opts?.frozenCandidateOpenedAtMs);
+        return { pass: true, summary: "ok", measuredHead: head, coverageComplete: true,
+          perGate: ids.map((gate) => ({ id: gate, status: "pass" as const })) };
+      },
+    };
+
+    const verdict = await verifyRepairHead(deps, queue);
+
+    expect(verdict.kind).toBe("green");
+    expect(clocks).toEqual([1_790_851_192_720]);
+  });
+
   it("a row handed in without a typed signature is classified from its flat list, the way the parser types a persisted one", async () => {
     const queue = queueWith([], { failingTests: ["lib/a.test.ts", WEB] });
     const { deps, refs, fileRuns, gateRuns } = recordingDeps();

@@ -19,6 +19,7 @@
  * policy must never freeze the fleet.
  */
 import { placementOverride, readPotControlPolicy, refreshPotControlPolicy, writePotControlPolicy } from './pot-control-policy';
+import type { RefusalContract } from './capability-envelope/identity-refusal-contract';
 
 export interface WorkScopeException {
   /** harness slug or glob (`foo/*`) the exception admits */
@@ -137,6 +138,8 @@ export type WorkScopeDenied = {
   message: string;
   setBy?: string;
   reason?: string;
+  /** WI-10005197: what would LIFT the denial (the policy edit / exception / re-home that makes it allowed). */
+  refusal?: RefusalContract;
 };
 export type WorkScopeVerdict = WorkScopeAllowed | WorkScopeDenied;
 
@@ -164,6 +167,14 @@ export function evaluateWorkScope(subject: WorkScopeSubject, policy: WorkScopePo
     allowHarnesses: [...policy.allowHarnesses],
     setBy: policy.setBy,
     reason: policy.reason,
+    refusal: {
+      observed: { harness: h, allowHarnesses: allow || null, policySetBy: policy.setBy ?? null },
+      liftsWhen:
+        `harness '${h}' matches the workspace work-scope policy allow-list, or carries a work-scope exception. ` +
+        `Widen the policy or add an exception with workspace:work_scope { op:'set' }, or re-home the item to an ` +
+        `allowed harness if it is really that harness's work. Out-of-scope work is parked, never deleted`,
+      whoCanMakeItTrue: ['owner', 'self'],
+    },
     message:
       `scope_denied: harness '${h}' is outside the workspace work-scope policy (allowed: ${allow}${provenance}). ` +
       `Out-of-scope work is parked, never deleted — widen the policy or add an exception with workspace:work_scope { op:'set' }, ` +
@@ -184,6 +195,7 @@ export function workScopeRefusal(
     message: v.message,
     ...(v.setBy ? { setBy: v.setBy } : {}),
     ...(v.reason ? { reason: v.reason } : {}),
+    ...(v.refusal ? { refusal: v.refusal } : {}),
     ...extra,
   };
 }

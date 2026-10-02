@@ -230,6 +230,15 @@ export const GCP_FIRST_WORKSPACE_DEFAULTS = {
 } as const;
 
 /**
+ * The provisioning model of a NEW Papercusp-hosted host (WI-10005210, plan
+ * agent-capacity-and-cost-gcp-2026-09-30 D-028): spot, which roughly halves the cost per active
+ * agent. A reclaim stops the VM and keeps its data disk, and the controller's 2-minute spot-reclaim
+ * sweep restarts it. A customer-delegated host is NOT defaulted: its project, quota and bill are the
+ * customer's, so spot there is their choice (`provider.provisioningModel` on the desired spec).
+ */
+export const PAPERCUSP_HOSTED_GCP_PROVISIONING_MODEL = 'spot' as const;
+
+/**
  * Default spec for a first GCP workspace. Everything tenant-specific comes from the VERIFIED
  * delegation. A Papercusp-hosted host (D-399) runs where its grant's name conditions point and
  * holds NO service account: nothing on the machine can act in Papercusp's project.
@@ -261,6 +270,7 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
       projectId: source.projectId,
       ...(papercuspHosted ? {} : { serviceAccountEmail: source.serviceAccountEmail }),
       network: { mode: 'managed' },
+      ...(papercuspHosted ? { provisioningModel: PAPERCUSP_HOSTED_GCP_PROVISIONING_MODEL } : {}),
     },
   } as WorkspaceHostDesiredSpec;
 }

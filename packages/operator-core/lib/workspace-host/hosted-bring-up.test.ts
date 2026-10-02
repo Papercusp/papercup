@@ -40,7 +40,7 @@ const HOSTED: WorkspaceHostDesiredSpec = {
   image: { id: 'projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260918' },
   data: { encrypted: true, volumeGiB: 100 },
   credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'delegation://ws-3b44/conn-3b44' } },
-  provider: { projectId: 'papercusp-hosted-workspaces', network: { mode: 'managed' } },
+  provider: { projectId: 'papercusp-hosted-workspaces', network: { mode: 'managed' }, provisioningModel: 'spot' },
 } as WorkspaceHostDesiredSpec;
 
 function request(desired: WorkspaceHostDesiredSpec = HOSTED) {

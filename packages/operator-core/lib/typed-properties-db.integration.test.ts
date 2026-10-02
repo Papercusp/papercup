@@ -235,6 +235,69 @@ describe('typed-properties-db (real PG, migration 923)', () => {
     ]);
   });
 
+  it('a worklist edit stamps the goal on NULL-goal rows of the listed plan only (WI-10005246)', async () => {
+    const planRef = 'plan:tp-harness/tp-plan-backfill';
+    await db.adminSql`
+      INSERT INTO harness_shared.goals (id, install_slug, workspace_id, title, status, properties)
+      VALUES ('g-tp-backfill', ${HARNESS}, ${WS}, 'backfill goal', 'active',
+              ${JSON.stringify({ worklist: {
+                value: [],
+                version: 1,
+                edited_at: '2026-09-19T23:59:35.692Z',
+                edited_by: 'original-holder',
+                provenance: 'agent-edit',
+              } })}::text::jsonb)`;
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, title, status)
+      VALUES (${WS}, ${HARNESS}, 'tp-plan-backfill', 'backfill plan', 'draft'),
+             (${WS}, ${HARNESS}, 'tp-plan-unlisted', 'unlisted plan', 'draft')`;
+    const item = (id: string, plan: string, goal: string | null, origin: string) => db.adminSql`
+      INSERT INTO harness_shared.work_items (feature_id, workspace_id, harness_slug, nature, source_plan_slug, goal_id, origin)
+      VALUES (${id}, ${WS}, ${HARNESS}, 'issue', ${plan}, ${goal}, ${origin})`;
+    await item('WI-bf-null', 'tp-plan-backfill', null, 'local');
+    await item('WI-bf-owned', 'tp-plan-backfill', 'g-tp-1', 'local');
+    await item('WI-bf-remote', 'tp-plan-backfill', null, 'remote');
+    await item('WI-bf-unlisted', 'tp-plan-unlisted', null, 'local');
+
+    const result = await db.adminSql.begin(async (tx) => setGoalProperty.handler({
+      goalId: 'g-tp-backfill',
+      property: 'worklist',
+      value: [planRef],
+      expectedVersion: 1,
+    } as never, {
+      workspaceId: WS,
+      isSuperuser: true,
+      uiClientId: 'su-worklist-backfill',
+      tx,
+    } as never)) as unknown as { isError?: boolean; content: Array<{ text: string }> };
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      ok: true,
+      attributionBackfill: {
+        refs: 1,
+        plansStamped: ['tp-plan-backfill'],
+        workItemsStamped: ['WI-bf-null'],
+      },
+    });
+
+    const items = await db.adminSql<Array<{ feature_id: string; goal_id: string | null }>>`
+      SELECT feature_id, goal_id FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id LIKE 'WI-bf-%' ORDER BY feature_id`;
+    expect(Object.fromEntries(items.map((r) => [r.feature_id, r.goal_id]))).toEqual({
+      'WI-bf-null': 'g-tp-backfill', // NULL-goal local row of the listed plan: stamped
+      'WI-bf-owned': 'g-tp-1', // already owned by another goal: never reparented
+      'WI-bf-remote': null, // federation-owned: left as reported residue
+      'WI-bf-unlisted': null, // a plan outside the worklist: untouched
+    });
+    const plans = await db.adminSql<Array<{ plan_slug: string; goal_id: string | null }>>`
+      SELECT plan_slug, goal_id FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND plan_slug IN ('tp-plan-backfill', 'tp-plan-unlisted') ORDER BY plan_slug`;
+    expect(Object.fromEntries(plans.map((r) => [r.plan_slug, r.goal_id]))).toEqual({
+      'tp-plan-backfill': 'g-tp-backfill',
+      'tp-plan-unlisted': null,
+    });
+  });
+
   it('does not persist a legacy declaration for an invalid or stale worklist write', async () => {
     await db.adminSql`
       INSERT INTO harness_shared.goals (id, install_slug, workspace_id, title, status)

@@ -53,6 +53,14 @@ const connectSlack = vi.fn(async (_sql: unknown, input: Record<string, unknown>)
   credentialRef: `slack-socket:${input.field ?? input.ownerUserId}`,
   config: { teamId: 'T1' },
 }));
+const SLACK_ORG_DISABLED = 'slack_org_connector_disabled:legal_review_pending';
+const connectOrgSlack = vi.fn(async (_sql: unknown, _input: Record<string, unknown>) => ({
+  id: '20000000-0000-4000-8000-000000000002',
+  kind: 'slack',
+  status: 'connecting',
+  credentialRef: 'slack-socket:org-T1',
+  config: { teamId: 'T1', credentialModel: 'customer-internal-app' },
+}));
 const ensureSlackFlagship = vi.fn(async (_sql: unknown, _workspaceId: string, source: { id: string }) => ({
   plan: { created: true, schemaAdded: true },
   binding: {
@@ -124,6 +132,11 @@ vi.mock('../../external-triggers/slack-flagship', () => ({
   SLACK_RESPOND_IN_THREAD_PLAN: 'slack-respond-in-thread-2026-08-22',
   ensureSlackRespondInThreadBinding: (...args: Parameters<typeof ensureSlackFlagship>) => ensureSlackFlagship(...args),
 }));
+vi.mock('../../data-sources/slack-org-connector', () => ({
+  // Literal, not SLACK_ORG_DISABLED: this factory is hoisted above that const.
+  SLACK_ORG_DISABLED_ERROR: 'slack_org_connector_disabled:legal_review_pending',
+  connectOrganizationSlackSource: (...args: Parameters<typeof connectOrgSlack>) => connectOrgSlack(...args),
+}));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 import { registerRoute } from '../define-route';
@@ -132,7 +145,7 @@ import type { ZodTypeAny } from 'zod';
 import routes from '../routes/admin/external-triggers';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
-const [read, mutate, slackManifest, slackConnect] = routes as unknown as AnyRoute[];
+const [read, mutate, slackManifest, slackConnect, slackConnectOrg] = routes as unknown as AnyRoute[];
 const URL = 'http://127.0.0.1:3070/admin/triggers';
 const BINDING_ID = '10000000-0000-4000-8000-000000000001';
 
@@ -405,5 +418,55 @@ describe('external-trigger admin route pair', () => {
       'owner:22222222-2222-4222-8222-222222222222',
     );
     expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
+  });
+
+  // Placeholder token strings on purpose: the route never inspects the prefix
+  // (the mocked connector does), and real-looking Slack prefixes trip the secrets guard.
+  it('connects an organization Slack source as the session owner, with no flagship binding', async () => {
+    expect(slackConnectOrg).toMatchObject({
+      method: 'POST',
+      path: '/admin/triggers/slack/connect-org',
+      auth: { trust: ['verified', 'trusted'] },
+    });
+    const response = await request(slackConnectOrg, 'POST', {
+      appToken: 'app-token-private', botToken: 'bot-token-private',
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ ok: true, source: { kind: 'slack', config: { credentialModel: 'customer-internal-app' } } });
+    expect(JSON.stringify(body)).not.toContain('app-token-private');
+    expect(JSON.stringify(body)).not.toContain('bot-token-private');
+    expect(connectOrgSlack).toHaveBeenCalledWith(sql, {
+      workspaceId: 'ws-test',
+      ownerUserId: '22222222-2222-4222-8222-222222222222',
+      createdBy: 'owner:22222222-2222-4222-8222-222222222222',
+      appToken: 'app-token-private',
+      botToken: 'bot-token-private',
+      installSlug: 'papercusp',
+    });
+    expect(ensureSlackFlagship).not.toHaveBeenCalled();
+    expect(connectSlack).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
+  });
+
+  it('answers 409 disabled while the org connector flag is dark (legal read pending)', async () => {
+    connectOrgSlack.mockRejectedValueOnce(new Error(SLACK_ORG_DISABLED));
+    const response = await request(slackConnectOrg, 'POST', { appToken: 'app-token', botToken: 'bot-token' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, error: 'disabled', detail: SLACK_ORG_DISABLED });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('refuses a per-user channels list and cross-origin org connects before touching Slack', async () => {
+    const extra = await request(slackConnectOrg, 'POST', { appToken: 'app-token', botToken: 'bot-token', channels: ['C1'] });
+    expect(extra.status).toBe(400);
+    const crossOrigin = await request(
+      slackConnectOrg,
+      'POST',
+      { appToken: 'app-token', botToken: 'bot-token' },
+      { origin: 'https://evil.example' },
+    );
+    expect(crossOrigin.status).toBe(403);
+    expect(connectOrgSlack).not.toHaveBeenCalled();
   });
 });

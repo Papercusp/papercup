@@ -527,6 +527,9 @@ export const EVENT_SUBSTRATE_MIGRATIONS = [
   '572-event-await-nodes-threshold-tree.sql',
   '599-event-announcement-generation.sql',
   '632-event-key-fire-latch.sql',
+  // WI-10005224: condition-object.ts LEFT JOINs the event_awaits_effective view (710);
+  // a fixture without it degrades findConditionObjects to "no object" through a catch.
+  '710-event-awaits-effective-deadline-view.sql',
   '825-verified-wait-producer-health.sql',
   '869-predicate-watch-changed-op.sql',
   '871-lifecycle-bound-watches.sql',

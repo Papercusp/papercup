@@ -277,6 +277,9 @@ import './external-trigger-dispatch-action';
 import './facebook-personal-vault-poll-action';
 import './google-calendar-poll-action';
 import './google-gmail-poll-action';
+// enterprise-data-sources-2026-10-01 P-016 / D-026: Slack organization connector cadence
+// (membership sync + paced backfill); inert while papercusp-slack-org-connector is dark.
+import './slack-org-sync-action';
 import './personal-vault-import-action';
 // overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the
 // one-shot `overwatch-wake` routine fires — computes the OverwatchBrief + launches

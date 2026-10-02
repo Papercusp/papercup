@@ -16,6 +16,12 @@ import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { resolveWorkspaceHostSoakSeams } from '../workspace-host/soak-seams';
 import { recordWorkspaceHostHealth } from '../workspace-host/observability-store';
 import { DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY } from '../workspace-host/provisioning-runner';
+import { hostedGcpWorkspaceProject } from '../workspace-host/hosted-gcp-hosting';
+import {
+  papercuspHostedRoleAttestationSummary,
+  runPapercuspHostedRoleAttestation,
+  type PapercuspHostedRoleAttestationRuntime,
+} from '../workspace-host/hosted-gcp-roles';
 import {
   listWorkspaceHostSpotReclaimTargets,
   listWorkspaceHostStandingHealthTargets,
@@ -104,10 +110,65 @@ export function workspaceHostStandingHealthSummary(result: WorkspaceHostStanding
   );
 }
 
+/**
+ * The control plane's side of WI-10005251: read the two Papercusp-hosted custom roles with the
+ * delegation source (read-only, `roles/iam.roleViewer`) and file a finding per drifted role.
+ * Heavy modules load lazily so a controller without a hosting project pays nothing.
+ */
+export function papercuspHostedRoleAttestationDbosRuntime(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): PapercuspHostedRoleAttestationRuntime {
+  let projectId: string | null = null;
+  try {
+    projectId = hostedGcpWorkspaceProject(env);
+  } catch {
+    projectId = null;
+  }
+  return {
+    projectId,
+    accessToken: async () => {
+      const { hostedGcpDelegationSource } = await import('../workspace-host/hosted-gcp-auth');
+      return hostedGcpDelegationSource(env).accessToken();
+    },
+    openFindingExists: async (watchdogKey) => {
+      const { findIssuesByWatchdogKeys } = await import('../issues-engineer');
+      const existing = await findIssuesByWatchdogKeys([watchdogKey]);
+      return existing.some((issue) => issue.state === 'open');
+    },
+    fileFinding: async (finding) => {
+      const { captureImprovement } = await import('../harness/improvements/capture-core');
+      await captureImprovement({
+        title: finding.title,
+        kind: 'bug',
+        severity: 'major',
+        scope: 'operator',
+        foundDuring: 'workspace-host standing health: hosted GCP role attestation (WI-10005251)',
+        createdBy: 'system:hosted-gcp-role-attestation',
+        sourceRole: 'system',
+        source: 'su',
+        dedupScope: 'open',
+        watchdogKey: finding.watchdogKey,
+        paths: [
+          'packages/operator-core/lib/workspace-host/hosted-gcp-hosting.ts',
+          'packages/operator-core/lib/workspace-host/hosted-gcp-roles.ts',
+        ],
+        body: finding.body,
+      });
+    },
+  };
+}
+
 async function workspaceHostStandingHealthTick(): Promise<WorkspaceHostStandingHealthPassResult> {
   const result = await runWorkspaceHostStandingHealthPass(workspaceHostStandingHealthDbosRuntime());
   const summary = workspaceHostStandingHealthSummary(result);
   if (summary) console.log(summary);
+  // Appended after the pass so the step order of in-flight older workflows is unchanged.
+  const roles = await DBOS.runStep(
+    () => runPapercuspHostedRoleAttestation(papercuspHostedRoleAttestationDbosRuntime()),
+    { name: 'hosted-gcp-role-attestation', retriesAllowed: false },
+  );
+  const rolesSummary = papercuspHostedRoleAttestationSummary(roles);
+  if (rolesSummary) console.log(rolesSummary);
   return result;
 }
 

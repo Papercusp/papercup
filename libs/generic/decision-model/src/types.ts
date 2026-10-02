@@ -230,4 +230,12 @@ export interface DecisionCallRecord {
    * measurement is disabled (`hostLoad: null` on the client) or failed.
    */
   readonly hostLoad: HostLoad | null;
+  /**
+   * Request-to-complete-response time of the last attempt that got a response, as
+   * measured by a transport running off the calling thread (the worker transport).
+   * Unlike `outcome.latencyMs` it excludes time the answer waited for the calling
+   * thread, so the two together split a slow call between provider and host. Null
+   * when no attempt got a response or the transport does not measure it.
+   */
+  readonly transportLatencyMs: number | null;
 }

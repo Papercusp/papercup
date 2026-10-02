@@ -3462,6 +3462,30 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
     expect(v.reason).not.toContain('STRANDED SHAPE');
   });
 
+  it('a lapsed claim lease with a live holder is not "none live" (WI-10005262)', () => {
+    // Measured 2026-10-02: holder su-3ee17ad9 live and driving a verify run, lease lapsed at
+    // 03:03Z, and the watchdog broadcast an URGENT "STRANDED — none live".
+    for (const holder of ['live', 'parked', 'recorded'] as const) {
+      const v = evaluateStrandedRepairQueue(
+        base({ fixerSpawnId: null, fixerAlive: null, gateOwnership: 'lease-expired', gateHolderSessionState: holder }),
+      );
+      expect(v.alarm).toBe(true);
+      expect(v.stranded).toBe(false);
+      expect(v.reason).toContain(`gate ownership lease-expired (holder ${holder})`);
+      expect(v.reason).not.toContain('STRANDED SHAPE');
+    }
+  });
+
+  it('a lapsed lease whose holder ended or is unmeasured still counts as absent', () => {
+    for (const holder of ['ended', null, undefined] as const) {
+      const v = evaluateStrandedRepairQueue(
+        base({ fixerSpawnId: null, fixerAlive: null, gateOwnership: 'lease-expired', gateHolderSessionState: holder }),
+      );
+      expect(v.stranded).toBe(true);
+      expect(v.reason).toContain('STRANDED SHAPE');
+    }
+  });
+
   it('a stalled but live owner is not absent; an ended owner is', () => {
     expect(evaluateStrandedRepairQueue(base({ gateOwnership: 'held-stalled' })).stranded).toBe(false);
     expect(evaluateStrandedRepairQueue(base({ gateOwnership: 'held-by-ended-session' })).stranded).toBe(true);

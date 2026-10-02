@@ -20,6 +20,7 @@
  */
 
 import type { AppKeyRow, AppKeyScopes } from './store';
+import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
 
 /**
  * Capability namespaces no app key may hold, and therefore no tool needing one may be called.
@@ -137,7 +138,15 @@ export type AppScopeDenialCode =
   | 'harness_not_in_scope'
   | 'harness_required_by_scope';
 
-export type AppScopeVerdict = { allow: true } | { allow: false; code: AppScopeDenialCode; reason: string };
+export type AppScopeVerdict =
+  | { allow: true }
+  | {
+      allow: false;
+      code: AppScopeDenialCode;
+      reason: string;
+      /** WI-10005197: what would LIFT the refusal. Present on `hard_denied` (a platform policy, not a per-key grant). */
+      refusal?: RefusalContract;
+    };
 
 const HARNESS_ARG_KEYS = ['harness', 'harnessSlug', 'harness_slug'] as const;
 const WORKSPACE_ARG_KEYS = ['workspace', 'workspaceId', 'workspace_id'] as const;
@@ -271,7 +280,22 @@ export function evaluateAppScope(
   }
 
   const denied = hardDenyReason(input.tool);
-  if (denied) return { allow: false, code: 'hard_denied', reason: denied };
+  if (denied) {
+    return {
+      allow: false,
+      code: 'hard_denied',
+      reason: denied,
+      refusal: {
+        observed: { tool: input.tool.name, toolGroup: toolGroupOf(input.tool.name) },
+        liftsWhen:
+          'the tool is no longer in a hard-deny group and declares no wildcard / hard-denied capability prefix ' +
+          '(HARD_DENY_GROUPS / HARD_DENY_CAPABILITY_PREFIXES in connected-apps/scope-policy.ts). No app-key grant ' +
+          'or scope edit lifts it — adding the tool to the key allowlist changes nothing. An app key can only call a ' +
+          'non-denied tool that does the job; changing the deny policy itself is a platform code change',
+        whoCanMakeItTrue: ['host'],
+      },
+    };
+  }
   if (input.tool.crossWorkspace) {
     return {
       allow: false,

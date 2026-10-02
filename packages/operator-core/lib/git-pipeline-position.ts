@@ -4943,30 +4943,33 @@ export function mapCheckpointRunInFlight(
 export const realResolveGateCandidates = async (root: string): Promise<GateCandidates> => {
   try {
     const { checkActiveCheckpointRun, currentCheckpointCandidate } = await import('./release-checkpoint-launch');
-    const { spawnSync } = await import('node:child_process');
-    const execFn = (cmd: string, args: string[]) => {
-      const r = spawnSync(cmd, args, {
-        encoding: 'utf8',
-        timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
-      });
-      return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-    };
-    const active = checkActiveCheckpointRun(root, execFn);
-    // checkActiveCheckpointRun ALREADY resolves the quiet-cut candidate internally (it
-    // spreads `...current` into its result) whenever a run is active — only pay for the
-    // second resolution when it did not, or this hot path (CLAUDE.md points agents here
-    // for "is my edit live") runs the same 4-5 git reads twice per call.
-    const nextCandidateSha =
-      active.current_candidate !== undefined
-        ? active.current_candidate
-        : currentCheckpointCandidate(root, execFn).current_candidate;
-    return {
-      // Only a genuinely ACTIVE run has a judging sha. `current_candidate` describes a
-      // HYPOTHETICAL fresh launch and must never be reported as "what is being judged"
-      // (EI-18695275971973546 cost a wrong fleet-wide broadcast to that exact conflation).
-      judgingSha: active.active ? (active.candidate ?? null) : null,
-      nextCandidateSha,
-    };
+    const { runSyncWithAsyncExec, execFileResult } = await import('./sync-exec-replay');
+    // WI-10005261: these probes are sync and exec-injected. A spawnSync exec here blocked the
+    // operator main thread (98.6% of a measured sentinel stall), so they run under
+    // record/replay: every git/systemctl call goes through async execFile, and the final pass
+    // is a faithful re-execution against the fetched results.
+    const { value } = await runSyncWithAsyncExec(
+      (execFn) => {
+        const active = checkActiveCheckpointRun(root, execFn);
+        // checkActiveCheckpointRun ALREADY resolves the quiet-cut candidate internally (it
+        // spreads `...current` into its result) whenever a run is active — only pay for the
+        // second resolution when it did not, or this hot path (CLAUDE.md points agents here
+        // for "is my edit live") runs the same 4-5 git reads twice per call.
+        const nextCandidateSha =
+          active.current_candidate !== undefined
+            ? active.current_candidate
+            : currentCheckpointCandidate(root, execFn).current_candidate;
+        return {
+          // Only a genuinely ACTIVE run has a judging sha. `current_candidate` describes a
+          // HYPOTHETICAL fresh launch and must never be reported as "what is being judged"
+          // (EI-18695275971973546 cost a wrong fleet-wide broadcast to that exact conflation).
+          judgingSha: active.active ? (active.candidate ?? null) : null,
+          nextCandidateSha,
+        };
+      },
+      (cmd, args) => execFileResult(cmd, args, { timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS }),
+    );
+    return value;
   } catch {
     return { judgingSha: null, nextCandidateSha: null };
   }

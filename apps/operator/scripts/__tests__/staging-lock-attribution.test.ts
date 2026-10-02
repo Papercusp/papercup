@@ -13,10 +13,11 @@ import { describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 const HELPER = join(REPO_ROOT, "apps/operator/scripts/systemd/staging-lock-attribution.sh");
-const DROPIN = join(
-  REPO_ROOT,
-  "apps/operator/scripts/systemd/papercup-staging-api.service.d/95-bundled-entry.conf",
-);
+// PROBE_DROPIN lets scripts/mutation-probe.sh point this suite at a mutated COPY
+// of the drop-in (copy-out mode) instead of mutating the shared tree.
+const DROPIN =
+  process.env.PROBE_DROPIN ??
+  join(REPO_ROOT, "apps/operator/scripts/systemd/papercup-staging-api.service.d/95-bundled-entry.conf");
 const SYNC = join(REPO_ROOT, "apps/operator/bin/release/sync-staging-checkout.sh");
 
 function makeTempDir(prefix: string): string {

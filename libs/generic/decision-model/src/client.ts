@@ -53,10 +53,49 @@ export const eventLoopUtilizationMeter: HostLoadMeter = () => {
   };
 };
 
+/**
+ * The call's deadline as seen by a transport: when it expires, and a last-chance
+ * hook that runs synchronously when the deadline timer fires, before the abort is
+ * dispatched.
+ *
+ * A transport whose answer can be complete while the calling thread is busy (the
+ * worker transport: the answer waits on a MessagePort) registers a hook that drains
+ * that answer synchronously. A promise it resolves inside the hook settles before
+ * the abort, because the abort is deferred to `setImmediate` (see
+ * {@link createDeadline}). Transports that do not need it ignore the field.
+ */
+export interface DeadlineHook {
+  /**
+   * When the deadline expires, on the `performance.timeOrigin + performance.now()`
+   * clock. That clock is Unix-epoch milliseconds in every thread of the process, so
+   * a worker can enforce the same instant on its own loop.
+   */
+  readonly expiresAt: number;
+  /** Run `fn` when the deadline timer fires, before the abort. Returns an unregister function. */
+  onExpiring(fn: () => void): () => void;
+}
+
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal },
-) => Promise<{ status: number; headers: { get(name: string): string | null }; text(): Promise<string> }>;
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+    signal: AbortSignal;
+    /** Present when the call has a deadline (always, from the client). */
+    deadline?: DeadlineHook;
+  },
+) => Promise<{
+  status: number;
+  headers: { get(name: string): string | null };
+  text(): Promise<string>;
+  /**
+   * Request-to-complete-response time measured by a transport that runs off the
+   * calling thread, so it excludes time the answer waited for this thread. The
+   * client records it as `transportLatencyMs`. Absent for in-thread transports.
+   */
+  transportLatencyMs?: number;
+}>;
 
 export interface DecisionClientOptions {
   readonly provider: DecisionProvider;
@@ -134,16 +173,49 @@ const DETAIL_MAX_CHARS = 300;
  * provider that genuinely has not answered still loses. The deferral is one loop
  * phase, not a longer budget. Unref'd like `AbortSignal.timeout`, so a pending
  * deadline never keeps the process alive.
+ *
+ * The deferral only rescues an answer that one poll phase can fully read. An
+ * in-thread fetch whose request was not even SENT while the thread was blocked
+ * gets nothing from it. The returned {@link DeadlineHook} closes that gap for a
+ * transport that runs off-thread: its hooks run inside the timer callback, and a
+ * promise they resolve settles in that callback's microtasks, before the
+ * deferred abort (P-008).
  */
-export function deadlineSignal(timeoutMs: number): AbortSignal {
+export function createDeadline(timeoutMs: number): { signal: AbortSignal; hook: DeadlineHook } {
   const controller = new AbortController();
+  const hooks = new Set<() => void>();
+  const expiresAt = performance.timeOrigin + performance.now() + timeoutMs;
   const timer = setTimeout(() => {
+    for (const fn of [...hooks]) {
+      try {
+        fn();
+      } catch {
+        // A faulty transport hook must not cancel the deadline itself.
+      }
+    }
+    hooks.clear();
     setImmediate(() => {
       controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
     }).unref();
   }, timeoutMs);
   timer.unref();
-  return controller.signal;
+  return {
+    signal: controller.signal,
+    hook: {
+      expiresAt,
+      onExpiring(fn) {
+        hooks.add(fn);
+        return () => {
+          hooks.delete(fn);
+        };
+      },
+    },
+  };
+}
+
+/** A transport's own deadline (the worker transport's) surfaces as a TimeoutError. */
+function isTimeoutError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'TimeoutError';
 }
 
 function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -241,7 +313,13 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
     }
   }
 
-  async function run(request: DecisionRequest, timeoutMs: number): Promise<DecisionOutcome> {
+  /** Per-call facts `run` learns that the outcome does not carry. */
+  interface RunMeta {
+    /** From the last attempt that got a response; null when none did or the transport does not measure it. */
+    transportLatencyMs: number | null;
+  }
+
+  async function run(request: DecisionRequest, timeoutMs: number, meta: RunMeta): Promise<DecisionOutcome> {
     const started = now();
     let attempts = 0;
     const inconclusive = (reason: InconclusiveReason, detail?: string, status?: number): DecisionOutcome => ({
@@ -266,8 +344,8 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
     }
     if (!key) return inconclusive('no-key');
 
-    const deadline = deadlineSignal(timeoutMs);
-    const signal = request.signal ? AbortSignal.any([deadline, request.signal]) : deadline;
+    const deadline = createDeadline(timeoutMs);
+    const signal = request.signal ? AbortSignal.any([deadline.signal, request.signal]) : deadline.signal;
     const whyAborted = (): InconclusiveReason => (request.signal?.aborted ? 'aborted' : 'timeout');
     const http = provider.buildRequest(request, key);
 
@@ -277,16 +355,30 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
       let status: number;
       let text: string;
       let retryAfter: string | null;
+      let transportMs: number | null;
       const abort = untilAborted(signal);
       try {
         const attempt = (async () => {
-          const res = await fetchImpl(http.url, { method: 'POST', headers: { ...http.headers }, body: http.body, signal });
-          return { status: res.status, retryAfter: res.headers.get('retry-after'), text: await res.text() };
+          const res = await fetchImpl(http.url, {
+            method: 'POST',
+            headers: { ...http.headers },
+            body: http.body,
+            signal,
+            deadline: deadline.hook,
+          });
+          const measured = res.transportLatencyMs;
+          return {
+            status: res.status,
+            retryAfter: res.headers.get('retry-after'),
+            text: await res.text(),
+            transportMs: typeof measured === 'number' && Number.isFinite(measured) && measured >= 0 ? measured : null,
+          };
         })();
         attempt.catch(() => {});
-        ({ status, retryAfter, text } = await Promise.race([attempt, abort.promise]));
+        ({ status, retryAfter, text, transportMs } = await Promise.race([attempt, abort.promise]));
+        meta.transportLatencyMs = transportMs;
       } catch (err) {
-        if (signal.aborted) return inconclusive(whyAborted());
+        if (signal.aborted || isTimeoutError(err)) return inconclusive(whyAborted());
         return inconclusive('network-error', err instanceof Error ? err.message : String(err));
       } finally {
         abort.dispose();
@@ -331,8 +423,9 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
       const endHostLoad = startHostLoad();
       const timeoutMs = Math.max(1, decideOptions.timeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
       let outcome: DecisionOutcome;
+      const meta: RunMeta = { transportLatencyMs: null };
       try {
-        outcome = await run(request, timeoutMs);
+        outcome = await run(request, timeoutMs, meta);
       } catch (err) {
         // Defensive: run() is written not to throw; if it ever does, fail open, visibly.
         outcome = {
@@ -353,6 +446,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
         surface: decideOptions.surface ?? null,
         subjectIds: decideOptions.subjectIds ? [...decideOptions.subjectIds] : [],
         hostLoad: endHostLoad(),
+        transportLatencyMs: meta.transportLatencyMs,
       });
       return outcome as DecisionOutcome<QM>;
     },

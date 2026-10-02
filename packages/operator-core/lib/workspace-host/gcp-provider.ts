@@ -31,7 +31,6 @@ import {
   assertWorkspaceHostSecretIsolation,
   resolveWorkspaceHostHealthStatus,
   unmeasuredHealthCheck,
-  WORKSPACE_HOST_DATA_ROOT,
 } from '@papercusp/deployment-driver';
 import {
   GCP_CLOUD_PLATFORM_SCOPE,
@@ -40,6 +39,10 @@ import {
 } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
 import { assertGcpImmutableImageId } from './gcp-image-family';
+import {
+  renderDurableFilesystemScript,
+  WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT,
+} from './durable-filesystem-script';
 import {
   GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS,
   gcpWorkspaceHostLabelValue,
@@ -56,7 +59,9 @@ export const GCP_WORKSPACE_HOST_TARGET = 'gcp';
 export const GCP_WORKSPACE_HOST_PROVIDER_VERSION = 'gcp-workspace-host-provider-v1';
 export const GCP_IAP_TCP_FORWARDING_RANGE = '35.235.240.0/20';
 export const GCP_DATA_DISK_RESIZE_POLICY = 'grow-only';
-export const GCP_DATA_MOUNT_POINT = '/var/lib/papercusp';
+export const GCP_DATA_MOUNT_POINT = WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT;
+/** How long the GCP startup script waits for the data disk; it is attached at instance creation. */
+const GCP_DATA_DEVICE_WAIT_SEC = 60;
 
 export type GcpComputeInstanceStatus =
   | 'PROVISIONING'
@@ -1421,77 +1426,18 @@ function metadata(
  * have the mount hide it. `hostBootstrapScript` reaches this function only from the provider
  * CONTEXT — `readSettings` refuses a caller-supplied `provider.startupScript`, so there is no
  * second producer for this argument.
+ *
+ * The script itself is the provider-neutral {@link renderDurableFilesystemScript}; GCP names the
+ * data disk by its device name, which the guest exposes as `/dev/disk/by-id/google-<name>`. GCP
+ * re-runs the startup script on every boot, and `planUpgrade` recreates the boot disk while
+ * retaining only the data disk (`{ ...dataDisk, autoDelete: false }`).
  */
 function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScript?: string): string {
-  const device = `/dev/disk/by-id/google-${dataDeviceName}`;
-  const userScript = hostBootstrapScript?.trim().replace(/^#![^\n]*(?:\n|$)/, '');
-  return [
-    '#!/usr/bin/env bash',
-    'set -euo pipefail',
-    `data_device='${device}'`,
-    `data_mount='${GCP_DATA_MOUNT_POINT}'`,
-    'for attempt in $(seq 1 60); do test -b "$data_device" && break; sleep 1; done',
-    'test -b "$data_device"',
-    'if ! blkid "$data_device" >/dev/null 2>&1; then mkfs.ext4 -F "$data_device"; fi',
-    'data_uuid=$(blkid -s UUID -o value "$data_device")',
-    'install -d -m 0750 "$data_mount"',
-    'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
-    'mountpoint -q "$data_mount" || mount "$data_mount"',
-    'resize2fs "$data_device"',
-    'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
-    // ⛔ WORKSPACE + AGENT HOMES MUST LAND ON THE DURABLE DISK (WI-10003296).
-    //
-    // GCP upgrades delete and recreate the boot disk while retaining only `data_device`.
-    // Both identities whose state must survive that operation live below /home: the customer's
-    // SSH identity owns its dotfiles and option-A agent credentials, and the isolated agent
-    // identity owns its native agent homes. Keeping either on the image loses authentication on
-    // every routine upgrade even though the workspace data itself survives.
-    //
-    // First adoption must use repair (which retains the boot disk) before a destructive upgrade.
-    // Publish the first copy by same-filesystem rename: a failed/interrupted copy must never be
-    // mistaken for a complete home on retry. Existing durable content, even empty, wins forever.
-    // This state must be on disk: it is mounted before the bootstrap or database can start.
-    '[[ -d /home && ! -L /home ]] || { echo "workspace home mount target is not a real directory" >&2; exit 1; }',
-    'if [[ ! -e "$data_mount/home" && ! -L "$data_mount/home" ]]; then',
-    '  home_seed="$(mktemp -d "$data_mount/.home-seed.XXXXXX")"',
-    '  cp -a /home/. "$home_seed"/',
-    '  mv -T -- "$home_seed" "$data_mount/home"',
-    'fi',
-    '[[ -d "$data_mount/home" && ! -L "$data_mount/home" ]] || { echo "durable home is not a real directory" >&2; exit 1; }',
-    "install -d -m 0755 '/home'",
-    'grep -q " /home none bind" /etc/fstab || printf "%s /home none bind 0 0\\n" "$data_mount/home" >> /etc/fstab',
-    "mountpoint -q '/home' || mount --bind \"$data_mount/home\" '/home'",
-    '[[ "$(stat -c %d:%i /home)" == "$(stat -c %d:%i "$data_mount/home")" ]] || { echo "workspace home is not backed by the durable directory" >&2; exit 1; }',
-    // ⛔ CUSTOMER WORKSPACES MUST LAND ON THE DURABLE DISK (WI-2143796, proven on canary-14).
-    //
-    // WORKSPACE_HOST_DATA_ROOT is `/srv/papercusp/workspaces` — a path on the BOOT disk, which
-    // `upgrade` DELETES and recreates from the new image (planUpgrade below retains only the data
-    // disk, `{ ...dataDisk, autoDelete: false }`). Measured 2026-09-03: a file written to that root
-    // as the customer SSH user was GONE after a ledger-verified `succeeded|100` upgrade, while the
-    // data disk persisted untouched — i.e. every customer workspace was destroyed by a routine
-    // image upgrade. The `workspaces` directory created just above, on the durable mount, was never
-    // referenced by anything: the storage was already provisioned and simply not used.
-    //
-    // Bind, rather than relocating WORKSPACE_HOST_DATA_ROOT itself, because the bootstrap builds a
-    // deliberate permission boundary at that path — 0711 on /srv/papercusp so the workspace user can
-    // traverse but not list, 0770 + named-user ACLs on the root itself — while $data_mount is
-    // 0750 root:$SERVICE_GROUP with the workspace account deliberately NOT in that group (D-043:
-    // keep runtime files root-owned and non-readable to the workspace user). Moving the root under
-    // $data_mount would put customer workspaces behind a directory the customer is denied, or force
-    // that boundary open. A bind mount keeps the entire published path, permission and ACL model
-    // byte-identical and changes only which disk the bytes live on. The ACLs are stored in the ext4
-    // filesystem on the data disk, so they now survive the upgrade too.
-    //
-    // This runs BEFORE the user bootstrap (see the ordering contract in this function's header), so
-    // the bootstrap's own `install -d`/`setfacl` on the workspace root write straight through to the
-    // durable disk. fstab carries the bind so it survives reboot as well as instance recreation.
-    `install -d -m 0711 '${WORKSPACE_HOST_DATA_ROOT.replace(/\/[^/]+$/, '')}'`,
-    `install -d '${WORKSPACE_HOST_DATA_ROOT}'`,
-    `grep -q " ${WORKSPACE_HOST_DATA_ROOT} none bind" /etc/fstab || printf "%s ${WORKSPACE_HOST_DATA_ROOT} none bind 0 0\\n" "$data_mount/workspaces" >> /etc/fstab`,
-    `mountpoint -q '${WORKSPACE_HOST_DATA_ROOT}' || mount --bind "$data_mount/workspaces" '${WORKSPACE_HOST_DATA_ROOT}'`,
-    ...(userScript ? ['', '# User-supplied bootstrap follows the durable mount.', userScript] : []),
-    '',
-  ].join('\n');
+  return renderDurableFilesystemScript({
+    devicePath: `/dev/disk/by-id/google-${dataDeviceName}`,
+    deviceWaitSec: GCP_DATA_DEVICE_WAIT_SEC,
+    hostBootstrapScript,
+  });
 }
 
 function refreshedInstanceMetadata(

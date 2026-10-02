@@ -1319,6 +1319,53 @@ describe('durable detached snapshot lifecycle', () => {
     }
   });
 
+  it('withholds a terminal PASS when requested per-file ledger rows include failures', async () => {
+    const runId = 'terminal-pass-with-failed-ledger';
+    const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts', 'lib/third.test.ts'];
+    const ledgerRows = [
+      { file_path: requestedFiles[0], status: 'pass', finished_at: new Date(1_700_000_001_000), output_tail: null },
+      { file_path: requestedFiles[1], status: 'fail', finished_at: new Date(1_700_000_002_000), output_tail: 'Transform failed' },
+      { file_path: requestedFiles[2], status: 'fail', finished_at: new Date(1_700_000_003_000), output_tail: 'Transform failed' },
+    ];
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{
+          run_id: runId,
+          task_id: 'task-terminal-pass-with-failed-ledger',
+          kind: 'vitest',
+          label: 'detached multi-file run',
+          file_path: null,
+          command: ['node', 'scripts/test-files.mjs'],
+          status: 'pass',
+          exit_code: 0,
+          started_at: new Date(1_700_000_000_000),
+          finished_at: new Date(1_700_000_010_000),
+          output: '',
+          truncated: false,
+          task_state: 'exited',
+          task_exit_code: 0,
+          task_ended_at: new Date(1_700_000_010_000),
+          task_detail: { requestedFiles },
+        }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered).toMatchObject({ runId, status: 'error', exitCode: 0 });
+    expect(recovered?.output).toContain('do not prove that every requested file passed');
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.[0]).toBe('error');
+  });
+
   it('waits for local terminal finalization before returning testing:run status', async () => {
     type Sql = Parameters<Store['persistRunSnapshot']>[1];
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;

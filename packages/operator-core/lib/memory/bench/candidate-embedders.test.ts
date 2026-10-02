@@ -11,7 +11,7 @@ vi.mock('@huggingface/transformers', () => ({
 }));
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
   validateNativeBoundaryRequest, nativeBoundaryPopulation, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
-  type NativeBoundaryRequest, type NativeBoundaryRow, type CandidateVectors } from './candidate-embedders';
+  type NativeBoundaryRequest, type NativeBoundaryRow, type NativeBoundaryBatchRow, type CandidateVectors } from './candidate-embedders';
 import { incumbentReferenceFixture } from './fixtures/incumbent-reference';
 
 describe('incumbent reference qualification', () => {
@@ -121,9 +121,48 @@ describe('native mDenseOn boundary evidence', () => {
     expect(result.comparisons[0].tokenLength).toBe(8192);
     expect(() => summarizeNativeBoundaries(request, [rows[7]], 'cpu')).toThrow('incomplete');
     expect(() => summarizeNativeBoundaries(request, [rows[0]], 'cpu', 'single-over-limit')).toThrow('incomplete');
-    for (const name of ['padded', 'mixed-length', 'unknown']) expect(() => nativeBoundaryPopulation(request, name)).toThrow('one declared');
+    expect(() => nativeBoundaryPopulation(request, 'unknown')).toThrow('one declared');
     rows[7].vector = [...rows[1].vector];
     expect(summarizeNativeBoundaries(request, [rows[7]], 'cpu', 'single-over-limit').diagnosticCompatible).toBe(false);
+  });
+  it.each(['padded', 'mixed-length'])('selects %s with only its declared single-input prerequisites', (id) => {
+    const { request, rows } = fixture();
+    const selection = nativeBoundaryPopulation(request, id), batch = request.batches.find((b) => b.id === id)!;
+    expect(selection.cases.map((c) => c.id)).toEqual(request.cases.filter((c) => batch.caseIds.includes(c.id)).map((c) => c.id));
+    expect(selection.batches).toEqual([batch]);
+    expect(selection.notChecked).toEqual([...request.cases.map((c) => `single-${c.id}`), 'padded', 'mixed-length']
+      .filter((cell) => cell !== id && !batch.caseIds.some((caseId) => cell === `single-${caseId}`)));
+    const selectedRows = rows.filter((r) => batch.caseIds.includes(r.id));
+    const evidence: NativeBoundaryBatchRow = { id, submittedCaseIds: batch.caseIds, actualInferenceBatchSize: 1,
+      vectors: batch.caseIds.map((caseId) => rows.find((r) => r.id === caseId)!.vector),
+      execution: { device: 'cpu', verified: true }, worker: { alive: true, disabled: false } };
+    const summary = summarizeNativeBoundaries(request, selectedRows, 'cpu', id, [evidence]);
+    expect(summary).toMatchObject({ diagnosticOnly: true, diagnosticCompatible: true, batchPopulationCompatible: true,
+      singlePopulationCompatible: false, rankingsEqual: null, notCheckedCells: selection.notChecked });
+    expect(() => summarizeNativeBoundaries(request, selectedRows, 'cpu', id)).toThrow('incomplete request-group');
+    evidence.vectors = evidence.vectors.map((v, i) => i ? v : rows[1].vector);
+    expect(summarizeNativeBoundaries(request, selectedRows, 'cpu', id, [evidence])).toMatchObject({
+      diagnosticCompatible: false, batchPopulationCompatible: false });
+  });
+  it.each(['order', 'tensor-batch', 'fallback', 'unverified', 'disabled', 'missing-vector', 'nonfinite'])('refuses %s request-group evidence', (failure) => {
+    const { request, rows } = fixture(), batch = request.batches[0];
+    const selectedRows = rows.filter((r) => batch.caseIds.includes(r.id));
+    const evidence: NativeBoundaryBatchRow = { id: batch.id, submittedCaseIds: [...batch.caseIds], actualInferenceBatchSize: 1,
+      vectors: batch.caseIds.map((id) => [...rows.find((r) => r.id === id)!.vector]),
+      execution: { device: 'cpu', verified: true }, worker: { alive: true, disabled: false } };
+    if (failure === 'order') evidence.submittedCaseIds.reverse();
+    if (failure === 'tensor-batch') evidence.actualInferenceBatchSize = 5;
+    if (failure === 'fallback') evidence.execution.device = 'cuda';
+    if (failure === 'unverified') evidence.execution.verified = false;
+    if (failure === 'disabled') evidence.worker.disabled = true;
+    if (failure === 'missing-vector') evidence.vectors.pop();
+    if (failure === 'nonfinite') evidence.vectors[0][0] = NaN;
+    expect(() => summarizeNativeBoundaries(request, selectedRows, 'cpu', batch.id, [evidence])).toThrow();
+  });
+  it('keeps unmeasured request groups in coverage when only the full single population is supplied', () => {
+    const { request, rows } = fixture();
+    expect(summarizeNativeBoundaries(request, rows, 'cpu')).toMatchObject({
+      singlePopulationCompatible: true, batchPopulationCompatible: false, notCheckedCells: ['padded', 'mixed-length'] });
   });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
     const { request, rows } = fixture();

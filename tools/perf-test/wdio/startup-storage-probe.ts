@@ -134,7 +134,10 @@ export function installStartupStorageProbe() {
     if (candidate.report.stopReason === 'collecting') candidate.report.stopReason = reason;
     if (candidate.frame !== null) window.cancelAnimationFrame(candidate.frame);
     candidate.frame = null;
-    if (candidate.companionTimer !== null) {
+    // Eligibility ends layout observation, but the independently queued timer
+    // may run after that frame. Preserve it until its callback, explicit stop,
+    // or the existing deadline so frame-first ordering is not censored.
+    if (candidate.companionTimer !== null && reason !== 'eligible-frame') {
       window.clearTimeout(candidate.companionTimer);
       candidate.companionTimer = null;
       candidate.report.firstCompanionTimerStopReason = reason;
@@ -214,7 +217,7 @@ export function installStartupStorageProbe() {
         try {
           candidate.companionTimer = window.setTimeout(() => {
             candidate.companionTimer = null;
-            if (!renderActive || render.stopReason !== 'collecting') return;
+            if (!renderActive || (render.stopReason !== 'collecting' && render.stopReason !== 'eligible-frame')) return;
             const beganTimer = performance.now();
             if (beganTimer - startedAtMs >= 60_000) {
               render.firstCompanionTimerStopReason = 'deadline';

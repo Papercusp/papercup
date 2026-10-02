@@ -450,6 +450,17 @@ export interface CheckpointExecutionContext {
   affectedTestProofGroup?: string;
 }
 
+/** WI-10004340: the frozen queue's review clock for a targeted leg runner. The repair-head
+ *  verification (`runGateAtRef(repairHead, ids)`) and the awaiting-fixer hold tick
+ *  (`runRepairTickLegs`) measure `<ws> :: lint:migration-forward-compat` outside the
+ *  candidate suite, so WI-10005212's candidate-suite clock never reached them: a sidecar
+ *  whose reviewBy lapsed after the freeze (987, reviewBy 2026-10-01, queue opened
+ *  2026-10-01T10:39Z) kept repairHead 0d8ad5e3 red on the wall clock. */
+export interface FrozenReviewClockOptions {
+  /** Persisted queue.openedAtMs. Omitted for a tip measurement, which keeps the wall clock. */
+  frozenCandidateOpenedAtMs?: number;
+}
+
 /** A source/test sibling whose newest committed half sits beyond the candidate cut. */
 export interface SplitSourceTestPair {
   candidatePath: string;
@@ -797,6 +808,7 @@ export interface CheckpointDeps {
   runGateAtRef?(
     ref: string,
     gateIds: string[],
+    opts?: FrozenReviewClockOptions,
   ): Promise<TargetedGateResult>;
   /** Run the standard post-suite gate legs at an already-materialized targeted tip. */
   runPostSuiteAtRef?(ref: string): Promise<{ pass: boolean; summary: string }>;
@@ -811,6 +823,7 @@ export interface CheckpointDeps {
   runRepairTickLegs?(
     ref: string,
     gateIds: string[],
+    opts?: FrozenReviewClockOptions,
   ): Promise<RepairTickLegs | null>;
   /** P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): heal the `gen:*:check`
    *  members of a repair-round red by running the paired `gen:*` writer INSIDE the frozen
@@ -6192,7 +6205,11 @@ export async function verifyRepairHead(
   const fileRun = fileSettled?.value;
   const gateSettled =
     gateList.length > 0
-      ? await settleRepairHeadRunner(deps.runGateAtRef!(head, gateList))
+      ? await settleRepairHeadRunner(
+          deps.runGateAtRef!(head, gateList, {
+            frozenCandidateOpenedAtMs: queue.openedAtMs,
+          }),
+        )
       : undefined;
   if (gateSettled && ("failure" in gateSettled || gateSettled.value === null)) {
     return {
@@ -15135,6 +15152,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     const measured = await deps.runRepairTickLegs(
       queue.repairHead,
       repairTickGateIds(queue),
+      { frozenCandidateOpenedAtMs: queue.openedAtMs },
     );
     if (!measured) return result;
     deps.log(
@@ -20408,7 +20426,7 @@ export function realCheckpointDeps(
     // the same checkpoint tree / setupTree contract runTestsAtRef relies on. A gate red
     // never populates `failingFiles` (that list is test-FILE-only), so without this seam
     // it fell straight past the stale-candidate rescue with nothing to re-run.
-    async runGateAtRef(ref, gateIds) {
+    async runGateAtRef(ref, gateIds, opts) {
       // Same honest-absence contract as runTestsAtRef: a setupTree throw here propagates
       // to the caller's .catch(() => null), which reads as tipRetest=null → 'tip re-run
       // unavailable' — never a fabricated REPRODUCE for a tip we never actually checked out.
@@ -20433,6 +20451,7 @@ export function realCheckpointDeps(
         // stamp it — but only once the checkout is verified to BE `ref` (a wrong sha is worse
         // than the reporter's own resolution).
         verifiedHead === ref ? ref : null,
+        opts?.frozenCandidateOpenedAtMs,
       );
       const measured = await measureTargetedGateRuns(gateIds, async (script, workspace) => {
         const invocation = workspace
@@ -20494,7 +20513,7 @@ export function realCheckpointDeps(
     // runGateAtRef above, with additional per-gate duration/lifecycle records (see
     // measureRepairTickLegs for the contract; the hold tick's checkpoint tree is idle,
     // so materializing repairHead here steps on nothing).
-    async runRepairTickLegs(ref, gateIds) {
+    async runRepairTickLegs(ref, gateIds, opts) {
       // WI-10001529: resolve through resolveGateRuns, NOT a bare NON_TEST_GATE_SCRIPTS
       // lookup. The lookup silently DROPPED every id that is not a registry key — which is
       // exactly what a queued `<ws> :: <script>` task signature is — so the one id whose
@@ -20510,6 +20529,9 @@ export function realCheckpointDeps(
         process.env,
         undefined,
         cfg.greenCheckpointCapacityMode,
+        undefined,
+        undefined,
+        opts?.frozenCandidateOpenedAtMs,
       );
       return measureRepairTickLegs(
         {

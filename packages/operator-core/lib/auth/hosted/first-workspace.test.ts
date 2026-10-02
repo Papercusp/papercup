@@ -332,7 +332,10 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
       credentialRef: 'delegation://ws-1/conn-1',
       configuration: GCP,
     }).record;
-    expect(gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record })).toMatchObject({ target: 'gcp', hostId: 'host-1' });
+    const spec = gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record });
+    expect(spec).toMatchObject({ target: 'gcp', hostId: 'host-1' });
+    // D-028: a customer-delegated host is not defaulted to spot; its project and bill are the customer's.
+    expect((spec as { provider: Record<string, unknown> }).provider).not.toHaveProperty('provisioningModel');
   });
 
   it('rejects a missing or unknown hosting choice, and bring-your-own-cloud without a configuration', async () => {
@@ -552,7 +555,8 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
       region: 'us-central1',
       zone: 'us-central1-c',
       credentials: { cloudCredentialRef: { kind: 'cloud', ref: identity.credentialRef } },
-      provider: { projectId: HOSTING_PROJECT, network: { mode: 'managed' } },
+      // D-028 (WI-10005210): a new Papercusp-hosted host is spot.
+      provider: { projectId: HOSTING_PROJECT, network: { mode: 'managed' }, provisioningModel: 'spot' },
     });
     expect((resolvedSpecs[0] as { provider: Record<string, unknown> }).provider).not.toHaveProperty('serviceAccountEmail');
   });

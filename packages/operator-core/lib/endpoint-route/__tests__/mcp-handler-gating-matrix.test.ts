@@ -1123,7 +1123,7 @@ function assertPolicyResultParity(
     });
   };
   expect(payloadContent(native)).toEqual(payloadContent(http));
-  expect(payloadContent(native)).toEqual([{ type: 'text', text: '3' }]);
+  expect(payloadContent(native)).toEqual([{ type: 'text', text: 'gatingtest:scoped-ok' }]);
 }
 
 describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the real HTTP assembly', (connection) => {

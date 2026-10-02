@@ -1487,7 +1487,7 @@ export function getRun(runId: string): RunSnapshot | null {
 }
 
 const UNVERIFIED_VITEST_PASS_NOTE =
-  '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not exactly cover the requested file manifest.\n';
+  '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n';
 
 async function withholdUnverifiedVitestPass(
   snapshot: RunSnapshot,

@@ -164,12 +164,23 @@ describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family 
     await blockByIssue('F-blocked', 'EI-1');
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
 
-    const __probeSet = await wi.setWorkItemState('EI-1', 'resolved', { by: 'integration-test', completionRef: 'readiness' }).catch((e: unknown) => ({ __err: String(e) }));
-    // WI5224-PROBE (temporary)
-    console.log('WI5224-PROBE set=', JSON.stringify(__probeSet)?.slice(0, 600));
-    console.log('WI5224-PROBE rows=', JSON.stringify(await db.sql`SELECT feature_id, item_kind, status, terminal_reason, taken_by, workspace_id, harness_slug FROM harness_shared.work_items`));
-    console.log('WI5224-PROBE deps=', JSON.stringify(await db.sql`SELECT * FROM harness_shared.work_item_deps`));
+    // Migration 996: only a SETTLED completion (authority committed/validated) satisfies a
+    // blocker. A bare completionRef is judged 'proposed' and keeps blocking (next test).
+    await wi.setWorkItemState('EI-1', 'resolved', {
+      by: 'integration-test', completionRef: 'readiness', completionAuthority: 'committed',
+    });
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
+  });
+
+  it('a RESOLVED issue blocker with only PROPOSED authority still blocks (migration 996)', async () => {
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
+    await seedIssue('EI-3', 'open');
+    await blockByIssue('F-blocked', 'EI-3');
+    const closed = await wi.setWorkItemState('EI-3', 'resolved', { by: 'integration-test', completionRef: 'readiness' });
+    // Precondition: the close really landed terminal and was judged under-evidenced; without
+    // it a "still blocked" read could just mean the write never happened.
+    expect(closed?.completionAuthority).toBe('proposed');
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
   });
 
   it('a CLOSED issue blocker (the other issue-terminal) does not block', async () => {
