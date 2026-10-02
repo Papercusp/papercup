@@ -608,6 +608,19 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     this.imagePublisherAccountIds = options.imagePublisherAccountIds ?? AWS_WORKSPACE_HOST_AMI_PUBLISHER_ACCOUNT_IDS;
   }
 
+  /**
+   * The connection's resolved credentials, from the SAME memoized chain every SDK call here uses, so
+   * a process this client hands them to (the SSM tunnel) acts as exactly the identity the SDK does.
+   */
+  async sessionCredentials(): Promise<AwsConnectionSessionCredentials> {
+    const identity = await this.credentials();
+    return {
+      accessKeyId: identity.accessKeyId,
+      secretAccessKey: identity.secretAccessKey,
+      ...(identity.sessionToken ? { sessionToken: identity.sessionToken } : {}),
+    };
+  }
+
   private clients(region = this.bound.region): AwsSdkClientSet {
     let set = this.regional.get(region);
     if (!set) {
@@ -1641,8 +1654,21 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   }
 }
 
+/** Short-lived credentials of one AWS connection. Secret; never serialize or log. */
+export interface AwsConnectionSessionCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+}
+
+/** A client that can hand out the credentials its own SDK calls are signed with. */
+export interface AwsConnectionCredentialSource {
+  sessionCredentials(): Promise<AwsConnectionSessionCredentials>;
+}
+
 /** The production AWS SDK v3 seam client for one persisted AWS connection. */
-export function createAwsSdkWorkspaceHostClient(options: AwsSdkWorkspaceHostClientOptions): AwsWorkspaceHostSdkClient & {
+export function createAwsSdkWorkspaceHostClient(options: AwsSdkWorkspaceHostClientOptions): AwsWorkspaceHostSdkClient &
+  AwsConnectionCredentialSource & {
   preflight(): AwsWorkspaceHostPreflightClient;
 } {
   return new AwsSdkWorkspaceHostClient(options);
