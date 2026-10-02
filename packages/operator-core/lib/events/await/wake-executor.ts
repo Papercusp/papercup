@@ -151,7 +151,17 @@ import {
   renderLoopWallsBlock,
 } from '../../harness/routines/loop-fire';
 import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
-import { formatEnvelope, mintNonce, tagTurnForInjection } from '../../turn-provenance/turn-provenance';
+import {
+  formatEnvelope,
+  mintNonce,
+  tagTurnForInjection,
+  type TaggedTurn,
+} from '../../turn-provenance/turn-provenance';
+
+/** The envelope+ledger tagger seam. The real one is async (WI-10005327: its
+ *  ledger write must not block the event loop); hermetic test stubs may stay
+ *  sync, so callers always await the result. */
+export type WakeTurnTagger = (args: Parameters<typeof tagTurnForInjection>[0]) => TaggedTurn | Promise<TaggedTurn>;
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import {
   readOwnerChatTurnText,
@@ -2017,7 +2027,7 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
  * ledger write still returns deliverable tagged text (the turn then shows as
  * UNVERIFIED at the hook — visible, never a dropped wake).
  */
-function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInjection): string {
+async function tagWakeText(d: DeliveryWork, text: string, tag: WakeTurnTagger): Promise<string> {
   const origin = readLoopDeliveryMarker(d.payload)
     ? 'loop-fire'
     : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
@@ -2036,7 +2046,7 @@ function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInject
       ? OWNER_CHAT_TURN_ORIGIN
       : 'wake-pump';
   try {
-    return tag({ sid: d.subscriberId, origin, text }).taggedText;
+    return (await tag({ sid: d.subscriberId, origin, text })).taggedText;
   } catch {
     // The wake itself is fail-soft, but returning it without an envelope turns a
     // machine prompt into affirmative owner speech in every transcript reader.
@@ -2534,7 +2544,7 @@ export interface ExecuteWakeDeps {
    *  wake delivery (never inbox bodies). Injected for tests (a hermetic test stubs
    *  it to avoid real ~/.papercusp/turn-provenance writes, or to a passthrough to
    *  assert un-tagged text); defaults to the real tagTurnForInjection. */
-  tagTurn?: typeof tagTurnForInjection;
+  tagTurn?: WakeTurnTagger;
   resumePlanRun?: (input: { runId: number; wakeText: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** turn-lifecycle-control Phase 3 (P-014): discover + inject into a live
    *  psu-hosted managed-pty session's control socket. The operator can't see it
@@ -3166,7 +3176,7 @@ async function injectPsuHostWake(
       lastTurnAtMs ?? undefined,
       agentToolCallsSinceNote,
     );
-    const coldText = tagWakeText(
+    const coldText = await tagWakeText(
       d,
       mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake,
       deps.tagTurn ?? tagTurnForInjection,
@@ -3743,7 +3753,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const rehydratedText = await rehydrateForDelivery(d, wakeTurnText(d));
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        tagWakeText(d, applyInjectionDoor(d, rehydratedText), tagTurn),
+        await tagWakeText(d, applyInjectionDoor(d, rehydratedText), tagTurn),
         findPsuHost,
         injectPsuHost,
         deliveryDeps,
@@ -3764,7 +3774,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // wake reason as the prompt. Lazy import keeps the engine free of a
       // static plans-tool dependency.
       const resumePlanRun = deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
-      const planRunText = tagWakeText(
+      const planRunText = await tagWakeText(
         d,
         applyInjectionDoor(d, await rehydrateForDelivery(d, wakeTurnText(d))),
         tagTurn,
@@ -3888,7 +3898,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
     }
 
-    const text = tagWakeText(
+    const text = await tagWakeText(
       sessionDelivery,
       applyInjectionDoor(
         sessionDelivery,
