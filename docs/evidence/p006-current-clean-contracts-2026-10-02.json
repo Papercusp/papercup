@@ -3515,5 +3515,44 @@
     "acceptance": "Selected BREACH@3 PASS/l4; unfiltered governing evaluator reports BREACH@3 PASS. Full accepted 28-clause governing census remains FAIL (13 pass, 15 fail) because other clauses, including four P-003 clauses made stale by the BREACH source/test change, still need renewal or proof.",
     "limits": "No LIVE_GATE_OPS, P2P, shared restart or P-007/P-008 source work. Independent rubric ratification, successful real-goal card, closure audit and shipment remain open."
   },
-  "next": "BREACH@3 governs PASS/l4 at clean commit 420c28a3f8. Renew P-003 MEASURED-ADMISSION, NUMERATOR, UNMEASURED and WINDOW source/test-stale bindings with current clean proof, then complete UNMEASURED-ADMISSION/D014 and the remaining P-004/P-005/P-006 acceptance work. Preserve D003/D013FAIL/D014/D016, P-007/P-008 independent lanes, and avoid LIVE_GATE_OPS/P2P."
+  "p003RenewalFire203": {
+    "recordedAt": "2026-10-02T17:45:00Z",
+    "sourcePin": "420c28a3f8d43b340625b826bba2180c0520d61a",
+    "measuredAdmission": {
+      "cleanUnit": { "run": 20542901, "result": "167/167 passed" },
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "at-ceiling-refused": 20542910, "under-ceiling-admitted": 20542963 },
+      "currentBindings": [22129, 22130, 22131, 22132],
+      "historicalBindingsRetracted": [21864, 21756, 21750, 21749],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "numerator": {
+      "cleanUnitRun": 20542226,
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "attributed-authoritative": 20544489, "diagnostic-excluded": 20544492, "potless-attributed": 20545198 },
+      "currentBindings": [22133, 22134, 22135, 22136, 22137, 22138, 22139],
+      "historicalBindingsRetracted": [22000, 22004, 22008, 22009, 22043, 22044],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "unmeasured": {
+      "cleanUnitRun": 20542226,
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "no-samples-null": 20547620, "priced-zero-measured": 20548459, "unpriced-null": 20548464 },
+      "currentBindings": [22151, 22152, 22153, 22154, 22155, 22156, 22157],
+      "historicalBindingsRetracted": [22005, 22006, 22007, 22040, 22041, 22042, 22047],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "window": {
+      "cleanUnitRun": 20542226,
+      "realPgPositiveRun": 20542229,
+      "calibratedMutants": { "declared-window": 20548502, "lifetime-fallback": 20548517, "display-admission-breach-parity": 20548588, "pre-creation-excluded": 20548599 },
+      "currentBindings": [22187, 22188, 22189, 22190, 22191, 22192, 22193, 22194],
+      "historicalBindingsRetracted": [21854, 21855, 21856, 21858, 22010, 22011, 22045, 22046],
+      "selectedAdequacy": "PASS/l3, current one-to-one pairs; historical runs retained"
+    },
+    "method": "All new mutation rows came from maintained copy-out overlay on a clean committed clone, with baseline and relocated-copy passes and intended mutant assertion failures. Private native PG was used for the two WINDOW integration mutants, stopped after each run. One initial synchronous PG wrapper ended by SIGPIPE before any test row was recorded; its database was stopped and the asynchronous wrapper plus preflight passed before the successful run. No shared tree mutation or LIVE_GATE_OPS.",
+    "governingCensus": { "acceptedClauses": 28, "pass": 12, "fail": 16, "unknown": 0, "governing": true, "newResidue": "Five P-002 clauses became freshness-fail during this interval; UNMEASURED-ADMISSION and P-004/P-005/P-006 remain fail." },
+    "limits": "The four renewed P-003 clauses pass selected adequacy, but WI-1074216/P-006 and full plan acceptance remain open. Independent rubric ratification, successful real-goal card, closure audit and shipment remain."
+  },
+  "next": "Freshly inspect the five P-002 freshness failures and source/test change ownership before any renewal; do not duplicate another member's lane or replay unchanged proof. Continue the independent P-006 tasks: UNMEASURED-ADMISSION/D014, P-004/P-005/P-006 proof, independent rubric ratification, successful real-goal card, closure audit and shipment. Preserve D003/D013FAIL/D014/D016, P-007/P-008 independent lanes, and avoid LIVE_GATE_OPS/P2P."
 }
