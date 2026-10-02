@@ -164,14 +164,22 @@ export function hostedConnectorRouteLabel(hostId: string): string {
 
 /**
  * D-407: the customer workspace a host was brought up for, read from its unrevoked connector
- * enrollment -- the persisted proof that the host carries a hosted bring-up. A host with none
- * (BYOC) returns null. Only the bring-up enrolls connectors, so a caller never has to say it.
+ * enrollment -- the persisted proof that the host carries a hosted bring-up. Only the bring-up
+ * enrolls connectors, so a caller never has to say it.
+ *
+ * aws-byoc-gcp-parity D-016 (c): a portal host whose provision succeeded but whose bring-up never
+ * completed has no connector yet, so it falls back to its `customer_workspaces` binding -- but only
+ * while that portal workspace is still 'provisioning'. That is the one state in which the
+ * empty-source initialize is safe: the workspace has never served, so there is nothing for it to
+ * overwrite. This is what lets `repair` recover such a host; without it the workspace stays
+ * 'provisioning' forever (measured on host-0f9b1ba8db30d143becc130a). A desktop/local BYOC host has
+ * neither binding and returns null.
  */
 export async function readHostedBringUpBinding(input: {
   controlPlaneWorkspaceId: string;
   hostId: string;
 }): Promise<{ customerWorkspaceId: string } | null> {
-  return withHostedServiceContext(async (sql) => {
+  const enrolled = await withHostedServiceContext(async (sql) => {
     const rows = await sql<Array<{ customer_workspace_id: string }>>`
       SELECT DISTINCT customer_workspace_id
         FROM papercusp_auth.hosted_workspace_connectors
@@ -184,6 +192,24 @@ export async function readHostedBringUpBinding(input: {
     }
     return rows[0] ? { customerWorkspaceId: rows[0].customer_workspace_id } : null;
   });
+  if (enrolled) return enrolled;
+
+  const pending = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
+    query<Array<{ id: string }>>`
+      SELECT id
+        FROM harness_shared.customer_workspaces
+       WHERE workspace_id = ${input.controlPlaneWorkspaceId}
+         AND workspace_host_id = ${input.hostId}
+         AND kind = 'hosted'
+         AND state = 'provisioning'
+       ORDER BY id
+       LIMIT 2
+    `,
+  );
+  if (pending.length > 1) {
+    throw new Error(`host ${input.hostId} is bound to ${pending.length} provisioning customer workspaces`);
+  }
+  return pending[0] ? { customerWorkspaceId: pending[0].id } : null;
 }
 
 export async function revokeHostedWorkspaceConnectorsForDestroyedHost(input: {
