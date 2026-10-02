@@ -20,7 +20,7 @@ import { loadBlueprintFromFile, type ResolvedAgentSpecification } from '@papercu
 import type { PotCapabilityProviderBindingRow } from '../capability-class-registry-store';
 import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds';
 import { matchesAny, PROTECTED_CAPABILITY_GLOBS, ROLE_ENVELOPES, type RoleEnvelope } from './policy';
-import type { RefusalContract } from './identity-refusal-contract';
+import { identityRefusalContract, type RefusalContract } from './identity-refusal-contract';
 
 interface CacheEntry {
   mtimeMs: number;
@@ -152,8 +152,10 @@ export function resolveIdentityGrantEnvelope(input: {
   const failures: IdentityGrantFailure[] = [];
   const allowedTools = new Set<string>();
   const fail = (cause: IdentityGrantFailure['cause'], classRef: string | null, toolName?: string) => {
+    // WI-10005197: the same lift condition the kernel verdict carries for this cause.
     failures.push({ code: 'capability_unsatisfied', cause, classRef,
-      ...(toolName ? { toolName } : {}), routes: ['operator-notify', 'suggest-provider', 'needs_human'] });
+      ...(toolName ? { toolName } : {}), routes: ['operator-notify', 'suggest-provider', 'needs_human'],
+      refusal: identityRefusalContract(cause) });
   };
   const result = (): IdentityGrantEnvelope => ({
     applied: true,
