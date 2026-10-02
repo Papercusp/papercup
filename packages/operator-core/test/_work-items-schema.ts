@@ -794,6 +794,31 @@ export const USER_TRUST_LIST_DDL = `
     PRIMARY KEY (workspace_id, trusted_github_user_id)
   )`;
 
+/** Minimal migration 1337 work_admissions relation for work_items:update tests.
+ * The update handler checks source-owned fields before writing; these focused
+ * fixtures only need the column-complete empty ledger read, not admission writes. */
+export const WORK_ADMISSIONS_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.work_admissions (
+    workspace_id    text        NOT NULL,
+    id              uuid        NOT NULL,
+    work_item_id    text        NOT NULL,
+    harness_slug    text        NOT NULL,
+    data_source_id  uuid,
+    source_kind     text        NOT NULL,
+    source_key      text        NOT NULL,
+    source_ref      jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    field_authority jsonb       NOT NULL DEFAULT '{}'::jsonb,
+    admitted_via    text        NOT NULL,
+    admitted_by     text        NOT NULL,
+    rule_id         uuid,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, id),
+    UNIQUE (workspace_id, source_kind, source_key)
+  );
+  CREATE INDEX IF NOT EXISTS work_admissions_work_item_idx
+    ON harness_shared.work_admissions (workspace_id, work_item_id);
+`;
+
 /**
  * Minimal `work_item_deps` table (migration 367) for the claim path. claimNextWorkItem's
  * readiness AND-clause (work-item-deps-and-readiness-2026-06-22 P-005, the F1 fix)
