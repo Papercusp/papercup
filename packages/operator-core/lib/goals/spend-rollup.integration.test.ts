@@ -42,7 +42,7 @@ vi.mock('../agent-tools/coordination/escalations', () => ({ openEscalation: esca
 import { computeGoalSpendRollup, runGoalSpendRollupOnce, sessionSpendForGoal } from './spend-rollup';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { GOAL_MODE } from '../modes/goal-session';
-import { resolveGoalLaunchForGoal } from '../goal-launch-settings';
+import { checkGoalInferenceAdmission, resolveGoalLaunchForGoal } from '../goal-launch-settings';
 
 const WS = 'default';
 const GOAL = 'goal-rollup-1';
@@ -143,7 +143,9 @@ beforeAll(async () => {
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.agent_modes (
       workspace_id text NOT NULL, owner_id text NOT NULL,
-      axis_key text NOT NULL, mode text NOT NULL, subject text, set_by text
+      axis_key text NOT NULL, mode text NOT NULL, subject text, set_by text,
+      goal_lease_epoch bigint, goal_handoff_from_owner_id text,
+      goal_handoff_expires_at timestamptz, set_at timestamptz NOT NULL DEFAULT now()
     )`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.session_briefs (
@@ -268,6 +270,42 @@ async function seedPartitionFixture() {
 }
 
 describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
+  describe('D-017: unmeasured spend is refused on real launch and per-turn paths', () => {
+    it.each([
+      { scenario: 'no-snapshot-refused', snapshot: false, usage: 'empty', admitted: false },
+      { scenario: 'no-samples-refused', snapshot: true, usage: 'empty', admitted: false },
+      { scenario: 'unpriced-refused', snapshot: true, usage: 'unpriced', admitted: false },
+      { scenario: 'priced-under-budget-control', snapshot: true, usage: 'priced-zero', admitted: true },
+    ] as const)('$scenario', async ({ snapshot, usage, admitted }) => {
+      await seedGoal({ budgetCents: 2_000 });
+      await subjectOwner('su-budget-test');
+      if (usage === 'unpriced') await sample({ goalId: GOAL, usd: null });
+      if (usage === 'priced-zero') await sample({ goalId: GOAL, usd: 0 });
+      if (snapshot) {
+        const sweep = await runGoalSpendRollupOnce(rootSql);
+        expect(sweep).toMatchObject({ ok: true, written: 1, errors: [] });
+        const metadata = await goalMetadata();
+        expect(metadata?.spentCents).toBe(usage === 'priced-zero' ? 0 : null);
+      } else {
+        expect(await goalMetadata()).toBeNull();
+      }
+
+      const launch = await resolveGoalLaunchForGoal({
+        workspaceId: WS, goalId: GOAL, sql: rootSql, launcherOwnerId: 'su-budget-test',
+      });
+      const turn = await checkGoalInferenceAdmission({
+        workspaceId: WS, ownerId: 'su-budget-test', sql: rootSql,
+      });
+      if (admitted) {
+        expect(launch.refusal).toBeNull();
+        expect(turn).toMatchObject({ allowed: true, reason: 'under-budget' });
+      } else {
+        expect(launch.refusal).toMatchObject({ reason: 'goal_budget_unmeasurable', current: null });
+        expect(turn).toMatchObject({ allowed: false, code: 'goal_budget_unmeasurable', spentCents: null });
+      }
+    });
+  });
+
   describe.each(['snapshot', 'launch-time'] as const)('measured launch admission through %s', (measurement) => {
     it.each([
       { spentCents: 2_000, scenario: 'at-ceiling-refused', refused: true },
