@@ -97,14 +97,13 @@ export async function readProcessMemory(client, { expectedPid } = {}) {
  * an allocation stack or exclusive retained ownership.
  * Offset pages use current insertion order, not a stable multi-read snapshot.
  * Digest selection and skipped page edges consume the same global work budget.
- * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
  * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
  *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
  *   owners?: string[], operatorCacheEntries?: boolean, maxCacheEntries?: number,
  *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number,
  *   cacheEntryOffset?: number, cacheKeyDigests?: string[] }} options
  */
-export async function readPinnedState(client, {
+export function validatePinnedStateOptions({
   expectedPid, maxSlots = 256, maxObjects = 4096, maxEntries = 8192,
   maxFields = 32, maxDepth = 5, budgetMs = 50, owners, operatorCacheEntries = false,
   maxCacheEntries = 64, maxEntryEntries = 2048, maxEntryObjects = 1024, maxKeyCodeUnits = 16384,
@@ -127,6 +126,17 @@ export async function readPinnedState(client, {
       (owners !== undefined && (!Array.isArray(owners) || owners.length < 1 || owners.length > 64 ||
         new Set(owners).size !== owners.length || owners.some(name => typeof name !== 'string' ||
           name.length < 1 || name.length > 512)))) throw new TypeError('invalid pinned-state limits/PID/owners');
+  return { expectedPid, limits, owners, operatorCacheEntries, cacheEntryOffset, cacheKeyDigests };
+}
+
+/** Read bounded pinned payloads after the same pure validation callers can use
+ * before opening an inspector. Validation never connects to or evaluates a target.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
+ * @param {Parameters<typeof validatePinnedStateOptions>[0]} options
+ */
+export async function readPinnedState(client, options) {
+  const { expectedPid, limits, owners, operatorCacheEntries, cacheEntryOffset, cacheKeyDigests } =
+    validatePinnedStateOptions(options);
   const result = await client.evaluate(`(() => {
     if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
     const limits = ${JSON.stringify(limits)}, owners = ${JSON.stringify(owners ?? null)}, start = performance.now();

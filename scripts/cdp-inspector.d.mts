@@ -27,14 +27,13 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * an allocation stack or exclusive retained ownership.
  * Offset pages use current insertion order, not a stable multi-read snapshot.
  * Digest selection and skipped page edges consume the same global work budget.
- * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
  * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
  *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
  *   owners?: string[], operatorCacheEntries?: boolean, maxCacheEntries?: number,
  *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number,
  *   cacheEntryOffset?: number, cacheKeyDigests?: string[] }} options
  */
-export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs, owners, operatorCacheEntries, maxCacheEntries, maxEntryEntries, maxEntryObjects, maxKeyCodeUnits, cacheEntryOffset, cacheKeyDigests, }: {
+export function validatePinnedStateOptions({ expectedPid, maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs, owners, operatorCacheEntries, maxCacheEntries, maxEntryEntries, maxEntryObjects, maxKeyCodeUnits, cacheEntryOffset, cacheKeyDigests, }: {
     expectedPid: number;
     maxSlots?: number;
     maxObjects?: number;
@@ -50,7 +49,31 @@ export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>,
     maxKeyCodeUnits?: number;
     cacheEntryOffset?: number;
     cacheKeyDigests?: string[];
-}): Promise<any>;
+}): {
+    expectedPid: number;
+    limits: {
+        maxSlots: number;
+        maxObjects: number;
+        maxEntries: number;
+        maxFields: number;
+        maxDepth: number;
+        budgetMs: number;
+        maxCacheEntries: number;
+        maxEntryEntries: number;
+        maxEntryObjects: number;
+        maxKeyCodeUnits: number;
+    };
+    owners: string[] | undefined;
+    operatorCacheEntries: boolean;
+    cacheEntryOffset: number;
+    cacheKeyDigests: string[] | undefined;
+};
+/** Read bounded pinned payloads after the same pure validation callers can use
+ * before opening an inspector. Validation never connects to or evaluates a target.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
+ * @param {Parameters<typeof validatePinnedStateOptions>[0]} options
+ */
+export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, options: Parameters<typeof validatePinnedStateOptions>[0]): Promise<any>;
 /** @typedef {{ pid: number, startedAt: number, until: number, endedAt: number,
  *   total: number, observerMs: number, limited: boolean,
  *   calls: Record<string, { calls: number, stacks: string[] }> }} FunctionCallTrace */

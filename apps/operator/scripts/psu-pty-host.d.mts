@@ -2281,11 +2281,12 @@ export function codexStartingFooterEvidence(output: any, { maxMatches, tailChars
     visibleChars: number;
     rawTail: string;
 } | null;
-export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, promptReady, }?: {
+export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, promptReady, onboardingExpired, }?: {
     enabled?: boolean | undefined;
     requireInitialOutput?: boolean | undefined;
     promptReady?: boolean | undefined;
-}): "ordinary-gate" | "composer-ready" | "wait-for-composer";
+    onboardingExpired?: boolean | undefined;
+}): "ordinary-gate" | "composer-ready" | "composer-unseen-ordinary-gate" | "wait-for-composer";
 /** @param {*} agent @param {*} output
  *  @param {{ rows?: number, cols?: number }} [dims] the child's PTY size (WI-10005178) */
 export function startupOutputReady(agent: any, output: any, dims?: {

@@ -6176,9 +6176,19 @@ export function headlessClaudeKickoffReadiness({
   enabled = false,
   requireInitialOutput = false,
   promptReady = false,
+  onboardingExpired = false,
 } = {}) {
   if (!enabled || !requireInitialOutput) return 'ordinary-gate';
-  return promptReady ? 'composer-ready' : 'wait-for-composer';
+  if (promptReady) return 'composer-ready';
+  // WI-10005472: the onboarding watcher saw neither a theme/security wizard nor
+  // the composer for its whole startup window. That is the signature of a child
+  // whose startup paint landed before this host's listener attached (the class
+  // the startupMarkerMissing last resort documents): the TUI sits healthy at a
+  // composer the byte stream never showed. Waiting longer cannot change that, so
+  // defer to the ordinary busy gate, exactly as the next wake inject would.
+  // Measured 2026-10-01/02: 24 of 24 headless-claude-composer-not-ready carry
+  // drops had onboarding expired; 0 of 1775 delivered carries did.
+  return onboardingExpired ? 'composer-unseen-ordinary-gate' : 'wait-for-composer';
 }
 
 /** @param {*} agent @param {*} output
@@ -8198,6 +8208,9 @@ export function hostThroughPty(o) {
   // per-child choice watcher until a real turn is submitted, not merely until
   // the first ready frame is painted.
   let activeHeadlessCodexModelChoice = null;
+  // WI-10005472: the current child's onboarding watcher, so the kickoff gate can
+  // tell "composer not seen YET" from "composer never seen in the whole window".
+  let activeHeadlessClaudeOnboarding = null;
   let childStartupFirstOutputAt = 0;
   // EI-24141825238362808: the child's own bracketed-paste mode, tracked over ALL
   // output (not only startup) so turn text is framed only while the TUI has it on.
@@ -8958,6 +8971,7 @@ export function hostThroughPty(o) {
         requireInitialOutput && !startupReadinessProven() && !startupFallbackReady;
       if (startupMarkerMissing) dropReason = 'no-startup-ready-marker';
       let lastResortSpent = false;
+      let composerUnseenFallbackRecorded = false;
       // eslint-disable-next-line no-constant-condition
       while (true) {
         if (startupMarkerMissing) {
@@ -9006,7 +9020,16 @@ export function hostThroughPty(o) {
           enabled: headlessClaudeOnboardingEnabled(env),
           requireInitialOutput,
           promptReady: childPromptReady,
+          onboardingExpired: activeHeadlessClaudeOnboarding?.status().expired === true,
         });
+        if (claudeKickoffReadiness === 'composer-unseen-ordinary-gate' && !composerUnseenFallbackRecorded) {
+          composerUnseenFallbackRecorded = true;
+          appendHostEvent(ownerId, 'headless-claude-composer-unseen-ordinary-gate', {
+            label,
+            attempts,
+            startupOutputChars: childStartupOutput.length,
+          });
+        }
         const freshPromptReady = freshChildOwnerInputGeneration !== null &&
           (codexMarkerKickoffRequiresFrame()
             ? childBackendFirstFrameAt > 0
@@ -10993,6 +11016,7 @@ export function hostThroughPty(o) {
       enabled: headlessClaudeOnboardingEnabled(env),
       startupMs: headlessClaudeOnboardingStartupMs(env),
     });
+    activeHeadlessClaudeOnboarding = headlessClaudeOnboarding;
     const headlessCodexModelChoice = makeHeadlessCodexModelChoiceStateMachine({
       enabled: headlessCodexModelChoiceEnabled(env),
     });
