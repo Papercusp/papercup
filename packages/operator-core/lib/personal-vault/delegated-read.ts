@@ -7,38 +7,32 @@
  * anything anywhere — what it learns can leave only through its answer. The
  * answer is therefore the one thing judged:
  *
- *   - it carries no restricted document text or fields → delivered, and the
- *     caller's disclosure ledger is NOT touched;
- *   - it carries restricted content → WITHHELD by default; with `acceptLabel`
- *     it is delivered and every restricted document it carries is recorded on
- *     the caller through `discloseDocuments`, the same delivery-time rule
- *     personal:search applies, so the caller's later sends are bound by those
- *     documents' reader sets (R-1). A caller with no attributable identity
- *     cannot carry a label (D-004), so its answer is withheld either way.
+ *   - no restricted document was consulted, or the answer is TYPED → delivered,
+ *     and the caller's disclosure ledger is NOT touched;
+ *   - otherwise it is presumed to carry EVERY restricted document consulted →
+ *     WITHHELD by default; with `acceptLabel` it is delivered and every
+ *     restricted document consulted is recorded on the caller through
+ *     `discloseDocuments`, the same delivery-time rule personal:search applies,
+ *     so the caller's later sends are bound by those documents' reader sets
+ *     (R-1). A caller with no attributable identity cannot carry a label
+ *     (D-004), so its answer is withheld either way.
  *
- * Classification is lexical and runs against EXACTLY the text the delegate was
- * shown (`renderDelegateDocuments` and `classifyDelegateAnswer` read the same
- * fields), so nothing the delegate saw is outside the check:
- *   - text: any `DELEGATE_SHINGLE_WORDS`-word run of a restricted document's
- *     title or snippet appearing in the answer; a segment shorter than that is
- *     matched whole once it has `DELEGATE_MIN_SEGMENT_WORDS` words;
- *   - fields: the sender and non-owner participant addresses of a restricted
- *     document appearing in the answer.
- * A value the caller already holds — present in its question, or in an
- * unrestricted document the delegate also saw — is not counted: delivering it
- * discloses nothing the caller could not read unlabelled.
- *
- * Limit (stated, tracked as residue): a paraphrase that shares no run of
- * `DELEGATE_SHINGLE_WORDS` words and no field value with a restricted document
- * passes as content-free. The delegate is instructed not to quote or name
- * people; the classifier is the enforcement, and it is lexical.
+ * WHY BY FORM, NOT BY WORDS (WI-10005608, D-010). Whether free text carries a
+ * document's content cannot be decided lexically: a paraphrase shares no word
+ * run and no field value with its source, and an earlier shingle classifier
+ * passed exactly that. A typed answer CAN be decided — `isTypedDelegateAnswer`:
+ * every word is yes/no/unknown/none, a word of the caller's own question, or at
+ * most one whole number that appears nowhere in what the delegate was shown of a
+ * restricted document (so a code, phone fragment or date copied from one is not
+ * a "count"). Such an answer reveals at most a bit, a count, or a choice among
+ * options the caller itself named — never document text or fields.
  *
  * Labelling and the ledger write happen in ONE transaction, after the model
  * call: the delegate's answer can take longer than Postgres's
  * idle_in_transaction_session_timeout, so no transaction is held across it.
  */
 import type postgres from 'postgres';
-import { discloseDocuments, loadOwnerAddresses, loadPrivacyRules } from './disclosure-ledger';
+import { discloseDocuments, loadPrivacyRules } from './disclosure-ledger';
 import {
   documentSender,
   labelDocument,
@@ -49,10 +43,10 @@ import {
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
-/** Length of the word run that counts as quoting a restricted document. */
-export const DELEGATE_SHINGLE_WORDS = 8;
-/** A title/snippet segment this short or shorter is too generic to identify a document. */
-export const DELEGATE_MIN_SEGMENT_WORDS = 3;
+/** Words a typed answer may use beyond the caller's own question words and one number. */
+export const DELEGATE_TYPED_WORDS: ReadonlySet<string> = new Set(['yes', 'no', 'unknown', 'none']);
+/** A count: a whole number of at most this many digits. */
+export const DELEGATE_MAX_COUNT_DIGITS = 4;
 /** The ledger's `delivered_via` for a delegated read. */
 export const DELEGATED_READ_VIA = 'personal:ask';
 
@@ -61,18 +55,6 @@ export interface DelegateSourceDocument extends LabelableDocument {
   snippet: string;
   kind?: string | null;
   occurredAt?: string | null;
-}
-
-export type DelegateEvidence = 'text' | 'sender' | 'participant';
-
-export interface DelegateCarry {
-  documentId: string;
-  evidence: DelegateEvidence[];
-}
-
-export interface DelegateClassification {
-  carriesRestricted: boolean;
-  carried: DelegateCarry[];
 }
 
 /** Produces the delegate's answer. Production: a tool-less model call (personal:ask). */
@@ -108,7 +90,7 @@ export type DelegatedReadResult =
       delivered: false;
       reason: 'delegate_answer_carries_restricted' | 'disclosure_identity_unresolved';
       consulted: number;
-      /** How many restricted documents the withheld answer would have carried. */
+      /** How many restricted documents the withheld (untyped) answer is presumed to carry. */
       carriedRestricted: number;
     };
 
@@ -124,19 +106,6 @@ export function delegateWords(text: string): string[] {
   return text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 }
 
-function shingles(words: readonly string[], size = DELEGATE_SHINGLE_WORDS): Set<string> {
-  const out = new Set<string>();
-  for (let i = 0; i + size <= words.length; i += 1) out.add(words.slice(i, i + size).join(' '));
-  return out;
-}
-
-/** True when `needle` occurs as a contiguous word run inside `haystack`. */
-function containsRun(haystack: readonly string[], needle: readonly string[]): boolean {
-  if (!needle.length || needle.length > haystack.length) return false;
-  const joined = ` ${haystack.join(' ')} `;
-  return joined.includes(` ${needle.join(' ')} `);
-}
-
 /**
  * The normalized addresses the delegate is shown for a document: its sender
  * and participants, exactly as a `participants` reader set would list them
@@ -147,16 +116,16 @@ function addressesOf(doc: DelegateSourceDocument): string[] {
   return readerSetFor(doc, 'participants').map((a) => a.trim().toLowerCase());
 }
 
-/** Everything the delegate is shown for one document, as the classifier reads it. */
-function viewSegments(doc: DelegateSourceDocument): string[] {
-  return [doc.title ?? '', doc.snippet ?? ''].filter((s) => s.trim().length > 0);
+/** Every word the delegate is shown for one document: header, addresses, title and text. */
+function shownWords(doc: DelegateSourceDocument): string[] {
+  return [doc.source, doc.kind ?? '', doc.occurredAt ?? '', ...addressesOf(doc), doc.title ?? '', doc.snippet ?? ''].flatMap(delegateWords);
 }
 
 // ── what the delegate sees ────────────────────────────────────────────────
 
 /**
  * The document block handed to the delegate. Only these fields reach it, and
- * `classifyDelegateAnswer` checks the answer against these same fields.
+ * `isTypedDelegateAnswer` refuses a number taken from any of them.
  */
 export function renderDelegateDocuments(documents: readonly DelegateSourceDocument[]): string {
   return documents
@@ -177,57 +146,38 @@ export function renderDelegateDocuments(documents: readonly DelegateSourceDocume
 
 export const DELEGATE_SYSTEM_PROMPT = [
   'You answer one question for another agent from the owner\'s personal documents listed below.',
-  'Answer in at most three sentences. Prefer counts, yes/no, dates and times.',
-  'Do not quote document text, do not repeat subject lines, and do not name or give the address of any person unless the question already names them.',
-  'If the documents do not answer the question, say so.',
+  'When the question can be answered with yes, no or a number, reply with ONLY that word or number; reply ONLY "unknown" when the documents do not answer it.',
+  'Only an answer in that form reaches the asker freely: any other answer drawn from a private document is withheld from it.',
+  'Otherwise answer in at most three sentences, without quoting document text or naming anyone the question does not already name.',
 ].join(' ');
 
 // ── classification ────────────────────────────────────────────────────────
 
-export function classifyDelegateAnswer(input: {
+/**
+ * True when `answer` is TYPED (see the module header): every word is one of
+ * {@link DELEGATE_TYPED_WORDS}, a word of the caller's own `question`, or a
+ * single whole number of at most {@link DELEGATE_MAX_COUNT_DIGITS} digits that
+ * appears in none of the `restricted` documents as the delegate was shown them.
+ * An empty answer is typed. PURE.
+ */
+export function isTypedDelegateAnswer(input: {
   answer: string;
   question: string;
   restricted: readonly DelegateSourceDocument[];
-  unrestricted: readonly DelegateSourceDocument[];
-  ownerAddresses: readonly string[];
-}): DelegateClassification {
-  const answerWords = delegateWords(input.answer);
-  if (!answerWords.length || !input.restricted.length) return { carriesRestricted: false, carried: [] };
-  const answerShingles = shingles(answerWords);
-
-  // What the caller already holds: its own question and every unrestricted
-  // document the delegate was shown.
-  const knownTexts = [input.question, ...input.unrestricted.flatMap((doc) => [...viewSegments(doc), ...addressesOf(doc)])];
-  const knownWords = knownTexts.map(delegateWords);
-  const knownShingles = new Set(knownWords.flatMap((words) => [...shingles(words)]));
-  const known = (run: readonly string[]) => knownWords.some((words) => containsRun(words, run));
-  const owner = new Set(input.ownerAddresses.map((a) => a.trim().toLowerCase()));
-
-  const carried: DelegateCarry[] = [];
-  for (const doc of input.restricted) {
-    const evidence = new Set<DelegateEvidence>();
-    for (const segment of viewSegments(doc)) {
-      const words = delegateWords(segment);
-      if (words.length >= DELEGATE_SHINGLE_WORDS) {
-        for (const s of shingles(words)) {
-          if (answerShingles.has(s) && !knownShingles.has(s)) {
-            evidence.add('text');
-            break;
-          }
-        }
-      } else if (words.length >= DELEGATE_MIN_SEGMENT_WORDS && containsRun(answerWords, words) && !known(words)) {
-        evidence.add('text');
-      }
+}): boolean {
+  const asked = new Set(delegateWords(input.question));
+  const restrictedWords = new Set(input.restricted.flatMap(shownWords));
+  const count = new RegExp(`^\\d{1,${DELEGATE_MAX_COUNT_DIGITS}}$`);
+  let numbers = 0;
+  for (const word of delegateWords(input.answer)) {
+    if (asked.has(word) || DELEGATE_TYPED_WORDS.has(word)) continue;
+    if (count.test(word) && !restrictedWords.has(word) && numbers === 0) {
+      numbers += 1;
+      continue;
     }
-    const sender = documentSender(doc)?.trim().toLowerCase() ?? null;
-    for (const address of addressesOf(doc)) {
-      if (owner.has(address)) continue;
-      const run = delegateWords(address);
-      if (containsRun(answerWords, run) && !known(run)) evidence.add(address === sender ? 'sender' : 'participant');
-    }
-    if (evidence.size) carried.push({ documentId: doc.id, evidence: [...evidence].sort() });
+    return false;
   }
-  return { carriesRestricted: carried.length > 0, carried };
+  return true;
 }
 
 // ── delivery ──────────────────────────────────────────────────────────────
@@ -250,18 +200,12 @@ export async function delegatedRead(params: DelegatedReadParams, deps: Delegated
     const restricted = labelled.filter((entry) => entry.privacy !== null);
     if (!restricted.length) return { delivered: true, answer, labelled: false, consulted } as const;
 
-    const ownerAddresses = await loadOwnerAddresses(tx, params.workspaceId, params.userId);
-    const verdict = classifyDelegateAnswer({
-      answer,
-      question: params.question,
-      restricted: restricted.map((entry) => entry.doc),
-      unrestricted: labelled.filter((entry) => entry.privacy === null).map((entry) => entry.doc),
-      ownerAddresses,
-    });
-    if (!verdict.carriesRestricted) return { delivered: true, answer, labelled: false, consulted } as const;
-
-    const carriedIds = new Set(verdict.carried.map((c) => c.documentId));
-    const carriedDocs = restricted.filter((entry) => carriedIds.has(entry.doc.id)).map((entry) => entry.doc);
+    // An untyped answer is presumed to carry EVERY restricted document consulted:
+    // which ones a paraphrase draws on cannot be attributed, so none is exempted.
+    const carriedDocs = restricted.map((entry) => entry.doc);
+    if (isTypedDelegateAnswer({ answer, question: params.question, restricted: carriedDocs })) {
+      return { delivered: true, answer, labelled: false, consulted } as const;
+    }
     if (!params.acceptLabel) {
       return { delivered: false, reason: 'delegate_answer_carries_restricted', consulted, carriedRestricted: carriedDocs.length } as const;
     }
