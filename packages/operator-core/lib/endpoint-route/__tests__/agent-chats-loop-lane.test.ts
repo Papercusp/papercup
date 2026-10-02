@@ -478,18 +478,22 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       postReq({ content: 'hello loop', engine: 'loop' }),
       ctxFor(CHAT),
     )) as Response;
-    const { closed } = await drainSse(res.body, 8_000);
+    const { text, closed } = await drainSse(res.body, 8_000);
     expect(closed).toBe(true);
+    expect(text).toContain('event: error');
+    expect(text).toContain('gateway exploded');
+    expect(text).not.toContain('event: done');
     const finalUpdate = mocks.updateArgs.at(-1)!;
     const transcript = JSON.parse(finalUpdate[0] as string) as Array<{ role: string; content: string; error?: boolean }>;
     expect(transcript.at(-1)).toMatchObject({
       role: 'assistant',
-      content: 'gateway exploded',
+      content: 'That turn did not complete. Try asking again.',
       error: true,
       engine: 'loop',
       model: 'claude-sonnet-4-6',
       account_route: 'auto',
     });
+    expect(transcript.at(-1)!.content).not.toContain('gateway exploded');
   });
 
   it('a retry with the same trailing user turn does not append it twice', async () => {
@@ -540,7 +544,7 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     const persisted = JSON.parse(mocks.updateArgs.at(-1)![0] as string) as Array<{ role: string; content: string; error?: boolean }>;
     expect(persisted.at(-1)).toMatchObject({
       role: 'assistant',
-      content: 'agent loop completed without assistant content',
+      content: 'That turn did not complete. Try asking again.',
       error: true,
     });
   });
