@@ -322,6 +322,33 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
   await test.info().attach('guide-axe-active-paused', { body: JSON.stringify({ active, paused }), contentType: 'application/json' });
 });
 
+test('connection focus stays visible when the docked rail reserves width after opening', async ({ page }) => {
+  const fixture = await setupJourney(page, false);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  await expect(page.locator('body')).toHaveClass(/has-dev-rail/);
+  // Reproduce the measured late collapsed-rail reservation on the real form:
+  // start without its 48px gutter, then allow the maintained CSS to reserve it.
+  await page.evaluate(() => { document.body.style.paddingRight = '0px'; });
+  const guide = page.getByRole('region', { name: 'First agent guide' });
+  const show = guide.getByRole('button', { name: 'Show me' });
+  await show.focus(); await page.keyboard.press('Enter');
+  const label = page.getByRole('textbox', { name: 'Connection label' });
+  await expect(label).toBeFocused();
+  await expect.poll(() => label.evaluate(element => element.getBoundingClientRect().width)).toBe(408);
+  await label.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    window.scrollBy({ top: rect.bottom - (innerHeight - 2), behavior: 'instant' });
+  });
+  await expect(label).toBeInViewport({ ratio: 1 });
+  await page.evaluate(() => { document.body.style.removeProperty('padding-right'); });
+  await expect.poll(() => label.evaluate(element => element.getBoundingClientRect().width)).toBe(360);
+  await expect(label).toBeFocused();
+  await expect(label).toBeInViewport({ ratio: 1 });
+  expect(fixture.writes).toEqual([]);
+});
+
 test('reload resumes saved pause, AI outage leaves controls operable, and Help replays without product writes', async ({ page }) => {
   const fixture = await setupJourney(page, false); fixture.setHelpStatus(503);
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
