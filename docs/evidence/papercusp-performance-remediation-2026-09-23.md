@@ -4,6 +4,29 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## R172 operation timing and clean P006 tests — 2026-10-02
+
+The changed r172 diagnostic passed preparation and boot, then failed its honest
+performance assertion. Popup was 812 ms against 1500 ms; FCP was 1351 ms against
+3000 ms; actual footer LCP was 4819 ms against 4000 ms. The matched footer queued
+its first frame at 3162 ms and ran at 4692 ms, with about 1 ms of measured reads.
+This sample supports small observer reads with a long queue interval. It does
+not explain the prior 134 ms sample or establish a product/CPU cause.
+
+The new operation rows were observed in native execution. The launcher logged
+one isolated collection and published 25 measures; its JSONL was removed by
+normal completion, so no retained row/hash claim is made. Official run
+`20261002T080301Z-1987766`, raw hashes, summary and identity-bound cleanup are in
+`r172TerminalDiagnosticCurrent` in the native audit JSON. All seven sampled
+owned PIDs were absent, the exact nonce scan was empty, and owned private
+profiles/HOME/tmpfs were removed. R-7 and its frozen cohort remain open.
+
+Separately, P006 clean committed tests at `920030a3b939` passed all 41 tests
+across three files with zero skips. Exact terminal rows 20499866, 20500782 and
+20500781 record clean execution. Source hashes and the retained clone are in
+[p006-current-clean-contracts-2026-10-02.json](p006-current-clean-contracts-2026-10-02.json).
+Negative controls, fresh evidence bindings and governing acceptance remain open.
+
 ## Shared target-schema readiness — 2026-10-02, Fire161
 
 The maintained verifier now checks shared schema readiness before allocating its
