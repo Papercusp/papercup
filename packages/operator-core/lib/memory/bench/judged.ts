@@ -619,9 +619,11 @@ export function selectBlindSourceTargets(snapshot: Snapshot, budget: BlindTarget
 }
 
 export async function collectIndependentCohort(opts: { snapshot: string; out: string; llm: LlmCallFn;
-  targetsPerPartition?: BlindTargetBudget; reuseAuthorsFrom?: string; log?: (message: string) => void }) {
+  targetsPerPartition?: BlindTargetBudget; reuseAuthorsFrom?: string; reuseCallsFrom?: string; log?: (message: string) => void }) {
   const targets = opts.targetsPerPartition ?? 16, log = opts.log ?? (() => {});
-  const root = path.resolve(opts.out), reuseRoot = opts.reuseAuthorsFrom ? path.resolve(opts.reuseAuthorsFrom) : undefined;
+  if (opts.reuseAuthorsFrom && opts.reuseCallsFrom) throw new Error('choose authors-only or exact-call recovery, not both');
+  const reuseFrom = opts.reuseCallsFrom ?? opts.reuseAuthorsFrom, reuseAllCalls = !!opts.reuseCallsFrom;
+  const root = path.resolve(opts.out), reuseRoot = reuseFrom ? path.resolve(reuseFrom) : undefined;
   if (reuseRoot === root) throw new Error('authors-only recovery requires a new output directory');
   const snapshot = JSON.parse(fs.readFileSync(opts.snapshot, 'utf8')) as Snapshot;
   const sourceTargets = selectBlindSourceTargets(snapshot, targets);
@@ -642,9 +644,13 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
   const donor = reuseRoot ? await readAuthorIdentity(path.join(reuseRoot, 'identity.json')) : undefined;
   if (donor) {
     authorReuse = donor.reference;
+    if (reuseAllCalls && (hashJson(donor.saved.identity.contract) !== hashJson(BLIND_COHORT_CONTRACT)
+      || hashJson(donor.saved.identity.targets) !== hashJson(targets))) {
+      throw new Error('invalid exact-call recovery identity: full contract/target budget mismatch');
+    }
   }
   const identity = { snapshotFingerprint, sourceFingerprint, ownerId, targets, contract: BLIND_COHORT_CONTRACT,
-    ...(authorReuse ? { authorReuse } : {}) };
+    ...(authorReuse ? { authorReuse } : {}), ...(reuseAllCalls ? { callReuse: authorReuse } : {}) };
   const identityHash = hashJson(identity);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const write = (file: string, value: unknown) => fs.writeFileSync(file, JSON.stringify(value, null, 2), { flag: 'wx', mode: 0o600 });
@@ -666,46 +672,74 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     };
     const isAuthor = system === BLIND_COHORT_CONTRACT.author && /^(memory|prose)-author-/.test(name);
     const recoverAuthor = async (origin: Awaited<ReturnType<typeof fingerprintFile>>) => {
-      if (!isAuthor || !donor) throw new Error('invalid authors-only raw reference');
+      if ((!isAuthor && !reuseAllCalls) || !donor) throw new Error('invalid authors-only raw reference');
       let current = donor, target = origin;
-      const seen = new Set<string>(), references = [];
+      const seen = new Set<string>(), references = [], identities = new Set<string>();
       for (;;) {
+        if (identities.has(current.reference.identity.path) || identities.size >= 64) throw new Error('cyclic or excessive recovery identity chain');
+        identities.add(current.reference.identity.path);
         const expectedPath = path.join(path.dirname(current.reference.identity.path), `${name}.json`);
-        if (target.path !== expectedPath
-          || path.dirname(fs.realpathSync(target.path)) !== fs.realpathSync(path.dirname(expectedPath))) throw new Error('invalid authors-only raw reference path');
+        if (target.path !== expectedPath) {
+          // A partial donor may not yet have reached the prose author phase.
+          // Follow its hash-pinned author ancestry, never a guessed file path
+          // or judge ancestry with a different source/question population.
+          const parentRef = current.saved.identity.authorReuse;
+          if (!reuseAllCalls || !isAuthor || !parentRef) throw new Error('invalid authors-only raw reference path');
+          const parent = await readAuthorIdentity(parentRef.identity.path, parentRef.identity);
+          if (parent.reference.identityHash !== parentRef.identityHash) throw new Error('invalid authors-only parent identity');
+          current = parent; continue;
+        }
+        if (path.dirname(fs.realpathSync(target.path)) !== fs.realpathSync(path.dirname(expectedPath))) throw new Error('invalid authors-only raw reference path');
         const realPath = fs.realpathSync(target.path);
         if (seen.has(realPath) || seen.size >= 64) throw new Error('cyclic or excessive authors-only reference chain');
         seen.add(realPath);
         if (hashJson(await fingerprintFile(target.path)) !== hashJson(target)) throw new Error('invalid authors-only raw reference');
         const saved = JSON.parse(fs.readFileSync(target.path, 'utf8'));
-        if (saved.kind !== 'reused-author') {
+        if (saved.kind !== 'reused-author' && saved.kind !== 'reused-call') {
           const original = validate(saved, current.reference.identityHash);
           if (references.some((ref) => ref.invocationId !== original.invocationId || ref.promptSha256 !== original.promptSha256)) throw new Error('invalid authors-only invocation reference');
           return original;
         }
-        if (saved.identityHash !== current.reference.identityHash
-          || !saved.authorReuse || hashJson(saved.authorReuse) !== hashJson(current.saved.identity.authorReuse)
+        const referenceKey = saved.kind === 'reused-call' ? 'callReuse' : 'authorReuse';
+        if ((!isAuthor && saved.kind === 'reused-author') || saved.identityHash !== current.reference.identityHash
+          || !saved[referenceKey] || hashJson(saved[referenceKey]) !== hashJson(current.saved.identity[referenceKey])
           || saved.promptSha256 !== promptSha256) throw new Error('invalid authors-only recovery reference');
         references.push(saved);
-        const parent = await readAuthorIdentity(saved.authorReuse.identity.path, saved.authorReuse.identity);
-        if (parent.reference.identityHash !== saved.authorReuse.identityHash) throw new Error('invalid authors-only parent identity');
+        const parent = await readAuthorIdentity(saved[referenceKey].identity.path, saved[referenceKey].identity);
+        if (parent.reference.identityHash !== saved[referenceKey].identityHash) throw new Error('invalid authors-only parent identity');
         current = parent; target = saved.origin;
       }
     };
     if (fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (saved.kind === 'reused-author') {
-        if (saved.identityHash !== identityHash || hashJson(saved.authorReuse) !== hashJson(authorReuse)) throw new Error('invalid authors-only recovery reference');
+      if (saved.kind === 'reused-author' || saved.kind === 'reused-call') {
+        const referenceKey = saved.kind === 'reused-call' ? 'callReuse' : 'authorReuse';
+        if ((saved.kind === 'reused-call' && !reuseAllCalls) || saved.identityHash !== identityHash
+          || !saved[referenceKey] || hashJson(saved[referenceKey]) !== hashJson(authorReuse)) throw new Error('invalid authors-only recovery reference');
         const original = await recoverAuthor(saved.origin);
         if (saved.invocationId !== original.invocationId || saved.promptSha256 !== original.promptSha256) throw new Error('invalid authors-only invocation reference');
         return original;
       }
       return validate(saved, identityHash);
     }
-    const oldAuthorFile = reuseRoot && isAuthor ? path.join(reuseRoot, `${name}.json`) : undefined;
+    let oldAuthorFile = reuseRoot && (isAuthor || reuseAllCalls) ? path.join(reuseRoot, `${name}.json`) : undefined;
+    if (oldAuthorFile && !fs.existsSync(oldAuthorFile) && reuseAllCalls && isAuthor) {
+      let parentRef = donor?.saved.identity.authorReuse;
+      const identities = new Set<string>();
+      while (parentRef) {
+        if (identities.has(parentRef.identity.path) || identities.size >= 64) throw new Error('cyclic or excessive recovery identity chain');
+        identities.add(parentRef.identity.path);
+        const parent = await readAuthorIdentity(parentRef.identity.path, parentRef.identity);
+        if (parent.reference.identityHash !== parentRef.identityHash) throw new Error('invalid authors-only parent identity');
+        const candidate = path.join(path.dirname(parent.reference.identity.path), `${name}.json`);
+        if (fs.existsSync(candidate)) { oldAuthorFile = candidate; break; }
+        parentRef = parent.saved.identity.authorReuse;
+      }
+    }
     if (oldAuthorFile && fs.existsSync(oldAuthorFile)) {
       const origin = await fingerprintFile(oldAuthorFile), saved = await recoverAuthor(origin);
-      write(file, { kind: 'reused-author', identityHash, authorReuse, origin, invocationId: saved.invocationId, promptSha256 });
+      write(file, { kind: isAuthor ? 'reused-author' : 'reused-call', identityHash,
+        ...(isAuthor ? { authorReuse } : { callReuse: authorReuse }), origin, invocationId: saved.invocationId, promptSha256 });
       log(`blind ${name} reused original ${saved.invocationId} from ${origin.path}`);
       return saved;
     }

@@ -4,7 +4,7 @@
  * gets a fake judge, the backend context an in-memory store.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -159,6 +159,88 @@ describe('blind label collection through the injected stateless transport', () =
         expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(true);
         expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
         expect(fs.existsSync(path.join(out, 'judgments.json'))).toBe(false);
+      } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+    });
+  it('recovers exact judge calls across new output identities and interruption chains without paying again', async () => {
+    const f = fixture();
+    try {
+      const original = path.join(f.root, 'original'), middle = path.join(f.root, 'middle'), final = path.join(f.root, 'final');
+      let judges = 0;
+      const pause: LlmCallFn = async (opts) => {
+        if (JSON.parse(opts.messages[0].content).questions && ++judges === 2) throw new Error('fixture paid-call boundary');
+        return f.llm(opts);
+      };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: original, llm: pause, targetsPerPartition: 1 }))
+        .rejects.toThrow('paid-call boundary');
+      const raw = path.join(original, 'memory-judge-1-0.json'), pin = await fingerprintFile(raw);
+      judges = 1;
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: middle, llm: pause,
+        reuseCallsFrom: original, targetsPerPartition: 1 })).rejects.toThrow('paid-call boundary');
+      expect(f.calls).toBe(3); // Both middle authors and its first judge were references only.
+      const reference = JSON.parse(fs.readFileSync(path.join(middle, 'memory-judge-1-0.json'), 'utf8'));
+      expect(reference).toMatchObject({ kind: 'reused-call', origin: pin });
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out: final, llm: f.llm,
+        reuseCallsFrom: middle, targetsPerPartition: 1 });
+      expect(f.calls).toBe(8); // Four authors and four successful judge calls, once each over three attempts.
+      expect(await fingerprintFile(raw)).toEqual(pin);
+      expect(JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8')).memory).toHaveLength(8);
+      const pass = JSON.parse(fs.readFileSync(path.join(final, 'memory-judge-1-pass.json'), 'utf8'));
+      expect(pass.calls[0].invocationId).toBe(reference.invocationId);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('preserves original prose authors when its partial donor never reached the prose phase', async () => {
+    const f = fixture();
+    try {
+      const original = path.join(f.root, 'original'), partial = path.join(f.root, 'partial'), final = path.join(f.root, 'final');
+      await collectIndependentCohort({ snapshot: f.snapshot, out: original, llm: f.llm, targetsPerPartition: 1 });
+      const originalPins = await Promise.all(fs.readdirSync(original).filter((n) => n.includes('-author-')).map((n) => fingerprintFile(path.join(original, n))));
+      const pause: LlmCallFn = async () => { throw new Error('fixture before prose'); };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: partial, llm: pause,
+        reuseAuthorsFrom: original, targetsPerPartition: 1 })).rejects.toThrow('before prose');
+      expect(fs.readdirSync(partial).some((n) => n.startsWith('prose-author-'))).toBe(false);
+      let authors = 0;
+      const llm: LlmCallFn = async (opts) => {
+        if (!JSON.parse(opts.messages[0].content).questions) authors++;
+        return f.llm(opts);
+      };
+      await collectIndependentCohort({ snapshot: f.snapshot, out: final, llm, reuseCallsFrom: partial, targetsPerPartition: 1 });
+      expect(authors).toBe(0);
+      for (const ref of originalPins) expect(await fingerprintFile(ref.path)).toEqual(ref);
+      const result = JSON.parse(fs.readFileSync(path.join(final, 'judgments.json'), 'utf8'));
+      expect(result.prose.agreement).toBe(1);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['contract', 'budget', 'conflicting-options', 'prompt', 'foreign-reference'])
+    ('refuses %s exact-call recovery before another priced request', async (failure) => {
+      const f = fixture(2);
+      try {
+        const original = path.join(f.root, 'original');
+        await collectIndependentCohort({ snapshot: f.snapshot, out: original, llm: f.llm, targetsPerPartition: 1 });
+        const identityPath = path.join(original, 'identity.json'), saved = JSON.parse(fs.readFileSync(identityPath, 'utf8'));
+        if (failure === 'contract') {
+          saved.identity.contract.judge += ' changed';
+          saved.identityHash = hashJson(saved.identity);
+          fs.writeFileSync(identityPath, JSON.stringify(saved));
+        }
+        if (failure === 'prompt') {
+          const raw = path.join(original, 'memory-judge-1-0.json'), body = JSON.parse(fs.readFileSync(raw, 'utf8'));
+          body.messages[0].content += 'changed';
+          fs.writeFileSync(raw, JSON.stringify(body));
+        }
+        let donor = original;
+        if (failure === 'foreign-reference') {
+          donor = path.join(f.root, 'middle');
+          await collectIndependentCohort({ snapshot: f.snapshot, out: donor, llm: f.llm, targetsPerPartition: 1, reuseCallsFrom: original });
+          const raw = path.join(donor, 'memory-judge-1-0.json'), body = JSON.parse(fs.readFileSync(raw, 'utf8'));
+          body.origin.path = path.join(original, 'memory-judge-2-0.json');
+          fs.writeFileSync(raw, JSON.stringify(body));
+        }
+        const llm: LlmCallFn = vi.fn(f.llm);
+        await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'refused'), llm,
+          targetsPerPartition: failure === 'budget' ? 2 : 1, reuseCallsFrom: donor,
+          ...(failure === 'conflicting-options' ? { reuseAuthorsFrom: original } : {}) }))
+          .rejects.toThrow(/recovery|recovered|choose|reference/);
+        expect(llm).not.toHaveBeenCalled();
       } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
     });
   it('retains separate raw calls, labels from full-chunk consensus and exact-input recovery guards', async () => {
