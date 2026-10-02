@@ -442,9 +442,14 @@ export async function validateIdentityInstallGrants(
   },
   readPolicy: PolicyReader = readIdentityGrantPolicy,
 ): Promise<readonly IdentityGrantFailure[]> {
+  // WI-10005197: the install-time refusal carries the same lift condition as the
+  // runtime kernel denial further down. `observed` is omitted on purpose — install
+  // time has no live policy revision to compare against, and the contract renders
+  // without it.
   const failure = (cause: IdentityGrantFailure['cause'], classRef: string | null, toolName?: string): IdentityGrantFailure => ({
     code: 'capability_unsatisfied', cause, classRef, ...(toolName ? { toolName } : {}),
     routes: ['operator-notify', 'suggest-provider', 'needs_human'],
+    refusal: identityRefusalContract(cause),
   });
   const classRefs = input.resolution.requirements.map((entry) => entry.classRef);
   if (!input.resolution.ok) return [failure('provider-unbound', classRefs[0] ?? null)];

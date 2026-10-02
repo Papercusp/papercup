@@ -10981,7 +10981,10 @@ async function runGreenCheckpointInner(
             candidate,
             from: lastReady,
             green: null,
-            reason: "repair-in-progress",
+            // This is a queue read fault, not a live repair hold. Keep the no-verdict
+            // fail-closed behavior, but let the transient-abort path retry it; reserve
+            // `repair-in-progress` for a readable queue that actually has peer-owned work.
+            reason: "infra-inconclusive",
             summary,
             repairQueueRead: read,
           };
@@ -10998,7 +11001,9 @@ async function runGreenCheckpointInner(
         candidate,
         from: lastReady,
         green: null,
-        reason: "repair-in-progress",
+        // A thrown queue read has no peer-owned repair to wait for. Mark it as a transient
+        // no-verdict so the existing bounded retry path rechecks the same frozen lineage.
+        reason: "infra-inconclusive",
         summary,
       };
     }

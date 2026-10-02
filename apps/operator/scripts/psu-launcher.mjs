@@ -314,6 +314,10 @@ Remote hosts (run psu on another machine; every other option is forwarded to it)
   --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with
                                      --connect-project, --connect-zone,
                                      --connect-instance and --connect-user
+  --connect-add-aws-ssm=<name>       Save your own EC2 instance, reached over SSM
+                                     Session Manager SSH, with --connect-region,
+                                     --connect-instance (i-…), --connect-user and
+                                     optionally --connect-aws-profile
   --connect-remove=<name>            Forget a saved remote host
 
 Values may use either --name=value or (where supported) --name value form.

@@ -1084,11 +1084,12 @@ snapshot_operator_source() {
     --exclude='.cache'
     --exclude='.pnpm-store'
   )
-  source_bytes="$(LC_ALL=C rsync -an --stats "${source_filters[@]}" "$REPO_DIR/" "$snapshot_root/" |
+  source_bytes="$(vh_probe_admitted_exec "$REPO_DIR" -- rsync -an --stats \
+    "${source_filters[@]}" "$REPO_DIR/" "$snapshot_root/" |
     awk '/^Total file size:/ { gsub(/,/, "", $4); print $4 }')" || return 1
   reserve_verifier_disk "$source_bytes" || return $?
   local snapshot_rc=0
-  rsync -a --delete "${source_filters[@]}" \
+  vh_probe_admitted_exec "$REPO_DIR" -- rsync -a --delete "${source_filters[@]}" \
     "$REPO_DIR/" "$snapshot_root/" || snapshot_rc=$?
   # rsync exit 24 = source files vanished mid-copy. The shared tree is edited live (peers'
   # atomic-write temp files appear and vanish constantly), so that is not a failed snapshot.

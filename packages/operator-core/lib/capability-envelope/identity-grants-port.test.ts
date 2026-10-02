@@ -5,6 +5,7 @@ import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from 
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
 import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
+import { identityRefusalContract } from './identity-refusal-contract';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
 
@@ -890,6 +891,26 @@ describe('P-005 install and runtime use the same ceiling', () => {
       .toMatchObject([{ cause: 'policy-unavailable' }]);
     expect(await validateIdentityInstallGrants(f.input, async () => ({ ...f.policy, bindings: [] })))
       .toMatchObject([{ cause: 'provider-changed' }]);
+  });
+
+  it('WI-10005197: every install-time refusal carries the same lift condition the runtime denial does', async () => {
+    const f = installFixture();
+    const narrowed = { ...f.policy, ceilings: [...f.policy.ceilings, { allowCapabilities: [] }] };
+    const unbound = { ...f.input, resolution: { ...f.input.resolution, ok: false } };
+    const failures = [
+      ...await validateIdentityInstallGrants(f.input, async () => narrowed),                       // outside-ceiling
+      ...await validateIdentityInstallGrants(f.input, async () => { throw new Error('offline'); }), // policy-unavailable
+      ...await validateIdentityInstallGrants(f.input, async () => ({ ...f.policy, bindings: [] })), // provider-changed
+      ...await validateIdentityInstallGrants(unbound, async () => f.policy),                        // provider-unbound
+    ];
+    expect(failures.map((failure) => failure.cause).sort())
+      .toEqual(['outside-ceiling', 'policy-unavailable', 'provider-changed', 'provider-unbound']);
+    for (const failure of failures) {
+      // Same cause => same contract as the runtime kernel verdict (observed is runtime-only).
+      expect(failure.refusal).toEqual(identityRefusalContract(failure.cause));
+      expect(failure.refusal?.liftsWhen).toBeTruthy();
+      expect(failure.refusal?.whoCanMakeItTrue.length).toBeGreaterThan(0);
+    }
   });
 
   it('checks a selected candidate without first installing it or binding it', async () => {

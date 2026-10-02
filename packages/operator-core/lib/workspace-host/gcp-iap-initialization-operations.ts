@@ -17,7 +17,13 @@ import {
   type WorkspaceHostInitializationStep,
   type WorkspaceHostRemoteInitializerStep,
 } from '@papercusp/deployment-driver';
-import { quotePosixShellArg } from './local-connection-manager';
+import {
+  AWS_CLI_PROFILE_PATTERN,
+  AWS_EC2_INSTANCE_ID_PATTERN,
+  AWS_REGION_PATTERN,
+  buildAwsSsmProxyCommand,
+  quotePosixShellArg,
+} from './local-connection-manager';
 import { redactWorkspaceHostText } from './observability-store';
 
 /**
@@ -392,9 +398,9 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
  * requires an absolute entrypoint, and resolving `test` off the remote PATH would make the probe
  * depend on the login shell of a host we are probing precisely because it is half-configured.
  */
-const AWS_REGION = /^[a-z]{2}(?:-gov|-iso[a-z]*)?-[a-z]+-[0-9]$/;
-const EC2_INSTANCE_ID = /^i-[0-9a-f]{8}(?:[0-9a-f]{9})?$/;
-const AWS_CLI_PROFILE = /^[A-Za-z0-9_.+-]{1,64}$/;
+const AWS_REGION = AWS_REGION_PATTERN;
+const EC2_INSTANCE_ID = AWS_EC2_INSTANCE_ID_PATTERN;
+const AWS_CLI_PROFILE = AWS_CLI_PROFILE_PATTERN;
 
 /**
  * The trust-pin alias for one EC2 incarnation. Bound to the instance id for the same reason as
@@ -442,19 +448,11 @@ export function buildAwsSsmSshInvocation(
   }
   const remoteEntrypoint = requireExecutable(invocation.entrypoint, invocation.entrypointLabel, true);
 
-  const proxyCommand = [
+  const proxyCommand = buildAwsSsmProxyCommand({
+    region: profile.region,
     awsExecutable,
-    'ssm',
-    'start-session',
-    '--target',
-    '%h',
-    '--document-name',
-    'AWS-StartSSHSession',
-    '--parameters',
-    'portNumber=%p',
-    `--region=${profile.region}`,
-    ...(profile.awsProfile === undefined ? [] : [`--profile=${profile.awsProfile}`]),
-  ].join(' ');
+    ...(profile.awsProfile === undefined ? {} : { awsProfile: profile.awsProfile }),
+  });
   const remoteCommand = [remoteEntrypoint, ...invocation.args].map(quotePosixShellArg).join(' ');
 
   return {

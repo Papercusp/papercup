@@ -1233,10 +1233,44 @@ export const EVENT_AWAITS_MIN_DDL = `
     contributor text);`;
 
 /**
+ * The Scout idea ledger, read by the agent-review claim door (`readLedgerGrade` in
+ * harness/improvements/agent-review.ts) when it claims a pending agent-review item.
+ * Columns from the live table (pg_dump 2026-10-02); the RLS policy, the change-notify
+ * trigger and the secondary indexes are omitted because no claim door depends on them.
+ */
+export const SCOUT_ROUTED_IDEAS_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.scout_routed_ideas (
+    idea_id text PRIMARY KEY,
+    workspace_id text NOT NULL,
+    harness_slug text NOT NULL,
+    cycle_id text,
+    lens text NOT NULL,
+    rail text NOT NULL,
+    routed_ref text NOT NULL,
+    title text,
+    addresses_pattern_refs jsonb,
+    routed_at bigint NOT NULL,
+    outcome text,
+    outcome_checked_at bigint,
+    human_grade smallint CHECK (human_grade >= 1 AND human_grade <= 5),
+    human_feedback text,
+    graded_by text,
+    graded_at timestamptz,
+    source_hive text,
+    target_hive text,
+    origin text NOT NULL DEFAULT 'scout',
+    created_by text,
+    model_spec text,
+    model_config jsonb);
+  CREATE INDEX IF NOT EXISTS scout_routed_ideas_routed_ref_idx
+    ON harness_shared.scout_routed_ideas (routed_ref);`;
+
+/**
  * Every relation a claim door reads or writes BEYOND the base work-item tables
  * (HARNESS_FEATURES_CONSOLIDATED_DDL or the test's own base schema), in apply order:
  * the trust-admission LEFT JOIN, the dependency-readiness clause, the operation-worker
- * claim binding (`adv_sessions`, fail-CLOSED when absent) and the event fire.
+ * claim binding (`adv_sessions`, fail-CLOSED when absent), the event fire, and the
+ * Scout idea ledger the agent-review door grades against.
  *
  * WI-10005130: each of these was added to the claim path at a different time, and each
  * time every hand-built claim-path fixture that lacked the new table went red, without
@@ -1250,6 +1284,7 @@ export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
   WORK_ITEM_DEPS_DDL,
   ADV_SESSIONS_CLAIM_MIN_DDL,
   EVENT_AWAITS_MIN_DDL,
+  SCOUT_ROUTED_IDEAS_MIN_DDL,
 ];
 
 /**

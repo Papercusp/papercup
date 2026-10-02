@@ -16,7 +16,6 @@
     "packages/operator-core/lib/agent-tools/work_items/work-item-ref-blocker-edges.ts::work_item_ref_dependency_refused": 1,
     "packages/operator-core/lib/auth/hosted/billing/stripe-billing-client.ts::live_mode_not_allowed": 1,
     "packages/operator-core/lib/capability-envelope/blueprint-envelopes.ts::capability_unsatisfied": 1,
-    "packages/operator-core/lib/capability-envelope/identity-grants-port.ts::capability_unsatisfied": 1,
     "packages/operator-core/lib/connected-apps/scope-policy.ts::hard_denied": 1,
     "packages/operator-core/lib/cupboard/capability-provider-uninstall.ts::capability_unsatisfied": 1,
     "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.ts::forbidden": 1,

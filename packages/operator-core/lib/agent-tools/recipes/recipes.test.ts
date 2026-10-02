@@ -140,6 +140,8 @@ import './sweep';
 // Authority fixtures below execute work_items:get; register it so P-015's current-catalog
 // preflight observes the same implementation that the production define-tool router loads.
 import '../work_items/get';
+// Output-schema preflight regression uses the live optional `gate` field contract.
+import '../release/trace';
 
 const findTool = (name: string) => {
   const t = listAllProjectedTools().find((x) => x.expose.mcp?.name === name);
@@ -596,6 +598,38 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
     expect(payload.results[0]).toMatchObject({ ok: false, id: 'stale', error: 'recipe_schema_stale' });
     expect(payload.results[0].schemaIssues[0].message).toContain('bogus');
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a saved recipe reading an optional current result field before orchestration', async () => {
+    const traceTool = findTool('release:trace');
+    expect(traceTool.outputJsonSchema?.properties).toHaveProperty('gate');
+    getRecipeMock.mockResolvedValue({
+      id: 'stale-output',
+      workspaceId: 'ws-test',
+      potSlug: 'alpha',
+      title: 'stale output field',
+      description: 'd',
+      script: 'const trace = await tools.release.trace({ path: "packages/example" });\nreturn trace.gate;',
+      authorRole: 'operator',
+      toolsUsed: ['release:trace'],
+      runCount: 1,
+      successCount: 1,
+      status: 'active',
+      tags: [],
+    });
+
+    const res = await findTool('recipes:run').fn({ id: 'stale-output' }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.results[0]).toMatchObject({ ok: false, id: 'stale-output', error: 'recipe_schema_stale' });
+    expect(payload.results[0].schemaIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'release:trace',
+        path: 'result.gate',
+        kind: 'output-field',
+        message: expect.stringContaining('optional in the current output schema'),
+      }),
+    ]));
     expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
 

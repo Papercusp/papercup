@@ -583,10 +583,11 @@ export function deriveBindingFromTestRun(
  * minutes after they ran, while an earlier plain test binding of the same file read stale.
  *
  * test_runs keeps no per-file content, so mtime is the only signal. That makes this
- * conservative: a rewrite with identical bytes also refuses, and the remedy is to re-run. The
- * residual blind spot is collection time: the reporter derives started_at as
- * finished_at - duration, so an edit after vitest read a file but before its tests started is
- * not seen. A missing file is left to the store's own measurement checks.
+ * conservative: a rewrite with identical bytes also refuses, and the remedy is to re-run.
+ * Pass the bound from `measurementLowerBound`, not bare started_at: the reporter derives
+ * started_at as finished_at - duration, which postdates collection, so an edit after vitest
+ * read a file but before its tests started is only seen against the run-wide start
+ * (EI-24827834166866368). A missing file is left to the store's own measurement checks.
  */
 export async function measuredFileModifiedAfterRun(
   root: string,
@@ -608,6 +609,28 @@ export async function measuredFileModifiedAfterRun(
     }
   }
   return null;
+}
+
+/**
+ * The earliest instant this run could have read a measured file: the run-wide start the
+ * reporter stamps in execution_details.runStartedAt when present (taken in onInit, before
+ * vitest collects any module), else the row's started_at. Whichever readable value is earlier
+ * wins, so a row that carries both is never judged against the later, post-collection one.
+ * Null when neither is readable, which measuredFileModifiedAfterRun treats as "cannot judge".
+ */
+export function measurementLowerBound(
+  startedAt: Date | string | null | undefined,
+  executionDetailsRaw: unknown,
+): Date | null {
+  const candidates: Date[] = [];
+  for (const value of [startedAt, executionDetails(executionDetailsRaw).runStartedAt]) {
+    if (value == null) continue;
+    if (!(value instanceof Date) && typeof value !== 'string') continue;
+    const at = value instanceof Date ? value : new Date(value);
+    if (!Number.isNaN(at.getTime())) candidates.push(at);
+  }
+  if (candidates.length === 0) return null;
+  return candidates.reduce((earliest, at) => (at.getTime() < earliest.getTime() ? at : earliest));
 }
 
 export interface TestRunBindingScope {

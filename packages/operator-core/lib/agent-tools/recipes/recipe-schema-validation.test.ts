@@ -3,10 +3,15 @@ import type { ProjectedTool } from '@papercusp/tooldef';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 import '../pre-prompt-registry-config';
 
-const tool = (name: string, inputSchema: Record<string, unknown>): ProjectedTool => ({
+const tool = (
+  name: string,
+  inputSchema: Record<string, unknown>,
+  outputJsonSchema?: Record<string, unknown>,
+): ProjectedTool => ({
   pluginName: 'test',
   description: name,
   inputSchema,
+  ...(outputJsonSchema ? { outputJsonSchema } : {}),
   capabilities: [],
   expose: { mcp: { name } },
   fn: (async () => ({ content: [] })) as never,
@@ -37,6 +42,96 @@ describe('validateRecipeScriptAgainstCatalog', () => {
       })],
     );
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:deploy'] });
+  });
+
+  it('reports missing and optional fields read from current tool results with script locations', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const trace = await tools.release.trace({ path: "packages/example" });\nreturn { gate: trace.gate.state, retired: trace.retired };',
+      [tool('release:trace', {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+        additionalProperties: false,
+      }, {
+        type: 'object',
+        properties: {
+          gate: {
+            type: 'object',
+            properties: { state: { type: 'string' } },
+            required: ['state'],
+          },
+        },
+        required: [],
+        additionalProperties: true,
+      })],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'release:trace',
+        path: 'result.gate.state',
+        kind: 'output-field',
+        message: expect.stringContaining('optional in the current output schema'),
+        position: expect.objectContaining({ line: 2 }),
+        callPosition: expect.objectContaining({ line: 1 }),
+      }),
+      expect.objectContaining({
+        tool: 'release:trace',
+        path: 'result.retired',
+        kind: 'output-field',
+        message: expect.stringContaining('not declared in the current output schema'),
+      }),
+    ]));
+  });
+
+  it('accepts result fields required throughout the current output schema', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const trace = await tools.release.trace({ path: "packages/example" });\nreturn trace.gate.state;',
+      [tool('release:trace', {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+        additionalProperties: false,
+      }, {
+        type: 'object',
+        properties: {
+          gate: {
+            type: 'object',
+            properties: { state: { type: 'string' } },
+            required: ['state'],
+          },
+        },
+        required: ['gate'],
+        additionalProperties: false,
+      })],
+    );
+
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:trace'] });
+  });
+
+  it('checks result reads from identifiers destructured out of Promise.all', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const [trace] = await Promise.all([tools.release.trace({ path: "packages/example" })]);\nreturn trace.gate;',
+      [tool('release:trace', {
+        type: 'object',
+        properties: { path: { type: 'string' } },
+        required: ['path'],
+        additionalProperties: false,
+      }, {
+        type: 'object',
+        properties: { gate: { type: 'object' } },
+        required: [],
+      })],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]).toMatchObject({
+      tool: 'release:trace',
+      path: 'result.gate',
+      kind: 'output-field',
+      message: expect.stringContaining('optional in the current output schema'),
+    });
   });
 
   it('normalizes a registered positional write row before checking the target schema', async () => {

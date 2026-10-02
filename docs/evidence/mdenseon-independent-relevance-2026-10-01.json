@@ -1749,6 +1749,14 @@
       "status": "manifest-qualified-inference-pending",
       "verification": "Validated both independent cohorts, exact labels and judgments, four aggregate raw judge files, declared source/toolchain/native fingerprints, and unchanged model/profile/tokenizer/prompt/execution contracts. Six fresh relevance cells are declared; the original V1 manifest and measurements remain intact."
     },
+    "measurementRun": {
+      "durableTaskId": "0muqa4jgobsn54u1kpd",
+      "logPath": ".papercusp/scratch/bash-f4e81e69-64e.log",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v4",
+      "deadline": "2026-10-02T13:23:28.818Z",
+      "lastObservation": "Queued through pc-heavy behind the running V6 performance matrix; no relevance cell or source comparison has completed.",
+      "verificationContract": "Six fresh processes must emit manifest-bound CPU receipts and complete retained document/query vectors. Compare each incumbent with mDenseOn on identical held-out queries using the existing source-target component bootstrap; retain query-level comparisons as secondary diagnostics. Calibration is separate, the fixed MRR margin remains 0.03, and a completed run does not by itself prove population exhaustion."
+    },
     "targetsPerPartition": 32,
     "authorRecovery": "All 128 saved v3 authors were reused; no new author calls. All original prompt, invocation, identity and fingerprint references were followed to the original priced author receipts.",
     "labels": {
