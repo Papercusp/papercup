@@ -3015,21 +3015,24 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   const profile = rawProfile === 'generic' ? 'engineer' : rawProfile;
   const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
   let result = applyToolManifest(listMcpProjections(role, profile), { bypass });
-  if (spawnRes.kind === 'ok' && spawnRes.ctx.authenticatedPrincipal) {
-    const caps = spawnRes.ctx.authenticatedPrincipal.capabilities;
+  const principal = spawnRes.kind === 'ok' ? spawnRes.ctx.authenticatedPrincipal : undefined;
+  if (spawnRes.kind === 'ok' && principal) {
+    // Bind the narrowed principal to a const: property narrowing on
+    // spawnRes.ctx.authenticatedPrincipal does not survive into the filter callback (TS18048).
+    const caps = principal.capabilities;
+    const allowedTools = principal.allowedTools;
     result = result.filter((listing) => {
       const name = (listing as { name?: unknown }).name;
       if (typeof name !== 'string') return false;
       const projected = lookupByMcpName(name);
       return projected !== undefined &&
-        (spawnRes.ctx.authenticatedPrincipal.allowedTools === undefined ||
-          spawnRes.ctx.authenticatedPrincipal.allowedTools.has(name)) &&
+        (allowedTools === undefined || allowedTools.has(name)) &&
         projected.capabilities.every((capability) => caps.has(capability));
     });
     // external-app-access P-003: an app key sees only the tools its scopes let it call —
     // the same policy the dispatch kernel seat enforces (connected-apps/enforce.ts).
     const appFilter = await appKeyToolListFilter(
-      spawnRes.ctx.authenticatedPrincipal,
+      principal,
       spawnRes.ctx.workspaceId,
     );
     if (appFilter) {
