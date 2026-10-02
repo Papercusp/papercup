@@ -489,11 +489,13 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // paths invoke this function directly), so plans:start cannot be its sole
   // authority. The shared snapshot is a no-op for legacy plans and fail-closed
   // for post-epoch contracts before any work-item is minted.
-  // Scope to the harness the plan was just read from: a plan slug is unique only per harness
-  // (a template is installed once per harness), so an unscoped read spans every copy and
-  // refuses `bar_snapshot_plan_ambiguous` (WI-10005140).
+  // Scope to the canonical storage harness of the plan row just read: readPlanBySlug resolves
+  // member/install aliases to their plan-storage home, but the acceptance snapshot reader uses
+  // the supplied slug verbatim. Passing opts.harnessSlug here can therefore miss this same row
+  // on a run-instance promotion and report a missing plan/BAR. A plan slug is unique only per
+  // harness, so keep the exact resolved scope rather than widening to an ambiguous unscoped read.
   const acceptanceBarLifecycle = await readAndEvaluateAcceptanceBarLifecycle(opts.planSlug, 'pre-start', {
-    harnessSlug: opts.harnessSlug,
+    harnessSlug: read.row.harnessSlug,
   });
   if (!acceptanceBarLifecycle.satisfied) {
     return {
