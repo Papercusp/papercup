@@ -29,6 +29,7 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { getOrgPg } from '@papercusp/db-org';
 
 import { gradeRoutedIdea, type GradeRoutedIdeaInput, type GradeRoutedIdeaResult } from '../../scout/routed-ledger';
@@ -41,6 +42,7 @@ import {
 } from '../../harness/improvements/agent-review';
 import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { completedResultPayload } from '../abort-completion-payload';
 
 /** Reviewer feedback is a brief, and over-limit input must fail instead of being clipped. */
 export const GRADE_IDEA_FEEDBACK_MAX_CHARS = LIMITS.BRIEF;
@@ -788,6 +790,48 @@ function resolveCallerOwnerId(ctx: ResolveIdentityCtx | undefined): string | nul
   }
 }
 
+/**
+ * Completion receipt for a grade whose handler RETURNED after the dispatch deadline
+ * (WI-10005670: 5 `blender:grade-idea` calls in 8 days reported `timeout` although the
+ * grade had landed, because the revision-notice/reconcile tail pushed the call past
+ * 60s). The returned outcome already says whether the ledger write applied, so it IS
+ * the commit proof — no second read is needed:
+ *   - `applied:true`                       → `recorded`, effect = the ledger row + its stamp;
+ *   - `applied:false` + a stated `reason`  → `not-recorded` (a designed no-op/refusal such
+ *     as owner-grade-sovereign or no-self-grade), so a late refusal is reported as the
+ *     refusal it is instead of a retryable timeout;
+ *   - anything else (unparseable, no ideaId, no verdict) → `recovery-incomplete`, which
+ *     fails closed to the timeout path.
+ * The grade write is itself an idempotent UPDATE (see {@link gradeRoutedIdea}); this does
+ * not make the best-effort revision wake idempotent, only the REPORT truthful.
+ */
+export function gradeIdeaAbortCompletionReceipt(_args: unknown, result: ToolResult): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const ideaId = typeof payload?.ideaId === 'string' && payload.ideaId.length > 0 ? payload.ideaId : null;
+  if (!payload || !ideaId) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'blender:grade-idea result did not identify the graded idea after abort',
+      failures: ['missing-idea-id'],
+    };
+  }
+  if (payload.applied === true) {
+    const gradedAt = (payload.idea as { gradedAt?: unknown } | null | undefined)?.gradedAt;
+    return {
+      status: 'recorded',
+      effectRef: `blender-grade-idea:${ideaId}${typeof gradedAt === 'string' && gradedAt ? `:${gradedAt}` : ''}`,
+    };
+  }
+  if (payload.applied === false && typeof payload.reason === 'string' && payload.reason.length > 0) {
+    return { status: 'not-recorded', reason: payload.reason };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'blender:grade-idea result carried no applied verdict after abort',
+    failures: ['missing-applied-verdict'],
+  };
+}
+
 export default defineTool({
   name: 'blender:grade-idea',
   description:
@@ -802,6 +846,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
+  abortCompletionReceipt: gradeIdeaAbortCompletionReceipt,
   args: gradeIdeaArgs,
   async handler(args, ctx) {
     // Thread the caller's coord ownerId (D-012 self-grade guard) alongside the role

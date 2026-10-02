@@ -4,28 +4,11 @@
  * the post produced by this completed call; it does not make the write globally
  * idempotent.
  */
-import { parseJsonWithTrailer, type AbortCompletionReceipt, type ToolResult } from '@papercusp/tooldef';
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
+import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
 function consultPostPayload(result: ToolResult): Record<string, unknown> | null {
-  const firstText = result.content.find(
-    (item): item is Extract<ToolResult['content'][number], { type: 'text' }> => item.type === 'text',
-  );
-  if (!firstText) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(firstText.text);
-  } catch {
-    parsed = parseJsonWithTrailer(firstText.text)?.value;
-  }
-  const root = asRecord(parsed);
-  return asRecord(root?.data) ?? root;
+  return completedResultPayload(result);
 }
 
 type ConsultPostingVerb = 'consult:reply' | 'consult:decline';

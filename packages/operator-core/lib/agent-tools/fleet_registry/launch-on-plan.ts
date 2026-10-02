@@ -110,6 +110,7 @@ import {
   claimableStatesForKinds as exactPlanClaimableStatesForKinds,
 } from '../plans/plan-admission-preflight';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
+import { fleetLaunchAbortCompletionReceipt } from './launch-abort-completion';
 import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mirror-guard';
 import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
@@ -1882,6 +1883,9 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'cup'],
+  // WI-10005670: a launch that returns just past the dispatch deadline has already persisted
+  // its transaction and opened members — report it as that launch, never a retryable timeout.
+  abortCompletionReceipt: fleetLaunchAbortCompletionReceipt,
   args: z.object({
     name: z
       .string()
