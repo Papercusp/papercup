@@ -906,9 +906,13 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     const trust = await buildBootcTrustReport(args);
     process.stderr.write(
       `trusted=${trust.trustReport.trusted} excluded unfixed=${trust.excluded.unfixed} genericEl9KernelCpe=${trust.excluded.genericKernelCpe} ` +
-        `vendorPending=${trust.excluded.vendorPending}\n`,
+        `staleBaseObject=${trust.excluded.staleBaseObject} vendorPending=${trust.excluded.vendorPending}\n`,
     );
-    write({ trustReport: trust.trustReport, vendorPending: trust.vendorPendingIds });
+    write({
+      trustReport: trust.trustReport,
+      staleBaseObjects: trust.staleBaseObjectIds,
+      vendorPending: trust.vendorPendingIds,
+    });
     return;
   }
   const built = await buildBootcImageArtifact(args);

@@ -27,6 +27,15 @@ export const RESTRICTED_HOLD_PREFLIGHT_EXIT = Object.freeze({ admit: 0, misuse: 
  */
 export const RESTRICTED_HOLD_PREFLIGHT_ENV = 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT';
 export const RESTRICTED_HOLD_PREFLIGHT_DONE = 'admitted-by-testing-run';
+/** Set by the raw router on its own env (inherited by every vitest it starts) after it admitted. */
+export const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER = 'admitted-by-test-router';
+/** Set by the vitest root preflight (WI-10005724) on vitest's main-process env after it admitted. */
+export const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST = 'admitted-by-vitest-root';
+const ADMITTED_MARKERS = new Set([
+  RESTRICTED_HOLD_PREFLIGHT_DONE,
+  RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER,
+  RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST,
+]);
 
 /**
  * Absolute path of the operator-core entry the router spawns — resolved from THIS module, never
@@ -81,12 +90,41 @@ export function interpretRestrictedHoldPreflight(result) {
  *   process has already executed everything it loads, so the fence belongs at the ROOT of the run
  *   (testing:run, or this router's own top-level invocation), not at every nested hop. Without
  *   this, each in-test router call would pay a ~2s census spawn and a Postgres dependency.
+ * - An enclosing router or vitest root already admitted this process tree (its marker is inherited).
  * @param {NodeJS.ProcessEnv} env
- * @returns {'testing-run' | 'nested-in-vitest' | null}
+ * @returns {'testing-run' | 'admitted-upstream' | 'nested-in-vitest' | null}
  */
 export function restrictedHoldPreflightSkipReason(env) {
-  if (env[RESTRICTED_HOLD_PREFLIGHT_ENV] === RESTRICTED_HOLD_PREFLIGHT_DONE) return 'testing-run';
+  const upstream = admittedUpstream(env);
+  if (upstream) return upstream;
   if (env.VITEST) return 'nested-in-vitest';
+  return null;
+}
+
+/** @param {NodeJS.ProcessEnv} env @returns {'testing-run' | 'admitted-upstream' | null} */
+function admittedUpstream(env) {
+  const marker = env[RESTRICTED_HOLD_PREFLIGHT_ENV];
+  if (marker === RESTRICTED_HOLD_PREFLIGHT_DONE) return 'testing-run';
+  if (marker !== undefined && ADMITTED_MARKERS.has(marker)) return 'admitted-upstream';
+  return null;
+}
+
+/**
+ * Why the vitest ROOT preflight (WI-10005724) needs no census of its own, or null when it does.
+ *
+ * Unlike the router, it can NOT skip on `VITEST`: vitest sets `process.env.VITEST = 'true'` in its
+ * own main process (prepareVitest) BEFORE the config or any globalSetup loads, so that signal is
+ * present at the root of every run, not only at nested hops. Nested runs are recognised by the
+ * admitted marker instead, which the root sets after it admits and every child process inherits.
+ * - GitHub Actions runners host no Papercusp operator, so no restricted session and no census exist
+ *   there (only `GITHUB_ACTIONS`, never the generic `CI`, which local tooling also sets).
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {'testing-run' | 'admitted-upstream' | 'github-actions' | null}
+ */
+export function vitestRootPreflightSkipReason(env) {
+  const upstream = admittedUpstream(env);
+  if (upstream) return upstream;
+  if (env.GITHUB_ACTIONS === 'true') return 'github-actions';
   return null;
 }
 
@@ -97,6 +135,27 @@ export function restrictedHoldPreflightSkipReason(env) {
 export function runRestrictedHoldPreflight({ repoRoot, files, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
   const skip = restrictedHoldPreflightSkipReason(env);
   if (skip) return { verdict: 'skipped', reason: skip };
+  return spawnCensus({ repoRoot, files, env, timeoutMs, spawn });
+}
+
+/**
+ * The vitest ROOT door (WI-10005724): `npx vitest`, and the per-workspace vitest runs
+ * `npm run test:affected` starts, reach no router. libs/test-config's host-preflight globalSetup
+ * calls this (through scripts/lib/vitest-host-preflight.mjs) after vitest has resolved the run's
+ * files and before any test executes. Same census child, same fail-closed table as the router.
+ * On admit it hands back the marker for vitest's main-process env, so every worker and every
+ * nested router/vitest a test starts skips a duplicate census.
+ * @param {{ repoRoot: string, files: string[], env?: NodeJS.ProcessEnv, timeoutMs?: number, spawn?: typeof spawnSync }} opts
+ */
+export function runVitestRootPreflight({ repoRoot, files, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
+  const skip = vitestRootPreflightSkipReason(env);
+  if (skip) return { verdict: 'skipped', reason: skip };
+  const verdict = spawnCensus({ repoRoot, files, env, timeoutMs, spawn });
+  if (verdict.verdict !== 'admit') return verdict;
+  return { verdict: 'admit', setEnv: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST } };
+}
+
+function spawnCensus({ repoRoot, files, env, timeoutMs, spawn }) {
   const result = spawn(process.execPath, ['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, repoRoot, ...files], {
     cwd: repoRoot,
     env,
@@ -110,4 +169,9 @@ export function runRestrictedHoldPreflight({ repoRoot, files, env = process.env,
 /** One stderr line for a refusal; greppable, and it names the measured state: nothing ran. */
 export function formatRestrictedHoldRefusal(refusal) {
   return `TEST_FILE_RESTRICTED_HOLD_REFUSED error=${refusal.error} measured=none ${refusal.hint}`;
+}
+
+/** The vitest-root door's refusal line (vitest prints it as the globalSetup error). */
+export function formatVitestRestrictedHoldRefusal(refusal) {
+  return `VITEST_RESTRICTED_HOLD_REFUSED error=${refusal.error} measured=none ${refusal.hint}`;
 }
