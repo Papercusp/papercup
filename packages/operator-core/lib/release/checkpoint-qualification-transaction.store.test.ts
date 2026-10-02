@@ -297,6 +297,124 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     expect(update.values).not.toContain(JSON.stringify(queue));
   });
 
+  it('rebinds only a dead unstarted runner to its same-row pending repair head', async () => {
+    const begun = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      nowMs: 100,
+    }).transaction;
+    const reserved = reserveQualificationRunner(begun, {
+      attemptId: 'attempt-1',
+      runnerId: 'gate-fire-old',
+      candidate: 'candidate-1',
+      unit: 'papercup-checkpoint-gate-fire-old.scope',
+      leaseDurationMs: 10_000,
+      started: false,
+      evidenceRefs: ['gate-fire:gate-fire-old'],
+      nowMs: 200,
+    }).transaction;
+    const current = {
+      ...reserved,
+      pendingRepairHead: 'repair-1',
+    };
+    const red = markFrozenCandidateVerificationRed(safeQueue(), {
+      failingTests: ['broken.test.ts'],
+      nowMs: 150,
+    });
+    const queue = markFrozenRepairAdmitted(red, {
+      atMs: 250,
+      actor: 'fixer',
+      source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1',
+      toRepairHead: 'repair-1',
+      paths: ['fixed.ts'],
+      unchanged: [],
+      blobs: { 'fixed.ts': 'blob-1' },
+    });
+
+    const { statements } = transactionHarness({
+      qualificationTransaction: current,
+      repair_queue: queue,
+    });
+    const result = await beginStoredQualification(target, {
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      incumbentLiveness: 'dead',
+      nowMs: 100_000,
+    });
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: {
+        attemptId: 'attempt-1',
+        candidate: 'repair-1',
+        repairHead: 'repair-1',
+        pendingRepairHead: null,
+        phase: 'ready',
+        outcome: { kind: 'pending' },
+        runId: null,
+        lastProgressAtMs: 100_000,
+        currentPhysicalRunner: null,
+        consumedPhysicalRuns: [expect.objectContaining({
+          id: 'gate-fire-old',
+          candidate: 'candidate-1',
+          outcome: { kind: 'pre-suite-no-verdict', reason: 'runner-vanished' },
+        })],
+        eligibilitySnapshot: null,
+      },
+    });
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).toContain("metadata->'repair_queue' =");
+    expect(update.values).toContain(JSON.stringify(queue));
+    expect(update.values).toContain(JSON.stringify(current));
+
+    for (const incumbentLiveness of ['live', 'unknown'] as const) {
+      const guarded = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+      const unchanged = await beginStoredQualification(target, {
+        attemptId: 'attempt-1',
+        candidate: 'candidate-1',
+        incumbentLiveness,
+        nowMs: 100_000,
+      });
+      expect(unchanged).toMatchObject({
+        status: 'idempotent',
+        transaction: { candidate: 'candidate-1', currentPhysicalRunner: { id: 'gate-fire-old' } },
+      });
+      expect(guarded.statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines')))
+        .toBe(false);
+    }
+
+    const attached = reserveQualificationRunner(begun, {
+      attemptId: 'attempt-1',
+      runnerId: 'gate-fire-old',
+      runId: 'run-1',
+      candidate: 'candidate-1',
+      pid: 123,
+      pidIdentity: 'boot:123',
+      leaseDurationMs: 10_000,
+      started: true,
+      evidenceRefs: ['gate-fire:gate-fire-old', 'checkpoint-run:run-1'],
+      nowMs: 250,
+    }).transaction;
+    const attachedCurrent = { ...attached, pendingRepairHead: 'repair-1' };
+    const attachedHarness = transactionHarness({
+      qualificationTransaction: attachedCurrent,
+      repair_queue: queue,
+    });
+    const attachedResult = await beginStoredQualification(target, {
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      incumbentLiveness: 'dead',
+      nowMs: 100_000,
+    });
+    expect(attachedResult).toMatchObject({
+      status: 'idempotent',
+      transaction: { candidate: 'candidate-1', currentPhysicalRunner: { pid: 123 } },
+    });
+    expect(attachedHarness.statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines')))
+      .toBe(false);
+  });
+
   it('does not resume a repair wait from a ready queue owned by another qualification', async () => {
     const begun = beginQualificationTransaction(null, {
       attemptId: 'attempt-1',

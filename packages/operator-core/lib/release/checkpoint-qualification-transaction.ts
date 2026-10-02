@@ -338,15 +338,51 @@ export type QualificationTransition =
   | { status: 'conflict' | 'terminal'; transaction: CheckpointQualificationTransaction };
 
 /**
+ * A scheduled fire may safely retarget only a runner placeholder that never attached a CLI.
+ * The gate-fire reference is just the pre-spawn reservation; `checkpoint-run:<id>` is the
+ * evidence that a process actually attached. The same-row queue check lives in
+ * beginStoredQualification, and this physical check keeps an attached runner pinned.
+ */
+function isUnstartedDeadRepairRunner(
+  current: CheckpointQualificationTransaction | null,
+  incumbentLiveness: RunnerLiveness | undefined,
+  nowMs: number,
+): current is CheckpointQualificationTransaction {
+  const runner = current?.currentPhysicalRunner;
+  return Boolean(
+    current &&
+    current.phase === 'running' &&
+    current.outcome.kind === 'pending' &&
+    current.pendingRepairHead &&
+    runner &&
+    runner.phase === 'launching' &&
+    runner.pid == null &&
+    runner.pidIdentity == null &&
+    !(runner.evidenceRefs ?? []).some((ref) => ref.startsWith('checkpoint-run:')) &&
+    incumbentLiveness === 'dead' &&
+    !launchReservationInGrace(runner, nowMs) &&
+    (!current.runId || storedRunIdIsFromEndedRunner(current) || storedRunIdOrphanedAtUnattachedRunner(current))
+  );
+}
+
+/**
  * EI-21643577467008123 — this waiting reason is emitted only after the durable
  * waiter failed to start. It therefore has no owner that can ever advance it and
  * must not retain the singleton transaction against a later retry/successor.
- * Every other pre-suite wait remains exclusive until its real owner advances it.
+ *
+ * WI-10005450 — a scheduled fire can also leave a `running` logical attempt with only an
+ * unattached launch placeholder after the prior CLI vanished. When the same locked repair queue
+ * proves a new untested head and liveness says the placeholder is dead, resume that exact attempt
+ * at the new head instead of letting every tick reserve the old candidate and conflict at CLI
+ * activation. Unknown/live runners remain exclusive.
  */
 function isRetryableUnownedWait(
   current: CheckpointQualificationTransaction | null,
   resumeUnownedRepairVerification = false,
+  incumbentLiveness?: RunnerLiveness,
+  nowMs = Date.now(),
 ): boolean {
+  if (resumeUnownedRepairVerification && isUnstartedDeadRepairRunner(current, incumbentLiveness, nowMs)) return true;
   if (
     !current ||
     current.phase !== 'waiting' ||
@@ -907,10 +943,21 @@ export function beginQualificationTransaction(
   input: BeginQualificationInput,
 ): QualificationTransition {
   const nowMs = input.nowMs ?? Date.now();
-  const retryableUnownedWait = isRetryableUnownedWait(current, input.resumeUnownedRepairVerification === true);
+  const retryableUnownedWait = isRetryableUnownedWait(
+    current,
+    input.resumeUnownedRepairVerification === true,
+    input.incumbentLiveness,
+    nowMs,
+  );
   const abandoned = isAbandonedQualification(current, input.incumbentLiveness, nowMs);
   if (current?.attemptId === input.attemptId) {
     if (retryableUnownedWait) {
+      const reclaimingDeadRepairRunner = isUnstartedDeadRepairRunner(
+        current,
+        input.incumbentLiveness,
+        nowMs,
+      );
+      const runnerVanished: QualificationOutcome = { kind: 'pre-suite-no-verdict', reason: 'runner-vanished' };
       return {
         status: 'updated',
         transaction: {
@@ -924,12 +971,17 @@ export function beginQualificationTransaction(
           candidate: input.candidate?.trim() || current.candidate,
           repairHead: input.repairHead?.trim() || current.repairHead,
           pendingRepairHead: null,
-          runId: input.runId?.trim() || current.runId,
+          runId: reclaimingDeadRepairRunner ? null : input.runId?.trim() || current.runId,
+          lastProgressAtMs: nowMs,
           phase: 'ready',
           phaseEnteredAtMs: nowMs,
           phaseDurationsMs: completedPhaseDurations(current, 'ready', nowMs),
           outcome: { kind: 'pending' },
           blockers: [],
+          currentPhysicalRunner: reclaimingDeadRepairRunner ? null : current.currentPhysicalRunner,
+          consumedPhysicalRuns: reclaimingDeadRepairRunner
+            ? consumedRunner(current, runnerVanished, nowMs)
+            : current.consumedPhysicalRuns,
           eligibilitySnapshot: input.resumeUnownedRepairVerification === true ? null : current.eligibilitySnapshot,
           evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
         },
@@ -1799,17 +1851,25 @@ export function beginStoredQualification(
     // can take the lease, between the read and the write.
     (current, context) => {
       const queue = parseFrozenCandidateRepairQueue(context.rawRepairQueue);
-      const resumableRepairHead =
+      const incumbentLiveness =
+        input.incumbentLiveness ?? probeRunnerLiveness(current?.currentPhysicalRunner);
+      const queueOwnsUntestedRepairHead = Boolean(
         current &&
-        current.phase === 'waiting' &&
-        current.outcome.kind === 'pre-suite-no-verdict' &&
-        current.outcome.reason === 'repair-in-progress' &&
-        current.currentPhysicalRunner === null &&
         queue?.phase === 'ready-to-verify' &&
         queue.qualificationAttemptId === current.attemptId &&
         queue.fixerSpawnId === null &&
         queue.dispatchReservation == null &&
         frozenRepairHeadAwaitsVerification(queue)
+      );
+      const resumableRepairHead =
+        current && queue && queueOwnsUntestedRepairHead && (
+          (current.phase === 'waiting' &&
+            current.outcome.kind === 'pre-suite-no-verdict' &&
+            current.outcome.reason === 'repair-in-progress' &&
+            current.currentPhysicalRunner === null) ||
+          (current.pendingRepairHead === queue.repairHead &&
+            isUnstartedDeadRepairRunner(current, incumbentLiveness, input.nowMs ?? Date.now()))
+        )
           ? queue.repairHead
           : null;
       return beginQualificationTransaction(current, {
@@ -1822,7 +1882,8 @@ export function beginStoredQualification(
           ? current!.attemptId
           : resolveQualificationAttemptId(input, context.rawRepairQueue),
         candidate: resumableRepairHead ?? input.candidate,
-        incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current?.currentPhysicalRunner),
+        repairHead: resumableRepairHead ?? input.repairHead,
+        incumbentLiveness,
         resumeUnownedRepairVerification: resumableRepairHead !== null,
       });
     },

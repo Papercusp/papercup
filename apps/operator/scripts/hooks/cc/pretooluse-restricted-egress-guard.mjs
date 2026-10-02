@@ -228,6 +228,15 @@ export async function decideEgress({ toolName, toolInput, cwd, env = process.env
   const { refuse, restricted, detail } = await askOperator({ owner, toolName, texts, env, fetchImpl });
   if (refuse) return { decision: 'deny', reason: refuse };
   if (restricted === false) return { decision: 'allow' };
+  if (restricted === null && prefilterHits(texts)) {
+    return {
+      decision: 'deny',
+      reason:
+        `This ${toolName} call names a mail, chat, calendar or social provider, and the operator could not ` +
+        `confirm this session is unrestricted (${detail}). ` +
+        `Retry when the operator is reachable, or use the gated verb (mail:send, chat:post, …).`,
+    };
+  }
 
   const why =
     restricted === true

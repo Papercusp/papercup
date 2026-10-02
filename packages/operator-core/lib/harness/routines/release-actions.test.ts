@@ -2664,12 +2664,17 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       runId: 'run-live', outcome: { kind: 'pending' }, currentPhysicalRunner: { id: 'runner-live', unit: 'unit-live' },
     };
     readStoredQualification.mockResolvedValueOnce({ status: 'present', transaction });
+    beginStoredQualification.mockResolvedValueOnce({ status: 'idempotent', transaction });
     recordStoredQualificationScheduledFire.mockResolvedValueOnce({ status: 'updated', transaction });
     probeRunnerLiveness.mockReturnValueOnce('live');
 
     await getSystemAction('green-checkpoint')!(ctx);
 
-    expect(beginStoredQualification).not.toHaveBeenCalled();
+    expect(beginStoredQualification).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
+      expect.objectContaining({ attemptId: 'attempt-live', evidenceRefs: expect.arrayContaining([expect.stringMatching(/^gate-fire:/)]) }),
+      { reconcileTerminalRepairQueueForSuccessor: true },
+    );
     expect(reserveStoredQualificationRunner).not.toHaveBeenCalled();
     expect(recordStoredQualificationScheduledFire).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }), 'attempt-live',

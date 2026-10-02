@@ -2564,13 +2564,17 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
       ? qualificationAtLaunch.transaction
       : null;
-  const qualificationBegin = activeAttempt
-    ? { status: 'idempotent' as const, transaction: activeAttempt }
-    : await beginStoredQualification(
-        ctx,
-        { attemptId: gateFireId, evidenceRefs: [`gate-fire:${gateFireId}`] },
-        { reconcileTerminalRepairQueueForSuccessor: true },
-      );
+  // Route active attempts through the same locked-row reconciliation as fresh ones. It is
+  // idempotent for a live runner, while a dead unstarted placeholder can safely adopt a newly
+  // admitted, never-judged repairHead before this fire reserves its physical slot.
+  const qualificationBegin = await beginStoredQualification(
+    ctx,
+    {
+      attemptId: activeAttempt?.attemptId ?? gateFireId,
+      evidenceRefs: [`gate-fire:${gateFireId}`],
+    },
+    { reconcileTerminalRepairQueueForSuccessor: true },
+  );
   if (qualificationBegin.status !== 'updated' && qualificationBegin.status !== 'idempotent') {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
