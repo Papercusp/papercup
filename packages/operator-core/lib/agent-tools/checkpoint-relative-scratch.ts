@@ -48,15 +48,20 @@ export async function filterTrackedRelativeScratchPaths(
     const repoRoot = resolveHarnessContentPath(registryRead.value, harness);
     if (!repoRoot) return refs;
     const isTracked = probe.isTracked ?? isGitTrackedPath;
-    return refs.filter((reference) => {
+    const kept: string[] = [];
+    for (const reference of refs) {
       const relativePath = repoRelativePathUnderRoot(reference, repoRoot);
-      if (!relativePath) return true;
-      try {
-        return isTracked(repoRoot, relativePath) !== true;
-      } catch {
-        return true;
+      if (!relativePath) {
+        kept.push(reference);
+        continue;
       }
-    });
+      try {
+        if (await isTracked(repoRoot, relativePath) !== true) kept.push(reference);
+      } catch {
+        kept.push(reference);
+      }
+    }
+    return kept;
   } catch {
     return refs;
   }
