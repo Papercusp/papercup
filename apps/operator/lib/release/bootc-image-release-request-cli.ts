@@ -56,7 +56,10 @@ import {
   type SecretFinding,
 } from "@papercusp/operator-core/lib/workspace-host/artifact-trust";
 import type { AwsAmiReleaseRequest } from "@papercusp/operator-core/lib/workspace-host/aws-ami-release";
-import { parseWorkspaceHostBootcBakeManifest } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
+import {
+  parseWorkspaceHostBootcBakeManifest,
+  workspaceHostBootcCloudArtifact,
+} from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 
@@ -667,10 +670,15 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   // for an avoidable reason.
   const loaded = await loadInput(args);
   const cleanRoom = requiredRecord(loaded.input.cleanRoom, "cleanRoom");
+  const placement = requiredRecord(cleanRoom.placement, "cleanRoom.placement");
+  // An AWS clean room boots the bake's own AWS disk (WI-10005633): its bake-manifest row is
+  // derived here from the same bake the artifact came from, never copied in by hand.
+  const aws = placement.provider === "aws";
   write({
     artifact: built.artifact,
-    placement: requiredRecord(cleanRoom.placement, "cleanRoom.placement"),
+    placement: aws ? { ...placement, bootcArtifact: workspaceHostBootcCloudArtifact(built.bake, "aws") } : placement,
     spec: { ...requiredRecord(cleanRoom.spec, "cleanRoom.spec"), hostModel: "bootc-image", bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE },
+    ...(aws ? { connection: requiredRecord(cleanRoom.connection, "cleanRoom.connection") } : {}),
   });
 }
 

@@ -33,6 +33,7 @@ import { delimiter, isAbsolute, join, relative, resolve } from 'node:path';
 
 import {
   CopyImageCommand,
+  CreateTagsCommand,
   DeleteSnapshotCommand,
   DeregisterImageCommand,
   DescribeImageAttributeCommand,
@@ -74,6 +75,7 @@ import {
   type AwsSdkCredentialIdentityProvider,
   type AwsSdkCredentialResolvers,
 } from './aws-sdk-client';
+import type { AwsBootcCleanRoomDiscardInput, AwsBootcCleanRoomStageInput } from './aws-bootc-clean-room-executor';
 import type { WorkspaceHostBootcCloudArtifact } from './bootc-bake-manifest';
 // The argv/shell:false process boundary is cloud-neutral; reuse it rather than fork a second one.
 import {
@@ -193,6 +195,29 @@ function assertSuccess(result: AwsAmiCommandResult, operation: string): string {
     fail(`${operation} exited ${result.exitCode}${detail ? `: ${detail}` : ''}`);
   }
   return result.stdout;
+}
+
+/** EC2 reports an already-gone image or snapshot by error code; for teardown that is success. */
+const EC2_NOT_FOUND = /^(InvalidAMIID\.(NotFound|Unavailable)|InvalidSnapshot\.NotFound)$/;
+
+function isEc2NotFound(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { name?: unknown; Code?: unknown };
+  const code = typeof record.name === 'string' ? record.name : record.Code;
+  return typeof code === 'string' && EC2_NOT_FOUND.test(code);
+}
+
+async function notFoundAs<T>(call: () => Promise<T>, absent: T): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (isEc2NotFound(error)) return absent;
+    throw error;
+  }
+}
+
+async function ignoreNotFound(call: () => Promise<unknown>): Promise<void> {
+  await notFoundAs(call, undefined);
 }
 
 function parseJsonStdout(stdout: string, operation: string): unknown {
