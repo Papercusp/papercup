@@ -1657,6 +1657,8 @@ test("startup trace separates completed-before-paint requests from later complet
     ] } },
     document: { readyState: 'complete' },
     performance: { timeOrigin: 1_700_000_000_000, now: () => 250,
+      getEntriesByName: (name: string, type: string) => name === 'accounts-tab-import' && type === 'measure'
+        ? [{ startTime: 20, duration: 120 }] : [],
       getEntriesByType: () => [{ name: 'papercusp://localhost/assets/main.js', startTime: 5, duration: 30, initiatorType: 'script' }] },
     location: { href: 'papercusp://localhost/adv' }, PerformanceObserver: { supportedEntryTypes: [] },
   };
@@ -1680,6 +1682,7 @@ test("startup trace separates completed-before-paint requests from later complet
     assert.deepEqual(trace.syncTrace.planStages.map(({ stage, measuredAtMs }) => ({ stage, measuredAtMs })),
       [{ stage: 'reactCommit', measuredAtMs: 185 }, { stage: 'updateToScreen', measuredAtMs: 195 }]);
     assert.equal(trace.resources[0].endMs, 35);
+    assert.deepEqual(trace.startupImports.accountsTab, { startMs: 20, durationMs: 120, endMs: 140 });
     assert.equal(trace.ipc.client.kind, 'unavailable');
     assert.deepEqual(trace.ipc.assertion, [{ startedAtMs: 3, importReadyAtMs: 30, invokeStartedAtMs: 31,
       invokeCompletedAtMs: 49, completedAtMs: 50, client: 'connected', renderer }]);
