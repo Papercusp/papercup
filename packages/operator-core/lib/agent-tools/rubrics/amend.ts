@@ -38,6 +38,10 @@ const NO_LIVE_DISCHARGE_MAPPING_CODE = 'acceptance_bar_amendment_no_live_dischar
 const NO_LIVE_DISCHARGE_MAPPING_NEXT =
   "Add the changed BAR to the subject plan's `## Requirements` section and add a matching row to `## Design` → `### Bar-to-work map for this plan`, mapping it to at least one non-dropped `P-NNN` item. Then retry. The amendment guard exempts a BAR being removed from the discharge-map check.";
 
+const ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE = 'acceptance_bar_approval_required';
+const ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT =
+  "Run rubrics:amend with dryRun:true, post preview.approval as a work_items:comment, repeat the dry run with reviewPreviewPost:'thread-post:<preview-id>', follow review.next, and apply only with approvalRef:'thread-post:<reviewer-answer-id>'.";
+
 function noLiveDischargeMappingRefusal(error: unknown): {
   ok: false;
   code: string;
@@ -51,6 +55,22 @@ function noLiveDischargeMappingRefusal(error: unknown): {
     code: NO_LIVE_DISCHARGE_MAPPING_CODE,
     error: message,
     next: NO_LIVE_DISCHARGE_MAPPING_NEXT,
+  };
+}
+
+function acceptanceBarApprovalRequiredRefusal(error: unknown): {
+  ok: false;
+  code: string;
+  error: string;
+  next: string;
+} | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.startsWith(`${ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE}:`)) return null;
+  return {
+    ok: false,
+    code: ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE,
+    error: message,
+    next: ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT,
   };
 }
 
@@ -262,7 +282,7 @@ export default defineTool({
     'Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining). The subject Decision, BAR/spec revisions, and rebind commit atomically; prior proof and grades remain history; the shrink guard applies.',
   guidance: {
     returns:
-      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). A missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`) returns { ok:false, code, error, next } as a domain refusal and makes no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
+      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). Missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`) and required outside-lineage approval (`acceptance_bar_approval_required`) return { ok:false, code, error, next } as domain refusals and make no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
@@ -481,7 +501,7 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
   try {
     rubric = await amendRubric(input);
   } catch (error) {
-    const refusal = noLiveDischargeMappingRefusal(error);
+    const refusal = noLiveDischargeMappingRefusal(error) ?? acceptanceBarApprovalRequiredRefusal(error);
     if (refusal) return refusal;
     throw error;
   }
