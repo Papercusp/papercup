@@ -1674,6 +1674,35 @@ describe('evaluateScorecard', () => {
     expect(listM).not.toHaveBeenCalled();
   });
 
+  // WI-10005160: a plan slug is unique per harness, not per workspace, so the BAR read must be
+  // scoped to the rubric's subject harness or it can span two copies and refuse
+  // `bar_snapshot_plan_ambiguous`.
+  it('scopes the BAR lifecycle preflight to the rubric subject harness', async () => {
+    getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' });
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ phase: 'pre-grading', satisfied: false, message: 'not ready' });
+
+    await evaluateScorecard({ rubricRef: 'acceptance-rubric' });
+
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalledWith('bar-plan', 'pre-grading', {
+      expectedApplicable: true,
+      harnessSlug: 'papercusp',
+    });
+  });
+
+  it('scorecards:emit scopes its pre-grading BAR read to the rubric subject harness', async () => {
+    getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' });
+    const lifecycle = { phase: 'pre-grading', satisfied: false, message: 'acceptance BAR contract is not ready for grading' };
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue(lifecycle);
+
+    const r = await emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-grader' });
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_bar_contract_not_ready', lifecycle });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalledWith('bar-plan', 'pre-grading', {
+      expectedApplicable: true,
+      harnessSlug: 'papercusp',
+    });
+  });
+
   it('does not collapse a failed backing-plan read into a false not-found', async () => {
     getRubricM.mockResolvedValue(null);
     readRubricPlanRevisionM.mockResolvedValue({ ok: false, revision: null });

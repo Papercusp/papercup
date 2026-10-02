@@ -10,6 +10,8 @@ import { resolve } from 'node:path';
 
 const state = vi.hoisted(() => ({
   stepOutputs: [] as Array<{ name: string; output: unknown }>,
+  /** Every tagged-template call on the mocked org pool: joined SQL text + bound values. */
+  sqlCalls: [] as Array<{ text: string; values: unknown[] }>,
   loopResult: {
     fired: false,
     reason: 'await-blocking',
@@ -78,7 +80,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
-    getOrgPg: () => ({ sql: vi.fn(async () => ({ count: 0 })) }),
+    getOrgPg: () => ({
+      sql: vi.fn(async (strings: unknown, ...values: unknown[]) => {
+        state.sqlCalls.push({ text: Array.isArray(strings) ? strings.join('?') : String(strings), values });
+        return { count: 0 };
+      }),
+    }),
     listDueCronRoutines: vi.fn(async () => []),
   };
 });
@@ -146,6 +153,7 @@ import { CaplessAdaptiveController } from '../resource-governor/controller';
 
 beforeEach(() => {
   state.stepOutputs.length = 0;
+  state.sqlCalls.length = 0;
   vi.clearAllMocks();
   state.poolShedFixture = false;
   state.dbosStarted = true;
@@ -638,6 +646,53 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       'system:test-replay-completes:settle',
       'clear-reaper-last-error',
     ]);
+  });
+
+  // WI-10005164 recurrence guard: a fail-soft sub-pass failure (`softError`) must reach
+  // `last_error` without failing the fire. Before it, task-reconcile's lifecycle sweep
+  // threw on every pass for a day while the routine's last_error stayed empty.
+  const lastErrorWrites = () =>
+    state.sqlCalls.filter((c) => c.text.includes("jsonb_build_object('last_error'"));
+  const lastErrorClears = () => state.sqlCalls.filter((c) => c.text.includes("- 'last_error'"));
+
+  it('records a single-step action softError as runner last_error, and does not clear it (WI-10005164)', async () => {
+    registerSystemAction('test-soft-error', vi.fn(async () => ({ softError: 'task-lifecycle sub-pass failing' })), {
+      scheduling: 'on-demand',
+    });
+
+    await routineFireWorkflow('rt_papercusp_test_soft', 'papercusp-workspace', 'papercusp', 'system:test-soft-error', {}, null);
+
+    expect(lastErrorWrites().map((c) => c.values)).toEqual([['task-lifecycle sub-pass failing', 'rt_papercusp_test_soft']]);
+    expect(lastErrorClears()).toEqual([]);
+  });
+
+  it('records an ownSteps action softError in its settle step, with the same step sequence (WI-10005164)', async () => {
+    registerSystemAction('test-soft-error-own', vi.fn(async () => ({ softError: 'sub-pass failing' })), {
+      ownSteps: true,
+      scheduling: 'on-demand',
+    });
+
+    await routineFireWorkflow('rt_papercusp_test_soft_own', 'papercusp-workspace', 'papercusp', 'system:test-soft-error-own', {}, null);
+
+    expect(state.stepOutputs.map((s) => s.name)).toEqual([
+      'routine-fire-start',
+      'routine-fire-active-fence',
+      'system:test-soft-error-own:settle',
+      'clear-reaper-last-error',
+    ]);
+    expect(lastErrorWrites().map((c) => c.values)).toEqual([['sub-pass failing', 'rt_papercusp_test_soft_own']]);
+    expect(lastErrorClears()).toEqual([]);
+  });
+
+  it('control: a clean single-step fire clears runner last_error and writes none', async () => {
+    registerSystemAction('test-soft-error-clean', vi.fn(async () => ({ diagnostics: { ok: true } })), {
+      scheduling: 'on-demand',
+    });
+
+    await routineFireWorkflow('rt_papercusp_test_clean', 'papercusp-workspace', 'papercusp', 'system:test-soft-error-clean', {}, null);
+
+    expect(lastErrorWrites()).toEqual([]);
+    expect(lastErrorClears()).toHaveLength(1);
   });
 });
 

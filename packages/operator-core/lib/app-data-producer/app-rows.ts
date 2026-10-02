@@ -4,12 +4,12 @@
  * P-011 requires push delivery and the P-005 reconcile sweep to send the SAME
  * shape — "a separate push-only payload shape is how the two silently diverge".
  * They have different INPUTS (push holds a freshly normalized trigger event;
- * reconcile reads a stored `personal_documents` row), so sharing a mapper only
+ * reconcile reads a stored `documents` row), so sharing a mapper only
  * works if both first reduce to a common shape. They do:
  *
  *   push:      NormalizedExternalEvent --personalDocumentFromExternalEvent-->  \
  *                                                                              ProducerSourceRecord --> app row
- *   reconcile: personal_documents row ------------------------------------->  /
+ *   reconcile: documents row ------------------------------------->  /
  *
  * That works because the vault sink stores the normalized payload VERBATIM as
  * `metadata`, so the reconcile path reads back exactly what the push path held.
@@ -31,7 +31,7 @@ import type { ProducerApp } from './owner-mapping';
 
 /**
  * The common shape both producer paths reduce to. Satisfied by
- * `PersonalDocumentInput` (push, pre-write) and by a stored `personal_documents`
+ * `PersonalDocumentInput` (push, pre-write) and by a stored `documents`
  * row (reconcile, post-read).
  */
 export interface ProducerSourceRecord {
@@ -101,7 +101,7 @@ export function appRowFromSourceRecord(
     // title/text only FILL IN when the payload lacks the field.
     const row: Record<string, unknown> = { ...metadata, id };
     // Provider provenance is authoritative and arrives on the stored
-    // personal_documents columns as well as on live events. Preserve it in the
+    // documents columns as well as on live events. Preserve it in the
     // app row as an explicit mailbox object so the email app never has to infer
     // an account from recipients when a source row already names one.
     // Only the normalized record columns are trusted for connection identity.

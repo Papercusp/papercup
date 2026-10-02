@@ -2,7 +2,7 @@
  * P-005 — the reconcile sweep: the producer proper.
  *
  * For each configured (owner, app) pair it asks the APP where its cursor is
- * (D-002), selects canonical `personal_documents` rows after that point (D-004),
+ * (D-002), selects canonical `documents` rows after that point (D-004),
  * maps them with the SAME mapper the push sink uses (app-rows.ts), POSTs the
  * batch, and reports the outcome. Idempotent by construction: both apps upsert
  * by row id, so a replayed batch is safe and a partially-applied run self-heals
@@ -48,7 +48,7 @@ export const RECONCILE_BATCH_SIZE = 200;
  */
 export const RECONCILE_MAX_ROWS_PER_RUN = 2_000;
 
-/** The platform `source` each app consumes, as stored on personal_documents. */
+/** The platform `source` each app consumes, as stored on documents. */
 const SOURCE_FOR_APP: Record<ProducerApp, string> = {
   email: 'gmail',
   calendar: 'calendar',
@@ -121,7 +121,7 @@ export async function selectCanonicalRowsAfter(
     ? await sql<Record<string, unknown>[]>`
         SELECT id, source, source_id::text, provider_account_id, kind, external_id, occurred_at, title, text, metadata,
                COALESCE(occurred_at, imported_at) AS cursor_at
-          FROM harness_shared.personal_documents
+          FROM harness_shared.documents
          WHERE workspace_id = ${workspaceId}
            AND user_id = ${userId}
            AND source = ${source}
@@ -132,7 +132,7 @@ export async function selectCanonicalRowsAfter(
     : await sql<Record<string, unknown>[]>`
         SELECT id, source, source_id::text, provider_account_id, kind, external_id, occurred_at, title, text, metadata,
                COALESCE(occurred_at, imported_at) AS cursor_at
-          FROM harness_shared.personal_documents
+          FROM harness_shared.documents
          WHERE workspace_id = ${workspaceId}
            AND user_id = ${userId}
            AND source = ${source}

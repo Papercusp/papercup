@@ -1111,8 +1111,13 @@ describe('work_items claim_next — associative `in` + work-stealing (D-004/D-00
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1', kind: 'feature' }))?.id).toBe('F-feat');
   });
 
-  it('never self-selects a historical chunk, even when it is the only open row', async () => {
-    await seedFeature('F-historical-chunk', { kind: 'chunk', createdTs: 100 });
+  // P-009 / D-022 point 2: there is no hardcoded chunk exclusion any more. chunk stays
+  // nature work / audience agent; work_items:create rejects chunk and every real chunk row is
+  // terminal (measured 2026-10-01: done 45, dropped 6, passed 12, none open), so the claim
+  // floors exclude it. An OPEN chunk row is a row no writer can mint, so the fixture seeds the
+  // historical chunk the way it actually exists: terminal.
+  it('never self-selects a historical (terminal) chunk, even when it is the only row', async () => {
+    await seedFeature('F-historical-chunk', { kind: 'chunk', status: 'done', createdTs: 100 });
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1', kind: 'chunk' })).toBeNull();
   });
@@ -1416,5 +1421,41 @@ describe('unified status vocab — one open token, both families claimable (P-00
     await seedIssue('WI-plain-done', { kind: 'bug', status: 'open' });
     await wi.setWorkItemState('WI-plain-done', 'done', { by: 'agA', completionRef: 'done' });
     expect(await reasonOf('WI-plain-done')).toEqual({ status: 'done', terminal_reason: null });
+  });
+});
+
+describe('P-009 / D-024: the by-id claim refuses rows that are not agent work by category (real PG)', () => {
+  // The fixture has no stamping trigger (production's D-018 trigger derives nature/audience
+  // from datatype_registry), so each row's category is set directly on the base table.
+  async function seedCategory(id: string, kind: string, nature: string, audience: string | null) {
+    await seedFeature(id, { kind });
+    await db.sql`
+      UPDATE harness_shared.work_items SET nature = ${nature}, audience = ${audience}
+       WHERE harness_slug = ${H} AND feature_id = ${id}`;
+  }
+
+  it('refuses a work/human row and a record row by id, and still claims agent work', async () => {
+    await seedCategory('F-cat-edp', 'email-draft-proposal', 'work', 'human');
+    await seedCategory('F-cat-record', 'bet', 'record', null);
+    await seedFeature('F-cat-agent');
+
+    expect(await wi.claimWorkItem('F-cat-edp', 'agA', { harness: H })).toBeNull();
+    expect(await wi.claimWorkItem('F-cat-record', 'agA', { harness: H })).toBeNull();
+    expect((await wi.claimWorkItem('F-cat-agent', 'agA', { harness: H }))?.assignee).toBe('agA');
+
+    const held = await db.sql<{ feature_id: string; taken_by: string | null }[]>`
+      SELECT feature_id, taken_by FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${H} AND feature_id IN ('F-cat-edp', 'F-cat-record', 'F-cat-agent')
+       ORDER BY feature_id`;
+    expect(held.map((r) => [r.feature_id, r.taken_by])).toEqual([
+      ['F-cat-agent', 'agA'],
+      ['F-cat-edp', null],
+      ['F-cat-record', null],
+    ]);
+
+    // The diagnostic claim.ts uses to name the refusal agrees with the gate that refused it.
+    expect(await wi.readNonAgentWorkCategory('F-cat-edp', H)).toEqual({ nature: 'work', audience: 'human' });
+    expect(await wi.readNonAgentWorkCategory('F-cat-record', H)).toEqual({ nature: 'record', audience: null });
+    expect(await wi.readNonAgentWorkCategory('F-cat-agent', H)).toBeNull();
   });
 });

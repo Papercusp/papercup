@@ -26,6 +26,7 @@ import {
   commentWorkItem,
   explainIssueClaimFloors,
   getWorkItem,
+  readNonAgentWorkCategory,
   readUnresolvedDepBlockers,
   type ClaimFloorAttribution,
   type UnresolvedDepBlocker,
@@ -1098,6 +1099,34 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // Reuse the per-id oracle rather than re-deriving admission here. This is advisory
   // and fail-soft: a diagnostic read must never change the refusal or turn a read
   // outage into a fabricated floor.
+  // P-009 / D-024: the feature-family claim UPDATE gates on the CATEGORY half of the work
+  // predicate (nature 'work' AND audience 'agent'). A record, document, event or human-audience
+  // row (e.g. an email-draft-proposal) is never claimable, by id or otherwise, so name it:
+  // unlike the admission floors below, waiting or retrying cannot help. Diagnostic only and
+  // fail-soft; a read outage falls through to the generic refusal, never to a grant.
+  const categoryHarness = current?.harness ?? it.harness;
+  if (current && current.family !== 'issue' && categoryHarness) {
+    let category: { nature: string; audience: string | null } | null = null;
+    try {
+      category = await readNonAgentWorkCategory(it.id, categoryHarness);
+    } catch {
+      category = null;
+    }
+    if (category) {
+      return {
+        ok: false,
+        id: it.id,
+        error: 'not_agent_work',
+        workItem: current,
+        nature: category.nature,
+        audience: category.audience,
+        hint:
+          `This row is nature '${category.nature}'${category.audience ? `, audience '${category.audience}'` : ''}, ` +
+          "not agent work (nature 'work', audience 'agent'), so no agent can claim it, by id or otherwise. " +
+          'Do not retry. A human-audience item is acted on by its owner; a record, document or event is data to read, not work.',
+      };
+    }
+  }
   let claimFloor: ClaimFloorAttribution | null = null;
   if (current?.family === 'issue') {
     const issueHarness = current.harness ?? it.harness;

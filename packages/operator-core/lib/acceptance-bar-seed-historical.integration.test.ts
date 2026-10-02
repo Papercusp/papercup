@@ -154,7 +154,7 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
   });
 
   it.each(['PUI-TASK-ADD', 'AUTO-BAR-R-1-P-001-REFUSAL-ATOMICITY'])(
-    'preserves additive plan-specific clause %s pinned to a BAR during re-audit',
+    'preserves clause revision and provenance for additive clause %s on a provenance-only re-audit',
     async (customSpecId) => {
     const planSlug = `additive-pinned-clause-reaudit-${customSpecId.toLowerCase()}`;
     const planContent = contentFor(planSlug);
@@ -265,9 +265,13 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
       rubricChanged: true,
     });
 
+    // Clause revisions are immutable snapshots. The source rubric revision on
+    // each clause records where that clause's meaning came from; a plan-only
+    // re-audit must not rewrite that pin or mint a provenance-only clause revision.
     await expect(db.adminSql`
       SELECT c.current_revision::int AS current_revision, r.lifecycle_status,
              r.source_bar_key, r.source_rubric_revision::int AS source_rubric_revision,
+             r.source_rubric_slug, r.source_bar_set_hash, r.acceptance_ref,
              r.required_test_layers, r.behavior
         FROM harness_shared.plan_spec_clauses c
         JOIN harness_shared.plan_spec_clause_revisions r
@@ -280,17 +284,23 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
          AND c.spec_id = ANY(${['AUTO-BAR-R-1-P-001', customSpecId]}::text[])
        ORDER BY c.spec_id
     `).resolves.toEqual([{
-      current_revision: 3,
-      lifecycle_status: 'accepted',
-      source_bar_key: 'R-1',
-      source_rubric_revision: 2,
-      required_test_layers: ['integration'],
-      behavior: 'The canonical store contains the submitted outcome exactly once.',
-    }, {
       current_revision: 2,
       lifecycle_status: 'accepted',
       source_bar_key: 'R-1',
-      source_rubric_revision: 2,
+      source_rubric_revision: 1,
+      source_rubric_slug: managed.source_rubric_slug,
+      source_bar_set_hash: managed.source_bar_set_hash,
+      acceptance_ref: `${managed.source_rubric_slug}@${managed.source_rubric_revision}:${managed.source_bar_key}`,
+      required_test_layers: ['integration'],
+      behavior: 'The canonical store contains the submitted outcome exactly once.',
+    }, {
+      current_revision: 1,
+      lifecycle_status: 'accepted',
+      source_bar_key: 'R-1',
+      source_rubric_revision: 1,
+      source_rubric_slug: managed.source_rubric_slug,
+      source_bar_set_hash: managed.source_bar_set_hash,
+      acceptance_ref: `${managed.source_rubric_slug}@${managed.source_rubric_revision}:${managed.source_bar_key}`,
       required_test_layers: ['integration'],
       behavior: 'The task editor adds one owner-authored task to the canonical store.',
     }]);

@@ -904,7 +904,10 @@ export async function consultDeclineCore(
                      answered_by: [...new Set(declineAnswerEvents.map((e) => e.ownerId))],
                    }
                  : {}),
-             } as never)},
+             } as never)}::jsonb
+                       || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
+                               THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                               ELSE '{}'::jsonb END,
              closed_at = ${now}::timestamptz,
              updated_at = ${now}::timestamptz
        WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
@@ -1084,7 +1087,10 @@ export async function consultCloseCore(
     await tx`
       UPDATE harness_shared.consult_state
          SET state = ${state},
-             outcome = ${tx.json(outcome as never)},
+             outcome = ${tx.json(outcome as never)}::jsonb
+                       || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
+                               THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                               ELSE '{}'::jsonb END,
              closed_at = ${now}::timestamptz,
              updated_at = ${now}::timestamptz
        WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}

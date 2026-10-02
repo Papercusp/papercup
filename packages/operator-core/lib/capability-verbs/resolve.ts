@@ -121,7 +121,7 @@ export async function resolveCanonicalDocument(
            d.title,
            d.text,
            d.metadata
-      FROM harness_shared.personal_documents d
+      FROM harness_shared.documents d
      WHERE d.workspace_id = ${params.workspaceId}
        AND d.user_id = ${params.userId}::uuid
        AND d.source = ${source}

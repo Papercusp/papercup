@@ -37,6 +37,16 @@ describe('capacity-table', () => {
     writeFileSync(path.join(dir, 'runs', run, 'agents.jsonl'), rows.join('\n') + '\n');
   }
 
+  it('includes every machine family gcp-rails can price (t2d, c4a), and skips dirs it cannot', () => {
+    for (const mt of ['t2d-standard-16', 'c4a-standard-16', 'e2-standard-16']) vm(mt, 'mixed-normal', [end('mixed-normal', 48, 'OK')]);
+    vm('t2a-standard-16', 'mixed-normal', [end('mixed-normal', 48, 'OK')]); // unpriced family
+    mkdirSync(path.join(root, 'notes'));
+    const types = buildTable(root, 120).map((r) => r.machineType).sort();
+    expect(types).toEqual(['c4a-standard-16', 'e2-standard-16', 't2d-standard-16']);
+    const c4a = buildTable(root, 120).find((r) => r.machineType === 'c4a-standard-16');
+    expect(c4a?.usdPerHour).toBeCloseTo(hourlyPriceUsd('c4a-standard-16', 120), 9);
+  });
+
   it('reports the share of tool-diverged replays at the capacity step, so a capacity resting on unfaithful replays is visible', () => {
     vm('e2-standard-8', 'mixed-normal', [end('mixed-normal', 4, 'OK'), end('mixed-normal', 8, 'SATURATED reason=wallSlowdown=1.90')], {
       n: 4,

@@ -5655,6 +5655,27 @@ export type ClaimFailure =
   | { reason: 'conflict'; holder: string }
   | { reason: 'gated'; holder: null };
 
+/**
+ * P-009 / D-024 — explain a by-id claim refused by the CATEGORY half of the work predicate.
+ * Returns the row's nature/audience when the feature-family row exists and is NOT agent work
+ * by category (nature 'work' AND audience 'agent'); null when it is agent work or absent.
+ * The test is the same SQL function the claim UPDATE applies (agentWorkCategoryWhereSql), so
+ * the explanation cannot disagree with the refusal. Read-only and diagnostic: it never
+ * changes a claim verdict, it only names one.
+ */
+export async function readNonAgentWorkCategory(
+  id: string,
+  harness: string,
+): Promise<{ nature: string; audience: string | null } | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ nature: string; audience: string | null }[]>`
+    SELECT nature, audience FROM harness_shared.work_items
+     WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness} AND feature_id = ${id}
+       AND NOT ${agentWorkCategoryWhereSql(sql, null)}
+     LIMIT 1`;
+  return rows[0] ?? null;
+}
+
 export function classifyClaimFailure(current: { assignee?: string | null } | null, claimer: string): ClaimFailure {
   if (!current) return { reason: 'not_found', holder: null };
   // EI-15027: normalize the "unassigned" sentinel here too (defense-in-depth: the

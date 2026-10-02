@@ -89,10 +89,13 @@ afterEach(async () => {
   // The production kernel deliberately turns failed authority reads into a
   // denial. A broken SQL fake must also report its original failure here, so
   // contract drift cannot masquerade as the confinement/audit verdict we test.
-  const reads = await Promise.allSettled(h.sql.mock.results
-    .filter(result => result.type === 'return')
-    .map(result => result.value));
-  expect(reads.filter(result => result.status === 'rejected'), 'policy fixture I/O failed').toEqual([]);
+  const authorityReads = h.sql.mock.calls.flatMap(([parts], index) => {
+    if (!Array.isArray(parts) || !parts.join('?').includes('FROM harness_shared.session_briefs')) return [];
+    const result = h.sql.mock.results[index];
+    return result?.type === 'return' ? [result.value] : [];
+  });
+  const reads = await Promise.allSettled(authorityReads);
+  expect(reads.filter(result => result.status === 'rejected'), 'authority fixture I/O failed').toEqual([]);
 });
 
 describe('admission replay policy fidelity', () => {

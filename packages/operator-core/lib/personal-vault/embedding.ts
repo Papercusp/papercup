@@ -7,7 +7,7 @@ export const PERSONAL_EMBEDDER_MODE = 'gemma' as const;
 export const PERSONAL_EMBED_MAX_ROWS_PER_TICK = 16;
 
 export const PERSONAL_EMBED_TARGET: BackfillTarget = {
-  table: 'harness_shared.personal_documents',
+  table: 'harness_shared.documents',
   embedCol: 'embedding',
   bodySql: `left(COALESCE(title, '') || E'\\n' || COALESCE(text, ''), 2000)`,
   keyCols: ['workspace_id', 'user_id', 'id'],
@@ -30,10 +30,10 @@ export async function runPersonalVaultEmbedBackfillOnce(): Promise<BackfillStats
   const { sql } = getOrgPg();
   const columns = await sql<Array<{ column_name: string }>>`
     SELECT column_name FROM information_schema.columns
-     WHERE table_schema = 'harness_shared' AND table_name = 'personal_documents'
+     WHERE table_schema = 'harness_shared' AND table_name = 'documents'
        AND column_name IN ('embedding', 'embedding_mode', 'embedding_profile')`;
   const names = new Set(columns.map((r) => r.column_name));
-  if (!names.has('embedding')) return { skipped: 'personal_documents.embedding unavailable' };
+  if (!names.has('embedding')) return { skipped: 'documents.embedding unavailable' };
   const embed = await buildPersonalDocumentEmbedder();
   return backfillTable(sql, PERSONAL_EMBED_TARGET, { embed: embed, maxRows: PERSONAL_EMBED_MAX_ROWS_PER_TICK, mode: PERSONAL_EMBEDDER_MODE, spaceAware: names.has('embedding_mode'), profileColPresent: names.has('embedding_profile'),
       profile: EMBEDDER_DIM_SPECS[PERSONAL_EMBEDDER_MODE] });

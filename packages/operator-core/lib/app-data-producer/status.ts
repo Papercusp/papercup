@@ -32,7 +32,7 @@ import { fetchAppCursor, parseReconcileCursor } from './reconcile';
 import { appBaseUrlEnvVar, type AppDeliveryOptions } from './live-sink';
 import { listAppOwnerMappings, PRODUCER_APPS, type ProducerApp } from './owner-mapping';
 
-/** The platform `source` each app consumes, as stored on personal_documents. */
+/** The platform `source` each app consumes, as stored on documents. */
 const SOURCE_FOR_APP: Record<ProducerApp, string> = {
   email: 'gmail',
   calendar: 'calendar',
@@ -181,7 +181,7 @@ export async function countPendingRows(
   const rows = parsed
     ? await sql<{ n: string }[]>`
         SELECT count(*) AS n
-          FROM harness_shared.personal_documents
+          FROM harness_shared.documents
          WHERE workspace_id = ${workspaceId}
            AND user_id = ${userId}
            AND source = ${source}
@@ -189,7 +189,7 @@ export async function countPendingRows(
       `
     : await sql<{ n: string }[]>`
         SELECT count(*) AS n
-          FROM harness_shared.personal_documents
+          FROM harness_shared.documents
          WHERE workspace_id = ${workspaceId}
            AND user_id = ${userId}
            AND source = ${source}

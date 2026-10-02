@@ -3684,9 +3684,14 @@ describe('EI-21338326327553651 — tenant population cache is scope-keyed, not t
 
 describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () => {
   it.each([
-    ['message bodies', "SELECT subject, body_text FROM harness_shared.personal_documents WHERE source='gmail'"],
-    ['an aggregate count', 'SELECT count(*) FROM harness_shared.personal_documents'],
-    ['the bare, unqualified name', 'SELECT * FROM personal_documents'],
+    ['message bodies', "SELECT subject, body_text FROM harness_shared.documents WHERE source='gmail'"],
+    ['an aggregate count', 'SELECT count(*) FROM harness_shared.documents'],
+    ['the bare, unqualified name', 'SELECT * FROM documents'],
+    // Migration 1327 (WI-10005071) leaves a compat VIEW under the old name that
+    // reads the same rows. Until the contract migration drops it, it is a second
+    // way into the mailbox and must stay fenced.
+    ['the compat view under the old name', "SELECT subject FROM harness_shared.personal_documents WHERE source='gmail'"],
+    ['the old name, unqualified', 'SELECT * FROM personal_documents'],
     ['consent rows', 'SELECT * FROM harness_shared.personal_grants'],
     ['identities', 'SELECT * FROM harness_shared.personal_identities'],
     ['identity aliases', 'SELECT * FROM harness_shared.personal_identity_aliases'],
@@ -3709,23 +3714,31 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
         JOIN harness_shared.harness_plans b ON true
         JOIN harness_shared.test_runs c ON true
         JOIN harness_shared.tool_invocations e ON true
-        JOIN harness_shared.personal_documents d ON true`;
+        JOIN harness_shared.documents d ON true`;
     expect(
       extractReferencedTables(sql),
       'precondition: the bounded extractor must NOT see the vault table here',
-    ).not.toContain('harness_shared.personal_documents');
+    ).not.toContain('harness_shared.documents');
     expect(() => assertSingleReadStatement(sql)).toThrow(/Personal Vault/);
   });
 
   it('refuses a vault table in a set-operation arm and in a scalar subquery', () => {
     expect(() =>
       assertSingleReadStatement(
-        'SELECT id FROM harness_shared.work_items UNION ALL SELECT id FROM harness_shared.personal_documents',
+        'SELECT id FROM harness_shared.work_items UNION ALL SELECT id FROM harness_shared.documents',
       ),
     ).toThrow(/Personal Vault/);
     expect(() =>
       assertSingleReadStatement('SELECT (SELECT count(*) FROM harness_shared.personal_documents) AS n'),
     ).toThrow(/Personal Vault/);
+  });
+
+  it('names the relation it actually matched in the refusal, so the quoting hint is usable', () => {
+    expect(personalVaultRefusal('SELECT count(*) FROM harness_shared.documents')).toContain(
+      "harness_shared.documents holds Personal Vault data",
+    );
+    expect(personalVaultRefusal('SELECT count(*) FROM harness_shared.documents')).toContain("('documents')");
+    expect(personalVaultRefusal('SELECT * FROM personal_grants')).toContain("('personal_grants')");
   });
 
   it('refuses a vault WRITE — forging a consent row is worse than reading one', () => {
@@ -3742,7 +3755,7 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
   it('allows schema/audit reads, where the vault name is a literal not a table', () => {
     expect(
       personalVaultRefusal(
-        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'personal_documents'",
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'documents'",
       ),
       'auditing whether vault RLS actually bites is how this bug was found — fencing that would be self-defeating',
     ).toBeNull();
@@ -3756,6 +3769,14 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
     expect(
       personalVaultRefusal('SELECT personal_documents_id FROM harness_shared.some_table'),
       'the trailing word boundary must not fire on personal_documents_id',
+    ).toBeNull();
+    expect(
+      personalVaultRefusal('SELECT documents_id FROM harness_shared.some_table'),
+      'the trailing word boundary must not fire on documents_id',
+    ).toBeNull();
+    expect(
+      personalVaultRefusal('SELECT * FROM harness_shared.plan_documents'),
+      'the leading word boundary must not fire on a table that merely ends in documents',
     ).toBeNull();
   });
 });

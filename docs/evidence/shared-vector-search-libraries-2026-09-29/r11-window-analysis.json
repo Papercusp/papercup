@@ -11,7 +11,7 @@
   ],
   "exitCode": 1,
   "startedAt": "2026-10-01T23:57:00.000Z",
-  "finishedAt": "2026-10-02T00:25:00.000Z",
+  "finishedAt": "2026-10-02T00:11:08.000Z",
   "summary": "FAIL, 1 of 2 assertions. Condition met: all 10 targets that had rows missing vectors in the window embedded rows (session_turns 49,922, session_turn_chunks 34,620, work_items 8,467, doc_sections 6,637, text_chunks 5,676, operator_turns 541, harness_plans 44, consult_state 18, code_recipes 12, harness_escalations 2); 4 targets had nothing missing all window; 0 eligible session_turns ingested before the window start still lack a vector. Falsifier clause 2 fired: the window log has 10 error messages absent from the 24h before, including one 'periodic sweep embedded NOTHING' (04:43:58Z), during embed-sidecar restart cycles 04:36-04:44Z. Both message templates predate the extraction; the bar does not exempt environment faults, so the result is a failure.",
   "plan": "shared-vector-search-libraries-2026-09-29",
   "planItem": "P-008",
@@ -59,7 +59,7 @@
       "headerLines": 3,
       "capture": "journalctl --user -u papercusp-bg-host.service --since @1790723780 --until @1790896580 --grep '\\[embed-backfill\\]' -o short-iso-precise"
     },
-    "sidecarJournal": "journalctl --user -u papercup-embed-sidecar.service (checked 2026-10-02T00:2xZ)",
+    "sidecarJournal": "journalctl --user -u papercup-embed-sidecar.service (checked 2026-10-02T00:09Z)",
     "database": "harness_shared.session_turns on the operator database, queried 2026-10-02T00:08Z"
   },
   "method": {
@@ -129,11 +129,11 @@
       "papercup-embed-sidecar.service (:3384) went through repeated Stopping/Stopped/Starting/Started cycles from 2026-10-01T04:36:25Z to at least 04:43:27Z (systemd user journal). The 'fetch failed' burst on 7 targets and the single 'embedded NOTHING' sweep fall inside 04:37:32Z-04:43:58Z.",
       "The sidecar restarted again at 2026-10-01T16:23:15Z-16:23:50Z; the doc_sections 'fetch failed' is at 16:23:44Z.",
       "The 17:03Z failures carry the sidecar's own report of a Postgres statement_timeout (57014).",
-      "Both message templates existed in the pre-extraction engine: at 9a9473af95, packages/operator-core/lib/search/embed-backfill.ts contains 'batch embed FAILED' once and the '${label} sweep embedded NOTHING (scanned=... errors=...)' template at line 1778; the current file carries the same NOTHING template at line 1091 (checked 2026-10-02T00:2xZ)."
+      "Both message templates existed in the pre-extraction engine: at 9a9473af95, packages/operator-core/lib/search/embed-backfill.ts contains 'batch embed FAILED' once and the '${label} sweep embedded NOTHING (scanned=... errors=...)' template at line 1778; the current file carries the same NOTHING template at line 1091 (checked 2026-10-02T00:10Z)."
     ],
     "inference": "The new messages are environment faults (embedding sidecar unavailable, database stall) that the pre-extraction engine would have logged the same way. This is an inference from the timing and the unchanged message sources; it does not change the verdict, because the bar does not exempt environment faults.",
     "followUp": "The falsifier cannot tell an environment fault from a regression. Any change to its wording is a rubric revision that needs rubric-vetting with the post-evidence timing disclosed (tracked on EI-24823955272728864); it must not be applied silently to turn this result into a pass."
   },
   "recordedBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
-  "recordedAt": "2026-10-02T00:25:00Z"
+  "recordedAt": "2026-10-02T00:14:00Z"
 }

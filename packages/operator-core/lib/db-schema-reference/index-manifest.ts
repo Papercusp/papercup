@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-01T22:53:35.937Z",
-  "migrationCountAtGeneration": 1121,
+  "generatedAt": "2026-10-02T00:20:52.064Z",
+  "migrationCountAtGeneration": 1124,
   "indexes": [
     {
       "schema": "audit",
@@ -3209,6 +3209,97 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "document_permission_members_pkey",
       "table": "document_permission_members",
       "definition": "CREATE UNIQUE INDEX document_permission_members_pkey ON harness_shared.document_permission_members USING btree (workspace_id, list_id, provider, provider_user_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_account_time_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_account_time_idx ON harness_shared.documents USING btree (workspace_id, user_id, source, provider_account_id, occurred_at DESC NULLS LAST)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_embedding_mode_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_embedding_mode_idx ON harness_shared.documents USING btree (workspace_id, user_id, embedding_mode) WHERE (embedding_mode IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_organization_dedupe",
+      "table": "documents",
+      "definition": "CREATE UNIQUE INDEX documents_organization_dedupe ON harness_shared.documents USING btree (workspace_id, source, dedupe_key) WHERE (scope = 'organization'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_participant_ids_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_participant_ids_idx ON harness_shared.documents USING gin (participant_ids)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_participants_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_participants_idx ON harness_shared.documents USING gin (participants)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_permission_list_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_permission_list_idx ON harness_shared.documents USING btree (workspace_id, permission_list_id) WHERE (scope = 'organization'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_pkey",
+      "table": "documents",
+      "definition": "CREATE UNIQUE INDEX documents_pkey ON harness_shared.documents USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_pot_dedupe",
+      "table": "documents",
+      "definition": "CREATE UNIQUE INDEX documents_pot_dedupe ON harness_shared.documents USING btree (workspace_id, pot_slug, source, dedupe_key) WHERE (scope = 'pot'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_scope_time_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_scope_time_idx ON harness_shared.documents USING btree (workspace_id, user_id, scope_key, occurred_at DESC NULLS LAST)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_source_id_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_source_id_idx ON harness_shared.documents USING btree (workspace_id, user_id, source_id) WHERE (source_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_source_time_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_source_time_idx ON harness_shared.documents USING btree (workspace_id, user_id, source, occurred_at DESC NULLS LAST)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_text_tsv_idx",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_text_tsv_idx ON harness_shared.documents USING gin (text_tsv)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "documents_workspace_id_user_id_source_dedupe_key_key",
+      "table": "documents",
+      "definition": "CREATE UNIQUE INDEX documents_workspace_id_user_id_source_dedupe_key_key ON harness_shared.documents USING btree (workspace_id, user_id, source, dedupe_key)",
       "constraintBacked": true
     },
     {
@@ -7073,97 +7164,6 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "personal_disclosures_pkey",
       "table": "personal_disclosures",
       "definition": "CREATE UNIQUE INDEX personal_disclosures_pkey ON harness_shared.personal_disclosures USING btree (workspace_id, user_id, id)",
-      "constraintBacked": true
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_account_time_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_account_time_idx ON harness_shared.personal_documents USING btree (workspace_id, user_id, source, provider_account_id, occurred_at DESC NULLS LAST)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_embedding_mode_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_embedding_mode_idx ON harness_shared.personal_documents USING btree (workspace_id, user_id, embedding_mode) WHERE (embedding_mode IS NOT NULL)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_organization_dedupe",
-      "table": "personal_documents",
-      "definition": "CREATE UNIQUE INDEX personal_documents_organization_dedupe ON harness_shared.personal_documents USING btree (workspace_id, source, dedupe_key) WHERE (scope = 'organization'::text)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_participant_ids_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_participant_ids_idx ON harness_shared.personal_documents USING gin (participant_ids)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_participants_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_participants_idx ON harness_shared.personal_documents USING gin (participants)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_permission_list_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_permission_list_idx ON harness_shared.personal_documents USING btree (workspace_id, permission_list_id) WHERE (scope = 'organization'::text)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_pkey",
-      "table": "personal_documents",
-      "definition": "CREATE UNIQUE INDEX personal_documents_pkey ON harness_shared.personal_documents USING btree (workspace_id, id)",
-      "constraintBacked": true
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_pot_dedupe",
-      "table": "personal_documents",
-      "definition": "CREATE UNIQUE INDEX personal_documents_pot_dedupe ON harness_shared.personal_documents USING btree (workspace_id, pot_slug, source, dedupe_key) WHERE (scope = 'pot'::text)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_scope_time_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_scope_time_idx ON harness_shared.personal_documents USING btree (workspace_id, user_id, scope_key, occurred_at DESC NULLS LAST)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_source_id_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_source_id_idx ON harness_shared.personal_documents USING btree (workspace_id, user_id, source_id) WHERE (source_id IS NOT NULL)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_source_time_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_source_time_idx ON harness_shared.personal_documents USING btree (workspace_id, user_id, source, occurred_at DESC NULLS LAST)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_text_tsv_idx",
-      "table": "personal_documents",
-      "definition": "CREATE INDEX personal_documents_text_tsv_idx ON harness_shared.personal_documents USING gin (text_tsv)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "personal_documents_workspace_id_user_id_source_dedupe_key_key",
-      "table": "personal_documents",
-      "definition": "CREATE UNIQUE INDEX personal_documents_workspace_id_user_id_source_dedupe_key_key ON harness_shared.personal_documents USING btree (workspace_id, user_id, source, dedupe_key)",
       "constraintBacked": true
     },
     {

@@ -129,7 +129,7 @@ describe('app row mapping (P-011)', () => {
   /**
    * THE PROPERTY P-011 TURNS ON: "a separate push-only payload shape is how the
    * two silently diverge." Push maps a freshly normalized event; reconcile maps
-   * the row read back out of personal_documents. This asserts the two produce
+   * the row read back out of documents. This asserts the two produce
    * the IDENTICAL app row, rather than leaving it to be true by inspection.
    */
   it('push and reconcile produce byte-identical app rows', () => {
@@ -137,7 +137,7 @@ describe('app row mapping (P-011)', () => {
       // Push: straight from the normalized trigger event.
       const pushed = appRowFromSourceRecord(personalDocumentFromExternalEvent(event));
 
-      // Reconcile: what a stored personal_documents row looks like when read
+      // Reconcile: what a stored documents row looks like when read
       // back — same fields, metadata round-tripped through JSON as Postgres
       // jsonb would, occurredAt rehydrated as a Date by the driver.
       const stored = personalDocumentFromExternalEvent(event);

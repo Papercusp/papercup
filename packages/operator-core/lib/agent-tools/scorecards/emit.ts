@@ -1494,8 +1494,12 @@ export async function emitScorecard(
       // task cleanup, so a BAR-only or divergent contract is refused before a
       // costly grading pass is spent.
       if (rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
+        // Scope to the subject plan's own harness: a plan slug is unique per harness, not per
+        // workspace, so an unscoped read can span two copies and refuse
+        // `bar_snapshot_plan_ambiguous` (WI-10005160).
         const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
           expectedApplicable: true,
+          harnessSlug: rubric.subjectHarnessSlug,
         });
         if (!lifecycle.satisfied) {
           return {
@@ -2015,7 +2019,9 @@ export async function emitScorecard(
         // P-003: vetting is the first phase that requires the as-built METHOD
         // and its runnable/manual check. Reuse the same snapshot rather than
         // inspecting the submitted meta-scorecard in isolation.
-        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(vettedRubric.subjectPlan, 'pre-vetting');
+        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(vettedRubric.subjectPlan, 'pre-vetting', {
+          harnessSlug: vettedRubric.subjectHarnessSlug,
+        });
         if (!lifecycle.satisfied) {
           return {
             ok: false as const,
@@ -2930,7 +2936,10 @@ export async function emitScorecard(
             getPlanItemStatuses(requirementsPlan),
           ]);
           const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
-            ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', { current: args.current })
+            ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', {
+                current: args.current,
+                harnessSlug: rubric.subjectHarnessSlug,
+              })
             : null;
           return {
             planSlug: requirementsPlan,

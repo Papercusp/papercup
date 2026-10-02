@@ -29,10 +29,7 @@ const LIB_ROOT = process.env.PROBE_BAR_LIFECYCLE_SCOPE_LIB_ROOT ?? HERE;
 const CALLEE = 'readAndEvaluateAcceptanceBarLifecycle';
 
 /** Lib-relative file → number of call sites still unscoped. Shrink-only (WI-10005160). */
-const KNOWN_UNSCOPED: Readonly<Record<string, number>> = {
-  'agent-tools/scorecards/emit.ts': 3,
-  'agent-tools/scorecards/evaluate.ts': 1,
-};
+const KNOWN_UNSCOPED: Readonly<Record<string, number>> = {};
 
 interface CallSite {
   line: number;

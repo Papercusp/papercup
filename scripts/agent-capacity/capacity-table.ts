@@ -22,7 +22,16 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseCapture, summarize, type Capture } from './footprint-summary';
-import { hourlyPriceUsd } from './gcp-rails';
+import { hourlyPriceUsd, parseMachineType } from './gcp-rails';
+
+function isPricedMachineType(mt: string): boolean {
+  try {
+    parseMachineType(mt);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface StepVerdict {
   label: string;
@@ -182,7 +191,9 @@ export function buildTable(root: string, diskGb: number): CapacityRow[] {
   const rows: CapacityRow[] = [];
   for (const mt of readdirSync(root).sort()) {
     const dir = path.join(root, mt);
-    if (!existsSync(dir) || !/^(e2|n2|n2d)-/.test(mt)) continue;
+    // A machine dir is any name gcp-rails can price (WI-10004380): a hand-kept family list here
+    // silently dropped the t2d and c4a ramps from the table while gcp-rails already priced them.
+    if (!existsSync(dir) || !isPricedMachineType(mt)) continue;
     for (const log of readdirSync(dir).filter((n) => /^ramp-.+\.log$/.test(n))) {
       const label = log.slice('ramp-'.length, -'.log'.length);
       const steps = parseRampLog(readFileSync(path.join(dir, log), 'utf8'));

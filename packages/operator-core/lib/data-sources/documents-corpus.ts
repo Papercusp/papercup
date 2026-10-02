@@ -2,8 +2,8 @@
  * Organization documents corpus (plan enterprise-data-sources-2026-10-01 P-014,
  * owner ruling D-005; schema: migration 1316).
  *
- * There is ONE documents corpus (`harness_shared.personal_documents`, renamed to
- * `documents` later). A row's `scope` says whose it is:
+ * There is ONE documents corpus (`harness_shared.documents`, renamed from
+ * `personal_documents` by migration 1327). A row's `scope` says whose it is:
  *   - personal      — owner-local Personal Vault row; read through personal-vault/store.ts, unchanged here.
  *   - organization  — user_id IS NULL; readable only through a source-derived permission list.
  *   - pot           — user_id IS NULL, pot_slug set; written by chat-retrieval-units.ts (P-015) for
@@ -189,7 +189,7 @@ export async function upsertOrganizationDocuments(
     const kind = nonEmpty(doc.kind, 'invalid_document_kind');
     const dedupeKey = nonEmpty(doc.dedupeKey, 'invalid_document_dedupe_key');
     const rows = await sql`
-      INSERT INTO harness_shared.personal_documents
+      INSERT INTO harness_shared.documents
         (workspace_id, user_id, scope, permission_list_id, source, kind, external_id,
          occurred_at, participants, title, text, metadata, dedupe_key)
       VALUES (${workspaceId}, NULL, 'organization', ${permissionListId}::uuid, ${source}, ${kind},
@@ -266,7 +266,7 @@ export async function searchOrganizationDocuments(
     SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants, d.title,
            left(d.text, ${snippetChars}) AS snippet, d.metadata, d.permission_list_id,
            ts_rank_cd(d.text_tsv, websearch_to_tsquery('english', ${params.query})) AS score
-      FROM harness_shared.personal_documents d
+      FROM harness_shared.documents d
      WHERE d.workspace_id = ${params.workspaceId}
        AND d.scope = 'organization' AND d.user_id IS NULL
        AND d.text_tsv @@ websearch_to_tsquery('english', ${params.query})
@@ -373,7 +373,7 @@ export async function searchPotDocuments(
     SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants, d.title,
            left(d.text, ${snippetChars}) AS snippet, d.metadata, d.pot_slug,
            ts_rank_cd(d.text_tsv, websearch_to_tsquery('english', ${params.query})) AS score
-      FROM harness_shared.personal_documents d
+      FROM harness_shared.documents d
      WHERE d.workspace_id = ${params.workspaceId}
        AND d.scope = 'pot' AND d.user_id IS NULL AND d.pot_slug = ${potSlug}
        AND d.text_tsv @@ websearch_to_tsquery('english', ${params.query})

@@ -309,7 +309,7 @@ function storedDedupeKey(route: Extract<CorpusRoute, { write: true }>, unitKey: 
 
 async function upsertPotDocument(sql: Sql, workspaceId: string, potSlug: string, doc: OrganizationDocumentInput): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.personal_documents
+    INSERT INTO harness_shared.documents
       (workspace_id, user_id, scope, pot_slug, source, kind, external_id,
        occurred_at, participants, title, text, metadata, dedupe_key)
     VALUES (${workspaceId}, NULL, 'pot', ${potSlug}, ${doc.source}, ${doc.kind},
@@ -397,7 +397,7 @@ async function deleteUnit(
   // Any scope: the key embeds the data-source id, so only this unit ever wrote it.
   if (unit.document_dedupe_key) {
     await sql`
-      DELETE FROM harness_shared.personal_documents
+      DELETE FROM harness_shared.documents
        WHERE workspace_id = ${workspaceId}
          AND source = ${corpusSource} AND dedupe_key = ${unit.document_dedupe_key}`;
   }
@@ -531,7 +531,7 @@ export async function rollupChatUnits(
       // Drop the prior row unless it IS the row about to be upserted (same key, scope, owner, pot).
       if (prior?.document_dedupe_key) {
         await sql`
-          DELETE FROM harness_shared.personal_documents
+          DELETE FROM harness_shared.documents
            WHERE workspace_id = ${workspaceId}
              AND source = ${corpusSource} AND dedupe_key = ${prior.document_dedupe_key}
              AND (${dedupeKey}::text IS NULL OR NOT (

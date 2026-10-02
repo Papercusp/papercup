@@ -246,8 +246,11 @@ export async function evaluateScorecard(
   // skeleton in that state makes a grader spend the full pass only to have the
   // terminal emit refuse the same payload.
   if (rubric.kind === 'acceptance' && rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
+    // Same harness scope as scorecards:emit: a plan slug is unique per harness, not per
+    // workspace (WI-10005160).
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
       expectedApplicable: true,
+      harnessSlug: rubric.subjectHarnessSlug,
     });
     if (!lifecycle.satisfied) {
       return {
