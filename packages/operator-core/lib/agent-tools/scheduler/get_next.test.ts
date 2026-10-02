@@ -564,7 +564,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     // EI-15777: the paused-miss branch must cancel the caller's OWN standing
     // work-item:claimable await(s) (self-scoped by ownerId) so a compliant peer
     // stand-down doesn't keep re-waking this member on a pull it's forbidden to make.
-    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-member');
+    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-member', { includeStanding: true });
   });
 
   it('EI-21079515303301272: blocks an active member before claim when its registered leader is not live', async () => {
