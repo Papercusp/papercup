@@ -8,12 +8,13 @@
  * unit tier (embedded-pg-supervisor.test.ts) covers disk-full classification and the
  * never-give-up backoff; this tier proves the wiring inside startEmbeddedPostgresServer.
  */
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import postgres from 'postgres';
+import EmbeddedPostgres from 'embedded-postgres';
 import { startEmbeddedPostgresServer } from '@papercusp/embedded-postgres-server';
 
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -92,6 +93,23 @@ async function boot(prefix: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('embedded-PG postmaster supervision (WI-10003688)', () => {
+  it('propagates a low-level stop rejection and remains available for explicit cleanup', async () => {
+    const { dataDir, port, handle } = await boot('papercusp-pg-stop-rejection-');
+    const pid = await postmasterPid(dataDir);
+    const cause = new Error('fixture_low_level_postgres_stop_failure');
+    const stop = vi.spyOn(EmbeddedPostgres.prototype, 'stop').mockRejectedValueOnce(cause);
+    try {
+      await expect(handle.stop()).rejects.toBe(cause);
+      expect(handle.health()).toMatchObject({ state: 'stopped' });
+      expect(isAlive(pid)).toBe(true);
+      expect(await selectOne(port, handle.password)).toBe(true);
+    } finally {
+      stop.mockRestore();
+    }
+    await handle.stop();
+    await waitFor('the explicitly cleaned postmaster to stop', () => !isAlive(pid), 10_000);
+  }, 120_000);
+
   it('restarts a SIGKILLed postmaster and serves queries again without an operator restart', async () => {
     const exits: Array<{ signal: string | null }> = [];
     let restarted = 0;
