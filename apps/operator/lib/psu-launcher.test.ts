@@ -15351,6 +15351,103 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
       expect(probed).not.toContain(9171);
     });
 
+    // EI-24899559853673371: background-host sessions use the dedicated
+    // :9271 → :3271 same-vintage proxy, carried as base + upstream port.
+    it("routes a local :3271 pin through its active same-vintage background proxy", () => {
+      const probed: number[] = [];
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271/",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9271;
+        },
+        warn: (message: string) => warnings.push(message),
+      });
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9271",
+        source: "managed-env",
+        startedAt: null,
+      });
+      expect(probed).toEqual([9271]);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/EI-24899559853673371/);
+      expect(warnings[0]).toMatch(/PAPERCUSP_MCP_PROXY=0/);
+    });
+
+    it("keeps :3271 direct when its proxy is down, even if the live :9071 proxy is up", () => {
+      const probed: number[] = [];
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9071;
+        },
+        warn: (message: string) => warnings.push(message),
+      });
+      expect(target.url).toBe("http://127.0.0.1:3271");
+      expect(probed).toEqual([9271]);
+      expect(warnings).toHaveLength(0);
+    });
+
+    it("does not route a :3271 pin through a proxy for another runtime or a remote host", () => {
+      const warnings: string[] = [];
+      for (const env of [
+        {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9071",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3070",
+        },
+        {
+          PAPERCUSP_OPERATOR_URL: "http://10.0.0.5:3271",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+      ]) {
+        expect(
+          resolveOperatorUrl({
+            env,
+            home,
+            probe: () => true,
+            warn: (message: string) => warnings.push(message),
+          }),
+        ).toBe(env.PAPERCUSP_OPERATOR_URL);
+      }
+      expect(warnings).toHaveLength(0);
+    });
+
+    it("PAPERCUSP_MCP_PROXY=0 opts out of same-vintage background proxy routing", () => {
+      const probed: number[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3271",
+          PAPERCUSP_MCP_PROXY: "0",
+          PAPERCUSP_MCP_PROXY_BASE: "http://127.0.0.1:9271",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3271",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return true;
+        },
+        warn: () => {},
+      });
+      expect(target.url).toBe("http://127.0.0.1:3271");
+      expect(probed).toEqual([]);
+    });
+
     it("leaves non-staging pins untouched even with the staging proxy live", () => {
       for (const pin of [
         "http://127.0.0.1:3070",
