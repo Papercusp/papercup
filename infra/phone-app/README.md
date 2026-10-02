@@ -92,6 +92,22 @@ credential or unit write. A changed binary or Phone source requires a new pin.
 the default remains `~/.local/bin`. The pin excludes secret values and does not
 itself prove a recovery drill or public calling.
 
+For the app-owned Phone Postgres database, create a logical backup outside the
+source tree and then restore it into a disposable embedded Postgres instance:
+
+```bash
+node infra/phone-app/phone-db-backup.mjs backup --out /absolute/private/phone.dump
+node infra/phone-app/phone-db-backup.mjs restore-drill --archive /absolute/private/phone.dump
+```
+
+The backup command reads `PHONE_APP_DATABASE_URL`, `PHONE_DATABASE_URL`, or
+`DATABASE_URL`, then falls back to `PHONE_HOME/postgres.json`. It writes a
+0600 custom-format archive and SHA-256 receipt, refuses to replace an existing
+archive, and never prints the database password. The drill verifies the digest,
+restores into a fresh temporary database, and reads every restored public table.
+It never writes to the running Phone database. Keep archives in a protected,
+backed-up destination; a local archive alone does not cover host loss.
+
 The smoke test requires a positive received-audio packet row and a complete,
 error-free subscriber summary from `lk` 2.16. It refuses unknown output formats,
 missing tracks and zero traffic even when `lk` exits zero. It does not prove public,

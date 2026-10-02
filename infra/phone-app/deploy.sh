@@ -126,6 +126,7 @@ phone_source_revision() {
 artifact_files() {
   ARTIFACT_FILES=(
     "$HERE/deploy.sh" "$HERE/media-config.mjs" "$HERE/verify-media-plane.sh"
+    "$HERE/phone-db-backup.mjs"
     "$HERE/livekit-server.yaml.tmpl" "$HERE/livekit-sip.yaml.tmpl"
     "$HERE/systemd/papercusp-phone-livekit.service"
     "$HERE/systemd/papercusp-phone-sip.service"
