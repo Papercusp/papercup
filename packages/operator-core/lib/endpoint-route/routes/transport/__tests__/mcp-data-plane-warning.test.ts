@@ -87,6 +87,24 @@ describe('withMcpDiagnosticWarnings', () => {
     });
   });
 
+  it('does not warn for a scorecards:emit result with a recorded completion receipt', () => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        created: true,
+        issueId: 'EI-24889905021992714',
+        completionReceipt: { status: 'recorded', effectRef: 'EI-24889905021992714' },
+      }) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-02T17:34:18.330Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it.each([
     ['facts:list', { ok: true, mode: 'key', found: true, count: 1, facts: [{ key: 'guard-rail:example' }] }],
     ['tools:find', { ok: true, hits: [{ tool: 'facts:list' }] }],

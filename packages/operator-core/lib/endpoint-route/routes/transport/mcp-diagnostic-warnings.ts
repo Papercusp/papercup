@@ -63,6 +63,18 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   if (body.notFound === true || body.not_found === true || body.missing === true) return false;
   if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
   if (typeof body.code === 'string' && body.code.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
+  const completionReceipt = body.completionReceipt;
+  if (
+    body.ok === true &&
+    completionReceipt &&
+    typeof completionReceipt === 'object' &&
+    !Array.isArray(completionReceipt) &&
+    (completionReceipt as Record<string, unknown>).status === 'recorded' &&
+    typeof (completionReceipt as Record<string, unknown>).effectRef === 'string' &&
+    ((completionReceipt as Record<string, unknown>).effectRef as string).trim().length > 0
+  ) {
+    return true;
+  }
   if (Array.isArray(body.entries) && body.entries.length > 0) return true;
   if (
     typeof body.ownerId === 'string' &&
