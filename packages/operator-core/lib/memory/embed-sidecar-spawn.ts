@@ -25,8 +25,10 @@
  */
 
 import { spawn, ChildProcess } from 'node:child_process';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { papercuspDataDir } from '../own-tunnel/runtime';
 import {
   resolveSidecarSpawnPlan,
   gracefulStopChild,
@@ -35,6 +37,8 @@ import {
   respawnBudgetExhausted,
   registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
   verifySidecarFitness,
+  loopbackListenerUids,
+  loopbackListenerOwnedBy,
   type SidecarFitness,
 } from '../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../host-benign-errors';
@@ -57,6 +61,9 @@ let sidecarReady = false;
 /** P-531: the running child announced a deliberate idle exit and has not exited
  *  yet. Set from the IDLE_EXIT stdout line, cleared on exit/error. */
 let idleExitPending = false;
+/** P-530: the port the running child announced on its READY line. Null until
+ *  the child is ready and again once it exits. */
+let spawnedPort: number | null = null;
 const readyWaiters: (() => void)[] = [];
 
 let deliberateStop = false;

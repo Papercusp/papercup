@@ -20,6 +20,13 @@ import {
 } from '@papercusp/deployment-driver';
 import { describe, expect, it } from 'vitest';
 
+import {
+  ATTESTATION_PREFIX as CANARY_ATTESTATION_PREFIX,
+  buildAwsAmiCanaryProof,
+  parseAwsAmiCanaryInput,
+  runAwsAmiCleanAccountCanary,
+} from '../../bin/aws-ami-canary-measure.mjs';
+
 import { ARTIFACT_TRUST_PIPELINE_VERSION, type ArtifactTrustReport } from './artifact-trust';
 import {
   WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
@@ -545,6 +552,54 @@ describe('AWS workspace-host AMI release', () => {
     forged.proofOverride = (proof) => ({ ...proof, attestation: { ...proof.attestation, hostId: 'aws-clean-ami-forged' } });
     await expect(executeAwsAmiRelease(request(), forged)).rejects.toThrow('attestation failed validation');
     expect(forged.calls).not.toContain('activate-pins');
+  });
+
+  it('accepts a proof from the real canary orchestration over the release-built fixture (WI-10005604)', async () => {
+    const observedAt = '2026-08-23T01:30:00.000Z';
+    class RealCanaryAdapter extends FakeAdapter {
+      override async launchCleanAccountCanary(input: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0]) {
+        this.calls.push(`canary:${input.region}`);
+        // The bin's parser must accept the TS-built fixture as-is; only the fake ids are swapped
+        // for well-formed ones so its id shape checks pass, then restored for the binding.
+        const parsed = parseAwsAmiCanaryInput({ ...input, imageId: 'ami-0123456789abcdef0', subnetId: 'subnet-0123456789abcdef0' });
+        const bound = { ...parsed, imageId: input.imageId, subnetId: input.subnetId };
+        const marker = `${CANARY_ATTESTATION_PREFIX}${Buffer.from(
+          JSON.stringify(workspaceHostCleanRoomFixtureAttestation(input.fixture, observedAt)),
+        ).toString('base64')}\n`;
+        const sent: string[] = [];
+        let state = 'running';
+        const observed = await runAwsAmiCleanAccountCanary(bound, {
+          runId: () => 'roundtrip',
+          now: () => 0,
+          sleep: async () => {},
+          callerAccount: async () => input.accountId,
+          describeImage: async () => ({ state: 'available', architecture: 'x86_64' }),
+          describeSubnet: async (subnetId) => ({ subnetId }),
+          runInstance: async () => 'i-0roundtrip',
+          describeInstance: async () => ({ state, publicIpv4: null }),
+          ssmPingStatus: async () => 'Online',
+          sendCommand: async ({ commands }) => {
+            sent.push(commands.join('\n'));
+            return String(sent.length - 1);
+          },
+          getInvocation: async ({ commandId }) => {
+            const commands = sent[Number(commandId)];
+            if (commands.includes('grep ')) return { status: 'Success', stdout: marker };
+            if (commands.includes('systemctl is-active')) return { status: 'Success', stdout: 'active\n' };
+            return { status: 'Success', stdout: '' };
+          },
+          terminate: async () => {
+            state = 'terminated';
+          },
+          censusByRunTag: async () => [],
+        });
+        return buildAwsAmiCanaryProof(bound, observed, observedAt) as unknown as AwsAmiCleanAccountLaunchProof;
+      }
+    }
+    const adapter = new RealCanaryAdapter();
+    await executeAwsAmiRelease(request(), adapter);
+    expect(adapter.manifest?.cleanAccountProof.evidenceRef).toMatch(/^aws-ami-canary:i-0roundtrip:/);
+    expect(adapter.calls).toContain('publish-manifest');
   });
 
   it('does not start a Packer build when the common release gate is red', async () => {
