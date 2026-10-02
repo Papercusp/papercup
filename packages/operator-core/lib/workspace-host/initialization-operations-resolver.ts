@@ -51,6 +51,7 @@ import {
 } from './credential-material-source';
 import { GcpIapDeliveringWorkspaceHostInitializationOperations } from './gcp-iap-credential-delivery';
 import { isHostedProviderCredentialRef, resolveHostedGcpAuth } from './hosted-gcp-auth';
+import { resolveOrganizationExternalIdRef } from './hosted-aws-identity';
 import { AWS_WORKSPACE_HOST_TARGET } from './aws-connection';
 import { AWS_WORKSPACE_HOST_TRANSPORT_FEATURES } from './aws-connection-profile';
 import {
@@ -58,6 +59,7 @@ import {
   awsSsmHostKeyAlias,
   gcpIapHostKeyAlias,
   gcpIapHostKeyAliasFamily,
+  type AwsSsmTunnelCredentials,
   type AwsSsmWorkspaceHostInitializationProfile,
   type GcpIapWorkspaceHostBootstrapStatusSource,
   type GcpIapWorkspaceHostInitializationProfile,
@@ -890,7 +892,7 @@ export function resolveGcpIapWorkspaceHostInitializationProfile(
 export function resolveAwsSsmWorkspaceHostInitializationProfile(
   desired: WorkspaceHostDesiredSpec,
   controller: WorkspaceHostInitializationControllerProfile,
-  incarnation: { instanceId: string; awsProfile?: string },
+  incarnation: AwsSsmIncarnation,
 ): AwsSsmWorkspaceHostInitializationProfile {
   if (desired.target !== AWS_WORKSPACE_HOST_TARGET) {
     throw new UnsupportedWorkspaceHostInitializationTargetError(String(desired.target));
@@ -905,15 +907,23 @@ export function resolveAwsSsmWorkspaceHostInitializationProfile(
     ...(controller.sshExecutable ? { sshExecutable: controller.sshExecutable } : {}),
     ...(controller.awsExecutable ? { awsExecutable: controller.awsExecutable } : {}),
     ...(incarnation.awsProfile ? { awsProfile: incarnation.awsProfile } : {}),
+    ...(incarnation.awsCredentials ? { awsCredentials: incarnation.awsCredentials } : {}),
     remoteEntrypoint: controller.remoteEntrypoint,
   };
+}
+
+/** One EC2 incarnation plus the identity its Session Manager tunnel runs as. */
+export interface AwsSsmIncarnation {
+  instanceId: string;
+  awsProfile?: string;
+  awsCredentials?: () => Promise<AwsSsmTunnelCredentials>;
 }
 
 /** The SSH profile for whichever provider the desired spec names. */
 export function resolveWorkspaceHostSshInitializationProfile(
   desired: WorkspaceHostDesiredSpec,
   controller: WorkspaceHostInitializationControllerProfile,
-  incarnation: { instanceId: string; awsProfile?: string },
+  incarnation: AwsSsmIncarnation,
 ): WorkspaceHostSshInitializationProfile {
   return desired.target === AWS_WORKSPACE_HOST_TARGET
     ? resolveAwsSsmWorkspaceHostInitializationProfile(desired, controller, incarnation)
@@ -1200,6 +1210,11 @@ export interface ResolveOperationsForHostInput {
   readAwsInstanceId?: (workspaceId: string, hostId: string) => Promise<string | null>;
   /** AWS test seam; production pins through `enrollAwsSsmHostKeys`. */
   enrollAwsHostKeys?: (input: AwsSsmHostKeyEnrollmentInput) => Promise<void>;
+  /**
+   * AWS test seam for a role-chain connection's tunnel credentials; production hands the tunnel the
+   * composed SDK client's own `sessionCredentials()`.
+   */
+  awsTunnelCredentials?: () => Promise<AwsSsmTunnelCredentials>;
 }
 
 /**
@@ -1325,15 +1340,34 @@ async function resolveAwsSsmOperationsForHost(
   const source = provider.credentialSource as { method?: unknown; profile?: unknown } | undefined;
   const awsProfile =
     source?.method === 'shared-profile' && typeof source.profile === 'string' ? source.profile : undefined;
-  const client: AwsSsmHostKeyClient =
-    input.awsClient ??
-    (await import('./aws-connection-inspection')).createConfiguredAwsWorkspaceHostClient(stored.connection);
+  // Composed exactly as the provider factory composes it (provider-factories.ts): a hosted
+  // customer role resolves its organization's ExternalId; without the resolver the client refuses.
+  const configured = input.awsClient
+    ? null
+    : (await import('./aws-connection-inspection')).createConfiguredAwsWorkspaceHostClient(stored.connection, {
+        resolveExternalId: resolveOrganizationExternalIdRef,
+      });
+  const client: AwsSsmHostKeyClient = input.awsClient ?? configured!;
+  // The AWS CLI resolves the connection's identity on its own only for the default chain and a
+  // named profile. Every role chain (hosted customer-role/OIDC, local assume-role) must hand the
+  // tunnel the SAME credentials the SDK client signs with, or `aws ssm start-session` runs as the
+  // controller's ambient identity (EI-24854807241461317).
+  const awsCredentials = awsCliResolvesConnectionIdentity(source)
+    ? undefined
+    : (input.awsTunnelCredentials ?? (configured ? () => configured.sessionCredentials() : undefined));
+  if (!awsCliResolvesConnectionIdentity(source) && !awsCredentials) {
+    throw new Error('aws_workspace_host_tunnel_credentials_unavailable');
+  }
   await establishAwsSsmHostKeyTrust(
     client,
     { region: desired.region, instanceId, knownHostsFile: input.controller.knownHostsFile },
     { ...(input.awaitHostKeys ?? {}), ...(input.enrollAwsHostKeys ? { enroll: input.enrollAwsHostKeys } : {}) },
   );
-  const incarnation = { instanceId, ...(awsProfile ? { awsProfile } : {}) };
+  const incarnation = {
+    instanceId,
+    ...(awsProfile ? { awsProfile } : {}),
+    ...(awsCredentials ? { awsCredentials } : {}),
+  };
   const { remoteEntrypoint: _remoteEntrypoint, ...transport } = resolveAwsSsmWorkspaceHostInitializationProfile(
     desired,
     input.controller,
@@ -1351,6 +1385,16 @@ async function resolveAwsSsmOperationsForHost(
     deliveryCapabilities,
     transport,
   };
+}
+
+/**
+ * Whether the AWS CLI, given only the connection's (non-secret) profile, signs as the same identity
+ * the SDK client does: true for the default chain and a named shared profile, false for every role
+ * chain. A missing or unrecognized source is treated as a role chain, so it refuses rather than
+ * tunnelling under ambient credentials.
+ */
+export function awsCliResolvesConnectionIdentity(source: { method?: unknown } | undefined): boolean {
+  return source?.method === 'default-chain' || source?.method === 'shared-profile';
 }
 
 /** The EC2 instance id the provisioner registered for a host, or null when none is applied. */
