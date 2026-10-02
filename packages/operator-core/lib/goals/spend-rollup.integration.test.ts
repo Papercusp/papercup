@@ -154,7 +154,8 @@ beforeAll(async () => {
     )`);
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.coord_presence (
-      owner_id text PRIMARY KEY, heartbeat_at timestamptz, fleet_slug text
+      owner_id text PRIMARY KEY, heartbeat_at timestamptz, fleet_slug text,
+      host text NOT NULL DEFAULT '', pid integer, source text NOT NULL DEFAULT ''
     )`);
 }, 90_000);
 
