@@ -407,8 +407,8 @@ describe('launch-tool routing guidance', () => {
     expect(launchAgent.guidance?.when).toContain('fleet or unfleeted');
     expect(launchAgent.guidance?.when).toContain('fleet:launch-on-plan');
     expect(launchAgent.guidance?.when).toContain('Duplicate screening never delays process launch');
-    expect(launchAgent.description).toMatch(/successful spawn proves only that a process opened/i);
-    expect(launchAgent.description).toContain('before claiming registration, a first turn, or a task claim');
+    expect(launchAgent.description).toMatch(/spawn is not proof of registration, a first turn, or a work claim/i);
+    expect(launchAgent.description).toContain('read launch verification');
     expect(launchAgent.description).not.toContain('starts working immediately');
     expect(launchAgent.guidance?.notWhen).toContain('capability:terminal');
   });
@@ -542,7 +542,7 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
 
 describe('published launch args schema', () => {
   it('publishes the conditional non-empty brief requirement at the tool level', () => {
-    expect(launchAgent.description).toContain('REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`');
+    expect(launchAgent.description).toContain('`resume`/`fork` require a non-empty top-level `brief`');
   });
 
   it('publishes successor/restoreVisible mutual exclusion and the visible successor default', () => {
