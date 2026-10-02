@@ -39,6 +39,7 @@ import {
   CARRY_NOTES_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
+  WORK_ADMISSIONS_MIN_DDL,
   WORK_ITEM_DEPS_DDL,
   applyClaimPathReadDeps,
 } from '../../../test/_work-items-schema';
@@ -301,6 +302,9 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(FLEET_MEMBERSHIP_EVENTS_DDL);
   await db.sql.unsafe(HFC_DDL);
+  // work_items:update's external-source ownership preflight reads the admission
+  // ledger even when this test item has no admission row.
+  await db.sql.unsafe(WORK_ADMISSIONS_MIN_DDL);
   await db.sql.unsafe(FLEET_ASSIGNMENT_DDL);
   // EI-22040912157347872: claim refusal details evaluate the same durable
   // assignment floor as the engine claim path. Keep this focused fixture on the
@@ -1233,7 +1237,8 @@ describe('work_items body/summary alias round-trip (WI-4492, real PG)', () => {
     // update under the ALIAS `summary` (the name get RETURNS) — the exact get→edit→update
     // round-trip that used to silently drop the edit.
     const updated = await call(updateTool, { id, summary: 'BETA revised body via the summary alias' });
-    expect((updated.results as Record<string, unknown>[])[0]!.ok).toBe(true);
+    const updateResult = (updated.results as Record<string, unknown>[])[0]!;
+    expect(updateResult.ok, `summary alias update failed: ${JSON.stringify(updateResult)}`).toBe(true);
     const [afterUpdate] = await db.sql<{ body: string }[]>`
       SELECT body FROM harness_shared.engineer_issues WHERE issue_id = ${id}`;
     expect(afterUpdate.body).toBe('BETA revised body via the summary alias');
@@ -1354,12 +1359,20 @@ describe('work_items:get { operationalBrief } — work-item brief (real PG)', ()
     const created = await createOne({ kind: 'feature', title: 'brief: appended checkpoint', harness: 'papercup' });
     const id = (created.workItem as Record<string, unknown>).id as string;
     const checkpoint = await seedAppendedCheckpoint(id, CURRENT_UPDATE_WITHOUT_NEXT);
+    const { getWorkItemCheckpointWithMeta } = await import('../../work-item-checkpoint');
+    const checkpointRead = await getWorkItemCheckpointWithMeta({ harness: 'papercup', workItemId: id });
+    expect(checkpointRead.latestUpdate, `checkpoint metadata=${JSON.stringify(checkpointRead)}`).toEqual({
+      status: 'available', text: CURRENT_UPDATE_WITHOUT_NEXT,
+    });
 
     const { row, brief } = await readBrief(id);
     expect(row.checkpoint).toBe(checkpoint);
     expect(brief.nextAction.status).toBe('unknown');
     expect(brief.nextAction).not.toMatchObject({ value: 'Do the stale action.' });
-    expect(brief.facts.successorResidue).toMatchObject({ status: 'known', value: { left: 'Current residue.' } });
+    expect(
+      brief.facts.successorResidue,
+      `checkpoint=${JSON.stringify(brief.facts.checkpoint)} nextAction=${JSON.stringify(brief.nextAction)}`,
+    ).toMatchObject({ status: 'known', value: { left: 'Current residue.' } });
   });
 
   it.each(['missing', 'invalid'] as const)(
