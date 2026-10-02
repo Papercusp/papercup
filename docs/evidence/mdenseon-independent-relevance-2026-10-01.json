@@ -3214,6 +3214,88 @@
       "modelAdoptionAuthorized": false
     }
   },
+  "cellBoundVectorInputExtension": {
+    "workItem": "WI-10005735",
+    "status": "maintained-helper-and-conventional-tests-verified",
+    "reusedMechanism": "loadRetainedRelevanceVectors now accepts cell.parameters.reuseVectorsInput selecting one declared immutable vector input; omission retains the existing reuseVectors default. No new vector store, runtime, tool or parallel manifest system.",
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "92eb671dea3eb5193ac7516ad80ae2c64920ae8395627c2ac9c5f6005bb543e0",
+        "bytes": 64721
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "sha256": "5b68d49c442743cd0ad71adc4c46157c05305917b1486e39d55625282c0b51d3",
+        "bytes": 51124
+      }
+    ],
+    "verification": {
+      "before": {
+        "runId": "dd096bd7-5dcd-4783-aeeb-3e2adfe1538e",
+        "testRunId": 20584093,
+        "passed": 0,
+        "failed": 1,
+        "explicitNameSkipped": 136,
+        "failure": "Second cell of one shared manifest used the global vector input and failed completed receipt identity."
+      },
+      "final": {
+        "runId": "0e84e52c-ef89-47fe-bbfd-4ab78fc1a174",
+        "testRunId": 20584097,
+        "passed": 137,
+        "failed": 0,
+        "skipped": 0
+      },
+      "compiler": {
+        "at": "2026-10-02T23:41:23.757Z",
+        "head": "10a4c0cbf3",
+        "namedFiles": 2,
+        "checkedFiles": 15,
+        "errors": 0
+      },
+      "guardCoverage": [
+        "Two distinct vector inputs in one frozen manifest bind to their own completed cells.",
+        "A selected vector input must be a nonempty string and declared on that cell, with a stored input fingerprint.",
+        "A declared input pointing at another completed cell is still refused.",
+        "Existing default, owner/arm/corpus, snapshot, raw, query identity, ordering, dimensions and normalization controls remain in the conventional suite."
+      ]
+    },
+    "scope": "The maintained selector is verified. Frozen source overlay v1 predates this extension and remains unchanged; a new overlay v2 must transplant and admit this exact tested block before joint incremental execution.",
+    "runtimeOverlayV2Qualified": false,
+    "newEmbeddingMatrixStarted": false,
+    "p003Complete": false
+  },
+  "sourceCollectionTerminalV7": {
+    "workItem": "WI-10004537",
+    "ownedIncident": "WI-10005738",
+    "taskId": "0murjh59a1uv4ej919f",
+    "log": ".papercusp/scratch/bash-0b68ce95-7b8.log",
+    "status": "failed",
+    "actualExit": 1,
+    "actualTerminalAt": "2026-10-02T23:37:27.399Z",
+    "observedTerminalAt": "2026-10-02T23:37:27.443Z",
+    "supersedes": "Earlier same-task running snapshots, including 23:29 prose-pass-2 progress. Do not run the successful-EOF whole-cohort audit or reuse a running assertion.",
+    "failedInvocation": "ba64fadd-5ed5-4a20-930d-5491788d1e72",
+    "failedStage": "prose-judge-2-256-q192",
+    "observedError": "LlmCallError: anthropic-direct error: 429 rate_limit_error; retry ladder stopped at attempt 2/8 because caller retry deadline was reached",
+    "providerRequestId": "req_011CfeHnEKpDkfkThmmdtxG7",
+    "preservedPasses": {
+      "memoryJudge1": { "calls": 144, "votes": 1132 },
+      "memoryJudge2": { "calls": 144, "votes": 1132 },
+      "proseJudge1": { "calls": 81, "votes": 572 }
+    },
+    "missingFinalFiles": [
+      "prose-judge-2-pass.json",
+      "labels.json",
+      "judgments.json"
+    ],
+    "causeStatus": "unconfirmed: determine actual request endpoint, gateway/account outcomes and retry deadline; the error prefix alone does not prove direct bypass or pool exhaustion",
+    "retryPolicy": "No paid retry or model/prompt/account-policy change until the owned incident diagnoses the actual route and preconditions. Preserve and audit the valid prefix and rejected attempts; never repay the completed calls.",
+    "finalNewLabelsVerified": false,
+    "newEmbeddingMatrixStarted": false,
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
