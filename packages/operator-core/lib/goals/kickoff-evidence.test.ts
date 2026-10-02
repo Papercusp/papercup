@@ -296,6 +296,7 @@ describe('GOAL kickoff required-leg gate', () => {
         cost: 'COST',
         ownerWalled: 'OWNER-WALLED',
         killed: 'KILLED',
+        nextWake: 'NEXT WAKE',
       });
     });
 
