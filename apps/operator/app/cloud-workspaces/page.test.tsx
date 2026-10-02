@@ -1648,8 +1648,19 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     expect(narrow).toContain(
       "grid-template-columns: repeat(4, minmax(0, 1fr))",
     );
-    expect(narrow).toContain(".hostRow {");
-    expect(narrow).toContain(".hostRowActions {");
+    // Equal-specificity responsive row rules must follow their base rules.
+    // Finding them only in the first container block misses a later override
+    // that squeezes the workspace name into the status badge.
+    const responsiveRowsStart = cloudPageCss.lastIndexOf(
+      "@container cw-page (max-width: 760px)",
+    );
+    expect(responsiveRowsStart).toBeGreaterThan(
+      cloudPageCss.search(/^\.hostRowMain \{/m),
+    );
+    const responsiveRows = cloudPageCss.slice(responsiveRowsStart);
+    expect(responsiveRows).toContain(".hostRow {");
+    expect(responsiveRows).toContain(".hostRowActions {");
+    expect(responsiveRows).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");
   });
 
   it("bounds recent activity density without dropping its entries", () => {
