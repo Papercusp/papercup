@@ -1549,7 +1549,20 @@ export async function probeEmbedSidecar(
         note: 'embed sidecar not enabled on this host (PAPERCUSP_EMBED_SIDECAR/…_URL unset) — nothing to probe',
       };
     }
-    url = (explicitUrl ?? spawnMod.embedSidecarLocalUrl()).replace(/\/$/, '');
+    const resolved = explicitUrl ?? spawnMod.embedSidecarLocalUrl();
+    if (!resolved) {
+      // P-530: this Server spawns its sidecar on demand and none is running
+      // now (not started yet, or it exited idle). Not an outage.
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: Date.now() - start,
+        present: false,
+        note: 'embed sidecar is spawned on demand by this Server and is not running now — nothing to probe',
+      };
+    }
+    url = resolved.replace(/\/$/, '');
   } catch {
     return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'embed-sidecar liveness unknown (spawn-module read failed)' };
   }
