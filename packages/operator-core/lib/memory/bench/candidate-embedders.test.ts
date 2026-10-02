@@ -11,7 +11,7 @@ vi.mock('@huggingface/transformers', () => ({
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
-  validateNativeBoundaryRequest, nativeBoundaryPopulation, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
+  validateNativeBoundaryRequest, nativeBoundaryPopulation, nativeInferenceTraceVerified, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
   type NativeBoundaryRequest, type NativeBoundaryRow, type NativeBoundaryBatchRow, type CandidateVectors } from './candidate-embedders';
 import { nativeBenchmarkOutputPaths } from './candidate-embedders';
 import { moduleRepoRoot } from '../../module-repo-root';
@@ -222,6 +222,30 @@ describe('native mDenseOn boundary evidence', () => {
     expect(summarizeNativeBoundaries(request, [row], 'cpu', 'single-short-query')).toMatchObject({
       passedFixedVectorGates: true, tokenIdsEqual: true, workerInputTraceVerified: false, diagnosticCompatible: false });
   });
+  it.each(['valid', 'legacy', 'other-request', 'other-thread', 'other-device', 'missing-end', 'failed', 'clock', 'reverse'])
+    ('keeps %s graph intervals distinct from process-only kernel evidence', (failure) => {
+      const { request, rows } = fixture(), row = rows[0];
+      const identity = { requestId: 0, attempt: 1, processId: 123, workerThreadId: 1, nativeThreadId: 456 };
+      const input = { model: request.export, device: 'cpu' as const, observedAt: '2026-10-02T00:00:00Z',
+        inputShape: [1, row.inputIds.length], inputIds: row.inputIds, attentionMask: row.inputIds.map(() => 1), request: identity };
+      const start = { ...identity, model: request.export, device: 'cpu' as const, observedAt: input.observedAt,
+        clock: 'node-hrtime' as const, monotonicNs: '100', phase: 'start' as const };
+      const end = { ...start, monotonicNs: '200', phase: 'end' as const, outcome: 'success' as const };
+      const events: any[] = [start, end];
+      if (failure === 'legacy') delete (input as any).request;
+      if (failure === 'other-request') end.requestId++;
+      if (failure === 'other-thread') end.nativeThreadId++;
+      if (failure === 'other-device') (end as any).device = 'cuda';
+      if (failure === 'missing-end') events.pop();
+      if (failure === 'failed') (end as any).outcome = 'error';
+      if (failure === 'clock') end.monotonicNs = 'unknown';
+      if (failure === 'reverse') end.monotonicNs = '99';
+      expect(nativeInferenceTraceVerified([input], events, request.export, row.referenceInputIds, 'cpu')).toBe(failure === 'valid');
+      row.inputTraces = [input]; row.inferenceTraces = events;
+      expect(summarizeNativeBoundaries(request, [row], 'cpu', 'single-short-query')).toMatchObject({
+        workerInferenceTraceVerified: failure === 'valid', diagnosticCompatible: failure === 'valid',
+      });
+    });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
     const { request, rows } = fixture();
     if (failure === 'partial') rows.pop();
