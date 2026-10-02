@@ -31,6 +31,10 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // kickoff re-delivered. The replacement's outcome is a separate event
     // (launch-kickoff-fresh-child-failed counts as failure via the suffix rule).
     kind === 'launch-kickoff-fresh-child-retry' ||
+    // EI-24818010361425604: a same-host respawn replaced the child mid-kickoff
+    // and the kickoff is re-delivered to the successor. Like the fresh-child
+    // retry above, the redelivery itself is recovery evidence.
+    kind === 'launch-kickoff-respawn-redelivery' ||
     kind === 'launch-kickoff-model-turn-retry-result' ||
     kind === 'submit-verify-human-input-retry' ||
     kind === 'respawn-carry-fresh-epoch-retry' ||
