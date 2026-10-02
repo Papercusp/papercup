@@ -790,6 +790,31 @@ describe("cc lifecycle hook — operator-independent paths", () => {
     });
   });
 
+  it("forwards the wake executor's PAPERCUSP_WAKE_DELIVERY_ID as wake_delivery_id (WI-10005679)", async () => {
+    const { exitCode, requests } = await runLifecycleAgainstDisposition(
+      "terminal",
+      undefined,
+      { PAPERCUSP_WAKE_DELIVERY_ID: "413379" },
+    );
+    expect(exitCode).toBe(0);
+    expect(
+      (requests[0].body.params as { arguments?: Record<string, unknown> })
+        .arguments,
+    ).toMatchObject({ wake_delivery_id: 413379 });
+  });
+
+  it("drops a malformed PAPERCUSP_WAKE_DELIVERY_ID instead of forwarding it", async () => {
+    const { requests } = await runLifecycleAgainstDisposition(
+      "continuation",
+      undefined,
+      { PAPERCUSP_WAKE_DELIVERY_ID: "not-a-number" },
+    );
+    const args = (requests[0].body.params as { arguments?: Record<string, unknown> })
+      .arguments;
+    expect(args).toBeDefined();
+    expect(args).not.toHaveProperty("wake_delivery_id");
+  });
+
   it("a carry/reset continuation SessionEnd never kills the managed host", async () => {
     const { exitCode, requests } = await runLifecycleAgainstDisposition(
       "continuation",

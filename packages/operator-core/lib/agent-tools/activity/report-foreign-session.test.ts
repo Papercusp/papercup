@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   release: vi.fn(),
   releaseLocks: vi.fn(),
   resetWake: vi.fn(),
+  wakeResumeTurn: vi.fn(),
   loopOwners: vi.fn(),
   consume: vi.fn(),
   classify: vi.fn(),
@@ -36,7 +37,10 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
 }));
 vi.mock('../../work-item-lease-release', () => ({ releaseAllWorkItemLeasesForOwner: h.release }));
 vi.mock('../locks/release-all-owned', () => ({ releaseAllOwnedLocks: h.releaseLocks }));
-vi.mock('../../session-reset-continuation', () => ({ recentContextResetWake: h.resetWake }));
+vi.mock('../../session-reset-continuation', () => ({
+  recentContextResetWake: h.resetWake,
+  isWakeResumeTurn: h.wakeResumeTurn,
+}));
 vi.mock('../../adv-roster', () => ({ activeLoopOwners: h.loopOwners }));
 vi.mock('../../carry-respawn-marker', () => ({ consumeRespawnExpected: h.consume }));
 vi.mock('../../adv-sessions', async (importActual) => ({
@@ -70,6 +74,7 @@ beforeEach(() => {
   h.release.mockResolvedValue({ releasedIds: ['WI-1'], claimsCleared: 1 });
   h.releaseLocks.mockResolvedValue({ released: [], heldBefore: 0, crossDomainReleased: [], resourcesReleased: 0 });
   h.resetWake.mockResolvedValue(null);
+  h.wakeResumeTurn.mockResolvedValue(false);
   h.loopOwners.mockResolvedValue(new Set());
   h.consume.mockResolvedValue(false);
   h.reanchorById.mockResolvedValue({ reanchored: true, owner: OWNER });
