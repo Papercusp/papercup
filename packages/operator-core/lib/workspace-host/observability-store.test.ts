@@ -388,6 +388,19 @@ describe('workspace-host observability store', () => {
     });
   });
 
+  it.each(['gcp', 'aws'])('offers %s restore only when an applied snapshot has a provider identity', async (target) => {
+    H.rows.set('FROM harness_shared.workspace_hosts', [{ id: 'host-1', name: 'research', target, observed_state: 'running',
+      desired_state: 'running', created_at: '2026-08-20T00:00:00Z' }]);
+    const resource = { host_id: 'host-1', logical_key: 'snapshot', kind: 'snapshot', target, state: 'applied', provider_id: 'snapshot-1', attempts: 1 };
+    for (const [resources, enabled] of [
+      [[], false], [[{ ...resource, state: 'running' }], false], [[{ ...resource, provider_id: null }], false], [[resource], true],
+    ] as const) {
+      H.rows.set('FROM harness_shared.workspace_host_resources', [...resources]);
+      const rows = await readWorkspaceHostControl('ws-1');
+      expect(rows[0]).toMatchObject({ capabilities: { restore: enabled } });
+    }
+  });
+
   it('does not project stale operation progress for an absent host tombstone', async () => {
     H.rows.set('FROM harness_shared.workspace_hosts', [
       {

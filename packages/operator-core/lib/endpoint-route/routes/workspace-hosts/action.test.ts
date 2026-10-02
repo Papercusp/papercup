@@ -780,7 +780,7 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
     const h = harness();
     const source = { ...desired, target, scope: { kind: target === 'aws' ? 'account' as const : 'project' as const, id: target === 'aws' ? '123456789012' : 'project-1' }, labels: undefined,
       provider: { sourceSetting: 'kept' } };
-    h.readTarget.mockResolvedValue({ ...(await h.readTarget())!, target, desired: source });
+    h.readTarget.mockResolvedValue({ ...(await h.readTarget('workspace_1', 'host-1'))!, target, desired: source });
     h.readConnection.mockResolvedValue({ id: 'connection-1', target, status: 'connected', connection: {
       target, cloudCredentialRef: { kind: 'cloud', ref: 'resolver://current' }, provider: { currentSetting: 'bound' },
     } });

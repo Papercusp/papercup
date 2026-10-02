@@ -758,7 +758,7 @@ describe("CloudWorkspacesPage — AWS parity", () => {
   });
 
   it.each(["gcp", "aws"] as const)("restores a registered %s snapshot to a distinct host without browser credential config", async (target) => {
-    H.rows = [target === "aws" ? awsConnectionRow : connectionRow, { ...workspaceRow, target,
+    H.rows = [target === "aws" ? awsConnectionRow : connectionRow, { ...workspaceRow, target, id: "host-research-control",
       capabilities: { ...workspaceRow.capabilities, restore: true },
       resources: [...(workspaceRow.resources ?? []), { logicalKey: "snapshot-1", kind: "snapshot", state: "applied", providerId: "snapshot-1", attempts: 1 }],
     }];
@@ -766,13 +766,13 @@ describe("CloudWorkspacesPage — AWS parity", () => {
     fireEvent.click(screen.getByRole("button", { name: "More actions for research-control" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Restore snapshot" }));
     const submit = screen.getByRole("button", { name: "Restore workspace" }) as HTMLButtonElement;
-    fireEvent.change(screen.getByRole("textbox", { name: "Restored workspace name" }), { target: { value: "host-1" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Restored workspace name" }), { target: { value: "research-control" } });
     expect(submit.disabled).toBe(true);
     fireEvent.change(screen.getByRole("textbox", { name: "Restored workspace name" }), { target: { value: "research-restored" } });
     expect(submit.disabled).toBe(false);
     fireEvent.click(submit);
-    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "restore", workspaceId: "host-1", name: "research-restored",
-      snapshot: { target, hostId: "host-1", providerId: "snapshot-1" }, desired: { hostId: "host-research-restored" } }));
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith({ action: "restore", workspaceId: "host-research-control", name: "research-restored",
+      snapshot: { target, hostId: "host-research-control", providerId: "snapshot-1" }, desired: { hostId: "host-research-restored" } }));
   });
 
   it("validates AWS and snapshots an AWS host through the shared mutation seam", async () => {
@@ -1275,7 +1275,7 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
       Array.from(menu.querySelectorAll('[role="menuitem"]')).map(
         (item) => item.textContent,
       ),
-    ).toEqual(["Repair", "Snapshot", "Destroy"]);
+    ).toEqual(["Repair", "Snapshot", "Restore snapshot", "Destroy"]);
 
     fireEvent.keyDown(repairItem, { key: "Tab" });
     expect(screen.queryByRole("menu")).toBeNull();

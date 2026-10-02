@@ -816,7 +816,7 @@ export default function CloudWorkspacesPage() {
           </div>
         </div>
       </Modal>
-      <Modal open={Boolean(restoreSource)} onClose={() => setRestoreSource(null)} title={`Restore ${restoreSource?.name ?? "workspace"}`}>
+      <Modal open={Boolean(restoreSource)} onOpenChange={(open) => { if (!open) setRestoreSource(null); }} title={`Restore ${restoreSource?.name ?? "workspace"}`}>
         <div className={styles.modalBody}>
           <p>Create a separate host from a durable snapshot. The source host stays available; its provider configuration is reused.</p>
           <Field label="Restored workspace name"><TextInput value={restoreName} aria-label="Restored workspace name"
