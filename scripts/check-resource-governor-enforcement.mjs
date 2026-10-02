@@ -1814,6 +1814,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for near-duplicate-guard-compare-cli.ts: gitBlob runs one awaited execFileSync(git hash-object <path>) per compared artifact to stamp provenance on this operator-invoked bench CLI; a failure is caught as null. It exits immediately and creates no detached worker or resident queue.",
   },
   {
+    path: "packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for chunk-search-ab-cli.ts: its sole child-process call reads Git metadata for measuredCode provenance (HEAD, blob and dirty state), with a 30-second timeout and 1 MiB output bound. The attended A/B CLI awaits each read, catches failures as explicit error text, detaches nothing and creates no resident process queue. This disposition rejects additional child starts or removal of the read bounds.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+        source.includes("execFileSync('git', ['-C', repo, ...args]") &&
+        /timeout:\s*30_000/.test(code) && /maxBuffer:\s*1024\s*\*\s*1024/.test(code) &&
+        !START_NON_VERB.test(code) && !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "packages/operator-core/lib/search/embedding-space-parity-cases.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1841,16 +1855,64 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed semantic disposition for scripts/lib/graph-dependency-suggestions.mjs: this is a call-local traversal frontier, not queued background work. Both initial changed-path seeds and discovered importers are deduplicated in `seen` and limited by the existing MAX_VISITED_FILES bound; excess seeds set `truncated` and are omitted from suggestions, while the baseline selection remains untouched. The cursor-index walk retains at most that same bound and is discarded when the suggestion call returns.",
   },
+  {
+    path: "scripts/analyze-heap-snapshots.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for analyze-heap-snapshots.mjs: checkNativeHeapDecode runs one caller-specified native decoder over supplied snapshot bytes, with a 60-second timeout and 16 KiB output bound, and returns scalar/hash diagnostics. This attended diagnostic creates no detached child or resident work queue. The exception rejects additional starts or removed subprocess bounds.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+        /\bspawnSync\s*\(\s*executable\s*,/.test(code) &&
+        /timeout:\s*60_000/.test(code) && /maxBuffer:\s*16\s*\*\s*1024/.test(code) &&
+        !START_NON_VERB.test(code) && !hasCalledResourceStartAlias(code);
+    },
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
-  P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [
+  P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
     `${path}::${code}`,
-    { disposition, reason },
+    { disposition, reason, ...(matchesSource ? { matchesSource } : {}) },
   ]),
 );
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs::resource-start-outside-admission",
+    {
+      disposition: "upstream",
+      reason:
+        "Reviewed upstream disposition for WI-10005599's 130-byte native Mul teardown control: native-cuda-allocation-preflight.test.ts runs capture under the canonical test parent (runGovernedTestProcess/withGovernedAdmissionContext), which owns the receipt and test deadline. capture/debug-capture propagate process.env and await child close/pipe EOF; target owns one FILE Worker and awaits termination. No embedding weights, service, detach or resident queue. Source conditioning pins the tiny graph, three nested starts and awaited lifetime. Historical standalone capability:bash launches remain task-attributed only: their typed admission inheritance is unmeasured and is not certified by this source disposition.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 2 &&
+          [...code.matchAll(/\bnew\s+Worker\s*\(/g)].length === 1 &&
+          !/\bnew\s+Piscina\s*\(|\.admit\s*\(/.test(code) && !hasCalledResourceStartAlias(code) &&
+          source.includes("const graphSha = '71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10'") &&
+          /embeddingModelInferencePerformed:\s*false/.test(code) &&
+          [...code.matchAll(/await\s+worker\.terminate\s*\(/g)].length === 2 && /child\.once\s*\(/.test(code) &&
+          /env:\s*process\.env/.test(code);
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/work_items/completion-freshness.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition: createPersistedCompletionHistorySearchMemo retains completed Git-search verdicts for CompletionHistoryMemoStore.save, not future resource starts. flush writes and clears those records and restores failed writes; hydrate restores saved results. The existing memo limit evicts old cache results without throttling productive work. Scope this disposition to pending writes inside that memo and reject any additional resident queue or removal of persistence.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        const start = code.indexOf('export function createPersistedCompletionHistorySearchMemo(');
+        const end = code.indexOf('\n}', start) + 2;
+        return start >= 0 && end > start && /\bstore\.save\s*\(/.test(code.slice(start, end)) &&
+          [...code.matchAll(RESIDENT_QUEUE)].every((match) =>
+            match[1] === 'pending' && match.index >= start && match.index < end);
+      },
+    },
+  ],
   [
     "apps/operator/scripts/psu-pty-host.mjs::unbounded-resident-queue",
     {

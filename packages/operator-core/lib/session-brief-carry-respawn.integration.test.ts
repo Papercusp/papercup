@@ -36,7 +36,7 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup());
 
 describe('pending carry-respawn on real Postgres', () => {
-  it('proves the migration requirement and persists a one-shot slot with nonce-safe restore and clear', async () => {
+  it('proves the migration requirement and one-shot consume safety across concurrent bootstrap, restore and clear', async () => {
     const nowMs = Date.now();
     const payload = {
       firstPrompt: 'Continue the verified active task.',
@@ -50,6 +50,31 @@ describe('pending carry-respawn on real Postgres', () => {
     )).rejects.toThrow(/pending_carry_respawn/);
 
     await applyMigrationForTest(db.sql, pendingCarryMigration);
+    const concurrentOwner = `${OWNER}-concurrent`;
+    const concurrentNonce = 'carry-concurrent-1';
+    const concurrentSlot = await savePendingCarryRespawn(
+      { ownerId: concurrentOwner, workspaceId: WORKSPACE },
+      payload,
+      { sql: db.sql, nowMs, nonce: concurrentNonce },
+    );
+    expect(concurrentSlot?.nonce).toBe(concurrentNonce);
+
+    // The fixture pool has independent connections; both bootstrap consumers
+    // race for the same row lock and exactly one may receive the one-shot slot.
+    const concurrentConsumers = await Promise.all([
+      consumePendingCarryRespawn(concurrentOwner, { sql: db.sql, nowMs: nowMs + 1 }),
+      consumePendingCarryRespawn(concurrentOwner, { sql: db.sql, nowMs: nowMs + 1 }),
+    ]);
+    expect(concurrentConsumers.filter((slot) => slot !== null)).toHaveLength(1);
+    expect(concurrentConsumers.filter((slot) => slot === null)).toHaveLength(1);
+    expect(concurrentConsumers.find((slot) => slot !== null)).toMatchObject({ nonce: concurrentNonce });
+    const concurrentlyConsumed = await db.sql`
+      SELECT pending_carry_respawn
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${concurrentOwner}
+    `;
+    expect(concurrentlyConsumed[0]?.pending_carry_respawn).toBeNull();
+
     const original = await savePendingCarryRespawn(
       { ownerId: OWNER, workspaceId: WORKSPACE },
       payload,
