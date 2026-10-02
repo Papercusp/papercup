@@ -2951,6 +2951,110 @@
       "modelAdoptionAuthorized": false
     }
   },
+  "schemaCallRecovery": {
+    "workItem": "WI-10005707",
+    "status": "bounded strict schema recovery qualified; source-complete snapshot collection continuing",
+    "supersedesLiveContinuation": "fencedCallRecovery.continuation describes a historical launch, now terminal failed1 at2026-10-02T22:03:19.962Z",
+    "previousTask": "0muri7xef1lno8oqb57",
+    "failedRaw": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v6-fenced-recovery/memory-judge-1-192-q64.json",
+      "sha256": "61d496a25c66ca4ba57015acc00a21c1736e5795f47d772b5a114f328b947dd6",
+      "bytes": 100702
+    },
+    "finding": {
+      "votes": 64,
+      "missingRequiredAmbiguity": 62,
+      "explicitAmbiguous": 2,
+      "stopReason": "end_turn",
+      "strictRejectionRequired": true,
+      "correctedEarlierAll64Claim": true
+    },
+    "repair": {
+      "reuse": "Existing immutable call/recovery seam and strict Scout parseLlmJson/numeric schema",
+      "boundedAttempts": 3,
+      "failedDonorCountsAsAttempt": true,
+      "sameAndSuccessorOutputLimitsGuarded": true,
+      "selectedCall": "Hash-pinned valid attempt; retain invalid raw and donor rejection evidence",
+      "modelPromptThresholdUnchanged": true,
+      "syntheticJudgments": false,
+      "rawOverwrites": false
+    },
+    "qualification": {
+      "assessment": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/schema-call-recovery-v1.json",
+        "sha256": "231f5f0816a2fb0c2dd0cd46499bd27392e4fd3e81a5c366ff2f49c5a6302e7d",
+        "bytes": 205210
+      },
+      "originalPinsVerified": 341,
+      "newReferencePinsVerified": 342,
+      "paidCalls": 0,
+      "firstMissingCall": {
+        "model": "claude-sonnet-4-6",
+        "promptSha256": "68e3e4e14f47133d2ded9bc4985464a9fb26d33c0d1b8902fe26a350c1d85378",
+        "questionCount": 64,
+        "sourceCount": 64
+      },
+      "identityHash": "a620f1bd7c5451d322186bb46e7f537382f01a1acbf593fa5afb1a740f05c2b7",
+      "tests": {
+        "judgedRunId": "94a0e690-0ec9-43fa-ac8f-2c2ca4a5dd94",
+        "judgedLedger": 20576049,
+        "judgedPassed": 67,
+        "otherUnchangedLedger": [
+          20576040,
+          20576041,
+          20576042
+        ],
+        "totalPassed": 205,
+        "failed": 0,
+        "skipped": 0
+      },
+      "typecheck": "2026-10-02T22:29:59.874Z head9c87959356;2named3checked0errors"
+    },
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "bc45f0cb7bbe2314af28489044b7b8ea8c714902a20797cc240b443bcc12cb1b",
+        "bytes": 49903
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "cab84e17b6b87d16fc5fb98ea3826a54a35a7fbac76a30fa714ab72d4f5816ab",
+        "bytes": 51475
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+        "sha256": "6258774bf0e0b033456a6af5df39b6a47f2aad7d69c9bc121448bb566df9b534",
+        "bytes": 3561
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+        "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12",
+        "bytes": 3485
+      }
+    ],
+    "continuation": {
+      "taskId": "0murjh59a1uv4ej919f",
+      "bashId": "0b68ce95-7b8",
+      "log": ".papercusp/scratch/bash-0b68ce95-7b8.log",
+      "deadline": "2026-10-03T00:32:59.655Z",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v7-schema-recovery",
+      "launchSource": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/resume-blind-labels-v7-schema-recovery.sh",
+      "preRetryHarnessAudit": "WI-10004537 comment1156322; WI-10005707 comment1156321"
+    },
+    "preservation": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/public-before-schema-recovery-v1.json",
+      "sha256": "4c0f7dcd73cdcd528d3ea3fecdbf5940d807a8dfb6508f2365ed118838c9f558",
+      "bytes": 115879,
+      "originalSectionsUnchanged": true
+    },
+    "acceptance": {
+      "p003Complete": false,
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "fullAccessibleCensusExhausted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
