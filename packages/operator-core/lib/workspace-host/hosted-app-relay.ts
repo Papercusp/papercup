@@ -471,6 +471,8 @@ export interface AppRelayPort {
  */
 export interface AppRelayOpenOptions {
   relayUsage?: RelayUsageReport;
+  /** The outside app owns the peer key and exchanges only Noise packets. */
+  sealed?: boolean;
 }
 
 export interface HostedAppRelayAuditEvent {

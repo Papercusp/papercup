@@ -350,10 +350,32 @@ async function runAssembledByoc() {
     );
     await settle(pending);
 
-    const appBrowser = browser('operator-http');
+    let app!: ReturnType<HostedWorkspaceSessionBroker['openAppChannel']>;
+    const appPackets: import('./byoc-sealed-channel').ByocSealedPacket[] = [];
+    const appSealed = new ByocSealedChannel({
+      initiator: true,
+      localKeyPair: clientKey,
+      expectedRemotePublicKey: hostKey.publicKey,
+      sendPacket: (packet) => {
+        if (!app) appPackets.push(packet);
+        else if (!app.send(packet)) throw new Error('sealed app packet was refused');
+      },
+      onFrame: () => {},
+      onError: (error) => hostWarnings.push(`app sealed channel: ${error.message}`),
+    });
+    app = broker.openAppChannel(
+      { binding, lastSeenAt: new Date() },
+      { onFrame: (frame) => { if (isByocSealedPacket(frame)) appSealed.receive(frame); }, onClose: () => {} },
+      'app-http',
+      { sealed: true },
+    );
+    if (!app) throw new Error('sealed app channel did not open');
+    for (const packet of appPackets.splice(0)) {
+      if (!app.send(packet)) throw new Error('sealed app handshake packet was refused');
+    }
     await settle(pending);
-    await appBrowser.sealed.opened;
-    await appBrowser.sealed.send({
+    await appSealed.opened;
+    await appSealed.send({
         type: 'http.request',
         requestId: 'app-1',
         method: 'POST',

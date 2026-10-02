@@ -476,9 +476,11 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     const connectorSocket = this.connectors.get(key);
     const state = this.connectorState.get(key);
     if (!connectorSocket || !open(connectorSocket) || !state) return null;
-    // The portal has no customer-held content key. This also fences OAuth key/token
-    // channels, whose request and answer carry secrets on the same app plane.
-    if (state.binding.hosting === 'byoc') return null;
+    // The portal has no customer-held content key. A BYOC app channel is admitted
+    // only when the outside app itself owns a pinned peer and hands us opaque
+    // packets; the ordinary portal relay remains refused.
+    const sealed = state.binding.hosting === 'byoc' && openOptions.sealed === true;
+    if (state.binding.hosting === 'byoc' && !sealed) return null;
     const channelId = this.randomId();
     let closed = false;
     const socket: HostedWorkspaceRelaySocket = {
@@ -510,7 +512,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       controllerKey: `${key}\u0000app:${channelId}`,
       idleTimer: null,
       closed: false,
-      sealed: false,
+      sealed,
     };
     this.sessions.set(channelId, session);
     this.touch(session);
@@ -522,12 +524,14 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       role: 'controller',
       // P-328: this month's relay usage (counts only), so the machine can raise the limit alert.
       ...(kind === 'app-http' && openOptions.relayUsage ? { relayUsage: openOptions.relayUsage } : {}),
+      ...(sealed ? { sealed: true } : {}),
     });
     this.audit(state.binding, 'app_relay_opened', channelId);
     return {
       send: (payload) => {
-        const type = payloadType(payload);
-        if (session.closed || !type || !clientTypes.has(type)) return false;
+        if (session.closed || (sealed && !isByocSealedPacket(payload))) return false;
+        const type = sealed ? byocSealedContentType(payload) : payloadType(payload);
+        if (type !== null && !clientTypes.has(type)) return false;
         const live = this.connectors.get(key);
         if (!live) return false;
         this.touch(session);
