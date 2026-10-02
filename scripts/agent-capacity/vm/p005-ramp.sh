@@ -35,6 +35,13 @@ AGENT_ENV=${AGENT_ENV:-}
 PARKED=${PARKED:-}
 PARK_AT_REQUEST=${PARK_AT_REQUEST:-4}
 PARK_RELEASE_SEC=${PARK_RELEASE_SEC:-$((DUR * 6 / 10))}
+# PARKED_PER_ACTIVE=R (P-016) replaces the fixed PARKED with round(R x n) parked sessions per step, so
+# every step holds the same busy:idle mix (plan D-038: R = (1-b)/b, about 1.9 for the measured fleet).
+PARKED_PER_ACTIVE=${PARKED_PER_ACTIVE:-}
+if [ -n "$PARKED_PER_ACTIVE" ] && ! [[ "$PARKED_PER_ACTIVE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "RAMP_ERROR PARKED_PER_ACTIVE must be a non-negative number, got '$PARKED_PER_ACTIVE'"
+  exit 2
+fi
 S="scripts/agent-capacity"
 uid=$(id -u)
 SLICE=${CAPDRV_SLICE_DIR:-/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/capdrv.slice}
@@ -65,16 +72,20 @@ echo "RAMP_PREFLIGHT_OK $LABEL $(grep -m1 DRIVER_CHECK_OK "$FP/p005-$LABEL.check
 
 for n in $STEPS; do
   run="p005-$LABEL-n$n"
+  parked=$PARKED
+  [ -z "$PARKED_PER_ACTIVE" ] || parked=$(awk -v r="$PARKED_PER_ACTIVE" -v n="$n" 'BEGIN { printf "%d", r * n + 0.5 }')
+  [ "$parked" = 0 ] && parked=''
   systemd-run --user --slice=capdrv.slice --unit="hold-capdrv-$run" --collect sleep 86400 >/dev/null
   python3 "$S/vm/sample-footprint.py" --cgroup "$SLICE" --interval 5 --duration $((DUR + 3600)) \
     --out "$FP/$run.jsonl" --label "$run" >"$FP/$run.log" 2>&1 &
   sampler=$!
   o0=$(ooms)
   echo "RAMP_STEP_START $run n=$n $(ts)"
+  [ -z "$parked" ] || echo "RAMP_STEP_PARKED $run parked=$parked release_at_sec=$PARK_RELEASE_SEC"
   t0=$(date +%s)
   npx tsx "$S/load-driver.ts" --agents "$n" --duration-sec "$DUR" --stagger-ms 1000 "${sel[@]}" "${tasks[@]}" \
     --run-id "$run" --isolation systemd --workdir "$WORKDIR" ${AGENT_ENV:+--agent-env "$AGENT_ENV"} \
-    ${PARKED:+--parked "$PARKED" --park-at-request "$PARK_AT_REQUEST" --release-at-sec "$PARK_RELEASE_SEC"} >"$FP/$run.driver.log" 2>&1
+    ${parked:+--parked "$parked" --park-at-request "$PARK_AT_REQUEST" --release-at-sec "$PARK_RELEASE_SEC"} >"$FP/$run.driver.log" 2>&1
   rc=$?
   # A shared tree keeps every session's edits; record how far it has drifted from its checkout.
   [ "$WORKDIR" != shared ] || echo "RAMP_SHARED_TREE run=$run dirty=$(git -C "$CACHE/prepared/papercusp" status --porcelain 2>/dev/null | wc -l)"
