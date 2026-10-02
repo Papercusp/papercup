@@ -357,6 +357,68 @@ export function assertNativeProfilerQualification(importer: { exitCode: number; 
   }
 }
 
+export interface NativeProfilerRequestWindow {
+  runTag: string; processId: number; nativeThreadId: number; startMonotonicNs: string; endMonotonicNs: string;
+}
+export interface NativeProfilerLaunch {
+  processId: number; nativeThreadId: number; correlationId: number; startNs: string; endNs: string;
+}
+export interface NativeProfilerKernel {
+  kernelId: string; processId: number; correlationId: number;
+}
+/** A matched CUDA preflight must establish the exported systemClockNs origin
+ * as CLOCK_MONOTONIC (Node hrtime), rather than assuming CLOCK_MONOTONIC_RAW.
+ * Use exact ns and the API's launch
+ * interval, never kernel execution time: asynchronous kernels can outlive Run.
+ * Callers supply the complete selected kernel population and its runtime API
+ * rows. Ambiguous/missing correlations or request windows fail qualification. */
+export function bindNativeProfilerKernelRequests(systemClockNs: string,
+  windows: NativeProfilerRequestWindow[], launches: NativeProfilerLaunch[], kernels: NativeProfilerKernel[]) {
+  const ns = (value: string): bigint => {
+    if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) throw new Error('invalid native profiler nanoseconds');
+    return BigInt(value);
+  };
+  const identity = (value: number) => Number.isSafeInteger(value) && value > 0;
+  const origin = ns(systemClockNs);
+  if (origin === 0n || !windows.length || !launches.length || !kernels.length) throw new Error('native profiler population missing');
+  const tags = new Set<string>();
+  const spans = windows.map((window) => {
+    const start = ns(window.startMonotonicNs), end = ns(window.endMonotonicNs);
+    if (!window.runTag || tags.has(window.runTag) || !identity(window.processId) || !identity(window.nativeThreadId)
+      || start >= end) throw new Error('invalid native profiler request window');
+    tags.add(window.runTag); return { ...window, start, end };
+  });
+  for (let i = 0; i < spans.length; i++) for (let j = i+1; j < spans.length; j++) {
+    const a = spans[i], b = spans[j];
+    if (a.processId === b.processId && a.nativeThreadId === b.nativeThreadId && a.start < b.end && b.start < a.end) {
+      throw new Error('overlapping native profiler request windows');
+    }
+  }
+  const apis = new Map<string, { launch: NativeProfilerLaunch; start: bigint; end: bigint }>();
+  for (const launch of launches) {
+    const start = ns(launch.startNs), end = ns(launch.endNs), key = `${launch.processId}:${launch.correlationId}`;
+    if (!identity(launch.processId) || !identity(launch.nativeThreadId) || !identity(launch.correlationId)
+      || end < start || apis.has(key)) throw new Error('invalid/ambiguous native profiler API correlation');
+    apis.set(key, { launch, start: origin + start, end: origin + end });
+  }
+  const seen = new Set<string>(), used = new Set<string>();
+  const bindings = kernels.map((kernel) => {
+    if (!kernel.kernelId || seen.has(kernel.kernelId) || !identity(kernel.processId) || !identity(kernel.correlationId)) {
+      throw new Error('invalid native profiler kernel identity');
+    }
+    seen.add(kernel.kernelId);
+    const api = apis.get(`${kernel.processId}:${kernel.correlationId}`);
+    if (!api) throw new Error('native profiler kernel lacks launch correlation');
+    const matches = spans.filter((window) => window.processId === api.launch.processId
+      && window.nativeThreadId === api.launch.nativeThreadId && api.start >= window.start && api.end <= window.end);
+    if (matches.length !== 1) throw new Error('native profiler launch lacks unique monotonic request window');
+    used.add(matches[0].runTag);
+    return { kernelId: kernel.kernelId, runTag: matches[0].runTag };
+  });
+  if (used.size !== spans.length) throw new Error('native profiler request window lacks compute kernels');
+  return bindings;
+}
+
 export interface CellOutcome { cellId: string; manifestSha256: string; status: 'measured' | 'incompatible';
   artifacts: Array<{ path: string; sha256: string; bytes: number }>; defect?: { owner: string; item: string; rootCause: string; guard: string } }
 /** Coverage is an exact partition of promised cells. Unknown/skipped is unfinished. */
