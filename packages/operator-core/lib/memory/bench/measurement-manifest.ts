@@ -342,6 +342,30 @@ export function assertMeasuredExecution(arm: MeasurementArm, actual: { device: s
  * a native CUDA measurement. A saved report may also contain partial events
  * after importer failure. This guard qualifies decoding; PID/sequence binding
  * and model acceptance still require their own retained evidence. */
+/** This proves reported CUDA API failures in a native model Run, not an
+ * arena limit, allocation sizes, physical pressure or fragmentation. Bind
+ * the target PID/library fingerprints and failing request separately. */
+export function inspectNativeCudaAllocationFailure(log: string) {
+  const reports = log.split(/^========= Program hit /m).slice(1);
+  const offsets: string[] = [];
+  let allocations = 0, propagatedErrors = 0;
+  for (const report of reports) {
+    const api = /^cudaErrorMemoryAllocation \(error 2\) due to "out of memory" on CUDA API call to (cudaMalloc|cudaGetLastError)\.\r?\n/.exec(report)?.[1];
+    const provider = /Host Frame:.*\[(0x[0-9a-f]+)\] in libonnxruntime_providers_cuda\.so(?:\r?\n|$)/i.exec(report)?.[1];
+    if (!api || !provider || !report.includes('Host Frame: InferenceSessionWrap::Run(Napi::CallbackInfo const&)')) {
+      throw new Error('CUDA allocation diagnostic lacks the native provider/API backtrace');
+    }
+    offsets.push(provider);
+    if (api === 'cudaMalloc') allocations++; else propagatedErrors++;
+  }
+  const summaries = [...log.matchAll(/^========= ERROR SUMMARY: (\d+) errors?\s*$/gm)];
+  if (!allocations || summaries.length !== 1 || Number(summaries[0][1]) !== reports.length) {
+    throw new Error('CUDA allocation diagnostic lacks a complete API-error census');
+  }
+  return { underlyingApi: 'cudaMalloc' as const, returnCode: 2 as const,
+    allocationErrors: allocations, propagatedErrors, cudaProviderOffsets: offsets };
+}
+
 export function assertNativeProfilerQualification(importer: { exitCode: number; output: string },
   capture: { databaseIntegrity: string; cudaApiRecords: number; cudaKernelRecords: number }): void {
   const fatalMarkers = ['processeventserror', 'unknown driver api function index:',

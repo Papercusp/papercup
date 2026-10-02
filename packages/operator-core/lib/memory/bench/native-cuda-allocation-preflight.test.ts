@@ -4,10 +4,34 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { inspectNativeCudaAllocationFailure } from './measurement-manifest';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const fixture = fileURLToPath(new URL('./fixtures/native-cuda-clock-preflight.py', import.meta.url));
+
+describe('retained native CUDA allocation cause', () => {
+  const report = (api: string) => `========= Program hit cudaErrorMemoryAllocation (error 2) due to "out of memory" on CUDA API call to ${api}.
+=========         Host Frame: [0x1ee77a] in libonnxruntime_providers_cuda.so
+=========         Host Frame: InferenceSessionWrap::Run(Napi::CallbackInfo const&) [0x1ad40] in onnxruntime_binding.node
+`;
+  const log = report('cudaMalloc') + report('cudaGetLastError') + '========= ERROR SUMMARY: 2 errors\n';
+  it('distinguishes the failed allocation from propagation without asserting pressure or allocation sizes', () => {
+    expect(inspectNativeCudaAllocationFailure(log)).toEqual({ underlyingApi: 'cudaMalloc', returnCode: 2,
+      allocationErrors: 1, propagatedErrors: 1, cudaProviderOffsets: ['0x1ee77a', '0x1ee77a'] });
+  });
+  it.each([
+    ['generic arena error', 'BFCArena::AllocateRawInternal Failed to allocate memory for requested buffer of size 3221225472'],
+    ['propagation only', report('cudaGetLastError') + '========= ERROR SUMMARY: 1 error\n'],
+    ['another error code', log.replaceAll('error 2', 'error 3')],
+    ['another provider', log.replaceAll('libonnxruntime_providers_cuda.so', 'libunrelated.so')],
+    ['unbound native call', log.replaceAll('InferenceSessionWrap::Run', 'UnrelatedWorker::Run')],
+    ['partial census', log.replace('SUMMARY: 2', 'SUMMARY: 1')],
+    ['missing terminal summary', log.replace('========= ERROR SUMMARY: 2 errors\n', '')],
+  ])('refuses %s as allocation-cause evidence', (_name, value) => {
+    expect(() => inspectNativeCudaAllocationFailure(value)).toThrow('CUDA allocation diagnostic');
+  });
+});
 
 function control(failureCode: number, successfulFailure = false, capacity = 4096) {
   const root = mkdtempSync(join(tmpdir(), 'cuda-allocation-control-')); roots.push(root);
