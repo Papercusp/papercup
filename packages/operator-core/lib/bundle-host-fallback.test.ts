@@ -30,10 +30,11 @@
  * how a mutant gets committed by the git-sync sweep mid-probe.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mutationProbeAdmissionDir } from '../../../scripts/lib/mutation-probe-window.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 // PROBE_SCRIPT makes the subject path overridable, which is what makes a TIER-2
@@ -61,7 +62,14 @@ function runBundler(entry: string, extraEnv?: Record<string, string>): { code: n
       // The strict release path is the default contract. Set it explicitly so
       // a supervisor-only opt-in inherited from the invoking agent/service
       // cannot silently change the first two cases into successful stale boots.
-      env: { ...process.env, PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0', ...extraEnv },
+      // WI-10005321: the bundler's mutation-probe gate reads admission markers from this
+      // scratch dir, not the live /tmp, so a peer's probe window cannot fail these cases.
+      env: {
+        ...process.env,
+        PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0',
+        PAPERCUSP_MUTATION_PROBE_TMPDIR: dir,
+        ...extraEnv,
+      },
     });
     return { code: 0, output };
   } catch (err) {
@@ -131,6 +139,39 @@ describe('bundle-host.sh last-known-good fallback', () => {
       expect(parsed.failingFiles.join('\n')).toMatch(/broken-entry\.ts:\d+:\d+/);
       expect(parsed.error).toMatch(/ERROR/);
       expect(parsed.servingBundleMtime).toBeTruthy();
+    },
+    260_000,
+  );
+
+  // WI-10005321: bg-host bundled the live tree inside a peer's in-tree mutation-probe window
+  // (2026-10-02) and ran with a tool-ceiling denial disabled for ~8 min. The probe restored the
+  // file; nothing could restore the bundle. The gate must refuse, and the last-known-good stays.
+  it(
+    'REFUSES to bundle while a mutation probe holds a file in the tree mutated, keeping the last-known-good bundle',
+    () => {
+      execFileSync('mkdir', ['-p', join(dir, 'dist-host')], { timeout: 10_000, killSignal: 'SIGKILL' });
+      writeFileSync(outfile, GOOD_BUNDLE);
+      const entry = join(dir, 'good-entry.ts');
+      writeFileSync(entry, 'export const ok = 1;\n');
+      const admission = mutationProbeAdmissionDir(REPO_ROOT, { tmpDir: dir });
+      mkdirSync(admission, { recursive: true });
+      const manifest = join(admission, 'original.manifest');
+      const fields = [REPO_ROOT, join(REPO_ROOT, 'probed.ts'), join(dir, 'probed.orig'), String(process.pid)];
+      writeFileSync(manifest, fields.map((f) => `${f}\0`).join(''), 'latin1');
+
+      const { code, output } = runBundler(entry, { PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: '0' });
+
+      expect(code).not.toBe(0);
+      expect(output).toMatch(/BUILD_MUTATION_PROBE_WINDOW state=active subject=probed\.ts/);
+      expect(output).toMatch(/FALLING BACK/);
+      expect(readFileSync(outfile, 'utf8')).toBe(GOOD_BUNDLE);
+
+      // Calibration: the same valid entry replaces the bundle once the window closes, so the
+      // refusal above came from the window and not from the entry.
+      rmSync(manifest);
+      const clean = runBundler(entry, { PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: '0' });
+      expect(clean.output).not.toMatch(/BUILD_MUTATION_PROBE_WINDOW/);
+      expect(readFileSync(outfile, 'utf8')).not.toBe(GOOD_BUNDLE);
     },
     260_000,
   );
