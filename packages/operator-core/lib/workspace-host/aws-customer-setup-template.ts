@@ -35,10 +35,11 @@ const AWS_PRINCIPAL_ARN = /^arn:aws(?:-[a-z]+)*:iam::(\d{12}):(?:root|role\/[\w+
 /**
  * Stack output → connection-form field. The desktop connection route
  * (routes/workspace-hosts/connection.ts) reads these field names; the template's Outputs carry
- * exactly these keys. `securityGroupIds` takes the one group as a single-element list.
+ * exactly these keys. `securityGroupIds` takes the one group as a single-element list, and the role
+ * goes into a local assume-role credential source (`credentialSource.roleArn`).
  */
 export const AWS_CUSTOMER_SETUP_CONNECTION_FIELDS = {
-  OperatorRoleArn: 'roleArn',
+  OperatorRoleArn: 'credentialSource.roleArn',
   VpcId: 'vpcId',
   PrivateSubnetId: 'subnetId',
   SecurityGroupId: 'securityGroupIds',
