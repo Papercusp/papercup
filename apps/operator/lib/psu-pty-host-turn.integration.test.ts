@@ -401,8 +401,6 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
         onRespawn: async (freshId: string) => {
           order.push('reanchor');
           reportedIds.push(freshId);
-          expect(existsSync(nativePath)).toBe(true);
-          expect(readFileSync(nativePath, 'utf8')).toContain(marker);
           return mappingConfirmed;
         },
         emitCompacted: (emittedOwner: string, focus: string, options: { nativeId?: string | null }) => {
@@ -437,8 +435,10 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
         }
 
         expect(reportedIds).toEqual([nativeId]);
+        expect(readFileSync(nativePath, 'utf8')).toContain(marker);
         if (mappingConfirmed) {
-          expect(order, JSON.stringify({ order, reportedIds, emitted, events })).toEqual(['reanchor', 'emit']);
+          const unannounced = events.find((event) => event.kind === 'respawn-compaction-unannounced');
+          expect(order, 'unannounced reason=' + String(unannounced?.reason)).toEqual(['reanchor', 'emit']);
           expect(emitted).toEqual([{ ownerId, focus: 'carry-respawn', nativeId }]);
           expect(events).toContainEqual(expect.objectContaining({
             kind: 'respawn-carry-delivered',
