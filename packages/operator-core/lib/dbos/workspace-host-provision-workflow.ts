@@ -51,6 +51,7 @@ import {
 import {
   readWorkspaceHostDestroyTarget,
   recordWorkspaceHostOperationTerminalFailure,
+  WorkspaceHostControllerFenceError,
 } from '../workspace-host/observability-store';
 import {
   WORKSPACE_HOST_ADMISSION_WINDOW_MS,
@@ -562,14 +563,30 @@ function serializedProvisioningProblems(error: unknown, expectedName: string): r
   return candidate.problems;
 }
 
+/**
+ * WI-10005474: a request reusing the operationId of a workflow that already ended in a fence
+ * refusal (WI-10005312) re-admits that SAME workflow, so `getResult` rethrows its stored error at
+ * once. Only the validated shape (fence name + non-empty host id) is restored.
+ */
+function serializedControllerFenceHostId(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const candidate = error as { name?: unknown; hostId?: unknown };
+  if (candidate.name !== 'WorkspaceHostControllerFenceError') return null;
+  return typeof candidate.hostId === 'string' && candidate.hostId.length > 0 ? candidate.hostId : null;
+}
+
 function rehydrateWorkspaceHostProvisioningError(error: unknown): unknown {
   if (
     error instanceof WorkspaceHostProvisioningRequestError ||
     error instanceof WorkspaceHostProvisioningConnectionError ||
-    error instanceof WorkspaceHostProvisioningTransientError
+    error instanceof WorkspaceHostProvisioningTransientError ||
+    error instanceof WorkspaceHostControllerFenceError
   ) {
     return error;
   }
+
+  const fenceHostId = serializedControllerFenceHostId(error);
+  if (fenceHostId) return new WorkspaceHostControllerFenceError(fenceHostId);
 
   const requestProblems = serializedProvisioningProblems(error, 'WorkspaceHostProvisioningRequestError');
   if (requestProblems) return new WorkspaceHostProvisioningRequestError(requestProblems);
@@ -625,8 +642,8 @@ export async function startWorkspaceHostProvisioningWorkflow(
     // DBOS serializes workflow errors through serialize-error. That preserves
     // name + enumerable fields, but deliberately rebuilds a plain Error and
     // therefore erases the custom prototype that the route uses for typed HTTP
-    // mapping. Rehydrate only the two validated terminal shapes at this durable
-    // boundary; unrelated/transient errors retain their original identity.
+    // mapping. Rehydrate only the validated typed shapes at this durable
+    // boundary; unrelated errors retain their original identity.
     throw rehydrateWorkspaceHostProvisioningError(error);
   }
 }
