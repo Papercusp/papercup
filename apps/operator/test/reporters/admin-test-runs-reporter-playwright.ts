@@ -29,6 +29,7 @@ import {
   type WorktreeGitSnapshot,
 } from '@papercusp/operator-core/lib/testing-worktree';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
+import { describeWorktreeDirt } from '@papercusp/test-config/admin-test-runs-reporter';
 import { posix, relative } from 'node:path';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -252,6 +253,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         this.worktreeBefore ?? { commit: null, porcelain: null },
         worktreeAfter,
       );
+      const dirtReason = describeWorktreeDirt(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter)?.slice(0, 500);
       for (const [file, agg] of this.byFile) {
         try {
           const filePath = toWorkspaceRel(file, this.runRoot);
@@ -261,7 +263,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
             ? 'skip'
             : 'pass';
           const durationMs = Math.max(0, agg.finishedAt - agg.startedAt);
-          const outputTail = agg.errors.length > 0 ? agg.errors.join('\n').slice(-4000) : null;
+          // Preserve diagnostics in the existing text column while deployed
+          // strict execution_details readers await the expanded reason field.
+          const output = [...agg.errors, ...(dirtReason ? [`[worktree provenance] ${dirtReason}`] : [])].join('\n');
+          const outputTail = output ? output.slice(-4000) : null;
           this.pending.push(
             insertRow({
               filePath,

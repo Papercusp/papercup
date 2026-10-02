@@ -113,6 +113,43 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     expect(values.at(-1)).toMatchObject({ root: '/proof', commitSha: 'proof-sha', worktreeDirty: false });
     expect(mocks.resolveGitContext).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [{ commit: null, porcelain: '' }, { commit: 'sha', porcelain: '' }, 'HEAD unreadable'],
+    [{ commit: 'sha', porcelain: '' }, { commit: 'sha', porcelain: null }, 'git status unreadable after'],
+    [{ commit: 'before', porcelain: '' }, { commit: 'after', porcelain: '' }, 'HEAD moved before -> after'],
+    [{ commit: 'sha', porcelain: ' M source.ts' }, { commit: 'sha', porcelain: '' }, 'before the run:  M source.ts'],
+    [{ commit: 'sha', porcelain: '' }, { commit: 'sha', porcelain: '?? generated.json' }, 'after the run: ?? generated.json'],
+  ])('retains the dirty snapshot cause in the existing output field (%s)', async (before, after, reason) => {
+    mocks.captureWorktreeSnapshot.mockReturnValueOnce(before).mockReturnValueOnce(after);
+    mocks.computeWorktreeDirty.mockReturnValue(true);
+    const reporter = new AdminTestRunsPlaywrightReporter();
+    reporter.onBegin();
+    reporter.onTestEnd({ location: { file: '/repo/e2e/example.spec.ts' } } as never,
+      { startTime: new Date(0), duration: 1, status: 'failed', errors: [{ message: 'original assertion failure' }] } as never);
+    reporter.onEnd();
+    await reporter.onExit();
+    const values = mocks.sql.mock.calls[0]!.slice(1);
+    expect(values[5]).toContain('original assertion failure');
+    expect(values[5]).toContain(reason);
+    expect(values[5]).toContain('[worktree provenance]');
+    expect(values.at(-2)).toBe(true);
+    const details = parseTestRunExecutionDetails(values.at(-1));
+    expect(details).toMatchObject({ worktreeDirty: true });
+    expect(details).not.toHaveProperty('worktreeDirtyReason');
+  });
+
+  it('does not add diagnostics to clean runs', async () => {
+    mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
+    mocks.computeWorktreeDirty.mockReturnValue(false);
+    const reporter = new AdminTestRunsPlaywrightReporter();
+    reporter.onBegin();
+    reporter.onTestEnd({ location: { file: '/repo/e2e/example.spec.ts' } } as never,
+      { startTime: new Date(0), duration: 1, status: 'passed', errors: [] } as never);
+    reporter.onEnd();
+    await reporter.onExit();
+    expect(mocks.sql.mock.calls[0]!.slice(1)[5]).toBeNull();
+  });
 });
 
 describe('playwrightExecutionDetails', () => {
