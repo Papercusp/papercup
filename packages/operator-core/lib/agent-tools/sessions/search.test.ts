@@ -16,6 +16,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/sessions/search.test.ts
  */
 import { describe, expect, it, vi } from 'vitest';
+import type { SearchLegs } from '@papercusp/search';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -43,7 +44,16 @@ vi.mock('../../search/session-ingest', async (importOriginal) => ({
 // The verbatim tests below never reach the hybrid branch, but search.ts
 // statically imports both — mock them inertly so the module loads without a
 // live embedder/DB, and let the one hybrid test override the return value.
-const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
+// `legs` is optional on the mock's return type so a case can install the engine's
+// per-leg verdict (WI-10005676) with a genuinely typechecked fixture — no
+// `as never` cast on the mock argument (lint:mock-cast-escape is shrink-only).
+interface HybridSearchMockResult {
+  results: never[];
+  totalHits: number;
+  embedderAvailable: boolean;
+  legs?: SearchLegs;
+}
+const runHybridSearch = vi.fn(async (): Promise<HybridSearchMockResult> => ({ results: [], totalHits: 0, embedderAvailable: true }));
 // `configureSearchDefaults` is NOT used by these tests — it is here because
 // `search.ts` -> `../search/sources` side-effect-imports
 // `lib/search/configure-search-defaults`, which CALLS it at module load (P-017).
@@ -514,5 +524,109 @@ describe('sessions:search mode enum is closed (EI-22100689099416717)', () => {
     const modeField = (tool.args as unknown as { shape: Record<string, { description?: string }> }).shape.mode;
     expect(modeField.description ?? '').toMatch(/hybrid/);
     expect(modeField.description ?? '').toMatch(/meaning/i);
+  });
+});
+
+/**
+ * WI-10005676 / EI-19478862482607876 — the engine's per-leg verdict reaches the
+ * RESULT.
+ *
+ * `sessions:search` used to destructure `{ results }` out of `runHybridSearch` and
+ * discard `legs`. The tool the compaction contract tells a successor to recover
+ * context with therefore could not say whether its semantic half had contributed
+ * anything: a search that silently went lexical-only read exactly like one that
+ * found nothing, and the only place the degradation was visible was a hook banner
+ * on a DIFFERENT code path. These cases pin both halves of the contract: the verdict
+ * is on a hybrid result (with the semantic candidate count stated even at zero), and
+ * it is absent in verbatim mode, which never runs an engine leg.
+ */
+describe('sessions:search surfaces the engine leg report (WI-10005676)', () => {
+  const healthyLeg = {
+    status: 'ran' as const,
+    candidates: 4,
+    floored: 0,
+    stage2Added: 0,
+    callsRun: 1,
+    callsFailed: 0,
+    failures: [],
+    blocked: null,
+  };
+
+  it('puts legs on a hybrid result and states semantic.candidates even when it is 0', async () => {
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({
+      results: [],
+      totalHits: 0,
+      embedderAvailable: true,
+      legs: {
+        degraded: true,
+        warning: 'semantic leg contributed 0 candidates',
+        lexical: { ...healthyLeg, candidates: 3 },
+        semantic: { ...healthyLeg, candidates: 0 },
+      },
+    });
+
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as {
+      legs?: {
+        degraded: boolean;
+        warning: string | null;
+        lexical: { candidates: number };
+        semantic: { candidates: number };
+      };
+    };
+
+    expect(parsed.legs).toBeDefined();
+    expect(parsed.legs?.degraded).toBe(true);
+    expect(parsed.legs?.warning).toBe('semantic leg contributed 0 candidates');
+    expect(parsed.legs?.lexical.candidates).toBe(3);
+    // The load-bearing assertion: a zero is STATED, not omitted — it is what tells a
+    // leg that ran and found nothing apart from a leg that never ran.
+    expect(parsed.legs?.semantic.candidates).toBe(0);
+  });
+
+  it('reports a healthy hybrid search as not degraded', async () => {
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({
+      results: [],
+      totalHits: 0,
+      embedderAvailable: true,
+      legs: {
+        degraded: false,
+        warning: null,
+        lexical: healthyLeg,
+        semantic: healthyLeg,
+      },
+    });
+
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as { legs?: { degraded: boolean; warning: string | null } };
+
+    expect(parsed.legs?.degraded).toBe(false);
+    expect(parsed.legs?.warning).toBeNull();
+  });
+
+  it('omits legs when the engine returned none rather than inventing a verdict', async () => {
+    // The pre-existing hybrid fixtures return no `legs`; the response must stay
+    // well-formed for them instead of throwing in the projection.
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({ results: [], totalHits: 0, embedderAvailable: true });
+
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as { ok: boolean; legs?: unknown };
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed).not.toHaveProperty('legs');
+  });
+
+  it('does NOT report legs in verbatim mode, which never runs an engine leg', async () => {
+    runHybridSearch.mockClear();
+
+    const res = await callTool({ query: 'needle', mode: 'verbatim', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as { ok: boolean; legs?: unknown };
+
+    expect(parsed.ok).toBe(true);
+    expect(runHybridSearch).not.toHaveBeenCalled();
+    expect(parsed).not.toHaveProperty('legs');
   });
 });
