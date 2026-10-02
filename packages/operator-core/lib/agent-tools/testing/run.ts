@@ -117,6 +117,7 @@ import { managedSpawn, type ManagedSpawnResult } from '../../task-manager/manage
 import { killScopeUnit, type ScopeControlOutcome } from '../../task-manager/control';
 import { mutationProbeRefusal } from './mutation-probe-fence';
 import { restrictedHoldRefusal } from './restricted-hold-fence';
+import { RESTRICTED_HOLD_PREFLIGHT_DONE, RESTRICTED_HOLD_PREFLIGHT_ENV } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -3100,6 +3101,9 @@ export async function runTestFilesCore(opts: {
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,
+      // WI-10005713: restrictedHoldRefusal admitted exactly these files above, so the router's own
+      // raw-path preflight would only repeat it (~2s + a census read). Set ONLY here, after the fence.
+      [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE,
       ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
       ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
     };
