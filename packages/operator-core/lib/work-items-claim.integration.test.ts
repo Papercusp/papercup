@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
@@ -141,7 +141,7 @@ beforeAll(async () => {
   // fixture so its claim assertions exercise the real schema instead of failing
   // before the floor can be evaluated.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   // P-007: claim authority reads the active role receipt. Narrow work-item
   // fixtures carry only the two columns sets that reader needs.
