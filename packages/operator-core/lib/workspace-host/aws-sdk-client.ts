@@ -1073,10 +1073,10 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
               },
             },
           ],
-          TagSpecifications: input.TagSpecifications.map((spec) => ({
-            ResourceType: spec.ResourceType,
-            Tags: mutableTags(spec.Tags),
-          })),
+          // The spot-request spec is an optional third tuple element (present only for a spot launch).
+          TagSpecifications: input.TagSpecifications.flatMap((spec) =>
+            spec ? [{ ResourceType: spec.ResourceType, Tags: mutableTags(spec.Tags) }] : [],
+          ),
           ...(input.UserData ? { UserData: input.UserData } : {}),
         }),
       ),
