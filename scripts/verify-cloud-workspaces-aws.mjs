@@ -11,6 +11,19 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { Script } from "node:vm";
 
+// Fail before an expensive native boot if the public lifecycle labels drift.
+const lifecycleLabels = { start: "Start machine", stop: "Stop machine" };
+const modelSource = readFileSync("apps/operator/app/cloud-workspaces/workspace-view-model.ts", "utf8");
+for (const [action, label] of Object.entries(lifecycleLabels)) {
+  if (!modelSource.includes(`${action}: ${JSON.stringify(label)}`)) {
+    throw new Error(`Native selector contract changed: ${action} must use ${label}`);
+  }
+}
+if (process.argv.includes("--preflight")) {
+  console.log("CW_AWS_NATIVE_PREFLIGHT passed: lifecycle label contract");
+  process.exit(0);
+}
+
 const required = (name) => {
   if (!process.env[name]) throw new Error(`Missing ${name}; use verify-tauri-headless.sh`);
   return process.env[name];
@@ -68,6 +81,9 @@ const type = (label, value) => {
   poll(selector, `document.querySelector(${JSON.stringify(selector)}).value===${JSON.stringify(value)}`, `input:${label}`);
 };
 const markButton = (text, scope = "document") => {
+  evidence.buttonLookups ??= [];
+  evidence.buttonLookups.push(JSON.parse(ev(`(() => { const root=${scope}; return {text:${JSON.stringify(text)},scope:${JSON.stringify(scope)},candidates:[...(root?.querySelectorAll('button,[role=menuitem]')||[])].map(e=>({text:e.textContent.trim(),label:e.getAttribute('aria-label'),disabled:!!e.disabled}))}; })()`)));
+  poll("body", `(() => { const root=${scope}; return [...(root?.querySelectorAll('button,[role=menuitem]')||[])].some(e=>e.textContent.trim()===${JSON.stringify(text)} && !e.disabled); })()`, `enabled button:${text}`);
   const selector = `#cw-native-${evidence.steps.length}`;
   ev(`(() => { const b=[...${scope}.querySelectorAll('button,[role=menuitem]')].find(e=>e.textContent.trim()===${JSON.stringify(text)}); if(!b)throw new Error('Missing '+${JSON.stringify(text)}); b.id=${JSON.stringify(selector.slice(1))}; return true; })()`);
   return selector;
@@ -115,9 +131,9 @@ try {
   poll('[data-stage]', "window.__cwNative.calls.some(c=>c.path.endsWith('/provision') && c.payload.desired.target==='aws' && c.payload.desired.scope.kind==='account' && c.payload.desired.provider.subnetId==='subnet-native')", "AWS account provision request captured");
   navigate("operate");
   poll('ul[aria-label="Managed workspace hosts"]', "!!document.querySelector('[aria-label=\"More actions for native-aws\"]')", "AWS host renders in Operate");
-  click(markButton("Stop"));
-  poll('ul[aria-label="Managed workspace hosts"]', "window.__cwNative.calls.some(c=>c.payload.action==='stop') && document.body.textContent.includes('Start')", "AWS stop request and observed fixture state");
-  click(markButton("Start"));
+  click(markButton(lifecycleLabels.stop));
+  poll('ul[aria-label="Managed workspace hosts"]', "window.__cwNative.calls.some(c=>c.payload.action==='stop') && document.body.textContent.includes('Start machine')", "AWS stop request and observed fixture state");
+  click(markButton(lifecycleLabels.start));
   poll('ul[aria-label="Managed workspace hosts"]', "window.__cwNative.calls.some(c=>c.payload.action==='start')", "AWS start request captured");
   click('[aria-label="More actions for native-aws"]');
   poll('[role="menu"]', "document.querySelector('[role=menu]').textContent.includes('Snapshot')", "AWS shared lifecycle menu");
