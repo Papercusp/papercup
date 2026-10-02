@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
+  OBSERVATION_UNKNOWN_REASONS,
   asStructuredObservation,
   normalizeScorecardRatings,
   scorecardAdmissionExclusion,
@@ -158,8 +159,8 @@ export function validateRubricRatingContracts(rubricRef: string, ratings: Observ
  * never arose, or was never observed, is rated unknown/idle AND says why. The reason must
  * be the structured `unknownReason`, not prose in `evidence`: the live R-3 census
  * (behavior-grading-r3-no-opportunity.live.test.ts) reads only that field, and measured
- * 2026-10-02 two judge-emitted cards that explained 20 unknowns in prose alone because
- * nothing at emit required the field.
+ * 2026-10-02 two cards (one from the automated judge) that explained 20 unknowns in prose
+ * alone because nothing at emit required the field.
  */
 export function validateGoalBehaviorUnknownDisclosure(rubricRef: string, ratings: ObservationRatings): void {
   if (rubricRef !== GOAL_BEHAVIOR_GRADING_RUBRIC) return;
@@ -172,8 +173,7 @@ export function validateGoalBehaviorUnknownDisclosure(rubricRef: string, ratings
   if (undisclosed.length > 0) {
     throw new Error(
       `${GOAL_BEHAVIOR_GRADING_RUBRIC} unknown/idle rating(s) ${undisclosed.map((k) => `'${k}'`).join(', ')} ` +
-        'require unknownReason (idle | not-exercised | instrument-unavailable | retention-gap | ' +
-        'generation-mismatch | external-capacity | scope-mismatch | other); prose in evidence does not count',
+        `require unknownReason (${OBSERVATION_UNKNOWN_REASONS.join(' | ')}); prose in evidence does not count`,
     );
   }
 }

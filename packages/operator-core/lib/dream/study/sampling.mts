@@ -1,5 +1,5 @@
-import { capabilityHash } from '../../packages/operator-core/lib/dream/capability-contracts.ts';
-import { type CapabilitySamplingSnapshot, type CapabilityStructuralRelation, type CapabilityThirdRole } from '../../packages/operator-core/lib/dream/capability-sampler.ts';
+import { capabilityHash } from '../../dream/capability-contracts.ts';
+import { type CapabilitySamplingSnapshot, type CapabilityStructuralRelation, type CapabilityThirdRole } from '../../dream/capability-sampler.ts';
 
 const scope = 'mechanism:memory.hive-scope';
 const revisions = 'capability:plans.spec-revisions';

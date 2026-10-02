@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capabilityHash } from "../../packages/operator-core/lib/dream/capability-contracts.ts";
+import { capabilityHash } from "../../dream/capability-contracts.ts";
 import { buildFlatCalibrationBlind } from "./calibration.mts";
 import { freezeImmutableArtifacts } from "./freeze-artifacts.mts";
 

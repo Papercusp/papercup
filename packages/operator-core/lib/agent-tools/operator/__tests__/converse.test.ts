@@ -28,7 +28,7 @@ const principalMocks = vi.hoisted(() => ({
 }));
 const customerPiMocks = vi.hoisted(() => ({
   spawnTransform: vi.fn(() => false),
-  start: vi.fn(async (args: { sessionId: string }) => ({
+  start: vi.fn(async (args: { sessionId: string; expiresAt: Date }) => ({
     sessionId: args.sessionId,
     bearer: 'pi-customer-token',
   })),
@@ -39,7 +39,7 @@ vi.mock('@papercusp/papercusp-shared/agent', async (importOriginal) => ({
   agentSpawnTransformConfigured: () => customerPiMocks.spawnTransform(),
 }));
 vi.mock('@papercusp/agent-mcp/provisioning', () => ({
-  startPiSession: (args: { sessionId: string }) => customerPiMocks.start(args),
+  startPiSession: (args: { sessionId: string; expiresAt: Date }) => customerPiMocks.start(args),
   endPiSession: (workspaceId: string, sessionId: string) => customerPiMocks.end(workspaceId, sessionId),
 }));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
@@ -300,7 +300,10 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
       expiresAt: expect.any(Date),
     }));
     const sessionId = customerPiMocks.start.mock.calls[0]?.[0]?.sessionId;
+    const expiresAt = customerPiMocks.start.mock.calls[0]?.[0]?.expiresAt;
     expect(sessionId).toMatch(/^operator-converse-/);
+    expect(expiresAt?.getTime()).toBeGreaterThan(Date.now());
+    expect(expiresAt?.getTime()).toBeLessThan(Date.now() + 31 * 60 * 1000);
     expect(customerPiMocks.end).toHaveBeenCalledWith('ws-real', sessionId);
   });
 

@@ -186,10 +186,11 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
     if (captureOrder || explicitReveal || frameReveal) {
       const focus = HTMLElement.prototype.focus;
       if (captureOrder) {
-        const scrollWindow = window.scrollTo;
-        window.scrollTo = function (...args: Parameters<typeof window.scrollTo>) {
+        const scrollWindow = window.scrollTo.bind(window);
+        window.scrollTo = function (...args: [options?: ScrollToOptions] | [x: number, y: number]) {
           recordOrder('window.scrollTo', undefined, { args, stack: new Error().stack });
-          scrollWindow.apply(window, args);
+          if (typeof args[0] === 'number') scrollWindow(args[0], args[1] ?? 0);
+          else scrollWindow(args[0]);
         };
         // Browser-produced rectangles identify layout shifts without forcing
         // geometry on the focus path (which can hide the original failure).

@@ -412,6 +412,107 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     expect(reader.gitlinkReads()).toBe(4);
   });
 
+  /** A one-repo fixture plus a settlement "pass" that shares a memo across passes. */
+  function historyFixture(prefix: string) {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    TEMP_ROOTS.push(root);
+    const run = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim();
+    run('init', '-q');
+    run('config', 'user.email', 'fixture@example.test');
+    run('config', 'user.name', 'Settlement Fixture');
+    const commit = (message: string, files: Record<string, string>) => {
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), text);
+      }
+      run('add', '--', ...Object.keys(files));
+      run('commit', '-q', '-m', message);
+      return run('rev-parse', 'HEAD');
+    };
+    const memo = createCompletionHistorySearchMemo();
+    const pass = async (closeHeadSha: string, toSha: string, blobs: Map<string, string>, ask: readonly string[]) => {
+      const reader = createCompletionBlobHistoryReader(undefined, memo);
+      const paths = [...blobs.keys()];
+      reader.hint(root, toSha, paths);
+      reader.hint(root, closeHeadSha, paths);
+      reader.hintBlobs(root, closeHeadSha, paths.map((path) => ({ path, blobSha: blobs.get(path)! })));
+      const verdicts: unknown[] = [];
+      const exact: unknown[] = [];
+      for (const path of ask) {
+        verdicts.push(await reader.contains(root, closeHeadSha, toSha, path, blobs.get(path)!));
+        exact.push(await completionBlobHistoryContains(root, closeHeadSha, toSha, path, blobs.get(path)!));
+      }
+      return { verdicts, exact, reads: reader.historyReads() };
+    };
+    return { root, run, commit, pass };
+  }
+
+  it('WI-10005380: a later pass searches only new commits, in one git log for every pair sharing the range', async () => {
+    const { root, run, commit, pass } = historyFixture('completion-history-memo-');
+    const paths = ['a.ts', 'b.ts', 'dir/c.ts', 'dir/d e.ts'];
+    const closeHeadSha = commit('close head', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} before";\n`])));
+    // Close-time blobs: a.ts and dir/c.ts reach a commit; b.ts and 'dir/d e.ts' do not (yet).
+    const closeText = (path: string) => `export const v = "${path} close time";\n`;
+    const blobs = new Map<string, string>();
+    for (const path of paths) {
+      writeFileSync(join(root, path), closeText(path));
+      blobs.set(path, run('hash-object', '-w', path));
+    }
+    commit('commit some close-time blobs', { 'a.ts': closeText('a.ts'), 'dir/c.ts': closeText('dir/c.ts') });
+    const pass1 = commit('supersede', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} later";\n`])));
+
+    // Pass 1: one shared search for all four pairs, plus the exact check for the two it saw.
+    const first = await pass(closeHeadSha, pass1, blobs, paths);
+    expect(first.verdicts).toEqual([true, false, true, false]);
+    expect(first.verdicts).toEqual(first.exact);
+    expect(first.reads).toBe(3);
+
+    // Pass 2: an unrelated commit landed. The two unmatched pairs share ONE search over the
+    // new commit only (the per-pair check would have run two, each over the whole range).
+    const unmatched = ['b.ts', 'dir/d e.ts'];
+    const pass2 = commit('unrelated', { 'other.ts': 'export const other = 1;\n' });
+    const second = await pass(closeHeadSha, pass2, blobs, unmatched);
+    expect(second.verdicts).toEqual([false, false]);
+    expect(second.verdicts).toEqual(second.exact);
+    expect(second.reads).toBe(1);
+    // The same commit again: already searched through it, so nothing is read.
+    expect((await pass(closeHeadSha, pass2, blobs, unmatched)).reads).toBe(0);
+
+    // Pass 3: b.ts's close-time blob finally lands; the sighting is confirmed exactly.
+    const pass3 = commit('late landing', { 'b.ts': closeText('b.ts') });
+    const third = await pass(closeHeadSha, pass3, blobs, unmatched);
+    expect(third.verdicts).toEqual([true, false]);
+    expect(third.verdicts).toEqual(third.exact);
+    expect(third.reads).toBe(2);
+  });
+
+  it('WI-10005380: a blob seen only on a merged-away side branch is found like the per-pair check, and a match is not remembered', async () => {
+    const { root, run, commit, pass } = historyFixture('completion-history-merge-side-');
+    const base = 'export const v = "base";\n';
+    const closeHeadSha = commit('close head', { 'p.ts': base });
+    const closeText = 'export const v = "close time";\n';
+    writeFileSync(join(root, 'p.ts'), closeText);
+    const blobs = new Map([['p.ts', run('hash-object', '-w', 'p.ts')]]);
+    run('checkout', '-q', '-b', 'side');
+    commit('side sets the close-time blob', { 'p.ts': closeText });
+    commit('side reverts it', { 'p.ts': base });
+    run('checkout', '-q', '-');
+    commit('main moves on', { 'q.ts': 'export const q = 1;\n' });
+    run('merge', '-q', '--no-ff', '-m', 'merge side', 'side');
+    const toSha = run('rev-parse', 'HEAD');
+
+    // The merge is TREESAME to its first parent for p.ts, which a path-limited log would
+    // prune; --find-object turns that simplification off, so the per-pair check walks the
+    // side branch and finds the blob. The batched search must walk it too.
+    const first = await pass(closeHeadSha, toSha, blobs, ['p.ts']);
+    expect(first.exact).toEqual([true]);
+    expect(first.verdicts).toEqual(first.exact);
+    expect(first.reads).toBe(2);
+    // A match is never remembered: the next pass searches (and confirms) again.
+    expect((await pass(closeHeadSha, toSha, blobs, ['p.ts'])).reads).toBe(2);
+  });
+
   it('a shared reader retries an unmeasured gitlink read, reuses settled ones, and shares one in flight', async () => {
     const bin = mkdtempSync(join(tmpdir(), 'completion-history-reader-'));
     TEMP_ROOTS.push(bin);

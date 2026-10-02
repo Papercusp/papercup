@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { hasValidGitEntry } from '../locks/valid-git-entry';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { streamGitFields, type GitSpawnOptions } from './untouched-paths';
 import type {
   CompletionSettlementManifest,
@@ -458,12 +459,82 @@ export interface CompletionBlobHistoryReader {
    * each. Announced paths that resolve into a submodule are announced there too.
    */
   hint(repoRoot: string, commitSha: string, paths: readonly string[]): void;
+  /**
+   * WI-10005380: announce (path, close-time blob) pairs that a later `contains` from
+   * `fromHeadSha` may ask about. Nothing is read here: the first history search over a
+   * range folds in every announced pair whose next search is that same range, so a pass
+   * costs about one `git log` per distinct range instead of one per (row, path).
+   */
+  hintBlobs(repoRoot: string, fromHeadSha: string, entries: ReadonlyArray<{ path: string; blobSha: string }>): void;
   /** How many gitlink ls-tree reads this reader has issued. */
   gitlinkReads(): number;
+  /** How many history `git log` reads this reader has issued. */
+  historyReads(): number;
 }
+
+/**
+ * WI-10005380: how far history has already been searched for a (path, close-time blob),
+ * kept ACROSS settlement passes.
+ *
+ * A row that cannot settle is re-checked on every rotation (527 of 555 candidates,
+ * measured 2026-09-30), and each check used to search its whole `closeHead..emitted`
+ * range again in its own exec: 4,632 `git log --find-object` execs in 10 min
+ * (2026-10-02, after WI-10005357).
+ *
+ * Only a NO-MATCH is kept: "no commit reachable from `searchedThrough` and not from the
+ * close-time commit has this blob at this path". It stays exact for any later commit T,
+ * ancestor or not, because from..T = (from..W) ∪ (T ^W ^from); the next search covers
+ * only the second part. A match is never kept: whether it is still reachable depends on
+ * T, so a matched pair is searched again (its row normally settles and leaves).
+ */
+export type CompletionHistorySearched = {
+  /** Where the pair resolved at its close-time HEAD (fixed for that commit). */
+  readonly repositoryRoot: string;
+  readonly fromCommitSha: string;
+  readonly path: string;
+  /** The commit, in that repository, through which a full-history search found no match. */
+  readonly searchedThrough: string;
+};
+
+export interface CompletionHistorySearchMemo {
+  get(key: string): CompletionHistorySearched | undefined;
+  set(key: string, value: CompletionHistorySearched): void;
+}
+
+/** Least-recently-used, bounded: the working set is the ~1k unsettled (path, blob) pairs. */
+export function createCompletionHistorySearchMemo(capacity = 20_000): CompletionHistorySearchMemo {
+  const entries = new Map<string, CompletionHistorySearched>();
+  return {
+    get(key) {
+      const value = entries.get(key);
+      if (value) {
+        entries.delete(key);
+        entries.set(key, value);
+      }
+      return value;
+    },
+    set(key, value) {
+      entries.delete(key);
+      entries.set(key, value);
+      for (const oldest of entries.keys()) {
+        if (entries.size <= capacity) break;
+        entries.delete(oldest);
+      }
+    },
+  };
+}
+
+/** The process-wide memo every pass's reader shares by default. */
+const historySearchState = pinModuleState('@papercusp/operator-core.completion-history-search', () => ({
+  memo: createCompletionHistorySearchMemo(),
+}));
+
+/** Pairs per batched history search: bounds argv and the per-field matching loop. */
+const HISTORY_SEARCH_BATCH = 256;
 
 export function createCompletionBlobHistoryReader(
   readGitlinks: GitlinkPrefixReader = readGitlinkPrefixes,
+  memo: CompletionHistorySearchMemo = historySearchState.memo,
 ): CompletionBlobHistoryReader {
   type Answer = string | null | 'unmeasured' | undefined;
   const keyOf = (root: string, commitSha: string) => root + '\0' + commitSha;
@@ -555,9 +626,141 @@ export function createCompletionBlobHistoryReader(
     return new Map(prefixes.map((prefix, index) => [prefix, settled[index] as string | null]));
   };
 
+  type Pair = { root: string; fromHeadSha: string; path: string; blobSha: string; id: string };
+  /** A pair's next search: the range `to ^lower` in one repository. */
+  type Span = { pair: Pair; from: CompletionHistoryLocation; to: CompletionHistoryLocation; lower: string };
+  /** A pair the batched search did not see is `false`; one it saw still needs the exact check. */
+  type Search = {
+    members: ReadonlyMap<string, Span>;
+    answers: ReadonlyMap<string, false | 'seen'> | 'timeout' | 'failed';
+  };
+  const pairOf = (root: string, fromHeadSha: string, path: string, blobSha: string): Pair => ({
+    root,
+    fromHeadSha,
+    path,
+    blobSha,
+    id: [root, fromHeadSha, path, blobSha].join('\0'),
+  });
+  const announcedPairs = new Map<string, Pair>();
+  /** Range → its batched search, kept for the pass so a member asked later reuses it. */
+  const searches = new Map<string, Promise<Search>>();
+  let historyReadCount = 0;
+
+  const spanOf = async (
+    pair: Pair,
+    toCommitSha: string,
+    opts: GitSpawnOptions,
+  ): Promise<Span | 'unmeasured' | undefined> => {
+    const searched = memo.get(pair.id);
+    const from = searched
+      ? { repositoryRoot: searched.repositoryRoot, commitSha: searched.fromCommitSha, path: searched.path }
+      : await completionHistoryLocation(pair.root, pair.fromHeadSha, pair.path, opts, sharedRead);
+    if (from === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
+    const to = await completionHistoryLocation(pair.root, toCommitSha, pair.path, opts, sharedRead);
+    if (to === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
+    if (!from || !to) return undefined;
+    if (from.repositoryRoot !== to.repositoryRoot || from.path !== to.path) return undefined;
+    return { pair, from, to, lower: searched?.searchedThrough ?? from.commitSha };
+  };
+  const rangeKey = (span: Span) => [span.to.repositoryRoot, span.to.commitSha, span.lower].join('\0');
+
+  /** `self` plus every announced pair whose next search is the same range. */
+  const membersFor = async (self: Span, toCommitSha: string, opts: GitSpawnOptions) => {
+    const key = rangeKey(self);
+    const members = new Map<string, Span>([[self.pair.id, self]]);
+    const candidates = [...announcedPairs.values()].filter((pair) => {
+      if (pair.id === self.pair.id || pair.root !== self.pair.root) return false;
+      // A cheap pre-filter; spanOf decides. A fresh pair's range starts at its own
+      // close-time commit, so only pairs closed at the same HEAD can share it.
+      const searched = memo.get(pair.id);
+      return searched ? searched.searchedThrough === self.lower : pair.fromHeadSha === self.pair.fromHeadSha;
+    });
+    for (const span of await Promise.all(candidates.map((pair) => spanOf(pair, toCommitSha, opts)))) {
+      if (span && span !== 'unmeasured' && rangeKey(span) === key) members.set(span.pair.id, span);
+    }
+    return members;
+  };
+
+  const search = async (members: ReadonlyMap<string, Span>, opts: GitSpawnOptions): Promise<Search> => {
+    const spans = [...members.values()];
+    const answers = new Map<string, false | 'seen'>();
+    for (let start = 0; start < spans.length; start += HISTORY_SEARCH_BATCH) {
+      const chunk = spans.slice(start, start + HISTORY_SEARCH_BATCH);
+      const first = chunk[0];
+      if (!first) break;
+      historyReadCount += 1;
+      const seen = await historyLogSees(
+        first.to.repositoryRoot,
+        first.to.commitSha,
+        first.lower,
+        chunk.map((span) => ({ path: span.to.path, blobSha: span.pair.blobSha })),
+        opts,
+      );
+      if (seen === 'timeout' || seen === 'failed') return { members, answers: seen };
+      chunk.forEach((span, index) => {
+        if (seen.has(index)) {
+          answers.set(span.pair.id, 'seen');
+          return;
+        }
+        answers.set(span.pair.id, false);
+        memo.set(span.pair.id, {
+          repositoryRoot: span.from.repositoryRoot,
+          fromCommitSha: span.from.commitSha,
+          path: span.from.path,
+          searchedThrough: span.to.commitSha,
+        });
+      });
+    }
+    return { members, answers };
+  };
+
+  const contains: CompletionBlobHistoryReader['contains'] = async (
+    repoRoot,
+    fromHeadSha,
+    toCommitSha,
+    rawPath,
+    blobSha,
+    opts = {},
+  ) => {
+    if (opts.signal?.aborted) return 'unmeasured';
+    if (!SHA_RE.test(fromHeadSha) || !SHA_RE.test(toCommitSha) || !OBJECT_SHA_RE.test(blobSha)) return undefined;
+    const path = normalizedRepoPath(repoRoot, rawPath);
+    if (!path || path !== rawPath) return undefined;
+    const span = await spanOf(pairOf(nodePath.resolve(repoRoot), fromHeadSha, path, blobSha), toCommitSha, opts);
+    if (span === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
+    if (!span) return undefined;
+    // from === to, or nothing landed since the last no-match: there is nothing to search.
+    if (span.lower === span.to.commitSha) return false;
+    const key = rangeKey(span);
+    const shared = searches.get(key);
+    let done = shared ? await shared : undefined;
+    if (!done?.members.has(span.pair.id)) {
+      const own = membersFor(span, toCommitSha, opts).then((members) => search(members, opts));
+      searches.set(key, own);
+      done = await own;
+    }
+    if (opts.signal?.aborted) return 'unmeasured';
+    if (done.answers === 'timeout' && done.members.size === 1) return 'unmeasured';
+    if (done.answers !== 'timeout' && done.answers !== 'failed' && done.answers.get(span.pair.id) === false) {
+      return false;
+    }
+    // Seen in the range, or the shared search measured nothing: the per-pair check decides.
+    historyReadCount += 1;
+    return historyLogFinds(span.from, span.to, blobSha, opts);
+  };
+
   return {
-    contains: (repoRoot, fromHeadSha, toCommitSha, rawPath, blobSha, opts = {}) =>
-      blobHistoryContains(sharedRead, repoRoot, fromHeadSha, toCommitSha, rawPath, blobSha, opts),
+    contains,
+    hintBlobs: (repoRoot, fromHeadSha, entries) => {
+      if (!SHA_RE.test(fromHeadSha)) return;
+      const root = nodePath.resolve(repoRoot);
+      for (const { path, blobSha } of entries) {
+        if (!OBJECT_SHA_RE.test(blobSha) || normalizedRepoPath(root, path) !== path) continue;
+        const pair = pairOf(root, fromHeadSha, path, blobSha);
+        announcedPairs.set(pair.id, pair);
+      }
+    },
+    historyReads: () => historyReadCount,
     hint: (repoRoot, commitSha, paths) => {
       if (!SHA_RE.test(commitSha)) return;
       // Only paths contains() itself would accept: a declared non-file ref ('/reports/…',
@@ -592,7 +795,16 @@ async function blobHistoryContains(
   if (!from || !to) return undefined;
   if (from.repositoryRoot !== to.repositoryRoot || from.path !== to.path) return undefined;
   if (from.commitSha === to.commitSha) return false;
+  return historyLogFinds(from, to, blobSha, opts);
+}
 
+/** The exact history check for one (path, blob) over `from..to`, in one location. */
+async function historyLogFinds(
+  from: CompletionHistoryLocation,
+  to: CompletionHistoryLocation,
+  blobSha: string,
+  opts: GitSpawnOptions,
+): Promise<CompletionBlobHistoryVerdict> {
   let found = false;
   const outcome = await streamGitFields(
     [
@@ -618,6 +830,73 @@ async function blobHistoryContains(
   if (opts.signal?.aborted || outcome === 'timeout') return 'unmeasured';
   if (outcome !== 'complete') return undefined;
   return found;
+}
+
+/**
+ * One batched history search for many (path, blob) pairs over the same range
+ * `to ^lower` in one repository: which pairs it saw, or the stream outcome when
+ * it did not complete.
+ *
+ * It visits every commit in the range: `--find-object` already turns history
+ * simplification off (a merge side the path-limited walk would prune is still walked,
+ * as in the per-pair check), and `--full-history` states that, because the cross-pass
+ * memo is exact only if no commit in a searched range was skipped. A pair it does not
+ * see is not in the range. A pair it does see is only a candidate (its range may reach
+ * behind the pair's own close-time commit); the caller confirms it with
+ * {@link historyLogFinds}, the per-pair check itself.
+ *
+ * A filepair is credited to a pair when its path is the pair's path (or under it, as
+ * a `:(literal)` pathspec matches) and either side is the pair's blob: the rule
+ * `--find-object` itself applies, so several objects can share one search.
+ */
+async function historyLogSees(
+  repositoryRoot: string,
+  toCommitSha: string,
+  lowerSha: string,
+  pairs: ReadonlyArray<{ path: string; blobSha: string }>,
+  opts: GitSpawnOptions,
+): Promise<ReadonlySet<number> | 'timeout' | 'failed'> {
+  const seen = new Set<number>();
+  let filepair: { old: string; new: string } | undefined;
+  const outcome = await streamGitFields(
+    [
+      '-C',
+      repositoryRoot,
+      'log',
+      '--full-history',
+      '--format=%x01%H',
+      '--raw',
+      '--no-abbrev',
+      '--no-renames',
+      '-z',
+      ...[...new Set(pairs.map((pair) => pair.blobSha))].map((sha) => '--find-object=' + sha),
+      toCommitSha,
+      '^' + lowerSha,
+      '--',
+      ...[...new Set(pairs.map((pair) => pair.path))].map((path) => ':(literal)' + path),
+    ],
+    // -z raw: a commit header field ('\x01<sha>'), then per filepair a meta field
+    // (':<mode> <mode> <old> <new> <status>', after a newline) and a path field.
+    (field) => {
+      if (filepair) {
+        const { old, new: next } = filepair;
+        filepair = undefined;
+        pairs.forEach((pair, index) => {
+          const underPath = field === pair.path || field.startsWith(pair.path + '/');
+          if (underPath && (pair.blobSha === old || pair.blobSha === next)) seen.add(index);
+        });
+        return;
+      }
+      const meta = field.replace(/^\n+/, '');
+      if (!meta.startsWith(':')) return;
+      const [, , old = '', next = ''] = meta.slice(1).split(' ');
+      filepair = { old, new: next };
+    },
+    { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
+  );
+  if (outcome === 'timeout') return 'timeout';
+  if (outcome !== 'complete') return 'failed';
+  return seen;
 }
 
 async function contentIdentity(

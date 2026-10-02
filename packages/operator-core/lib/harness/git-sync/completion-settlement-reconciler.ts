@@ -343,6 +343,23 @@ function batchSafeDeclaredPath(path: unknown): path is string {
  * is only a prefetch hint: a path missing here makes that row read its own tree, so it skips
  * the schema parse that settleRow does anyway.
  */
+/** A candidate row's parsed settlement manifest; undefined when it does not parse. */
+function settlementManifestOfRow(row: CandidateRow) {
+  try {
+    const payload = (typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload) as
+      | Record<string, unknown>
+      | null
+      | undefined;
+    const evidence = payload?.[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
+    const parsed = CompletionSettlementManifestSchema.safeParse(
+      normalizeStoredSettlementManifest(evidence?.settlementManifest),
+    );
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function declaredPathsForBatch(rows: readonly CandidateRow[]): string[] {
   const paths = new Set<string>();
   for (const row of rows) {
@@ -601,6 +618,25 @@ async function reconcileProposedCompletionsCore(
   // WI-10005285: every row is read against the same commit, so read the tree once per pass.
   // WI-10005357: the history reader's gitlink reads at that commit batch the same way.
   historyReader?.hint(scope.repositoryRoot, commitSha, declaredPathsForBatch(rows));
+  // WI-10005380: announce every row's close-time (path, blob) pairs before any row asks, so
+  // one history search per range answers every row that shares it; and each row's paths at
+  // its close-time HEAD, so that search resolves them from one ls-tree per HEAD.
+  if (historyReader) {
+    for (const row of rows) {
+      const manifest = settlementManifestOfRow(row);
+      if (!manifest) continue;
+      historyReader.hint(manifest.repositoryRoot, manifest.headSha, manifest.normalizedPaths);
+      historyReader.hintBlobs(
+        manifest.repositoryRoot,
+        manifest.headSha,
+        manifest.contentIdentity.flatMap((entry) =>
+          entry.deletion !== true && typeof entry.workingTreeBlobSha === 'string'
+            ? [{ path: entry.path, blobSha: entry.workingTreeBlobSha }]
+            : [],
+        ),
+      );
+    }
+  }
   let batchUnavailable = false;
   const lookup =
     rows.length > 1

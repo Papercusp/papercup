@@ -1,9 +1,9 @@
 import type { Sql } from 'postgres';
-import { runControlMutation } from '../../packages/operator-core/lib/gateway-control/control-harness.ts';
-import { getPotLearningScope, setPotLearningScope } from '../../packages/operator-core/lib/learning/pot-gate/store.ts';
-import { reconcileRoutineRestore, revertRoutineAudit } from '../../packages/operator-core/lib/agent-tools/routines/revert.ts';
-import { readRoutineSnap, writeRoutineSnap, routineSnapEqual, type RoutineSnap } from '../../packages/operator-core/lib/agent-tools/routines/routine-snapshot.ts';
-import { computeNextFireAt } from '../../packages/operator-core/lib/harness/routines/cron.ts';
+import { runControlMutation } from '../../gateway-control/control-harness.ts';
+import { getPotLearningScope, setPotLearningScope } from '../../learning/pot-gate/store.ts';
+import { reconcileRoutineRestore, revertRoutineAudit } from '../../agent-tools/routines/revert.ts';
+import { readRoutineSnap, writeRoutineSnap, routineSnapEqual, type RoutineSnap } from '../../agent-tools/routines/routine-snapshot.ts';
+import { computeNextFireAt } from '../../harness/routines/cron.ts';
 
 type Receipt = { ok: boolean; applied?: boolean; reverted?: boolean; verify?: { ok: boolean }; auditId?: string };
 export type RestorationPorts = {

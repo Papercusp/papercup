@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { STUDY_BLOCKS, requireStudyRoom, validateStudyBlocks, type StudyTotal } from '../../../../scratchpad/dream-study-2026-09-09/accounting.mts';
+import { STUDY_BLOCKS, requireStudyRoom, validateStudyBlocks, type StudyTotal } from './study/accounting.mts';
 
-const blocks = Object.values(STUDY_BLOCKS).map(block => JSON.parse(readFileSync(new URL('../../../../scratchpad/dream-study-2026-09-09/' + block.file, import.meta.url), 'utf8')));
+const blocks = Object.values(STUDY_BLOCKS).map(block => JSON.parse(readFileSync(new URL('./study/' + block.file, import.meta.url), 'utf8')));
 const limits = validateStudyBlocks(blocks);
 const row = (pin: string, attempts: number, cost: number, arm: StudyTotal['arm'] = 'structured-pair'): StudyTotal => ({ pin, attempts, cost, arm });
 

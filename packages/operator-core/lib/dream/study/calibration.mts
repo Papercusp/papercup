@@ -1,8 +1,8 @@
-import { capabilityHash } from "../../packages/operator-core/lib/dream/capability-contracts.ts";
-import { CapabilityProposalSchema } from "../../packages/operator-core/lib/dream/capability-pass.ts";
-import { DREAM_UTILITY_CONTRACT } from "../../packages/operator-core/lib/dream/dream-evaluation.ts";
-import { dreamCapabilityRun } from "../../packages/operator-core/lib/dream/dream-run-provenance.ts";
-import type { DreamRun } from "../../packages/operator-core/lib/dream/dream-run-store.ts";
+import { capabilityHash } from "../../dream/capability-contracts.ts";
+import { CapabilityProposalSchema } from "../../dream/capability-pass.ts";
+import { DREAM_UTILITY_CONTRACT } from "../../dream/dream-evaluation.ts";
+import { dreamCapabilityRun } from "../../dream/dream-run-provenance.ts";
+import type { DreamRun } from "../../dream/dream-run-store.ts";
 
 const PRIOR_TEXT_LIMIT = 12_000;
 

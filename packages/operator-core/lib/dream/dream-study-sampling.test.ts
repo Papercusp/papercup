@@ -5,7 +5,7 @@ import { capabilityHash, capabilityUnitHash, CapabilityPacketSchema } from './ca
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination, type CapabilitySamplingSnapshot } from './capability-sampler';
 import { CAPABILITY_DREAM_PROMPT_VERSION } from './capability-pass';
-import { studySampling } from '../../../../scratchpad/dream-study-2026-09-09/sampling.mts';
+import { studySampling } from './study/sampling.mts';
 
 let snapshot: CapabilitySamplingSnapshot;
 let fixtureRoot: string;

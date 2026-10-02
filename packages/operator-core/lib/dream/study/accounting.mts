@@ -1,4 +1,4 @@
-import { dreamEvaluationProtocolHash, DreamEvaluationProtocolSchema, type DreamEvaluationArm } from '../../packages/operator-core/lib/dream/dream-evaluation.ts';
+import { dreamEvaluationProtocolHash, DreamEvaluationProtocolSchema, type DreamEvaluationArm } from '../../dream/dream-evaluation.ts';
 import type { Sql } from 'postgres';
 import { sumBlenderTicks, type BlenderTick } from './blender-guard.mts';
 

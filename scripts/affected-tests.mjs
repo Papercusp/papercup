@@ -2022,6 +2022,18 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // WI-10005302: workflow/config-only changes are outside npm workspaces.
+    // Catch misplaced label rules before GitHub rejects a push with zero jobs.
+    workspace: "@papercusp/operator-core",
+    script: "test:github-workflows",
+    appliesTo: (f) =>
+      f.startsWith(".github/workflows/") ||
+      f === ".github/labeler.yml" ||
+      f === "packages/operator-core/lib/github-workflows.test.ts" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/affected-tests.mjs",
+  },
+  {
     // WI-10005194. lib/scout/pty-host-health-lane.test.ts reads
     // apps/operator/scripts/psu-pty-host.mjs BY PATH and fails when the host
     // emits an event kind the classifier does not know. The host lives in

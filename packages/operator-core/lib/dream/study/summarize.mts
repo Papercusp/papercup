@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getOrgPg } from "@papercusp/db-org";
-import { capabilityHash } from "../../packages/operator-core/lib/dream/capability-contracts.ts";
+import { capabilityHash } from "../../dream/capability-contracts.ts";
 import {
   dreamCapabilityRun,
   dreamRunAssessments,
-} from "../../packages/operator-core/lib/dream/dream-run-provenance.ts";
+} from "../../dream/dream-run-provenance.ts";
 import {
   STUDY_BLOCKS,
   readStudyTotals,
@@ -462,7 +462,7 @@ try {
     "",
     "## Reproduction and evidence",
     "",
-    "`PAPERCUSP_WORKSPACE_ID=papercusp-workspace node --import tsx scratchpad/dream-study-2026-09-09/summarize.mts`",
+    "`PAPERCUSP_WORKSPACE_ID=papercusp-workspace node --import tsx packages/operator-core/lib/dream/study/summarize.mts`",
     "",
     "The companion [JSON evidence](evidence-summary.json) records each attempt, settled calls and conservative reservations, source-unit coverage, exact paired-run matching, Blender receipts, and outstanding work. The source ledgers are `harness_shared.dream_runs` and `harness_shared.scout_ticks`; `accounting.mts` owns cumulative budget accounting. Historic trial rows are not rewritten.",
     "",

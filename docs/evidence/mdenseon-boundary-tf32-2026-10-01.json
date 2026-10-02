@@ -1143,7 +1143,7 @@
   "nativeRuntimeResourcePreparation": {
     "status": "Worker native-call library/capacity observation preparation verified; complete DLL closure and actual model GPU acceptance remain open",
     "workItem": "WI-10004540",
-    "supersedesCurrentPins": "Current worker/native qualifier pins below supersede five files in the earlier nativeCallClockExtension. Its115-test proof remains historical; frozen R4/V6 and model-free Nsight calibration capture remain immutable.",
+    "supersedesCurrentPins": "These tested resource-preparation pins superseded five files in the earlier nativeCallClockExtension. The worker MJS and input-trace test pins are now historical and superseded by nativeLoaderActivityPreparation below. The other three resource pins remain current; frozen R4/V6 and model-free Nsight calibration capture remain immutable.",
     "reuse": "Add runtime evidence to the existing opt-in embed_native_inference lifecycle and existing private native-inference JSONL. Extend the same qualifier and conventional Vitest suite; no new callback, platform tool, table, service or production setting.",
     "libraryObservation": "On Linux the worker samples /proc/self/maps before and after the actual synchronous addon Run. It fingerprints executable mappings, shared objects and .node addons with streaming SHA256; opened descriptor inode/device must match the map. Deleted/ambiguous mappings, inaccessible files, changes during hashing, malformed records and evidence order failures cannot qualify. Cached hashes are keyed by path/device/inode/size/mtime/ctime.",
     "capacityObservation": "CUDA native-call boundaries run the existing nvidia-smi device-capacity query, adding GPU UUID and PCI identity, exact monotonic query brackets and executable fingerprint. CPU is not-applicable; failed/invalid CUDA queries retain unknown plus reason. Scope is all nvidia-smi devices, with CUDA_VISIBLE_DEVICES retained but not assumed to bind the provider. No allocator-cause claim follows from the sampled numbers.",
@@ -1179,6 +1179,44 @@
       "GPU capacity observation samples all devices; actual model GPU binding requires the profiler's device identity. Values describe measurement-time capacity, not successful allocation or the historical allocator failure cause.",
       "These opt-in diagnostic observations add hashing/query overhead; they do not replace controlled V7 performance acceptance.",
       "No pretrained model or CUDA-model capture replay. Native-model request joins, actual complete closure/capacity,8192/over-limit/mixed/full rankings and broader plan bars remain open."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
+  "nativeLoaderActivityPreparation": {
+    "status": "Standard glibc loader activity detector and native-call markers verified; actual model DLL closure and GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "reuse": "Use the installed glibc LD_DEBUG=files stderr trace, documented in ld.so(8), rather than adding an audit/preload library. Extend the existing opt-in native-call lifecycle, measurement-manifest qualifier and their conventional Vitest suites. No new platform tool, setting, service, native addon or production policy.",
+    "mechanism": "With files/all loader diagnostics enabled, the worker synchronously writes request-tag/PID/Linux-TID/phase/exact Node-hrtime markers to the same stderr descriptor around the original synchronous addon Run. The marker nanoseconds equal retained native lifecycle values. LD_DEBUG_OUTPUT is refused because a separate log loses the shared ordering. Ordinary untraced calls and native diagnostics without LD_DEBUG=files add no markers.",
+    "detector": "inspectNativeLoaderActivity requires process-start loader evidence and complete unique markers bound to the supplied request population. It rejects malformed identities, clocks, missing/repeated markers, unsupported activity and overlapping same-thread windows. It reports loader map creation/destruction and init/fini across the whole first-start to last-end interval, including activity between calls, and ignores other-PID loader output from sampler subprocesses.",
+    "verification": {
+      "runGroupId": "5a029f13-9782-478d-ba2c-349406514282",
+      "testRunIds": [20540091, 20540092],
+      "passed": 82,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "tests": ["packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts"],
+      "actualTransientControl": "A conventional test builds a tiny no-dependency shared object in its private fixture directory, then loads, calls and unloads it within matched Python CLOCK_MONOTONIC markers under actual glibc diagnostics. The detector observes both generating-map and destroying-map even though the before/after maps could match.",
+      "actualNativeWorker": "The retained upstream130-byte CPU ORT fixture validates exact stderr marker equality with six native lifecycle records across queued successes and an actual dimension error. A real file-worker/fake-native guard refuses separate LD_DEBUG_OUTPUT before a native-call marker or model result can qualify. No pretrained or CUDA-model replay.",
+      "typecheck": "Canonical operator-core requested source/test and its14-file service scope clean; generic-memory requested test plus loaded imports clean. Both compiler exits0; plain ESM node --check and scoped git diff --check pass. An earlier mixed-project check found two new test environment type errors, corrected with NodeJS.ProcessEnv and checked in the owning projects.",
+      "earlierRuns": ["7a0a18ea-da52-4567-a582-0078e4f59f64", "b47421fe-372c-415e-9267-a8fcf1a92ff3"]
+    },
+    "sources": [
+      { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 26375, "sha256": "af3ab27d4d3df54182238d5f993e428981d14aaf5eafb6ca18aaaf11898ab44f" },
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "bytes": 39393, "sha256": "acb964992256ef1518833108df950acc48579b28a0cd50a1c0359cffd7ff94a0" }
+    ],
+    "tests": [
+      { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 28315, "sha256": "ace77d8d8d37d8617f04a3ee92f88783dbe6e45e576a26d12fdaebb6f0f750ce" },
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "bytes": 16282, "sha256": "75731699035081ea9e653ea76eb3035e1c06db76cfab8e5cf992854c1a88976f" }
+    ],
+    "limitations": [
+      "No loader activity is distinct from complete fingerprinted DLL closure. Join initial loader objects, resolved paths and namespaces to pre-inference map identities; preserve complete raw stderr from target exec through EOF with its fingerprint and terminal receipt before a model closure claim.",
+      "This guard covers glibc loader events, not arbitrary mmap/JIT executable pages. Unsupported or absent startup/marker evidence cannot qualify.",
+      "The fresh model capture still needs all tested overlays, exact source/dependency/Node/Python pins, FILE-parent worker boot, matched CUDA/clock preflight, complete kernel/request joins and actual GPU UUID/PCI capacity binding. R4/V6/V7/V5 and all retained capture evidence remain immutable."
     ],
     "pretrainedModelInferencePerformed": false,
     "nativeCudaModelInferencePerformed": false,

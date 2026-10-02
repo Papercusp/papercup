@@ -578,183 +578,183 @@ export default defineTool({
     let brainBackend = operatorBackend;
     let brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
     let failedOver = false;
-    try {
-    emitChatEvent(ctx, {
-      type: 'provenance',
-      engine: brainEngine,
-      model: brainModel,
-    });
-    // WI-10003188: the backend's own reason for a failed attempt, so a turn that ends
-    // with no output can say WHY instead of a fixed "agent backend failure".
-    // WI-10004897: EVERY empty attempt is kept (backend, model, its own error), so a turn
-    // that failed over reports the first backend's cause too, not only the last one's.
     const emptyAttempts: BrainAttemptOutcome[] = [];
     let skippedFailover: SkippedBrainFailover | null = null;
-    // The failover judges the alternate's login from THIS process's home. With the D-421
-    // customer-identity spawn transform installed, the brain CLI runs as the customer
-    // workspace account, whose credential files this service user cannot read, so a local
-    // probe would report every alternate `absent` and wrongly skip every failover. There the
-    // login cannot be judged here (null): the failover runs as before.
-    const failoverCredentialOf = agentSpawnTransformConfigured()
-      ? () => null
-      : (backend: string) => agentBackendCredentialVerdict(backend);
+    try {
+      emitChatEvent(ctx, {
+        type: 'provenance',
+        engine: brainEngine,
+        model: brainModel,
+      });
+      // WI-10003188: the backend's own reason for a failed attempt, so a turn that ends
+      // with no output can say WHY instead of a fixed "agent backend failure".
+      // WI-10004897: EVERY empty attempt is kept (backend, model, its own error), so a turn
+      // that failed over reports the first backend's cause too, not only the last one's.
+      // The failover judges the alternate's login from THIS process's home. With the D-421
+      // customer-identity spawn transform installed, the brain CLI runs as the customer
+      // workspace account, whose credential files this service user cannot read, so a local
+      // probe would report every alternate `absent` and wrongly skip every failover. There the
+      // login cannot be judged here (null): the failover runs as before.
+      const failoverCredentialOf = agentSpawnTransformConfigured()
+        ? () => null
+        : (backend: string) => agentBackendCredentialVerdict(backend);
 
-    // The agent backend (omp → codex/anthropic) intermittently produces
-    // an empty turn: a transient upstream model error, or omp exiting 0
-    // with no assistant text. Retry ONCE when an attempt produced
-    // nothing at all — but never after any delta/tool_call has already
-    // streamed to the user, since that output is committed on the wire.
-    // (2026-05-21: operator returned blank turns under codex flakiness.)
-    const MAX_BRAIN_ATTEMPTS = 2;
-    for (let attempt = 1; attempt <= MAX_BRAIN_ATTEMPTS; attempt++) {
-      // WI-5071: a blank attempt on a session (resumed OR fresh) must not eat
-      // the retry too — drop the session and run the retry fully cold with
-      // the full prompt, exactly the pre-session behavior.
-      if (attempt > 1 && brainSession && convId) {
-        invalidateChatBrainSession(convId, `blank turn on attempt ${attempt - 1}`);
-        brainSession = null;
-      }
-      const resumedTurn = !!brainSession?.resumed;
-      turnSessionMode = brainSession ? (resumedTurn ? 'resumed' : 'fresh-session') : 'cold';
-      // This attempt's own backend error only — the failover decision must never act
-      // on a previous attempt's reason.
-      let attemptBackendError: string | null = null;
-      try {
-        for await (const ev of runAgentChat({
-          // Resumed session ⇒ delta prompt (the session carries the history
-          // verbatim); fresh/cold ⇒ the full prompt.
-          promptText: resumedTurn ? userPromptTextDelta : userPromptText,
-          // First turn of a session: 'force' (`--session-id <uuid>`) CREATES
-          // it — create-ONLY: claude-code exits 1 "Session ID … is already in
-          // use" if the id exists (verified live 2026-07-16; the old
-          // "create-or-resume" doc was wrong). Later turns: 'resume' (`-r`).
-          // isolateDir pins the stable config dir the session store lives in.
-          ...(brainSession
-            ? {
-                sessionId: brainSession.sessionId,
-                sessionMode: resumedTurn ? ('resume' as const) : ('force' as const),
-                isolateDir: brainSession.dir,
+      // The agent backend (omp → codex/anthropic) intermittently produces
+      // an empty turn: a transient upstream model error, or omp exiting 0
+      // with no assistant text. Retry ONCE when an attempt produced
+      // nothing at all — but never after any delta/tool_call has already
+      // streamed to the user, since that output is committed on the wire.
+      // (2026-05-21: operator returned blank turns under codex flakiness.)
+      const MAX_BRAIN_ATTEMPTS = 2;
+      for (let attempt = 1; attempt <= MAX_BRAIN_ATTEMPTS; attempt++) {
+        // WI-5071: a blank attempt on a session (resumed OR fresh) must not eat
+        // the retry too — drop the session and run the retry fully cold with
+        // the full prompt, exactly the pre-session behavior.
+        if (attempt > 1 && brainSession && convId) {
+          invalidateChatBrainSession(convId, `blank turn on attempt ${attempt - 1}`);
+          brainSession = null;
+        }
+        const resumedTurn = !!brainSession?.resumed;
+        turnSessionMode = brainSession ? (resumedTurn ? 'resumed' : 'fresh-session') : 'cold';
+        // This attempt's own backend error only — the failover decision must never act
+        // on a previous attempt's reason.
+        let attemptBackendError: string | null = null;
+        try {
+          for await (const ev of runAgentChat({
+            // Resumed session ⇒ delta prompt (the session carries the history
+            // verbatim); fresh/cold ⇒ the full prompt.
+            promptText: resumedTurn ? userPromptTextDelta : userPromptText,
+            // First turn of a session: 'force' (`--session-id <uuid>`) CREATES
+            // it — create-ONLY: claude-code exits 1 "Session ID … is already in
+            // use" if the id exists (verified live 2026-07-16; the old
+            // "create-or-resume" doc was wrong). Later turns: 'resume' (`-r`).
+            // isolateDir pins the stable config dir the session store lives in.
+            ...(brainSession
+              ? {
+                  sessionId: brainSession.sessionId,
+                  sessionMode: resumedTurn ? ('resume' as const) : ('force' as const),
+                  isolateDir: brainSession.dir,
+                }
+              : {}),
+            systemPromptText,
+            model: brainModel,
+            backend: brainBackend,
+            // Gateway admission tier: this brain IS the owner-interactive chat/voice
+            // reply (loopback-only route; operator:converse + the papercup:converse
+            // voice alias share this handler). Tag it `interactive` so its LLM calls
+            // land in the gateway's reserved tier-1 (HUMAN_PRIORITY_LABELS → fail-fast
+            // + reserved floor) instead of the untiered default band, where under an
+            // account-pool crunch the owner's voice queued behind the background fleet
+            // and hung ("processing forever" — EI-10795). Threads to every backend:
+            // anthropic-direct via priorityTierHeaders, claude/codex via the spawn's
+            // ANTHROPIC_CUSTOM_HEADERS / gateway config.
+            priority: 'interactive',
+            mcpConfig,
+            allowedTools: [...allowedTools],
+            permissionMode: 'bypassPermissions',
+            // Isolate the claude-code brain spawn from the host ~/.claude so
+            // it loads ONLY its agentmcp tools + persona — not the dev box's
+            // MCP servers (coord_*/harness_*/papercusp-su) + SessionStart
+            // skills hook, which under bypassPermissions make the brain go
+            // agentic and emit no clean turn (turns=0). No-op for non-claude
+            // backends. See plan operator-brain-test-isolation-2026-06-02.
+            isolateConfig: true,
+            // The operator reaches its world ONLY through agentmcp tools and
+            // emits <say>/<spawn> as control-tag text — it needs no Claude
+            // Code built-ins, and when present it misuses them (no-op Bash
+            // "comments", ToolSearch-ing already-loaded tools, occasional
+            // 600s loops). Deny them all. See voice-persona-production-readiness.
+            disallowBuiltins: true,
+            // Load the ~50-tool `?tools=`-filtered surface DIRECTLY (no ToolSearch
+            // deferral). Empirically the proven non-deferral lever on claude-code
+            // 2.1.x — per-tool `_meta.alwaysLoad` is not honored over HTTP MCP.
+            // Safe only because the mcpUrl above pins `&tools=` to the small set.
+            // (voice-persona-production-readiness P-009.)
+            disableToolSearch: true,
+            signal: ctx.signal,
+          })) {
+            if (firstEventAt === null) firstEventAt = Date.now();
+            if (ctx.signal.aborted) break;
+            if (ev.type === 'delta') {
+              emitChatEvent(ctx, { type: 'delta', text: ev.text });
+              assembled += ev.text;
+            } else if (ev.type === 'tool_call') {
+              emittedToolCall = true;
+              // Claude Code strips the colon before the model sees the name, so
+              // this arrives sanitized (`chat_ask_choice`). Restore the canonical
+              // `chat:ask_choice` — the key the chat-cards registry and the
+              // ask_choice gates match on; without it the card silently never
+              // renders and the user sees a "pick one" with nothing to pick.
+              const name = canonicalToolName(ev.name);
+              emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input });
+            } else if (ev.type === 'result') {
+              totalCost += ev.costUsd ?? 0;
+              if (typeof ev.unreportedFrames === 'number' && Number.isSafeInteger(ev.unreportedFrames) && ev.unreportedFrames > 0) {
+                unreportedFrames += ev.unreportedFrames;
               }
-            : {}),
-          systemPromptText,
-          model: brainModel,
-          backend: brainBackend,
-          // Gateway admission tier: this brain IS the owner-interactive chat/voice
-          // reply (loopback-only route; operator:converse + the papercup:converse
-          // voice alias share this handler). Tag it `interactive` so its LLM calls
-          // land in the gateway's reserved tier-1 (HUMAN_PRIORITY_LABELS → fail-fast
-          // + reserved floor) instead of the untiered default band, where under an
-          // account-pool crunch the owner's voice queued behind the background fleet
-          // and hung ("processing forever" — EI-10795). Threads to every backend:
-          // anthropic-direct via priorityTierHeaders, claude/codex via the spawn's
-          // ANTHROPIC_CUSTOM_HEADERS / gateway config.
-          priority: 'interactive',
-          mcpConfig,
-          allowedTools: [...allowedTools],
-          permissionMode: 'bypassPermissions',
-          // Isolate the claude-code brain spawn from the host ~/.claude so
-          // it loads ONLY its agentmcp tools + persona — not the dev box's
-          // MCP servers (coord_*/harness_*/papercusp-su) + SessionStart
-          // skills hook, which under bypassPermissions make the brain go
-          // agentic and emit no clean turn (turns=0). No-op for non-claude
-          // backends. See plan operator-brain-test-isolation-2026-06-02.
-          isolateConfig: true,
-          // The operator reaches its world ONLY through agentmcp tools and
-          // emits <say>/<spawn> as control-tag text — it needs no Claude
-          // Code built-ins, and when present it misuses them (no-op Bash
-          // "comments", ToolSearch-ing already-loaded tools, occasional
-          // 600s loops). Deny them all. See voice-persona-production-readiness.
-          disallowBuiltins: true,
-          // Load the ~50-tool `?tools=`-filtered surface DIRECTLY (no ToolSearch
-          // deferral). Empirically the proven non-deferral lever on claude-code
-          // 2.1.x — per-tool `_meta.alwaysLoad` is not honored over HTTP MCP.
-          // Safe only because the mcpUrl above pins `&tools=` to the small set.
-          // (voice-persona-production-readiness P-009.)
-          disableToolSearch: true,
-          signal: ctx.signal,
-        })) {
-          if (firstEventAt === null) firstEventAt = Date.now();
-          if (ctx.signal.aborted) break;
-          if (ev.type === 'delta') {
-            emitChatEvent(ctx, { type: 'delta', text: ev.text });
-            assembled += ev.text;
-          } else if (ev.type === 'tool_call') {
-            emittedToolCall = true;
-            // Claude Code strips the colon before the model sees the name, so
-            // this arrives sanitized (`chat_ask_choice`). Restore the canonical
-            // `chat:ask_choice` — the key the chat-cards registry and the
-            // ask_choice gates match on; without it the card silently never
-            // renders and the user sees a "pick one" with nothing to pick.
-            const name = canonicalToolName(ev.name);
-            emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input });
-          } else if (ev.type === 'result') {
-            totalCost += ev.costUsd ?? 0;
-            if (typeof ev.unreportedFrames === 'number' && Number.isSafeInteger(ev.unreportedFrames) && ev.unreportedFrames > 0) {
-              unreportedFrames += ev.unreportedFrames;
+            } else if (ev.type === 'error') {
+              // runAgentChat yields exactly one terminal `error` event
+              // when the agent backend itself failed. Log it (stderr
+              // included) for host-log visibility; fall through to the
+              // empty-output retry check below rather than throwing, so a
+              // transient backend error still gets a second attempt.
+              attemptBackendError = ev.message;
+              const detail = ev.stderr
+                ? `${ev.message}\n--- stderr ---\n${ev.stderr}`
+                : ev.message;
+              console.error(
+                '[operator:converse] agent backend error ' +
+                  `(attempt ${attempt}/${MAX_BRAIN_ATTEMPTS}): ${detail}`,
+              );
             }
-          } else if (ev.type === 'error') {
-            // runAgentChat yields exactly one terminal `error` event
-            // when the agent backend itself failed. Log it (stderr
-            // included) for host-log visibility; fall through to the
-            // empty-output retry check below rather than throwing, so a
-            // transient backend error still gets a second attempt.
-            attemptBackendError = ev.message;
-            const detail = ev.stderr
-              ? `${ev.message}\n--- stderr ---\n${ev.stderr}`
-              : ev.message;
+          }
+        } catch (err) {
+          throw new Error(
+            `operator converse failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+
+        // Stop once this attempt committed any output, or on abort.
+        if (assembled.trim() || emittedToolCall || ctx.signal.aborted) break;
+        emptyAttempts.push({ engine: brainEngine, model: brainModel, error: attemptBackendError });
+        if (attempt < MAX_BRAIN_ATTEMPTS) {
+          const failover =
+            role === 'papercup' && !failedOver
+              ? papercupChatFailover({
+                  engine: brainEngine,
+                  failure: classifyChatModelFailure(attemptBackendError),
+                  credentialOf: failoverCredentialOf,
+                })
+              : null;
+          if (failover?.kind === 'unavailable') {
+            // WI-10004897: the cap/dead login cannot clear on a same-backend retry, and the
+            // alternate's login is known dead, so a second spawn on either cannot succeed.
+            // Stop now and report both facts instead of spending the retry on a 401.
             console.error(
-              '[operator:converse] agent backend error ' +
-                `(attempt ${attempt}/${MAX_BRAIN_ATTEMPTS}): ${detail}`,
+              `[operator:converse] ${brainEngine} (${brainModel}) failed with ${failover.cause} on attempt ` +
+                `${attempt}; failover to ${failover.backend} skipped: credential ${failover.credential}.`,
+            );
+            skippedFailover = { engine: failover.backend, model: failover.model, credential: failover.credential };
+            break;
+          }
+          if (failover) {
+            console.error(
+              `[operator:converse] ${brainEngine} (${brainModel}) failed with ${failover.cause} on attempt ` +
+                `${attempt} — failing over to ${failover.backend} (${failover.model}).`,
+            );
+            failedOver = true;
+            brainModel = failover.model;
+            brainBackend = failover.backend;
+            brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
+            // Re-announce what actually runs now; the chat reducer keeps the latest frame.
+            emitChatEvent(ctx, { type: 'provenance', engine: brainEngine, model: brainModel });
+          } else {
+            console.error(
+              `[operator:converse] brain produced no output on attempt ${attempt} — retrying.`,
             );
           }
         }
-      } catch (err) {
-        throw new Error(
-          `operator converse failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
       }
-
-      // Stop once this attempt committed any output, or on abort.
-      if (assembled.trim() || emittedToolCall || ctx.signal.aborted) break;
-      emptyAttempts.push({ engine: brainEngine, model: brainModel, error: attemptBackendError });
-      if (attempt < MAX_BRAIN_ATTEMPTS) {
-        const failover =
-          role === 'papercup' && !failedOver
-            ? papercupChatFailover({
-                engine: brainEngine,
-                failure: classifyChatModelFailure(attemptBackendError),
-                credentialOf: failoverCredentialOf,
-              })
-            : null;
-        if (failover?.kind === 'unavailable') {
-          // WI-10004897: the cap/dead login cannot clear on a same-backend retry, and the
-          // alternate's login is known dead, so a second spawn on either cannot succeed.
-          // Stop now and report both facts instead of spending the retry on a 401.
-          console.error(
-            `[operator:converse] ${brainEngine} (${brainModel}) failed with ${failover.cause} on attempt ` +
-              `${attempt}; failover to ${failover.backend} skipped: credential ${failover.credential}.`,
-          );
-          skippedFailover = { engine: failover.backend, model: failover.model, credential: failover.credential };
-          break;
-        }
-        if (failover) {
-          console.error(
-            `[operator:converse] ${brainEngine} (${brainModel}) failed with ${failover.cause} on attempt ` +
-              `${attempt} — failing over to ${failover.backend} (${failover.model}).`,
-          );
-          failedOver = true;
-          brainModel = failover.model;
-          brainBackend = failover.backend;
-          brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
-          // Re-announce what actually runs now; the chat reducer keeps the latest frame.
-          emitChatEvent(ctx, { type: 'provenance', engine: brainEngine, model: brainModel });
-        } else {
-          console.error(
-            `[operator:converse] brain produced no output on attempt ${attempt} — retrying.`,
-          );
-        }
-      }
-    }
     } finally {
       // Revoke the customer-run bearer as soon as the model stream is finished.
       // expires_at remains the durable fallback if the host dies before here.

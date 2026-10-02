@@ -445,7 +445,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       });
       if (!paused) {
         expect(byRule.get('goal-owner-report')?.action).toEqual({ kind: 'report',
-          summary: 'send MOVED / COST / OWNER-WALLED / KILLED on a canonical owner-facing rail now', tool: 'coord:send', args: { to: ['human'] } });
+          summary: 'send MOVED / COST / OWNER-WALLED / KILLED / NEXT WAKE on a canonical owner-facing rail now', tool: 'coord:send', args: { to: ['human'] } });
         expect(byRule.get('goal-owner-report')?.evidence.map(row => row.ref)).toEqual([`goal-owner-report:${GOAL}:baseline`]);
         expect(byRule.get('goal-plan-placement')?.action).toEqual({ kind: 'repair', targetRef: refs[0],
           summary: 'The plan is draft and cannot launch until its lifecycle/start gate is satisfied.' });

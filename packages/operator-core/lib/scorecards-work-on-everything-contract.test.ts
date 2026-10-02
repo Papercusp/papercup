@@ -3,6 +3,8 @@ import {
   computeWorkOnEverythingRollup,
   evaluateScorecardInstrumentContract,
   validateWorkOnEverythingEvidenceEnvelope,
+  validateRubricRatingContracts,
+  GOAL_BEHAVIOR_GRADING_RUBRIC,
   WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC,
   resolveScorecardInstrumentSnapshots,
   type ScorecardRow,
@@ -160,6 +162,48 @@ describe('Work on everything scorecard contract', () => {
       .toEqual(ratings);
     expect(asStructuredObservation({ rubricRef: 'legacy', ratings: { key: { rating: 'pass', evidence: 'old' } } })?.ratings)
       .toEqual({ key: { rating: 'pass', evidence: 'old' } });
+  });
+});
+
+// AUTO-BAR-R-3 (goal-agent-behavior-feedback-2026-09-06): the emit and evaluate doors share
+// validateRubricRatingContracts, so these cases pin what both refuse.
+describe('GOAL behavior-grading unknown disclosure contract', () => {
+  it.each(['unknown', 'idle', ' Unknown '])('refuses a %s rating whose reason is only prose', (value) => {
+    expect(() =>
+      validateRubricRatingContracts(GOAL_BEHAVIOR_GRADING_RUBRIC, {
+        'kickoff-portfolio-read': { rating: value, evidence: 'Not exercised in this window.' },
+      }),
+    ).toThrow(/'kickoff-portfolio-read'.*require unknownReason \(idle \| not-exercised/);
+  });
+
+  it('names every undisclosed criterion in one refusal and ignores conduct ratings', () => {
+    expect(() =>
+      validateRubricRatingContracts(GOAL_BEHAVIOR_GRADING_RUBRIC, {
+        a: { rating: 'unknown', evidence: 'x', unknownReason: '  ' as never },
+        b: { rating: 'idle', evidence: 'y' },
+        c: { rating: 'pass', evidence: 'observed at turn 4' },
+      }),
+    ).toThrow(/'a', 'b' require/);
+  });
+
+  it('accepts a structured reason, and leaves other rubrics to their own contracts', () => {
+    expect(() =>
+      validateRubricRatingContracts(GOAL_BEHAVIOR_GRADING_RUBRIC, {
+        a: { rating: 'unknown', evidence: 'No fleet shipped.', unknownReason: 'not-exercised' },
+        b: { rating: 'pass', evidence: 'observed at turn 4' },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateRubricRatingContracts('some-other-rubric', { a: { rating: 'unknown', evidence: 'prose' } }),
+    ).not.toThrow();
+  });
+
+  it('still runs the Work on everything envelope through the shared entry point', () => {
+    expect(() =>
+      validateRubricRatingContracts(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, {
+        'goal-mode-foundation': { rating: 'pass', evidence: 'narrative only' },
+      }),
+    ).toThrow(/evidenceRef/);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createBlenderAdmission, sumBlenderTicks } from '../../../../scratchpad/dream-study-2026-09-09/blender-guard.mts';
-import { requireStudyRoom, STUDY_BLOCKS } from '../../../../scratchpad/dream-study-2026-09-09/accounting.mts';
+import { createBlenderAdmission, sumBlenderTicks } from './study/blender-guard.mts';
+import { requireStudyRoom, STUDY_BLOCKS } from './study/accounting.mts';
 
 const model = 'gpt-5.6-luna:medium';
 const opts = { model, messages: [{ role: 'user' as const, content: 'test' }], maxTokens: 1024 };

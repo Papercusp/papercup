@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import type { DreamRun } from './dream-run-store';
-import { buildCalibrationBundle } from '../../../../scratchpad/dream-study-2026-09-09/calibration.mts';
-import { freezeImmutableArtifacts } from '../../../../scratchpad/dream-study-2026-09-09/freeze-artifacts.mts';
+import { buildCalibrationBundle } from './study/calibration.mts';
+import { freezeImmutableArtifacts } from './study/freeze-artifacts.mts';
 
 const roots: string[] = [];
 afterEach(async () => {

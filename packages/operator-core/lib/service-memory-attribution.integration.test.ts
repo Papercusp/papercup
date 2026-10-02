@@ -13,6 +13,7 @@ import { HOST_MALLOC_ARENA_MAX } from '../../../apps/operator/bin/malloc-arena-r
 import { createCdpClient, readProcessMemory, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import type { PgResultDiagnostic } from '@papercusp/db-org';
+import { createCache } from '@papercusp/cache';
 
 const root = resolve(__dirname, '../../..');
 
@@ -79,13 +80,24 @@ function runCohortWithLog(args: string[], options: { cwd: string; timeout: numbe
 // Build both cohorts from one maintained bundle. The counterfactual restores
 // only the old full-read key; reject drift before starting any runtime.
 function restoreFullInboxKey(bundle: string) {
-  const pattern = /\.\.\.\(?boundedInbox \? \{\s*limit,\s*ambient: includeAmbient,\s*intents: !!args\.include_intents\s*\} : \{\}\)?/g;
+  const pattern = /\.\.\.\(?boundedInbox \? \{\s*(limit,\s*ambient: includeAmbient,\s*intents: !!args\d*\.include_intents)\s*\} : \{\}\)?/g;
   const matches = [...bundle.matchAll(pattern)];
   if (matches.length !== 1) throw Error('Expected exactly one normalized inbox key in bundle');
   const match = matches[0];
-  const replacement = 'limit, ambient: includeAmbient, intents: !!args.include_intents';
+  const replacement = match[1];
   return { bundle: bundle.slice(0, match.index) + replacement + bundle.slice(match.index! + match[0].length),
     intervention: { offset: match.index, before: match[0], after: replacement } };
+}
+
+// Closed helper also runs in CDP. Validate the actual library shape before
+// expensive preparation, then verify the private cache is empty after cold-bust.
+function preparePairCache(state: any) {
+  const cache = state?.cache;
+  if (state?.cacheLayerOn !== true || typeof cache?.clearL1 !== 'function' ||
+      !(cache?.l1?.map instanceof Map)) throw Error('Private pair cache API/owner shape mismatch');
+  cache.clearL1();
+  if (cache.l1.map.size !== 0) throw Error('Private pair cache did not cold-bust');
+  return { enabled: state.cacheLayerOn, entries: cache.l1.map.size };
 }
 
 // queryObjects triggers GC and enumerates survivors. Its aggregate sizes are
@@ -167,8 +179,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     const key = '...boundedInbox ? { limit, ambient: includeAmbient, intents: !!args.include_intents } : {}';
     const restored = restoreFullInboxKey('prefix ' + key + ' suffix');
     expect(restored.bundle).toBe('prefix limit, ambient: includeAmbient, intents: !!args.include_intents suffix');
+    // esbuild renames colliding handler arguments in the actual host graph.
+    expect(restoreFullInboxKey(key.replace('args.', 'args27.')).bundle)
+      .toBe('limit, ambient: includeAmbient, intents: !!args27.include_intents');
     expect(() => restoreFullInboxKey('unrelated bundle')).toThrow('exactly one');
     expect(() => restoreFullInboxKey(key + key)).toThrow('exactly one');
+  });
+
+  it('checks the real cache cold-bust API before an expensive paired runtime', async () => {
+    const cache = createCache();
+    await cache.getOrSet('private', 'coord:inbox:guard', async () => ['useful'], { tags: ['coord_event_log'] });
+    expect(preparePairCache({ cache, cacheLayerOn: true })).toEqual({ enabled: true, entries: 0 });
+    expect(() => preparePairCache({ cache: { clear() {} }, cacheLayerOn: true })).toThrow('API/owner');
+    expect(() => preparePairCache({ cache, cacheLayerOn: false })).toThrow('API/owner');
   });
 
   it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT))('compares same-input full inbox keys on independent private HTTP hosts', async () => {
@@ -184,6 +207,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       'packages/operator-core/lib/cache/instance.ts',
       'libs/generic/cache/src/cache.ts', 'libs/generic/cache/src/l1.ts',
       'scripts/cdp-inspector.mjs', 'apps/operator/bin/bundle-host.sh',
+      'packages/operator-core/lib/service-memory-attribution.integration.test.ts',
     ];
     const sources = () => Object.fromEntries(sourcePaths.map(path =>
       [path, createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
@@ -194,6 +218,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const { createHash } = require('node:crypto');
       const { pathToFileURL } = require('node:url');
       const postgres = require('postgres');
+      const preparePairCache = ${preparePairCache.toString()};
       const e = process.env, wait = ms => new Promise(r => setTimeout(r, ms));
       const hash = value => createHash('sha256').update(value).digest('hex');
       const report = { schemaVersion: 1, plane: 'isolated-current-build-operator-api', incomplete: true,
@@ -255,8 +280,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               cwd: path.join(process.cwd(), 'apps/operator'), detached: true,
               env: { ...e, VITEST: '', MALLOC_ARENA_MAX: e.TEST_MALLOC_ARENA_MAX }, stdio: ['ignore', 'pipe', 'pipe'] });
             cohort.pid = host.pid;
-            for (const stream of [host.stdout, host.stderr]) stream.on('data', value => {
-              tail = (tail + value.toString()).slice(-3000); if (stream === host.stderr) startup += value.toString(); });
+            for (const stream of [host.stdout, host.stderr]) stream.setEncoding('utf8').on('data', value => {
+              tail = (tail + value).slice(-3000); if (stream === host.stderr) startup += value; });
             const deadline = Date.now() + 150000;
             let ready = false, endpoint;
             while (Date.now() < deadline) {
@@ -285,7 +310,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             // Warm dispatch/readiness before the resource baseline, then discard
             // that private cache. Counters/PSS are sampled before reading content.
             await call('coord:inbox', { directed: true, limit: 1, max_body_chars: 1 });
-            await client.evaluate("globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value.cache.clear()", { returnByValue: true });
+            cohort.cachePreflight = (await client.evaluate('(' + preparePairCache.toString() + ") (globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value)", { returnByValue: true })).result.value;
             const sample = async phase => {
               const started = performance.now();
               const memory = await readProcessMemory(client, { expectedPid: host.pid });
@@ -331,21 +356,32 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       })().catch(err => { report.error = String(err); process.exitCode = 1; })
       .finally(async () => { if (sql) await sql.end(); publish(); });
     `;
+    let phase = 'bundle-preflight';
+    const preflight: Record<string, unknown> = {};
     try {
       expect(() => new Function(probe)).not.toThrow();
+      expect(preparePairCache({ cache: createCache(), cacheLayerOn: true })).toEqual({ enabled: true, entries: 0 });
       symlinkSync(resolve(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
       const build = runCohortWithLog([resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
         '--exec-under-lock', '--', resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', current],
       { cwd: root, env: process.env, timeout: 180000 }, join(directory, 'build.log'));
+      preflight.build = { ...build.log, tail: build.stderr };
       expect(build.status, build.stderr).toBe(0);
       cpSync(dirname(current), dirname(baseline), { recursive: true });
-      const restored = restoreFullInboxKey(readFileSync(current, 'utf8'));
+      phase = 'counterfactual-preflight';
+      const emitted = readFileSync(current, 'utf8');
+      const keyOffset = emitted.indexOf('bounded: boundedInbox');
+      preflight.currentBundleSha256 = createHash('sha256').update(emitted).digest('hex');
+      preflight.emittedKey = keyOffset < 0 ? null : emitted.slice(keyOffset, keyOffset + 850);
+      const restored = restoreFullInboxKey(emitted);
       writeFileSync(baseline, restored.bundle);
+      phase = 'runtime-cohorts';
       const result = runCohortWithLog([resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--', process.execPath, '-e', probe],
         { cwd: root, timeout: 360000, env: { ...process.env, TEST_CURRENT_PATH: current, TEST_BASELINE_PATH: baseline,
           TEST_REPORT_PATH: rawReport, TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } },
         join(directory, 'runtime.log'));
       const report = readCohortReport(rawReport, result);
+      phase = 'report-verification';
       report.sources = { before: beforeSources, after: sources(), fullGraph: 'unknown' };
       report.build = build.log; report.runtimeLog = result.log; report.intervention = restored.intervention;
       writeFileSync(destination, serializeIdentitySafeJson(report));
@@ -368,6 +404,13 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       // retained heap or requiring nondeterministic allocator noise to be green.
       console.log('P011_INBOX_PAIR_SUMMARY ' + JSON.stringify(report.cohorts.map((c: any) => ({ mode: c.mode,
         pssBytes: c.samples.map((s: any) => s.os.pssBytes), heapUsed: c.samples.map((s: any) => s.memory.heapUsed) }))));
+    } catch (error) {
+      const failure = existsSync(destination) ? JSON.parse(readFileSync(destination, 'utf8'))
+        : existsSync(rawReport) ? JSON.parse(readFileSync(rawReport, 'utf8')) : { incomplete: true, cohorts: [] };
+      Object.assign(failure, { verificationError: String(error), verificationPhase: phase, preflight,
+        sources: { before: beforeSources, after: sources(), fullGraph: 'unknown' } });
+      writeFileSync(destination, serializeIdentitySafeJson(failure));
+      throw error;
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 570000);
 

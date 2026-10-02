@@ -1,4 +1,4 @@
-import { dreamCallOwnerId } from '../../packages/operator-core/lib/dream/dream-cycle.ts';
+import { dreamCallOwnerId } from '../../dream/dream-cycle.ts';
 
 const phases = ['generation', 'control-a', 'control-b', 'review'] as const;
 type Phase = typeof phases[number];

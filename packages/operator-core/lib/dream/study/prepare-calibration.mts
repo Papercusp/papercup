@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getOrgPg } from "@papercusp/db-org";
-import { mapDreamRun } from "../../packages/operator-core/lib/dream/dream-run-store.ts";
+import { mapDreamRun } from "../../dream/dream-run-store.ts";
 import { STUDY_BLOCKS, validateStudyBlocks } from "./accounting.mts";
 import { buildCalibrationBundle } from "./calibration.mts";
 import { freezeImmutableArtifacts } from "./freeze-artifacts.mts";

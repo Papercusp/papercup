@@ -1,5 +1,5 @@
 import { costFromTokens, priceFor } from '@papercusp/model-pricing';
-import type { ScoutLlmAdmission } from '../../packages/operator-core/lib/scout/run.ts';
+import type { ScoutLlmAdmission } from '../../scout/run.ts';
 
 export interface StudyCall {
   id: number; model: string; reservedUsd: number;

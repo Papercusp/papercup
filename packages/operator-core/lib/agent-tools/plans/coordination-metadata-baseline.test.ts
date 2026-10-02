@@ -166,8 +166,9 @@ describe('P-002 workflow measurements against frozen P-001 targets', () => {
       blockers: [expect.objectContaining({ check: 'clauses', state: 'blocked', code: 'spec_set_hash_mismatch' })],
       wouldBlock: ['spec_set_hash_mismatch'],
     } });
-    expect(result.data).toHaveProperty('specSetHash');
-    expect(result.data.specSetHash).not.toBe(expectedSpecSetHash);
+    const data = (result as { data: { specSetHash?: unknown } }).data;
+    expect(data).toHaveProperty('specSetHash');
+    expect(data.specSetHash).not.toBe(expectedSpecSetHash);
     expect(result).not.toHaveProperty('data.scorecardDraft');
   });
 

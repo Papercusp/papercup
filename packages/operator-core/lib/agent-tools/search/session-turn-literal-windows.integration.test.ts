@@ -90,6 +90,8 @@ beforeAll(async () => {
   sql = db.sql;
   await sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (surface text, body jsonb)`);
   await applyMigrationForTest(sql, path.join(SQL_DIR, '501-session-turns.sql'));
+  // Migration 1117's column only: its backfill joins session_turn_chunks, which this fixture lacks.
+  await sql.unsafe(`ALTER TABLE harness_shared.session_turns ADD COLUMN IF NOT EXISTS chunked_at timestamptz`);
   await applyMigrationForTest(sql, path.join(SQL_DIR, '794-session-turns-provenance-at-ingest.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '1334-session-turn-windows.sql'));

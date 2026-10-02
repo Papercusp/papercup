@@ -1,10 +1,10 @@
 import { getOrgPg } from '@papercusp/db-org';
-import { rerankCapabilityPriors } from '../../packages/operator-core/lib/dream/capability-review.ts';
-import { buildSidecarAwareReranker } from '../../packages/operator-core/lib/memory/embed-sidecar-wiring.ts';
-import { installFlagOverrideStore } from '../../packages/operator-core/lib/flag-override-store.ts';
-import { getPilotCapabilityManifest } from '../../packages/operator-core/lib/dream/capability-catalog.ts';
-import { buildCapabilityPacket } from '../../packages/operator-core/lib/dream/capability-packets.ts';
-import { buildCapabilityReviewSources } from '../../packages/operator-core/lib/dream/capability-review-sources.ts';
+import { rerankCapabilityPriors } from '../../dream/capability-review.ts';
+import { buildSidecarAwareReranker } from '../../memory/embed-sidecar-wiring.ts';
+import { installFlagOverrideStore } from '../../flag-override-store.ts';
+import { getPilotCapabilityManifest } from '../../dream/capability-catalog.ts';
+import { buildCapabilityPacket } from '../../dream/capability-packets.ts';
+import { buildCapabilityReviewSources } from '../../dream/capability-review-sources.ts';
 import { fileURLToPath } from 'node:url';
 
 if (process.env.PAPERCUSP_EMBED_SIDECAR_URL !== 'http://127.0.0.1:3384') throw new Error('Use the verified local scorer');
@@ -31,7 +31,7 @@ try {
   } catch (error) {
     console.log(JSON.stringify({ phase: 'direct-error', elapsedMs: Date.now() - started, error: String(error), cause: String(error?.cause ?? '') }));
   }
-  const rootPath = fileURLToPath(new URL('../../', import.meta.url));
+  const rootPath = fileURLToPath(new URL('../../../../../', import.meta.url));
   const manifest = getPilotCapabilityManifest();
   const scope = { workspaceId: 'papercusp-workspace', potSlug: 'papercusp', repositoryId: 'papercusp' };
   const packets = [];

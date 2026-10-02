@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { prepareStudyRoutine, restoreStudyControls, studyRestorationPorts, type RestorationPorts } from '../../../../scratchpad/dream-study-2026-09-09/controls.mts';
+import { prepareStudyRoutine, restoreStudyControls, studyRestorationPorts, type RestorationPorts } from './study/controls.mts';
 import type { RoutineSnap } from '../agent-tools/routines/routine-snapshot';
 
 vi.mock('../gateway-control/control-harness', async () => {
@@ -13,7 +13,7 @@ vi.mock('../gateway-control/control-harness', async () => {
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 describe('D017 standalone study environment admission', () => {
   it.each(['', 'https://external.example', 'http://127.0.0.1:3384/other'])('refuses sidecar setting %j before any study execution', (sidecar) => {
-    const result = spawnSync(process.execPath, ['--import', 'tsx', 'scratchpad/dream-study-2026-09-09/run-one-cycle.mts', '--run'], {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', 'packages/operator-core/lib/dream/study/run-one-cycle.mts', '--run'], {
       cwd: root,
       env: { ...process.env, PAPERCUSP_EMBED_SIDECAR_URL: sidecar },
       encoding: 'utf8', timeout: 20_000,
