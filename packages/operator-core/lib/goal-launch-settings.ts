@@ -3022,6 +3022,73 @@ export async function declareGoalHolderPolicy(
   return writeGoalLaunchSettings(goalId, { ...(current.settings ?? {}), holder }, sql);
 }
 
+/** One presence-bearing session the headcount SQL counted, with the liveness inputs the oracle needs. */
+interface HeadcountPresenceRow {
+  ownerId: string;
+  inFleet: boolean;
+  heartbeatAt: string | null;
+  host: string | null;
+  pid: number | null;
+  source: string | null;
+}
+
+/**
+ * Tolerant reader for the `presence_rows` json aggregate of `goalHeadcount`'s
+ * query. An absent/malformed aggregate parses to `[]` — i.e. "no row for the
+ * oracle to judge", which leaves the heartbeat count standing (the pre-oracle
+ * behaviour) rather than throwing away a count that was successfully taken.
+ */
+function parseHeadcountPresenceRows(raw: unknown): HeadcountPresenceRow[] {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: HeadcountPresenceRow[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.ownerId !== 'string' || row.ownerId === '') continue;
+    out.push({
+      ownerId: row.ownerId,
+      inFleet: row.inFleet === true,
+      heartbeatAt: typeof row.heartbeatAt === 'string' ? row.heartbeatAt : null,
+      host: typeof row.host === 'string' ? row.host : null,
+      pid: typeof row.pid === 'number' ? row.pid : null,
+      source: typeof row.source === 'string' ? row.source : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * The rows the SHARED liveness oracle (`resolveSessionStates`) calls `ended` —
+ * never a re-derivation from heartbeat age, which is process keepalive and not
+ * an agent-liveness verdict (see `goalHeadcount`). Dynamic import for the same
+ * reason as the other heavyweight seams here: this module rides in every launch
+ * path and must not drag the presence tool's dependency graph into its static
+ * graph. A verdict of `null` (not measured) or any other state is NOT excluded.
+ *
+ * `recorded` is deliberately NOT excluded: the oracle defines it as
+ * "authoritatively LIVE per the session log" (presence-wakeability.ts), so
+ * dropping it would under-count live sessions and weaken the ceiling.
+ */
+async function oracleEndedHeadcountRows(rows: HeadcountPresenceRow[]): Promise<HeadcountPresenceRow[]> {
+  if (rows.length === 0) return [];
+  const { resolveSessionStates } = await import('./agent-tools/coordination/liveness-oracle');
+  const verdicts = await resolveSessionStates(
+    rows.map((r) => ({ ownerId: r.ownerId, heartbeatAt: r.heartbeatAt, host: r.host, pid: r.pid, source: r.source })),
+  );
+  return rows.filter((r) => {
+    const state = verdicts.get(r.ownerId)?.sessionState;
+    return state === 'ended';
+  });
+}
+
 /**
  * Live headcounts for a goal, and optionally for one of its fleets.
  *
@@ -3035,6 +3102,19 @@ export async function declareGoalHolderPolicy(
  * the boot grace and has not yet registered presence. The second leg is what
  * makes a burst of concurrent launches converge instead of every one of them
  * reading zero.
+ *
+ * ⚠ A FRESH HEARTBEAT IS NOT LIVENESS (WI-10005672). Heartbeat freshness is
+ * process KEEPALIVE; the one agent-liveness verdict is the shared oracle's
+ * `sessionState`. A session the oracle calls `ended` therefore does not count
+ * even while its last heartbeat is inside the stale window — before
+ * this a goal's relaunch right after its members died was refused or
+ * under-admitted for up to GOAL_HEADCOUNT_STALE_MS although zero agents were
+ * alive. The oracle only SUBTRACTS from the heartbeat count, and only for rows
+ * that have a presence row (a boot-grace row has none to judge): `suspect`,
+ * `draining`, `parked`, `live`, `recorded` (authoritatively live per the session
+ * log) and an unclassifiable (`null`) verdict all keep counting, so the ceiling errs toward over-counting, never toward admitting a
+ * burst. An oracle failure propagates to the caller's fail-open path like any
+ * other count failure ("ceiling not enforced", reported in band).
  */
 export async function goalHeadcount(args: {
   workspaceId: string;
@@ -3049,10 +3129,22 @@ export async function goalHeadcount(args: {
   const staleSecs = Math.max(1, Math.floor(GOAL_HEADCOUNT_STALE_MS / 1000));
   const graceSecs = Math.max(1, Math.floor(GOAL_HEADCOUNT_BOOT_GRACE_MS / 1000));
   try {
+    const fleetKey = args.fleetSlug || '';
     const rows = await pg(args.sql)`
       SELECT
         count(*)::int AS total,
-        count(*) FILTER (WHERE p.fleet_slug = ${args.fleetSlug || ''})::int AS fleet
+        count(*) FILTER (WHERE p.fleet_slug = ${fleetKey})::int AS fleet,
+        coalesce(
+          json_agg(json_build_object(
+            'ownerId', b.owner_id,
+            'inFleet', coalesce(p.fleet_slug = ${fleetKey}, false),
+            'heartbeatAt', p.heartbeat_at,
+            'host', p.host,
+            'pid', p.pid,
+            'source', p.source
+          )) FILTER (WHERE p.owner_id IS NOT NULL),
+          '[]'::json
+        ) AS presence_rows
       FROM harness_shared.session_briefs b
       LEFT JOIN harness_shared.coord_presence p ON p.owner_id = b.owner_id
       WHERE b.workspace_id = ${args.workspaceId}
@@ -3061,11 +3153,19 @@ export async function goalHeadcount(args: {
           p.heartbeat_at > now() - ${`${staleSecs} seconds`}::interval
           OR (p.owner_id IS NULL AND b.updated_at > now() - ${`${graceSecs} seconds`}::interval)
         )`;
-    const r = (rows[0] ?? {}) as { total?: unknown; fleet?: unknown };
+    const r = (rows[0] ?? {}) as { total?: unknown; fleet?: unknown; presence_rows?: unknown };
+    let total = Number(r.total ?? 0);
+    let fleet = Number(r.fleet ?? 0);
+    // The heartbeat count above is only an UPPER BOUND; the shared oracle then
+    // removes every presence-bearing row it calls ended/recorded.
+    for (const gone of await oracleEndedHeadcountRows(parseHeadcountPresenceRows(r.presence_rows))) {
+      total -= 1;
+      if (gone.inFleet) fleet -= 1;
+    }
     return {
       headcount: {
-        total: Number(r.total ?? 0),
-        fleet: args.fleetSlug ? Number(r.fleet ?? 0) : null,
+        total: Math.max(0, total),
+        fleet: args.fleetSlug ? Math.max(0, fleet) : null,
       },
       error: null,
     };
