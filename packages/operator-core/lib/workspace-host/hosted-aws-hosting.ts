@@ -30,7 +30,12 @@
  */
 import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS, type AwsWorkspaceHostPermissionAction } from './aws-connection';
 import { AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS } from './aws-safety';
-import { HOSTED_AWS_HOST_KMS_ALIAS, hostedAwsHostNames } from './hosted-aws-host-stack';
+import {
+  AWS_SPOT_SERVICE_NAME,
+  HOSTED_AWS_HOST_KMS_ALIAS,
+  awsSpotServiceLinkedRoleArn,
+  hostedAwsHostNames,
+} from './hosted-aws-host-stack';
 import { HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX, organizationDelegationRoleName } from './hosted-aws-identity';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -115,6 +120,7 @@ export type PapercuspHostingGrantClass =
   | 'host-instance'
   | 'host-volume'
   | 'host-snapshot'
+  | 'host-spot-request'
   | 'create'
   | 'create-tags'
   | 'own-session'
@@ -153,6 +159,8 @@ export const PAPERCUSP_HOSTING_ACTION_CLASSES: Readonly<Record<AwsWorkspaceHostP
   'ec2:DetachVolume': 'host-volume',
   'ec2:DeleteVolume': 'host-volume',
   'ec2:DeleteSnapshot': 'host-snapshot',
+  // WI-10005389: the persistent spot request behind a spot host, tagged with the host at creation.
+  'ec2:CancelSpotInstanceRequests': 'host-spot-request',
   'ssm:DescribeInstanceInformation': 'observe',
   'ssm:GetConnectionStatus': 'observe',
   'ssm:GetCommandInvocation': 'observe',
@@ -239,6 +247,31 @@ export function papercuspHostingPolicy(input: PapercuspHostingPolicyInput): Reco
         Condition: requestsHost,
       },
       {
+        // WI-10005389: a spot launch also creates its spot request, tagged with this host.
+        Sid: 'CreateSpotRequestForHost',
+        Effect: 'Allow',
+        Action: 'ec2:RunInstances',
+        Resource: ec2('spot-instances-request/*'),
+        Condition: requestsHost,
+      },
+      {
+        // Only this host's spot request can be cancelled (destroy cancels it before terminating).
+        Sid: 'HostSpotRequest',
+        Effect: 'Allow',
+        Action: actionsOf('host-spot-request'),
+        Resource: ec2('spot-instances-request/*'),
+        Condition: onHost,
+      },
+      {
+        // An API spot launch needs EC2's Spot service-linked role to exist; EC2 creates it on the
+        // first launch with the caller's permission. Only that one role, for that one service.
+        Sid: 'SpotServiceLinkedRole',
+        Effect: 'Allow',
+        Action: 'iam:CreateServiceLinkedRole',
+        Resource: awsSpotServiceLinkedRoleArn(account, partition),
+        Condition: { StringEquals: { 'iam:AWSServiceName': AWS_SPOT_SERVICE_NAME } },
+      },
+      {
         Sid: 'CreateSnapshotForHost',
         Effect: 'Allow',
         Action: 'ec2:CreateSnapshot',
@@ -270,7 +303,12 @@ export function papercuspHostingPolicy(input: PapercuspHostingPolicyInput): Reco
         Sid: 'TagOnlyAtCreation',
         Effect: 'Allow',
         Action: actionsOf('create-tags'),
-        Resource: [ec2('instance/*'), ec2('volume/*'), `arn:${partition}:ec2:${region}::snapshot/*`],
+        Resource: [
+          ec2('instance/*'),
+          ec2('volume/*'),
+          ec2('spot-instances-request/*'),
+          `arn:${partition}:ec2:${region}::snapshot/*`,
+        ],
         Condition: {
           StringEquals: {
             'ec2:CreateAction': ['RunInstances', 'CreateVolume', 'CreateSnapshot'],

@@ -18,6 +18,16 @@ export const HOSTED_AWS_HOST_TAG_KEY = 'papercusp:workspace-host';
 /** Distinguishes the two subnets; the host launches into the `private` one. */
 export const HOSTED_AWS_HOST_SUBNET_TAG_KEY = 'papercusp:workspace-host-subnet';
 export const HOSTED_AWS_HOST_KMS_ALIAS = 'alias/papercusp-workspace-host';
+
+/** The service that owns EC2's Spot service-linked role (WI-10005389). */
+export const AWS_SPOT_SERVICE_NAME = 'spot.amazonaws.com';
+/** IAM path + name of EC2's Spot service-linked role, the same in every account. */
+export const AWS_SPOT_SERVICE_LINKED_ROLE = `aws-service-role/${AWS_SPOT_SERVICE_NAME}/AWSServiceRoleForEC2Spot`;
+
+/** The ARN of EC2's Spot service-linked role in `accountId`. */
+export function awsSpotServiceLinkedRoleArn(accountId: string, partition = 'aws'): string {
+  return `arn:${partition}:iam::${accountId}:role/${AWS_SPOT_SERVICE_LINKED_ROLE}`;
+}
 export const HOSTED_AWS_DEFAULT_REGION = 'us-east-1';
 /** Commercial-partition regions only: GovCloud and China have other partitions and AMI owners. */
 export const HOSTED_AWS_REGION = /^(?!us-gov-|cn-)[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/;
@@ -75,6 +85,16 @@ function tags(accountId: string, extra: Readonly<Record<string, string>> = {}): 
 }
 
 const FIRST_AZ = { 'Fn::Select': [0, { 'Fn::GetAZs': '' }] };
+
+/** Key-policy condition that admits exactly this account's Spot service-linked role. */
+function spotServiceRoleCondition(): Record<string, unknown> {
+  return {
+    StringEquals: { 'kms:CallerAccount': { Ref: 'AWS::AccountId' } },
+    ArnEquals: {
+      'aws:PrincipalArn': { 'Fn::Sub': `arn:\${AWS::Partition}:iam::\${AWS::AccountId}:role/${AWS_SPOT_SERVICE_LINKED_ROLE}` },
+    },
+  };
+}
 
 /**
  * CloudFormation resources, rules and outputs that build the host's infrastructure in `region`.
@@ -222,6 +242,27 @@ export function hostedAwsHostStackFragment(accountId: string, region: string): {
                 Action: 'kms:CreateGrant',
                 Resource: '*',
                 Condition: { Bool: { 'kms:GrantIsForAWSResource': true } },
+              },
+              // WI-10005389: only EC2 can restart a spot host it interrupted, and it does so as its
+              // Spot service-linked role, which must be able to use this key to reattach the host's
+              // encrypted disks. Matched by ARN rather than named as the principal: KMS refuses a
+              // key policy naming a role that does not exist, and an account that never launched
+              // spot has no such role, so naming it would fail stack creation.
+              {
+                Sid: 'SpotServiceDiskUse',
+                Effect: 'Allow',
+                Principal: { AWS: '*' },
+                Action: ['kms:Encrypt', 'kms:Decrypt', 'kms:ReEncrypt*', 'kms:GenerateDataKey*', 'kms:DescribeKey'],
+                Resource: '*',
+                Condition: spotServiceRoleCondition(),
+              },
+              {
+                Sid: 'SpotServiceDiskGrants',
+                Effect: 'Allow',
+                Principal: { AWS: '*' },
+                Action: 'kms:CreateGrant',
+                Resource: '*',
+                Condition: { ...spotServiceRoleCondition(), Bool: { 'kms:GrantIsForAWSResource': true } },
               },
             ],
           },

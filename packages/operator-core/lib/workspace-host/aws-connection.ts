@@ -86,6 +86,9 @@ export const AWS_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'ec2:DeleteVolume',
   'ec2:CreateSnapshot',
   'ec2:DeleteSnapshot',
+  // WI-10005389: a spot host is launched by a PERSISTENT spot request, and terminating its instance
+  // while that request is still open makes EC2 launch a replacement. Destroy cancels it first.
+  'ec2:CancelSpotInstanceRequests',
   // aws-byoc-gcp-parity D-009: the client already makes these calls as the customer role
   // (security-group inbound check, console output, launch-template discovery).
   'ec2:DescribeSecurityGroups',
