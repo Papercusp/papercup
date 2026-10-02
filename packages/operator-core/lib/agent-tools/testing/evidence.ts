@@ -45,7 +45,7 @@ export const recoverTestEvidenceSchema = z.object({
   workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
   originRunId: z.string().uuid(), runId: z.string().uuid(),
   waitMs: z.number().int().min(0).max(RECOVERY_WAIT_CEILING_MS).optional()
-    .describe(`Wait up to this long (default ${RECOVERY_WAIT_DEFAULT_MS}ms) for a still-running detached run to finish before reconciling; 0 reconciles immediately.`),
+    .describe(`Wait up to this long (default ${RECOVERY_WAIT_DEFAULT_MS}ms) for a detached run to finish and its file-level ledger result to arrive before reconciling; 0 reconciles immediately.`),
 }).strict();
 type Request = z.infer<typeof testEvidenceSchema>;
 type Recovery = z.infer<typeof recoverTestEvidenceSchema>;
@@ -794,6 +794,29 @@ async function awaitTerminalRunSnapshot(runId: string, limitMs: number, deps: De
   }
 }
 
+/** A passing run can become terminal before its reporter's file-level ledger row is visible.
+ * Spend only the recovery budget left after the terminal snapshot before treating that row as absent. */
+async function awaitRecoveryLedgerRows(prepared: Prepared[], originRunId: string, runId: string,
+  scope: Scope, limitMs: number, deps: Deps): Promise<number> {
+  if (limitMs <= 0 || prepared.length === 0) return 0;
+  const sleep = deps.sleep ?? defaults.sleep!;
+  const now = deps.now ?? defaults.now!;
+  const started = now();
+  for (;;) {
+    const primary = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: runId });
+    const origin = originRunId !== runId && (primary?.length ?? 0) === 0
+      ? await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: originRunId })
+      : null;
+    const ledger = (primary?.length ?? 0) > 0 ? primary : origin ?? primary;
+    const allRowsVisible = prepared.every(row => ledger?.some(entry =>
+      entry.file_path === row.binding.testPath && entry.finished_at !== null));
+    const waitedMs = now() - started;
+    const remainingMs = limitMs - waitedMs;
+    if (allRowsVisible || remainingMs <= 0) return waitedMs;
+    await sleep(Math.min(RECOVERY_WAIT_POLL_MS, remainingMs));
+  }
+}
+
 /** Rehydrate exact persisted mappings; no transcript or user-retyped fingerprints. */
 export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps: Deps = defaults) {
   // Audit withdrawn mappings to recover a reporter result that arrived after a
@@ -853,10 +876,18 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
   const { snapshot: runSnapshot, error: runStatusError, waitedMs } =
     await awaitTerminalRunSnapshot(recoveredRunId, waitLimitMs, deps, scope);
   const terminalRun = isTerminalRunSnapshot(runSnapshot) ? runSnapshot : undefined;
+  // A successful detached process may publish its per-file reporter rows just after the
+  // terminal snapshot. Use only the portion of waitMs the process wait did not consume;
+  // otherwise an early empty ledger read can retire a result that is about to be visible.
+  const ledgerWaitedMs = terminalRun?.status === 'pass' && terminalRun.exitCode === 0
+    ? await awaitRecoveryLedgerRows(prepared, recovery.originRunId, recoveredRunId, scope,
+      Math.max(0, waitLimitMs - waitedMs), deps)
+    : 0;
+  const totalWaitedMs = waitedMs + ledgerWaitedMs;
   const bundle = await finishTestEvidence(prepared, recovery.originRunId, recoveredRunId, scope, undefined, deps, terminalRun);
   const stillRunning = runSnapshot !== null && !terminalRun;
   return { ...bundle,
-    recoveryWait: { limitMs: waitLimitMs, waitedMs,
+    recoveryWait: { limitMs: waitLimitMs, waitedMs: totalWaitedMs, ledgerWaitedMs,
       outcome: terminalRun ? 'terminal' as const : stillRunning ? 'still-running' as const
         : runStatusError ? 'unavailable' as const : 'not-found' as const,
       ...(stillRunning ? { nextStep: `The detached run was still in flight after waiting ${Math.round(waitedMs / 1000)}s. `
