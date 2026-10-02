@@ -11,7 +11,7 @@ import {
 test.describe.configure({ mode: 'serial' });
 const root = path.resolve(__dirname, '../../..');
 const output = process.env.DESKTOP_MATRIX_OUTPUT_DIR;
-const referencePath = 'scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png';
+const referencePath = 'docs/evidence/visual-desktop-mockups-2026-09-07/b-workspace.png';
 const states = ['ready', 'empty', 'loading', 'disconnected', 'error'] as const;
 const sizes = { desktop: { width: 1440, height: 900 }, narrow: { width: 390, height: 844 } };
 const themes = ['light', 'dark'] as const;
