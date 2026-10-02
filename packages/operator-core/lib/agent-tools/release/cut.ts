@@ -404,11 +404,19 @@ async function openCutOperation(input: {
  * verification attempt). Same unambiguous-held-claim rule as capability:bash, and
  * fail-soft: an unattributable cut still fires, just unlinked.
  */
-async function cutWorkItemId(ctx: unknown): Promise<string | null> {
+async function cutWorkItemId(
+  ctx: unknown,
+  explicitWorkItemId?: string,
+): Promise<{ workItemId: string | null; refusal?: string }> {
   try {
-    return (await resolveBashTaskProvenance(ctx as ResolveIdentityCtx, null)).workItemId;
-  } catch {
-    return null;
+    const provenance = await resolveBashTaskProvenance(ctx as ResolveIdentityCtx, null, undefined, {
+      explicitWorkItemId,
+    });
+    return { workItemId: provenance.workItemId };
+  } catch (error) {
+    return explicitWorkItemId
+      ? { workItemId: null, refusal: error instanceof Error ? error.message : String(error) }
+      : { workItemId: null };
   }
 }
 
@@ -917,6 +925,8 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('run'),
+      work_item_id: z.string().trim().min(1).max(120).optional()
+        .describe('Held work-item for this cut and its slow-attempt gate; overrides a stale session goal stamp.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
       sourceSha: z
@@ -973,6 +983,8 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('run-leg'),
+      work_item_id: z.string().trim().min(1).max(120).optional()
+        .describe('Held work-item for this cut and its slow-attempt gate; overrides a stale session goal stamp.'),
       platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).describe('Which platform leg to fire on its own unit.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
@@ -1488,7 +1500,9 @@ export default defineTool({
 
       // expensive-verification-loops P-002: a cut for a work item that keeps failing
       // slow attempts waits for an audit on the item, before any side effect below.
-      const cutWorkItem = await cutWorkItemId(ctx);
+      const provenance = await cutWorkItemId(ctx, args.work_item_id);
+      if (provenance.refusal) return json({ ok: false, op: 'run-leg', refused: true, reason: provenance.refusal });
+      const cutWorkItem = provenance.workItemId;
       const loopRefusal = await loopLaunchRefusal({
         workspaceId: activeWorkspaceId(),
         workItemId: cutWorkItem,
@@ -1690,7 +1704,9 @@ export default defineTool({
     }
 
     // expensive-verification-loops P-002: same loop gate as run-leg.
-    const cutWorkItem = await cutWorkItemId(ctx);
+    const provenance = await cutWorkItemId(ctx, args.work_item_id);
+    if (provenance.refusal) return json({ ok: false, op: 'run', refused: true, reason: provenance.refusal });
+    const cutWorkItem = provenance.workItemId;
     const loopRefusal = await loopLaunchRefusal({
       workspaceId: activeWorkspaceId(),
       workItemId: cutWorkItem,
