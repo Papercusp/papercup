@@ -2687,6 +2687,28 @@ describe('peersKnowLookup retrieve mode — an intent matching only the tail of 
     expect(await countRows()).toEqual(before);
   });
 
+  it('ranks through the filtered slice (scan exact, generic-rag-chunking D-040), not a whole-surface chunk scan', async () => {
+    const ws = 'ws-pk-tail-exact';
+    await seedLongQuestion({ ws, conv: 'pk-long-exact', tailTheta: 0.05 });
+    const opts = (rootSql as unknown as { options: { debug?: unknown } }).options;
+    const prior = opts.debug;
+    const seen: string[] = [];
+    opts.debug = (_conn: unknown, text: string) => {
+      if (text.includes('text_chunks')) seen.push(text);
+    };
+    try {
+      const hit = await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: ws, intent: INTENT });
+      expect(hit?.ref).toBe('pk-long-exact');
+    } finally {
+      opts.debug = prior;
+    }
+    expect(seen).toHaveLength(1);
+    // The exact leg materialises the settled questions once and reaches their
+    // chunks by key; the ANN leg would read consult_state a second time for the join.
+    expect(seen[0]).toContain('chunk_leg_slice');
+    expect(seen[0]).toMatch(/parent_key = ARRAY\[/);
+  });
+
   it('control: the same row misses without its chunks and hits once they exist', async () => {
     const ws = 'ws-pk-tail-nochunk';
     await seedLongQuestion({ ws, conv: 'pk-long-bare', tailTheta: 0, chunks: false });
