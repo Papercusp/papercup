@@ -612,7 +612,7 @@ describe('repoCitationDeps — containment is unchanged', () => {
 });
 
 describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
-  it('distinguishes tracked and untracked files in the selected repository', () => {
+  it('distinguishes tracked and untracked files in the selected repository after async prewarm', async () => {
     const trackedRoot = path.join(workspaceRoot, 'tracked-repo');
     fs.mkdirSync(trackedRoot, { recursive: true });
     fs.writeFileSync(path.join(trackedRoot, 'tracked.ts'), 'export const tracked = true;\n');
@@ -620,6 +620,7 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
     git(trackedRoot, 'add', '--', 'tracked.ts');
     fs.writeFileSync(path.join(trackedRoot, 'untracked.ts'), 'export const untracked = true;\n');
 
+    await prewarmRepoCitationTracking([trackedRoot], [code('tracked.ts'), code('untracked.ts')]);
     const deps = repoCitationDeps(trackedRoot);
     expect(deps.isTracked?.('tracked.ts')).toBe(true);
     expect(deps.isTracked?.('untracked.ts')).toBe(false);
@@ -630,7 +631,7 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
     });
   });
 
-  it('reuses one tracked-file snapshot across resolver contexts and reloads it when the Git index changes', () => {
+  it('reuses one tracked-file snapshot across resolver contexts and reloads it when the Git index changes', async () => {
     const trackedRoot = path.join(workspaceRoot, 'tracked-cache-repo');
     fs.mkdirSync(trackedRoot, { recursive: true });
     fs.writeFileSync(path.join(trackedRoot, 'tracked.ts'), 'export const tracked = true;\n');
@@ -640,6 +641,7 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
 
     __resetRepoCitationTrackingCacheForTests();
     try {
+      await prewarmRepoCitationTracking([trackedRoot], [code('tracked.ts'), code('newly-tracked.ts')]);
       expect(repoCitationDeps(trackedRoot).isTracked?.('tracked.ts')).toBe(true);
       // A NEW deps object shares the index snapshot instead of spawning Git once
       // per citation/root-selection/gate-evaluation context.
@@ -647,6 +649,7 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
       expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 1, loads: 1 });
 
       git(trackedRoot, 'add', '--', 'newly-tracked.ts');
+      await prewarmRepoCitationTracking([trackedRoot], [code('newly-tracked.ts')]);
       expect(repoCitationDeps(trackedRoot).isTracked?.('newly-tracked.ts')).toBe(true);
       expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 1, loads: 2 });
     } finally {
@@ -1094,7 +1097,7 @@ describe('repoCitationDeps — torn index (WI-10005009)', () => {
     return dir;
   };
 
-  it('keeps a committed file tracked, and an untracked one untracked, under a half-written index', () => {
+  it('keeps a committed file tracked, and an untracked one untracked, under a half-written index', async () => {
     const dir = tornRepo();
     try {
       // Calibration: the raw index read really does misreport, so this case is not vacuous.
@@ -1106,6 +1109,7 @@ describe('repoCitationDeps — torn index (WI-10005009)', () => {
       }
       expect(rawTracked).toBe(false);
 
+      await prewarmRepoCitationTracking([dir], [code('tracked.ts'), code('untracked.ts')]);
       const deps = repoCitationDeps(dir);
       // isTracked is optional on the deps type; require it, so the negative case below
       // cannot pass vacuously through an absent reader.
