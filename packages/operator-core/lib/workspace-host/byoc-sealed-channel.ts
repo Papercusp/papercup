@@ -137,10 +137,7 @@ export class ByocSealedChannel {
       this.pendingType = type;
       this.raw.contentType = type;
       try {
-        await new Promise<void>((resolve, reject) => {
-          this.noise.write(Buffer.from(JSON.stringify(frame) + '\n'), (error?: Error | null) =>
-            error ? reject(error) : resolve());
-        });
+        this.noise.write(Buffer.from(JSON.stringify(frame) + '\n'));
         await this.noise.flush();
       } finally {
         this.raw.contentType = null;

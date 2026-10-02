@@ -6,7 +6,11 @@ import {
   type ByocSealedPacket,
 } from './byoc-sealed-channel';
 
-async function pair(overrides: { clientExpected?: Buffer; hostExpected?: Buffer } = {}) {
+async function pair(overrides: {
+  clientExpected?: Buffer;
+  hostExpected?: Buffer;
+  clientPacket?: (packet: ByocSealedPacket) => ByocSealedPacket;
+} = {}) {
   const clientKey = SecretStream.keyPair(Buffer.alloc(32, 11));
   const hostKey = SecretStream.keyPair(Buffer.alloc(32, 22));
   const clientPackets: ByocSealedPacket[] = [];
@@ -22,7 +26,7 @@ async function pair(overrides: { clientExpected?: Buffer; hostExpected?: Buffer 
     expectedRemotePublicKey: overrides.clientExpected ?? hostKey.publicKey,
     sendPacket(packet) {
       clientPackets.push(packet);
-      queueMicrotask(() => host.receive(packet));
+      queueMicrotask(() => host.receive(overrides.clientPacket?.(packet) ?? packet));
     },
     onFrame: (frame) => clientFrames.push(frame),
     onError: (error) => errors.push(error),
@@ -67,15 +71,13 @@ describe('BYOC sealed relay channel', () => {
   });
 
   it('detects relay relabelling instead of delivering ciphertext under another allowed type', async () => {
-    const p = await pair();
+    const p = await pair({
+      clientPacket: (packet) => packet.contentType === 'pty.input'
+        ? { ...packet, contentType: 'file.write' }
+        : packet,
+    });
     await Promise.all([p.client.opened, p.host.opened]);
-    const originalReceive = p.host.receive.bind(p.host);
-    // Stop automatic delivery for the application packet, then relabel it.
-    const before = p.clientPackets.length;
     await p.client.send({ type: 'pty.input', data: 'opaque' });
-    const application = p.clientPackets.slice(before).find((packet) => packet.contentType === 'pty.input');
-    expect(application).toBeDefined();
-    if (application) originalReceive({ ...application, contentType: 'file.write' });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(p.errors.some((error) => /content type mismatch/.test(error.message))).toBe(true);
     p.client.close();
