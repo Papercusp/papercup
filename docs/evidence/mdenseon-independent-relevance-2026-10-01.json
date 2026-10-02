@@ -2652,7 +2652,7 @@
         }
       },
       "uniformTargetBudgetCeiling": 34,
-      "reason": "The existing collector requires one equal target count in both partitions and both corpora. A uniform request of 64 exceeds the 34 frozen prose calibration sources. Exhaustion requires explicit unequal source budgets or a new snapshot drawn from the retained full census, plus bounded question batches; neither changing the held-out partition seed nor recycling excluded labels is permitted.",
+      "reason": "At accounting time the collector required one equal target count in both partitions and both corpora. A uniform request of 64 exceeds the 34 frozen prose calibration sources. The qualified extension recorded in sourceCollectionExpansion now supports unequal budgets and bounded question batches; its all-source run covers the current snapshot only. Full accessible-census exhaustion still requires expansion from the retained census, without changing the held-out partition seed or recycling excluded labels.",
       "sourceOrder": "Use the existing hashJson([snapshot.seed, sourceGroup]) order and preserve all prior raw author/label/measurement artifacts."
     },
     "acceptance": {

@@ -8,7 +8,7 @@ vi.mock('../../../scripts/lib/governed-test-process.mjs', () => ({ executeGovern
 const bytes = Buffer.from('private fixture bytes');
 const executable = process.execPath;
 const success = { status: 0, signal: null, error: undefined, stdout: '', stderr: '', actualDemand: {} };
-beforeEach(() => vi.mocked(executeGovernedByteProcess).mockReset());
+beforeEach(() => { vi.mocked(executeGovernedByteProcess).mockReset(); });
 
 describe('heap analyzer admission routes', () => {
   it('routes retainer analysis through the bounded admitted byte process', async () => {

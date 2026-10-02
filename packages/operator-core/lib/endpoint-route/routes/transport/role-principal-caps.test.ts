@@ -202,6 +202,22 @@ describe('loadRoleCapabilities', () => {
   );
 
   test(
+    'judge can make the runbook read an acceptance rubric mandates: docs:get passes BOTH gates (EI-24903256825782248)',
+    { timeout: 60_000 },
+    async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+      const { default: docsGet } = await import('../../../agent-tools/docs/get');
+      // Gate 1: the tool's role allowlist. Gate 2: the principal capability it requires.
+      expect(docsGet.agentRoles).toContain('judge');
+      expect(docsGet.capability).toBe('docs:read');
+      expect(caps.has(docsGet.capability as string)).toBe(true);
+      // Still read-only: no doc writer and no broad search/SQL grant rides along.
+      expect(caps.has('docs:write')).toBe(false);
+      expect(caps.has('intel:read')).toBe(false);
+    },
+  );
+
+  test(
     'judge can emit, verify, persist lifecycle evidence, and capture defects without gaining implementation powers',
     { timeout: 60_000 },
     async () => {

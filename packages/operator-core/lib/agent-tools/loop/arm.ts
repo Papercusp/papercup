@@ -65,6 +65,7 @@ import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
 import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
+import { selfCompactionAvailability } from '../../events/await/psu-pty-discovery';
 import {
   admitMonitorArm,
   monitorPredicateDedupRefusal,
@@ -1496,6 +1497,33 @@ export default defineTool({
       }
     }
 
+    // EI-24899961156406639 — a COLD loop only sheds context when a live psu-pty host can
+    // carry-respawn the session. Without one a cold wake may resume the SAME transcript or
+    // park inbox-only, so `carry:'cold'` silently fails to deliver the fresh context it
+    // promises (the continuation gate's old over-ceiling remedy; see EI-24836531791426051).
+    // Read the SHARED predicate `session:request-compaction` and the continuation gate use,
+    // so this warning, that refusal and that advice cannot drift apart. Warn-only, never a
+    // refusal: headless fleet members arm cold by design and the carry-note path still works
+    // for them. Fail-soft, like the carry-note check above.
+    let coldCarryNoHostWarning: string | null = null;
+    if (carry === 'cold') {
+      try {
+        const availability = selfCompactionAvailability(ownerId);
+        if (!availability.available) {
+          coldCarryNoHostWarning =
+            `This loop is armed COLD, but this session has no live psu-pty host able to carry-respawn it ` +
+            `(${availability.reason}), so a cold wake is NOT guaranteed to start on a fresh context — it may ` +
+            `resume this same transcript or park as inbox-only, and session:request-compaction would refuse. ` +
+            `Do not rely on carry:'cold' to shed context here; the compaction watchdog is the only backstop for an ` +
+            `over-ceiling session. Relaunch through a managed psu-pty host (psu) before relying on cold carry, or arm warm.`;
+        }
+      } catch (e) {
+        console.warn(
+          `[loop:arm] cold-carry host check failed (loop still armed): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+
     // EI-21526226279199560 — persist the declared blocker STRUCTURALLY, alongside the
     // frozen premise already prepended to `kickoff` above. The premise is what the wake
     // re-READS; this record is what the wake can re-RESOLVE, which is the difference
@@ -1631,6 +1659,8 @@ export default defineTool({
     const acceptancePlaneAdvisory = await acceptancePlaneAdvisoryForWait({ ownerId, goal });
     // EI-21542193720279374 part (b) — see the coldNoCarryNoteWarning computation above.
     const coldCarryNoteWarningText = coldNoCarryNoteWarning ? ` ⚠ ${coldNoCarryNoteWarning}` : '';
+    // EI-24899961156406639 — see the coldCarryNoHostWarning computation above.
+    const coldCarryNoHostWarningText = coldCarryNoHostWarning ? ` ⚠ ${coldCarryNoHostWarning}` : '';
     // EI-18792078711601844: a RE-ARM that PRESERVED the prior loop's carry gets
     // an explicit disclosure, so an omitted carry is never mistaken for a fresh
     // default. Fresh arms are warm and need no exceptional lifecycle warning.
@@ -1666,6 +1696,7 @@ export default defineTool({
       claimNote +
       warningNote +
       coldCarryNoteWarningText +
+      coldCarryNoHostWarningText +
       carryResolutionNote +
       monitorPushNote;
 
@@ -1721,6 +1752,7 @@ export default defineTool({
             reachability: reachabilityOut,
             unboundedWarmLoopWarning,
             coldNoCarryNoteWarning,
+            coldCarryNoHostWarning,
             priorLoopOverwrite: overwriteNote,
             // acceptance-runtime-plane P-003: a loop whose goal waits on main/:3070/a deploy,
             // armed by an agent whose held live acceptance bars run elsewhere. Advisory only.

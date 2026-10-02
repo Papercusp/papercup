@@ -11296,7 +11296,8 @@
         "documenter",
         "curator",
         "papercup-deep",
-        "release-fixer"
+        "release-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "You have slugs from docs:outline and need page contents. Use `heading` with either headings[].id or headings[].text (single-slug) when only one section of a long page is relevant.",

@@ -200,7 +200,12 @@ export default defineTool({
   // the same pool slot they are needlessly retaining. Match docs:search and release
   // that slot before the handler starts its own lazy reads.
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES, 'papercup-deep', 'release-fixer'],
+  // EI-24903256825782248: `judge` is here because an acceptance rubric's method
+  // can MANDATE a runbook read (e.g. a criterion whose drift markers live in a
+  // grading runbook). Without it a judge must rate unknown, and the ship gate
+  // then refuses for want of a pass-equivalent independent rating. Read-only;
+  // paired with the judge's `docs:read` principal cap.
+  agentRoles: [...SU_ROLES, 'papercup-deep', 'release-fixer', 'judge'],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },
