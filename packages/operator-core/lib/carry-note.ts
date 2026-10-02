@@ -246,10 +246,11 @@ export const FALSIFIER_MISSING_NOTE =
 
 /** Labels (`#id`, else a clipped claim) of VERIFIED rows with no falsifier — drives the warn-only
  *  `falsifierMissing` advisory on both checkpoint writers. Never refuses a write. */
-export function checksMissingFalsifier(checks: ReadonlyArray<CheckEntry>): string[] {
+export function checksMissingFalsifier(checks: ReadonlyArray<CheckEntry & { sampleAdequate?: boolean }>): string[] {
   const out: string[] = [];
   for (const c of checks) {
-    if (!(c.verified ?? '').trim() || (c.falsifier ?? '').trim()) continue;
+    // `sampleAdequate:false` rows are already downgraded to `?` by the normalizer — not a ✓ to flag.
+    if (c.sampleAdequate === false || !(c.verified ?? '').trim() || (c.falsifier ?? '').trim()) continue;
     const id = sanitizeCarryRowId(c.id);
     out.push(id ? `#${id}` : c.claim.trim().slice(0, 80));
   }

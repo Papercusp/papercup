@@ -7,6 +7,8 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { readFileSync, readdirSync } from 'node:fs';
+import ts from 'typescript';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   decideOperatorHttpRoute,
@@ -49,6 +51,22 @@ describe('decideOperatorHttpRoute', () => {
     ['GET', '/api/discovery/pot-meta?slug=alpha'],
     ['POST', '/api/discovery/set-pot'],
     ['GET', '/api/flags/bootstrap'],
+    // Native Settings pages must work through the same workspace connector as chat.
+    ['GET', '/api/zero-harness/rest-query?name=consult.expertRouting&args=%7B%7D'],
+    ['POST', '/api/agent-mcp/consult-expert-routing-set'],
+    ['GET', '/api/profile'],
+    ['POST', '/api/profile'],
+    ['GET', '/api/backups/healthcheck'],
+    ['PUT', '/api/backups'],
+    ['PUT', '/api/agent-mcp/operator-voice-prefs'],
+    ['POST', '/api/agent-mcp/trust-set'],
+    ['POST', '/api/agent-mcp/p2p-settings-set'],
+    ['GET', '/api/plugins/config?harness=alpha&plugin=search'],
+    ['PUT', '/api/plugins/config'],
+    ['GET', '/api/user/jev-settings'],
+    ['POST', '/api/user/jev-settings'],
+    ['GET', '/api/pot/alpha/policy'],
+    ['POST', '/api/pot/alpha/policy'],
   ])('relays the portal surface %s %s', (method, path) => {
     expect(decideOperatorHttpRoute(method, path)).toMatchObject({ ok: true });
   });
@@ -109,6 +127,49 @@ describe('OPERATOR_HTTP_ROUTE_ALLOWLIST — awaitsRouteBudget', () => {
       for (const route of matches) expect(route.timeoutSec).not.toBeNull();
     },
   );
+});
+
+describe('native Settings route coverage', () => {
+  it('admits the HTTP calls the mounted Settings pages actually make', () => {
+    const root = new URL('../../../../apps/operator/app/settings/', import.meta.url);
+    const calls: Array<{ file: string; method: string; path: string }> = [];
+    function urlOf(node: ts.Expression): string | null {
+      if (ts.isStringLiteralLike(node)) return node.text;
+      if (ts.isTemplateExpression(node)) return node.head.text + node.templateSpans.map((s) => 'example' + s.literal.text).join('');
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) return urlOf(node.left);
+      return null;
+    }
+    for (const file of readdirSync(root, { recursive: true }) as string[]) {
+      if (!file.endsWith('.tsx') || file.includes('.test.')) continue;
+      const src = ts.createSourceFile(file, readFileSync(new URL(file, root), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+      function visit(node: ts.Node) {
+        if (ts.isCallExpression(node) && ['fetch', 'postJson'].includes(node.expression.getText(src)) && node.arguments[0]) {
+          let path = urlOf(node.arguments[0]);
+          // plugin-runtime's optional origin prefix is empty in the web portal.
+          if (path === 'example/api/plugins/runtime/status') path = '/api/plugins/runtime/status';
+          if (path?.startsWith('/api/')) {
+            let method = node.expression.getText(src) === 'postJson' ? 'POST' : 'GET';
+            const options = node.arguments[1];
+            if (options && ts.isObjectLiteralExpression(options)) {
+              for (const prop of options.properties) {
+                if (ts.isPropertyAssignment(prop) && prop.name.getText(src) === 'method' && ts.isStringLiteral(prop.initializer)) method = prop.initializer.text;
+              }
+            }
+            calls.push({ file, method, path });
+          }
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(src);
+    }
+    // A failed crawl/parser must not turn coverage into a vacuous green.
+    expect(calls).toContainEqual({ file: 'expert-routing/page.tsx', method: 'POST', path: '/api/agent-mcp/consult-expert-routing-set' });
+    const refused = calls.filter(({ method, path }) => !decideOperatorHttpRoute(method, path).ok);
+    expect(refused, JSON.stringify(refused)).toEqual([]);
+    // Coverage is for source calls, not an authority to admit arbitrary operations.
+    expect(decideOperatorHttpRoute('DELETE', '/api/profile')).toEqual({ ok: false, code: 'route_not_relayed' });
+    expect(decideOperatorHttpRoute('POST', '/api/admin/deploy-accounts/arbitrary-operation')).toEqual({ ok: false, code: 'route_not_relayed' });
+  });
 });
 
 describe('operatorHttpRequestHeaders', () => {
@@ -215,6 +276,36 @@ const decodeBody = (frames: Array<Record<string, unknown>>) =>
   frames.filter((f) => f.type === 'http.body').map((f) => Buffer.from(String(f.data), 'base64').toString()).join('');
 
 describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)', () => {
+  it('saves and rereads Expert Routing on the selected machine under the ticket principal', async () => {
+    let halfLife = 14;
+    const { seen, origin } = await operator((req, res, entry) => {
+      if (req.method === 'POST' && req.url === '/api/agent-mcp/consult-expert-routing-set') {
+        halfLife = JSON.parse(entry.body).recencyHalfLifeDays;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } else {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ rows: [{ recencyHalfLifeDays: halfLife }] }));
+      }
+    });
+    const h = adapterFor(origin);
+    await h.open();
+    await h.relay({ type: 'http.request', requestId: 'settings-save', method: 'POST',
+      path: '/api/agent-mcp/consult-expert-routing-set',
+      headers: { 'content-type': 'application/json', cookie: 'must-not-forward' },
+      body: Buffer.from(JSON.stringify({ recencyHalfLifeDays: 21 })).toString('base64') });
+    await h.relay({ type: 'http.request', requestId: 'settings-read', method: 'GET',
+      path: '/api/zero-harness/rest-query?name=consult.expertRouting&args=%7B%7D' });
+    expect(seen.map(({ method }) => method)).toEqual(['POST', 'GET']);
+    expect(JSON.parse(decodeBody(h.payloads().filter((f) => f.requestId === 'settings-read'))))
+      .toEqual({ rows: [{ recencyHalfLifeDays: 21 }] });
+    for (const request of seen) {
+      expect(request.headers[HOSTED_PRINCIPAL_USER_HEADER]).toBe('user-1');
+      expect(request.headers.cookie).toBeUndefined();
+    }
+    await h.adapter.accept({ type: 'relay.close', channelId: 'http-1', reason: 'test_complete' });
+  });
+
   it('forwards an allowlisted POST to the loopback operator as the ticket principal and relays the response', async () => {
     const { seen, origin } = await operator((_req, res) => {
       res.writeHead(201, { 'content-type': 'application/json', 'set-cookie': 'leak=1' });
