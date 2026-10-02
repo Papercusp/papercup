@@ -7871,6 +7871,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
  * @param {{renderedHash?: string}} [o.sessionPort] { renderedHash } for the managed seed
  * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
+ * @param {{nativeId?:string|null}|null} [o.adoptedCarryRespawn] host-code adoption of a carry;
+ *   its kickoff must prove the late native id and re-anchor before it announces completion
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
  * @param {string} [o.normalizedLogPath] optional headless grep-safe log path; normally
@@ -7950,6 +7952,7 @@ export function hostThroughPty(o) {
     kickoff = null,
     kickoffFile = null,
     sessionPort = null,
+    adoptedCarryRespawn = null,
     onKickoffPersisted = async () => {},
     onSpawn = () => {},
     nativePersistenceTimeoutMs = Number(
@@ -9607,6 +9610,35 @@ export function hostThroughPty(o) {
             try { child.kill(); } catch { /* already exited */ }
           }
           return;
+        }
+        if (adoptedCarryRespawn) {
+          const adoptedCarryChild = child;
+          const adoptedAnnouncement = await announceVerifiedCarryRespawn({
+            ownerId,
+            agent: env.PAPERCUSP_AGENT,
+            nativeId: adoptedCarryRespawn.nativeId ?? null,
+            proof,
+            report: onRespawn,
+            emit: emitCompacted,
+            timeoutMs: respawnReportTimeoutMs,
+            isCurrent: () => child === adoptedCarryChild && !recycling && !shuttingDown && !cleaned,
+          });
+          const adoptedNativeId = adoptedAnnouncement.nativeId ?? adoptedCarryRespawn.nativeId ?? null;
+          appendHostEvent(ownerId, 'respawn-carry-delivered', {
+            mode: 'carry-respawn',
+            nativeId: adoptedNativeId,
+            outputSeen: childStartupOutput.length > 0,
+            turnStartVerified: true,
+            nativeRef: proof.nativeRef ?? null,
+            adopted: true,
+          });
+          if (!adoptedAnnouncement.announced) {
+            appendHostEvent(ownerId, 'respawn-compaction-unannounced', {
+              nativeId: adoptedNativeId,
+              reason: adoptedAnnouncement.reason,
+              adopted: true,
+            });
+          }
         }
         // The marker proves submission, not execution. When an isolated native
         // transcript is available, only a task-start/assistant row after this

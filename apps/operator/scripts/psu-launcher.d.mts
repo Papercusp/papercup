@@ -2986,6 +2986,13 @@ export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any,
  * so a handoff written by an older host keeps the old behaviour (no kickoff).
  */
 export function handoffFirstTurnText(handoff: any): string | null;
+/**
+ * Keep carry adoption explicit even when Codex has not assigned its native id
+ * yet. The successor pty host resolves that late id from exact kickoff proof.
+ */
+export function adoptedCarryRespawnFromHandoff(handoff: any): {
+    nativeId: any;
+} | null;
 export function announceAdoptedCarryRespawn(ownerId: any, advSessionId: any, nativeId: any, { reportImpl, emitImpl, }?: {
     reportImpl?: typeof reportSessionRespawnedDurably | undefined;
     emitImpl?: typeof fireSessionCompactedEvent | undefined;
