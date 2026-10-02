@@ -127,7 +127,7 @@ describe('Google Calendar adapter with the real delivery ledger and Personal Vau
       }>
     >`
       SELECT source, kind, external_id, title, participants
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${WS} AND user_id = ${userId}`;
     expect(documents).toEqual([
       expect.objectContaining({

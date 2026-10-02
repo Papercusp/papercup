@@ -133,7 +133,7 @@ describe('Facebook adapter with the real delivery ledger and Personal Vault sink
       title: string;
     }>>`
       SELECT source, kind, external_id, title
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${WS} AND user_id = ${userId}
        ORDER BY kind, external_id`;
     expect(documents).toEqual([

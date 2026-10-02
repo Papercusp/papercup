@@ -27,7 +27,7 @@ const WS = 'personal-vault-test';
 beforeAll(async () => {
   org = await createOrgTestDb();
   await org.adminSql`
-    ALTER TABLE harness_shared.personal_documents
+    ALTER TABLE harness_shared.documents
       ADD COLUMN IF NOT EXISTS embedding_profile text`;
   const [user] = await org.adminSql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
@@ -65,7 +65,7 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE user_id = ${userId}`;
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_sync_state WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_identity_aliases WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_identities WHERE user_id = ${userId}`;
@@ -106,7 +106,7 @@ describe('Personal Vault core', () => {
     expect(reimport.ids).toEqual(first.ids);
     const rows = await org.adminSql<Array<{ source: string; n: number }>>`
       SELECT source, count(*)::int AS n
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${WS} AND user_id = ${userId}
        GROUP BY source ORDER BY source`;
     expect(rows).toEqual([
@@ -127,7 +127,7 @@ describe('Personal Vault core', () => {
     const localEmbedding = new Array(768).fill(0);
     localEmbedding[0] = 1;
     await org.adminSql`
-      UPDATE harness_shared.personal_documents
+      UPDATE harness_shared.documents
          SET embedding = ${JSON.stringify(localEmbedding)}::vector,
              embedding_mode = 'gemma',
              embedding_profile = 'gemma-embeddinggemma-300m-768@v1'
@@ -146,7 +146,7 @@ describe('Personal Vault core', () => {
     });
 
     await org.adminSql`
-      UPDATE harness_shared.personal_documents
+      UPDATE harness_shared.documents
          SET embedding_profile = 'openai-text-embedding-3-small-768@v1'
        WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'facebook'`;
     const mismatched = await searchPersonalDocuments(org.adminSql, WS, userId, {
@@ -173,7 +173,7 @@ describe('Personal Vault core', () => {
     expect(results[0]).toMatchObject({ source: 'gmail', scopeKey: 'personal:gmail', title: 'Launch notes' });
     expect(results[0]!.snippet.length).toBeLessThanOrEqual(100);
     const count = await org.adminSql<Array<{ n: number }>>`
-      SELECT count(*)::int n FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
+      SELECT count(*)::int n FROM harness_shared.documents WHERE user_id = ${userId}`;
     expect(count[0].n).toBe(2);
   });
 
@@ -264,7 +264,7 @@ describe('Personal Vault core', () => {
       participants: ['Ada Lovelace'], title: 'Ada thread', text: 'Project Phoenix follow-up', dedupeKey: 'ada-social',
     }]);
     const rows = await org.adminSql<Array<{ source: string; participant_ids: string[] }>>`
-      SELECT source, participant_ids FROM harness_shared.personal_documents
+      SELECT source, participant_ids FROM harness_shared.documents
        WHERE user_id = ${userId} ORDER BY source`;
     expect(rows.every((row) => row.participant_ids.length === 1)).toBe(true);
     expect(new Set(rows.flatMap((row) => row.participant_ids)).size).toBe(1);
@@ -332,7 +332,7 @@ describe('Personal Vault core', () => {
       }>
     >`
       SELECT source_id::text, provider_account_id
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'gmail'`;
     expect(remaining).toEqual([
       {
@@ -342,7 +342,7 @@ describe('Personal Vault core', () => {
     ]);
     const otherUserRows = await org.adminSql<Array<{ n: number }>>`
       SELECT count(*)::int AS n
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${WS} AND user_id = ${otherUser.id}
          AND provider_account_id = 'first@example.com'`;
     expect(otherUserRows).toEqual([{ n: 1 }]);
@@ -389,7 +389,7 @@ describe('Personal Vault core', () => {
       provider_account_id: string | null;
     }>>`
       SELECT source, source_id::text, provider_account_id
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE user_id = ${userId} ORDER BY source`;
     expect(rows.map((r) => r.source)).toEqual(['contacts', 'gmail']);
     expect(rows.find((row) => row.source === 'gmail')).toMatchObject({
