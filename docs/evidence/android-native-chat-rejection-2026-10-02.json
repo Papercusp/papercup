@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "Android native rejected-chat draft and conversation integrity",
-  "framework": "gradle-android-compose-jni",
+  "framework": "operational",
   "command": [
     "android/gradlew",
     "-p",
