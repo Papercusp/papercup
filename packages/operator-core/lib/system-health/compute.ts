@@ -121,6 +121,21 @@ import {
 
 const WINDOW_MS = 60 * 60_000; // the dashboard's "this window" lookback (1h)
 const DEAD_ROUTINE_OVERDUE_MS = 10 * 60_000;
+/**
+ * WI-10005073: a FAST routine (observed cadence `next_fire_at - last_fired_at` <= 60 s) is dead
+ * after LEAST(base, GREATEST(base * 0.5, 10 * cadence)) instead of the flat base. With the
+ * 10 min base that is 5 min for anything every 30 s or faster, 10 x cadence between 30 and
+ * 60 s; the checkpoint-widened base (20 min) doubles it. Why: a bg-host main thread pinned
+ * after boot left every 1 s routine silent ~14 min, and the flat 10 min (20 min during a
+ * checkpoint) let most of that pass unreported. Why not tighter: a NORMAL bg-host restart
+ * (drain + boot + first tick) silenced the 1 s fleet-headcount-governor ~3.7 min on
+ * 2026-10-02 04:19-04:23Z, so a 3 min floor would page on every deploy. The cadence is
+ * derived from the row itself (the engine sets next_fire_at = cron-next at each fire), so a
+ * new fast routine is covered without a registry; a never-fired row keeps the base.
+ */
+export const FAST_ROUTINE_MAX_CADENCE_SEC = 60;
+export const FAST_ROUTINE_CADENCE_MULTIPLE = 10;
+export const FAST_ROUTINE_FLOOR_FRACTION = 0.5;
 /** WI-4310: the WIDENED dead-routine overdue threshold used only while a green-checkpoint
  *  run's known, self-recovering resource footprint (GREEN_CHECKPOINT_MAX_FORKS forked vitest
  *  workers sharing this box's PG pool + CPU with routinesTick) is active or just finished —
@@ -753,7 +768,17 @@ export async function readDeadRoutines(
   }>>`
     WITH scope AS (
       SELECT name, install_slug, next_fire_at,
-             (next_fire_at < now() - make_interval(secs => ${overdueMs / 1000})) AS is_overdue
+             (next_fire_at < now() - make_interval(secs => CASE
+                WHEN last_fired_at IS NULL OR NOT isfinite(next_fire_at) OR next_fire_at <= last_fired_at
+                  THEN ${overdueMs / 1000}::float8
+                WHEN next_fire_at - last_fired_at <= make_interval(secs => ${FAST_ROUTINE_MAX_CADENCE_SEC}::float8)
+                  THEN LEAST(
+                    ${overdueMs / 1000}::float8,
+                    GREATEST(
+                      ${(overdueMs / 1000) * FAST_ROUTINE_FLOOR_FRACTION}::float8,
+                      ${FAST_ROUTINE_CADENCE_MULTIPLE}::float8 * extract(epoch FROM next_fire_at - last_fired_at)::float8))
+                ELSE ${overdueMs / 1000}::float8
+              END)) AS is_overdue
         FROM harness_shared.routines
        WHERE active = true AND next_fire_at IS NOT NULL
          AND workspace_id = ${workspaceId}

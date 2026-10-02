@@ -53,6 +53,22 @@ describe('bg-host spawn sites route through the spawner sidecar seam (WI-1000497
     await expect(mod.execSystemctlUser(['show', 'a.service'])).rejects.toBe(err);
   });
 
+  it('supervision reconcile: the 60 s drop-in install check (WI-10005118)', async () => {
+    const mod = await import('../harness/routines/supervision-reconcile-action');
+    await mod.runSystemdDropInInstallCheck();
+    expect(execFileViaSidecar).toHaveBeenCalledTimes(1);
+    const [command, args, opts] = execFileViaSidecar.mock.calls[0] as [string, string[], Record<string, unknown>];
+    expect(command).toBe(process.execPath);
+    expect(args[1]).toBe('--list');
+    expect(opts).toMatchObject({
+      timeoutMs: 30_000,
+      maxBuffer: 256 * 1024,
+      subsystem: 'supervision-dropin-check',
+      sidecarVar: mod.SUPERVISION_RECONCILE_SIDECAR_VAR,
+    });
+    expect(typeof opts.cwd).toBe('string');
+  });
+
   it('service-health journal canary: journalctl', async () => {
     const { defaultJournalCanaryExec, JOURNAL_CANARY_SIDECAR_VAR } = await import('../service-health');
     await expect(defaultJournalCanaryExec(['--user', '-n', '1'], 2500)).resolves.toEqual({ stdout: 'ok' });
