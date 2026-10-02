@@ -381,6 +381,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Syncs Slack channel membership into permission lists and writes paced backfill pages as chat messages; no agent or model call',
   },
+  'system:github-issues-sync': {
+    spend: 'none',
+    why: 'Syncs GitHub repository collaborators into permission lists and polls issues, state changes and comments into ticket records, events and documents; no agent or model call',
+  },
   'system:personal-vault-import': {
     spend: 'none',
     why: 'Advances one bounded, checkpointed local archive-import batch; no agent or model call',
