@@ -14,6 +14,8 @@
  *     field, and only xoxp- user tokens are accepted.
  */
 import { describe, expect, it } from 'vitest';
+import { dirname, resolve } from 'node:path';
+import { importGraph } from '../search/import-graph';
 import type { TokenStorage } from '../oauth/token';
 import type { LiveSearchInput } from './live-search-adapter';
 import {
@@ -27,6 +29,14 @@ import {
 } from './slack-realtime-search';
 
 const CREDENTIAL_REF = 'slack-socket:acme_app';
+
+it('keeps live user-token search independent of trigger ingestion and work-item search', () => {
+  const lib = resolve(dirname(new URL(import.meta.url).pathname), '..');
+  const graph = importGraph(resolve(lib, 'data-sources/slack-realtime-search.ts'));
+  expect(graph.modules.has(resolve(lib, 'external-triggers/slack-credential-ref.ts'))).toBe(true);
+  expect(graph.modules.has(resolve(lib, 'external-triggers/ingestion.ts'))).toBe(false);
+  expect(graph.modules.has(resolve(lib, 'work-items.ts'))).toBe(false);
+});
 
 function input(overrides: Partial<LiveSearchInput> = {}): LiveSearchInput {
   return {

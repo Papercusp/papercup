@@ -666,6 +666,8 @@ function startupRenderFixture() {
   const frames = new Map<number, () => void>();
   let nextFrame = 0;
   let deadline: (() => void) | null = null;
+  const companionTimers = new Map<number, () => void>();
+  let nextTimer = 100;
   let disconnected = 0;
   let rectReads = 0;
   const milestones = new Map<string, unknown>();
@@ -686,8 +688,11 @@ function startupRenderFixture() {
       disconnect() { disconnected++; mutation = null; } },
     requestAnimationFrame: (fn: () => void) => { const id = ++nextFrame; frames.set(id, fn); return id; },
     cancelAnimationFrame: (id: number) => { frames.delete(id); },
-    setTimeout: (fn: () => void) => { deadline = fn; return 2; },
-    clearTimeout: () => { deadline = null; },
+    setTimeout: (fn: () => void, delay: number) => {
+      if (delay === 0) { const id = ++nextTimer; companionTimers.set(id, fn); return id; }
+      deadline = fn; return 2;
+    },
+    clearTimeout: (id: number) => { if (id === 2) deadline = null; else companionTimers.delete(id); },
     getComputedStyle: (node: typeof element | typeof parent) => node.style,
   };
   const values = { window: fakeWindow, document: { fonts, documentElement: {},
@@ -705,6 +710,8 @@ function startupRenderFixture() {
     },
     mutate: () => mutation?.(),
     runFrame: () => { const pending = [...frames.values()]; frames.clear(); for (const fn of pending) fn(); },
+    runCompanionTimers: () => { const pending = [...companionTimers.values()]; companionTimers.clear(); for (const fn of pending) fn(); },
+    pendingCompanionTimers: () => companionTimers.size,
     expire: () => deadline?.(), pendingFrame: () => frames.size !== 0,
     disconnected: () => disconnected, rectReads: () => rectReads,
     restore: () => { for (const [name, descriptor] of originals) {
@@ -713,6 +720,92 @@ function startupRenderFixture() {
     } },
   };
 }
+
+test('bundled startup frame timing separates a prompt timer from a delayed frame and costly geometry reads', () => {
+  const f = startupRenderFixture();
+  try {
+    Function(buildStartupStorageProbeScript())();
+    const probe = (f.fakeWindow as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe;
+    f.tick(800); f.insert();
+    assert.equal(f.rectReads(), 0);
+    assert.equal(f.pendingCompanionTimers(), 1);
+    f.tick(810); f.runCompanionTimers();
+    let readAt = 1600;
+    f.parent.style.opacity = '1';
+    f.fakeWindow.getComputedStyle = (node) => { readAt += 5; f.tick(readAt); return node.style; };
+    f.element.getBoundingClientRect = () => {
+      readAt += 7; f.tick(readAt); return { width: 100, height: 30, top: 1, left: 1, right: 101, bottom: 31 };
+    };
+    f.tick(1600); f.runFrame();
+    const report = probe.stop().render;
+    assert.equal(report.firstFrameQueuedAtMs, 800);
+    assert.equal(report.firstCompanionTimerAtMs, 810);
+    assert.equal(report.firstCompanionTimerStopReason, 'completed');
+    assert.equal(report.firstFrameAtMs, 1600);
+    assert.equal(report.firstFrameReadCompletedAtMs, 1617);
+    assert.equal(report.firstFrameOutcome, 'eligible');
+    assert.equal(report.totalObserverWorkMs, 17);
+    assert.equal(f.pendingCompanionTimers(), 0);
+  } finally { f.restore(); }
+});
+
+test('startup paired callbacks distinguish both delayed from a cancelled or unavailable timer', () => {
+  const f = startupRenderFixture();
+  try {
+    const probe = installStartupStorageProbe();
+    f.tick(200); f.insert(); f.insertSubtitle();
+    assert.equal(f.pendingCompanionTimers(), 2, 'one timer per first candidate frame');
+    for (let i = 0; i < 20; i++) f.mutate();
+    assert.equal(f.pendingCompanionTimers(), 2, 'mutation bursts must not add timers');
+    f.tick(900); f.runCompanionTimers(); f.tick(910); f.runFrame();
+    const reports = probe.stop().render.candidates;
+    assert.deepEqual(reports.map((row) => row.firstFrameQueuedAtMs), [200, 200]);
+    assert.deepEqual(reports.map((row) => row.firstCompanionTimerAtMs), [900, 900]);
+    assert.deepEqual(reports.map((row) => row.firstFrameReadCompletedAtMs), [910, 910]);
+    assert.deepEqual(reports.map((row) => row.firstFrameOutcome), ['hidden-ancestor', 'eligible']);
+
+    f.parent.style.opacity = '1';
+    const frameFirst = installStartupStorageProbe(); f.tick(1000); f.runFrame();
+    const cancelled = frameFirst.stop().render;
+    assert.equal(cancelled.firstCompanionTimerAtMs, null, 'a cancelled timer is not a zero-delay observation');
+    assert.equal(cancelled.firstCompanionTimerStopReason, 'eligible-frame');
+    assert.equal(f.pendingCompanionTimers(), 0);
+
+    const timerNative = f.fakeWindow.setTimeout;
+    f.fakeWindow.setTimeout = (fn, delay) => { if (delay === 0) throw new Error('private timer failure'); return timerNative(fn, delay); };
+    const unavailable = installStartupStorageProbe(); f.runFrame();
+    const missing = unavailable.stop().render;
+    assert.equal(missing.firstCompanionTimerAtMs, null);
+    assert.equal(missing.firstCompanionTimerStopReason, 'unavailable');
+    assert(missing.unavailable.includes('companion-timer'));
+    assert.equal(missing.stopReason, 'eligible-frame', 'timer failure must preserve frame observations');
+    assert(!JSON.stringify(missing).includes('private timer failure'));
+  } finally { f.restore(); }
+});
+
+test('startup companion timers are cancelled on replacement, explicit stop and deadline', () => {
+  const f = startupRenderFixture();
+  try {
+    const replaced = installStartupStorageProbe(); f.insert(); f.replace();
+    assert.equal(replaced.stop().render.firstCompanionTimerStopReason, 'candidate-replaced');
+    assert.equal(f.pendingCompanionTimers(), 0);
+    const stopped = installStartupStorageProbe();
+    assert.equal(f.pendingCompanionTimers(), 1);
+    assert.equal(stopped.stop().render.firstCompanionTimerStopReason, 'stopped');
+    const expired = installStartupStorageProbe(); f.tick(60_000); f.expire();
+    assert.equal(expired.stop().render.firstCompanionTimerStopReason, 'deadline');
+    assert.equal(f.pendingCompanionTimers(), 0);
+    assert.equal(f.pendingFrame(), false);
+    f.tick(0);
+    const delayedTimer = installStartupStorageProbe();
+    f.tick(60_000); f.runCompanionTimers();
+    const overdue = delayedTimer.stop().render;
+    assert.equal(overdue.firstCompanionTimerAtMs, null, 'overdue callbacks are not accepted observations');
+    assert.equal(overdue.firstCompanionTimerStopReason, 'deadline');
+    assert.equal(overdue.stopReason, 'deadline');
+    assert.equal(f.pendingFrame(), false);
+  } finally { f.restore(); }
+});
 
 test('bundled startup milestones distinguish late Accounts mount from an earlier sidebar without layout or content reads', () => {
   const f = startupRenderFixture();

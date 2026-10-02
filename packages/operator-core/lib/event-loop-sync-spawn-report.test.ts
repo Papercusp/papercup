@@ -87,7 +87,8 @@ describe('sync-spawn stall reporter (WI-10005253)', () => {
     expect(await report(msg())).toBe('filed');
     expect(d.hasOpenRow).toHaveBeenCalledWith('event-loop-sync-spawn:defaultWorktreeStatus');
     expect(d.capture).toHaveBeenCalledTimes(1);
-    const input = d.capture.mock.calls[0]![0] as ReturnType<typeof syncSpawnCaptureInput>;
+    // The mock is declared with no parameter, so its call tuple is typed `[]`; widen before indexing.
+    const input = (d.capture.mock.calls[0] as unknown[])[0] as ReturnType<typeof syncSpawnCaptureInput>;
     expect(input).toMatchObject({
       title: 'Synchronous child-process call blocked the operator event loop: defaultWorktreeStatus',
       kind: 'bug',

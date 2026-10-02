@@ -458,6 +458,28 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
+  it('allows a negative staging-route note in the focus to pass the live carry boundary', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const focus = 'The candidate fix is uncommitted and no approved staging route has been provided.';
+    const out = await call({ focus });
+
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true, requested: true, respawn: 'queued' });
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledTimes(1);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    expect(injected().data).toContain(focus);
+  });
+
   it('does not reinterpret stale candidate prose in the immutable host addendum as a live instruction', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),

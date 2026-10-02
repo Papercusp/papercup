@@ -574,6 +574,7 @@ describe('frozen lineage carry policy', () => {
     'The refusal says staging was selected as the judged candidate; this sentence describes the diagnostic, not a directive.',
     'A carry row describing the refusal contains selecting staging as the judged candidate.',
     'The frozen-candidate lineage guard reads as selecting staging as the judged candidate while explaining the refusal.',
+    'The candidate fix is uncommitted and no approved staging route has been provided.',
     'The release checkpoint receipt explicitly reported that quiet-cut excluded unrelated newer staging commits and judged repairHead 7968c0cf.',
     'The checkpoint receipt says quiet-cut excluded unrelated newer staging commits; the judged repairHead was 7968c0cf.',
     'current-build verification on staging is available — re-check: curl http://127.0.0.1:3170/api/desktop/version',

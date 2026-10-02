@@ -1972,8 +1972,13 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       // process landing just before the next second can legitimately fall
       // through on its first 500ms poll (observed at 264ms in gate candidate
       // 52676bb91277). Keep only the upper bound that distinguishes this path
-      // from the broad 900-second default.
-      expect(waited).toBeLessThan(5000);
+      // from the broad 900-second default. That upper bound is the runSync
+      // spawn kill (30s), NOT a tight 5s: the gate measured 23.4s here on
+      // repairHead 0d8ad5e3 under fleet load (WI-10005207) — node boot +
+      // pc-heavy's 500ms poll, not a broad-budget wait. A broad 900s wait is
+      // killed at 30s and never prints the landmark above, so this still fails.
+      expect(r.error).toBeUndefined();
+      expect(waited).toBeLessThan(29_000);
     } finally {
       killGroup(holder);
     }

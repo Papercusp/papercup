@@ -100,6 +100,10 @@ export function installStartupStorageProbe() {
     scope: 'first DOM observation and frame geometry/ancestor styles; not paint, clipping or occlusion',
     firstObservedAtMs: null as number | null, firstFrameAtMs: null as number | null,
     firstEligibleFrameAtMs: null as number | null,
+    firstFrameQueuedAtMs: null as number | null, firstCompanionTimerAtMs: null as number | null,
+    firstCompanionTimerStopReason: null as string | null,
+    firstFrameReadCompletedAtMs: null as number | null, firstFrameOutcome: null as string | null,
+    frameTimingScope: 'first paired zero-delay timer/frame requests and callback/read times; not paint or a main-thread root cause',
     mutationCallbacks: 0, frameReads: 0, maxMutationCallbacks: 1000, maxFrameReads: 32,
     totalObserverWorkMs: 0, stopReason: 'collecting', unavailable: [] as string[],
     milestoneMatchesAtFirstObservation: [] as Array<{ selector: string; matches: boolean | null }>,
@@ -119,7 +123,8 @@ export function installStartupStorageProbe() {
   const fontsReport = { initialStatus: null as string | null, readyAtMs: null as number | null,
     events: [] as Array<{ event: string; atMs: number; status: string }>, dropped: 0 };
   const candidates = renderCandidates.map((report) => ({ report,
-    element: null as HTMLElement | null, frame: null as number | null }));
+    element: null as HTMLElement | null, frame: null as number | null,
+    companionTimer: null as number | null }));
   type Candidate = typeof candidates[number];
   let renderActive = true;
   let renderObserver: MutationObserver | null = null;
@@ -129,6 +134,11 @@ export function installStartupStorageProbe() {
     if (candidate.report.stopReason === 'collecting') candidate.report.stopReason = reason;
     if (candidate.frame !== null) window.cancelAnimationFrame(candidate.frame);
     candidate.frame = null;
+    if (candidate.companionTimer !== null) {
+      window.clearTimeout(candidate.companionTimer);
+      candidate.companionTimer = null;
+      candidate.report.firstCompanionTimerStopReason = reason;
+    }
     if (candidates.every(({ report }) => report.stopReason !== 'collecting')) {
       renderObserver?.disconnect();
       renderObserver = null;
@@ -196,31 +206,62 @@ export function installStartupStorageProbe() {
         render.milestoneMatchesAtFirstObservation = joinMilestones(element);
       }
       if (candidate.frame !== null) return;
+      // Pair ONLY the first frame request with a timer (two timers total). A
+      // prompt timer with a late frame differs from two delayed callbacks; it
+      // still cannot identify JS work, scheduling or native rendering as cause.
+      if (render.firstFrameQueuedAtMs === null) {
+        render.firstFrameQueuedAtMs = performance.now();
+        try {
+          candidate.companionTimer = window.setTimeout(() => {
+            candidate.companionTimer = null;
+            if (!renderActive || render.stopReason !== 'collecting') return;
+            const beganTimer = performance.now();
+            if (beganTimer - startedAtMs >= 60_000) {
+              render.firstCompanionTimerStopReason = 'deadline';
+              stopRenderDom('deadline'); return;
+            }
+            render.firstCompanionTimerAtMs = beganTimer;
+            render.firstCompanionTimerStopReason = 'completed';
+            render.totalObserverWorkMs += performance.now() - beganTimer;
+          }, 0);
+        } catch {
+          render.firstCompanionTimerStopReason = 'unavailable';
+          render.unavailable.push('companion-timer');
+        }
+      }
       candidate.frame = window.requestAnimationFrame(() => {
         candidate.frame = null;
         if (!renderActive || render.stopReason !== 'collecting') return;
         if (performance.now() - startedAtMs >= 60_000) { stopRenderDom('deadline'); return; }
         if (render.frameReads >= render.maxFrameReads) { stopCandidate(candidate, 'frame-cap'); return; }
         const beganFrame = performance.now();
+        const firstFrame = render.frameReads === 0;
+        const outcome = (reason: string) => { if (firstFrame) render.firstFrameOutcome = reason; };
         render.frameReads++;
         render.firstFrameAtMs ??= beganFrame;
         try {
-          if (!element.isConnected) return;
+          if (!element.isConnected) { outcome('disconnected'); return; }
           let ancestor: HTMLElement | null = element;
           for (let depth = 0; ancestor && depth < 32; depth++, ancestor = ancestor.parentElement) {
             const style = window.getComputedStyle(ancestor);
             if (style.display === 'none' || style.visibility === 'hidden' ||
-                style.visibility === 'collapse' || Number(style.opacity) === 0) return;
+                style.visibility === 'collapse' || Number(style.opacity) === 0) { outcome('hidden-ancestor'); return; }
           }
-          if (ancestor) { render.unavailable.push('ancestor-depth'); stopCandidate(candidate, 'unavailable'); return; }
+          if (ancestor) { outcome('ancestor-depth'); render.unavailable.push('ancestor-depth'); stopCandidate(candidate, 'unavailable'); return; }
           const rect = element.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
-              rect.top >= window.innerHeight || rect.left >= window.innerWidth) return;
+              rect.top >= window.innerHeight || rect.left >= window.innerWidth) { outcome('outside-viewport'); return; }
+          outcome('eligible');
           render.firstEligibleFrameAtMs = performance.now();
           stopCandidate(candidate, 'eligible-frame');
         } catch {
+          outcome('unavailable');
           render.unavailable.push('frame-read'); stopCandidate(candidate, 'unavailable');
-        } finally { render.totalObserverWorkMs += performance.now() - beganFrame; }
+        } finally {
+          const completedFrame = performance.now();
+          if (firstFrame) render.firstFrameReadCompletedAtMs = completedFrame;
+          render.totalObserverWorkMs += completedFrame - beganFrame;
+        }
       });
     } catch { render.unavailable.push('candidate-read'); stopCandidate(candidate, 'unavailable'); }
     finally { render.totalObserverWorkMs += performance.now() - began; }

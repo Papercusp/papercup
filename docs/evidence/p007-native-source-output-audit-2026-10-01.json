@@ -1,4 +1,51 @@
 {
+  "pairedFramePreparationFire135": {
+    "scope": "Fire135 source/bundled guards and fresh r168 preparation; no new native run, root cause, product repair or R7 acceptance",
+    "reused": "Existing installStartupStorageProbe lifetimes, MutationObserver/frame reads, compilation/index writers and canonical Node suite",
+    "gap": "r167 footer observation3264ms then firstFrame4662ms lacked request/timer/read-completion intervals. Static Accounts footer is outside loading; selected frozen lazy wrapper preloads23 indexed dependencies then shim/src. Full original graph and import duration remain unknown.",
+    "change": "One zero-delay timer per first candidate frame (maximum2), queued/frame/timer/read-completed timestamps and first outcome. Cancelled/unavailable/overdue callbacks remain null; existing bounds, cleanup and work accounting retained.",
+    "sourceSha256": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "921941fe76dd8b34c723d7d951e1ed910c2cc70eb043abc6843703ea6c995d5b",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "d717c2a5cd289e4070f1cb8630b55612c8e7e77cc61a2591f9710ae011c3a5d1",
+      "libs/generic/sync/src/lazy-with-retry.ts": "5c29752f6b9704e8de0231da4d0312b2aaa14c3ea195a16e343d26cbdbd84812"
+    },
+    "tests": {
+      "command": "npm --prefix tools/perf-test/wdio run test:unit; npm --prefix tools/perf-test/wdio run typecheck",
+      "pass": 67,
+      "fail": 0,
+      "skip": 0,
+      "typecheck": "PASS",
+      "unitLog": "/tmp/p007-fire135-frame-unit-final.log",
+      "typecheckLog": "/tmp/p007-fire135-frame-type-final.log",
+      "redLog": "/tmp/p007-fire135-frame-red.log",
+      "scope": "Current Fire135 source guards;64PASS3FAIL red,final67PASS0skip+tsc",
+      "unitLogSha256": "ff10bca4f77535a9fa65a217803c17d8dd4024a221610f545d48d83287bfca57",
+      "typecheckLogSha256": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+      "redLogSha256": "a5f191fc46ca42706997f258a801584ac55eb1bbfb22df5f6fa57b421fa5a80d"
+    },
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r168-instrument-manifest.json",
+    "manifestSha256": "bcad7d1075d5af4e3bc90c6560eedfb9c4d50696efa04e5815de0415c859770c",
+    "assertion": "$HOME/.papercusp/perf/p007-native-current/r168-run-assertion.sh",
+    "assertionSha256": "59d77782439ab8caa1f883d62faef8bb2b4435992ace6949249d87d0ef75c5c5",
+    "spaIndex": "$HOME/.papercusp/perf/p007-native-current/r168-app/usr/lib/Papercusp GUI/sidecar/spa/index.html",
+    "spaIndexSha256": "44ae2508c172197d8147154bc83edb6c75f3d5cd88839da0916fda6de2327c30",
+    "payloadSha256": {
+      "$HOME/.papercusp/perf/p007-native-current/r168-startup-storage-probe.js": "bdd2c7cc48942d8c4f43e8d125b91b8a88bad4c089e2043ea0fc4cce51c73cf8",
+      "$HOME/.papercusp/perf/p007-native-current/r168-web-vitals-probe.js": "58b2528bc893a3529c64cbc49be4c70b4fce9cb3a4d5d63a7c76f940a8bb6a7a"
+    },
+    "preparationRecovery": {
+      "partialBaselineSha256": "711caf7d3fab86ee356a08402d872441fa96f525b5371ce9615b1b99e37657c7",
+      "measuredDifference": "Exactly one injected newline after <head>",
+      "fixedBy": "Copied exact saved r165 raw baseline after hash verification; assertion now hashes raw baseline and requires absent early-probe marker."
+    },
+    "predictions": {
+      "hypothesis": "True actual LCP candidate join, timerAt close to queuedAt while frameAt is later and readCompletedAt is close to frameAt; callback scheduling distinction only",
+      "alternative": "TimerAt/frameAt both much later than queuedAt, or readCompletedAt far after frameAt. Cancelled/unavailable/overdue timer remains null and does not distinguish hypotheses."
+    },
+    "portCaution": "Prior port33700 has been reused; verifier selects fresh free ports and validates only its own runtime. Never kill/delete another holder.",
+    "limits": "Timer/rAF scheduling policies differ; observations discriminate callback/read intervals, not an import, paint or main-thread root cause. Actual LCP candidate identity required. Media restriction, observer work, new API and clocks remain confounds.",
+    "next": "Verify current source/manifest/assertion/payload hashes, then ONE changed r168 maintained native verifier. No unchanged r167/r166/r165/r164/r163 replay; P007/R7 and P006/P008 acceptance remain open."
+  },
   "scope": "P007 source-qualified diagnostic history and current host localization; recorded threshold failures, not root-cause verification or R7 acceptance",
   "workItem": "WI-10002829",
   "r167HostDiagnosticFire134": {

@@ -4,6 +4,32 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## Paired startup callback preparation — 2026-10-02, Fire135
+
+The existing early probe now records the first frame request, one companion
+zero-delay timer per candidate, the first frame callback, and completion of its
+style/geometry reads. This distinguishes a prompt timer with a delayed frame
+from two delayed callbacks or a costly read. These are callback observations;
+they do not identify a main-thread, import or paint cause. Cancelled, unavailable
+and overdue timer observations remain null.
+
+The canonical WDIO Node suite passed **67 tests, zero skips**, after the three
+new regressions failed against the previous source; the package typecheck passed.
+Source `921941fe76dd`, test `d717c2a5cd28` and final unit log `ff10bca4f775`
+bind this preparation. Fresh r168 early/Web Vitals payloads and an independent
+saved SPA are bound by manifest `bcad7d1075d5` and assertion `59d77782439a`.
+No r168 native run has started. Baseline preparation caught one insertion newline
+before compilation; recovery used the exact saved raw baseline and added an
+assertion for its hash and absent probe marker.
+
+Exact references, predictions and limits are in
+[the source audit](p007-native-source-output-audit-2026-10-01.json),
+`pairedFramePreparationFire135`. The leader's later observation that port 33700
+was reused does not invalidate r167's dated cleanup receipt; it prevents a current
+global port-absence claim. P-007 cause/product/R7 and the separate P-006/P-008
+acceptance remain open. The next run must validate its own selected ports and
+runtime identity, preserve failed cohorts, and join the actual LCP candidate.
+
 ## Measurement profiles
 
 The original [audit](../audits/application-performance-audit-2026-09-23.md)

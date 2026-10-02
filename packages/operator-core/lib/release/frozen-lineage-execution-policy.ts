@@ -697,6 +697,10 @@ const CARRY_PIN_INSTRUCTION_PREFIX =
 const CARRY_EXECUTION_ACTIONS = String.raw`(?:create|check\s*out|checkout|launch|run|test|verify|judge|evaluate)`;
 const CARRY_JUDGED_CONTEXT =
   /\b(?:candidate|judged|canonical(?:\s+(?:test|verification|verdict|run))|verdict|verification|worktree|root\s+test|full[-\s]+suite)\b/i;
+// Candidate/source relations must stay within one clause. Otherwise
+// "candidate fix is uncommitted and no approved staging route was provided"
+// pairs the first clause's "candidate ... is" with the second clause's "staging".
+const CARRY_RELATION_GAP = String.raw`(?:(?!\b(?:and|or|nor|while|unless|because|so)\b|[,;:]).)`;
 const CARRY_NEGATION_BEFORE =
   /\b(?:not(?!\s+only)|don't|never|cannot|can't|refus(?:e|es|ed|ing)|reject(?:s|ed|ing)?|forbid(?:s|den|ding)?|block(?:s|ed|ing)?)\b(?:\s+\S+){0,7}\s*$/i;
 const CARRY_RETRACTION_AFTER =
@@ -783,19 +787,19 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
         // still catch instructions that actually run or judge against a
         // moving source.
         const directRelationBefore = new RegExp(
-          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|worktree(?!\s+list\b))\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}\s*$`,
+          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|worktree(?!\s+list\b))\b${CARRY_RELATION_GAP}{0,140}\b(?:from|at|on|to|is|equals?)\b${CARRY_RELATION_GAP}{0,70}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
         const directRelationAfter = new RegExp(
-          String.raw`^${pattern}.{0,100}\b(?:as|for)\b.{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|worktree)\b`,
+          String.raw`^${pattern}${CARRY_RELATION_GAP}{0,100}\b(?:as|for)\b${CARRY_RELATION_GAP}{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|worktree)\b`,
           'i',
         ).exec(sourceThroughNext);
         const strongAction = new RegExp(
-          String.raw`\b(${CARRY_STRONG_SELECTION_ACTIONS})\b.{0,160}${pattern}\s*$`,
+          String.raw`\b(${CARRY_STRONG_SELECTION_ACTIONS})\b${CARRY_RELATION_GAP}{0,160}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
         const executionAction = new RegExp(
-          String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b.{0,160}${pattern}\s*$`,
+          String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b${CARRY_RELATION_GAP}{0,160}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
         const strongActionHasJudgedContext =

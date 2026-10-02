@@ -230,6 +230,62 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     expect(d.openEscalation).not.toHaveBeenCalled();
   });
 
+  // WI-10005247: a shipped goal-plan route (origin su-ideate, never verified)
+  // sat 27h behind a cursor deep in the scout region because the lap ignored
+  // outcome_checked_at. The sweep must verify it on the very next wake and must
+  // not drag the round-robin cursor onto it.
+  it('verifies a never-checked su-ideate route first and leaves the round-robin cursor alone', async () => {
+    const written: Array<{ cursorIdeaId: string | null }> = [];
+    const d = deps({
+      readPortfolioGradingBacklog: vi.fn(async () => 861),
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        {
+          ideaId: 'goal-plan:stranded',
+          origin: 'su-ideate',
+          routedRef: 'plan:frontier-remediation',
+          routedAtMs: NOW - 27 * 3_600_000,
+          humanGrade: 4,
+          outcomeCheckedAtMs: null,
+        },
+        ...['s1', 's2', 's3', 's4'].map((id, i) => ({
+          ideaId: id,
+          origin: 'scout',
+          routedRef: `wi:${id}`,
+          routedAtMs: NOW - 90 * 86_400_000 + i,
+          humanGrade: null,
+          outcomeCheckedAtMs: NOW - 600_000,
+        })),
+      ]),
+      readPortfolioFrontierCheckpoint: vi.fn(async () => ({
+        version: 1 as const,
+        phase: 'outcome-verification' as const,
+        cursorIdeaId: 's1',
+        cursorGrade: null,
+        cursorRoutedAtMs: NOW - 90 * 86_400_000,
+        currentIdeaId: null,
+        itemBudget: 25,
+        timeBudgetMs: 5_000,
+        consumedItems: 3,
+        elapsedMs: 10,
+        gradingBacklog: 861,
+        pendingOutcomes: 5,
+        evidenceSource: null,
+        updatedAt: new Date(NOW - 1_000).toISOString(),
+      })),
+      writePortfolioFrontierCheckpoint: vi.fn(async (_ws: string, cp: { cursorIdeaId: string | null }) => {
+        written.push(cp);
+      }),
+    });
+    await scoutOutcomeRefreshSweep(d);
+    const refreshed = (d.refreshScoutOutcomes as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => (call[0] as { ideaIds: string[]; origin?: string }),
+    );
+    expect(refreshed[0]).toMatchObject({ ideaIds: ['goal-plan:stranded'], origin: 'su-ideate' });
+    expect(refreshed).toHaveLength(3);
+    // cursor advanced only by the round-robin rows (s2, s3), not by the priority pick
+    expect(written.at(-1)?.cursorIdeaId).toBe('s3');
+  });
+
   it('rechecks at the write boundary and narrows to the reserved slice when grading arrives', async () => {
     const readBacklog = vi.fn(async () => 0);
     readBacklog.mockResolvedValueOnce(0).mockResolvedValueOnce(1);

@@ -1104,12 +1104,26 @@ function assertCatalogParity(native: { tools: { name: string }[] }, http: unknow
 }
 
 function assertPolicyResultParity(
-  native: { content?: unknown; _meta?: Record<string, unknown> },
-  http: { content?: unknown; _meta?: Record<string, unknown> },
+  native: { isError?: boolean; content?: unknown; _meta?: Record<string, unknown> },
+  http: { isError?: boolean; content?: unknown; _meta?: Record<string, unknown> },
 ) {
-  expect(native.content).toEqual(http.content);
-  expect(native._meta?.resultProjection).toEqual(http._meta?.resultProjection);
-  expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
+  // The build-stamp annotator may add its once-per-owner advisory block before
+  // projection. That legitimately changes linesIn and the metrics footer, but
+  // the projection result and its essential metadata must still agree.
+  expect(native.isError).toBe(http.isError);
+  expect(http.isError).not.toBe(true);
+  expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesOut: 1 });
+  expect(http._meta?.resultProjection).toMatchObject({ applied: true, linesOut: 1 });
+  const payloadContent = (result: { content?: unknown }): unknown => {
+    if (!Array.isArray(result.content)) return result.content;
+    return result.content.filter((item: unknown) => {
+      if (!item || typeof item !== 'object') return true;
+      const text = item as { type?: unknown; text?: unknown };
+      return !(text.type === 'text' && typeof text.text === 'string' && text.text.startsWith('\n[projection:'));
+    });
+  };
+  expect(payloadContent(native)).toEqual(payloadContent(http));
+  expect(payloadContent(native)).toEqual([{ type: 'text', text: '3' }]);
 }
 
 describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the real HTTP assembly', (connection) => {
@@ -1127,7 +1141,7 @@ describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SD
 
   it('preserves policy metadata, dispatcher scope and compact content through the SDK', async () => {
     const extra = superuserExtra('&workspace=ws-test');
-    const args = { projection: { pipe: [{ op: 'count' }] } };
+    const args = { projection: { pipe: [{ op: 'grep', pattern: 'gatingtest:scoped-ok', fixed: true }] } };
     const http = await withSdkHost(
       extra,
       client => client.callTool({ name: 'gatingtest:scoped', arguments: args }),
@@ -1155,7 +1169,7 @@ describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SD
 
   it('calibrates the result oracle by rejecting lost policy metadata and changed content', async () => {
     const extra = superuserExtra('&workspace=ws-test');
-    const args = { projection: { pipe: [{ op: 'count' }] } };
+    const args = { projection: { pipe: [{ op: 'grep', pattern: 'gatingtest:scoped-ok', fixed: true }] } };
     const http = await callTool('gatingtest:scoped', args, extra);
     await withSdkHost(extra, async (client) => {
       const native = await client.callTool({ name: 'gatingtest:scoped', arguments: args });

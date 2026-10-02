@@ -647,6 +647,7 @@ interface PendingOutcomeCandidateRow {
   routed_ref: string;
   routed_at: string | number;
   human_grade: number | string | null;
+  outcome_checked_at: string | number | null;
 }
 
 /**
@@ -663,7 +664,7 @@ export async function readPendingOutcomeCandidates(opts: {
   const { sql } = getOrgPg();
   const limit = Math.max(1, Math.min(10_000, Math.floor(opts.limit ?? 5_000)));
   const rows = await sql<PendingOutcomeCandidateRow[]>`
-    SELECT idea_id, origin, routed_ref, routed_at, human_grade
+    SELECT idea_id, origin, routed_ref, routed_at, human_grade, outcome_checked_at
       FROM harness_shared.scout_routed_ideas
      WHERE workspace_id = ${opts.workspaceId}
        AND origin = ANY(${['scout', 'su-ideate']}::text[])
@@ -677,6 +678,8 @@ export async function readPendingOutcomeCandidates(opts: {
     routedRef: row.routed_ref,
     routedAtMs: Number(row.routed_at),
     humanGrade: row.human_grade == null ? null : Number(row.human_grade),
+    // null = never verified (the frontier staleness tier's first-check lane).
+    outcomeCheckedAtMs: row.outcome_checked_at == null ? null : Number(row.outcome_checked_at),
   }));
 }
 
