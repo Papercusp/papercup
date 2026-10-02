@@ -546,9 +546,9 @@ describe('Azure Compute Gallery workspace-host release', () => {
 
   it('fails closed before pinning when guest tools, replica policy, or explicit reader access drift', async () => {
     const missingTool = new FakeAdapter();
-    missingTool.missingTool = 'walinuxagent';
+    missingTool.missingTool = 'WALinuxAgent';
     await expect(executeAzureComputeGalleryRelease(request(), missingTool)).rejects.toThrow(
-      'missing guest tool walinuxagent',
+      'missing guest tool WALinuxAgent',
     );
     expect(missingTool.calls).not.toContain('publish-manifest');
 

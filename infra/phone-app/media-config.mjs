@@ -212,7 +212,10 @@ const PHONE_RECOVERY = {
   'sidecar-http': 'Inspect the sidecar /api/health endpoint and its unit.',
   'turn-certificate': 'Renew and recheck the hosted TURN certificate/key before expiry; do not admit hosted traffic.',
 };
-const execFileAsync = promisify(execFile);
+let execFileAsyncMemo;
+function execFileAsync(...args) {
+  return (execFileAsyncMemo ??= promisify(execFile))(...args);
+}
 
 /** Local process/HTTP readiness is deliberately narrower than public calling:
  * it does not assert PSTN, bidirectional media, price policy or recovery drills.
