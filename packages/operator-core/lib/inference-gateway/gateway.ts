@@ -9515,6 +9515,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 return;
               }
               if (!response) return;
+              // Project every bearer attempt through the same rate-window observer as the
+              // OAuth lane; a 429 still carries authoritative credit and window headers.
+              const responseModel = parseCodexRequestShape(context.body).model ?? '';
+              deps.onResponse?.(response.metadata.headers, response.status, responseModel, account);
               if (response.status === 429) {
                 // Counted here even when the kernel goes on to rotate: the old path
                 // recorded the throttle against the account that emitted it.
