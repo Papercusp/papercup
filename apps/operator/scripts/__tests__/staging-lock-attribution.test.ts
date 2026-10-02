@@ -61,7 +61,97 @@ function mockSystemctl(binDir: string, properties: string): void {
   );
 }
 
+function completeGenerationFixture(dir: string) {
+  const sha = "a".repeat(40);
+  const generation = join(dir, "papercusp-staging.generations/.candidate-test");
+  const repo = join(generation, "checkout");
+  const operator = join(repo, "apps/operator");
+  const binDir = join(dir, "bin");
+  const probe = join(dir, "proof-checked");
+  const rebuilt = join(dir, "bundle-rebuilt");
+  const proofValid = join(dir, "proof-valid");
+  mkdirSync(join(operator, "bin"), { recursive: true });
+  mkdirSync(join(repo, "scripts"), { recursive: true });
+  mkdirSync(binDir);
+  writeFileSync(join(generation, ".ready"), sha + "\n");
+  writeFileSync(proofValid, "valid\n");
+  writeFileSync(join(binDir, "git"), `#!/usr/bin/env bash\nprintf '%s\\n' '${sha}'\n`, { mode: 0o700 });
+  mockSystemctl(binDir, "ActiveState=activating\nSubState=start-pre\nMainPID=0\nType=notify\nResult=success");
+  // Exercise the pre-start protocol without constructing the entire host graph.
+  // bundle-host-freshness's own suite verifies the real proof and drift checks.
+  writeFileSync(join(repo, "scripts/npm-install-safe.mjs"),
+    'import { spawnSync } from "node:child_process";\n' +
+    'const args = process.argv.slice(2); const command = args.slice(args.indexOf("--") + 1);\n' +
+    'if (args[0] !== "--repo-root" || args[2] !== "--exec-under-lock") process.exit(64);\n' +
+    'const result = spawnSync(command[0], command.slice(1), { stdio: "inherit" });\n' +
+    'process.exit(result.status ?? 1);\n');
+  writeFileSync(join(operator, "bin/bundle-host-freshness.mjs"),
+    'import { existsSync, writeFileSync } from "node:fs";\n' +
+    `writeFileSync(${JSON.stringify(probe)}, JSON.stringify(process.argv.slice(2)));\n` +
+    `process.exit(existsSync(${JSON.stringify(proofValid)}) ? 0 : 1);\n`);
+  const bundle = join(operator, "bin/bundle-host.sh");
+  writeFileSync(bundle, `#!/usr/bin/env bash\nprintf rebuilt > '${rebuilt}'\n`, { mode: 0o700 });
+  return { sha, generation, repo, operator, binDir, probe, rebuilt, proofValid, bundle };
+}
+
 describe("staging lock attribution", () => {
+  it("reuses a verified complete generation while another candidate holds the checkout lock", async () => {
+    const dir = makeTempDir("staging-generation-reuse-");
+    let holder: ReturnType<typeof spawn> | undefined;
+    let holderExit: Promise<void> | undefined;
+    try {
+      const fixture = completeGenerationFixture(dir);
+      const lock = join(dir, "sync.lock");
+      const ready = join(dir, "holder-ready");
+      holder = spawn("/usr/bin/flock", ["--exclusive", "--no-fork", lock,
+        "/usr/bin/bash", "-c", 'touch "$1"; exec /usr/bin/sleep 4', "holder", ready], { stdio: "ignore" });
+      holderExit = new Promise((done) => holder?.once("exit", () => done()));
+      for (let i = 0; i < 300 && !existsSync(ready); i += 1) {
+        await new Promise((done) => setTimeout(done, 10));
+      }
+      expect(existsSync(ready)).toBe(true);
+      const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", lock, fixture.bundle], {
+        cwd: fixture.operator,
+        env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: "1" },
+        encoding: "utf8", timeout: 10_000,
+      });
+      expect(result.status).toBe(0);
+      expect(existsSync(fixture.rebuilt)).toBe(false);
+      expect(JSON.parse(readFileSync(fixture.probe, "utf8"))).toEqual([
+        "check", "--repo-root", fixture.repo, "--entry", "bin/hono-host.ts",
+        "--outfile", "dist-host/hono-host.mjs", "--manifest", "dist-host/.bundle-fresh.json",
+      ]);
+      expect(result.stderr).toContain("lock_scope=immutable_generation");
+      // A physical lock probe distinguishes reuse from merely waiting for the
+      // candidate to finish; this is not a wall-clock performance assertion.
+      expect(spawnSync("/usr/bin/flock", ["-n", lock, "true"]).status).toBe(1);
+    } finally {
+      if (holder && holder.exitCode === null) holder.kill("SIGTERM");
+      await holderExit;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["missing readiness", "different source", "rejected proof"])(
+    "keeps the locked rebuild when a generation has %s", (reason) => {
+      const dir = makeTempDir("staging-generation-fallback-");
+      try {
+        const fixture = completeGenerationFixture(dir);
+        if (reason === "missing readiness") rmSync(join(fixture.generation, ".ready"));
+        if (reason === "different source") writeFileSync(join(fixture.generation, ".ready"), "b".repeat(40));
+        if (reason === "rejected proof") rmSync(fixture.proofValid);
+        const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", join(dir, "sync.lock"), fixture.bundle], {
+          cwd: fixture.operator,
+          env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: "1" },
+          encoding: "utf8", timeout: 10_000,
+        });
+        expect(result.status).toBe(0);
+        expect(existsSync(fixture.rebuilt)).toBe(true);
+        expect(result.stderr).toContain("acquisition_outcome=acquired");
+        expect(result.stderr).not.toContain("lock_scope=immutable_generation");
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
   it("matches a conflicting holder by exact device/inode and excludes waiters", () => {
     const dir = makeTempDir("staging-lock-parser-");
     try {
