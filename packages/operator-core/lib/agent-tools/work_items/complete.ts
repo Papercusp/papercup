@@ -5453,10 +5453,34 @@ async function completeOne(
 // completion fields so legacy aliases such as `coordNotes` publish their real types;
 // `z.unknown()` was rendered by direct wrappers as an object and invited invalid calls.
 const completionInputFields = completionInputSchema.shape as Record<string, z.ZodTypeAny>;
+// WI-10005648: these four nested records are ALREADY published once, in full, under the
+// `$defs` entry that `completion` references. Re-publishing each at the argument root as a
+// flat alias copied ~4.5 KB of identical structure onto the tool-delivery FLOOR (the
+// psu-launcher `budgetOverrun` gate). `gatherFlatCompletion` folds an alias into
+// `completion` before any schema runs, so the strict, typed validation of these fields
+// happens against `completion.<field>` regardless of what the root publishes; the root
+// therefore advertises only that the key exists and where its typed shape lives. A
+// `z.record` (not `z.object` / `z.looseObject`) is deliberate: strictArgs strictifies every
+// `object` node, which would turn a loose object into one that rejects every key.
+const FLAT_ALIAS_POINTER_FIELDS: ReadonlySet<string> = new Set([
+  'verification',
+  'rootCauseVerification',
+  'coverage',
+  'selfReview',
+]);
 const flatCompletionAliasShape = Object.fromEntries(
   COMPLETION_FIELDS.map((field) => {
     const schema = completionInputFields[field];
     if (!schema) throw new Error(`Missing completion input schema for flat alias: ${field}`);
+    if (FLAT_ALIAS_POINTER_FIELDS.has(field)) {
+      return [
+        field,
+        z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe(`Legacy flat alias; the typed shape is \`completion.${field}\`.`),
+      ];
+    }
     return [field, schema.optional()];
   }),
 );
