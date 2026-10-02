@@ -44,7 +44,7 @@
 
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { open, readdir, stat } from 'node:fs/promises';
+import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
@@ -241,7 +241,7 @@ export interface IngestStats {
    * session IDs, owner IDs or SQL. */
   metadataBackfills?: Array<{
     sourceKind: SourceKind;
-    operation: 'sessionOwners' | 'codexAdvSessions';
+    operation: 'sessionOwners' | 'partOwners' | 'codexAdvSessions';
     requested: number;
     /** Owner repair: SHA-256 of JSON.stringify([sessionIds, owners]) in the
      * exact UNNEST parameter order. Captured before execution, even on failure;
@@ -1329,6 +1329,54 @@ async function listCandidateFiles(
   return out;
 }
 
+/** A managed fork can leave a seed copy with the source session's native id in
+ * the fork owner's directory, including after the original file is archived.
+ * Resolve path owners from psu's first-write-wins birth index before decoding
+ * or repairing indexed turns. An absent index preserves the path fallback. */
+async function indexedClaudeOwnersForCandidates(
+  adapter: FileAdapter,
+  candidates: ReadonlyArray<{ path: string }>,
+): Promise<Map<string, string>> {
+  const sessionIds = new Set<string>();
+  for (const candidate of candidates) {
+    const { sessionId, owner } = adapter.meta(candidate.path);
+    if (owner) sessionIds.add(sessionId);
+  }
+  const resolved = new Map<string, string>();
+  const ids = [...sessionIds];
+  for (let start = 0; start < ids.length; start += 32) {
+    await Promise.all(ids.slice(start, start + 32).map(async (sessionId) => {
+      const indexed = await indexedClaudeOwner(sessionId);
+      if (indexed) resolved.set(sessionId, indexed);
+    }));
+  }
+  return resolved;
+}
+
+const indexedClaudeOwnerCache = pinModuleState<Map<string, { owner: string | null; at: number }>>(
+  '@papercusp/operator-core.indexedClaudeOwners', () => new Map(),
+);
+
+async function indexedClaudeOwner(sessionId: string): Promise<string | null> {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId)) return null;
+  const cached = indexedClaudeOwnerCache.get(sessionId);
+  if (cached && (cached.owner || Date.now() - cached.at < 60_000)) return cached.owner;
+  let owner: string | null = null;
+  try {
+    const indexed = JSON.parse(await readFile(
+      join(HOME, '.papercusp', 'psu-session-owners', sessionId), 'utf8',
+    )) as { ownerId?: unknown };
+    owner = typeof indexed.ownerId === 'string' && indexed.ownerId ? indexed.ownerId : null;
+  } catch { /* older/untracked sessions have no birth index */ }
+  indexedClaudeOwnerCache.delete(sessionId);
+  indexedClaudeOwnerCache.set(sessionId, { owner, at: Date.now() });
+  if (indexedClaudeOwnerCache.size > 20_000) {
+    const oldest = indexedClaudeOwnerCache.keys().next().value;
+    if (oldest) indexedClaudeOwnerCache.delete(oldest);
+  }
+  return owner;
+}
+
 /** Read complete lines from `filePath` starting at `offset`, bounded. Returns
  * the parsed-turn list + the new offset (end of last complete line), plus
  * (EI-9970) the prompt/response/tool-call deltas classifyLine finds across
@@ -1789,6 +1837,31 @@ async function backfillSessionOwners(
        AND turns.source_kind = ${sourceKind}
        AND turns.session_id = resolved.session_id
        AND turns.owner IS DISTINCT FROM resolved.owner
+  `;
+  return repaired.count ?? 0;
+}
+
+/** Repair faithful-part owner stamps only for Claude ids whose candidate path
+ * conflicts with the launcher's birth index. Most sessions never enter this
+ * UPDATE, preserving the existing no-op cost for ordinary sweeps. */
+async function backfillClaudePartOwners(
+  sql: Sql,
+  ownersBySession: Map<string, string>,
+  onInput: (inputSha256: string) => void,
+): Promise<number> {
+  if (!ownersBySession.size) return 0;
+  const sessionIds = [...ownersBySession.keys()];
+  const owners = sessionIds.map((sessionId) => ownersBySession.get(sessionId)!);
+  onInput(createHash('sha256').update(JSON.stringify([sessionIds, owners])).digest('hex'));
+  const repaired = await sql`
+    UPDATE harness_shared.session_turn_parts AS parts
+       SET owner = resolved.owner
+      FROM UNNEST(${sql.array(sessionIds)}::text[], ${sql.array(owners)}::text[])
+           AS resolved(session_id, owner)
+     WHERE parts.workspace_id = 'default'
+       AND parts.source_kind = 'claude'
+       AND parts.session_id = resolved.session_id
+       AND parts.owner IS DISTINCT FROM resolved.owner
   `;
   return repaired.count ?? 0;
 }
@@ -2270,6 +2343,9 @@ async function backfillFileParts(
 ): Promise<boolean> {
   if (budget.files <= 0 || budget.bytes <= 0 || !adapter.parseParts) return false;
   const meta = adapter.meta(row.file_path);
+  const owner = adapter.sourceKind === 'claude'
+    ? await indexedClaudeOwner(meta.sessionId) ?? meta.owner
+    : meta.owner;
   let sourceSize: number;
   try {
     const source = await stat(row.file_path);
@@ -2315,7 +2391,7 @@ async function backfillFileParts(
     await insertParts(sql, partRowsFrom(result.parts, {
       sourceKind: adapter.sourceKind,
       sessionId: row.session_id ?? meta.sessionId,
-      owner: meta.owner,
+      owner,
       partCount,
     }));
 
@@ -2516,6 +2592,9 @@ export async function ingestFileNow(
   const { sql } = getOrgPg();
   let inserted = 0;
   const meta = adapter.meta(filePath);
+  const owner = opts.owner ?? (adapter.sourceKind === 'claude'
+    ? await indexedClaudeOwner(meta.sessionId) ?? meta.owner
+    : meta.owner);
   if (adapter.sourceKind === 'codex') {
     // Run this even when the file has no new bytes: read-time freshness is
     // also the repair path for a paused session whose process interval still
@@ -2543,7 +2622,7 @@ export async function ingestFileNow(
       session_id: t.sessionId ?? opts.sessionId ?? meta.sessionId,
       turn_idx: st.turn_count + i,
       ts: t.ts ? t.ts.toISOString() : null,
-      owner: opts.owner ?? meta.owner,
+      owner,
       harness_slug: null,
       cwd: t.cwd ?? null,
       speaker: t.speaker,
@@ -2557,7 +2636,7 @@ export async function ingestFileNow(
       await insertParts(sql, partRowsFrom(parts, {
         sourceKind: adapter.sourceKind,
         sessionId: opts.sessionId ?? meta.sessionId,
-        owner: opts.owner ?? meta.owner,
+        owner,
         partCount: st.part_count,
       }));
     } catch (err) {
@@ -2794,7 +2873,8 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       // on the next ordinary sweep, including unchanged transcripts.
       stats.errors += 1;
       if ((stats.errorSample ??= []).length < 3) {
-        const label = operation === 'sessionOwners' ? 'owner backfill' : 'adv metadata';
+        const label = operation === 'sessionOwners' ? 'owner backfill'
+          : operation === 'partOwners' ? 'part owner backfill' : 'adv metadata';
         stats.errorSample.push(`${sourceKind} ${label}: ${(err as Error).message.slice(0, 200)}`);
       }
     } finally {
@@ -2893,6 +2973,17 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       );
       let filesThisAdapter = 0;
       const ownerBackfill = new Map<string, string>();
+      const indexedClaudeOwners = adapter.sourceKind === 'claude'
+        ? await measure('state', () => indexedClaudeOwnersForCandidates(adapter, candidates))
+        : new Map<string, string>();
+      const conflictingClaudePartOwners = new Map<string, string>();
+      if (adapter.sourceKind === 'claude') {
+        for (const candidate of candidates) {
+          const { sessionId, owner } = adapter.meta(candidate.path);
+          const indexed = indexedClaudeOwners.get(sessionId);
+          if (owner && indexed && owner !== indexed) conflictingClaudePartOwners.set(sessionId, indexed);
+        }
+      }
       const codexMetadataBackfill = new Map<number, CodexAdvSessionMetadata>();
       let ompOwnersByAdvSession = new Map<number, string>();
       if (adapter.sourceKind === 'omp') {
@@ -2915,7 +3006,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           const metadataStarted = performance.now();
           const st = stateMap.get(cand.path) ?? { ...EMPTY_STATE };
           const meta = adapter.meta(cand.path);
-          const owner = meta.owner ?? (
+          const owner = indexedClaudeOwners.get(meta.sessionId) ?? meta.owner ?? (
             adapter.sourceKind === 'omp' && meta.advSessionId != null
               ? ompOwnersByAdvSession.get(meta.advSessionId) ?? null
               : null
@@ -3019,6 +3110,11 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       await measureMetadataBackfill(adapter.sourceKind, 'sessionOwners', ownerBackfill.size,
         (receipt) => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill,
           (inputSha256) => { receipt.inputSha256 = inputSha256; }));
+      if (adapter.sourceKind === 'claude') {
+        await measureMetadataBackfill(adapter.sourceKind, 'partOwners', conflictingClaudePartOwners.size,
+          (receipt) => backfillClaudePartOwners(sql, conflictingClaudePartOwners,
+            (inputSha256) => { receipt.inputSha256 = inputSha256; }));
+      }
       if (adapter.sourceKind === 'codex') {
         await measureMetadataBackfill(adapter.sourceKind, 'codexAdvSessions', codexMetadataBackfill.size,
           () => backfillCodexAdvSessions(sql, codexMetadataBackfill));
