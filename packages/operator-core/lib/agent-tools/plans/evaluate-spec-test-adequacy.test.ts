@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import {
   dispatchProjectedTool,
   lookupByMcpName,
@@ -313,7 +314,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
   it('records exact binding ids in the replay recipe, including repeated evidence refs', async () => {
     const evidenceRef = 'packages/operator-core/lib/reconnect.test.ts#reconnect';
     // A repeated reference can name separate active bindings when their evidence kinds differ.
-    const evidence = [
+    const evidence: Awaited<ReturnType<typeof listSpecEvidence>> = [
       { id: 18924, evidenceKind: 'test', evidenceRef },
       { id: 18874, evidenceKind: 'fixture', evidenceRef },
       { id: 18875, evidenceKind: 'coverage-census', evidenceRef },
@@ -322,7 +323,9 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       workItemId: 'WI-123',
       planSlug: 'plan-a',
       specId: 'SPEC-001',
+      sourceValId: null,
       specRevision: 1,
+      currentRevision: 1,
       specFingerprint: 'sha256:spec-001',
       fingerprints: {
         sourceFingerprint: 'git:abc',
@@ -333,7 +336,12 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       },
       coverageEvidenceRef: null,
       testRunId: null,
+      testRunProvenance: null,
       details: {},
+      observedAt: '2026-10-01T12:00:00Z',
+      bindingFingerprint: 'sha256:binding',
+      createdBy: 'su-test',
+      createdAt: '2026-10-01T12:00:00Z',
       currentness: {
         comparisonSupplied: true,
         provenance: 'server-measured',
@@ -353,7 +361,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       },
     }));
     listClauses.mockResolvedValue([clause('active')]);
-    listEvidence.mockResolvedValue(evidence as never);
+    mockResolvedTyped(listEvidence, evidence);
 
     const result = await call({
       harness: 'papercusp',
