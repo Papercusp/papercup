@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createEmbedSidecarServer,
   EMBED_SIDECAR_IDLE_EXIT_ENV,
+  EMBED_SIDECAR_PROBE_HEADER,
   resolveEmbedSidecarIdleExitMs,
   shouldIdleExit,
   type EmbedSidecarHandle,
@@ -66,6 +67,23 @@ describe('createEmbedSidecarServer activity accounting', () => {
     await new Promise((r) => setTimeout(r, 20));
     const res = await fetch(`${base}/healthz`);
     await res.arrayBuffer();
+    const after = handle!.activity();
+    expect(after.inFlight).toBe(0);
+    expect(after.lastActivityAt).toBe(before.lastActivityAt);
+  });
+
+  it('does not count a request marked as a health probe as activity (P-532b)', async () => {
+    const base = await boot();
+    const before = handle!.activity();
+    await new Promise((r) => setTimeout(r, 20));
+    const res = await fetch(`${base}/embed`, {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json', [EMBED_SIDECAR_PROBE_HEADER]: '1' },
+    });
+    expect(res.status).toBe(400);
+    await res.arrayBuffer();
+    await new Promise((r) => setTimeout(r, 20));
     const after = handle!.activity();
     expect(after.inFlight).toBe(0);
     expect(after.lastActivityAt).toBe(before.lastActivityAt);
