@@ -448,6 +448,13 @@ function isStaleAgainst(env: OpEnvelope, prev: WinnerMeta): boolean {
 export const STORED_ORDER_PREFETCH_WINDOW = 2048;
 /** Per-window budget for the look-ahead reads; an op not read in time is read normally. */
 export const STORED_ORDER_PEEK_TIMEOUT_MS = 1000;
+/**
+ * WI-10005291: the most look-ahead reads in flight at once. The window is 2048 ops, and a
+ * window can hold a whole snapshot set (~1,040 chunks of ~4 MiB). Reading all of it at once
+ * read ~4 GB per skipped set on the tower's own log and spiked bg-host RSS by GBs (bpftrace
+ * pread census, 2026-10-02). Bounded, a skipped set costs at most this many chunk reads.
+ */
+export const STORED_ORDER_PEEK_CONCURRENCY = 32;
 
 /** F4: processing an entry is distinct from materializing it. Boolean sinks
  * retain their existing handled/changed contract; typed sinks can defer or reject. */
@@ -3476,53 +3483,77 @@ async function peekAndSeedStoredOrder(args: {
   // first chunk to arrive says where the set sits, so every other read in its span is
   // cancelled then, even after the deadline (a read outlives the peek). The fold's own
   // next position and the set's last block stay: the fold's jump reads exactly those.
+  // WI-10005291: cancelling withdraws only a NETWORK request. On a local log (the own log)
+  // every block is already in storage, so an issued read is a storage read that cannot be
+  // withdrawn: issuing the whole window at once read a whole skipped set (~4 GB) per
+  // crossing. So reads go out in position order, at most STORED_ORDER_PEEK_CONCURRENCY at
+  // a time, and none is issued inside a span already known to be skipped.
   const cancellable = (log as CancellableReadLog).getCancellable;
   const inFlight = typeof cancellable === 'function' ? new Map<number, CancellableRead>() : null;
-  const dropSkippedSpan = (op: PeerLogOp | null, i: number): void => {
-    if (!inFlight || !op || !isSnapshotOp(op)) return;
+  const skippedSpans: { from: number; to: number }[] = [];
+  const inSkippedSpan = (i: number): boolean => skippedSpans.some((s) => i >= s.from && i < s.to);
+  const noteSkippedSpan = (op: PeerLogOp | null, i: number): void => {
+    if (!op || !isSnapshotOp(op)) return;
     const span = skippedSetSpan(cursor, log.keyHex, op.value as SnapshotPayload | undefined, i);
     if (!span) return;
-    for (let j = Math.max(span.start, start) + 1; j < Math.min(span.end - 1, end); j++) {
+    const from = Math.max(span.start, start) + 1;
+    const to = Math.min(span.end - 1, end);
+    if (to <= from) return;
+    skippedSpans.push({ from, to });
+    if (!inFlight) return;
+    for (let j = from; j < to; j++) {
       inFlight.get(j)?.cancel();
       inFlight.delete(j);
     }
   };
-  try {
-    const reads: Promise<void>[] = [];
-    for (let i = start; i < end; i++) {
-      let read: Promise<{ ok: true; op: PeerLogOp | null } | { ok: false }>;
-      if (inFlight) {
-        const handle = cancellable!.call(log, i);
-        inFlight.set(i, handle);
-        read = handle.op.then(
-          (op) => {
-            inFlight.delete(i);
-            dropSkippedSpan(op, i);
-            return { ok: true as const, op };
-          },
-          () => {
-            inFlight.delete(i);
-            return { ok: false as const };
-          },
-        );
-      } else {
-        read = Promise.resolve()
-          .then(() => log.get(i))
-          .then(
-            (op) => ({ ok: true as const, op }),
-            () => ({ ok: false as const }),
-          );
-      }
-      reads.push(
-        Promise.race([read, deadline]).then((r) => {
-          // P-532 (D-027): a snapshot chunk is never kept. Neither consumer reads one, and
-          // a window can span a whole set: a VM peer held 477 chunks of ~4 MiB here, 3.6 GB
-          // decoded, until the heap limit killed it. The main loop reads each chunk itself.
-          if (r !== TIMEOUT && r.ok && !isSnapshotOp(r.op)) peeked.set(i, r.op);
-        }),
+  const readAt = (i: number): Promise<{ ok: true; op: PeerLogOp | null } | { ok: false }> => {
+    if (inFlight) {
+      const handle = cancellable!.call(log, i);
+      inFlight.set(i, handle);
+      return handle.op.then(
+        (op) => {
+          inFlight.delete(i);
+          noteSkippedSpan(op, i);
+          return { ok: true as const, op };
+        },
+        () => {
+          inFlight.delete(i);
+          return { ok: false as const };
+        },
       );
     }
-    await Promise.all(reads);
+    return Promise.resolve()
+      .then(() => log.get(i))
+      .then(
+        (op) => {
+          noteSkippedSpan(op, i);
+          return { ok: true as const, op };
+        },
+        () => ({ ok: false as const }),
+      );
+  };
+  let expired = false;
+  void deadline.then(() => {
+    expired = true;
+  });
+  let next = start;
+  const worker = async (): Promise<void> => {
+    while (!expired && next < end) {
+      const i = next++;
+      if (inSkippedSpan(i)) continue;
+      const r = await Promise.race([readAt(i), deadline]);
+      // Out of budget: stop issuing. A read still in flight outlives the peek, as before.
+      if (r === TIMEOUT) return;
+      // P-532 (D-027): a snapshot chunk is never kept. Neither consumer reads one, and
+      // a window can span a whole set: a VM peer held 477 chunks of ~4 MiB here, 3.6 GB
+      // decoded, until the heap limit killed it. The main loop reads each chunk itself.
+      if (r.ok && !isSnapshotOp(r.op)) peeked.set(i, r.op);
+    }
+  };
+  try {
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < Math.min(STORED_ORDER_PEEK_CONCURRENCY, end - start); w++) workers.push(worker());
+    await Promise.all(workers);
   } finally {
     if (timer) clearTimeout(timer);
   }
