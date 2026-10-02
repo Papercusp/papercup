@@ -95,11 +95,27 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
     ['retainerDepth', retainerDepth, 3], ['maxRetainers', maxRetainers, 100]]) {
     if (!Number.isInteger(value) || value < 1 || value > maximum) throw new TypeError('Invalid heap graph ' + name);
   }
-  const { decode_bytes, init_panic_hook, NodeType, EdgeType, WasmSortBy } = await import('@vscode/v8-heap-parser');
+  const heapParser = await import('@vscode/v8-heap-parser');
+  const { decode_bytes, init_panic_hook, NodeType, EdgeType, WasmSortBy } = heapParser;
   // Without the upstream hook, a Rust panic loses its origin and becomes only
-  // "unreachable". Keep its diagnostics in the private runner's stderr.
+  // "unreachable". Reduce panic output to fixed kinds and numeric evidence;
+  // decoder messages can quote private input and must never be persisted.
   init_panic_hook();
   let graph, phase = 'decode-bytes';
+  const panic = { kind: 'unclassified', source: '', allocationBytes: 0, length: 0, index: 0 };
+  const consoleError = console.error;
+  console.error = (...args) => {
+    const text = args.filter(value => typeof value === 'string').join('\n');
+    const source = text.match(/(?:^|\/)src\/([a-z_]+\.rs:\d+:\d+)/m);
+    if (source) panic.source = source[1];
+    const allocation = text.match(/memory allocation of (\d+) bytes failed/);
+    const bounds = text.match(/index out of bounds: the len is (\d+) but the index is (\d+)/);
+    if (allocation) { panic.kind = 'allocation-failed'; panic.allocationBytes = Number(allocation[1]); }
+    else if (bounds) { panic.kind = 'index-out-of-bounds'; panic.length = Number(bounds[1]); panic.index = Number(bounds[2]); }
+    else if (text.includes('capacity overflow')) panic.kind = 'capacity-overflow';
+    else if (text.includes('attempt to subtract with overflow')) panic.kind = 'subtract-overflow';
+    else if (text.includes('expected root index to be first or last')) panic.kind = 'unsupported-root-index';
+  };
   const safeBytes = value => {
     const number = Number(value);
     if (!Number.isSafeInteger(number) || number < 0) throw new TypeError('Unsafe heap graph byte count');
@@ -152,9 +168,12 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
   } catch (cause) {
     // Never include the decoder's message: it can quote private input. Phase
     // and error class are enough to distinguish decode from graph failures.
-    throw new Error('Heap retainer analysis failed at ' + phase + ' (' +
-      (cause instanceof Error ? cause.name : 'unknown') + ')', { cause });
-  } finally { graph?.free(); }
+    const wasm = Object.getOwnPropertyDescriptor(heapParser.default ?? heapParser, '__wasm')?.value;
+    throw Object.assign(new Error('Heap retainer analysis failed at ' + phase + ' (' +
+      (cause instanceof Error ? cause.name : 'unknown') + ')'), {
+      diagnostic: { phase, inputBytes: input.byteLength, wasmMemoryBytes: wasm?.memory?.buffer?.byteLength ?? null, panic },
+    });
+  } finally { console.error = consoleError; graph?.free(); }
 }
 
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
