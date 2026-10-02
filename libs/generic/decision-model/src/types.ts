@@ -115,6 +115,12 @@ export type InconclusiveReason =
   | 'rate-limited'
   /** 529 after the retry budget was spent. */
   | 'overloaded'
+  /**
+   * 402: the provider refused for billing (for example, the account has no credits left).
+   * After a 402 the client sends nothing for `paymentRequiredCooldownMs`, and each call in
+   * that window returns this reason with attempts 0 and no status.
+   */
+  | 'payment-required'
   /** Any other non-2xx status. */
   | 'http-error'
   /** The deadline expired before an answer arrived. */

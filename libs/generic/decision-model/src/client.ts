@@ -11,6 +11,9 @@
  *    400 ms gets an answer or an inconclusive within ~400 ms, never 400 ms per try.
  *  - 429 and 529 are retried with exponential backoff (honouring Retry-After when
  *    it fits the remaining budget); every other status is terminal on first sight.
+ *  - 402 (a billing refusal, e.g. no credits) suspends the client: for
+ *    `paymentRequiredCooldownMs` every call returns 'payment-required' without
+ *    sending anything, then the next call probes the provider again.
  *  - The observer (the host's audit ledger) is fired AFTER the outcome is known
  *    and is never awaited: a slow or failing ledger cannot delay or break a decision.
  *  - Every observed call carries `hostLoad`: how busy the calling thread was while
@@ -127,6 +130,12 @@ export interface DecisionClientOptions {
   readonly maxRetries?: number;
   /** First backoff delay; doubles per retry with ±25% jitter. Default 150 ms. */
   readonly backoffBaseMs?: number;
+  /**
+   * After a 402, how long to send nothing and answer 'payment-required' at once.
+   * A billing refusal fails every request until someone adds credits, so sending
+   * more only costs latency. Default 60 000 ms; 0 turns the suspension off.
+   */
+  readonly paymentRequiredCooldownMs?: number;
   /** Observer for completed calls (the audit ledger). Fire-and-forget. */
   readonly onCall?: (record: DecisionCallRecord) => void | Promise<void>;
   /**
@@ -170,6 +179,7 @@ export interface DecisionClient {
 const DEFAULT_TIMEOUT_MS = 2000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_BACKOFF_BASE_MS = 150;
+const DEFAULT_PAYMENT_REQUIRED_COOLDOWN_MS = 60_000;
 const DETAIL_MAX_CHARS = 300;
 
 /**
@@ -291,6 +301,7 @@ function retryAfterMs(value: string | null): number | null {
 
 function statusReason(status: number): InconclusiveReason {
   if (status === 401 || status === 403) return 'unauthorized';
+  if (status === 402) return 'payment-required';
   if (status === 422 || status === 400) return 'rejected';
   if (status === 429) return 'rate-limited';
   if (status === 529 || status === 503) return 'overloaded';
@@ -309,6 +320,9 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
   const now = options.now ?? Date.now;
   const maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
   const backoffBase = Math.max(0, options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS);
+  const paymentCooldownMs = Math.max(0, options.paymentRequiredCooldownMs ?? DEFAULT_PAYMENT_REQUIRED_COOLDOWN_MS);
+  /** Epoch ms until which a prior 402 suspends sending; 0 = not suspended. */
+  let paymentRequiredUntil = 0;
   const hostLoadMeter = options.hostLoad === undefined ? eventLoopUtilizationMeter : options.hostLoad;
 
   /** Start the host-load measurement. A meter fault yields null, never a thrown decide. */
@@ -361,6 +375,13 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
 
     const invalid = provider.validate(request);
     if (invalid) return inconclusive('invalid-request', invalid);
+
+    if (now() < paymentRequiredUntil) {
+      return inconclusive(
+        'payment-required',
+        `suspended after a 402 until ${new Date(paymentRequiredUntil).toISOString()}; nothing was sent`,
+      );
+    }
 
     let key: string | null;
     try {
@@ -438,6 +459,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
       }
 
       const reason = statusReason(status);
+      if (status === 402 && paymentCooldownMs > 0) paymentRequiredUntil = now() + paymentCooldownMs;
       if (!isRetryable(status) || attempts > maxRetries) return inconclusive(reason, text, status);
 
       const backoff = backoffBase * 2 ** (attempts - 1) * (0.75 + random() * 0.5);
