@@ -965,13 +965,22 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(tool.args.safeParse(args).success).toBe(true);
     const b = body(await tool.handler(args as never, { role: 'operator' } as never));
     expect(b.ok).toBe(true);
-    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, { explicitWorkItemId: 'WI-parent' });
+    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, {
+      explicitWorkItemId: 'WI-parent', requireExplicitForMultipleHeldItems: true,
+    });
     expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-parent' }));
   });
   it('refuses an explicit unheld whole-cut item before opening or launching the task', async () => {
     provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_not_held', 'WI-other is not held'));
     const b = body(await tool.handler({ ...runArgs, work_item_id: 'WI-other', confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: false, refused: true, reason: 'WI-other is not held' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
+  });
+  it('requires an explicit item for a whole cut when several items are held', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_id_required', 'name the release item'));
+    const b = body(await tool.handler({ ...runArgs, confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'name the release item' });
     expect(beginOpM).not.toHaveBeenCalled();
     expect(launchM).not.toHaveBeenCalled();
   });
@@ -1322,13 +1331,22 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     expect(tool.args.safeParse(args).success).toBe(true);
     const b = body(await tool.handler(args as never, { role: 'operator' } as never));
     expect(b.ok).toBe(true);
-    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, { explicitWorkItemId: 'WI-parent' });
+    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, {
+      explicitWorkItemId: 'WI-parent', requireExplicitForMultipleHeldItems: true,
+    });
     expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-parent' }));
   });
   it('refuses an explicit unheld leg item before opening or launching the task', async () => {
     provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_not_held', 'WI-other is not held'));
     const b = body(await tool.handler({ ...legArgs, work_item_id: 'WI-other', confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: false, refused: true, reason: 'WI-other is not held' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
+  });
+  it('requires an explicit item for a leg when several items are held', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_id_required', 'name the release item'));
+    const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'name the release item' });
     expect(beginOpM).not.toHaveBeenCalled();
     expect(launchM).not.toHaveBeenCalled();
   });

@@ -120,6 +120,49 @@ describe('bash task provenance — a caller-named work_item_id (WI-10004202)', (
 });
 
 describe('bash task provenance — the fallback refuses to guess', () => {
+  it('requires explicit attribution for an opted-in launcher despite a retained subtask goal', async () => {
+    await expect(resolveBashTaskProvenance(
+      CTX, 'papercusp', deps({ goalRef: 'WI-subtask', held: [{ id: 'WI-parent' }, { id: 'WI-subtask' }] }),
+      { requireExplicitForMultipleHeldItems: true },
+    )).rejects.toMatchObject({ code: 'work_item_id_required' });
+  });
+
+  it('accepts a held explicit parent when multiple items are held', async () => {
+    const p = await resolveBashTaskProvenance(
+      CTX, 'papercusp', deps({ goalRef: 'WI-subtask', held: [{ id: 'WI-parent' }, { id: 'WI-subtask' }] }),
+      { requireExplicitForMultipleHeldItems: true, explicitWorkItemId: 'WI-parent' },
+    );
+    expect(p.workItemId).toBe('WI-parent');
+  });
+
+  it('preserves implicit attribution for an opted-in caller with one held item', async () => {
+    const p = await resolveBashTaskProvenance(
+      CTX, 'papercusp', deps({ goalRef: 'WI-parent', held: [{ id: 'WI-parent' }] }),
+      { requireExplicitForMultipleHeldItems: true },
+    );
+    expect(p.workItemId).toBe('WI-parent');
+  });
+  it('uses the sole live claim instead of a stale goal for an opted-in launcher', async () => {
+    const p = await resolveBashTaskProvenance(
+      CTX, 'papercusp', deps({ goalRef: 'WI-old', held: [{ id: 'WI-parent' }] }),
+      { requireExplicitForMultipleHeldItems: true },
+    );
+    expect(p.workItemId).toBe('WI-parent');
+  });
+  it('does not attribute an opted-in launcher to an unheld stale goal', async () => {
+    const p = await resolveBashTaskProvenance(
+      CTX, 'papercusp', deps({ goalRef: 'WI-old', held: [] }),
+      { requireExplicitForMultipleHeldItems: true },
+    );
+    expect(p.workItemId).toBeNull();
+  });
+  it('requires an explicit item when a strict launcher cannot measure held claims', async () => {
+    await expect(resolveBashTaskProvenance(
+      CTX, 'papercusp', deps({ goalRef: 'WI-old', throws: true }),
+      { requireExplicitForMultipleHeldItems: true },
+    )).rejects.toMatchObject({ code: 'work_item_id_required' });
+  });
+
   it('stays NULL when the caller holds SEVERAL items', async () => {
     // Two claims give no basis for choosing, and a wrong association reads as fact.
     const p = await resolveBashTaskProvenance(CTX, 'papercusp', {

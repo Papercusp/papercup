@@ -50,7 +50,7 @@ import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
-import { resolveBashTaskProvenance } from '../capability/bash-task-provenance';
+import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -411,10 +411,11 @@ async function cutWorkItemId(
   try {
     const provenance = await resolveBashTaskProvenance(ctx as ResolveIdentityCtx, null, undefined, {
       explicitWorkItemId,
+      requireExplicitForMultipleHeldItems: true,
     });
     return { workItemId: provenance.workItemId };
   } catch (error) {
-    return explicitWorkItemId
+    return explicitWorkItemId || error instanceof BashProvenanceRefusal
       ? { workItemId: null, refusal: error instanceof Error ? error.message : String(error) }
       : { workItemId: null };
   }
@@ -926,7 +927,7 @@ export default defineTool({
     z.object({
       op: z.literal('run'),
       work_item_id: z.string().trim().min(1).max(120).optional()
-        .describe('Held work-item for this cut and its slow-attempt gate; overrides a stale session goal stamp.'),
+        .describe('Held work-item for this cut and its slow-attempt gate. Required when you hold multiple items; overrides a stale session goal stamp.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
       sourceSha: z
@@ -984,7 +985,7 @@ export default defineTool({
     z.object({
       op: z.literal('run-leg'),
       work_item_id: z.string().trim().min(1).max(120).optional()
-        .describe('Held work-item for this cut and its slow-attempt gate; overrides a stale session goal stamp.'),
+        .describe('Held work-item for this cut and its slow-attempt gate. Required when you hold multiple items; overrides a stale session goal stamp.'),
       platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).describe('Which platform leg to fire on its own unit.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
