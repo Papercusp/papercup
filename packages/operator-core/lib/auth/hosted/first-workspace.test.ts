@@ -338,6 +338,36 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     expect((spec as { provider: Record<string, unknown> }).provider).not.toHaveProperty('provisioningModel');
   });
 
+  it('never attaches the controller identity to a customer-project VM (WI-10005297)', () => {
+    // The delegation's serviceAccountEmail is the identity Papercusp ACTS AS. On the VM it would
+    // give every agent the controller's power over the customer's project, and GCP refused the
+    // create anyway (SERVICE_ACCOUNT_ACCESS_DENIED: no delegation grants actAs on it).
+    const sources: HostedProviderDelegationRecord['configuration'][] = [
+      GCP,
+      {
+        provider: 'gcp',
+        source: {
+          method: 'workload-identity',
+          projectId: 'customer-project-1',
+          projectNumber: '123456789012',
+          poolId: 'papercusp',
+          providerId: 'papercusp',
+          serviceAccountEmail: 'papercusp-host@customer-project-1.iam.gserviceaccount.com',
+          issuer: 'https://identity.papercusp.com',
+          audience: 'papercusp',
+          subject: 'org-a',
+        },
+      },
+    ];
+    for (const configuration of sources) {
+      const record = { credentialRef: 'delegation://ws-1/conn-1', configuration } as HostedProviderDelegationRecord;
+      const spec = gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record });
+      expect((spec as { provider: Record<string, unknown> }).provider).not.toHaveProperty('serviceAccountEmail');
+      // The controller identity still reaches the provider, as the credential it acts with.
+      expect(spec.credentials).toEqual({ cloudCredentialRef: { kind: 'cloud', ref: 'delegation://ws-1/conn-1' } });
+    }
+  });
+
   it('rejects a missing or unknown hosting choice, and bring-your-own-cloud without a configuration', async () => {
     const { deps } = harness();
     const bootstrap = createHostedFirstWorkspace(deps);

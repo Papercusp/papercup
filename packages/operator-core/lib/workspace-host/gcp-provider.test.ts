@@ -2302,6 +2302,28 @@ describe('every role that drives the GCP provider holds what GCP checks on each 
     }
   });
 
+  it('BYOC hosted: the customer-project VM holds no identity, so no lifecycle call needs actAs (WI-10005297)', async () => {
+    // `uncovered` exempts iam.* (actAs is granted on the account, not the project), which is how a
+    // spec attaching the controller identity to the VM passed the coverage test above and was then
+    // refused live with SERVICE_ACCOUNT_ACCESS_DENIED. Nothing grants that, so nothing may need it.
+    const identityPermissions = (needed: Map<string, Set<string>>) =>
+      [...needed.keys()]
+        .filter((permission) => permission.startsWith('iam.') || permission === 'compute.instances.setServiceAccount')
+        .sort();
+    expect(identityPermissions((await driveEveryLifecycle(customerProjectSpec())).needed)).toEqual([]);
+
+    // Control: the pre-fix spec (controller identity on the VM) is what this check exists to catch.
+    const spec = customerProjectSpec() as WorkspaceHostDesiredSpec & { provider: Record<string, unknown> };
+    const attached = {
+      ...spec,
+      provider: { ...spec.provider, serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com' },
+    } as WorkspaceHostDesiredSpec;
+    expect(identityPermissions((await driveEveryLifecycle(attached)).needed)).toEqual([
+      'compute.instances.setServiceAccount',
+      'iam.serviceAccounts.actAs',
+    ]);
+  });
+
   it('BYOC: calls whose permissions do not depend on their arguments are covered too', () => {
     // driveEveryLifecycle reaches the argument-dependent calls; this reaches the read/catalog ones
     // (inventory, regions, sizes, images) a lifecycle never makes.
