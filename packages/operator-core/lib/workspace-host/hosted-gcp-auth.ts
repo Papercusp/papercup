@@ -123,7 +123,7 @@ export function gcpDelegationOrganization(
     fetch?: typeof fetch;
     source?: HostedGcpDelegationSource;
   } = {},
-): HostedDelegationOrganization {
+): Omit<HostedDelegationOrganization, 'awsTrustedPrincipal'> {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetch ?? fetch;
   const ensureAccount = () => {

@@ -13,6 +13,11 @@ import {
   type AzureCloudEnvironment,
   type AzureWorkspaceHostCredentialSource,
 } from './azure-connection';
+import {
+  HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX,
+  externalIdRefOrganization,
+  organizationExternalId,
+} from './hosted-aws-identity';
 
 export const HOSTED_PROVIDER_DELEGATION_VERSION = 'hosted-provider-delegation-v1';
 
@@ -142,6 +147,12 @@ export interface HostedDelegationOrganization {
    * that host's resources — and return where it lives and who acts on it.
    */
   gcpPapercuspHosting(hostId: string): Promise<{ projectId: string; serviceAccountEmail: string }>;
+  /**
+   * AWS (aws-byoc-gcp-parity D-001): the organization's own role in the Papercusp control-plane
+   * account — created on first use — and its org-scoped ExternalId reference. A customer role
+   * trusts exactly this principal, with exactly this ExternalId.
+   */
+  awsTrustedPrincipal(): Promise<{ principalArn: string; externalIdRef: string }>;
 }
 
 /**
@@ -156,6 +167,24 @@ export async function bindDelegationToOrganization<
 >(input: T, organization: HostedDelegationOrganization): Promise<T & { organizationId: string }> {
   const organizationId = requirePattern(organization.organizationId, SAFE_ID, 'organizationId');
   const configuration = input.configuration as HostedProviderDelegationConfiguration | undefined;
+  if (configuration?.provider === 'aws') {
+    // D-001: the principal and ExternalId are the organization's own, never the caller's. OIDC is
+    // refused for the same reason GCP refuses workload identity: every organization would
+    // federate as the same Papercusp subject.
+    const source = configuration.source as { environment?: unknown; method?: unknown } | undefined;
+    if (source?.environment !== 'hosted' || source.method !== 'customer-role') {
+      throw new Error('hosted_provider_delegation_aws_method_not_organization_bound');
+    }
+    const { principalArn, externalIdRef } = await organization.awsTrustedPrincipal();
+    return {
+      ...input,
+      organizationId,
+      configuration: {
+        ...configuration,
+        source: { ...configuration.source, trustedPrincipalArn: principalArn, externalIdRef },
+      },
+    };
+  }
   if (configuration?.provider !== 'gcp') return { ...input, organizationId };
   const source = configuration.source as { method?: unknown } | undefined;
   if (source?.method !== 'service-account-impersonation') {
@@ -215,9 +244,13 @@ function connectionStatus(record: HostedProviderDelegationRecord): 'connected' |
 
 function connectionProviderConfig(record: HostedProviderDelegationRecord): Record<string, unknown> {
   const gcp = record.configuration.provider === 'gcp' ? record.configuration.source : undefined;
+  const aws = record.configuration.provider === 'aws' ? record.configuration : undefined;
   const config = {
     hostedDelegation: record,
     ...(gcp ? { projectId: gcp.projectId, serviceAccountEmail: gcp.serviceAccountEmail } : {}),
+    // The AWS provider composes from `credentialSource`; it refuses a hosted source unless this
+    // delegation is verified (aws-configured-provider), which is where a revocation takes effect.
+    ...(aws ? { accountId: aws.accountId, credentialSource: aws.source } : {}),
   };
   assertWorkspaceHostSecretIsolation(config, 'hostedProviderDelegation.providerConfig');
   return config;
@@ -456,13 +489,24 @@ function awsTemplate(
       AWSTemplateFormatVersion: '2010-09-09',
       Description: 'Papercusp workspace-host least-privilege delegated role',
       ...(source.method === 'customer-role'
-        ? { Parameters: { ExternalId: { Type: 'String', NoEcho: true } } }
+        ? {
+            Parameters: {
+              ExternalId: {
+                Type: 'String',
+                // Server-derived per organization (D-007); prefilled so the customer never types it.
+                ...(externalIdRefOrganization(source.externalIdRef)
+                  ? { Default: organizationExternalId(externalIdRefOrganization(source.externalIdRef) as string) }
+                  : {}),
+                Description: 'Papercusp ExternalId for your organization. Leave as provided.',
+              },
+            },
+          }
         : {}),
       Resources: {
         WorkspaceHostRole: {
           Type: 'AWS::IAM::Role',
           Properties: {
-            RoleName: `PapercuspWorkspaceHost-${accountId}`,
+            RoleName: `${HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX}${accountId}`,
             AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [trust] },
             Policies: [
               {
