@@ -77,6 +77,7 @@ import {
 } from './aws-sdk-client';
 import type { AwsBootcCleanRoomDiscardInput, AwsBootcCleanRoomStageInput } from './aws-bootc-clean-room-executor';
 import type { WorkspaceHostBootcCloudArtifact } from './bootc-bake-manifest';
+import { AWS_AMI_SCAN_COLDSNAP_ENV } from './coldsnap-pin';
 // The argv/shell:false process boundary is cloud-neutral; reuse it rather than fork a second one.
 import {
   NodeGcpImageFamilyCommandRunner,
@@ -266,12 +267,18 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     return { ...(await this.deps.childCredentials()), AWS_REGION: region, AWS_DEFAULT_REGION: region };
   }
 
-  private async runJson(executable: string, input: unknown, region: string, operation: string): Promise<unknown> {
+  private async runJson(
+    executable: string,
+    input: unknown,
+    region: string,
+    operation: string,
+    extraEnv: Readonly<Record<string, string>> = {},
+  ): Promise<unknown> {
     const result = await this.commands.run({
       command: executable,
       args: [],
       stdin: JSON.stringify(input),
-      env: await this.childEnv(region),
+      env: { ...(await this.childEnv(region)), ...extraEnv },
       timeoutMs: RUNNER_TIMEOUT_MS,
     });
     return parseJsonStdout(assertSuccess(result, operation), operation);
@@ -441,7 +448,11 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
 
   async scanImage(input: Parameters<AwsAmiReleaseAdapter['scanImage']>[0]): Promise<AwsAmiScanEvidence> {
     // The release contract validates every field; this layer only enforces the JSON boundary.
-    return (await this.runJson(this.executables.scan, input, input.region, 'AMI scan')) as AwsAmiScanEvidence;
+    // The scan downloads the candidate's snapshot with coldsnap too: hand it the SAME binary the
+    // upload used (pinned install or override) instead of letting it re-resolve one off its PATH.
+    return (await this.runJson(this.executables.scan, input, input.region, 'AMI scan', {
+      [AWS_AMI_SCAN_COLDSNAP_ENV]: this.executables.coldsnap,
+    })) as AwsAmiScanEvidence;
   }
 
   async copyImage(input: Parameters<AwsAmiReleaseAdapter['copyImage']>[0]): Promise<{ imageId: string }> {

@@ -49,6 +49,7 @@ import {
   AwsBootcCleanRoomExecutor,
   type AwsBootcCleanRoomPlacement,
 } from "@papercusp/operator-core/lib/workspace-host/aws-bootc-clean-room-executor";
+import { coldsnapCompositionOption } from "@papercusp/operator-core/lib/workspace-host/coldsnap-pin";
 import {
   workspaceHostReleaseSubjectSha256,
   type WorkspaceHostBootcCloudArtifact,
@@ -214,7 +215,8 @@ export function awsCleanRoomCompositionOptionsFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): AwsAmiReleaseCompositionOptions {
   return {
-    ...(env.PAPERCUSP_AWS_COLDSNAP_EXECUTABLE ? { coldsnapExecutable: env.PAPERCUSP_AWS_COLDSNAP_EXECUTABLE } : {}),
+    // Override, else the checksum-pinned install (coldsnap-pin.ts), else bare `coldsnap` on PATH.
+    ...coldsnapCompositionOption(env),
     ...(env.PAPERCUSP_AWS_AMI_SCAN_EXECUTABLE ? { scanExecutable: env.PAPERCUSP_AWS_AMI_SCAN_EXECUTABLE } : {}),
     ...(env.PAPERCUSP_AWS_AMI_CANARY_EXECUTABLE ? { canaryExecutable: env.PAPERCUSP_AWS_AMI_CANARY_EXECUTABLE } : {}),
   };
