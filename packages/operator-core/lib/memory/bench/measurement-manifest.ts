@@ -269,6 +269,111 @@ export function loadIndependentMeasurementInputs(prepared: PreparedMeasurement, 
   return { entries, queries, corpusVersion: `independent-${manifest.inputs[dataset.snapshot].sha256}`,
     goldVersion: `independent-${manifest.inputs[dataset.labels].sha256}` };
 }
+
+/** Extend the existing raw/vector receipt format, not a second vector cache.
+ * Reuse is explicitly frozen on a relevance cell with reuseCellId plus three
+ * declared inputs: reuseManifest, reuseCompletion, reuseVectors. Completion
+ * binds vectors (which have no arm metadata themselves) to the measured arm.
+ * New labels may change relevance, but a reused query's text/source may not. */
+export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement, corpus: 'memory' | 'prose') {
+  const donorId = prepared.cell.parameters.reuseCellId;
+  if (donorId === undefined) return undefined;
+  if (typeof donorId !== 'string' || !donorId || prepared.cell.bar !== 'relevance'
+    || prepared.cell.corpus !== corpus || prepared.arm.execution.transport !== 'worker') {
+    throw new Error('invalid retained relevance reuse cell');
+  }
+  const readPinned = async (ref: z.infer<typeof fingerprint>) => {
+    fingerprint.parse(ref);
+    if (hashJson(await fingerprintFile(ref.path)) !== hashJson(ref)) throw new Error('retained relevance fingerprint mismatch');
+    return JSON.parse(fs.readFileSync(ref.path, 'utf8'));
+  };
+  const refs = Object.fromEntries(['reuseManifest', 'reuseCompletion', 'reuseVectors'].map((name) => {
+    if (!prepared.cell.inputIds.includes(name) || !prepared.manifest.inputs[name]) {
+      throw new Error('retained relevance inputs must be declared on the cell');
+    }
+    return [name, prepared.manifest.inputs[name]];
+  }));
+  const donor = validateMeasurementManifest(await readPinned(refs.reuseManifest));
+  const cell = donor.cells.find((c) => c.id === donorId), arm = donor.arms.find((a) => a.id === cell?.armId);
+  if (!cell || cell.bar !== 'relevance' || cell.corpus !== corpus || !arm
+    || donor.ownerId !== prepared.manifest.ownerId || hashJson(arm) !== hashJson(prepared.arm)) {
+    throw new Error('retained relevance arm/corpus/owner mismatch');
+  }
+  const completion = await readPinned(refs.reuseCompletion);
+  const completed = Array.isArray(completion.completed) ? completion.completed.filter((c: any) => c.cellId === donorId) : [];
+  if (completion.formatVersion !== 1 || completion.status !== 'completed'
+    || completion.ownerId !== donor.ownerId || completion.manifestSha256 !== refs.reuseManifest.sha256
+    || completed.length !== 1 || hashJson(completed[0].vectors) !== hashJson(refs.reuseVectors)) {
+    throw new Error('retained relevance completed receipt mismatch');
+  }
+  for (const inputId of cell.inputIds) {
+    const ref = donor.inputs[inputId];
+    if (hashJson(await fingerprintFile(ref.path)) !== hashJson(ref)) throw new Error('retained relevance donor input changed');
+  }
+  const oldDataset = donor.datasets.find((d) => d.corpus === corpus)!;
+  const dataset = prepared.manifest.datasets.find((d) => d.corpus === corpus)!;
+  const oldSnapshot = donor.inputs[oldDataset.snapshot], snapshot = prepared.manifest.inputs[dataset.snapshot];
+  if (oldSnapshot.sha256 !== snapshot.sha256 || oldSnapshot.bytes !== snapshot.bytes) {
+    throw new Error('retained relevance snapshot changed');
+  }
+  const previous = loadIndependentMeasurementInputs({ ...prepared, manifest: donor, cell, arm }, corpus);
+  const current = loadIndependentMeasurementInputs(prepared, corpus);
+  const raw = await readPinned(completed[0].raw);
+  if (raw.formatVersion !== 1 || raw.manifestSha256 !== refs.reuseManifest.sha256
+    || raw.cellId !== donorId || raw.armId !== arm.id || raw.ownerId !== donor.ownerId
+    || !Number.isFinite(Date.parse(raw.measuredAt)) || Date.parse(raw.measuredAt) < Date.parse(donor.frozenAt)
+    || Date.parse(raw.measuredAt) > Date.parse(prepared.manifest.frozenAt)
+    || raw.report?.corpus !== corpus || raw.report?.corpusVersion !== previous.corpusVersion
+    || raw.report?.goldSetVersion !== previous.goldVersion || !raw.report?.results?.[arm.model]
+    || raw.report.results[arm.model].blocked) throw new Error('retained relevance raw identity mismatch');
+  const saved = await readPinned(refs.reuseVectors), vectors = saved.vectors?.[arm.model];
+  if (saved.corpus !== corpus || saved.corpusVersion !== previous.corpusVersion
+    || hashJson(saved.keys) !== hashJson(previous.entries.map((e) => e.key))
+    || hashJson(saved.queryIds) !== hashJson(previous.queries.map((q) => q.id))
+    || !vectors || Object.keys(saved.vectors).length !== 1
+    || !Array.isArray(vectors.docVectors) || !Array.isArray(vectors.queryVectors)
+    || vectors.docVectors.length !== previous.entries.length || vectors.queryVectors.length !== previous.queries.length
+    || [...vectors.docVectors, ...vectors.queryVectors].some((v) => !Array.isArray(v)
+      || v.length !== arm.profile.nativeDims || v.some((x) => typeof x !== 'number' || !Number.isFinite(x))
+      || Math.abs(Math.sqrt(v.reduce((s, x) => s + x * x, 0)) - 1) > 0.001)) {
+    throw new Error('retained relevance vector population/order/normalization mismatch');
+  }
+  const oldIndexes = new Map(previous.queries.map((q, i) => [q.id, i]));
+  const queryIdentity = (q: typeof current.queries[number]) => ({ id: q.id, query: q.query, class: q.class,
+    group: q.group, partition: q.partition });
+  const missingIndexes: number[] = [];
+  const queryVectors = current.queries.map((q, index): number[] | undefined => {
+    const oldIndex = oldIndexes.get(q.id);
+    if (oldIndex === undefined) { missingIndexes.push(index); return undefined; }
+    if (hashJson(queryIdentity(q)) !== hashJson(queryIdentity(previous.queries[oldIndex]))) {
+      throw new Error('retained relevance query identity changed');
+    }
+    return vectors.queryVectors[oldIndex];
+  });
+  return { docVectors: vectors.docVectors as number[][], queryVectors, missingIndexes,
+    evidence: { donorCellId: donorId, manifest: refs.reuseManifest, completion: refs.reuseCompletion,
+      raw: completed[0].raw, vectors: refs.reuseVectors, documentsReused: vectors.docVectors.length,
+      reusedQueryIds: current.queries.filter((_, i) => queryVectors[i] !== undefined).map((q) => q.id),
+      newQueryIds: missingIndexes.map((i) => current.queries[i].id),
+      scope: 'embedding reuse only; independent new labels, scoring and source-power acceptance remain required',
+      timingComparableToFullInference: false } };
+}
+
+/** Keep local new-query indices separate from the complete accepted order. */
+export async function embedIncrementalRelevanceQueries(
+  retained: NonNullable<Awaited<ReturnType<typeof loadRetainedRelevanceVectors>>>, queryTexts: string[],
+  embedMissing: (texts: string[]) => Promise<number[][]>,
+): Promise<number[][]> {
+  if (queryTexts.length !== retained.queryVectors.length) throw new Error('incremental relevance query population mismatch');
+  const newVectors = retained.missingIndexes.length ? await embedMissing(retained.missingIndexes.map((i) => queryTexts[i])) : [];
+  if (newVectors.length !== retained.missingIndexes.length) throw new Error('incremental relevance new vector population mismatch');
+  const merged = [...retained.queryVectors];
+  retained.missingIndexes.forEach((index, localIndex) => { merged[index] = newVectors[localIndex]; });
+  return merged.map((v) => {
+    if (!v) throw new Error('incremental relevance missing query vector');
+    return v;
+  });
+}
 /** No inference or SQL writes happen until every selected identity is verified. */
 export async function prepareMeasurementCell(file: string, expectedSha256: string, cellId: string,
   repoRoot: string = process.cwd()): Promise<PreparedMeasurement> {
