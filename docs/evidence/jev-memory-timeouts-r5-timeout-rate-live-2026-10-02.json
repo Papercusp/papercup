@@ -32,8 +32,8 @@
   "comparison": "The old :3070 build f52b2457ba (no P-007/P-008) was ~25-27% not answered over the same window.",
   "summary": "6 of 1,147 new-build memory-injection calls not answered (0.52%, below the 1% target over more than 1,000 calls); all 6 are timeouts and each carries its calling-thread event-loop utilization (0.84-1.0) as the named cause.",
   "assertions": [
-    { "name": "at least 1,000 calls measured", "expected": "total >= 1000", "observed": 1147, "pass": true },
-    { "name": "not-answered rate below 1%", "expected": "pct < 1", "observed": 0.52, "pass": true },
-    { "name": "every residue is attributed", "expected": "each not-answered row has loop_utilization recorded", "observed": "6 of 6 carry loop_utilization 0.84-1.0", "pass": true }
+    { "id": "at-least-1000-calls", "passed": true, "evidence": "total = 1147 >= 1000" },
+    { "id": "not-answered-below-1pct", "passed": true, "evidence": "6 of 1147 not answered = 0.52% < 1%" },
+    { "id": "every-residue-attributed", "passed": true, "evidence": "6 of 6 not-answered rows are timeouts carrying calling-thread loop_utilization 0.84-1.0 (see residue[])" }
   ]
 }

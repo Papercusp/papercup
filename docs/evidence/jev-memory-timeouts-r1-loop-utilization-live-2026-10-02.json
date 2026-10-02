@@ -18,7 +18,7 @@
   "result": { "total": 1141, "withLoopUtilization": 1141 },
   "summary": "1,141 of 1,141 new-build memory-injection decision calls carry loop_busy_ms and loop_utilization in [0,1]; no row lacks the attribution fields.",
   "assertions": [
-    { "name": "population is non-empty", "expected": "total > 0", "observed": 1141, "pass": true },
-    { "name": "every row carries loop_busy_ms and loop_utilization in [0,1]", "expected": "withLoopUtilization == total", "observed": "1141 == 1141", "pass": true }
+    { "id": "population-non-empty", "passed": true, "evidence": "total = 1141 > 0" },
+    { "id": "every-row-carries-loop-utilization", "passed": true, "evidence": "withLoopUtilization = total = 1141 (loop_busy_ms NOT NULL and loop_utilization in [0,1])" }
   ]
 }

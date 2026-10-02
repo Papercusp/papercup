@@ -169,9 +169,41 @@ parentPort.on('message', (call) => {
 `;
 
 /** What the worker posts back for one call. */
-type WorkerReply =
-  | { ok: true; status: number; headers: Record<string, string>; text: string; transportMs: number }
-  | { ok: false; error: string; timedOut?: boolean; transportMs: number };
+type WorkerReply = (
+  | { ok: true; status: number; headers: Record<string, string>; text: string }
+  | { ok: false; error: string; timedOut?: boolean }
+) & {
+  transportMs: number;
+  /** How far the request got: started (not fully sent), sent (no response headers yet), headers. */
+  phase: WorkerPhase;
+  /** Time the call waited for the worker to take it, ms; null if not measurable. */
+  queuedMs: number | null;
+};
+
+type WorkerPhase = 'started' | 'sent' | 'headers';
+
+/** Posted by the worker each time a call reaches a new phase, before its final reply. */
+interface WorkerProgress {
+  progress: WorkerPhase;
+  atMs: number;
+  queuedMs: number | null;
+}
+
+function ms(value: number | null): string {
+  return value === null ? 'unknown' : `${Math.round(value)}ms`;
+}
+
+/** The ledger detail for a call the worker itself stopped at the deadline. */
+export function describeWorkerTimeout(reply: { transportMs: number; phase: WorkerPhase; queuedMs: number | null }): string {
+  return `worker deadline at ${ms(reply.transportMs)}: phase=${reply.phase}, queued=${ms(reply.queuedMs)}`;
+}
+
+/** The ledger detail for a call whose deadline passed on the calling side before the worker replied. */
+export function describeNoWorkerReply(last: WorkerProgress | null): string {
+  return last
+    ? `caller deadline, no worker reply: phase=${last.progress} at ${ms(last.atMs)}, queued=${ms(last.queuedMs)}`
+    : 'caller deadline, no worker reply: phase=none (the worker had not started the call)';
+}
 
 export type WorkerTransportEvent =
   /** The worker died; calls in flight failed. It is restarted on the next call. */
@@ -289,19 +321,33 @@ export function createWorkerTransport(options: WorkerTransportOptions): WorkerTr
               transportLatencyMs: reply.transportMs,
             });
           } else {
+            if (reply.timedOut) {
+              init.deadline?.reportIncomplete({ elapsedMs: reply.transportMs, detail: describeWorkerTimeout(reply) });
+            }
             reject(reply.timedOut ? timeoutError(reply.error) : new Error(reply.error));
           }
         });
       }
 
-      /** Take an answer the worker already posted, without waiting for this thread's loop. */
+      let lastProgress: WorkerProgress | null = null;
+      function handle(message: WorkerReply | WorkerProgress): void {
+        if ('progress' in message) lastProgress = message;
+        else accept(message);
+      }
+
+      /** Take what the worker already posted, without waiting for this thread's loop. */
       function drain(): void {
-        const got = receiveMessageOnPort(port1);
-        if (got) accept(got.message as WorkerReply);
+        while (!settled) {
+          const got = receiveMessageOnPort(port1);
+          if (!got) return;
+          handle(got.message as WorkerReply | WorkerProgress);
+        }
       }
 
       function onAbort(): void {
         drain();
+        if (settled) return;
+        init.deadline?.reportIncomplete({ elapsedMs: null, detail: describeNoWorkerReply(lastProgress) });
         settle(() => reject(abortReason(init.signal)));
       }
 
@@ -309,13 +355,21 @@ export function createWorkerTransport(options: WorkerTransportOptions): WorkerTr
         settle(() => reject(err));
       }
 
-      port1.on('message', (reply: WorkerReply) => accept(reply));
+      port1.on('message', (message: WorkerReply | WorkerProgress) => handle(message));
       init.signal.addEventListener('abort', onAbort, { once: true });
       if (init.deadline) unhook = init.deadline.onExpiring(drain);
       pending.add(onLost);
       try {
         w.postMessage(
-          { url, method: init.method, headers: init.headers, body: init.body, expiresAt, port: port2 },
+          {
+            url,
+            method: init.method,
+            headers: init.headers,
+            body: init.body,
+            expiresAt,
+            postedAt: performance.timeOrigin + performance.now(),
+            port: port2,
+          },
           [port2],
         );
       } catch (err) {
