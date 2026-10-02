@@ -597,8 +597,8 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
     symlinkSync(oldRoot, alias);
     try {
       const result = runFn(
-        ['staging_candidate_ready', 'publish_staging_generation'],
-        'log() { :; }; publish_staging_generation "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" 1',
+        ['staging_candidate_unready_reason', 'publish_staging_generation'],
+        `log() { printf '%s\\n' "$*"; }; publish_staging_generation "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" 1`,
         {
           env: {
             STAGING_ROOT: alias,
@@ -610,6 +610,11 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
       );
       expect(result.status).toBe(1);
       expect(realpathSync(alias)).toBe(realpathSync(oldRoot));
+      // EI-24867768475421999: the refusal names the unmet condition, because the
+      // EXIT trap deletes the candidate and the journal line is the only evidence left.
+      expect(result.stdout).toContain(
+        'FATAL: refusing to publish an incomplete staging generation: host bundle missing or empty',
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -630,7 +635,7 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
     symlinkSync(oldRoot, alias);
     try {
       const result = runFn(
-        ['staging_candidate_ready', 'publish_staging_generation'],
+        ['staging_candidate_unready_reason', 'publish_staging_generation'],
         'log() { :; }; publish_staging_generation "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" 0',
         {
           env: {
@@ -786,6 +791,79 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
     const exitAfterHealthy = script.indexOf('exit 0', healthy);
     expect(exitAfterHealthy).toBeGreaterThan(healthy);
     expect(script.slice(healthy, exitAfterHealthy)).toContain('prune_staging_generations');
+  });
+});
+
+describe('sync-staging-checkout.sh names the unmet publication condition (EI-24867768475421999)', () => {
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  let root = '';
+  let home = '';
+  let checkout = '';
+
+  function reason(requireHostBundle: 0 | 1): string {
+    const r = runFn(
+      ['staging_candidate_unready_reason'],
+      'staging_candidate_unready_reason "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" "$REQUIRE"',
+      {
+        env: {
+          CANDIDATE_ROOT: checkout,
+          CANDIDATE_HOME: home,
+          TARGET_SHA: sha,
+          REQUIRE: String(requireHostBundle),
+        },
+      },
+    );
+    expect(r.status).toBe(0);
+    return r.stdout.trim();
+  }
+
+  function writeComplete(): void {
+    mkdirSync(join(checkout, 'apps/operator-vite/dist'), { recursive: true });
+    mkdirSync(join(checkout, 'apps/operator/dist-host'), { recursive: true });
+    writeFileSync(join(home, '.ready'), sha + '\n');
+    writeFileSync(join(checkout, 'apps/operator-vite/dist/index.html'), '<html></html>');
+    writeFileSync(join(checkout, 'apps/operator/dist-host/hono-host.mjs'), 'export {};');
+    writeFileSync(join(checkout, 'apps/operator/dist-host/.bundle-fresh.json'), '{}');
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'staging-unready-reason-'));
+    home = join(root, '.candidate-x');
+    checkout = join(home, 'checkout');
+    mkdirSync(checkout, { recursive: true });
+    writeComplete();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('prints nothing for a complete candidate (calibration: the real ready case passes)', () => {
+    expect(reason(1)).toBe('');
+    expect(reason(0)).toBe('');
+  });
+
+  it('names a missing freshness proof, the condition behind the 2026-10-02 11:38Z refusal', () => {
+    rmSync(join(checkout, 'apps/operator/dist-host/.bundle-fresh.json'));
+    expect(reason(1)).toMatch(/^host bundle freshness proof missing: .*\.bundle-fresh\.json/);
+    expect(reason(0)).toBe('');
+  });
+
+  it('names a .ready mismatch with both values', () => {
+    writeFileSync(join(home, '.ready'), 'f'.repeat(40) + '\n');
+    expect(reason(1)).toContain(`holds ${'f'.repeat(40)}, expected ${sha}`);
+    rmSync(join(home, '.ready'));
+    expect(reason(1)).toContain(`holds <missing>, expected ${sha}`);
+  });
+
+  it('names a missing SPA dist, a missing host bundle, and a stale marker', () => {
+    writeFileSync(join(checkout, 'apps/operator/dist-host/.bundle-stale.json'), '{}');
+    expect(reason(1)).toMatch(/^host bundle is marked stale/);
+    expect(reason(0)).toBe('');
+    rmSync(join(checkout, 'apps/operator/dist-host/hono-host.mjs'));
+    expect(reason(1)).toMatch(/^host bundle missing or empty/);
+    rmSync(join(checkout, 'apps/operator-vite/dist/index.html'));
+    expect(reason(0)).toMatch(/^SPA dist missing or empty/);
   });
 });
 

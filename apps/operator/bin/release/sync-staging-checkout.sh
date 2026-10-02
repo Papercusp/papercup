@@ -148,24 +148,35 @@ create_staging_candidate() {
   STAGING_CANDIDATE_ROOT="$STAGING_CANDIDATE_HOME/checkout"
 }
 
-staging_candidate_ready() {
+# Prints the first unmet publication condition; prints nothing when the
+# candidate is complete. EI-24867768475421999: the refusal used to name no
+# condition, and the EXIT trap deletes the candidate, so a refused run destroyed
+# the only evidence of which check failed. The reason now lands in the journal.
+staging_candidate_unready_reason() {
   local candidate_root="$1" candidate_home="$2" expected_sha="$3" require_host_bundle="${4:-1}"
-  local ready_sha
+  local ready_sha dist_host="$candidate_root/apps/operator/dist-host"
   ready_sha="$(cat "$candidate_home/.ready" 2>/dev/null || true)"
-  [[ "$ready_sha" == "$expected_sha" ]] &&
-    [[ -s "$candidate_root/apps/operator-vite/dist/index.html" ]] || return 1
-  if [[ "$require_host_bundle" == 1 ]]; then
-    [[ -s "$candidate_root/apps/operator/dist-host/hono-host.mjs" ]] &&
-      [[ -s "$candidate_root/apps/operator/dist-host/.bundle-fresh.json" ]] &&
-      [[ ! -e "$candidate_root/apps/operator/dist-host/.bundle-stale.json" ]]
+  if [[ "$ready_sha" != "$expected_sha" ]]; then
+    printf '%s/.ready holds %s, expected %s\n' "$candidate_home" "${ready_sha:-<missing>}" "$expected_sha"
+  elif [[ ! -s "$candidate_root/apps/operator-vite/dist/index.html" ]]; then
+    printf 'SPA dist missing or empty: apps/operator-vite/dist/index.html\n'
+  elif [[ "$require_host_bundle" != 1 ]]; then
+    return 0
+  elif [[ ! -s "$dist_host/hono-host.mjs" ]]; then
+    printf 'host bundle missing or empty: apps/operator/dist-host/hono-host.mjs\n'
+  elif [[ ! -s "$dist_host/.bundle-fresh.json" ]]; then
+    printf 'host bundle freshness proof missing: apps/operator/dist-host/.bundle-fresh.json (the bundle-host.sh stamp step failed; its [bundle-freshness] line above names the cause)\n'
+  elif [[ -e "$dist_host/.bundle-stale.json" ]]; then
+    printf 'host bundle is marked stale: apps/operator/dist-host/.bundle-stale.json exists\n'
   fi
 }
 
 publish_staging_generation() {
   local candidate_root="$1" candidate_home="$2" expected_sha="$3" require_host_bundle="${4:-1}"
-  local tmp="${STAGING_ROOT}.publish.$$"
-  if ! staging_candidate_ready "$candidate_root" "$candidate_home" "$expected_sha" "$require_host_bundle"; then
-    log "FATAL: refusing to publish an incomplete staging generation"
+  local tmp="${STAGING_ROOT}.publish.$$" unready
+  unready="$(staging_candidate_unready_reason "$candidate_root" "$candidate_home" "$expected_sha" "$require_host_bundle")"
+  if [[ -n "$unready" ]]; then
+    log "FATAL: refusing to publish an incomplete staging generation: $unready"
     return 1
   fi
   if [[ -e "$STAGING_ROOT" && ! -L "$STAGING_ROOT" ]]; then
