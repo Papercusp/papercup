@@ -908,7 +908,7 @@
   },
   "nativeCudaProfilerRecovery": {
     "workItem": "WI-10005387",
-    "status": "Canonical CUDA-event qualification guard and matched profiler preflight verified; native model capture still pending",
+    "status": "Canonical CUDA-event guard, matched profiler preflight, and native V6 model capture verified; remaining P006 population and request-sequence acceptance open",
     "guard": {
       "source": { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "bytes": 30947, "sha256": "3f87daffee10686d426b01e56f37e93e9b0d409d82a38e35e326289e5a2fdcd1" },
       "test": { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "bytes": 6127, "sha256": "566f62ee4b2e084fda2b500cc3eba574232c80549873c39bb3c54cd4857d7ae1" },
@@ -956,6 +956,41 @@
       "scope": "Qualifies matching CUDA capture/report decoding/export on this host; native mDenseOn kernel/PID/request-sequence and complete-before-inference closure remain unverified"
     },
     "next": "Mandatory actual CUDA-event guard before a new native model capture with unchanged R4 source/request/reference and matched pinned Nsight runtime. Preserve old V5 vectors and raw captures; do not replay model inference merely to recover saved proof."
+  },
+  "nativeCudaPaddedV6": {
+    "taskId": "0muqtlxj0drhql41e1o",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v6",
+    "exitCode": 0,
+    "driverCompletedAt": "2026-10-02T10:29:21.455Z",
+    "canonicalGuardVerifiedAt": "2026-10-02T10:29:27.471Z",
+    "recipe": { "bytes": 12258, "sha256": "8e0b031af24360e7d304541b46df8ecea982ec58398a8684ef7002ee90093452" },
+    "runtimeSource": "Unchanged qualified R4 source, dependency generation, copied Node, FILE-parent worker driver, model/request/reference, and TF32-off diagnostic recipe; profiler moved to CUDA-qualified matched 2026 full bundle",
+    "driver": { "bytes": 1291, "sha256": "85f182ff7eca366e0b11d886d5bd82d643fe092a8b8989a80b0060c5e43ea7fb" },
+    "result": { "bytes": 303499, "sha256": "715ac20e79aa8f7c18ef2d85f8630b2095cd815fee00cdf6f0609273c3e94b94" },
+    "inputTrace": { "bytes": 3624, "sha256": "5589550ec860f1bc6f0cc60187ef3ca7cac2f01e5be1bd715ba6bb33431e7384" },
+    "completion": { "bytes": 963, "sha256": "5c98c2cbe243312f60e5eb27c5bd725e6a5f6a5d73a3c3fb1bf99c2244ed1fcb" },
+    "canonicalGuard": { "bytes": 246, "sha256": "64ac348864d69fb96a06b4ce6353b4246f6425829e689380dc29f726103159fd" },
+    "profileDatabase": { "bytes": 14581760, "sha256": "0f163a3fa476d5013642d9e80a11dc44f99809f94adf800a8150d5108dadf74e" },
+    "profileReport": { "bytes": 4544880, "sha256": "77a2b1d4df944a077887e24f33df15860b4f18846b90e8738c65022d9a51454b" },
+    "workerBootAfterAdmission": { "bytes": 1380, "sha256": "0f298877a04df5c22880b58c9f0c241ad724fc857acad82f23ad32227b0374ae" },
+    "loadedClosureAfter": { "bytes": 8697, "sha256": "d05b6351837ef3d71c28fe027c85d5522720f9689d5990e258860bf1a5135a2a" },
+    "diagnosticCompatible": true,
+    "selectedCell": "padded",
+    "singleCells": 5,
+    "retainedInputTraceJoins": 10,
+    "actualInferenceBatchSize": 1,
+    "verification": "Exact frozen summarizeNativeBoundaries recomputation matched the retained summary; original reference vectors/token IDs and source pins checked without inference replay. Canonical CUDA-event guard passed before and after capture.",
+    "databaseIntegrity": "ok",
+    "cudaApiRecords": 14705,
+    "cudaKernelRecords": 8644,
+    "nativeKernelPidBound": true,
+    "nativeDriverPid": 2835147,
+    "kernelPidBinding": "Kernel table globalPid joined directly to PROCESSES.globalPid; grouped pid rows = [(2835147, 8644)]",
+    "kernelPidAndSequenceBindingVerified": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "fullGpuPopulationComplete": false,
+    "notCheckedCells": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length"],
+    "oldEvidence": "V5 vectors, raw capture, partial report and importer failure remain retained; newer physical evidence does not retroactively qualify the failed V5 import"
   },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
