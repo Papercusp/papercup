@@ -72,7 +72,7 @@ const PLAN = 'drained-plan-2026-09-20';
 // this suite MOCKS to answer the acceptance-filing probe. Unpinned, a second
 // primary obligation appeared on the agenda below (measured 2026-09-22,
 // WI-2144525). It has its own suite; pin it empty here.
-const NO_OWNER_DIRECTIVES = { ownerDirectives: async () => [], waitingOn: async () => [] };
+const NO_OWNER_DIRECTIVES = { ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [] };
 let currentBody: string;
 
 function planBody(status: string, itemStatus = 'done'): string {

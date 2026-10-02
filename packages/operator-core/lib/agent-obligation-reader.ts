@@ -16,6 +16,8 @@ import {
 import {
   buildAgentObligationAgenda,
   selectGoalPlacementPlan,
+  type ConsultReconciliationProviderInput,
+  type ConsultReconciliationRow,
   type WaitingOnObligationRow,
   type WaitingOnProviderInput,
   type IndependentVerificationProviderInput,
@@ -110,6 +112,17 @@ export interface AgentObligationReaderDeps {
    * one, and gating it would reproduce the same measured hole.
    */
   waitingOn: (workspaceId: string, ownerId: string) => Promise<WaitingOnObligationRow[]>;
+  /**
+   * Consults this session opened under `latency_contract:'proceed'` and has not
+   * reconciled (EI-23764501791910357). A `proceed` consult lets the requester act
+   * on an ASSUMPTION; this is the read that makes "reconcile it when the reply
+   * lands" an obligation with a terminal state instead of an honour-system line.
+   *
+   * REQUIRED for the same reason as `waitingOn`: an optional dep lets the family land
+   * declared and probe-covered while production populates nothing. NOT gated on an
+   * active goal — any session can open a `proceed` consult.
+   */
+  consultReconciliations: (workspaceId: string, ownerId: string) => Promise<ConsultReconciliationRow[]>;
 }
 
 interface ReadOutcome<T> {
@@ -363,7 +376,14 @@ export async function readAgentObligationAgenda(input: {
     [] as WaitingOnObligationRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning] =
+  // Not gated on goalId either: see AgentObligationReaderDeps.consultReconciliations.
+  const consultsPromise = boundedRead(
+    'consult-reconciliation',
+    deps.consultReconciliations(input.workspaceId, input.ownerId),
+    [] as ConsultReconciliationRow[],
+    sourceTimeoutMs,
+  );
+  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning, consults] =
     await Promise.all([
       portfolioPromise,
       admissionPromise,
@@ -375,12 +395,36 @@ export async function readAgentObligationAgenda(input: {
       directivesPromise,
       waitingOnPromise,
       planningPromise,
+      consultsPromise,
     ]);
   const planSlugs = [...ownPlanSlugs, ...worklistAcceptance.planSlugs];
   const acceptances = [...ownAcceptances, ...worklistAcceptance.acceptances];
   degradedSources.push(...admission.failures);
   if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
   if (waits.degraded) degradedSources.push(readFailure('waiting-on', waits));
+  if (consults.degraded) degradedSources.push(readFailure('consult reconciliation', consults));
+  const consultReconciliation: ConsultReconciliationProviderInput = {
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+    observedAt,
+    // Row facts only — no observation clock — so an unchanged set of consults keeps an
+    // unchanged generation across warm turns (the turn-start cursor's dedup depends on it).
+    sourceGeneration: agentObligationSourceGeneration({
+      consults: consults.degraded
+        ? 'unknown'
+        : consults.value.map((row) => [row.consultId, row.phase, row.settledAt, row.expiresAt]),
+    }),
+    read: consults.degraded
+      ? {
+          status: 'unknown',
+          failure: {
+            code: 'canonical-consult-reconciliation-read-failed',
+            detail: readFailure('consult reconciliation', consults),
+            retry: 'retry the consult_state read for this requester (latency_contract=proceed, no outcome.reconciliation)',
+          },
+        }
+      : { status: 'known', value: consults.value },
+  };
   const waitingOn: WaitingOnProviderInput = {
     workspaceId: input.workspaceId,
     ownerId: input.ownerId,
@@ -637,7 +681,7 @@ export async function readAgentObligationAgenda(input: {
 
   return {
     agenda: buildAgentObligationAgenda(
-      { planPlacement, goalPlanning, ownerReport, independentVerification, ownerDirectives, waitingOn },
+      { planPlacement, goalPlanning, ownerReport, independentVerification, ownerDirectives, waitingOn, consultReconciliation },
       observedAt,
     ),
     goalId,
@@ -1010,5 +1054,67 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
         ));
       return [...awaitRows, ...lockRows];
     },
+    consultReconciliations: async (workspaceId, ownerId) => {
+      const [{ getOrgPg }, { GRADING_CASCADE_FLAVOR }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('./consult/grading-cascade'),
+      ]);
+      // The reconciliation marker lives in `consult_state.outcome` (jsonb), so there is
+      // no new table: a consult with no `outcome.reconciliation` IS the debt.
+      //  · Grading-cascade consults are excluded — they are a REQUEST to be graded, whose
+      //    verdict flows through scorecards and the plan-shipping gate, not an assumption
+      //    the requester built work on (the sweep alone opens ~80/week).
+      //  · The window is the escape hatch for a debt nobody will ever settle: past it the
+      //    row stops being an agenda obligation, but stays unreconciled in the table.
+      //  · Answered first, then newest, capped — the agenda must stay a short list.
+      const rows = (await getOrgPg().sql`
+        SELECT conversation_id, state, question, origin_task_ref, expires_at,
+               COALESCE(closed_at, updated_at) AS settled_at
+          FROM harness_shared.consult_state
+         WHERE workspace_id = ${workspaceId}
+           AND requester_id = ${ownerId}
+           AND latency_contract = 'proceed'
+           AND (outcome -> 'reconciliation') IS NULL
+           AND COALESCE(routing -> 'cascade' ->> 'flavor', '') <> ${GRADING_CASCADE_FLAVOR}
+           AND COALESCE(closed_at, updated_at) > now() - make_interval(hours => ${CONSULT_RECONCILIATION_WINDOW_HOURS}::int)
+         ORDER BY (state IN ('closed_answered', 'graduated')) DESC, COALESCE(closed_at, updated_at) DESC
+         LIMIT ${CONSULT_RECONCILIATION_MAX_ROWS}
+      `) as unknown as Array<{
+        conversation_id: string;
+        state: string;
+        question: string | null;
+        origin_task_ref: string | null;
+        expires_at: Date | string | null;
+        settled_at: Date | string | null;
+      }>;
+      const iso = (value: Date | string | null): string | null => (value ? new Date(value).toISOString() : null);
+      return rows.map((row) => {
+        const phase = consultReconciliationPhase(row.state);
+        return {
+          consultId: row.conversation_id,
+          phase,
+          assumption: row.question,
+          originTaskRef: row.origin_task_ref,
+          settledAt: phase === 'pending' ? null : iso(row.settled_at),
+          expiresAt: iso(row.expires_at),
+        };
+      });
+    },
   };
+}
+
+/** A `proceed` consult's debt is only collectable once, so the window bounds the agenda, not the debt. */
+export const CONSULT_RECONCILIATION_WINDOW_HOURS = 72;
+/** Same order of magnitude as the other per-agenda row caps; the recovery verb lists the rest. */
+export const CONSULT_RECONCILIATION_MAX_ROWS = 6;
+
+/**
+ * `consult_state.state` → what the originator owes. Exported so the mapping is pinned by a
+ * test: an unmapped NEW state must read as `unanswered` (the conservative reading — silence
+ * is not confirmation), never as `answered`.
+ */
+export function consultReconciliationPhase(state: string): ConsultReconciliationRow['phase'] {
+  if (state === 'routing' || state === 'awaiting_responder' || state === 'active') return 'pending';
+  if (state === 'closed_answered' || state === 'graduated') return 'answered';
+  return 'unanswered';
 }

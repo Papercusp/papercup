@@ -130,6 +130,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     // empty so these cases keep measuring the goal/plan providers.
     ownerDirectives: vi.fn(async () => []),
     waitingOn: vi.fn(async () => []),
+    consultReconciliations: vi.fn(async () => []),
     ...overrides,
   };
 }
