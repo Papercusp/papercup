@@ -14,6 +14,7 @@
 import { performance } from 'node:perf_hooks';
 import { Worker } from 'node:worker_threads';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describeNoWorkerReply, describeWorkerTimeout } from './worker-transport.js';
 import {
   createDecisionClient,
   createJevProvider,
@@ -172,15 +173,67 @@ describe('worker transport vs a blocked calling thread', () => {
     expect(out).toMatchObject({ kind: 'inconclusive', reason: 'timeout' });
     expect(elapsed).toBeGreaterThanOrEqual(DEADLINE_MS - 20);
     expect(elapsed).toBeLessThan(SLOW_MS - 100);
-    expect(records[0]!.transportLatencyMs).toBeNull();
+    // Whichever deadline fires first, the ledger says the request reached the provider
+    // and no response headers came back: the time was the provider's.
+    expect(out).toMatchObject({
+      detail: expect.stringMatching(/^(worker deadline at \d+ms|caller deadline, no worker reply): phase=sent\b/),
+    });
+    const latency = records[0]!.transportLatencyMs;
+    if (latency !== null) expect(latency).toBeLessThanOrEqual(DEADLINE_MS + 20);
     // The worker gave up on the request instead of letting it run on.
     await expect.poll(async () => (await serverStats()).aborted - before.aborted, { timeout: 2_000 }).toBe(1);
   });
 
   it('times out on the worker-measured deadline even when the calling thread is also blocked', async () => {
     const transport = newTransport();
-    const out = await client(toServer(transport.fetch, SLOW_MS, BLOCK_MS)).decide(request);
+    const records: DecisionCallRecord[] = [];
+    const out = await client(toServer(transport.fetch, SLOW_MS, BLOCK_MS), (r) => records.push(r)).decide(request);
     expect(out).toMatchObject({ kind: 'inconclusive', reason: 'timeout' });
+    // The worker's own deadline fired while this thread was blocked; its reply was
+    // waiting on the port, so the ledger carries the worker's timing, not a guess.
+    expect(out).toMatchObject({
+      detail: expect.stringMatching(/^worker deadline at \d+ms: phase=sent, queued=\d+ms$/),
+    });
+    // Measured from when the worker took the call (an unwarmed worker starts a little
+    // after the deadline was set), so it is at most the budget, never the blocked time.
+    expect(records[0]!.transportLatencyMs).toBeGreaterThan(DEADLINE_MS / 2);
+    expect(records[0]!.transportLatencyMs).toBeLessThanOrEqual(DEADLINE_MS + 20);
+  });
+
+  it('records a transport-reported timing on the timeout row, and none on a caller abort', async () => {
+    // A transport that reports through the deadline hook, then fails on the abort.
+    const reporting: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          init.deadline?.reportIncomplete({ elapsedMs: 42, detail: 'stub: phase=sent' });
+          reject(init.signal.reason);
+        });
+      });
+    const records: DecisionCallRecord[] = [];
+    const out = await client(reporting, (r) => records.push(r)).decide(request);
+    expect(out).toMatchObject({ kind: 'inconclusive', reason: 'timeout', detail: 'stub: phase=sent' });
+    expect(records[0]!.transportLatencyMs).toBe(42);
+
+    const caller = new AbortController();
+    const aborted: DecisionCallRecord[] = [];
+    const pending = client(reporting, (r) => aborted.push(r)).decide({ ...request, signal: caller.signal });
+    setTimeout(() => caller.abort(), 20);
+    const abortedOut = await pending;
+    expect(abortedOut).toMatchObject({ kind: 'inconclusive', reason: 'aborted' });
+    expect(abortedOut).not.toHaveProperty('detail');
+    expect(aborted[0]!.transportLatencyMs).toBeNull();
+  });
+
+  it('names how far the call got when the caller deadline passes first', () => {
+    expect(describeNoWorkerReply(null)).toBe(
+      'caller deadline, no worker reply: phase=none (the worker had not started the call)',
+    );
+    expect(describeNoWorkerReply({ progress: 'headers', atMs: 790.4, queuedMs: 2.2 })).toBe(
+      'caller deadline, no worker reply: phase=headers at 790ms, queued=2ms',
+    );
+    expect(describeWorkerTimeout({ transportMs: 801.2, phase: 'started', queuedMs: null })).toBe(
+      'worker deadline at 801ms: phase=started, queued=unknown',
+    );
   });
 
   it('reuses one connection across calls (the worker owns a keep-alive agent)', async () => {

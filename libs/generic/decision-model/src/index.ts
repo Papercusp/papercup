@@ -35,6 +35,7 @@ export {
   type DecideOptions,
   type DeadlineHook,
   type FetchLike,
+  type TransportTiming,
 } from './client.js';
 export {
   createWorkerTransport,
