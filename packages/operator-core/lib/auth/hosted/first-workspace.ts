@@ -122,7 +122,8 @@ export interface HostedFirstWorkspaceDependencies {
   discoverAwsHostInfrastructure(record: HostedProviderDelegationRecord): Promise<HostedAwsHostInfrastructure>;
   /**
    * Builds the admission port around a spec resolver bound to THIS verified delegation. A
-   * `bringUp` sets the machine up once it is built (D-401); only Papercusp hosting passes one.
+   * `bringUp` sets the machine up once it is built (D-401); passed for every GCP host, whoever's
+   * project it runs in (aws-byoc-gcp-parity D-015).
    */
   createAdmission(
     resolveDesiredSpec: ResolveFirstWorkspaceSpec,
@@ -541,11 +542,13 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         resolveSpec = async (spec) => gcpFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified });
       }
 
-      // D-401: a Papercusp-hosted machine is set up right after it is built; the customer's own
-      // cloud is left as they provisioned it.
+      // D-401 + aws-byoc-gcp-parity D-015: every GCP machine this door admits is set up right after
+      // it is built, Papercusp-hosted or in the customer's own project. A portal customer has no
+      // controller of their own and no initialize route, so without the bring-up their workspace
+      // would stay 'provisioning' forever. AWS bring-up (over SSM) is not built yet (D-015 rule 3).
       const admission = deps.createAdmission(
         resolveSpec,
-        hosting === 'papercusp' ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } } : {},
+        provider === 'gcp' ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } } : {},
       );
       let admitted: { workspaceId: string; provisionOperationId: string };
       try {
