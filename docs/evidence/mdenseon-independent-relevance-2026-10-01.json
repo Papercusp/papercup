@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "workItem": "WI-10004537",
   "plan": "mdenseon-adoption-measurements-2026-10-01",
-  "status": "initial-independent-cohort-measured-power-unresolved",
+  "status": "expanded-six-cell-independent-cohort-measured-and-verified-power-unresolved",
   "p003Complete": false,
   "serializedMeasurementLaunch": {
     "runId": "independent-relevance-v5",
-    "status": "prepared; not launched",
+    "status": "completed exit 0 after verified controlled V7; six raw/vector receipts and paired analysis verified",
     "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
     "launchRecipe": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/launch-relevance-v5-after-v7.sh",
     "prerequisite": "verifyCompletedPerformanceRun for complete controlled performance-cpu-v7, with all fifteen raw receipt fingerprints and rederived summary",
@@ -14,6 +14,380 @@
     "originalLabelsModelsAndRuntimeUnchanged": true,
     "partialV4Preserved": true,
     "acceptanceComplete": false
+  },
+  "serializedMeasurementOutcome": {
+    "status": "completed; six raw/vector cells and rederived paired analysis verified",
+    "taskId": "0muqglgxk1aw5s6h0dv",
+    "completedAt": "2026-10-02T04:48:49.507Z",
+    "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+    "driver": {
+      "sha256": "210f9921805fd4307ac2a446231fb047ff54dd4d6e5c8fecd48861e0f4c5347e",
+      "bytes": 4717
+    },
+    "completion": {
+      "sha256": "ce398ac43834a7196a941b259660fb5ac8abdf10e95df1bbad13df435ab65345",
+      "bytes": 4674
+    },
+    "analysis": {
+      "sha256": "f5b36fbd3e57a8f39d5168451322d3dfa3360631b1c741bbb4d3283dd811fb1c",
+      "bytes": 55467
+    },
+    "primaryUnit": "source-target-component",
+    "decisionMargin": 0.03,
+    "calibrationExcluded": true,
+    "cells": [
+      {
+        "cellId": "relevance-memory-mdenseon",
+        "raw": {
+          "sha256": "a425bab4a56f67157e4f34caf478fb65c207d1e55d31fb506f63dd9593a4a784",
+          "bytes": 81111
+        },
+        "vectors": {
+          "sha256": "91ac410ddfde4e1bae1e44911b89aa54fa164c7bbe8abb2830aeac77072c7e01",
+          "bytes": 9440034
+        },
+        "heldoutQueries": 32,
+        "answerableMetrics": {
+          "n": 24,
+          "recall_at_1": 0.875,
+          "recall_at_3": 0.875,
+          "recall_at_5": 0.9167,
+          "mrr_at_10": 0.8833
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.5335,
+          "hardNegTop1Mean": 0.4963,
+          "margin": 0.0372
+        }
+      },
+      {
+        "cellId": "relevance-memory-gemma",
+        "raw": {
+          "sha256": "1a9350b2a9ecf243ff30e08eae369c763a147878c5cebfa5456f2a2d0c580a2f",
+          "bytes": 80843
+        },
+        "vectors": {
+          "sha256": "fd5f0162cdb2bd1653352e607d3b93fe7e743010813c7779b12558361ec0eb4a",
+          "bytes": 9517258
+        },
+        "heldoutQueries": 32,
+        "answerableMetrics": {
+          "n": 24,
+          "recall_at_1": 0.875,
+          "recall_at_3": 0.9167,
+          "recall_at_5": 1,
+          "mrr_at_10": 0.9125
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.731,
+          "hardNegTop1Mean": 0.682,
+          "margin": 0.049
+        }
+      },
+      {
+        "cellId": "relevance-memory-harrier",
+        "raw": {
+          "sha256": "2f2314fc2b69c2f8fa17800d36a9b4571dc99b93f94247a54540fb97feb9a7cd",
+          "bytes": 80851
+        },
+        "vectors": {
+          "sha256": "dca673700dcfd5cbd44a85155abea98096cab19cb617b473db40b68fbe6309a3",
+          "bytes": 12619789
+        },
+        "heldoutQueries": 32,
+        "answerableMetrics": {
+          "n": 24,
+          "recall_at_1": 0.8333,
+          "recall_at_3": 0.875,
+          "recall_at_5": 0.875,
+          "mrr_at_10": 0.8542
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.6542,
+          "hardNegTop1Mean": 0.6374,
+          "margin": 0.0168
+        }
+      },
+      {
+        "cellId": "relevance-prose-mdenseon",
+        "raw": {
+          "sha256": "d89a4409aaa07b0bfa5b0f04967f2d37a42aee8b9b91338f7e6c7f42778b4bfe",
+          "bytes": 100509
+        },
+        "vectors": {
+          "sha256": "00848854bc9284fc727f3478af091f2befe483e49cab50dff88c4beea137929f",
+          "bytes": 9058889
+        },
+        "heldoutQueries": 8,
+        "answerableMetrics": {
+          "n": 6,
+          "recall_at_1": 1,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 1
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.5185,
+          "hardNegTop1Mean": 0.4884,
+          "margin": 0.0301
+        }
+      },
+      {
+        "cellId": "relevance-prose-gemma",
+        "raw": {
+          "sha256": "2845e9bd6d04aa805969246a5d026eb8939163e9946e5596e50e2b8f43dda88d",
+          "bytes": 100235
+        },
+        "vectors": {
+          "sha256": "e3aa38663a36698a5ce9a2c7a2395ed730209d41f32287479719acdded8cee95",
+          "bytes": 9123350
+        },
+        "heldoutQueries": 8,
+        "answerableMetrics": {
+          "n": 6,
+          "recall_at_1": 1,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 1
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.7228,
+          "hardNegTop1Mean": 0.6898,
+          "margin": 0.033
+        }
+      },
+      {
+        "cellId": "relevance-prose-harrier",
+        "raw": {
+          "sha256": "b197aeab9804a97e0b245b351890aeeeeb3ec4a59faf6dbebf8c9e05203ab1b1",
+          "bytes": 100248
+        },
+        "vectors": {
+          "sha256": "c49861adb2b32b196ceea1c491c4b7d7a8e34f8f2903e030ff83a3ff21530e9d",
+          "bytes": 12101014
+        },
+        "heldoutQueries": 8,
+        "answerableMetrics": {
+          "n": 6,
+          "recall_at_1": 1,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 1
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.65,
+          "hardNegTop1Mean": 0.6053,
+          "margin": 0.0447
+        }
+      }
+    ],
+    "comparisons": [
+      {
+        "corpus": "memory",
+        "baseline": "gemma",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "exact-identifier": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": -0.1875,
+              "lower": -0.4375,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0.09999999999999998,
+              "lower": 0,
+              "upper": 0.30000000000000004,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 8,
+            "queryCount": 24,
+            "delta": {
+              "point": -0.029166666666666563,
+              "lower": -0.14583333333333337,
+              "upper": 0.07916666666666664,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "memory",
+        "baseline": "harrier",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0.08750000000000002,
+              "lower": 0,
+              "upper": 0.2125,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 8,
+            "queryCount": 24,
+            "delta": {
+              "point": 0.029166666666666674,
+              "lower": 0,
+              "upper": 0.07083333333333333,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "gemma",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "exact-identifier": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 2,
+            "queryCount": 6,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "harrier",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "exact-identifier": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 2,
+            "queryCount": 6,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          }
+        }
+      }
+    ],
+    "allSourceClassMarginsResolved": false,
+    "fullAccessibleSourceCensusExhausted": false,
+    "p003Complete": false,
+    "modelAdoptionAuthorized": false,
+    "verificationInferencePerformed": false
   },
   "artifactPathConvention": "Paths beginning ~/ resolve against the executing account home; immutable hashes identify private artifacts.",
   "measuredAt": "2026-10-01T12:31:07.990Z",

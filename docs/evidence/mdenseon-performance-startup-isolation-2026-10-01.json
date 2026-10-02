@@ -3,7 +3,7 @@
   "plan": "mdenseon-adoption-measurements-2026-10-01",
   "workItem": "WI-10004539",
   "issue": "EI-24784676128638572",
-  "status": "startup-isolation-verified; five-block-model-measurement-pending",
+  "status": "controlled-five-block-CPU-performance-measured-and-verified; final-plan-acceptance-pending",
   "controlledPerformanceReplacement": {
     "decision": "mdenseon-adoption-measurements-2026-10-01#D-004",
     "issue": "EI-24830817000496473",
@@ -33,9 +33,523 @@
         "runId": "independent-relevance-v5",
         "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
         "admittedAt": "2026-10-02T04:24:44.145Z",
-        "status": "running; six-cell relevance results pending",
+        "status": "completed exit 0; six relevance cells and rederived source-pair analysis verified",
         "serializedLaunchVerified": true
       }
+    },
+    "controlledCpuComparison": {
+      "sourceSummarySha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
+      "estimator": "Median across the five fresh-process blocks of each within-block statistic. Not pooled percentiles, confidence intervals or significance tests.",
+      "latencyScope": "Warm HTTP/client/worker request latency, uncached; milliseconds.",
+      "throughputScope": "group wall time includes client/HTTP/worker plus collector bookkeeping; request latency stops before sample hashing/logging",
+      "resourceScope": "CPU process peak RSS includes JS/ONNX worker; GPU memory not applicable to verified CPU cells",
+      "gpuMemory": {
+        "status": "not-applicable",
+        "reason": "All fifteen declared and verified performance cells use CPU inference."
+      },
+      "arms": [
+        {
+          "armId": "mdenseon",
+          "blocks": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "warmMs": {
+            "query": {
+              "p50": 50.826217000001634,
+              "p95": 125.94546300000002,
+              "p99": 181.74385400000028
+            },
+            "document": {
+              "p50": 297.69570300000487,
+              "p95": 755.8347050000011,
+              "p99": 2001.5722289999976
+            }
+          },
+          "cachedMs": {
+            "query": {
+              "p50": 1.0798330000034184,
+              "p95": 2.379349999995611,
+              "p99": 2.379349999995611
+            },
+            "document": {
+              "p50": 1.033132000011392,
+              "p95": 2.425277999980608,
+              "p99": 2.425277999980608
+            }
+          },
+          "processToFirstResponseMs": 17158.837890625,
+          "firstQueryColdMs": 8344.197897,
+          "firstDocumentColdMs": 375.16377999999895,
+          "peakRssMiB": {
+            "median": 3456.6953125,
+            "range": [
+              3277.62890625,
+              3460.23046875
+            ]
+          },
+          "artifactBytes": 1262610859,
+          "requestGroupTextsPerSecond": [
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 10.8828329581317,
+              "range": [
+                4.424822221235056,
+                18.88009114401758
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 19.749678429872645,
+              "range": [
+                17.345462609163018,
+                22.01857971793752
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 19.115944097022457,
+              "range": [
+                9.622657210365166,
+                22.448245436858848
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 16.241289072473894,
+              "range": [
+                15.148066248111734,
+                23.7455448135765
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 19.707329910753742,
+              "range": [
+                12.030811159274014,
+                23.39900964313222
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 20.641500352106792,
+              "range": [
+                14.875231629487736,
+                22.976283301122937
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 3.6721127253340473,
+              "range": [
+                2.7671916765580713,
+                4.047170631712778
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 2.927803796712648,
+              "range": [
+                2.6476260030334187,
+                3.0730209183211303
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 2.7229152257697735,
+              "range": [
+                2.4730977627142865,
+                3.100188462704286
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 3.2713433161048266,
+              "range": [
+                3.022961389267695,
+                3.5064895763291966
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 3.328515868647238,
+              "range": [
+                3.1603762285465877,
+                3.368146142238928
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 3.2050928495496267,
+              "range": [
+                2.999407161714628,
+                3.5543347867410127
+              ]
+            }
+          ]
+        },
+        {
+          "armId": "gemma",
+          "blocks": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "warmMs": {
+            "query": {
+              "p50": 49.864206999998714,
+              "p95": 137.54685699999936,
+              "p99": 631.2677779999995
+            },
+            "document": {
+              "p50": 267.44954800000414,
+              "p95": 587.3651809999938,
+              "p99": 1304.0471510000061
+            }
+          },
+          "cachedMs": {
+            "query": {
+              "p50": 1.0282730000035372,
+              "p95": 1.6292930000054184,
+              "p99": 1.6292930000054184
+            },
+            "document": {
+              "p50": 0.9173700000101235,
+              "p95": 1.5829960000119172,
+              "p99": 1.5829960000119172
+            }
+          },
+          "processToFirstResponseMs": 11199.94140625,
+          "firstQueryColdMs": 2750.3128060000017,
+          "firstDocumentColdMs": 393.0038990000012,
+          "peakRssMiB": {
+            "median": 2573.75390625,
+            "range": [
+              2535.92578125,
+              2641.328125
+            ]
+          },
+          "artifactBytes": 1255326097,
+          "requestGroupTextsPerSecond": [
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 19.536479346978915,
+              "range": [
+                18.696522744978733,
+                23.077891993342565
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 21.392249270681802,
+              "range": [
+                20.284923583377577,
+                25.18141073886637
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 20.91772704704288,
+              "range": [
+                11.622089546578678,
+                22.067358922198657
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 21.529375361619103,
+              "range": [
+                19.749732921198646,
+                23.10742927731352
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 21.396259504308713,
+              "range": [
+                20.64110840868654,
+                23.649201928119414
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 21.77553356096959,
+              "range": [
+                20.16037164402743,
+                23.263816347041335
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 3.6659386161454033,
+              "range": [
+                3.2283937801158538,
+                4.318125974263023
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 3.2367198532949173,
+              "range": [
+                2.594537834661733,
+                3.2959068960354747
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 3.3142289418516917,
+              "range": [
+                2.904722890322206,
+                3.4147032583738177
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 4.02867365771941,
+              "range": [
+                3.737048214280726,
+                4.2002482387136455
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 4.089943445007818,
+              "range": [
+                3.50480189890754,
+                4.332509770748128
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 4.0162146402109355,
+              "range": [
+                3.670994121895745,
+                4.080080207522345
+              ]
+            }
+          ]
+        },
+        {
+          "armId": "harrier",
+          "blocks": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "warmMs": {
+            "query": {
+              "p50": 199.62282199999754,
+              "p95": 308.7506489999978,
+              "p99": 546.8532120000018
+            },
+            "document": {
+              "p50": 877.8653960000083,
+              "p95": 1757.6044450000045,
+              "p99": 2419.561658999999
+            }
+          },
+          "cachedMs": {
+            "query": {
+              "p50": 1.1906460000027437,
+              "p95": 2.1110339999722783,
+              "p99": 2.1110339999722783
+            },
+            "document": {
+              "p50": 0.9780759999994189,
+              "p95": 1.5178060000762343,
+              "p99": 1.5178060000762343
+            }
+          },
+          "processToFirstResponseMs": 17558.552978515625,
+          "firstQueryColdMs": 5272.284094999999,
+          "firstDocumentColdMs": 1184.842369,
+          "peakRssMiB": {
+            "median": 4438.8828125,
+            "range": [
+              4351.9921875,
+              4475.08203125
+            ]
+          },
+          "artifactBytes": 2104142056,
+          "requestGroupTextsPerSecond": [
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 5.052283766969165,
+              "range": [
+                3.934453747464707,
+                5.791411186344414
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 4.826677764767524,
+              "range": [
+                3.438604474249989,
+                5.755474142159545
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 4.908136448503776,
+              "range": [
+                4.4516131763897135,
+                6.262190699589274
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 4.455660102406892,
+              "range": [
+                4.234612415666525,
+                5.242914347078475
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 4.865022246608776,
+              "range": [
+                3.844105872645387,
+                4.948248219472111
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 4.608233958545007,
+              "range": [
+                3.7890234132014546,
+                5.28260771859449
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 1.2722433080188247,
+              "range": [
+                0.9289487134275612,
+                1.3488634706546199
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 0.9571905395374505,
+              "range": [
+                0.8162873412817012,
+                1.070975651952638
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 0.9857224449438137,
+              "range": [
+                0.7743233378422778,
+                1.0287627767430934
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 1.1937455391773957,
+              "range": [
+                1.1470473366420935,
+                1.2404495199837595
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 1.185058070062973,
+              "range": [
+                1.1599686564006633,
+                1.3078387780949468
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 1.2179214944478693,
+              "range": [
+                1.1632029842837912,
+                1.281164493544992
+              ]
+            }
+          ]
+        }
+      ]
     },
     "historicalPartialProgress": {
       "observedAt": "2026-10-02T04:16:55Z",
