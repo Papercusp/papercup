@@ -55,7 +55,12 @@ async function seamsWith(
   describeInstance: (instanceId: string) => Promise<AwsInstanceObservation | undefined>,
   extra: { runner?: { run: ReturnType<typeof vi.fn> }; readInstanceId?: () => Promise<string | null> } = {},
 ) {
-  const sleep = vi.fn(async (_ms: number) => undefined);
+  // A fake clock the mocked sleep advances: the reach probe's retry budget is measured with
+  // timing.now, so a frozen clock would retry an unreachable host forever.
+  let clock = 0;
+  const sleep = vi.fn(async (ms: number) => {
+    clock += ms;
+  });
   const seams = await resolveAwsWorkspaceHostSoakSeams({
     workspaceId: 'workspace-1',
     hostId: desired.hostId,
@@ -68,7 +73,7 @@ async function seamsWith(
     // describeInstance ONLY: a seam that tried to enroll host keys would need getConsoleOutput.
     awsClient: { describeInstance: vi.fn(describeInstance) },
     ...(extra.runner ? { runner: extra.runner as never } : {}),
-    timing: { sleep, now: () => 0 },
+    timing: { sleep, now: () => clock },
   });
   return { seams, sleep };
 }
