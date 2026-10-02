@@ -78,6 +78,13 @@ import type { LearningSloOptions } from './learning-slo';
 import type { EngagementCollectorOptions } from '../../endpoint-ipc/engagement';
 import { isLoopArmOwnerRole } from '../routines/autoloop-chronic-failure';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import {
+  toolLatencyBudgetSignalsFromRows,
+  toolLatencyBudgetsFromProjected,
+  writeToolNames,
+  type ToolLatencyBudget,
+  type ToolLatencyRow,
+} from './tool-latency-budget';
 
 export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
@@ -840,6 +847,20 @@ export interface CollectOptions extends LearningSloOptions, EngagementCollectorO
   sharedStallDurationMs?: number;
   /** Bound the raw candidate read used by shared-stall correlation. Default 2000. */
   sharedStallMaxRows?: number;
+  /**
+   * tool-latency-budget (WI-10005730): a MUTATING tool whose p95 STRICTLY exceeds this fraction
+   * of its dispatch timeout budget is flagged (late-return / commit-unknown risk). Default 0.8.
+   */
+  toolLatencyRatio?: number;
+  /** Minimum calls in the window before a tool's p95 counts. Default 20. */
+  toolLatencyMinSamples?: number;
+  /** Window for the per-tool p95 aggregate, in hours. Default 24. */
+  toolLatencyWindowHours?: number;
+  /**
+   * Test seam: tool-name → budget map. Production leaves this unset and the collector reads
+   * the live projected-tool registry (the dispatcher's own `timeoutSec ?? 60` source).
+   */
+  toolLatencyBudgets?: ReadonlyMap<string, ToolLatencyBudget>;
   /** Caller/DX tool-error (invalid_args / role-denied) sustained-pattern bar. Default 10. */
   callerMinCount?: number;
   /** Soft-failure outcome current consecutive-run bar. Default 10. */
@@ -2262,10 +2283,51 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
     HAVING count(*) >= ${softMinRun}
      ORDER BY count(*) DESC
      LIMIT 100`;
+  // tool-latency-budget (WI-10005730): write tools whose p95 runs near their dispatch timeout.
+  // Fail-soft like the shared-stall correlation above — a registry that cannot load (a tool file
+  // mid-edit) or a partial telemetry schema must not blind the rest of the tool-error sweep.
+  let toolLatencySignals: WatchdogSignal[] = [];
+  try {
+    const budgets = opts.toolLatencyBudgets ?? await loadProjectedToolLatencyBudgets();
+    const writeTools = writeToolNames(budgets);
+    if (writeTools.length === 0) {
+      // An EMPTY registry is indistinguishable from "no slow tools" in the output — say so,
+      // so a blind detector is a logged fact rather than a silent clean bill.
+      console.warn('[improvement-watchdog] tool-latency-budget skipped: no write tools in the projected registry');
+    } else {
+      const latencyWindowHours = opts.toolLatencyWindowHours ?? 24;
+      const latencyRows = await sql<ToolLatencyRow[]>`
+        SELECT tool_name,
+               count(*)::int AS n,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::float8 AS p95_ms,
+               max(invoked_at) AS latest_at,
+               min(invoked_at) AS earliest_at
+          FROM harness_shared.tool_invocations
+         WHERE invoked_at > now() - make_interval(hours => ${latencyWindowHours})
+           AND tool_name = ANY(${writeTools}::text[])
+           AND status IN ('ok', 'error', 'timeout')
+           AND duration_ms > 0
+           AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
+           AND ${dispatchWrapperExclusionPredicate(sql)}
+         GROUP BY tool_name
+        HAVING count(*) >= ${opts.toolLatencyMinSamples ?? 20}
+         LIMIT 500`;
+      toolLatencySignals = toolLatencyBudgetSignalsFromRows(latencyRows, budgets, {
+        toolLatencyRatio: opts.toolLatencyRatio,
+        toolLatencyMinSamples: opts.toolLatencyMinSamples,
+        toolLatencyWindowHours: latencyWindowHours,
+      });
+    }
+  } catch (error) {
+    console.warn(
+      `[improvement-watchdog] tool-latency-budget unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   return [
     ...toolErrorSignalsFromRows(rows, opts, sharedStall.correlatedToolNames),
     ...sharedStall.signals,
     ...softFailureSignalsFromRunRows(softRows, opts),
+    ...toolLatencySignals,
   ];
 }
 
