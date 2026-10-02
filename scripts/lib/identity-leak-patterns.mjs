@@ -789,3 +789,22 @@ export function redactIdentityLeaks(text, entries) {
 
   return out;
 }
+
+/**
+ * Serialize diagnostic JSON through the same redactor as the distribution guard.
+ * Redact string values before JSON escaping; counters, hashes, keys and the input
+ * object stay intact. Reject identity-bearing keys instead of changing its schema.
+ * @param {unknown} value JSON-compatible diagnostic report
+ * @param {[string,string][]} [entries] synthetic identity literals for tests
+ * @returns {string} indented JSON with a final newline
+ */
+export function serializeIdentitySafeJson(value, entries) {
+  const json = JSON.stringify(value, (key, field) => {
+    if (redactIdentityLeaks(key, entries) !== key) {
+      throw new Error('Diagnostic JSON key contains a machine identity');
+    }
+    return typeof field === 'string' ? redactIdentityLeaks(field, entries) : field;
+  }, 2);
+  if (json === undefined) throw new Error('Diagnostic report must be JSON-compatible');
+  return json + '\n';
+}
