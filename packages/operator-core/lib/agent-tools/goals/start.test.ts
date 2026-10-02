@@ -173,6 +173,9 @@ const idempotencyRows = new Map<string, {
   launchedBy: string | null;
 }>();
 let currentGoalArgs: Record<string, unknown> = {};
+// Happy paths exercise launch ordering with a fresh, authoritative measurement.
+// Null deliberately retains the all-empty ledger refusal for the negative control.
+let measuredSpendCents: number | null = 100;
 const runSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
   const text = strings.join(' ? ');
   sql.push({ text, values });
@@ -221,10 +224,12 @@ const runSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
       launch_settings: null,
       budget_cents: currentGoalArgs.budgetCents ?? null,
       budget_window_sec: currentGoalArgs.budgetWindowSec ?? null,
-      spent_cents: null,
+      spent_cents: measuredSpendCents,
       spent_cents_breakdown: null,
-      spent_cents_at: null,
-      spent_cents_source: null,
+      spent_cents_at: new Date().toISOString(),
+      spent_cents_source: 'goal-lineage-rollup',
+      interactive_usage_freshness_status: 'fresh',
+      interactive_usage_last_ingested_at_ms: Date.now(),
       drain_fleet: null,
     }]);
   }
@@ -275,6 +280,7 @@ const isError = (res: unknown) => !!(res as { isError?: boolean }).isError;
 beforeEach(() => {
   vi.clearAllMocks();
   currentGoalArgs = { ...ARGS };
+  measuredSpendCents = 100;
   order.length = 0;
   sql.length = 0;
   idempotencyRows.clear();
@@ -326,6 +332,28 @@ export function stampPrecedesSpawn(recorded: string[]): boolean {
   const spawn = recorded.indexOf('spawn');
   return stamp !== -1 && spawn !== -1 && stamp < spawn;
 }
+
+describe('goals:start measured budget prerequisite', () => {
+  it('refuses an empty spend ledger before opening any holder', async () => {
+    measuredSpendCents = null;
+    const result = await call();
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('spend CANNOT BE MEASURED');
+    expect(textOf(result)).toContain('no goal-attributed, pot, or session usage samples');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a fresh authoritative measurement at the declared ceiling', async () => {
+    measuredSpendCents = ARGS.budgetCents;
+    const result = await call();
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('budget');
+    expect(textOf(result)).not.toContain('CANNOT BE MEASURED');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+});
 
 describe('the ordering predicate itself', () => {
   it('accepts stamp-then-spawn and REJECTS spawn-then-stamp', () => {

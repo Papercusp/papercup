@@ -103,6 +103,11 @@ it('emits actionable cost alerts from existing usage accounts without disclosing
       [{ ...account, policy: { ...policy, periodEnd: new Date(now - 1_000).toISOString() } }, 'expired'],
       [{ ...account, policy: null }, 'missingPolicy'],
       [{ ...account, spentMicros: 'invalid' }, 'malformed'],
+      [{ ...account, policy: { ...policy, approvedBy: {} } }, 'malformed'],
+      [{ ...account, policy: { ...policy, approvalRef: {} } }, 'malformed'],
+      [{ ...account, policy: { ...policy, rateSheet: { ...policy.rateSheet, sourceRefs: 'x' } } }, 'malformed'],
+      [{ ...account, policy: { ...policy, rateSheet: { ...policy.rateSheet, sourceRefs: [{}] } } }, 'malformed'],
+      [{ ...account, policy: { ...policy, rateSheet: { ...policy.rateSheet, id: [] } } }, 'malformed'],
     ] as const) {
       await sql`UPDATE phone_usage_accounts SET state = ${sql.json(state)}`;
       const report = await check();

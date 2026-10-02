@@ -532,7 +532,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume full context with a required non-empty brief. Choose agentId (latest) OR sessionId (exact). Omitted runtime settings use the target/saved fleet profile; account/model overrides may conflict with that profile. carry is rejected for resume/fork; use successor for fresh context with explicit runtime/carry and retained identity.',
+          'Resume full context with a required non-empty brief. For ordinary in-place continuation, send `{ resume, brief }`. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
         ),
       successor: z
         .object({
@@ -545,7 +545,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows account/model/carry overrides. Visible by default; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
+          'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows explicit fresh-context `account`, `model`, or `carry` settings. Visible by default when `headless` is omitted or `false`; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
         ),
       fork: z
         .boolean()
