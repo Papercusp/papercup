@@ -61,17 +61,25 @@ export function parseAwsAmiReleaseDescription(
   return match ? { releaseVersion: match[1]!, releaseSha256: match[2]! } : undefined;
 }
 
-/** Host prerequisites from the common bootstrap contract plus AWS transport. */
+/**
+ * Host prerequisites from the common bootstrap contract plus AWS transport, named by the
+ * RPM the CentOS Stream 9 bootc image (infra/images/bootc/workspace-host.Containerfile)
+ * actually installs. These are package names, so each one can be checked with `rpm -q`
+ * against the baked image (WI-10005605). The Ubuntu-era names did not exist on that image:
+ * ufw maps to nftables and unattended-upgrades to dnf-automatic (RPM-EQUIVALENCE.md), and
+ * the AWS agent package is amazon-ssm-agent. The connection profile's `aws-ssm-agent`
+ * requirement id is a separate capability id, not a package name.
+ */
 export const AWS_AMI_REQUIRED_GUEST_TOOLS = [
   'acl',
-  'aws-ssm-agent',
+  'amazon-ssm-agent',
   'ca-certificates',
   'curl',
+  'dnf-automatic',
   'jq',
   'minisign',
+  'nftables',
   'openssh-server',
-  'ufw',
-  'unattended-upgrades',
 ] as const;
 
 export interface AwsAmiRegionTarget {

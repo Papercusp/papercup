@@ -107,7 +107,7 @@ describe("aws AMI release CLI", () => {
         parameterPrefix: "/p/ami",
         json: false,
       },
-      { "aws-ssm-agent": "3.3.1" },
+      { "amazon-ssm-agent": "3.3.1" },
       {
         PAPERCUSP_AWS_COLDSNAP_EXECUTABLE: "/opt/coldsnap",
         PAPERCUSP_AWS_AMI_SCAN_EXECUTABLE: "/opt/scan",
@@ -116,7 +116,7 @@ describe("aws AMI release CLI", () => {
     );
     expect(options).toEqual({
       repositoryRoot: "/repo",
-      guestToolVersions: { "aws-ssm-agent": "3.3.1" },
+      guestToolVersions: { "amazon-ssm-agent": "3.3.1" },
       parameterPrefix: "/p/ami",
       coldsnapExecutable: "/opt/coldsnap",
       scanExecutable: "/opt/scan",
