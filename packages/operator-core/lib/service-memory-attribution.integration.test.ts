@@ -1101,6 +1101,43 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 500_000);
 
+  it.skipIf(!process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER)('keeps the native decoder control across the maintained isolated runtime boundary', () => {
+    const program = String.raw`
+      const fs = require('node:fs'), path = require('node:path');
+      const snapshot = path.join(process.env.TMPDIR, 'decoder-control.heapsnapshot');
+      let phase = 'env-boundary';
+      (async () => {
+        if (process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER)
+          throw Error('Ambient control must be stripped');
+        if (!process.env.TEST_NATIVE_HEAP_DECODER) throw Error('Explicit decoder input was lost');
+        phase = 'import';
+        const { checkNativeHeapDecode } = await import(require('node:url').pathToFileURL(process.env.TEST_HEAP_ANALYZER));
+        phase = 'snapshot';
+        fs.mkdirSync(process.env.TMPDIR, { recursive: true });
+        require('node:v8').writeHeapSnapshot(snapshot);
+        phase = 'native-decode';
+        const result = checkNativeHeapDecode(fs.readFileSync(snapshot), process.env.TEST_NATIVE_HEAP_DECODER);
+        console.log('NATIVE_DECODER_CONTROL ' + JSON.stringify(result));
+      })().catch(error => { console.error(JSON.stringify({ phase, errorClass: error.name, errorCode: error.code }));
+        process.exitCode = 1; }).finally(() => fs.rmSync(snapshot, { force: true }));
+    `;
+    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--', process.execPath, '-e', program], {
+      cwd: root, encoding: 'utf8', timeout: 120_000, maxBuffer: 64 * 1024,
+      env: { ...process.env, TEST_NATIVE_HEAP_DECODER: process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER,
+        TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs') },
+    });
+    expect(result.status, result.stderr.slice(-1000)).toBe(0);
+    const line = result.stdout.split('\n').find(line => line.startsWith('NATIVE_DECODER_CONTROL '));
+    expect(line).toBeDefined();
+    const report = JSON.parse(line!.slice('NATIVE_DECODER_CONTROL '.length));
+    expect(report.decoded).toBe(true);
+    expect(report.executableSha256).toBe(createHash('sha256')
+      .update(readFileSync(process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER!)).digest('hex'));
+    expect(report.inputBytes).toBeGreaterThan(0);
+    expect(report.stdoutBytes).toBeLessThan(10);
+  }, 150_000);
+
   it.each(['diagnostic', 'ordinary', ...(process.env.PAPERCUSP_P011_HEAP_CENSUS === '1' ? ['snapshot'] : []),
     ...(process.env.PAPERCUSP_P011_HEAP_RETAINERS === '1' ? ['retainers'] : [])] as const)('binds %s PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async mode => {
     const destination = evidenceDestination(process.env.PAPERCUSP_P011_REPORT);
