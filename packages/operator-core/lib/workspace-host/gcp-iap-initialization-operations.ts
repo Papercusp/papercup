@@ -121,6 +121,24 @@ export interface AwsSsmWorkspaceHostInitializationProfile {
   awsExecutable?: string;
   /** Named AWS CLI profile carrying the connection's credentials; absent = the CLI's default chain. */
   awsProfile?: string;
+  /**
+   * The connection's own short-lived credentials, for a connection the AWS CLI cannot resolve by
+   * itself: any role chain (hosted customer-role, hosted OIDC, local assume-role). Without them the
+   * Session Manager tunnel runs as whatever ambient identity the controller process happens to
+   * have — for a hosted connection that is Papercusp's control-plane principal, which has no
+   * `ssm:StartSession` in the customer's account, so it fails; worse, if it did have it, the tunnel
+   * would silently run under the wrong principal. Resolved at spawn (each step opens a new tunnel)
+   * and handed to the CLI only through the child environment; never serialized. Mutually exclusive
+   * with `awsProfile`.
+   */
+  awsCredentials?: () => Promise<AwsSsmTunnelCredentials>;
+}
+
+/** Short-lived AWS credentials for one Session Manager tunnel. Secret; never serialize. */
+export interface AwsSsmTunnelCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
 }
 
 /** Every transport the shared SSH initialization operations can drive. */
@@ -132,6 +150,13 @@ export interface GcpIapWorkspaceHostInitializationCommand {
   command: string;
   args: readonly string[];
   stdin: string;
+  /**
+   * The COMPLETE environment for the transport process, resolved just before it is spawned.
+   * Absent = inherit the controller's environment. A function, not data, because it can carry
+   * secret credentials (`AwsSsmWorkspaceHostInitializationProfile.awsCredentials`): it must never
+   * be serialized, logged, or persisted with the command.
+   */
+  resolveEnvironment?: () => Promise<NodeJS.ProcessEnv>;
 }
 
 export interface GcpIapWorkspaceHostInitializationProcessResult {
@@ -446,6 +471,12 @@ export function buildAwsSsmSshInvocation(
   if (profile.awsProfile !== undefined) {
     requireCondition(AWS_CLI_PROFILE.test(profile.awsProfile), 'AWS CLI profile has an invalid value');
   }
+  // One identity per tunnel: a named profile AND injected credentials would leave the CLI to pick
+  // (explicit --profile wins), which is exactly the ambiguity the injection exists to remove.
+  requireCondition(
+    profile.awsProfile === undefined || profile.awsCredentials === undefined,
+    'AWS SSM transport cannot carry both a CLI profile and injected credentials',
+  );
   const remoteEntrypoint = requireExecutable(invocation.entrypoint, invocation.entrypointLabel, true);
 
   const proxyCommand = buildAwsSsmProxyCommand({
@@ -480,6 +511,56 @@ export function buildAwsSsmSshInvocation(
       remoteCommand,
     ],
     stdin: invocation.stdin,
+    ...(profile.awsCredentials ? { resolveEnvironment: awsSsmTunnelEnvironment(profile.awsCredentials) } : {}),
+  };
+}
+
+/** Every variable through which the AWS CLI could select an identity other than the injected one. */
+const AWS_CLI_IDENTITY_SELECTORS = [
+  'AWS_PROFILE',
+  'AWS_DEFAULT_PROFILE',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_SECURITY_TOKEN',
+  'AWS_ROLE_ARN',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'AWS_ROLE_SESSION_NAME',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_AUTHORIZATION_TOKEN',
+] as const;
+
+/**
+ * The tunnel's environment: the controller's own, with every ambient identity selector removed and
+ * the connection's credentials set. ssh hands its environment to the ProxyCommand, so this is how
+ * `aws ssm start-session` (and the Session Manager plugin it starts) runs as the connection.
+ * Resolution failures are reported by error NAME only: credential-provider errors can quote
+ * role/profile material.
+ */
+export function awsSsmTunnelEnvironment(
+  credentials: () => Promise<AwsSsmTunnelCredentials>,
+  base: NodeJS.ProcessEnv = process.env,
+): () => Promise<NodeJS.ProcessEnv> {
+  return async () => {
+    let resolved: AwsSsmTunnelCredentials;
+    try {
+      resolved = await credentials();
+    } catch (error) {
+      const name = error instanceof Error ? error.name : 'Error';
+      throw new Error(`AWS SSM tunnel credentials could not be resolved (${name})`);
+    }
+    requireCondition(
+      typeof resolved.accessKeyId === 'string' && resolved.accessKeyId.length > 0 &&
+        typeof resolved.secretAccessKey === 'string' && resolved.secretAccessKey.length > 0,
+      'AWS SSM tunnel credentials are incomplete',
+    );
+    const env: NodeJS.ProcessEnv = { ...base };
+    for (const key of AWS_CLI_IDENTITY_SELECTORS) delete env[key];
+    env.AWS_ACCESS_KEY_ID = resolved.accessKeyId;
+    env.AWS_SECRET_ACCESS_KEY = resolved.secretAccessKey;
+    if (resolved.sessionToken) env.AWS_SESSION_TOKEN = resolved.sessionToken;
+    return env;
   };
 }
 
@@ -643,6 +724,9 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
   async run(
     command: GcpIapWorkspaceHostInitializationCommand,
   ): Promise<GcpIapWorkspaceHostInitializationProcessResult> {
+    // Resolved per spawn, never cached on the command: each step opens a new tunnel, and the
+    // credential source refreshes short-lived role credentials before they expire.
+    const env = command.resolveEnvironment ? await command.resolveEnvironment() : undefined;
     return await new Promise((resolve, reject) => {
       // ssh launches gcloud as its ProxyCommand. Own one POSIX process group so every
       // failure bound covers both processes rather than orphaning the proxy after ssh dies.
@@ -651,6 +735,7 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
         detached: ownsProcessGroup,
+        ...(env ? { env } : {}),
       }) as ChildProcessWithoutNullStreams;
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
