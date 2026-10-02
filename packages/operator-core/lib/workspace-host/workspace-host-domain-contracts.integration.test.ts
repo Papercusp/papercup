@@ -446,24 +446,45 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
         checks: [{ name: 'compute-running', ok: true, detail: 'RUNNING' }],
       });
 
+      const operationId = `operation-health-${action}`;
       await beginWorkspaceHostOperation({
         workspaceId,
-        operationId: `operation-health-${action}`,
+        operationId,
         hostId,
         action,
         controllerAuthority: authority,
       });
+      await recordWorkspaceHostObservation(
+        workspaceId,
+        {
+          host: { hostId, target: 'gcp', resources: [] },
+          state: action === 'stop' ? 'stopped' : 'running',
+          resources: [],
+          observedAt: '2026-10-02T00:01:00.000Z',
+          drift: [],
+        },
+        { operationId, controllerAuthority: authority },
+      );
 
       const [host] = await db.adminSql<{
+        observed_state: string;
         health_status: string | null;
         health_attested_at: Date | string | null;
         health_checks: unknown[];
       }[]> `
-        SELECT health_status, health_attested_at, health_checks
+        SELECT observed_state, health_status, health_attested_at, health_checks
         FROM harness_shared.workspace_hosts
         WHERE workspace_id = ${workspaceId} AND id = ${hostId}
       `;
-      expect(host).toEqual({ health_status: null, health_attested_at: null, health_checks: [] });
+      expect(host).toEqual({
+        observed_state: action === 'stop' ? 'stopped' : 'running',
+        health_status: null,
+        health_attested_at: null,
+        health_checks: [],
+      });
+      expect(await readWorkspaceHostControl(workspaceId)).toContainEqual(
+        expect.objectContaining({ kind: 'workspace', id: hostId, health: undefined }),
+      );
     },
   );
 
