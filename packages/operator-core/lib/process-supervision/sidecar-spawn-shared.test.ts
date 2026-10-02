@@ -15,6 +15,9 @@ import {
   loopbackListenerOwnedBy,
 } from './sidecar-spawn-shared';
 import { createServer } from 'node:net';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 describe('loopback listener ownership (P-530, WI-10005523)', () => {
   // Real /proc/net/tcp shape: sl local rem st tx:rx tr:when retrnsmt uid timeout inode
@@ -142,6 +145,45 @@ describe('verifySidecarFitness (EI-19314150478401738)', () => {
 });
 
 describe('resolveSidecarSpawnPlan (WI-3079)', () => {
+  it('uses a nonempty maintained sibling under the same node and parent declaration', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'spawner-bundle-plan-'));
+    try {
+      const sibling = join(directory, 'spawner-sidecar.mjs');
+      writeFileSync(sibling, 'export {};');
+      const plan = resolveSidecarSpawnPlan({
+        selfPath: join(directory, 'serve.mjs'), devScriptPath: '/repo/spawner-sidecar.ts',
+        bundledScriptName: 'spawner-sidecar.mjs', bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+        execPath: '/opt/app/bin/node', spawnerPid: 4242,
+      });
+      expect(plan).toEqual({
+        cmd: '/opt/app/bin/node', args: [sibling], mode: 'bundled-reexec',
+        env: { PAPERCUSP_SPAWNER_SIDECAR_MODE: '1', PAPERCUSP_DESKTOP_PARENT_PID: '4242' },
+      });
+      // Other sidecar routes do not opt into this artifact.
+      expect(resolveSidecarSpawnPlan({
+        selfPath: join(directory, 'serve.mjs'), devScriptPath: '/repo/gateway.ts',
+        bundledModeEnvVar: 'PAPERCUSP_GATEWAY_SIDECAR_MODE', execPath: '/opt/app/bin/node', spawnerPid: 4242,
+      }).args).toEqual([join(directory, 'serve.mjs')]);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(['absent', 'empty', 'directory'])('keeps the full entry fallback when sibling is %s', (condition) => {
+    const directory = mkdtempSync(join(tmpdir(), 'spawner-bundle-fallback-'));
+    try {
+      const sibling = join(directory, 'spawner-sidecar.mjs');
+      if (condition === 'empty') writeFileSync(sibling, '');
+      if (condition === 'directory') mkdirSync(sibling);
+      const selfPath = join(directory, 'hono-host.mjs');
+      expect(resolveSidecarSpawnPlan({
+        selfPath, devScriptPath: '/repo/spawner-sidecar.ts', bundledScriptName: 'spawner-sidecar.mjs',
+        bundledModeEnvVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE', execPath: '/usr/bin/node', spawnerPid: 4242,
+      })).toEqual({
+        cmd: '/usr/bin/node', args: [selfPath], mode: 'bundled-reexec',
+        env: { PAPERCUSP_SPAWNER_SIDECAR_MODE: '1', PAPERCUSP_DESKTOP_PARENT_PID: '4242' },
+      });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('dev (real .ts on disk) → npx tsx <devScriptPath>', () => {
     const plan = resolveSidecarSpawnPlan({
       selfPath: '/repo/packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts',
