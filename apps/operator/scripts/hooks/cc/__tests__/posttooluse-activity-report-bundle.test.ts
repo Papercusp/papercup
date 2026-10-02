@@ -344,6 +344,7 @@ describe("cc PostToolUse activity-report hook — hook_bundle fold (stub operato
       const r = await run(ambientSid, {}, { session_id: nativeSessionId });
       expect(r.status).toBe(0);
       expect(lastRequest?.url).toContain(`client=${resolvedSid}`);
+      expect(new URL(lastRequest?.url ?? '').searchParams.get('native_session')).toBe(nativeSessionId);
       expect(lastRequest?.body.params.arguments.owner).toBe(resolvedSid);
       expect(cursorFor(resolvedSid)).toEqual({
         generation: "host-a:1",

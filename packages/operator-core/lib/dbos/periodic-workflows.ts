@@ -25,6 +25,7 @@ import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import type { PgssBaseline } from '../system-health/hot-seq-scan-detector';
 import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc, SCRATCH_GC_CRONTAB } from '../scratch-gc';
+import { runLocksCacheGc } from '../locks-cache-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
 import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
@@ -130,6 +131,22 @@ async function scratchGcTick(): Promise<void> {
       runScratchGc({ workspaceRegistry });
     },
     { name: 'scratch-gc' },
+  );
+  // WI-10005187: the hooks' per-owner state in ~/.papercusp/locks-cache is the same
+  // class of agent-local ephemeral storage and had no GC at all (32k entries).
+  // Fail-soft: a sweep error is logged, never thrown into a workflow retry.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const r = await runLocksCacheGc();
+        console.log(
+          `[locks-cache-gc] ${r.dir}: scanned=${r.scanned} removed=${r.removed} kept=${r.kept} skipped=${r.skipped}${r.error ? ` error=${r.error}` : ''}`,
+        );
+      } catch (err) {
+        console.warn(`[locks-cache-gc] sweep failed (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'locks-cache-gc' },
   );
 }
 const scratchGcWorkflow = idempotentRegisterWorkflow('scratchGc', () =>

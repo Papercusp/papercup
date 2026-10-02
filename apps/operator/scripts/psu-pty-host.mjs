@@ -58,6 +58,7 @@ import {
   unlinkSync,
   existsSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   chmodSync,
   renameSync,
@@ -2255,6 +2256,121 @@ function readProcText(readFile, path) {
   }
 }
 
+const PROC_NET_TCP_STATES = {
+  '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV', '04': 'FIN_WAIT1',
+  '05': 'FIN_WAIT2', '06': 'TIME_WAIT', '07': 'CLOSE', '08': 'CLOSE_WAIT',
+  '09': 'LAST_ACK', '0A': 'LISTEN', '0B': 'CLOSING',
+};
+
+/** Decode a /proc/net/tcp{,6} address ("0100007F:23C3") to "127.0.0.1:9155".
+ * The kernel prints each 32-bit word in host (little-endian) byte order.
+ * @param {string} value */
+export function decodeProcNetAddress(value) {
+  const [hex = '', portHex = ''] = String(value).split(':');
+  const port = Number.parseInt(portHex, 16);
+  /** @param {string} w */
+  const wordBytes = (w) => [w.slice(6, 8), w.slice(4, 6), w.slice(2, 4), w.slice(0, 2)].map((b) => Number.parseInt(b, 16));
+  if (/^[0-9A-Fa-f]{8}$/.test(hex)) return `${wordBytes(hex).join('.')}:${port}`;
+  if (/^[0-9A-Fa-f]{32}$/.test(hex)) {
+    const bytes = [0, 8, 16, 24].flatMap((i) => wordBytes(hex.slice(i, i + 8)));
+    if (bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 255 && bytes[11] === 255) {
+      return `${bytes.slice(12).join('.')}:${port}`;
+    }
+    const groups = [];
+    for (let i = 0; i < 16; i += 2) groups.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
+    return `[${groups.join(':')}]:${port}`;
+  }
+  return String(value).slice(0, 64);
+}
+
+/**
+ * Socket inventory of one process (WI-10005178): which TCP peers it holds, in what
+ * state, plus a unix-socket count. A Codex child stuck at "Starting" logs nothing
+ * and is recycled within minutes, so the snapshot is the only place this evidence
+ * can be caught. Reads the process's fd links and its OWN network namespace's
+ * /proc/<pid>/net tables, parsed once per namespace via `netCache`. Never throws;
+ * null when the fd list is unreadable.
+ * @param {number} pid
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, netCache?: Map<string, { tcp: Map<string, { remote: string, state: string }>, unix: Set<string> }>, maxTcp?: number }} [options]
+ */
+export function collectProcSockets(pid, {
+  readFile = readFileSync,
+  readDir = readdirSync,
+  readLink = readlinkSync,
+  netCache = new Map(),
+  maxTcp = 8,
+} = {}) {
+  let fds;
+  try {
+    fds = readDir(`/proc/${pid}/fd`).map(String);
+  } catch {
+    return null;
+  }
+  const inodes = new Set();
+  for (const fd of fds) {
+    let target;
+    try {
+      target = String(readLink(`/proc/${pid}/fd/${fd}`));
+    } catch {
+      continue;
+    }
+    const match = /^socket:\[(\d+)\]$/.exec(target);
+    if (match) inodes.add(match[1]);
+  }
+  if (inodes.size === 0) return { total: 0, tcp: [], unix: 0, other: 0 };
+  let nsKey = `pid:${pid}`;
+  try {
+    nsKey = String(readLink(`/proc/${pid}/ns/net`));
+  } catch {
+    // Unknown namespace: parse this process's tables uncached.
+  }
+  let tables = netCache.get(nsKey);
+  if (!tables) {
+    tables = { tcp: new Map(), unix: new Set() };
+    for (const name of ['tcp', 'tcp6']) {
+      const text = readProcText(readFile, `/proc/${pid}/net/${name}`) ?? '';
+      for (const line of text.split('\n').slice(1)) {
+        const cols = line.trim().split(/\s+/);
+        if (cols.length < 10) continue;
+        tables.tcp.set(cols[9], {
+          remote: decodeProcNetAddress(cols[2]),
+          state: PROC_NET_TCP_STATES[cols[3]] ?? cols[3],
+        });
+      }
+    }
+    const unixText = readProcText(readFile, `/proc/${pid}/net/unix`) ?? '';
+    for (const line of unixText.split('\n').slice(1)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length >= 7) tables.unix.add(cols[6]);
+    }
+    netCache.set(nsKey, tables);
+  }
+  /** @type {Map<string, { remote: string, state: string, count: number }>} */
+  const tcp = new Map();
+  let tcpCount = 0;
+  let unix = 0;
+  for (const inode of inodes) {
+    const entry = tables.tcp.get(inode);
+    if (entry) {
+      tcpCount += 1;
+      const key = `${entry.remote} ${entry.state}`;
+      const prior = tcp.get(key);
+      if (prior) prior.count += 1;
+      else tcp.set(key, { ...entry, count: 1 });
+    } else if (tables.unix.has(inode)) {
+      unix += 1;
+    }
+  }
+  const peers = [...tcp.values()].sort((a, b) => b.count - a.count);
+  return {
+    total: inodes.size,
+    tcp: peers.slice(0, maxTcp),
+    ...(peers.length > maxTcp ? { tcpTruncated: peers.length - maxTcp } : {}),
+    unix,
+    other: inodes.size - tcpCount - unix,
+  };
+}
+
 /** Walk the descendants of `rootPid` breadth-first. Children are read from
  * EVERY thread's /proc/PID/task/TID/children: the kernel lists a child under the
  * thread that forked it, and Codex (a multithreaded Rust runtime) forks its MCP
@@ -2268,15 +2384,17 @@ function readProcText(readFile, path) {
 
 /**
  * @param {number | undefined} rootPid
- * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, maxDepth?: number, maxProcs?: number }} [options]
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, maxDepth?: number, maxProcs?: number }} [options]
  */
 export function collectCodexStuckProcessTree(rootPid, {
   readFile = readFileSync,
   readDir = readdirSync,
+  readLink = readlinkSync,
   maxDepth = 5,
   maxProcs = 20,
 } = {}) {
   const procs = [];
+  const netCache = new Map();
   if (!Number.isInteger(rootPid) || rootPid <= 0) return { procs, truncated: false };
   const queue = [{ pid: rootPid, ppid: null, depth: 0 }];
   const seen = new Set();
@@ -2316,6 +2434,7 @@ export function collectCodexStuckProcessTree(rootPid, {
       wchan: wchan && wchan !== '0' ? wchan.slice(0, 64) : null,
       threads,
       cmd: cmdline ? redactSnapshotArgv(cmdline.split('\0').filter(Boolean)) : null,
+      sockets: collectProcSockets(current.pid, { readFile, readDir, readLink, netCache }),
     });
     if (current.depth >= maxDepth) continue;
     for (const tid of tids) {
@@ -2385,7 +2504,7 @@ export function readCodexTuiLogTail(codexHome, {
 }
 
 /** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
- * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readTail?: SnapshotReadTail }} [options]
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail }} [options]
  */
 export function collectCodexStartingStuckSnapshot({
   rootPid,
@@ -2393,11 +2512,12 @@ export function collectCodexStartingStuckSnapshot({
   platform = process.platform,
   readFile = readFileSync,
   readDir = readdirSync,
+  readLink = readlinkSync,
   readTail = readFileTail,
 } = {}) {
   try {
     const tree = platform === 'linux'
-      ? collectCodexStuckProcessTree(rootPid, { readFile, readDir })
+      ? collectCodexStuckProcessTree(rootPid, { readFile, readDir, readLink })
       : { procs: [], truncated: false };
     return {
       rootPid: Number.isInteger(rootPid) ? rootPid : null,

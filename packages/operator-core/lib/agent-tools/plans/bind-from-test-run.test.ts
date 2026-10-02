@@ -1,6 +1,6 @@
 /** P-044 (RSR-P-044-A): deriving a proof binding from a recorded test run — pure derivation + scope rules. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import {
   expandTestRunBinding,
   FROM_TEST_RUN_MAX_SOURCE_PATHS,
   isTestInfrastructurePath,
+  measuredFileModifiedAfterRun,
   repoRelativeTestPath,
   recordedTestPath,
   testRunBindingSchema,
@@ -281,6 +282,76 @@ describe('expandTestRunBinding: harness attribution', () => {
         },
         details: { testRun: { recordedRoot: mirror, recordedFilePath: TEST, canonicalTestPathOverride: canonical } },
       },
+    });
+  });
+
+  // EI-24826121815486916: the store pins the checkout's bytes at bind time, so a run whose
+  // measured files changed after it started would bind `current` for code it never executed.
+  describe('measured files modified after the run started', () => {
+    const GUARD_TEST = 'pkg/guard/guard.test.ts';
+    const GUARD_SUBJECT = 'pkg/guard/subject.ts';
+    const STARTED = '2026-09-23T15:00:00.000Z';
+    const before = new Date('2026-09-23T14:00:00Z');
+    const after = new Date('2026-09-23T16:00:00Z');
+
+    beforeAll(async () => {
+      await mkdir(path.join(root, 'pkg/guard'), { recursive: true });
+      await writeFile(path.join(root, GUARD_SUBJECT), 'export const subject = 1;\n');
+      await writeFile(path.join(root, GUARD_TEST), "import { subject } from './subject';\n");
+    });
+
+    async function stamp(subjectAt: Date, testAt = before) {
+      await utimes(path.join(root, GUARD_SUBJECT), subjectAt, subjectAt);
+      await utimes(path.join(root, GUARD_TEST), testAt, testAt);
+    }
+
+    const dirtyMutant = () =>
+      run({
+        file_path: GUARD_TEST,
+        source: 'mutation-probe',
+        worktree_dirty: true,
+        started_at: STARTED,
+        execution_details: { mutationPhase: 'mutant' },
+      });
+
+    it('refuses a dirty mutant run whose subject was edited after it started, naming the path and both times', async () => {
+      await stamp(after);
+      const out = await expandTestRunBinding(input(), SCOPE, deps(dirtyMutant()).d);
+      expect(out).toMatchObject({ ok: false, error: 'test_run_source_modified_after_run', testRunId: 42 });
+      if (!out.ok) {
+        expect(out.message).toContain(GUARD_SUBJECT);
+        expect(out.message).toContain(STARTED);
+        expect(out.message).toContain(after.toISOString());
+        expect(out.message).toContain('Re-run the test');
+      }
+    });
+
+    it('binds the same run when every measured file predates its start (positive control)', async () => {
+      await stamp(before);
+      expect(await expandTestRunBinding(input(), SCOPE, deps(dirtyMutant()).d)).toMatchObject({
+        ok: true,
+        binding: { evidenceKind: 'mutation', measurement: { testPaths: [GUARD_TEST], sourcePaths: [GUARD_SUBJECT] } },
+      });
+    });
+
+    it('also guards the test file itself, and clean runs in this checkout', async () => {
+      await stamp(before, after);
+      const clean = run({ file_path: GUARD_TEST, started_at: STARTED });
+      expect(await expandTestRunBinding(input(), SCOPE, deps(clean).d)).toMatchObject({
+        ok: false,
+        error: 'test_run_source_modified_after_run',
+        message: expect.stringContaining(GUARD_TEST),
+      });
+    });
+
+    it('cannot judge without a start time, and leaves a missing file to the store', async () => {
+      await stamp(after);
+      expect(await measuredFileModifiedAfterRun(root, [GUARD_SUBJECT], undefined)).toBeNull();
+      expect(await measuredFileModifiedAfterRun(root, ['pkg/guard/missing.ts'], STARTED)).toBeNull();
+      expect(await measuredFileModifiedAfterRun(root, ['pkg/guard/missing.ts', GUARD_SUBJECT], STARTED)).toMatchObject({
+        path: GUARD_SUBJECT,
+        startedAt: STARTED,
+      });
     });
   });
 

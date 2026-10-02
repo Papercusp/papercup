@@ -13,9 +13,36 @@ rejected tool call, not a usable inner payload.
 
 import json
 import os
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 OUTPUT_ENVELOPE_SCHEMA_VERSION = 'papercusp.output-envelope/v1'
 SCRATCH_URI_PREFIX = 'papercusp://scratch/'
+
+
+def with_native_session(url, native_session_id):
+    """Bind a hook MCP request to its verified native session URL context.
+
+    The MCP host derives request.ctx.advSessionId from this query parameter;
+    a JSON-RPC argument named ``session_id`` is telemetry and cannot establish
+    the verified request context. Keep other query parameters intact and
+    replace any stale native_session value rather than sending duplicates.
+    """
+    if not isinstance(url, str) or not isinstance(native_session_id, str):
+        return url
+    native_session_id = native_session_id.strip()
+    if not native_session_id:
+        return url
+    try:
+        parts = urlsplit(url)
+        query = [
+            (key, value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if key != 'native_session'
+        ]
+        query.append(('native_session', native_session_id))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    except (TypeError, ValueError):
+        return url
 
 
 def _parse_json_object(text):

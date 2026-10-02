@@ -12,9 +12,19 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const { dbRows } = vi.hoisted(() => ({ dbRows: { current: [] as unknown[] } }));
+const { fixtureSql, disclosureTransaction } = vi.hoisted(() => {
+  const sql = vi.fn(async (strings: TemplateStringsArray) => {
+    // Filing rows are not disclosure labels. The real sealing gate reads an
+    // independent ledger before any watchdog message can be persisted.
+    if (strings.join(' ').includes('harness_shared.personal_disclosures')) return [];
+    return dbRows.current;
+  });
+  const begin = vi.fn(async (run: (tx: typeof sql) => Promise<unknown>) => run(sql));
+  return { fixtureSql: Object.assign(sql, { begin }), disclosureTransaction: begin };
+});
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: () => Promise.resolve(dbRows.current) }),
+  getOrgPg: () => ({ sql: fixtureSql }),
 }));
 vi.mock('../pot/started', () => ({
   listBlenderMaintenanceScopes: vi.fn(),
@@ -270,7 +280,13 @@ describe('fireGradingNudge (the WI-2187 stable Mug seam)', () => {
   });
 
   it('passes the concrete owner and payload to the shared Mug wake seam', async () => {
+    disclosureTransaction.mockClear();
+    fixtureSql.mockClear();
     await fireGradingNudge('ws-1', 'mug-owner-123', [filing('idea-su-1', 10)], 604_800);
+    expect(disclosureTransaction).toHaveBeenCalled();
+    expect(fixtureSql.mock.calls.some(([strings]) =>
+      strings.join(' ').includes('harness_shared.personal_disclosures'),
+    )).toBe(true);
     expect(wakeMug).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-1', mugOwner: 'mug-owner-123', source: 'su-ideate-ungraded',
       summary: expect.stringContaining('idea-su-1'),

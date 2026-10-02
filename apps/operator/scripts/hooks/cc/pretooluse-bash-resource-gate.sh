@@ -189,7 +189,7 @@ urllib = _UrllibNamespace()
 
 operator_url, token_path, agent_id, hook_dir = sys.argv[1:5]
 sys.path.insert(0, hook_dir)
-from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_hook_payload, read_token_file, with_native_session  # noqa: E402
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -429,6 +429,7 @@ def _record_delivery(key):
         harness_slug = os.environ.get('PAPERCUSP_HARNESS_SLUG')
         if harness_slug:
             arguments['harness_slug'] = harness_slug
+        native_session_id = payload.get('session_id') or os.environ.get('PAPERCUSP_NATIVE_SESSION_ID') or ''
         body = json.dumps({
             'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
             'params': {
@@ -438,8 +439,11 @@ def _record_delivery(key):
             },
         }).encode()
         req = urllib.request.Request(
-            operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
-            + urllib.parse.quote(agent_id, safe=''),
+            with_native_session(
+                operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+                + urllib.parse.quote(agent_id, safe=''),
+                native_session_id,
+            ),
             data=body,
             headers={
                 'Authorization': 'Bearer ' + token,

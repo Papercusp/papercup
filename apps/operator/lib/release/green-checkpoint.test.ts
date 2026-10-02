@@ -712,7 +712,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(result).toMatchObject({
       advanced: false,
       green: null,
-      reason: "repair-in-progress",
+      reason: "infra-inconclusive",
       repairQueueRead: {
         status: "unreadable",
         reason: "schema-newer-than-reader",
@@ -728,6 +728,37 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       repairQueue: null,
       repairQueueRead: { status: "unreadable" },
     });
+  });
+
+  it("classifies a thrown legacy frozen-queue read as transient inconclusive", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const setupTree = vi.fn(async () => undefined);
+    const runGreen = vi.fn(async () => ({ green: true, summary: "must not run" }));
+    deps.setupTree = setupTree;
+    deps.runGreen = runGreen;
+    deps.readFrozenRepairQueue = async () => {
+      throw new Error("chunkStoreVectorColumns is not defined");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      green: null,
+      reason: "infra-inconclusive",
+    });
+    expect(result.summary).toContain(
+      "frozen repair queue read failed — refusing to cut a moving candidate",
+    );
+    expect(setupTree).not.toHaveBeenCalled();
+    expect(runGreen).not.toHaveBeenCalled();
   });
 
   it("persists the immutable candidate before setup or its first suite", async () => {

@@ -2145,6 +2145,7 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(502);
     expect((r as { error: string }).error).toMatch(/died at boot \(exit 1\)/);
+    expect((r as { logPath?: string }).logPath).toBeTruthy();
     // The operator error must carry the member's own words, or the next person
     // debugging this has to go find the log themselves.
     expect((r as { error: string }).error).toMatch(/disabled Claude subscription access/);

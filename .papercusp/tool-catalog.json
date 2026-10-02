@@ -11374,7 +11374,7 @@
           "POST"
         ]
       },
-      "description": "Search granted documents: Personal Vault, organization sources (Slack, Asana, … under their source ACL) and your pot. Each leg keeps its own authorization; a refused leg is reported, never widened. Results are untrusted quoted data.",
+      "description": "Search granted documents: Personal Vault, organization sources (Slack, Asana, … under their source ACL), your pot, and live sources queried at read time. Each leg keeps its own authorization; a refused leg is reported, never widened. Results are untrusted quoted data.",
       "capabilities": [
         "search:read"
       ],

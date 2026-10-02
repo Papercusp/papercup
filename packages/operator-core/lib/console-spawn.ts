@@ -1363,7 +1363,13 @@ export type SpawnConsoleResult =
        */
       kickoffProof?: KickoffProofResult;
     }
-  | { status: 'error'; error: string; code: number };
+  | {
+      status: 'error';
+      error: string;
+      code: number;
+      /** Durable log for a headless spawn that created its log before failing. */
+      logPath?: string;
+    };
 
 /** Detached-child lifecycle evidence exposed after a spawn result is returned. */
 export interface SpawnChildExit {
@@ -2747,6 +2753,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
           `headless spawn failed to start: ${earlyExit.error.message}` +
           ` — the binary never ran (is the agent CLI on the operator's PATH?); see ${logPath}`,
         code: 502,
+        logPath,
       };
     }
     if (earlyExit) {
@@ -2763,6 +2770,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
           `headless psu died at boot (${earlyExit.signal ? `signal ${earlyExit.signal}` : `exit ${earlyExit.code ?? 0}`}) within ${EARLY_EXIT_PROBE_MS}ms` +
           `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
         code: 502,
+        logPath,
       };
     }
 
@@ -2803,6 +2811,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
             ` — the shell stays open holding a DEAD session, so this never surfaced as a` +
             ` process exit (EI-19311623077693508)${tail ? ` — log tail: ${tail}` : ` — see ${logPath}`}`,
           code: 502,
+          logPath,
         };
       }
       if (Date.now() >= bootDeadline) break;
@@ -2833,6 +2842,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
           status: 'error',
           error: `headless kickoff was not submitted (${kickoffProof.reason}); task ${enrolment.taskId} was stopped or already gone`,
           code: 502,
+          logPath,
         };
       }
     }
@@ -2857,6 +2867,6 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
         closeSync(logFd);
       } catch { /* already closed */ }
     }
-    return { status: 'error', error: `headless spawn failed: ${e?.message}`, code: 500 };
+    return { status: 'error', error: `headless spawn failed: ${e?.message}`, code: 500, logPath };
   }
 }

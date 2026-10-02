@@ -161,7 +161,7 @@ describe('canonical plan lifecycle blocker receipts', () => {
 });
 
 describe('canonical delegated-member claim receipt', () => {
-  it.each(['drain', 'test'] as const)('excludes canonical %s activity from independent plan placement', async (activity) => {
+  it.each(['drain', 'test'] as const)('does not duplicate a plan fleet for canonical %s activity held by another fleet member', async (activity) => {
     // Both activities can have live leaders, members and a real plan lease.
     // Only the explicit plan allocation distinguishes them from a plan fleet.
     expect((await setMode({ workspaceId: WS, ownerId: LEADER, modeId: activity,
@@ -186,12 +186,10 @@ describe('canonical delegated-member claim receipt', () => {
     }
     const row = await placement();
     expect(row, `plan-activity-exclusion:${activity}`).toMatchObject({
-      state: 'admitting', fleet: null, launchTransaction: null,
+      state: 'blocked', fleet: null, launchTransaction: null,
       activeLane: { ownerId: MEMBER, ownerFleet: FLEET, holderLive: true },
-      reconciliation: { consistent: false, action: 'launch-spawned-leader',
-        toolCall: { tool: 'fleet:launch-on-plan', args: {
-          name: `${HARNESS}-${PLAN}-plan-fleet`, plan: PLAN, harness: HARNESS, leader: 'spawn',
-        } } },
+      reconciliation: { consistent: false, action: 'reconcile-plan-lane-holder',
+        reason: expect.stringContaining(FLEET), toolCall: null },
     });
     expect(row.state).not.toBe('working');
     expect(row.state).not.toBe('independently-led');

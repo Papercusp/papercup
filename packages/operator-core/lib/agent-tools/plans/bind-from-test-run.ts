@@ -40,7 +40,7 @@
  */
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { recordedTestLayer, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { withWorkspace } from '@papercusp/db-org';
@@ -97,6 +97,12 @@ export interface TestRunEvidenceRow {
   commit_sha: string | null;
   worktree_dirty: boolean | null;
   execution_details: unknown;
+  /**
+   * When the run started (NOT NULL DEFAULT now() in test_runs). Optional only so hand-built
+   * fixtures that predate it still type; the loader always selects it. Absent means the
+   * after-run modification guard cannot judge, so it does not refuse.
+   */
+  started_at?: Date | string | null;
   finished_at: Date | string | null;
 }
 
@@ -135,7 +141,8 @@ export type TestRunBindingError =
   | 'test_run_canonical_path_mismatch'
   | 'source_paths_underivable'
   | 'run_contradicts_declared_adequacy'
-  | 'test_run_as_committed_content_mismatch';
+  | 'test_run_as_committed_content_mismatch'
+  | 'test_run_source_modified_after_run';
 
 function executionDetails(raw: unknown): Record<string, unknown> {
   // The column is jsonb, but the reporter has written it both as an object and as a
@@ -567,6 +574,42 @@ export function deriveBindingFromTestRun(
   return { ok: true, binding, attribution };
 }
 
+/**
+ * EI-24826121815486916: the spec-evidence store pins a binding's measurement from this
+ * checkout's bytes at BIND time. An as-committed run is content-verified against its commit;
+ * every other run only executed what the checkout held when it ran. A measured file modified
+ * after the run started may not be what ran, so its pin would describe code the run never saw.
+ * Measured: two mutation-probe mutant runs bound `current` against a source a peer edited four
+ * minutes after they ran, while an earlier plain test binding of the same file read stale.
+ *
+ * test_runs keeps no per-file content, so mtime is the only signal. That makes this
+ * conservative: a rewrite with identical bytes also refuses, and the remedy is to re-run. The
+ * residual blind spot is collection time: the reporter derives started_at as
+ * finished_at - duration, so an edit after vitest read a file but before its tests started is
+ * not seen. A missing file is left to the store's own measurement checks.
+ */
+export async function measuredFileModifiedAfterRun(
+  root: string,
+  paths: readonly string[],
+  startedAt: Date | string | null | undefined,
+): Promise<{ path: string; modifiedAt: string; startedAt: string } | null> {
+  if (startedAt == null) return null;
+  const started = startedAt instanceof Date ? startedAt : new Date(startedAt);
+  if (Number.isNaN(started.getTime())) return null;
+  for (const repoRelative of paths) {
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await stat(resolve(root, repoRelative))).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtimeMs > started.getTime()) {
+      return { path: repoRelative, modifiedAt: new Date(mtimeMs).toISOString(), startedAt: started.toISOString() };
+    }
+  }
+  return null;
+}
+
 export interface TestRunBindingScope {
   workspaceId: string;
   harnessSlug: string;
@@ -585,7 +628,7 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
     return withWorkspace(scope.workspaceId, async (tx) => {
       const rows = await tx<TestRunEvidenceRow[]>`
         SELECT id, file_path, status, source, harness_slug, workspace_id, commit_sha,
-               worktree_dirty, execution_details, finished_at
+               worktree_dirty, execution_details, started_at, finished_at
           FROM harness_shared.test_runs
          WHERE id = ${testRunId}`;
       const row = rows[0];
@@ -765,6 +808,21 @@ export async function expandTestRunBinding(
           `test-run ${testRunId} ran clean at ${asCommitted.commitSha.slice(0, 12)} in a disposable clone, but ${content.path} ` +
           `${content.reason} in this checkout, so the binding's fingerprint would not describe the code that ran. ` +
           'Re-run the test as-committed at a commit this checkout matches and bind that run.',
+      };
+    }
+  }
+  if (result.ok && !asCommitted) {
+    const { testPaths, sourcePaths } = result.binding.measurement;
+    const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
+    const changed = await measuredFileModifiedAfterRun(root, measured, row.started_at);
+    if (changed) {
+      return {
+        ok: false,
+        error: 'test_run_source_modified_after_run',
+        testRunId,
+        message:
+          `test-run ${testRunId} started at ${changed.startedAt}, but ${changed.path} was modified at ${changed.modifiedAt}, ` +
+          'so the binding would fingerprint bytes this run may never have executed. Re-run the test and bind the new run.',
       };
     }
   }
