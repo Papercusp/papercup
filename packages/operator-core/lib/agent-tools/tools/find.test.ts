@@ -15,6 +15,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
+import launchAgent from '../capability/launch-agent';
 import releaseTrace from '../release/trace';
 import plansNew from '../plans/new';
 import plansAudit from '../plans/audit';
@@ -286,6 +287,18 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const text = embedText.get('tools:find');
     expect(text).toContain('tools:find');
     expect(text).toContain('query');
+  });
+
+  it('publishes capability:launch-agent conditional brief requirements in discovery output', async () => {
+    expect(launchAgent.name).toBe('capability:launch-agent');
+    const result = await callHandler({ query: 'capability:launch-agent', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'capability:launch-agent');
+
+    expect(hit).toBeDefined();
+    expect(hit?.argSchema).toContain('brief?:string');
+    expect(hit?.argSchema).toContain(
+      'constraint:$ (resume or fork => non-empty top-level brief required)',
+    );
   });
 
   it('derives return shapes from registered output schemas before authored prose', () => {

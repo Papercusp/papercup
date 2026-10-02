@@ -52,6 +52,7 @@ import { realpathSoft, resolveCapabilityBaseDir } from './base-dir';
 import { maskIntegrationKey, readIntegrationKey } from '../../integration-credentials';
 import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { findProviderEgressTargets } from '../../personal-vault/provider-egress.mjs';
 import { BashProvenanceRefusal, resolveBashTaskProvenance } from './bash-task-provenance';
 import { listLiveTasks } from '../../task-manager/store';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
@@ -548,6 +549,25 @@ export default defineTool({
     // the child's misleading `spawn /usr/bin/bash ENOENT`.
     const cwdError = missingBashCwdError(cwd, Boolean(args.cwd));
     if (cwdError) throw new Error(cwdError);
+    // P-007 / BAR R-11: a session that has read restricted personal data reaches
+    // mail, chat, calendar and social providers only through the gated verbs.
+    // The scan is a pure regex; the disclosure ledger is read only when the
+    // command names a provider host, a sidecar, or the sidecars' secrets.
+    if (findProviderEgressTargets(command).length) {
+      const { checkRestrictedEgress, egressRefusalPayload } = await import('../../personal-vault/binding-enforcement');
+      let egressOwnerId: string | null = null;
+      try {
+        egressOwnerId = resolveAgentIdentity(ctx as unknown as ResolveIdentityCtx).ownerId;
+      } catch {
+        egressOwnerId = null;
+      }
+      const refusal = egressRefusalPayload(
+        await checkRestrictedEgress({ ownerId: egressOwnerId, tool: 'capability:bash', texts: [command] }),
+      );
+      if (refusal) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(refusal) }], isError: true };
+      }
+    }
     const unboundedGitHistorySearch = detectUnboundedGitHistorySearch(command);
     if (unboundedGitHistorySearch) {
       return {

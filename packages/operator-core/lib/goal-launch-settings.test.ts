@@ -2698,8 +2698,8 @@ describe('P-006: the budget launch gate', () => {
   // ── The OTHER null: no snapshot, or an empty authoritative stream ──
   //
   // Neither is evidence that nothing was spent (D-011 clause 3). The gate used to
-  // admit both on the absence; it now measures every leg at launch and admits only
-  // the zero-usage bootstrap (stewardship-remediation D-014).
+  // admit both on the absence; D-017 now refuses either when no priced goal spend
+  // can be measured, including the all-empty case.
   const NULL_SNAPSHOTS = [null, 'no-lineage-samples'] as const;
 
   it('REFUSES an empty authoritative stream beside goal usage on the pot/session legs', async () => {
@@ -2759,10 +2759,9 @@ describe('P-006: the budget launch gate', () => {
     }
   });
 
-  it('CONTROL: one usage sample on ANY diagnostic leg is enough to refuse the bootstrap', async () => {
-    // Pairs with the bootstrap case: the only difference is a single sample, so a
-    // mutant that admitted on `lineage.samples === 0` alone passes the bootstrap
-    // test above and fails here.
+  it('classifies diagnostic-only usage separately from an all-empty refusal', async () => {
+    // Both cases refuse admission. A diagnostic-only sample changes the refusal
+    // scope to unattributed usage without inventing a priced goal spend figure.
     for (const legs of [
       { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 1, session: 0 },
       { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 1 },

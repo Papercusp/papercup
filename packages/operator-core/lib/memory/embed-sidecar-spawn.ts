@@ -43,6 +43,7 @@ import {
   EMBED_SIDECAR_LEGACY_CAPABILITIES,
   EMBED_SIDECAR_PORT_ENV,
   EMBED_SIDECAR_READY_LINE,
+  EMBED_SIDECAR_IDLE_EXIT_LINE,
 } from './embed-sidecar-server';
 
 /** Per-host opt-in switch (v1 rollout control, like PAPERCUSP_SPAWNER_SIDECAR). */
@@ -179,6 +180,17 @@ function scheduleRespawn(): void {
  * LISTEN — model warm-up continues in the background, so this stays well
  * inside the timeout even on a cold model cache).
  */
+/**
+ * P-531: how the spawner treats a sidecar exit. Only a CLEAN exit (code 0)
+ * that the sidecar announced on stdout (EMBED_SIDECAR_IDLE_EXIT_LINE) is an
+ * idle exit: no crash-respawn, no respawn-budget charge, the next embed
+ * re-launches it. Anything else, including a non-zero exit after the
+ * announcement, stays a crash and goes through scheduleRespawn.
+ */
+export function classifyEmbedSidecarExit(e: { idleExitAnnounced: boolean; code: number | null }): 'idle-exit' | 'crash' {
+  return e.idleExitAnnounced && e.code === 0 ? 'idle-exit' : 'crash';
+}
+
 export async function spawnEmbedSidecar(): Promise<void> {
   // WI-7249 / D-011: registration belongs to the SPAWN, not to a call site. Registered
   // inside ensureEmbedSidecar today, so a direct spawnEmbedSidecar() caller (it is
@@ -255,6 +267,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
 
     // Listen for ready handshake
     let stdoutBuffer = '';
+    let idleExitAnnounced = false;
     sidecarProcess.stdout?.on('data', (chunk: Buffer) => {
       stdoutBuffer += chunk.toString();
       const lines = stdoutBuffer.split('\n');
@@ -264,6 +277,13 @@ export async function spawnEmbedSidecar(): Promise<void> {
 
       for (const line of lines.slice(0, -1)) {
         console.log('[embed-sidecar]', line);
+
+        if (line.includes(EMBED_SIDECAR_IDLE_EXIT_LINE)) {
+          // P-531: a deliberate idle exit is coming. Stop routing new work to
+          // this process now; the exit handler below must not crash-respawn it.
+          idleExitAnnounced = true;
+          sidecarReady = false;
+        }
 
         if (line.includes(EMBED_SIDECAR_READY_LINE)) {
           sidecarReady = true;
@@ -290,12 +310,19 @@ export async function spawnEmbedSidecar(): Promise<void> {
     });
 
     sidecarProcess.on('exit', (code) => {
+      sidecarProcess = null;
+      sidecarReady = false;
+      if (classifyEmbedSidecarExit({ idleExitAnnounced, code }) === 'idle-exit') {
+        console.log('[embed-sidecar] exited idle; the next embed re-launches it');
+        // A caller that arrived during the idle shutdown is parked on
+        // readyWaiters: re-launch now so it is not stranded until a timeout.
+        if (readyWaiters.length > 0) void spawnEmbedSidecar().catch(() => undefined);
+        return;
+      }
       const msg = code !== null ? `exit code ${code}` : 'killed';
       if (!deliberateStop) {
         console.warn(`[embed-sidecar] died (${msg})`);
       }
-      sidecarProcess = null;
-      sidecarReady = false;
       scheduleRespawn();
     });
   });

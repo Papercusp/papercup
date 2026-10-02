@@ -177,7 +177,10 @@ describe('engine-comparison-cli aggregate() — recurrence guard (EI-24858052475
   // proven falsifiable against the exact pre-fix shape inside this same test, so it cannot pass vacuously.
   // Clock reads AND file-mtime reads: an mtime is a filesystem property that a cp / fresh clone / the gate's
   // checkpoint checkout resets, so deriving run identity from it made the bytes depend on checkout time.
-  const readsClock = (src: string): boolean => /new Date\(|Date\.now\(|\.stat\(|mtime/i.test(src);
+  // Line comments are stripped first: a comment explaining "never mtimes" must not trip the detector (the
+  // textual self-match trap). `(^|\s)//` only, so a `https://` inside a string is left alone.
+  const stripLineComments = (src: string): string => src.replace(/(^|\s)\/\/[^\n]*/g, '$1');
+  const readsClock = (src: string): boolean => /new Date\(|Date\.now\(|\.stat\(|mtime/i.test(stripLineComments(src));
   const aggregateBody = (src: string): string => {
     const start = src.indexOf('async function aggregate(');
     const end = src.indexOf('\n}\n', start);

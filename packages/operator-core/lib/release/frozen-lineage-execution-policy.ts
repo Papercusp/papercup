@@ -406,7 +406,14 @@ function canonicalRootTestCwd(atom: string, cwd: string | null): string | null |
   const words = peelHeavyWrapper(parsed);
   const head = commandName(words[0]);
 
-  if (head === 'node' && words[1]?.replace(/^\.\//, '') === 'scripts/affected-tests.mjs') return cwd;
+  if (head === 'node' && words[1]?.replace(/^\.\//, '') === 'scripts/affected-tests.mjs') {
+    // These modes only enumerate the affected-test plan and exit before a suite
+    // runs, so they do not judge a frozen candidate's test verdict.
+    const selectionOnly = words.slice(2).some(
+      (word) => word === '--dry' || word === '--dry-run' || word === '--print-affected',
+    );
+    return selectionOnly ? undefined : cwd;
+  }
   if (head !== 'npm') return undefined;
 
   let effectiveCwd = cwd;

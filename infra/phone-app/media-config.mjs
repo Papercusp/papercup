@@ -201,6 +201,17 @@ const PHONE_UNITS = [
   ['worker', 'papercusp-phone-worker.service'],
   ['sidecar', 'papercusp-phone-sidecar.service'],
 ];
+// A health failure should name its operational owner and the next diagnostic,
+// without requiring the alert consumer to parse journal text or credentials.
+const PHONE_RECOVERY = {
+  media: 'Inspect papercusp-phone-livekit.service and its pinned media configuration.',
+  sip: 'Inspect papercusp-phone-sip.service and the SIP-to-media connection.',
+  worker: 'Inspect papercusp-phone-worker.service and its vendor/credential preflight.',
+  sidecar: 'Inspect papercusp-phone-sidecar.service and its database dependency.',
+  'media-http': 'Inspect the loopback LiveKit HTTP control endpoint and media unit.',
+  'sidecar-http': 'Inspect the sidecar /api/health endpoint and its unit.',
+  'turn-certificate': 'Renew and recheck the hosted TURN certificate/key before expiry; do not admit hosted traffic.',
+};
 const execFileAsync = promisify(execFile);
 
 /** Local process/HTTP readiness is deliberately narrower than public calling:
@@ -249,6 +260,11 @@ export async function localPhoneReadiness(env, probes = {}) {
   return {
     ok: checks.every(check => check.ready),
     checks,
+    alerts: checks.filter(check => !check.ready).map(check => ({
+      component: check.component,
+      owner: 'phone-operations',
+      action: PHONE_RECOVERY[check.component],
+    })),
     scope: 'local-process-and-http-only',
     publicPhoneVerified: false,
     turnCertificateVerified: hosted && checks.at(-1).ready,

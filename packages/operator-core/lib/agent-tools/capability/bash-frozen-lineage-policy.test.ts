@@ -142,6 +142,18 @@ describe('capability:bash frozen-lineage guard', () => {
     expect(jobs.startBackground).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ['node scripts/affected-tests.mjs --changed-paths libs/papercusp --base HEAD^ --dry'],
+    ['node scripts/affected-tests.mjs --changed-paths libs/papercusp --base HEAD^ --print-affected'],
+  ] as const)('runs selection-only affected-tests probes without a candidate-verdict check: %s', async (command) => {
+    const result = await bash.handler({ command, cwd: ROOT }, ctx());
+    expect(result.isError).not.toBe(true);
+    expect(queueIo.read).not.toHaveBeenCalled();
+    expect(markerIo.read).not.toHaveBeenCalled();
+    expect(gitIo.head).not.toHaveBeenCalled();
+    expect(jobs.startBackground).toHaveBeenCalledOnce();
+  });
+
   it('treats an authoritative ready-to-test queue as inactive even when the marker is stale', async () => {
     queueIo.read.mockResolvedValue({ ...QUEUE, phase: 'ready-to-test' });
 

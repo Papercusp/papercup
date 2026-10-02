@@ -77,6 +77,9 @@ certificate renewal; those remain separate operational acceptance checks.
 `infra/phone-app/deploy.sh --status` reads the existing external configuration
 and returns that same JSON verdict with a nonzero exit status when not ready;
 it installs nothing, restarts nothing, and never prints credential values.
+Its `alerts` array maps each failed SIP/media/worker/sidecar/HTTP check to the
+Phone operations owner and a concrete diagnostic. A failed check produces a
+nonzero exit; a process being up alone cannot hide a failed HTTP endpoint.
 When hosted coordinates are present, the same status also fails closed on
 missing, mismatched or less-than-seven-days-remaining TURN certificate/key
 material, returning a `turn-certificate` check without exposing file paths or
@@ -115,6 +118,24 @@ archive, and never prints the database password. The drill verifies the digest,
 restores into a fresh temporary database, and reads every restored public table.
 It never writes to the running Phone database. Keep archives in a protected,
 backed-up destination; a local archive alone does not cover host loss.
+
+Read the existing Phone usage-account ledger for an aggregate, non-secret cost
+policy alert without admitting or charging any calls:
+
+```bash
+node infra/phone-app/phone-db-backup.mjs usage-status
+```
+
+The same database discovery path is used. A missing ledger/policy, suspended
+or expired period, exhausted approved hard cap, or malformed stored account
+returns nonzero with a `phone-operations` action. Healthy stored policies
+produce an empty `alerts` list; this is **not** a claim that provider charges
+have been reconciled (`liveProviderSpendVerified: false`). The output omits
+tenant identities, rate-sheet details and database credentials. Capture both
+this cost result and `deploy.sh --status` in the existing operator alert
+pipeline; either nonzero verdict needs Phone operations attention. Actual
+provider/rate/budget approvals and continuous alert delivery remain live
+acceptance obligations rather than something an isolated source test can prove.
 
 The smoke test requires a positive received-audio packet row and a complete,
 error-free subscriber summary from `lk` 2.16. It refuses unknown output formats,

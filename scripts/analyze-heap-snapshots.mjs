@@ -82,6 +82,68 @@ export function summarizeHeapSnapshot(snap, { top = 30 } = {}) {
     definition: 'V8 snapshot node self_size, after snapshot GC; not retained/exclusive bytes or total native memory.' };
 }
 
+/** Private snapshot analysis using the maintained Rust/WASM dominator graph.
+ * Input remains bytes: constructing a V8 string would reject large snapshots.
+ * Returned names contain only constructor/function labels, never string values
+ * or edge/property names. Class retained sizes overlap and must not be added.
+ * @param {Uint8Array} input
+ * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number }} [options]
+ */
+export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, retainerDepth = 2, maxRetainers = 32 } = {}) {
+  if (!(input instanceof Uint8Array) || !input.byteLength) throw new TypeError('Heap graph requires snapshot bytes');
+  for (const [name, value, maximum] of [['top', top, 30], ['perClass', perClass, 10],
+    ['retainerDepth', retainerDepth, 3], ['maxRetainers', maxRetainers, 100]]) {
+    if (!Number.isInteger(value) || value < 1 || value > maximum) throw new TypeError('Invalid heap graph ' + name);
+  }
+  const { decode_bytes, NodeType, EdgeType, WasmSortBy } = await import('@vscode/v8-heap-parser');
+  const graph = decode_bytes(input);
+  const safeBytes = value => {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) throw new TypeError('Unsafe heap graph byte count');
+    return number;
+  };
+  const nodeRow = node => {
+    const type = NodeType[node.typ] ?? 'Other';
+    // The parser's enum uses title-case names. Normalize STRING variants before
+    // applying the same payload exclusion as the streaming self-size census.
+    const typeLabel = type.toLowerCase();
+    return { index: node.index, id: node.id, type,
+      class: classLabel(typeLabel, node.name()), selfSizeBytes: safeBytes(node.self_size),
+      retainedSizeBytes: safeBytes(node.retained_size), children: node.children_len };
+  };
+  const genericLabels = new Set(['(system)', '(array)', '(string)', '(object)', '(compiled code)',
+    '(closure)', '(regexp)', '(number)', '(native)', '(synthetic)', '(concatenated string)',
+    '(sliced string)', '(bigint)', '(unknown)']);
+  try {
+    const groups = graph.get_class_groups(0, top, false);
+    try {
+      const rows = groups.map((group, groupIndex) => {
+        const raw = group.name();
+        const row = { class: genericLabels.has(raw) ? raw : classLabel('class', raw),
+          count: group.children_len, selfSizeBytes: safeBytes(group.self_size),
+          retainedSizeBytes: safeBytes(group.retained_size), nodes: [] };
+        const nodes = graph.class_children(groupIndex, 0, perClass, WasmSortBy.RetainedSize);
+        try {
+          row.nodes = nodes.map(node => {
+            const retainers = graph.get_all_retainers(node.index, retainerDepth);
+            try {
+              return { ...nodeRow(node), retainers: retainers.slice(0, maxRetainers).map(retainer => ({
+                ...nodeRow(retainer), retainsIndex: retainer.retains_index,
+                edgeType: EdgeType[retainer.edge_typ] ?? 'Other' })),
+                retainerCount: retainers.length, retainersTruncated: retainers.length > maxRetainers };
+            } finally { for (const retainer of retainers) retainer.free(); }
+          });
+        } finally { for (const node of nodes) node.free(); }
+        return row;
+      });
+      return { parser: '@vscode/v8-heap-parser@0.1.0', rootIndex: graph.root_index,
+        limits: { top, perClass, retainerDepth, maxRetainers }, groups: rows,
+        definition: 'Node retained_size is dominator-owned V8 self_size; class retained sizes overlap. Not total native memory or production savings.',
+        privacy: 'String payloads, source text, filesystem names and edge/property names are omitted.' };
+    } finally { for (const group of groups) group.free(); }
+  } finally { graph.free(); }
+}
+
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
  * @param {import('node:stream').Readable} input
  * @param {{ top?: number }} [options] top=0 keeps all classes for multi-snapshot aggregation.

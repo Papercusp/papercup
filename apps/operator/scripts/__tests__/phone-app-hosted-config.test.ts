@@ -120,12 +120,27 @@ describe('Phone local readiness is fail-closed and scoped', () => {
   });
   it('refuses inactive/crashed units, HTTP faults and unknown probes', async () => {
     const base = { unitState: async () => true, httpReady: async () => true };
-    expect((await localPhoneReadiness(coordinates, {
+    const sipFailure = await localPhoneReadiness(coordinates, {
       ...base, unitState: async (unit: string) => unit !== 'papercusp-phone-sip.service',
-    })).ok).toBe(false);
-    expect((await localPhoneReadiness(coordinates, {
+    });
+    expect(sipFailure.ok).toBe(false);
+    expect(sipFailure.alerts).toEqual([{
+      component: 'sip', owner: 'phone-operations',
+      action: expect.stringContaining('papercusp-phone-sip.service'),
+    }]);
+    const workerAndMedia = await localPhoneReadiness(coordinates, {
+      ...base, unitState: async (unit: string) =>
+        !['papercusp-phone-worker.service', 'papercusp-phone-livekit.service'].includes(unit),
+    });
+    expect(workerAndMedia.alerts.map(alert => alert.component)).toEqual(['media', 'worker']);
+    expect(workerAndMedia.alerts.every(alert => alert.action && alert.owner === 'phone-operations')).toBe(true);
+    const sidecarFailure = await localPhoneReadiness(coordinates, {
       ...base, httpReady: async (url: string) => !url.includes('8793'),
-    })).ok).toBe(false);
+    });
+    expect(sidecarFailure.ok).toBe(false);
+    expect(sidecarFailure.alerts).toMatchObject([{
+      component: 'sidecar-http', action: expect.stringContaining('/api/health'),
+    }]);
     expect((await localPhoneReadiness(coordinates, {
       ...base, unitState: async () => { throw new Error('systemctl failed'); },
     })).ok).toBe(false);

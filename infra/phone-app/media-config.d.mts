@@ -34,6 +34,7 @@ export function localPhoneReadiness(env: MediaEnvironment, probes?: {
   httpReady?: (url: string) => Promise<boolean>;
 }): Promise<{
   ok: boolean; checks: Array<{ component: string; ready: boolean }>;
+  alerts: Array<{ component: string; owner: 'phone-operations'; action: string }>;
   scope: 'local-process-and-http-only';
   publicPhoneVerified: false; turnCertificateVerified: boolean;
   bidirectionalAudioVerified: false; recoveryVerified: false; costPolicyVerified: false;

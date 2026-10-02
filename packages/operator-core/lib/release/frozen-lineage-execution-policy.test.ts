@@ -248,6 +248,24 @@ describe('frozen lineage shell-command policy', () => {
   });
 
   it.each([
+    ['--dry'],
+    ['--dry-run'],
+    ['--print-affected'],
+  ] as const)('leaves affected-tests plan probes outside frozen verification: %s', async (flag) => {
+    const command = `node scripts/affected-tests.mjs --changed-paths libs/papercusp --base HEAD^ ${flag}`;
+    const readMarker = vi.fn(() => marker());
+    const readCheckoutHead = vi.fn(async () => CANDIDATE);
+    const classification = classifyFrozenLineageShellCommand({ command, cwd: ROOT });
+
+    expect(classification).toBeNull();
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, { readMarker, readCheckoutHead }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'operation-not-governed' });
+    expect(readMarker).not.toHaveBeenCalled();
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+  });
+
+  it.each([
     'npm run test:file -- packages/operator-core/lib/a.test.ts',
     'npx vitest run packages/operator-core/lib/a.test.ts',
     'ptool release:repair-queue --json - <<JSON\n{"op":"admit","paths":["a.ts"]}\nJSON',

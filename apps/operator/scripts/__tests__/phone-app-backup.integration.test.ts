@@ -62,3 +62,65 @@ it('backs up Phone rows and restores them in an isolated database without replac
     await rm(work, { recursive: true, force: true });
   }
 }, 180_000);
+
+it('emits actionable cost alerts from existing usage accounts without disclosing tenant or database credentials', async () => {
+  const work = await mkdtemp(join(tmpdir(), 'phone-usage-status-test-'));
+  const server = await startEmbeddedPostgresServer({ dataDir: join(work, 'source-pg'),
+    dbName: 'phone', port: await freePort(), onLog: () => {} });
+  const sql = postgres(server.urls.admin, { max: 1, onnotice: () => {} });
+  const env = { ...process.env, PHONE_APP_DATABASE_URL: server.urls.admin,
+    PHONE_DATABASE_URL: '', DATABASE_URL: '' };
+  const check = async () => execFileAsync(process.execPath, [script, 'usage-status'], {
+    env, timeout: 20_000,
+  }).then(({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+    error => ({ code: error.code, stdout: error.stdout as string, stderr: error.stderr as string }));
+  const now = Date.now();
+  const policy = {
+    periodStart: new Date(now - 60_000).toISOString(),
+    periodEnd: new Date(now + 3_600_000).toISOString(),
+    approvedBy: 'fixture-approver', approvalRef: 'fixture-approval',
+    status: 'active', hardCapMicros: 1_000_000,
+    rateSheet: { id: 'fixture-rates', currency: 'USD', sourceRefs: ['fixture-reference'],
+      effectiveAt: new Date(now - 60_000).toISOString(), capturedAt: new Date(now - 60_000).toISOString() },
+  };
+  const account = { policy, spentMicros: 100_000, reservedMicros: 200_000 };
+  try {
+    const missingLedger = await check();
+    expect(missingLedger.code).not.toBe(0);
+    expect(JSON.parse(missingLedger.stdout).alerts[0].condition).toBe('usage-telemetry-unavailable');
+    await sql.unsafe('CREATE TABLE public.phone_usage_accounts (owner_id text PRIMARY KEY, state jsonb NOT NULL)');
+    await sql`INSERT INTO phone_usage_accounts (owner_id, state)
+      VALUES (${'private-owner-id'}, ${sql.json(account)})`;
+    const healthy = await check();
+    expect(healthy.code, healthy.stdout + healthy.stderr).toBe(0);
+    expect(JSON.parse(healthy.stdout)).toMatchObject({
+      ok: true, action: 'usage-status', accountsChecked: 1,
+      alerts: [], liveProviderSpendVerified: false,
+    });
+    for (const [state, expected] of [
+      [{ ...account, policy: { ...policy, status: 'suspended' } }, 'suspended'],
+      [{ ...account, spentMicros: 900_000 }, 'exhausted'],
+      [{ ...account, policy: { ...policy, periodEnd: new Date(now - 1_000).toISOString() } }, 'expired'],
+      [{ ...account, policy: null }, 'missingPolicy'],
+      [{ ...account, spentMicros: 'invalid' }, 'malformed'],
+    ] as const) {
+      await sql`UPDATE phone_usage_accounts SET state = ${sql.json(state)}`;
+      const report = await check();
+      expect(report.code, report.stdout).not.toBe(0);
+      expect(JSON.parse(report.stdout)).toMatchObject({
+        ok: false, alerts: expect.arrayContaining([{
+          condition: expected, count: 1, owner: 'phone-operations',
+          action: expect.any(String),
+        }]),
+      });
+      expect(report.stdout + report.stderr).not.toContain('private-owner-id');
+      expect(report.stdout + report.stderr).not.toContain(new URL(server.urls.admin).password);
+    }
+    await sql.unsafe('DELETE FROM phone_usage_accounts');
+    expect(JSON.parse((await check()).stdout).alerts[0].condition).toBe('usage-telemetry-unavailable');
+  } finally {
+    await sql.end({ timeout: 5 }).catch(() => {});
+    await server.stop().catch(() => {});
+    await rm(work, { recursive: true, force: true });
+  }
+}, 120_000);

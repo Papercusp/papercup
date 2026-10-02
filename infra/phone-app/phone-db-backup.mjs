@@ -123,6 +123,66 @@ async function backup(out) {
   }
 }
 
+// Read the existing Phone usage ledger; never infer "zero spend" from a
+// missing/unreadable policy or ledger. Only aggregate counts leave the process:
+// owner IDs, rate sheets, database URLs and provider events remain private.
+export function assessUsageAccounts(accounts, now = Date.now()) {
+  const counts = { missingPolicy: 0, suspended: 0, expired: 0, exhausted: 0, malformed: 0 };
+  if (!Array.isArray(accounts) || accounts.length === 0 || accounts.length > 1000 ||
+      !Number.isFinite(now)) {
+    return { ok: false, action: 'usage-status', accountsChecked: 0,
+      alerts: [{ condition: 'usage-telemetry-unavailable', owner: 'phone-operations',
+        action: 'Verify the Phone usage ledger and approved policy source before admitting carrier traffic.' }] };
+  }
+  for (const account of accounts) {
+    const policy = account?.policy;
+    if (!policy) { counts.missingPolicy++; continue; }
+    const start = Date.parse(policy.periodStart), end = Date.parse(policy.periodEnd);
+    const micros = [account.spentMicros, account.reservedMicros, policy.hardCapMicros];
+    if (!policy.approvedBy || !policy.approvalRef || !policy.rateSheet?.id ||
+        policy.rateSheet.currency !== 'USD' || !policy.rateSheet.sourceRefs?.length ||
+        !Number.isFinite(Date.parse(policy.rateSheet.effectiveAt)) ||
+        !Number.isFinite(Date.parse(policy.rateSheet.capturedAt)) ||
+        !Number.isFinite(start) ||
+        !Number.isFinite(end) || end <= start ||
+        micros.some(value => !Number.isSafeInteger(value) || value < 0) ||
+        !Number.isSafeInteger(micros[0] + micros[1])) {
+      counts.malformed++;
+      continue;
+    }
+    if (policy.status !== 'active') counts.suspended++;
+    if (now < start || now >= end) counts.expired++;
+    if (micros[0] + micros[1] >= micros[2]) counts.exhausted++;
+  }
+  const actions = {
+    missingPolicy: 'Bind a verified Phone usage policy; do not admit unpriced carrier traffic.',
+    suspended: 'Investigate the suspended policy and provider charges before requesting fresh approval.',
+    expired: 'Renew the usage period and approved rate sheet before carrier admission.',
+    exhausted: 'Stop carrier admission and reconcile committed plus reserved spend against the hard cap.',
+    malformed: 'Repair the Phone usage account/policy record before carrier admission.',
+  };
+  const alerts = Object.entries(counts).filter(([, count]) => count > 0)
+    .map(([condition, count]) => ({ condition, count, owner: 'phone-operations', action: actions[condition] }));
+  return { ok: alerts.length === 0, action: 'usage-status', accountsChecked: accounts.length,
+    alerts, scope: 'stored-policy-and-cost-only', liveProviderSpendVerified: false };
+}
+
+async function usageStatus() {
+  const raw = await sourceUrl();
+  const { default: postgres } = await import('postgres');
+  const sql = postgres(raw, { max: 1, connect_timeout: 10, onnotice: () => {} });
+  try {
+    const rows = await sql`SELECT state FROM phone_usage_accounts LIMIT 1001`;
+    const result = assessUsageAccounts(rows.map(row => row.state));
+    console.log(JSON.stringify(result));
+    if (!result.ok) process.exitCode = 1;
+  } catch {
+    // Driver errors can embed a database URL. Refuse instead of leaking it.
+    console.log(JSON.stringify(assessUsageAccounts([])));
+    process.exitCode = 1;
+  } finally { await sql.end({ timeout: 5 }).catch(() => {}); }
+}
+
 async function freePort() {
   return new Promise((resolvePort, reject) => {
     const server = createServer();
@@ -191,13 +251,15 @@ async function drill(archive) {
 
 try {
   const [action, flag, path, ...rest] = process.argv.slice(2);
-  if (rest.length || !path || (action === 'backup' && flag !== '--out') ||
-      (action === 'restore-drill' && flag !== '--archive') ||
-      !['backup', 'restore-drill'].includes(action)) {
-    throw new Error('usage: phone-db-backup.mjs backup --out /absolute/path.dump | restore-drill --archive /absolute/path.dump');
+  if (rest.length || (action === 'usage-status' ? flag !== undefined || path !== undefined :
+      !path || (action === 'backup' && flag !== '--out') ||
+      (action === 'restore-drill' && flag !== '--archive')) ||
+      !['backup', 'restore-drill', 'usage-status'].includes(action)) {
+    throw new Error('usage: phone-db-backup.mjs backup --out /absolute/path.dump | restore-drill --archive /absolute/path.dump | usage-status');
   }
   if (action === 'backup') await backup(path);
-  else await drill(path);
+  else if (action === 'restore-drill') await drill(path);
+  else await usageStatus();
 } catch (error) {
   // libpq URLs and secret values never enter diagnostic output.
   console.error(`phone-db-backup: ${error instanceof Error ? error.message : 'unknown failure'}`);

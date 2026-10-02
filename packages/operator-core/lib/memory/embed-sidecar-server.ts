@@ -67,6 +67,7 @@
  * auto-recover (memory-write-journal-auto-recovery-2026-07-11).
  */
 import * as http from 'node:http';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   buildGemmaEmbedder,
   buildHarrierEmbedder,
@@ -608,6 +609,41 @@ export interface EmbedSidecarHandle {
   close: () => Promise<void>;
   /** Per-`model:kind` warm state — surfaced verbatim by /healthz. */
   warmStates: () => Record<string, WarmState>;
+  /**
+   * Work-request activity for the idle exit (P-531, WI-10005523): `inFlight`
+   * counts open requests on every route EXCEPT GET /healthz, and
+   * `lastActivityAt` is the epoch ms of the last such request's start or end
+   * (server creation before the first one). /healthz is excluded so the
+   * parent's liveness probes can never keep an idle sidecar alive.
+   */
+  activity: () => EmbedSidecarActivity;
+}
+
+export interface EmbedSidecarActivity {
+  inFlight: number;
+  lastActivityAt: number;
+}
+
+/**
+ * P-531: a sidecar SPAWNED BY ITS SERVER (PAPERCUSP_EMBED_SIDECAR=1) may exit
+ * after this many ms with no work request, returning the embedding model's
+ * ~1 GB to the host; the spawner re-launches it lazily on the next embed.
+ * Unset or 0 = never exit. The supervised systemd sidecar, and any sidecar
+ * whose URL other processes share, must leave this unset: nothing would
+ * respawn it for them.
+ */
+export const EMBED_SIDECAR_IDLE_EXIT_ENV = 'PAPERCUSP_EMBED_SIDECAR_IDLE_EXIT_MS';
+/** Printed on stdout just before an idle exit, so the spawner can tell it from a crash. */
+export const EMBED_SIDECAR_IDLE_EXIT_LINE = 'PAPERCUSP_EMBED_SIDECAR_IDLE_EXIT';
+
+export function resolveEmbedSidecarIdleExitMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env[EMBED_SIDECAR_IDLE_EXIT_ENV]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/** True when the sidecar has been idle (no open work request) for at least `idleMs`. */
+export function shouldIdleExit(activity: EmbedSidecarActivity, nowMs: number, idleMs: number): boolean {
+  return idleMs > 0 && activity.inFlight === 0 && nowMs - activity.lastActivityAt >= idleMs;
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -1417,10 +1453,22 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   };
   const capabilities = Object.keys(handlers);
 
+  // P-531 idle-exit accounting: every routed request except the liveness probe.
+  let inFlight = 0;
+  let lastActivityAt = Date.now();
   const server = http.createServer((req, res) => {
     const url = (req.url ?? '').split('?')[0];
-    const handle = handlers[`${req.method} ${url}`];
+    const route = `${req.method} ${url}`;
+    const handle = handlers[route];
     if (handle) {
+      if (route !== EMBED_SIDECAR_CAP_HEALTHZ) {
+        inFlight += 1;
+        lastActivityAt = Date.now();
+        res.once('close', () => {
+          inFlight -= 1;
+          lastActivityAt = Date.now();
+        });
+      }
       handle(req, res);
       return;
     }
@@ -1559,6 +1607,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     server,
     listening,
     warmStates: () => ({ ...warm }),
+    activity: () => ({ inFlight, lastActivityAt }),
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());
@@ -1583,7 +1632,10 @@ export function runEmbedSidecarServer(): void {
       process.exit(1);
     },
   );
+  let shuttingDown = false;
   const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[embed-sidecar] ${signal} received, shutting down gracefully`);
     // EI-19464316359123796: this process IS the "in-process embedding" host the
     // fallback-warning in embed-sidecar-spawn.ts tells OTHER callers to worry
@@ -1606,4 +1658,22 @@ export function runEmbedSidecarServer(): void {
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // P-531: exit when idle so the model's memory returns to the host; the
+  // spawner reads the IDLE_EXIT line, skips its crash-respawn, and re-launches
+  // on the next embed. Same graceful path as SIGTERM (workers torn down first).
+  const idleMs = resolveEmbedSidecarIdleExitMs();
+  if (idleMs > 0) {
+    const tickMs = Math.max(1_000, Math.min(30_000, Math.floor(idleMs / 4)));
+    managedSetInterval(
+      'embed-sidecar-idle-exit',
+      tickMs,
+      () => {
+        if (shuttingDown || !shouldIdleExit(handle.activity(), Date.now(), idleMs)) return;
+        console.log(`${EMBED_SIDECAR_IDLE_EXIT_LINE} idleMs=${idleMs}`);
+        shutdown('idle');
+      },
+      { category: 'lifecycle' },
+    );
+  }
 }
