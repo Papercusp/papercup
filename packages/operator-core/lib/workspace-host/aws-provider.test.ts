@@ -11,6 +11,7 @@ import {
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
 import {
+  AWS_SPOT_MARKET_OPTIONS,
   AWS_WORKSPACE_HOST_CLIENT_TOKEN_LENGTH,
   AwsInstanceLaunchFailedError,
   awsWorkspaceHostClientToken,
@@ -109,6 +110,9 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
   repairCalls = 0;
   terminateCalls = 0;
   deleteVolumeCalls = 0;
+  readonly cancelSpotCalls: string[][] = [];
+  /** Destroy-path mutations in call order, so cancel-before-terminate is observable. */
+  readonly destroyMutations: string[] = [];
   /** Inbound rule count per security group; an unlisted group reads as closed (0). */
   readonly securityGroupIngress = new Map<string, number>();
   /** Groups EC2 "does not return" — simulates an unverifiable group. */
@@ -262,6 +266,8 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
       instanceStatus: 'initializing',
       systemStatus: 'initializing',
       ssmOnline: false,
+      // EC2 names the spot request on the instance it launched for it.
+      ...(input.InstanceMarketOptions ? { spotInstanceRequestId: `sir-${instanceId.slice(2)}` } : {}),
       observedAt: NOW,
     });
     return { instanceId, requestId: `request:run:${instanceId}` };
@@ -360,8 +366,15 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
 
   async terminateInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult> {
     this.terminateCalls += 1;
+    this.destroyMutations.push(...instanceIds.map((id) => `terminate:${id}`));
     this.setInstanceStates(instanceIds, 'shutting-down');
     return { requestId: 'request:terminate' };
+  }
+
+  async cancelSpotInstanceRequests(spotInstanceRequestIds: readonly string[]): Promise<AwsProviderMutationResult> {
+    this.cancelSpotCalls.push([...spotInstanceRequestIds]);
+    this.destroyMutations.push(...spotInstanceRequestIds.map((id) => `cancel-spot:${id}`));
+    return { requestId: 'request:cancel-spot' };
   }
 
   async createSnapshot(input: AwsCreateSnapshotInput): Promise<AwsCreatedSnapshot> {
@@ -425,12 +438,19 @@ function requireAppliedResource(result: WorkspaceHostApplyResult): WorkspaceHost
   return result.resource;
 }
 
+/** The default fixture as a spot host (WI-10005389). */
+function spotDesired(): WorkspaceHostDesiredSpec {
+  const base = desired();
+  return { ...base, provider: { ...base.provider, provisioningModel: 'spot' } };
+}
+
 async function provision(
   client: FakeAwsWorkspaceHostSdkClient,
   provider: ReturnType<typeof createAwsWorkspaceHostProvider>,
+  spec: WorkspaceHostDesiredSpec = desired(),
 ): Promise<{ host: WorkspaceHostRef; resources: WorkspaceHostResourceRef[] }> {
   const plan = await provider.plan(
-    { action: 'provision', operationId: 'provision-1', idempotencyKey: 'provision-1', desired: desired() },
+    { action: 'provision', operationId: 'provision-1', idempotencyKey: 'provision-1', desired: spec },
     context(),
   );
   const resources: WorkspaceHostResourceRef[] = [];
@@ -448,7 +468,7 @@ async function provision(
     }
   }
   expect(client.attachVolumeCalls).toHaveLength(1);
-  return { host: { hostId: desired().hostId, target: 'aws', resources }, resources };
+  return { host: { hostId: spec.hostId, target: 'aws', resources }, resources };
 }
 
 /** Every `TagSpecifications[].ResourceType` anywhere in a value (step inputs nest the EC2 request). */
@@ -490,6 +510,105 @@ describe('AWS zero-orphan coverage (aws-byoc-gcp-parity P-007)', () => {
       expect(JSON.stringify(step.input)).not.toMatch(/CreateSecurityGroup|security-group'|CreateInstanceProfile|instance-profile'/i);
       expect((step.input as { op?: string }).op ?? '').not.toMatch(/security-group|instance-profile|iam/i);
     }
+  });
+});
+
+describe('AWS spot hosts (WI-10005389)', () => {
+  async function runRequestFor(spec: WorkspaceHostDesiredSpec): Promise<AwsRunInstancesInput> {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'spot-1', idempotencyKey: 'spot-1', desired: spec },
+      context(),
+    );
+    const step = plan.steps.find((candidate) => candidate.id === 'run-instance');
+    return (step!.input as { request: AwsRunInstancesInput }).request;
+  }
+
+  async function destroyAll(
+    client: FakeAwsWorkspaceHostSdkClient,
+    provider: ReturnType<typeof createAwsWorkspaceHostProvider>,
+    host: WorkspaceHostRef,
+    resources: WorkspaceHostResourceRef[],
+  ): Promise<WorkspaceHostApplyResult[]> {
+    const destroy = await provider.plan(
+      {
+        action: 'destroy',
+        operationId: 'operation:destroy',
+        idempotencyKey: 'operation:destroy',
+        host,
+        disposition: 'discard',
+        confirmation: { expectedHostId: host.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+      },
+      context(),
+    );
+    const results: WorkspaceHostApplyResult[] = [];
+    for (const step of destroy.steps) {
+      results.push(
+        await provider.apply(
+          { planId: destroy.planId, operationId: destroy.operationId, step, knownResources: resources },
+          context(),
+        ),
+      );
+    }
+    return results;
+  }
+
+  it('launches a spot host as a persistent, stop-on-interrupt spot request with no price cap', async () => {
+    expect(AWS_SPOT_MARKET_OPTIONS).toEqual({
+      MarketType: 'spot',
+      SpotOptions: { SpotInstanceType: 'persistent', InstanceInterruptionBehavior: 'stop' },
+    });
+    const request = await runRequestFor(spotDesired());
+    expect(request.InstanceMarketOptions).toEqual(AWS_SPOT_MARKET_OPTIONS);
+    // The request itself carries the host's managed tags, like the instance and its volumes.
+    expect(request.TagSpecifications.map((spec) => spec!.ResourceType)).toEqual([
+      'instance',
+      'volume',
+      'spot-instances-request',
+    ]);
+    expect(request.TagSpecifications[2]!.Tags).toEqual(request.TagSpecifications[0].Tags);
+  });
+
+  it('launches on-demand when the provisioning model is absent or standard', async () => {
+    const base = desired();
+    for (const spec of [base, { ...base, provider: { ...base.provider, provisioningModel: 'standard' } }]) {
+      const request = await runRequestFor(spec);
+      expect(request).not.toHaveProperty('InstanceMarketOptions');
+      expect(request.TagSpecifications.map((tagSpec) => tagSpec!.ResourceType)).toEqual(['instance', 'volume']);
+    }
+  });
+
+  it('refuses an unknown provisioning model at plan time', async () => {
+    const base = desired();
+    const { provider } = providerAndClient();
+    await expect(
+      provider.plan(
+        {
+          action: 'provision',
+          operationId: 'spot-bad',
+          idempotencyKey: 'spot-bad',
+          desired: { ...base, provider: { ...base.provider, provisioningModel: 'preemptible' } },
+        },
+        context(),
+      ),
+    ).rejects.toThrow(/provisioningModel must be one of standard, spot/);
+  });
+
+  it('cancels the persistent spot request before terminating the instance, so EC2 cannot relaunch it', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider, spotDesired());
+    const results = await destroyAll(client, provider, host, resources);
+    expect(results.map((result) => result.state)).toEqual(['destroyed', 'destroyed']);
+    expect(client.cancelSpotCalls).toEqual([['sir-00000000000000001']]);
+    expect(client.destroyMutations).toEqual(['cancel-spot:sir-00000000000000001', 'terminate:i-00000000000000001']);
+  });
+
+  it('never cancels a spot request for an on-demand host (control)', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    await destroyAll(client, provider, host, resources);
+    expect(client.cancelSpotCalls).toEqual([]);
+    expect(client.destroyMutations).toEqual(['terminate:i-00000000000000001']);
   });
 });
 
