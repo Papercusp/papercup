@@ -416,6 +416,8 @@ interface RawOperation {
   region?: string;
   clientOperationId?: string;
   error?: { errors?: Array<{ code?: string; message?: string }> };
+  /** Set by Compute when the operation failed: the status a synchronous call would have returned. */
+  httpErrorStatusCode?: number;
 }
 
 interface RawResource {
@@ -592,13 +594,27 @@ function attachedNames(users: readonly string[] | undefined): string[] {
   return (users ?? []).map(lastSegment).filter((name): name is string => !!name);
 }
 
+/**
+ * Operation error codes a backoff clears: the operation-error spelling of the transport's
+ * GCP_RATE_LIMIT_REASONS (gcp-preflight.ts). Deliberately NOT `QUOTA_EXCEEDED`, for the same reason
+ * the transport excludes `quotaExceeded`: a spent quota does not refill on a retry.
+ */
+const GCP_OPERATION_THROTTLE_CODES: ReadonlySet<string> = new Set([
+  'RATE_LIMIT_EXCEEDED',
+  'RESOURCE_OPERATION_RATE_EXCEEDED',
+  'RESOURCE_NOT_READY',
+]);
+
 function operationError(raw: RawOperation): GcpOperationObservation['error'] | undefined {
   const entries = raw.error?.errors ?? [];
   if (entries.length === 0) return undefined;
   const codes = [...new Set(entries.map(({ code }) => code).filter((code): code is string => !!code))];
+  const status = raw.httpErrorStatusCode;
   return {
     ...(codes[0] ? { code: codes[0] } : {}),
     message: codes.length > 0 ? `GCP operation failed (${codes.join(', ')})` : 'GCP operation failed',
+    ...(typeof status === 'number' && Number.isInteger(status) ? { status } : {}),
+    ...(codes.some((code) => GCP_OPERATION_THROTTLE_CODES.has(code)) ? { throttled: true } : {}),
   };
 }
 
