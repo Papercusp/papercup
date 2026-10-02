@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { Script } from "node:vm";
 
 const required = (name) => {
   if (!process.env[name]) throw new Error(`Missing ${name}; use verify-tauri-headless.sh`);
@@ -32,7 +33,10 @@ for (const path of ["apps/operator/app/cloud-workspaces/ConnectStage.tsx", "apps
   evidence.sourceHashes[path] = createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 const command = (bin, args, opts = {}) => execFileSync(bin, args, { encoding: "utf8", timeout: 120000, ...opts });
-const ev = (js) => command(tool, ["eval", "--pid", pid, js]).trim();
+const ev = (js) => {
+  new Script(js); // Validate generated JS before touching the native bridge.
+  return command(tool, ["eval", "--pid", pid, js]).trim();
+};
 const poll = (selector, js, label) => {
   const result = command("bash", [required("VERIFY_TAURI_POLL"), "--require", selector, "--eval", js]);
   evidence.steps.push({ label, result });
@@ -40,7 +44,9 @@ const poll = (selector, js, label) => {
 };
 const click = (selector) => {
   command("bash", [required("VERIFY_TAURI_LIVENESS_CHECK")]);
-  const rect = JSON.parse(ev(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e || e.disabled)throw new Error('Missing/disabled target'); e.scrollIntoView({block:'center'}); const r=e.getBoundingClientRect(); return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}; })()`));
+  ev(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e || e.disabled)throw new Error('Missing/disabled target'); e.scrollIntoView({block:'center',behavior:'instant'}); return true; })()`);
+  poll(selector, `(() => { const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2); return r.width>0 && r.height>0 && !!hit && (hit===e || e.contains(hit)); })()`, `pointer target:${selector}`);
+  const rect = JSON.parse(ev(`(() => { const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}; })()`));
   const env = { ...process.env, DISPLAY: display };
   const wid = command("xdotool", ["search", "--pid", pid], { env }).trim().split(/\s+/).at(-1);
   const geometry = command("xwininfo", ["-id", wid], { env });
@@ -53,6 +59,7 @@ const click = (selector) => {
 const type = (label, value) => {
   const selector = `input[aria-label=${JSON.stringify(label)}]`;
   click(selector);
+  poll(selector, `document.activeElement===document.querySelector(${JSON.stringify(selector)})`, `focus:${label}`);
   const env = { ...process.env, DISPLAY: display };
   command("xdotool", ["key", "--clearmodifiers", "ctrl+a"], { env });
   command("xdotool", ["type", "--clearmodifiers", "--delay", "0", value], { env });
@@ -76,7 +83,7 @@ try {
       if(url.pathname.endsWith('/rest-query') && url.searchParams.get('name')==='workspaceHosts.control'){
         state.queries++; return new Response(JSON.stringify({rows:state.rows,version:String(state.queries)}),{status:200,headers:{'content-type':'application/json'}});
       }
-      if(/^\/api\/workspace-hosts\/(connection|provision|action)$/.test(url.pathname) && init?.method==='POST'){
+      if(['/api/workspace-hosts/connection','/api/workspace-hosts/provision','/api/workspace-hosts/action'].includes(url.pathname) && init?.method==='POST'){
         const payload=JSON.parse(init.body); state.calls.push({path:url.pathname,payload});
         if(payload.action==='connect')state.rows=[connection];
         if(url.pathname.endsWith('/provision'))state.rows=[connection,{kind:'workspace',id:payload.desired.hostId,name:payload.name,connectionId:connection.id,target:'aws',scopeLabel:'123456789012',region:'us-east-1',size:'m6i.xlarge',image:'ami-native',diskGiB:100,network:'subnet-native',desiredState:'running',observedState:'running',recoverability:{kind:'snapshot',label:'snap-native'},capabilities:{start:false,stop:true,repair:true,snapshot:true,restore:true,destroy:true},resources:[{logicalKey:'snapshot',kind:'snapshot',state:'applied',providerId:'snap-native',attempts:1}]}];
@@ -130,7 +137,8 @@ try {
   evidence.error = String(error.stderr || error.message || error);
   process.exitCode = 1;
 } finally {
-  try { evidence.finalDom = ev("JSON.stringify({href:location.href,text:document.body.innerText.slice(-16000),calls:window.__cwNative?.calls})"); } catch {}
+  try { evidence.finalDom = ev("JSON.stringify({href:location.href,text:document.body.innerText.slice(-16000),calls:window.__cwNative?.calls,focus:document.activeElement?.outerHTML,inputs:[...document.querySelectorAll('input')].map(e=>({label:e.getAttribute('aria-label'),value:e.value}))})"); } catch {}
+  try { command(tool, ["screenshot","--pid",pid,"--output",resolve(out,"final.png")]); } catch {}
   try { ev("if(window.__cwNative){window.fetch=window.__cwNative.original;delete window.__cwNative;} true"); } catch {}
   writeFileSync(resolve(out,"result.json"), JSON.stringify(evidence,null,2));
   console.log(`CW_AWS_NATIVE_RESULT status=${evidence.status} syntheticCloudResponses=true realAwsLifecycleProven=false evidence=${out}`);

@@ -1544,6 +1544,10 @@ describe("CloudWorkspacesPage — failure and layout", () => {
        prove the paired transition lives in ONE rule. */
     expect(cloudPageCss).toContain("container-type: inline-size");
     expect(cloudPageCss).toContain("container-name: cw-page");
+    // The desktop content pane can be 394px inside a 1280px window. A
+    // viewport breakpoint let the provider track collapse to zero and cover
+    // the form. The open panel must reflow using its own available width.
+    expect(cloudPageCss).toContain("repeat(auto-fit, minmax(min(100%, 380px), 1fr))");
     expect(cloudPageCss).not.toContain("container-name: cw-shell");
 
     const mediumStart = cloudPageCss.indexOf(
