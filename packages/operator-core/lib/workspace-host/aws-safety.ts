@@ -7,10 +7,17 @@
  *
  * AWS has no deterministic-name kinds: every resource the AWS provider creates (EC2 instance, EBS
  * volume, EBS snapshot) carries the three managed tags, so each kind is enumerated by tag filter.
+ *
+ * P-007 adds AWS ambiguous-operation recovery over the same shared rules
+ * (`createManagedWorkspaceHostAmbiguousOperationRecoveryRecord`), keyed by the AWS tag identity.
  */
 import {
   censusManagedWorkspaceHostResources,
+  createManagedWorkspaceHostAmbiguousOperationRecoveryRecord,
   type ManagedWorkspaceHostResourceObservation,
+  type WorkspaceHostAmbiguousOperationRecoveryInput,
+  type WorkspaceHostAmbiguousOperationRecoveryProfile,
+  type WorkspaceHostAmbiguousOperationRecoveryRecord,
   type WorkspaceHostCensusProfile,
   type WorkspaceHostInventoryEvidence,
   type WorkspaceHostResourceCensus,
@@ -58,6 +65,49 @@ export type AwsWorkspaceHostResourceCensus = WorkspaceHostResourceCensus<AwsWork
 
 export function censusAwsWorkspaceHostResources(input: AwsWorkspaceHostResourceCensusInput): AwsWorkspaceHostResourceCensus {
   return censusManagedWorkspaceHostResources(input, AWS_WORKSPACE_HOST_CENSUS_PROFILE);
+}
+
+export const AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF =
+  'runbook://workspace-host/aws/ambiguous-operation-recovery-v1';
+
+/**
+ * How an operator settles an EC2 call whose outcome is unknown (timeout, dropped connection).
+ * Every step names a mechanism the AWS client actually has: RunInstances and CreateVolume reuse the
+ * caller's ClientToken, CreateSnapshot (which has none) is found by its `papercusp:client-token` tag.
+ */
+export const AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK = {
+  ref: AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF,
+  steps: [
+    'Find the resource by the original ClientToken (find*ByClientToken reads the papercusp:client-token tag); do not issue an uncorrelated retry with a new token.',
+    'Read the resource directly from EC2 by id (DescribeInstances / DescribeVolumes / DescribeSnapshots) and verify its exact papercusp:* managed tags.',
+    'Map EC2 state onto the neutral vocabulary (running, stopped; terminated or not-found reads as absent) and record it with the EC2 request id as provider evidence.',
+    'Close the durable step only when the fresh observed state proves the attempted action completed.',
+    'Otherwise resume reconciliation with the original operation id and the same ClientToken.',
+  ],
+} as const;
+
+export type AwsWorkspaceHostAmbiguousOperationRecoveryRecord = WorkspaceHostAmbiguousOperationRecoveryRecord<
+  'aws-workspace-host-ambiguous-operation-recovery',
+  typeof AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF
+>;
+
+const AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RECOVERY_PROFILE: WorkspaceHostAmbiguousOperationRecoveryProfile<
+  'aws-workspace-host-ambiguous-operation-recovery',
+  typeof AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF
+> = {
+  census: AWS_WORKSPACE_HOST_CENSUS_PROFILE,
+  kind: 'aws-workspace-host-ambiguous-operation-recovery',
+  runbookRef: AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF,
+};
+
+/** Produce the only typed evidence that may manually close an ambiguous AWS operation. */
+export function createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(
+  input: WorkspaceHostAmbiguousOperationRecoveryInput,
+): AwsWorkspaceHostAmbiguousOperationRecoveryRecord {
+  return createManagedWorkspaceHostAmbiguousOperationRecoveryRecord(
+    input,
+    AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RECOVERY_PROFILE,
+  );
 }
 
 /** EC2 `Filters` that select one workspace's Papercusp-managed resources. */

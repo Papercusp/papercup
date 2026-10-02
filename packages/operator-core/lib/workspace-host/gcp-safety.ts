@@ -624,22 +624,28 @@ export const GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK = {
   ],
 } as const;
 
-export type GcpWorkspaceHostAmbiguousAction = 'create' | 'update' | 'delete' | 'start' | 'stop';
-export type GcpWorkspaceHostAmbiguousObservedState = 'present' | 'absent' | 'running' | 'stopped';
+export type WorkspaceHostAmbiguousAction = 'create' | 'update' | 'delete' | 'start' | 'stop';
+export type GcpWorkspaceHostAmbiguousAction = WorkspaceHostAmbiguousAction;
+/** Provider-neutral observed state; each provider maps its own vocabulary onto it before recording. */
+export type WorkspaceHostAmbiguousObservedState = 'present' | 'absent' | 'running' | 'stopped';
+export type GcpWorkspaceHostAmbiguousObservedState = WorkspaceHostAmbiguousObservedState;
 
-export interface GcpWorkspaceHostAmbiguousProviderRead {
+export type GcpWorkspaceHostAmbiguousProviderRead = WorkspaceHostAmbiguousProviderRead;
+export interface WorkspaceHostAmbiguousProviderRead {
   resource: WorkspaceHostResourceRef;
-  state: GcpWorkspaceHostAmbiguousObservedState;
+  state: WorkspaceHostAmbiguousObservedState;
   observedAt: string;
   providerEvidenceRef: string;
+  /** GCP labels or AWS tags, keyed by the provider's managed keys. */
   labels?: Readonly<Record<string, string>>;
   providerRequestId?: string;
 }
 
-export interface GcpWorkspaceHostAmbiguousOperationRecoveryInput {
+export type GcpWorkspaceHostAmbiguousOperationRecoveryInput = WorkspaceHostAmbiguousOperationRecoveryInput;
+export interface WorkspaceHostAmbiguousOperationRecoveryInput {
   operationId: string;
   idempotencyKey: string;
-  attemptedAction: GcpWorkspaceHostAmbiguousAction;
+  attemptedAction: WorkspaceHostAmbiguousAction;
   resource: WorkspaceHostResourceRef;
   hostId: string;
   workspaceId: string;
@@ -647,20 +653,48 @@ export interface GcpWorkspaceHostAmbiguousOperationRecoveryInput {
   reason: string;
   issuedAt: string;
   maxEvidenceAgeMs: number;
-  providerRead: GcpWorkspaceHostAmbiguousProviderRead;
+  providerRead: WorkspaceHostAmbiguousProviderRead;
   providerEvidence?: Readonly<Record<string, unknown>>;
 }
 
-export interface GcpWorkspaceHostAmbiguousOperationRecoveryRecord extends GcpWorkspaceHostAmbiguousOperationRecoveryInput {
-  kind: 'gcp-workspace-host-ambiguous-operation-recovery';
-  runbookRef: typeof GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF;
+export interface WorkspaceHostAmbiguousOperationRecoveryRecord<
+  Kind extends string = string,
+  RunbookRef extends string = string,
+> extends WorkspaceHostAmbiguousOperationRecoveryInput {
+  kind: Kind;
+  runbookRef: RunbookRef;
   closesOperation: boolean;
   nextAction: 'mark-step-applied' | 'mark-step-destroyed' | 'resume-reconcile-with-same-idempotency-key';
 }
 
+export type GcpWorkspaceHostAmbiguousOperationRecoveryRecord = WorkspaceHostAmbiguousOperationRecoveryRecord<
+  'gcp-workspace-host-ambiguous-operation-recovery',
+  typeof GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF
+>;
+
+/**
+ * What makes ambiguous-operation recovery provider-specific: the managed identity a present
+ * resource must carry (the census profile's target, keys and value encoding), and the record's
+ * kind and runbook. The freshness, identity and completion rules are shared.
+ */
+export interface WorkspaceHostAmbiguousOperationRecoveryProfile<Kind extends string, RunbookRef extends string> {
+  census: Pick<WorkspaceHostCensusProfile, 'target' | 'managedLabelKeys' | 'labelValue'>;
+  kind: Kind;
+  runbookRef: RunbookRef;
+}
+
+const GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RECOVERY_PROFILE: WorkspaceHostAmbiguousOperationRecoveryProfile<
+  'gcp-workspace-host-ambiguous-operation-recovery',
+  typeof GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF
+> = {
+  census: GCP_WORKSPACE_HOST_CENSUS_PROFILE,
+  kind: 'gcp-workspace-host-ambiguous-operation-recovery',
+  runbookRef: GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF,
+};
+
 function ambiguousActionCompleted(
-  action: GcpWorkspaceHostAmbiguousAction,
-  state: GcpWorkspaceHostAmbiguousObservedState,
+  action: WorkspaceHostAmbiguousAction,
+  state: WorkspaceHostAmbiguousObservedState,
 ): boolean {
   if (action === 'delete') return state === 'absent';
   if (action === 'start') return state === 'running';
@@ -672,7 +706,19 @@ function ambiguousActionCompleted(
 export function createGcpWorkspaceHostAmbiguousOperationRecoveryRecord(
   input: GcpWorkspaceHostAmbiguousOperationRecoveryInput,
 ): GcpWorkspaceHostAmbiguousOperationRecoveryRecord {
-  assertWorkspaceHostSecretIsolation(input, 'gcpSafety.ambiguousRecovery');
+  return createManagedWorkspaceHostAmbiguousOperationRecoveryRecord(
+    input,
+    GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RECOVERY_PROFILE,
+  );
+}
+
+/** Produce the only typed evidence that may manually close an ambiguous operation on any provider. */
+export function createManagedWorkspaceHostAmbiguousOperationRecoveryRecord<Kind extends string, RunbookRef extends string>(
+  input: WorkspaceHostAmbiguousOperationRecoveryInput,
+  profile: WorkspaceHostAmbiguousOperationRecoveryProfile<Kind, RunbookRef>,
+): WorkspaceHostAmbiguousOperationRecoveryRecord<Kind, RunbookRef> {
+  const census = profile.census;
+  assertWorkspaceHostSecretIsolation(input, `${census.target}Safety.ambiguousRecovery`);
   requireNonEmpty(input.operationId, 'ambiguous operationId');
   requireNonEmpty(input.idempotencyKey, 'ambiguous idempotencyKey');
   requireNonEmpty(input.hostId, 'ambiguous hostId');
@@ -689,12 +735,12 @@ export function createGcpWorkspaceHostAmbiguousOperationRecoveryRecord(
   if (resourceKey(input.resource) !== resourceKey(input.providerRead.resource)) {
     throw new Error('Ambiguous-operation provider read does not match the attempted resource');
   }
-  assertCensusResource(input.resource, 'ambiguous resource', 'gcp');
+  assertCensusResource(input.resource, 'ambiguous resource', census.target);
   if (input.providerRead.state !== 'absent') {
     const expectedLabels = {
-      [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
-      [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: gcpWorkspaceHostLabelValue(input.hostId),
-      [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: gcpWorkspaceHostLabelValue(input.workspaceId),
+      [census.managedLabelKeys.managed]: 'true',
+      [census.managedLabelKeys.hostId]: census.labelValue(input.hostId),
+      [census.managedLabelKeys.workspaceId]: census.labelValue(input.workspaceId),
     };
     if (
       !input.providerRead.labels ||
@@ -710,8 +756,8 @@ export function createGcpWorkspaceHostAmbiguousOperationRecoveryRecord(
       : 'mark-step-applied'
     : 'resume-reconcile-with-same-idempotency-key';
   return {
-    kind: 'gcp-workspace-host-ambiguous-operation-recovery',
-    runbookRef: GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF,
+    kind: profile.kind,
+    runbookRef: profile.runbookRef,
     ...input,
     resource: { ...input.resource },
     providerRead: {

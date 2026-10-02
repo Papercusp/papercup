@@ -5,14 +5,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceHostProviderConnection, WorkspaceHostResourceRef } from '@papercusp/deployment-driver';
 import {
+  AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK,
+  AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF,
   AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS,
   AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS,
   censusAwsWorkspaceHostResources,
+  createAwsWorkspaceHostAmbiguousOperationRecoveryRecord,
   type AwsWorkspaceHostResourceCensusInput,
 } from './aws-safety';
 import { createAwsSdkWorkspaceHostClient, type AwsSdkClientConfig, type AwsSdkClientSet } from './aws-sdk-client';
 import { createAwsWorkspaceHostProvider } from './aws-provider';
-import type { ManagedWorkspaceHostResourceObservation } from './gcp-safety';
+import type { ManagedWorkspaceHostResourceObservation, WorkspaceHostAmbiguousOperationRecoveryInput } from './gcp-safety';
 
 vi.mock('@aws-sdk/credential-providers', () => {
   const credentials = () =>
@@ -249,5 +252,96 @@ describe('censusAwsWorkspaceHostResources', () => {
     expect(() =>
       censusAwsWorkspaceHostResources(censusInput({ expected: [{ ...ref('vm', 'i-live'), target: 'gcp' }] })),
     ).toThrow("census expected[0] must target 'aws'");
+  });
+});
+
+describe('createAwsWorkspaceHostAmbiguousOperationRecoveryRecord (P-007)', () => {
+  // Mixed-case ids on purpose: AWS tag values are verbatim, where GCP labels would lowercase them.
+  const hostId = 'Host_AWS-7';
+  const workspaceId = 'Workspace_ABC';
+  const volume: WorkspaceHostResourceRef = { target: 'aws', kind: 'disk', providerId: 'vol-0data' };
+  const tags = {
+    [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed]: 'true',
+    [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId]: hostId,
+    [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId]: workspaceId,
+  };
+
+  function recoveryInput(
+    overrides: Partial<WorkspaceHostAmbiguousOperationRecoveryInput> = {},
+    read: Partial<WorkspaceHostAmbiguousOperationRecoveryInput['providerRead']> = {},
+  ): WorkspaceHostAmbiguousOperationRecoveryInput {
+    return {
+      operationId: 'op-create-volume-1',
+      idempotencyKey: 'client-token-1',
+      attemptedAction: 'create',
+      resource: volume,
+      hostId,
+      workspaceId,
+      actorId: 'su-operator',
+      reason: 'CreateVolume timed out',
+      issuedAt: '2026-10-02T00:10:00.000Z',
+      maxEvidenceAgeMs: 300_000,
+      providerRead: {
+        resource: volume,
+        state: 'present',
+        observedAt: '2026-10-02T00:09:00.000Z',
+        providerEvidenceRef: 'ec2-request:0f3a',
+        labels: tags,
+        ...read,
+      },
+      ...overrides,
+    };
+  }
+
+  it('closes a create proven by a fresh EC2 read carrying the verbatim papercusp:* tags', () => {
+    const record = createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(recoveryInput());
+    expect(record).toMatchObject({
+      kind: 'aws-workspace-host-ambiguous-operation-recovery',
+      runbookRef: AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF,
+      closesOperation: true,
+      nextAction: 'mark-step-applied',
+    });
+    expect(AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK.ref).toBe(AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF);
+    expect(AWS_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK.steps.join(' ')).toContain('ClientToken');
+  });
+
+  it('closes a delete only when EC2 reads the resource absent, and resumes with the same token otherwise', () => {
+    expect(
+      createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(
+        recoveryInput({ attemptedAction: 'delete' }, { state: 'absent', labels: undefined }),
+      ),
+    ).toMatchObject({ closesOperation: true, nextAction: 'mark-step-destroyed' });
+    expect(
+      createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(recoveryInput({ attemptedAction: 'delete' })),
+    ).toMatchObject({ closesOperation: false, nextAction: 'resume-reconcile-with-same-idempotency-key' });
+  });
+
+  it('refuses a present read whose tags are GCP-shaped or lowercased instead of the exact AWS identity', () => {
+    const gcpShaped = {
+      'papercusp-managed': 'true',
+      'papercusp-host-id': hostId,
+      'papercusp-workspace-id': workspaceId,
+    };
+    const lowercased = { ...tags, [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId]: hostId.toLowerCase() };
+    for (const labels of [gcpShaped, lowercased]) {
+      expect(() => createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(recoveryInput({}, { labels }))).toThrow(
+        'lacks the exact managed host/workspace labels',
+      );
+    }
+  });
+
+  it('refuses a GCP resource, a stale read and a read of a different resource', () => {
+    const gcpDisk: WorkspaceHostResourceRef = { ...volume, target: 'gcp' };
+    expect(() =>
+      createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(recoveryInput({ resource: gcpDisk }, { resource: gcpDisk })),
+    ).toThrow("ambiguous resource must target 'aws'");
+    expect(() =>
+      createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(recoveryInput({}, { observedAt: '2026-10-01T23:00:00.000Z' })),
+    ).toThrow('fresh, non-future provider read');
+    expect(() =>
+      createAwsWorkspaceHostAmbiguousOperationRecoveryRecord(
+        recoveryInput({}, { resource: { ...volume, providerId: 'vol-0other' } }),
+      ),
+    ).toThrow('does not match the attempted resource');
   });
 });
