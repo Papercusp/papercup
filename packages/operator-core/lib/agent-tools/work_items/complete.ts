@@ -5283,6 +5283,7 @@ async function completeOne(
       const post = await commentWorkItem(it.id, it.boundaryNote!, ident.ownerId, {
         workspaceId: ctx.workspaceId,
         harness: it.harness ?? existing.harness ?? undefined,
+        writerOwnerId: ident.ownerId,
       });
       if (post) boundaryNotePosted = true;
       else boundaryNoteError = `boundaryNote for ${it.id} could not be persisted: work-item comment returned no post`;
