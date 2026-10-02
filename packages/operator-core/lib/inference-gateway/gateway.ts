@@ -3459,6 +3459,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       /** When the store TOOK this reading (`utilizationAt`). The store↔pool reconciliation clears a
        *  park only on a reading NEWER than the park — an older reading says nothing about it. */
       readingAt?: number;
+      usageCreditsAvailable?: boolean;
     }
   >();
   /** P-008 (anthropic-credits-gateway-2026-09-30): each Claude account's latest billing state, parsed
@@ -3492,6 +3493,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** True while this subscription account is past its allowance and serving from usage credits. */
   const inUsageCredits = (account: ActiveAccount, at: number): boolean => {
     if (account.authMode === 'api-key') return false;
+    const h = accountRateHints.get(account.accountId);
+    if (h?.usageCreditsAvailable === true && [
+      { utilization: h.utilization, resetAt: h.windowResetAt },
+      { utilization: h.utilization7d, resetAt: h.windowResetAt7d },
+    ].some((window) => (window.utilization ?? 0) >= HINT_CAPACITY_FULL_AT &&
+      !(window.resetAt !== undefined && window.resetAt <= at))) return true;
     const b = claudeBillingByAccount.get(account.accountId);
     return b?.state === 'usage-credits' && !(b.until !== undefined && b.until <= at);
   };
@@ -3572,7 +3579,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       paused:
         (cgov?.state.pausedUntil ?? 0) > at ||
         (egressPauseUntil.get(accountId) ?? 0) > at ||
-        (!overage && (h?.pausedUntil ?? 0) > at),
+        ((!overage || h?.usageCreditsAvailable === true) && (h?.pausedUntil ?? 0) > at),
       exhausted: !overage && !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= at),
       transportHealth: (egressFailStreak.get(accountId) ?? 0) > 0 ? 'degraded' : 'healthy',
       inFlight: cgov ? Math.max(0, cgov.state.inFlight + inFlightAdjustment) : undefined,
@@ -3585,7 +3592,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             { utilization: h?.utilization7d, resetAt: h?.windowResetAt7d },
           ],
       now: at,
-      burnAction: h?.burnAction,
+      burnAction: overage ? undefined : h?.burnAction,
       billing: account.authMode === 'api-key' || overage ? 'metered' : 'included',
       meteredPolicy: account.meteredPolicy,
     });
@@ -3619,9 +3626,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
     if (h) {
       consider(h.pausedUntil);
-      if ((h.utilization ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt);
-      if ((h.utilization7d ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt7d);
-      if (h.burnAction === 'shed') consider(h.windowResetAt7d);
+      if (h.usageCreditsAvailable !== true) {
+        if ((h.utilization ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt);
+        if ((h.utilization7d ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt7d);
+        if (h.burnAction === 'shed') consider(h.windowResetAt7d);
+      }
     }
     consider(egressPauseUntil.get(accountId));
     return recoverAt > 0 ? recoverAt : undefined;
@@ -11374,6 +11383,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         burnAction?: AccountBurnAction;
         /** When the store took the reading (`utilizationAt`); gates the store↔pool park reconciliation. */
         readingAt?: number;
+        usageCreditsAvailable?: boolean;
       }>,
     ): void {
       accountRateHints.clear();
@@ -11387,6 +11397,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             windowResetAt7d: h.windowResetAt7d,
             burnAction: h.burnAction,
             readingAt: h.readingAt,
+            usageCreditsAvailable: h.usageCreditsAvailable,
           });
         }
       }
