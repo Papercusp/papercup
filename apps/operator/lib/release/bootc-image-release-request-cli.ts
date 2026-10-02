@@ -293,11 +293,74 @@ export function rpmOwnedPaths(sbom: unknown): Set<string> {
   return owned;
 }
 
-/** The finding IS an installed rpm, or every file it sits in is owned by one. Mirrors vendor_owned. */
-function isVendorOwned(match: Record<string, unknown>, owned: ReadonlySet<string>): boolean {
+/**
+ * D-029 (WI-10005719). syft locates a base-layer binary the build did not replace at its ostree
+ * OBJECT (the base layer hardlinks the live path to it). release-supply-chain.sh probes each such
+ * object inside the image and records the live path(s) with identical content, or proves it has
+ * none: a stale base copy the deployed tree never references. Mirrors ostree_object.
+ */
+const OSTREE_OBJECT = /^\/sysroot\/ostree\/repo\/objects\/[0-9a-f]{2}\/[0-9a-f]{62}\.file$/;
+
+/** The probe's verdict for one ostree object: where its content lives, or that it lives nowhere. */
+export interface OstreeObjectVerdict {
+  livePaths: string[];
+  stale: boolean;
+}
+
+export type OstreeObjectIndex = ReadonlyMap<string, OstreeObjectVerdict>;
+
+const NO_OSTREE_OBJECTS: OstreeObjectIndex = new Map();
+
+/**
+ * Read release-supply-chain.sh's ostree-objects.json (D-029). A record for a different image is
+ * corrupt evidence and refuses outright. An INCOMPLETE probe (the container failed, never reached
+ * its end marker, or left an object without a verdict) relocates nothing and proves nothing stale,
+ * so it yields an empty index — exactly the shell's ostree-object-index.json.
+ */
+export function ostreeObjectIndex(record: unknown, digest: string): Map<string, OstreeObjectVerdict> {
+  const doc = requiredRecord(record, "ostree-objects record");
+  if (doc.digest !== digest) fail(`ostree-objects record is for ${String(doc.digest)}, not ${digest}`);
+  const index = new Map<string, OstreeObjectVerdict>();
+  if (doc.complete !== true) return index;
+  if (!Array.isArray(doc.objects)) fail("ostree-objects record must record an objects array");
+  for (const object of doc.objects) {
+    if (!isRecord(object) || typeof object.path !== "string") fail("ostree-objects record has an object without a path");
+    const livePaths = Array.isArray(object.livePaths)
+      ? object.livePaths.filter((path): path is string => typeof path === "string" && path.length > 0)
+      : [];
+    index.set(object.path, { livePaths, stale: object.stale === true });
+  }
+  return index;
+}
+
+/** Each location, relocated to its live copies when the probe found any. Mirrors effective_paths. */
+function effectivePaths(artifact: Record<string, unknown>, objects: OstreeObjectIndex): string[] {
+  return locationPaths(artifact).flatMap((path) => {
+    const live = objects.get(path)?.livePaths ?? [];
+    return live.length > 0 ? live : [path];
+  });
+}
+
+/** Every location is an ostree object the probe proved has no live copy. Mirrors stale_object. */
+function isStaleObject(match: Record<string, unknown>, objects: OstreeObjectIndex): boolean {
+  const paths = locationPaths(isRecord(match.artifact) ? match.artifact : {});
+  return (
+    paths.length > 0 &&
+    paths.every((path) => {
+      const verdict = objects.get(path);
+      return OSTREE_OBJECT.test(path) && verdict?.stale === true && verdict.livePaths.length === 0;
+    })
+  );
+}
+
+/**
+ * The finding IS an installed rpm, or every file it sits in — after D-029 relocation — is owned by
+ * one. Mirrors vendor_owned.
+ */
+function isVendorOwned(match: Record<string, unknown>, owned: ReadonlySet<string>, objects: OstreeObjectIndex): boolean {
   const artifact = isRecord(match.artifact) ? match.artifact : {};
   if (isInstalledRpm(artifact)) return true;
-  const paths = locationPaths(artifact);
+  const paths = effectivePaths(artifact, objects);
   return paths.length > 0 && paths.every((path) => owned.has(path));
 }
 
@@ -328,10 +391,16 @@ export function vendorShipsNothingNewer(record: unknown, digest: string): boolea
   );
 }
 
-/** What the vendor-pending rule needs: who owns which file, and whether the vendor ships newer. */
+/**
+ * What the vendor-pending rule needs: who owns which file, and whether the vendor ships newer.
+ * `ostreeObjects` (D-029) is the probe's index: it relocates object-located findings to their live
+ * paths before ownership is judged, and names the stale base objects. Absent ⇒ nothing relocates
+ * and nothing is stale.
+ */
 export interface VendorPendingEvidence {
   ownedPaths: ReadonlySet<string>;
   vendorShipsNothingNewer: boolean;
+  ostreeObjects?: OstreeObjectIndex;
 }
 
 /**
@@ -339,15 +408,20 @@ export interface VendorPendingEvidence {
  * release-supply-chain.sh applies it: findings WITH A FIX, minus EL9 kernel RPMs matched only by
  * a generic upstream NVD CPE (a vendor kernel's fix may already be backported, so that match
  * cannot show the package is vulnerable). Unfixed findings are not a verdict a rebase can change.
- * D-027: with `vendor` evidence, a fixed Critical/High finding the vendor owns (isVendorOwned) is
- * vendor-pending when the image's own repos ship nothing newer — a fix no rebuild here can reach.
- * Without that proof nothing is pending. The excluded counts, and the pending findings' ids, are
- * returned so the caller reports them; they are never silently dropped.
+ * D-029: first, a fixed Critical/High finding located ONLY at ostree objects the image's probe
+ * proved stale (no live copy anywhere in the deployed tree) is a stale base object — content the
+ * host never executes. D-027: then, with `vendor` evidence, a fixed Critical/High finding the vendor
+ * owns (isVendorOwned, over the relocated paths) is vendor-pending when the image's own repos ship
+ * nothing newer — a fix no rebuild here can reach. Without that proof nothing is pending. The
+ * excluded counts, and the excluded findings' ids, are returned so the caller reports them; they
+ * are never silently dropped.
  */
 export function actionableGrypeReport(report: unknown, vendor?: VendorPendingEvidence): {
   report: Record<string, unknown>;
   excludedUnfixed: number;
   excludedGenericKernelCpe: number;
+  excludedStaleBaseObject: number;
+  staleBaseObjectIds: string[];
   excludedVendorPending: number;
   vendorPendingIds: string[];
 } {
@@ -355,7 +429,9 @@ export function actionableGrypeReport(report: unknown, vendor?: VendorPendingEvi
   if (!Array.isArray(doc.matches)) fail("grype report must record a matches array");
   let excludedUnfixed = 0;
   let excludedGenericKernelCpe = 0;
+  const staleBaseObjectIds: string[] = [];
   const vendorPendingIds: string[] = [];
+  const objects = vendor?.ostreeObjects ?? NO_OSTREE_OBJECTS;
   const matches = doc.matches.filter((match) => {
     if (!isRecord(match) || !isRecord(match.vulnerability)) return true; // parseVulnerabilityFacts refuses it
     const fix = isRecord(match.vulnerability.fix) ? match.vulnerability.fix : {};
@@ -368,12 +444,14 @@ export function actionableGrypeReport(report: unknown, vendor?: VendorPendingEvi
       return false;
     }
     const severity = match.vulnerability.severity;
-    if (
-      vendor?.vendorShipsNothingNewer === true &&
-      (severity === "Critical" || severity === "High") &&
-      isVendorOwned(match, vendor.ownedPaths)
-    ) {
-      vendorPendingIds.push(typeof match.vulnerability.id === "string" ? match.vulnerability.id : "(no id)");
+    const critHigh = severity === "Critical" || severity === "High";
+    const id = typeof match.vulnerability.id === "string" ? match.vulnerability.id : "(no id)";
+    if (critHigh && isStaleObject(match, objects)) {
+      staleBaseObjectIds.push(id);
+      return false;
+    }
+    if (vendor?.vendorShipsNothingNewer === true && critHigh && isVendorOwned(match, vendor.ownedPaths, objects)) {
+      vendorPendingIds.push(id);
       return false;
     }
     return true;
@@ -382,6 +460,8 @@ export function actionableGrypeReport(report: unknown, vendor?: VendorPendingEvi
     report: { ...doc, matches },
     excludedUnfixed,
     excludedGenericKernelCpe,
+    excludedStaleBaseObject: staleBaseObjectIds.length,
+    staleBaseObjectIds,
     excludedVendorPending: vendorPendingIds.length,
     vendorPendingIds,
   };
@@ -483,9 +563,26 @@ export interface BootcTrustBuild {
   trustReport: ArtifactTrustReport;
   bake: ReturnType<typeof parseWorkspaceHostBootcBakeManifest>;
   sourceRevision: string;
-  excluded: { unfixed: number; genericKernelCpe: number; vendorPending: number };
+  excluded: { unfixed: number; genericKernelCpe: number; staleBaseObject: number; vendorPending: number };
+  /** D-029: the stale base-object findings' ids, reported beside the verdict, never dropped. */
+  staleBaseObjectIds: string[];
   /** D-027: the vendor-pending findings' ids, reported beside the verdict, never dropped. */
   vendorPendingIds: string[];
+}
+
+/**
+ * The bake's shell copy of a classification recorded its own count; the two copies must agree, so
+ * a drift between them refuses at release instead of silently widening one side.
+ */
+function requireSummaryCount(summary: Record<string, unknown>, field: string, derived: number, rule: string): void {
+  const recorded = summary[field];
+  if (recorded === undefined || recorded === "skipped") return;
+  if (Number(recorded) !== derived) {
+    fail(
+      `supply-chain summary records ${String(recorded)} ${field} findings but the release gate derives ` +
+        `${derived} (${rule} copies disagree)`,
+    );
+  }
 }
 
 /** Build the trust report for the bake's OCI digest from the evidence its tools left behind. */
@@ -524,22 +621,16 @@ export async function buildBootcTrustReport(
   // D-027: vendor-updates.json exists only when the bake had RPM-owned findings to ask about; its
   // absence proves nothing, so nothing becomes vendor-pending.
   const vendorUpdates = await readJsonIfPresent(resolve(supplyChain, "vendor-updates.json"), "vendor-updates record");
+  // D-029: ostree-objects.json exists only when the bake probed object-located findings; its
+  // absence (or an incomplete probe) relocates nothing and proves nothing stale.
+  const ostreeObjects = await readJsonIfPresent(resolve(supplyChain, "ostree-objects.json"), "ostree-objects record");
   const narrowed = actionableGrypeReport(await readJson(resolve(supplyChain, "vulns.json"), "grype report"), {
     ownedPaths: rpmOwnedPaths(sbomDoc),
     vendorShipsNothingNewer: vendorUpdates !== null && vendorShipsNothingNewer(vendorUpdates, digest),
+    ostreeObjects: ostreeObjects === null ? NO_OSTREE_OBJECTS : ostreeObjectIndex(ostreeObjects, digest),
   });
-  // The bake's shell copy of the same rule recorded its own count: the two copies must agree, so a
-  // drift between them refuses at release instead of silently widening one side.
-  if (
-    summary.vendorPending !== undefined &&
-    summary.vendorPending !== "skipped" &&
-    Number(summary.vendorPending) !== narrowed.excludedVendorPending
-  ) {
-    fail(
-      `supply-chain summary records ${String(summary.vendorPending)} vendor-pending findings but the release gate derives ` +
-        `${narrowed.excludedVendorPending} (D-027 copies disagree)`,
-    );
-  }
+  requireSummaryCount(summary, "vendorPending", narrowed.excludedVendorPending, "D-027");
+  requireSummaryCount(summary, "staleBaseObjects", narrowed.excludedStaleBaseObject, "D-029");
   const vulnerabilities = parseVulnerabilityFacts(narrowed.report);
 
   const scanFacts = parseBootcSecretScan(
@@ -603,8 +694,10 @@ export async function buildBootcTrustReport(
     excluded: {
       unfixed: narrowed.excludedUnfixed,
       genericKernelCpe: narrowed.excludedGenericKernelCpe,
+      staleBaseObject: narrowed.excludedStaleBaseObject,
       vendorPending: narrowed.excludedVendorPending,
     },
+    staleBaseObjectIds: narrowed.staleBaseObjectIds,
     vendorPendingIds: narrowed.vendorPendingIds,
   };
 }

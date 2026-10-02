@@ -87,7 +87,12 @@ import {
 } from './lib/test-file-exit-codes.mjs';
 import { peekFsMutexSync } from './lib/fs-mutex.mjs';
 import { formatMutationProbeWindow, readMutationProbeWindow } from './lib/mutation-probe-window.mjs';
-import { formatRestrictedHoldRefusal, runRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
+import {
+  formatRestrictedHoldRefusal,
+  RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER,
+  RESTRICTED_HOLD_PREFLIGHT_ENV,
+  runRestrictedHoldPreflight,
+} from './lib/restricted-hold-preflight.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
 import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
 
@@ -2819,6 +2824,12 @@ export async function main(
     if (restrictedHold.verdict === 'refuse') {
       console.error(formatRestrictedHoldRefusal(restrictedHold));
       return TEST_FILE_EXIT_NOT_MEASURED;
+    }
+    // WI-10005724: every vitest this router starts inherits process.env, and its root preflight
+    // (libs/test-config host-preflight globalSetup) would otherwise repeat the same ~2s census.
+    // Only a real admit marks it; a skip means an enclosing root already set (or owns) the marker.
+    if (restrictedHold.verdict === 'admit') {
+      process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
     }
   }
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
