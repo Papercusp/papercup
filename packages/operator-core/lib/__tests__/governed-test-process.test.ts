@@ -1,4 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 
 // The bridge is intentionally a plain-Node `.mjs` module so both repository
@@ -7,6 +10,7 @@ import {
   buildGovernedProcessDemand,
   classifyGovernedTestProcessOutcome,
   createGovernedProcessDemandSampler,
+  executeGovernedByteProcess,
   governedProcessIdempotencyKey,
   isRetryableAdmissionFailure,
   resolveGovernedProcessTree,
@@ -33,6 +37,105 @@ const context = {
   decisionGeneration: 1,
   leaseId: 'lease-1',
 };
+
+describe('governed byte-input process', () => {
+  const options = (runGovernedOperation: unknown, extra: Record<string, unknown> = {}) => ({
+    workspaceId: 'ws', env: {}, owner: 'diagnostic-test', namespace: 'byte-diagnostic',
+    timeoutMs: 3000, maxBuffer: 4096,
+    executionApi: {
+      admissionContextFromEnvironment: (): typeof context | undefined => undefined,
+      governedExecutionLeaseTtlForTimeout: () => 4000,
+      runGovernedOperation,
+    }, ...extra,
+  });
+
+  it('starts only after admission and releases after byte input and pipe EOF', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'governed-byte-process-'));
+    const marker = join(directory, 'started');
+    let admit!: () => void;
+    const gate = new Promise<void>(resolve => { admit = resolve; });
+    const settlements: unknown[] = [];
+    const runGovernedOperation = vi.fn(async (input, run) => {
+      await gate;
+      const result = await run(context);
+      settlements.push(input.settle(result));
+      return result;
+    });
+    try {
+      const pending = executeGovernedByteProcess(process.execPath, ['-e', `
+        require('node:fs').writeFileSync(process.argv[1], 'started');
+        let bytes = 0;
+        process.stdin.on('data', chunk => { bytes += chunk.length; });
+        process.stdin.on('end', () => setTimeout(() => console.log(JSON.stringify({
+          bytes, receipt: JSON.parse(process.env.PAPERCUSP_ADMISSION_CONTEXT).receiptId
+        })), 30));
+      `, marker], Buffer.from('private-input'), options(runGovernedOperation));
+      await vi.waitFor(() => expect(runGovernedOperation).toHaveBeenCalledOnce());
+      expect(existsSync(marker)).toBe(false);
+      expect(settlements).toEqual([]);
+      admit();
+      const result = await pending;
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ bytes: 13, receipt: context.receiptId });
+      expect(settlements).toEqual([{ kind: 'release', actualDemand: result.actualDemand }]);
+      expect(runGovernedOperation.mock.calls[0][0]).toMatchObject({
+        workspaceId: 'ws', namespace: 'byte-diagnostic', admissionClass: 'process',
+        dedicatedClient: true, leaseTtlMs: 4000,
+        demand: { cpuWeight: 1, memoryBytes: 1024 * 1024 * 1024, fileDescriptors: 3 },
+      });
+    } finally { admit(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('refuses a child when admission fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'governed-byte-refusal-'));
+    const marker = join(directory, 'started');
+    const runGovernedOperation = vi.fn(async () => { throw Error('admission refused'); });
+    try {
+      await expect(executeGovernedByteProcess(process.execPath,
+        ['-e', `require('node:fs').writeFileSync(process.argv[1], 'started')`, marker],
+        Buffer.from('private-input'), options(runGovernedOperation))).rejects.toThrow('admission refused');
+      expect(existsSync(marker)).toBe(false);
+      expect(runGovernedOperation).toHaveBeenCalledOnce();
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('inherits the parent receipt without opening a second admission', async () => {
+    const runGovernedOperation = vi.fn();
+    const config = options(runGovernedOperation);
+    config.executionApi.admissionContextFromEnvironment = () => context;
+    const result = await executeGovernedByteProcess(process.execPath,
+      ['-e', 'console.log(JSON.parse(process.env.PAPERCUSP_ADMISSION_CONTEXT).receiptId)'],
+      Buffer.alloc(0), config);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(context.receiptId);
+    expect(runGovernedOperation).not.toHaveBeenCalled();
+  });
+
+  it('keeps timeout and output failures bounded and cancels their receipt', async () => {
+    const settlements: unknown[] = [];
+    const runGovernedOperation = vi.fn(async (input, run) => {
+      const result = await run(context);
+      settlements.push(input.settle(result));
+      return result;
+    });
+    const timeout = await executeGovernedByteProcess(process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)'], Buffer.alloc(0), options(runGovernedOperation, { timeoutMs: 100 }));
+    expect(timeout.status).toBeNull();
+    expect(timeout.signal).toBe('SIGTERM');
+    const output = await executeGovernedByteProcess(process.execPath,
+      ['-e', "console.log('x'.repeat(8192))"], Buffer.alloc(0), options(runGovernedOperation, { maxBuffer: 64 }));
+    expect(output.error?.code).toBe('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    expect(Buffer.byteLength(output.stdout)).toBeLessThanOrEqual(64);
+    expect(settlements).toEqual(Array(2).fill({ kind: 'cancel', reason: 'native diagnostic did not complete successfully' }));
+  });
+
+  it('rejects missing subprocess bounds before admission', async () => {
+    const runGovernedOperation = vi.fn();
+    await expect(executeGovernedByteProcess(process.execPath, [], Buffer.alloc(0),
+      options(runGovernedOperation, { timeoutMs: 0 }))).rejects.toThrow('finite timeout');
+    expect(runGovernedOperation).not.toHaveBeenCalled();
+  });
+});
 
 describe('governed test-process bridge', () => {
   it('builds a bounded process reservation and stable idempotency key', () => {
