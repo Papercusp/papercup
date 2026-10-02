@@ -2,7 +2,7 @@
  * This measures one request-only host, not the production six-worker/background cohort.
  * Allocation samples and completed query bytes do not prove a retained-state owner.
  */
-import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -503,6 +503,196 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it('attributes the serving HTTP mutation-fence compiler to independent preflight resource cohorts', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'papercusp-serving-compiler-'));
+    const hostDirectory = join(directory, 'host');
+    const bundle = join(hostDirectory, 'hono-host.mjs');
+    const reportPath = join(directory, 'report.json');
+    const sourceDirectory = process.env.PAPERCUSP_P011_SERVING_HOST_DIRECTORY;
+    const destination = process.env.PAPERCUSP_P011_SERVING_COMPILER_REPORT;
+    if (destination) expect(existsSync(dirname(resolve(root, destination)))).toBe(true);
+    const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    try {
+      if (sourceDirectory) {
+        // Read a serving generation; only its disposable copy is written.
+        cpSync(sourceDirectory, hostDirectory, { recursive: true });
+      } else {
+        const built = spawnSync('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
+          cwd: resolve(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
+        });
+        expect(built.status, built.stderr.slice(-2000)).toBe(0);
+      }
+      symlinkSync(resolve(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
+      const bundleHash = sha256(readFileSync(bundle));
+      const worker = join(hostDirectory, 'mutation-probe-closure.worker.mjs');
+      expect(existsSync(worker), 'The real host compiler worker must accompany its bundle.').toBe(true);
+      const workerHash = sha256(readFileSync(worker));
+      const inspectorPath = pathToFileURL(join(root, 'scripts/cdp-inspector.mjs')).href;
+      const probe = String.raw`
+        const fs = require('node:fs'), path = require('node:path');
+        const { spawn } = require('node:child_process');
+        const { createHash } = require('node:crypto');
+        const e = process.env, wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+        const hash = value => createHash('sha256').update(value).digest('hex');
+        const report = { schemaVersion: 1, incomplete: true, plane: 'serving-operator-http-preflight-private-cohorts',
+          bundleSha256: e.TEST_BUNDLE_HASH, workerSha256: e.TEST_WORKER_HASH, sourceDirectory: e.TEST_SOURCE_DIRECTORY || null,
+          cohorts: [], limitations: [
+            'Actual maintained HTTP testing:run preflight; private request-only processes and data, not ambient production load.',
+            'Control uses an unsupported-extension mutation lease; compiler uses a code-module lease. HTTP request and source bytes match.',
+            'Compiler workload is a refused mutation preflight, not a completed test run or normal idle baseline.',
+            'No historical gigabyte caller attribution or production memory reduction is claimed.',
+            'Executable PSS and V8 native counters are separate measurements, not a total native allocation estimate.'
+          ] };
+        const publish = () => { fs.writeFileSync(e.TEST_REPORT_PATH, JSON.stringify(report, null, 2)); };
+        const home = path.join(e.PAPERCUSP_WORKSPACES_ROOT, e.PAPERCUSP_WORKSPACE_ID, 'operator-home');
+        const source = 'export const values = [' + Array.from({length: 30000}, (_, i) => JSON.stringify('controlled-source-' + i)).join(',') + '];\n';
+        const test = "import { values } from './subject'; export const observed = values.length;\n";
+        fs.writeFileSync(path.join(home, 'subject.ts'), source);
+        fs.writeFileSync(path.join(home, 'subject.txt'), source);
+        fs.writeFileSync(path.join(home, 'caller.test.ts'), test);
+        report.inputs = { sourceBytes: Buffer.byteLength(source), sourceSha256: hash(source), testSha256: hash(test) };
+        const stat = pid => {
+          const value = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+          return value.slice(value.lastIndexOf(')') + 2).split(' ');
+        };
+        const resources = pid => {
+          const row = stat(pid), executable = fs.readlinkSync('/proc/' + pid + '/exe');
+          const memory = fs.readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8');
+          const kb = name => Number(new RegExp('^' + name + ':\\s+(\\d+)', 'm').exec(memory)?.[1]);
+          return { pid, parent: Number(row[1]), startTicks: row[19], executable,
+            executableSha256: hash(fs.readFileSync('/proc/' + pid + '/exe')),
+            pssKiB: kb('Pss'), anonymousKiB: kb('Anonymous'), privateDirtyKiB: kb('Private_Dirty') };
+        };
+        const descendants = pid => {
+          const rows = [];
+          const visit = parent => {
+            let children;
+            try { children = fs.readFileSync('/proc/' + parent + '/task/' + parent + '/children', 'utf8').trim(); }
+            catch { return; }
+            for (const child of children ? children.split(/\s+/).map(Number) : []) {
+              try { rows.push(resources(child)); visit(child); } catch { /* exited between ancestry and sample */ }
+            }
+          };
+          visit(pid); return rows;
+        };
+        (async () => {
+          const { createCdpClient, readProcessMemory, withFunctionCallTrace } = await import(e.TEST_INSPECTOR_PATH);
+          for (const mode of ['control', 'compiler']) {
+            const cohort = { mode, samples: [], requests: [], descendants: [], pauses: 0, reaped: false };
+            report.cohorts.push(cohort); publish();
+            const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', e.TEST_BUNDLE_PATH], {
+              cwd: path.join(process.cwd(), 'apps/operator'), env: { ...e, MALLOC_ARENA_MAX: e.TEST_MALLOC_ARENA_MAX },
+              stdio: ['ignore', 'pipe', 'pipe'] });
+            const exited = new Promise(resolve => child.once('exit', resolve));
+            let startup = '', tail = '', client, lease, poll;
+            const seen = new Map();
+            for (const stream of [child.stdout, child.stderr]) stream.on('data', value => {
+              const text = value.toString(); tail = (tail + text).slice(-2000);
+              if (stream === child.stderr) startup += text;
+            });
+            const call = async (name, args) => {
+              const body = JSON.stringify({ name, args, harness: e.PAPERCUSP_POT_HOME_SLUG, confirmed: true });
+              const response = await fetch(e.PAPERCUSP_OPERATOR_URL + '/api/agent-mcp/run-tool', {
+                method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-workspace': e.PAPERCUSP_WORKSPACE_ID },
+                body, signal: AbortSignal.timeout(30000) });
+              const value = await response.json();
+              if (!response.ok || !value.ok) throw Error(name + ': ' + JSON.stringify(value));
+              // Tools use either data or text results; preserve the exact body too.
+              const result = value.result?.data ?? value.result;
+              const text = result?.content?.find(row => row.type === 'text')?.text;
+              return { value: text ? JSON.parse(text) : result, requestSha256: hash(body), requestBytes: Buffer.byteLength(body) };
+            };
+            try {
+              const deadline = Date.now() + 150000;
+              let endpoint;
+              while (Date.now() < deadline) {
+                if (child.exitCode !== null || child.signalCode !== null) throw Error('host exited: ' + tail);
+                endpoint = [...startup.matchAll(/^Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+)\r?$/gm)].at(-1)?.[1];
+                try { const r = await fetch(e.PAPERCUSP_OPERATOR_URL + '/api/health/ready', { signal: AbortSignal.timeout(1000) });
+                  if ((await r.json()).ready && endpoint) break; } catch {}
+                await wait(250);
+              }
+              if (!endpoint) throw Error('host inspector/readiness timeout: ' + tail);
+              client = createCdpClient(endpoint, { requestTimeoutMs: 5000 }); await client.connect();
+              const identity = (await client.evaluate('({pid:process.pid,entry:process.argv[1]})', { returnByValue: true })).result.value;
+              if (identity.pid !== child.pid || identity.entry !== e.TEST_BUNDLE_PATH) throw Error('serving PID/entry mismatch');
+              cohort.identity = { ...identity, startTicks: stat(child.pid)[19], bundleSha256: hash(fs.readFileSync(identity.entry)) };
+              client.ws.on('message', raw => { try { if (JSON.parse(String(raw)).method === 'Debugger.paused') cohort.pauses++; } catch {} });
+              const locked = await call('locks:acquire', { paths: [mode === 'compiler' ? 'subject.ts' : 'subject.txt'],
+                coordination_domain: home, intent: 'mutation probe', ttl_sec: 120 });
+              lease = locked.value;
+              cohort.leaseReceipt = lease;
+              if (!lease?.acquired && !lease?.ok) throw Error('private mutation lease not acquired: ' + JSON.stringify(lease));
+              const sample = async phase => {
+                const parent = await readProcessMemory(client, { expectedPid: child.pid });
+                cohort.samples.push({ phase, ...parent, os: resources(child.pid), descendants: descendants(child.pid) }); publish();
+              };
+              await sample('preflight');
+              const collect = () => { for (const row of descendants(child.pid)) {
+                const key = row.pid + ':' + row.startTicks, prior = seen.get(key);
+                seen.set(key, { ...row, samples: (prior?.samples || 0) + 1,
+                  peakPssKiB: Math.max(prior?.peakPssKiB || 0, row.pssKiB) });
+              } };
+              poll = setInterval(collect, 20);
+              const traced = await withFunctionCallTrace(client, { expectedPid: child.pid,
+                targets: [{ name: 'fork', expression: "process.getBuiltinModule('child_process').fork" }],
+                durationMs: 30000, maxCalls: 16, maxStacks: 4, maxStackChars: 3000 }, async () => {
+                for (let window = 0; window < 3; window++) {
+                  const response = await call('testing:run', { files: ['caller.test.ts'], timeoutMs: 1000 });
+                  cohort.requests.push({ window, ...response });
+                  if (response.value?.error !== 'mutation_probe_active') throw Error('Expected real mutation refusal: ' + JSON.stringify(response.value));
+                  await sample('window-' + window);
+                }
+              });
+              cohort.trace = traced.trace;
+              clearInterval(poll); poll = undefined;
+              await wait(1000); await sample('bounded-idle');
+              cohort.descendants = [...seen.values()];
+              cohort.unreaped = cohort.descendants.filter(row => { try { return stat(row.pid)[19] === row.startTicks; } catch { return false; } });
+            } catch (error) { cohort.error = String(error); cohort.hostErrorTail = tail; throw error; }
+            finally {
+              clearInterval(poll);
+              if (lease?.lock_id || lease?.lockId) {
+                try { cohort.leaseRelease = (await call('locks:release', { lock_id: lease.lock_id || lease.lockId })).value; }
+                catch (error) { cohort.leaseReleaseError = String(error); }
+              }
+              client?.close();
+              if (child.exitCode === null && child.signalCode === null) {
+                child.kill('SIGTERM'); await Promise.race([exited, wait(5000)]);
+                if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+              }
+              child.stdout.destroy(); child.stderr.destroy(); cohort.reaped = child.exitCode !== null || child.signalCode !== null;
+              publish();
+            }
+          }
+          report.incomplete = false; publish();
+        })().catch(error => { report.error = String(error); publish(); process.exitCode = 1; });
+      `;
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api',
+        '--', process.execPath, '-e', probe], { cwd: root, encoding: 'utf8', timeout: 360_000, maxBuffer: 128 * 1024,
+        env: { ...process.env, TEST_BUNDLE_PATH: bundle, TEST_BUNDLE_HASH: bundleHash, TEST_WORKER_HASH: workerHash,
+          TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_REPORT_PATH: reportPath, TEST_INSPECTOR_PATH: inspectorPath,
+          TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } });
+      const report = readCohortReport(reportPath, result);
+      if (destination) writeFileSync(resolve(root, destination), JSON.stringify(report, null, 2) + '\n');
+      expect(result.status, report.error ?? result.stderr.slice(-2000)).toBe(0);
+      expect(report.incomplete).toBe(false);
+      expect(report.cohorts).toHaveLength(2);
+      const [control, compiler] = report.cohorts;
+      expect(control.requests.map((row: any) => row.requestSha256)).toEqual(compiler.requests.map((row: any) => row.requestSha256));
+      expect(control.trace.calls.fork.calls).toBe(0);
+      expect(compiler.trace.calls.fork.calls).toBe(3);
+      expect(compiler.trace.calls.fork.stacks.join('\n')).toContain('testImportClosures');
+      expect(compiler.descendants.some((row: any) => row.executable.endsWith('/esbuild') && row.pssKiB > 0)).toBe(true);
+      for (const cohort of report.cohorts) {
+        expect(cohort.identity.bundleSha256).toBe(bundleHash);
+        expect(cohort.samples.map((row: any) => row.phase)).toEqual(['preflight', 'window-0', 'window-1', 'window-2', 'bounded-idle']);
+        expect(cohort.pauses).toBe(0); expect(cohort.unreaped).toEqual([]); expect(cohort.reaped).toBe(true);
+        expect(cohort.leaseReleaseError).toBeUndefined();
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 500_000);
 
   it('binds matched PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async () => {
     // Read the maintained desktop transport contract before bundle/DB work.

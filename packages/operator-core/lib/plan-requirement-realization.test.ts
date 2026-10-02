@@ -433,6 +433,20 @@ describe('judgeRequirementRealization', () => {
       expect(line).toContain('the plan no longer contains this item');
     });
 
+    it('names a dropped unrealized target without exempting it from evidence', () => {
+      const v = judge({
+        mappings: [mapping({ planTargets: ['P-001'] })],
+        itemAudits: [itemAudit('P-001', [DOC])],
+        planItems: [planItem('P-001', 'dropped')],
+      });
+      const line = describeUnrealized(v.unrealized[0]!);
+
+      expect(v.ok).toBe(false);
+      expect(v.droppedTargets).toHaveLength(1);
+      expect(line).toContain('P-001 (dropped; still subject to the evidence rule)');
+      expect(line).toContain('no verifying');
+    });
+
     it('describeDroppedTarget names the target and whether a stale citation still vouches', () => {
       const v = judge({
         mappings: [mapping({ planTargets: ['P-001'] })],

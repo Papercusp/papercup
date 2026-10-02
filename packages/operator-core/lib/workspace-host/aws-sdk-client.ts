@@ -1198,6 +1198,16 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       state: stateName,
       ...(instance.ImageId ? { imageId: instance.ImageId } : {}),
       attachedVolumeIds,
+      ...(instance.StateReason?.Code
+        ? {
+            stateReason: {
+              code: instance.StateReason.Code,
+              ...(instance.StateReason.Message
+                ? { message: this.redactor.scrub(instance.StateReason.Message) }
+                : {}),
+            },
+          }
+        : {}),
       observedAt: this.now(),
     };
     if (stateName !== 'running') return observation;

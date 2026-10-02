@@ -173,6 +173,29 @@ describe("classifyCallOrigin — refuses to guess", () => {
     });
   });
 
+  it("derives system only for reserved machine markers when caller metadata is absent", () => {
+    for (const spawnId of ["event-reaction", "predicate-watch", "cell-read"]) {
+      expect(classifyCallOrigin({ spawnId })).toEqual({
+        origin: "system",
+        source: "derived",
+      });
+    }
+
+    expect(classifyCallOrigin({ spawnId: "unregistered-worker" })).toEqual({
+      origin: "unknown",
+      source: "derived",
+    });
+    expect(
+      classifyCallOrigin({ spawnId: "cell-read", requestOrigin: CLAUDE_MODEL_CALL }),
+    ).toEqual({ origin: "agent", source: "derived" });
+    expect(
+      classifyCallOrigin({
+        spawnId: "event-reaction",
+        requestOrigin: { query: { origin: "hook" } },
+      }),
+    ).toEqual({ origin: "hook", source: "declared" });
+  });
+
   it("never throws on a malformed request origin — telemetry may not fail a tool call", () => {
     const malformed = [
       { requestOrigin: { query: null, headers: null } },

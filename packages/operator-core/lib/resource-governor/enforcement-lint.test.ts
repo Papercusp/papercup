@@ -256,6 +256,26 @@ describe('resource governor enforcement lint', () => {
     expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('MAX_VISITED_FILES');
   });
 
+  it('keeps hosted GCP role reconciliation as a one-shot operator CLI bypass', () => {
+    const path = 'scripts/workspace-host/reconcile-hosted-gcp-roles.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = 'scripts/workspace-host/reconcile-hosted-gcp-roles.ts::resource-start-outside-admission';
+    const disposition = P016_DISPOSITION_REGISTRY.get(key);
+
+    expect(disposition?.disposition).toBe('bypass');
+    expect(disposition?.reason).toContain("execFileSync('gcloud', ['auth', 'print-access-token'])");
+    expect(source).toContain("execFileSync('gcloud', ['auth', 'print-access-token']");
+    expect(source.match(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)).toEqual([
+      'execFileSync(',
+    ]);
+    expect(source).not.toMatch(
+      /\b[A-Za-z_$][\w$]*\s*[=:]\s*(?:promisify\s*\(\s*)?(?:spawn|spawnSync|fork|execFile|execFileSync)\s*[,)\s;}]/,
+    );
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true }),
+    ).toEqual([]);
+  });
+
   it('can audit a pending migration and applies only centrally registered dispositions', () => {
     const files: Array<[string, string]> = [
       [

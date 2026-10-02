@@ -378,6 +378,13 @@ export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
+    path: "scripts/workspace-host/reconcile-hosted-gcp-roles.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/workspace-host/reconcile-hosted-gcp-roles.ts: this is a directly invoked operator CLI, not a runtime lane. Its sole process start is one synchronous execFileSync('gcloud', ['auth', 'print-access-token']) call to obtain the operator's GCP credential; it is awaited to completion and returns one captured token. reconcilePapercuspHostedRoles then handles the two fixed role specs sequentially with in-process fetch calls and at most three attempts per role. It creates no worker, background task, or resident queue. The hosted-role repair is intentionally performed by an operator identity while the control plane only attests roles read-only (WI-10005251), so runtime admission would gate the explicit repair path without governing persistent capacity.",
+  },
+  {
     path: "scripts/share-source.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

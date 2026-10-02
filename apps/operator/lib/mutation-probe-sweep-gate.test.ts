@@ -43,7 +43,7 @@
  * behaviour under test, which is the exact false verdict the parse gate below
  * exists to prevent (EI-21430792829614962).
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -101,7 +101,13 @@ function runProbe(args: string[], extraEnv: Record<string, string | undefined> =
     cwd: scratch,
     encoding: 'utf8',
     timeout: 60_000,
-    env: {
+    env: probeEnv(extraEnv),
+  });
+  return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+}
+
+function probeEnv(extraEnv: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  return {
       ...process.env,
       TMPDIR: scratch,
       // Scrub the AMBIENT value so every case below measures what the PROBE
@@ -120,9 +126,7 @@ function runProbe(args: string[], extraEnv: Record<string, string | undefined> =
       // false reds. The cases that test that refusal set it via extraEnv.
       PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
       ...extraEnv,
-    },
-  });
-  return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
 }
 
 const GOOD = 'value = GOOD\n';
@@ -1055,6 +1059,70 @@ describe('mutation-probe.sh unparseable-mutant gate', () => {
  *   - the in-tree guard runs under a wall-clock ceiling, and tripping it is a
  *     harness-error, never a verdict.
  */
+describe('mutation-probe.sh orphaned-snapshot recovery (EI-24673390474513566)', () => {
+  // SIGKILL is the one signal the probe's EXIT/TERM/INT traps cannot answer, so it
+  // is the faithful model of "the probe died mid-mutant": the subject stays
+  // mutated and the admission manifest stays behind. The NEXT probe in the same
+  // checkout must find the dead owner, restore the subject from the snapshot,
+  // and then run normally — not refuse forever, and not test the mutant.
+  it('restores a subject left mutated by a SIGKILLed in-tree probe, then runs normally', async () => {
+    const marker = join(scratch, 'orphan-mutant-phase-reached');
+    rmSync(marker, { force: true });
+    const child = spawn(
+      'bash',
+      [
+        PROBE,
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', `grep -q GOOD {} || { touch '${marker}'; sleep 30; }`,
+        '--in-tree',
+        '--accept-sweep-race',
+      ],
+      { cwd: scratch, detached: true, stdio: 'ignore', env: probeEnv() },
+    );
+    const exited = new Promise((done) => child.once('exit', done));
+    try {
+      const deadline = Date.now() + 45_000;
+      while (!existsSync(marker)) {
+        if (Date.now() > deadline) throw new Error('probe never reached its mutant phase');
+        await new Promise((tick) => setTimeout(tick, 100));
+      }
+      // The mutant is on disk and the probe is alive inside its guard.
+      expect(readFileSync(subject, 'utf8')).not.toBe(GOOD);
+      process.kill(-child.pid!, 'SIGKILL');
+      await exited;
+      // No trap ran, so nothing restored it: this is the orphaned state.
+      expect(readFileSync(subject, 'utf8')).not.toBe(GOOD);
+
+      const { status, out } = runProbe([
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--accept-sweep-race',
+      ]);
+
+      expect(out).toContain('restoring subject from orphaned original snapshot');
+      expect(out).not.toContain('active snapshot');
+      expect(out).not.toContain('invalid snapshot manifest');
+      // A verdict here proves the baseline ran on the RESTORED bytes: had the
+      // subject still been mutated, `grep -q GOOD` would fail the baseline.
+      expect(status).toBe(0);
+      expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+      expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+      writeFileSync(subject, GOOD);
+    }
+  }, 120_000);
+});
+
 describe('mutation-probe.sh in-tree dirty-window ceiling', () => {
   // Echoes the inherited value so the assertion reads the CHILD's environment
   // rather than this test process's, then behaves like the ordinary subject

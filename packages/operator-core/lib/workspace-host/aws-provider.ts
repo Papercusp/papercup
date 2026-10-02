@@ -125,7 +125,47 @@ export interface AwsInstanceObservation {
   instanceStatus?: 'ok' | 'impaired' | 'initializing' | 'insufficient-data';
   systemStatus?: 'ok' | 'impaired' | 'initializing' | 'insufficient-data';
   ssmOnline?: boolean;
+  /** EC2's StateReason: why the instance left `pending`/`running` (e.g. Client.InvalidKMSKey.InvalidState). */
+  stateReason?: { code: string; message?: string };
   observedAt: string;
+}
+
+/**
+ * The instance a `run-instance` step launched ended before it ever ran. Terminal for the step,
+ * whatever the cause: EC2 answers a repeated RunInstances carrying the same ClientToken with the
+ * SAME instance, so no retry of this step can produce a new one. Before this error the waiter's
+ * FAILURE verdict was swallowed, the step reported in-progress, reconcile read `terminated` as
+ * absent and re-issued the call, and the operation sat at running forever (WI-10005332).
+ *
+ * `status` is what the shared classifier reads (4xx -> terminal). `transient` marks an AWS-side
+ * cause (`Server.*`, e.g. InsufficientInstanceCapacity) that a NEW operation, with a new token,
+ * may clear; a `Client.*` cause (a KMS key the instance cannot use, a volume limit) will recur
+ * until the configuration changes.
+ */
+export class AwsInstanceLaunchFailedError extends Error {
+  readonly status = 422;
+  readonly code: string;
+  readonly transient: boolean;
+
+  constructor(observation: AwsInstanceObservation) {
+    const code = observation.stateReason?.code ?? 'unknown';
+    const transient = code.startsWith('Server.');
+    super(
+      `AWS instance ${observation.instanceId} ended '${observation.state}' during launch` +
+        ` (${code}${observation.stateReason?.message ? `: ${observation.stateReason.message}` : ''})` +
+        (transient ? '; the cause is AWS-side, so a new provision operation may succeed' : ''),
+    );
+    this.name = 'AwsInstanceLaunchFailedError';
+    this.code = code;
+    this.transient = transient;
+  }
+}
+
+/** A launch observed `shutting-down`/`terminated` can never reach `running` (see the error above). */
+function assertInstanceLaunchAlive(observation: AwsInstanceObservation | undefined): void {
+  if (observation && (observation.state === 'terminated' || observation.state === 'shutting-down')) {
+    throw new AwsInstanceLaunchFailedError(observation);
+  }
 }
 
 export interface AwsVolumeObservation {
@@ -933,6 +973,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         await this.assertNoInboundRules(input.request.NetworkInterfaces[0].Groups);
         const created = await this.client.runInstances(input.request);
         const observed = await this.client.waitForInstanceState(created.instanceId, 'running', ctx.signal);
+        assertInstanceLaunchAlive(observed);
         if (!observed || observed.state !== 'running') return this.inProgress(request, created.requestId);
         return this.applied(request, resource(AWS_INSTANCE_RESOURCE_KIND, created.instanceId), created.requestId);
       }
@@ -1157,6 +1198,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           found.state === 'running'
             ? found
             : await this.client.waitForInstanceState(found.instanceId, 'running', ctx.signal);
+        assertInstanceLaunchAlive(settled);
         if (settled?.state === 'running') {
           return this.unchanged(request, resource(AWS_INSTANCE_RESOURCE_KIND, found.instanceId));
         }
