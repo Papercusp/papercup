@@ -310,6 +310,44 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-001'] }));
   });
 
+  it('records exact binding ids in the replay recipe, including repeated evidence refs', async () => {
+    const evidenceRef = 'packages/operator-core/lib/reconnect.test.ts#reconnect';
+    const evidence = [
+      { id: 18924, evidenceKind: 'test', evidenceRef },
+      { id: 18874, evidenceKind: 'test', evidenceRef },
+      { id: 18875, evidenceKind: 'test', evidenceRef },
+    ].map((row) => ({
+      ...row,
+      workItemId: 'WI-123',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      sourceFingerprint: 'git:abc',
+      testFingerprint: 'sha256:test',
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+      details: {},
+    }));
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue(evidence as never);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      detail: 'full',
+    });
+
+    expect(result).toMatchObject({ ok: true, count: 1 });
+    expect(result.rows[0].scorecardDraft.rerunRecipe).toMatchObject({
+      args: { bindingIds: [18874, 18875, 18924] },
+      selection: { bindingIds: [18874, 18875, 18924] },
+    });
+  });
+
   // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): the number that misled a careful
   // reader on 2026-09-16 was a pinned-cohort "pass 7/0/0" quoted as if it were the ship
   // verdict, while the unscoped gate said 1/7. The label must ride on the result itself.

@@ -64,6 +64,30 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
     expect((await read())?.attribution?.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'unstamped-work-item', ref: 'WI-ladder' }),
     ]));
+
+    // WI-10005269: a federation-owned (origin='remote') unstamped row cannot be stamped by any
+    // local verb, so it must be reported as `remoteOwned`, never as an actionable issue — and the
+    // local unstamped row must keep failing the ladder (the split is by origin, not a blanket skip).
+    await sql`UPDATE harness_shared.work_items SET goal_id = ${GOAL}
+      WHERE workspace_id = ${WS} AND feature_id = 'WI-ladder'`;
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, source_plan_slug,
+         source_plan_item_ids, goal_id, origin)
+      VALUES (${WS}, 'papercusp', 'WI-ladder-remote', 'task', 'open', 'alpha', ARRAY['P-002'], NULL, 'remote')`;
+    const remoteOnly = (await read())?.attribution;
+    expect(remoteOnly).toMatchObject({
+      status: 'healthy', issues: [], remoteOwned: ['WI-ladder-remote'],
+      checked: { pots: 1, plans: 1, workItems: 2 },
+    });
+    await sql`UPDATE harness_shared.work_items SET goal_id = NULL
+      WHERE workspace_id = ${WS} AND feature_id = 'WI-ladder'`;
+    const mixed = (await read())?.attribution;
+    expect(mixed?.status).toBe('incomplete');
+    expect(mixed?.issues).toEqual([
+      expect.objectContaining({ code: 'unstamped-work-item', ref: 'WI-ladder' }),
+    ]);
+    expect(mixed?.remoteOwned).toEqual(['WI-ladder-remote']);
   }, 60_000);
 
   it('builds the owner report from exact goal evidence and the watchdog report watermark', async () => {

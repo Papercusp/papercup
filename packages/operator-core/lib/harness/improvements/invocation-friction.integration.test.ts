@@ -60,6 +60,7 @@ function persistedCapture() {
     const workspace = input.workspaceId;
     const deps: CaptureDeps = {
       searchIssues: async () => [],
+      resolvePotScope: async ({ rawSlug }) => rawSlug,
       findIssuesByWatchdogKeys: async keys => (await rows(workspace))
         .filter(row => keys.includes(String(row.payload?.watchdogKey))),
       // Deliberately return other contracts too: the production classifier

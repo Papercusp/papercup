@@ -14,6 +14,10 @@
  *
  * stripe-subscription-signup-2026-10-01 P-004.
  */
+// Import the contract SHAPE from the dependency-free leaf, never from
+// `identity-refusal-contract`: this module sits in the portal-prebundled hosted cone and
+// `hosted-auth-runtime.bundle-cone.test.ts` walks `import type` edges too (WI-10005197).
+import type { RefusalContract } from '../../../capability-envelope/refusal-contract-types';
 import { postStripeForm } from '../../../cupboard/payment-adapters/stripe';
 
 export const STRIPE_API_BASE = 'https://api.stripe.com/v1';
@@ -56,7 +60,8 @@ export interface StripeBillingClient {
 
 export type StripeBillingClientConstruction =
   | { readonly ok: true; readonly client: StripeBillingClient }
-  | { readonly ok: false; readonly code: 'invalid_secret_key' | 'live_mode_not_allowed' };
+  | { readonly ok: false; readonly code: 'invalid_secret_key' }
+  | { readonly ok: false; readonly code: 'live_mode_not_allowed'; readonly refusal: RefusalContract };
 
 const malformed = (status: number, detail: string) =>
   ({ ok: false as const, code: 'malformed-response' as const, status, detail });
@@ -69,7 +74,19 @@ export function createStripeBillingClient(input: {
 }): StripeBillingClientConstruction {
   const mode = stripeKeyMode(input.secretKey);
   if (!mode) return { ok: false, code: 'invalid_secret_key' };
-  if (mode === 'live' && !input.liveModeAllowed) return { ok: false, code: 'live_mode_not_allowed' };
+  if (mode === 'live' && !input.liveModeAllowed) {
+    return {
+      ok: false,
+      code: 'live_mode_not_allowed',
+      refusal: {
+        observed: { keyMode: 'live', liveModeAllowed: 'false' },
+        liftsWhen:
+          'the owner turns the default-OFF `papercusp-hosted-billing-live-mode` flag on, or the deployment is ' +
+          'given a test-mode (sk_test_/rk_test_) Stripe key. Retrying with the same live key and flag changes nothing',
+        whoCanMakeItTrue: ['owner'],
+      } satisfies RefusalContract,
+    };
+  }
   const post = (path: string, params: Record<string, unknown>, idempotencyKey?: string) =>
     postStripeForm({ url: `${STRIPE_API_BASE}${path}`, secretKey: input.secretKey, params, fetchImpl: input.fetchImpl, idempotencyKey });
 

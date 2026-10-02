@@ -638,6 +638,21 @@ const noPreLockAuthority = () => ({
   harness: null,
 });
 
+/**
+ * WI-10005268: the production default exec now runs its probes off the event loop (async), so a
+ * test that omits `execFn` would reach `spawnFn` a few ticks late and miss the fake child's events
+ * it emits right after the call. Answer exactly what the real host answered for '/tree' (captured
+ * 2026-10-02): an unknown systemd unit, and no git repository at the root.
+ */
+const inertLaunchExec: ExecSyncLike = (cmd) =>
+  cmd === 'systemctl'
+    ? {
+        status: 0,
+        stdout: 'MainPID=0\nExecMainStartTimestamp=\nLoadState=not-found\nActiveState=inactive\nInvocationID=\n',
+        stderr: '',
+      }
+    : { status: 128, stdout: '', stderr: "fatal: cannot change to '/tree': No such file or directory\n" };
+
 function launchDetachedCheckpoint(
   ...args: [
     Parameters<typeof launchDetachedCheckpointImpl>[0]?,
@@ -663,7 +678,7 @@ function launchDetachedCheckpoint(
   return launchDetachedCheckpointImpl(
     opts,
     spawnFn,
-    execFn,
+    execFn ?? inertLaunchExec,
     readLogHead,
     cancelStaleAwaits,
     recordDisplacement,

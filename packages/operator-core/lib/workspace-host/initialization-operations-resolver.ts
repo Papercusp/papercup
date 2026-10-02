@@ -38,6 +38,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
   WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
+  parseEc2ConsoleBootstrapStatus,
   parseWorkspaceHostBootstrapReportedStatus,
   type WorkspaceHostDeliveryCapabilities,
   type WorkspaceHostDesiredSpec,
@@ -974,6 +975,20 @@ export function gcpBootstrapStatusSource(
 }
 
 /**
+ * Read the bootstrap's own status report from the EC2 serial console — the channel
+ * `bootstrapStatusChannel: 'ec2-console-output'` renders into the script (aws-byoc-gcp-parity
+ * D-013). The LAST marker line wins, and the SSM push writes `running` before it starts the
+ * bootstrap, so a report an earlier run left on the console never reads as this run's. No report
+ * is null (keep waiting); an EC2 error propagates, and the readiness wait treats it as no report.
+ */
+export function ec2ConsoleBootstrapStatusSource(
+  client: AwsSsmHostKeyClient,
+  instanceId: string,
+): GcpIapWorkspaceHostBootstrapStatusSource {
+  return async () => parseEc2ConsoleBootstrapStatus((await client.getConsoleOutput(instanceId)) ?? '');
+}
+
+/**
  * Build the concrete host adapter for a desired spec.
  *
  * Throws `UnsupportedWorkspaceHostInitializationTargetError` for a target with no adapter, and
@@ -1330,6 +1345,7 @@ async function resolveAwsSsmOperationsForHost(
       input.controller,
       incarnation,
       input.credentialMaterialSource ?? UNCONFIGURED_WORKSPACE_HOST_CREDENTIAL_MATERIAL_SOURCE,
+      ec2ConsoleBootstrapStatusSource(client, instanceId),
     ),
     deliveryCapabilities,
     transport,

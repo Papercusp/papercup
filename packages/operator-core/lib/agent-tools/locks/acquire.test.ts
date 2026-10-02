@@ -379,11 +379,12 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('identifies the queued waiter on the fast path', async () => {
+    const holderExpires = new Date(Date.now() + 60_000);
     routeM.mockResolvedValue({
       value: {
         ok: false,
         reason: 'queued_waiter',
-        busy: [{ path: 'a.ts', owner: 'queued', owner_label: 'QUEUED', intent: 'edit', expires_ts: new Date(Date.now() + 60_000) }],
+        busy: [{ path: 'a.ts', owner: 'holder', owner_label: 'HOLDER', intent: 'write file', expires_ts: holderExpires }],
       },
       via: 'local-authority',
     });
@@ -391,9 +392,10 @@ describe('locks:acquire — outcome branches', () => {
     expect(b).toMatchObject({
       ok: false,
       reason: 'queued_waiter',
-      busy: [{ path: 'a.ts', owner: 'queued' }],
+      busy: [{ path: 'a.ts', owner: 'holder', expires_ts: holderExpires.toISOString() }],
     });
-    expect(String(b.advice)).toMatch(/queued agent/);
+    expect(String(b.advice)).toMatch(/earlier lock-wait ticket/);
+    expect(String(b.advice)).toMatch(/active holders only/);
   });
 
   it('a WorkspaceContendedError degrades to a structured TRANSIENT workspace_contended (never a false holder, never a raw PG leak) — EI-9478', async () => {
@@ -630,6 +632,27 @@ describe('locks:acquire — EI-19324204900062056 blocking-wait connection resili
     expect(b).toMatchObject({ ok: false, ticket_id: 'T-A', busy: [{ path: 'a.ts', owner: 'o2' }] });
     expect(b.reason).not.toBe('wait_connection_unstable');
     expect(pokeM).toHaveBeenCalled();
+  });
+
+  it('retains queued_waiter and the active holder snapshot after a blocking timeout', async () => {
+    const holderExpires = new Date('2026-10-02T03:59:29.604Z');
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-Q', wait_until: new Date(Date.now() - 1000) });
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({
+      ok: false,
+      reason: 'queued_waiter',
+      busy: [{ path: 'a.ts', owner: 'holder', owner_label: 'Holder', intent: 'write file', expires_ts: holderExpires }],
+    });
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'queued_waiter',
+      ticket_id: 'T-Q',
+      busy: [{ path: 'a.ts', owner: 'holder', expires_ts: holderExpires.toISOString() }],
+    });
   });
 
   it('a transient CONNECTION_CLOSED error at the tail (step 6 expireWaiter) degrades to a structured wait_connection_unstable — never a raw thrown/MCP-fatal error', async () => {

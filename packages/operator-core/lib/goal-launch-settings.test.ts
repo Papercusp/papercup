@@ -979,6 +979,8 @@ describe('readGoalLaunchSettings', () => {
         unmeasuredPricedSpend: false,
         spentCentsAt: null,
         spentCentsSource: null,
+        interactiveUsageFreshnessStatus: null,
+        interactiveUsageLastIngestedAtMs: null,
       },
       brief: {
         title: 'Goal g1',
@@ -2195,7 +2197,47 @@ describe('P-019 goal attribution ladder', () => {
     });
     expect(wrong.issues.map((issue) => issue.code)).toEqual(['plan-goal-mismatch', 'work-item-goal-mismatch']);
     expect(evaluateGoalLadderHealth({ goalId: 'goal-a', pots: [], plans: [], workItems: [], unreadable: true }))
-      .toMatchObject({ status: 'unknown', issues: [{ code: 'ladder-unreadable' }] });
+      .toMatchObject({ status: 'unknown', issues: [{ code: 'ladder-unreadable' }], remoteOwned: [] });
+  });
+
+  // WI-10005269: federation-owned (origin='remote') rows refuse local field edits and the attribution
+  // backfill skips them, so no local verb can ever stamp one. Reporting them as an actionable
+  // `unstamped-work-item` pinned the ladder at `incomplete` forever. The split is by ORIGIN only.
+  describe('remote-owned unstamped work-items', () => {
+    const plan = { ref: 'plan:papercusp/alpha', harness: 'papercusp', goalId: 'goal-a', exists: true };
+    const remote = { id: 'WI-R', harness: 'papercusp', planSlug: 'alpha', goalId: null, origin: 'remote' };
+
+    it('lists a remote unstamped row as non-blocking remoteOwned, never as an issue', () => {
+      const verdict = evaluateGoalLadderHealth({ goalId: 'goal-a', pots: [pot], plans: [plan], workItems: [remote] });
+      expect(verdict).toMatchObject({
+        status: 'healthy', issues: [], remoteOwned: ['WI-R'], checked: { pots: 1, plans: 1, workItems: 1 },
+      });
+    });
+
+    it('still fails the ladder for a LOCAL unstamped row beside a remote one (origin, not a blanket skip)', () => {
+      const verdict = evaluateGoalLadderHealth({
+        goalId: 'goal-a', pots: [pot], plans: [plan],
+        workItems: [
+          remote,
+          { id: 'WI-L', harness: 'papercusp', planSlug: 'alpha', goalId: null, origin: 'local' },
+          { id: 'WI-U', harness: 'papercusp', planSlug: 'alpha', goalId: null },
+        ],
+      });
+      expect(verdict.status).toBe('incomplete');
+      expect(verdict.issues).toEqual([
+        expect.objectContaining({ code: 'unstamped-work-item', ref: 'WI-L' }),
+        expect.objectContaining({ code: 'unstamped-work-item', ref: 'WI-U' }),
+      ]);
+      expect(verdict.remoteOwned).toEqual(['WI-R']);
+    });
+
+    it('does not excuse a remote row stamped to ANOTHER goal — that is a real mismatch', () => {
+      const verdict = evaluateGoalLadderHealth({
+        goalId: 'goal-a', pots: [pot], plans: [plan], workItems: [{ ...remote, goalId: 'goal-b' }],
+      });
+      expect(verdict.issues).toEqual([expect.objectContaining({ code: 'work-item-goal-mismatch', ref: 'WI-R' })]);
+      expect(verdict.remoteOwned).toEqual([]);
+    });
   });
 });
 
@@ -2494,6 +2536,8 @@ describe('P-006: the budget launch gate', () => {
     liveSpend.calls = 0;
   });
 
+  const UNPRICED = 'unpriced-lineage-samples';
+
   const launchWithBudget = (
     budget: {
       budget_cents?: number | string | null;
@@ -2506,16 +2550,24 @@ describe('P-006: the budget launch gate', () => {
       spent_cents_freshness_last_ingested_at_ms?: number | string | null;
     },
     seen?: string[],
-  ) =>
-    resolveGoalLaunch({
+  ) => {
+    const freshSnapshotDefaults = budget.spent_cents_unmeasured_reason === UNPRICED &&
+      budget.spent_cents_freshness_status === undefined
+      ? {
+          spent_cents_freshness_status: 'fresh' as const,
+          spent_cents_freshness_last_ingested_at_ms: Date.now(),
+        }
+      : {};
+    return resolveGoalLaunch({
       workspaceId: WS,
       launcherOwnerId: 'su-goal',
       sql: mockSql({
         modeSubject: { 'su-goal': 'g1' },
-        budget: { g1: budget },
+        budget: { g1: { ...budget, ...freshSnapshotDefaults } },
         ...(seen ? { seen } : {}),
       }),
     });
+  };
 
   it('refuses at spent == budget (the ceiling is inclusive) and skips the headcount read', async () => {
     const seen: string[] = [];
@@ -2603,8 +2655,6 @@ describe('P-006: the budget launch gate', () => {
   // could not price, so the true total is unknown. For the second, failing open
   // means the ceiling never binds while those samples stay in the window. These
   // tests pin the split.
-  const UNPRICED = 'unpriced-lineage-samples';
-
   it('REFUSES a goal whose window holds attributed samples that carry no price', async () => {
     const r = await launchWithBudget({
       budget_cents: 50000,
@@ -2817,6 +2867,8 @@ describe('P-006: the budget launch gate', () => {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: 'fresh',
+      interactiveUsageLastIngestedAtMs: expect.any(Number),
     });
   });
 

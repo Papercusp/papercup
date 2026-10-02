@@ -963,6 +963,15 @@ export interface GoalLadderHealth {
     action: string;
   }>;
   checked: { pots: number; plans: number; workItems: number };
+  /**
+   * Worklist work-items that carry no `goal_id` stamp but are owned by another machine
+   * (`origin = 'remote'`). Federation owns those rows: a local field edit is refused and the
+   * attribution backfill deliberately skips them, so NO local verb can stamp one. Counting them as
+   * `unstamped-work-item` made the ladder `incomplete` forever for a defect the local goal holder
+   * cannot repair (WI-10005269). They are surfaced here as an explicit, non-blocking note — the
+   * owning machine stamps them — never silently dropped and never an actionable issue.
+   */
+  remoteOwned: string[];
 }
 
 /** Compile only from the canonical goal, tripwire and spend fields already read. */
@@ -1069,15 +1078,20 @@ export function evaluateGoalLadderHealth(args: {
   goalId: string;
   pots: GoalPortfolioBrief['pots'];
   plans: Array<{ ref: string; harness: string | null; goalId: string | null; exists: boolean }>;
-  workItems: Array<{ id: string; harness: string | null; planSlug: string | null; goalId: string | null }>;
+  workItems: Array<{
+    id: string; harness: string | null; planSlug: string | null; goalId: string | null;
+    /** `harness_shared.work_items.origin`; `'remote'` rows are federation-owned (see `remoteOwned`). */
+    origin?: string | null;
+  }>;
   unreadable?: boolean;
 }): GoalLadderHealth {
   const issues: GoalLadderHealth['issues'] = [];
+  const remoteOwned: string[] = [];
   const add = (code: GoalLadderHealth['issues'][number]['code'], ref: string, action: string) =>
     issues.push({ code, ref, action });
   if (args.unreadable) {
     add('ladder-unreadable', args.goalId, 'Re-read the canonical goal, pot, plan and work-item records.');
-    return { status: 'unknown', issues, checked: { pots: 0, plans: 0, workItems: 0 } };
+    return { status: 'unknown', issues, checked: { pots: 0, plans: 0, workItems: 0 }, remoteOwned };
   }
   if (args.pots.length === 0) add('missing-pot-link', args.goalId, 'Attach a pot with goals:attach-pot.');
   if (args.pots.length > 0 && !args.pots.some((pot) => pot.role === 'owner')) {
@@ -1098,7 +1112,8 @@ export function evaluateGoalLadderHealth(args: {
     }
   }
   for (const item of args.workItems) {
-    if (!item.goalId) add('unstamped-work-item', item.id, 'Repair the canonical work-item goal_id stamp.');
+    if (!item.goalId && item.origin === 'remote') remoteOwned.push(item.id);
+    else if (!item.goalId) add('unstamped-work-item', item.id, 'Repair the canonical work-item goal_id stamp.');
     else if (item.goalId !== args.goalId) add('work-item-goal-mismatch', item.id, 'Review the item attribution; do not reparent it silently.');
     if (item.harness && !args.pots.some((pot) => pot.harness === item.harness)) {
       add('missing-pot-link', item.id, 'Attach the work-item pot to this goal.');
@@ -1107,6 +1122,7 @@ export function evaluateGoalLadderHealth(args: {
   return {
     status: issues.length ? 'incomplete' : 'healthy', issues,
     checked: { pots: args.pots.length, plans: args.plans.length, workItems: args.workItems.length },
+    remoteOwned,
   };
 }
 
@@ -1488,7 +1504,7 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     `Goal: ${brief.goal.status ?? 'unknown'}; worklist: ${plans}`,
     `Pots: ${brief.pots.map((p) => `${p.harness}:${p.role}[kill=${p.killCriterion ?? 'missing'}]`).join(', ') || 'none'}`,
     ...(brief.attribution
-      ? [`Attribution ladder: ${brief.attribution.status}; checked=${brief.attribution.checked.pots} pot links/${brief.attribution.checked.plans} plans/${brief.attribution.checked.workItems} work items; issues=${brief.attribution.issues.map((issue) => `${issue.code}(${issue.ref})`).join(', ') || 'none'}`]
+      ? [`Attribution ladder: ${brief.attribution.status}; checked=${brief.attribution.checked.pots} pot links/${brief.attribution.checked.plans} plans/${brief.attribution.checked.workItems} work items; issues=${brief.attribution.issues.map((issue) => `${issue.code}(${issue.ref})`).join(', ') || 'none'}${brief.attribution.remoteOwned.length ? `; remote-owned (non-blocking, owning machine stamps)=${brief.attribution.remoteOwned.join(', ')}` : ''}`]
       : []),
     `Drain fleet: ${brief.drainFleet.slug ?? 'not declared'}; live=${brief.drainFleet.live ?? 'unknown'}; working=${brief.drainFleet.working ?? 'unknown'}; control=${brief.drainFleet.controlState ?? 'unknown'}`,
     `Queue: total=${brief.queue.total}; terminal=${brief.queue.terminal}; in-flight=${brief.queue.inFlight}; blocked=${brief.queue.blocked}; needs-human=${brief.queue.needsHuman}; claimable=${brief.queue.claimable ?? 'unknown'} (${brief.queue.claimabilityScope})`,
@@ -1848,7 +1864,8 @@ export async function readGoalPortfolioBrief(args: {
                 ) plans) AS plans,
              (SELECT COALESCE(jsonb_agg(jsonb_build_object(
                        'id', wi.feature_id, 'harness', wi.harness_slug,
-                       'planSlug', wi.source_plan_slug, 'goalId', wi.goal_id
+                       'planSlug', wi.source_plan_slug, 'goalId', wi.goal_id,
+                       'origin', wi.origin
                      ) ORDER BY wi.feature_id), '[]'::jsonb)
                 FROM harness_shared.work_items wi
                WHERE wi.workspace_id = g.workspace_id
@@ -2141,7 +2158,8 @@ export async function readGoalPortfolioBrief(args: {
         const id = portfolioString(item?.id);
         if (!item || !id) return [];
         return [{ id, harness: portfolioString(item.harness),
-          planSlug: portfolioString(item.planSlug), goalId: portfolioString(item.goalId) }];
+          planSlug: portfolioString(item.planSlug), goalId: portfolioString(item.goalId),
+          origin: portfolioString(item.origin) }];
       }),
     });
     const priorities: string[] = [];

@@ -73,7 +73,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   resetOperatorCacheForTests();
-  __setCachedReadEnabledForTests(null);
+  __setCachedReadEnabledForTests(false);
   setFlagOverridesForTest(null);
   if (fx) {
     await cleanupPlans(fx.admin, WS, HARNESS);
@@ -112,6 +112,15 @@ describe('R-5 real PostgreSQL attention macro', () => {
       }, ctx as never));
       const wire = JSON.stringify((res as { data: Record<string, unknown> }).data);
       const parsed = JSON.parse(wire);
+      if (arm === 'full-feed-consumer' && !report.populationObserved) {
+        const rows = parsed.groups.flatMap((group: { items: Record<string, unknown>[] }) => group.items);
+        report.populationObserved = { total: rows.length,
+          unexpected: rows.filter((row: { id: string }) => !expectedRefs.has(row.id)).map((row: Record<string, unknown>) => ({
+            id: row.id, kind: row.kind, source: row.source, harnessSlug: row.harnessSlug,
+            planSlug: row.planSlug, status: row.status, tier: row.tier,
+          })) };
+        publish();
+      }
       const value = arm === 'compact-consumer' ? parsed : output === 'counts'
         ? { counts: deriveAttentionCounts(parsed.groups), degraded: parsed.degraded === true }
         : { refs: deriveAttentionRefs(parsed.groups), degraded: parsed.degraded === true };

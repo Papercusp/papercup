@@ -71,7 +71,11 @@ function occurrenceReceipt(input: RecordIssueOccurrenceInput, occurrenceId: numb
 }
 
 function deps(
-  opts: { found?: EngineerIssue[]; setCheckpoint?: CaptureDeps['setCheckpoint'] } = {},
+  opts: {
+    found?: EngineerIssue[];
+    setCheckpoint?: CaptureDeps['setCheckpoint'];
+    resolvePotScope?: CaptureDeps['resolvePotScope'];
+  } = {},
 ): CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } {
   const created: CreateIssueInput[] = [];
   const occurrences: RecordIssueOccurrenceInput[] = [];
@@ -80,6 +84,7 @@ function deps(
     occurrences,
     searchIssues: async () => opts.found ?? [],
     setCheckpoint: opts.setCheckpoint,
+    resolvePotScope: opts.resolvePotScope ?? (async ({ rawSlug }) => rawSlug),
     recordIssueOccurrence: async (input) => {
       occurrences.push(input);
       return occurrenceReceipt(input, occurrences.length);
@@ -665,6 +670,54 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       invokedAt: '2026-09-28T05:35:00Z', failure: { toolName: 'coord:send', status: 'error',
         message: 'internal error' } }, d);
     expect(d.created[0].scope).toBe('harness:papercusp');
+  });
+
+  it('maps the engineering docs sentinel to the platform Pot and retains source harness metadata', async () => {
+    const d = {
+      ...deps({ resolvePotScope: async ({ rawSlug, workspaceId }) => {
+        expect(rawSlug).toBeNull();
+        expect(workspaceId).toBe('papercusp-workspace');
+        return 'papercusp';
+      } }),
+      findIssuesByToolFailureClassKeys: async () => [],
+      findIssuesByWatchdogKeys: async () => [],
+    };
+
+    await captureToolInvocationFriction({
+      workspaceId: 'papercusp-workspace', harnessSlug: 'engineering', ownerId: 'su-a',
+      invokedAt: '2026-09-28T05:35:00Z',
+      failure: { toolName: 'docs:search', status: 'error', message: 'temporary lookup failure' },
+    }, d);
+
+    expect(d.created[0]?.scope).toBe('harness:papercusp');
+    expect(d.created[0]?.payload).toMatchObject({
+      toolInvocation: {
+        workspaceId: 'papercusp-workspace', harnessSlug: 'engineering', ownerId: 'su-a',
+      },
+    });
+  });
+
+  it('stores member-harness friction under its resolved Pot home and retains the source harness', async () => {
+    const d = {
+      ...deps({ resolvePotScope: async ({ rawSlug, workspaceId }) => {
+        expect(rawSlug).toBe('member-harness');
+        expect(workspaceId).toBe('ws');
+        return 'owner-home';
+      } }),
+      findIssuesByToolFailureClassKeys: async () => [],
+      findIssuesByWatchdogKeys: async () => [],
+    };
+
+    await captureToolInvocationFriction({
+      workspaceId: 'ws', harnessSlug: 'member-harness', ownerId: 'su-a',
+      invokedAt: '2026-09-28T05:36:00Z',
+      failure: { toolName: 'coord:send', status: 'error', message: 'temporary transport failure' },
+    }, d);
+
+    expect(d.created[0]?.scope).toBe('harness:owner-home');
+    expect(d.created[0]?.payload).toMatchObject({
+      toolInvocation: { workspaceId: 'ws', harnessSlug: 'member-harness', ownerId: 'su-a' },
+    });
   });
 
   it('R-7 a second measured reporter promotes the same issue while readiness stays unknown', async () => {
@@ -4322,6 +4375,7 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     const d: CaptureDeps = {
       searchIssues: async () => [],
       recordIssueOccurrence: async (input) => { occurrences.push(input); return null; },
+      resolvePotScope: async ({ rawSlug }) => rawSlug,
       findIssuesByWatchdogKeys: async (keys) => rows.filter((row) => keys.includes(payloadOf(row).watchdogKey)),
       findIssuesByToolFailureClassKeys: async (keys) =>
         rows.filter((row) => keys.includes(payloadOf(row).toolFailureProbation?.classKey)),

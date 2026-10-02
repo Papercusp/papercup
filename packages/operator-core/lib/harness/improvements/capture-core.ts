@@ -85,6 +85,8 @@ import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { canonicalPotSlug, PLATFORM_POT_SLUG } from '../../platform-pot-slug';
+import { isWorkspaceGlobalLabel } from '../../workspace-global-labels';
+import { isEngineeringDocsSentinel } from '../../agent-tools/_harness-scope';
 import { isFlakeKey } from '../../calibration/types';
 import {
   decideIssueAdmissionCircuit,
@@ -641,6 +643,9 @@ export interface CaptureDeps {
     canonicalId: string;
     canonicalHarness?: string | null;
   }) => Promise<IssueAdmissionPressure | null>;
+  /** Resolve a capture source harness to its storage Pot. Optional/injectable so
+   * invocation-friction scope mapping stays unit-testable without the org DB. */
+  resolvePotScope?: (input: { rawSlug: string | null; workspaceId: string }) => Promise<string | null>;
   /**
    * Lifecycle seam for the pre-enrollment review park. Kept injectable so the core's
    * PG-free tests can prove ordering without importing the large work-items module.
@@ -1707,7 +1712,24 @@ export async function captureToolInvocationFriction(
   // fail-on-console real-engine PUI test). A wildcard names no harness: file operator-scoped.
   const concreteHarness = typeof harnessSlug === 'string' && harnessSlug.trim() && harnessSlug.trim() !== '*'
     ? harnessSlug.trim() : null;
-  const scope = concreteHarness ? `harness:${concreteHarness}` : 'operator';
+  // Invocation telemetry identifies the SOURCE harness, but work-item scope is
+  // a Pot home. Resolve through the same membership resolver as createIssue so
+  // member harnesses land at their home Pot. The `engineering` docs sentinel is
+  // not a concrete harness, so resolve it as workspace-global; retain the raw
+  // source value in `toolInvocation` below for attribution.
+  const sourceIsWorkspaceScope = !concreteHarness ||
+    isWorkspaceGlobalLabel(concreteHarness, workspaceId) ||
+    isEngineeringDocsSentinel(concreteHarness);
+  const resolvePotScope = deps.resolvePotScope ?? (async (args: { rawSlug: string | null; workspaceId: string }) => {
+    const { resolveWorkItemPot } = await import('../../pot-membership');
+    return resolveWorkItemPot(args);
+  });
+  const resolvedPotScope = concreteHarness
+    ? await resolvePotScope({ rawSlug: sourceIsWorkspaceScope ? null : concreteHarness, workspaceId })
+    : null;
+  const scope = resolvedPotScope
+    ? `harness:${resolvedPotScope}`
+    : sourceIsWorkspaceScope ? 'operator' : `harness:${concreteHarness}`;
   const toolInvocation = { workspaceId, harnessSlug, ownerId, invokedAt };
   const incomingProbation = {
     ...normalized, watchdogKey: rowKey, signatureKey, state: 'probation' as const, intendedKind: kind,

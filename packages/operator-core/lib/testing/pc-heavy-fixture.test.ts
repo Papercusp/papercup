@@ -13,6 +13,7 @@ const KNOWN_LAUNCHERS = [
   'pc-heavy-psi-scarcity-gate.test.ts',
   'pc-heavy-retry-stdout-isolation.test.ts',
   'pc-heavy-scratch-nesting-recurrence-guard.test.ts',
+  'pc-heavy-stdin.test.ts',
 ];
 
 describe('pc-heavy fixture launch isolation', () => {

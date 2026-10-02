@@ -60,11 +60,24 @@ describe('P-023: prepareTypedPropertyMutation', () => {
     const agentOnOwner = prepareTypedPropertyMutation(
       base({ property: 'budget', provenance: 'agent-edit', value: 5 }),
     );
-    expect(agentOnOwner).toMatchObject({ ok: false, code: 'forbidden', editableBy: 'owner' });
+    expect(agentOnOwner).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+      editableBy: 'owner',
+      refusal: {
+        observed: { property: 'budget', editableBy: 'owner', actor: 'agent', provenance: 'agent-edit' },
+        whoCanMakeItTrue: ['owner'],
+      },
+    });
     const ownerOnAgent = prepareTypedPropertyMutation(
       base({ property: 'notes', provenance: 'owner-edit', value: 'x' }),
     );
-    expect(ownerOnAgent).toMatchObject({ ok: false, code: 'forbidden', editableBy: 'agent' });
+    expect(ownerOnAgent).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+      editableBy: 'agent',
+      refusal: { whoCanMakeItTrue: ['another-agent'] },
+    });
   });
 
   it('stale: expectedVersion must match (0 = unset)', () => {
@@ -119,6 +132,12 @@ describe('P-023: prepareTypedPropertyMutation', () => {
       proposedLength: 1,
       actualVersion: 4,
       recovery: { confirmShrink: true },
+      // WI-10005197: a fail-closed refusal states what lifts it and who can make that true.
+      refusal: {
+        observed: { property: 'worklist', priorLength: '3', proposedLength: '1' },
+        liftsWhen: expect.stringContaining('confirmShrink:true'),
+        whoCanMakeItTrue: ['self'],
+      },
     });
 
     const confirmed = prepareTypedPropertyMutation(

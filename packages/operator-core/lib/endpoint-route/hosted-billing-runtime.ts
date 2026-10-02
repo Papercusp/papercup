@@ -26,6 +26,7 @@ import { withWorkspace } from '@papercusp/db-org';
 import { withHostedServiceContext } from '@papercusp/db-org/tenant-context';
 import type { Sql } from 'postgres';
 import { Hono } from 'hono';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
 import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
@@ -247,7 +248,21 @@ export async function createHostedBillingRuntime(
         return denial(status, resolution.reason);
       }
       if (required.some((permission) => !resolution.principal.capabilities.has(permission))) {
-        return Response.json({ ok: false, error: { code: 'forbidden', message: 'permission_missing' } }, { status: 403 });
+        return Response.json({
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message: 'permission_missing',
+            refusal: {
+              observed: { route: `${route.method} ${route.path}`, required: required.join(',') },
+              liftsWhen:
+                'the session principal holds every capability the billing route requires (a hosted-membership ' +
+                'role change by the organization owner/admin; the session then re-resolves on its next request). ' +
+                'Retrying the same session without the capability changes nothing',
+              whoCanMakeItTrue: ['owner'],
+            } satisfies RefusalContract,
+          },
+        }, { status: 403 });
       }
       return route.handler(context.req.raw, { principal: resolution.principal });
     });

@@ -24,7 +24,19 @@ describe('stripeKeyMode / live-mode gate', () => {
 
   it('refuses a live key unless the owner-authority flag is on; test keys always construct', () => {
     const { impl } = fakeFetch([]);
-    expect(createStripeBillingClient({ secretKey: 'sk_live_x', fetchImpl: impl, liveModeAllowed: false })).toEqual({ ok: false, code: 'live_mode_not_allowed' });
+    const refused = createStripeBillingClient({ secretKey: 'sk_live_x', fetchImpl: impl, liveModeAllowed: false });
+    expect(refused).toEqual({
+      ok: false,
+      code: 'live_mode_not_allowed',
+      // WI-10005197: the refusal says what compared, what lifts it, and who can make that true.
+      refusal: {
+        observed: { keyMode: 'live', liveModeAllowed: 'false' },
+        liftsWhen: expect.stringContaining('papercusp-hosted-billing-live-mode'),
+        whoCanMakeItTrue: ['owner'],
+      },
+    });
+    // The contract is secret-free: the key itself is never in the observed values.
+    expect(JSON.stringify(refused)).not.toContain('sk_live_x');
     const live = createStripeBillingClient({ secretKey: 'sk_live_x', fetchImpl: impl, liveModeAllowed: true });
     expect(live.ok && live.client.livemode).toBe(true);
     const test = createStripeBillingClient({ secretKey: 'sk_test_x', fetchImpl: impl, liveModeAllowed: false });

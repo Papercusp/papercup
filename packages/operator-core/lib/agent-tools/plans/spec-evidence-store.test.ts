@@ -720,6 +720,39 @@ describe('listSpecEvidence timestamp normalization', () => {
     ]);
   });
 
+  it('restricts a pinned replay to the exact persisted binding ids', async () => {
+    await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'],
+      specIds: ['SPEC-001-01'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+      evidenceRefs: ['vitest:shared-ref'],
+      bindingIds: [18874, 18875, 18924],
+    });
+
+    const query = h.queries.find(({ sql }) => sql.includes('b.id = ANY('));
+    expect(query?.sql).toContain('b.id = ANY(');
+    expect(query?.values).toContainEqual([18874, 18875, 18924]);
+  });
+
+  it('keeps an explicitly empty binding-id replay empty', async () => {
+    await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'],
+      specIds: ['SPEC-001-01'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+      bindingIds: [],
+    });
+
+    const query = h.queries.find(({ sql }) => sql.includes('b.id = ANY('));
+    expect(query?.sql).toContain('b.id = ANY(');
+    expect(query?.values).toContainEqual([]);
+  });
+
   it('surfaces provisional scorecard proof bases on the returned binding row', async () => {
     h.rows = [
       {

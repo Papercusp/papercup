@@ -90,6 +90,25 @@
 #                         plausibly explain the observed pressure. Set to 0 to
 #                         restore the unconditional pre-fix election.
 #   PC_HEAVY_MEM_PSI_SAMPLE_SEC  post-admission sample cadence (default 2s).
+#   PC_HEAVY_PEAK_LEDGER  per-job peak-memory ledger (WI-10005184). Default
+#                         <PC_HEAVY_DIR>/job-peaks.tsv; empty, 0 or off disables.
+#                         An admitted job runs in its CALLER's cgroup, so the
+#                         cgroup cannot say what one job used. Instead the
+#                         preemptible monitor sums RssAnon and VmRSS over every
+#                         process in the job's own session (the setsid group
+#                         it already owns for preemption) and, when the leader
+#                         exits, appends one line:
+#                           at=<epoch> anon_mib=<peak> rss_mib=<peak>
+#                           samples=<n> secs=<wall> exit=<rc> label=<cmd words>
+#                         anon_mib is the budgeting number: VmRSS double-counts
+#                         file pages shared between worker processes. A peak is
+#                         a sampled maximum, so a spike shorter than the cadence
+#                         can be missed, and an OOM-killed job (exit=137)
+#                         records only the peak reached before the kill.
+#   PC_HEAVY_PEAK_SAMPLE_SEC  peak sampling cadence in whole seconds (default 2;
+#                         independent of PC_HEAVY_PSI_ADMISSION).
+#   PC_HEAVY_PEAK_LEDGER_MAX  lines kept in the ledger (default 500). It is
+#                         trimmed back to this many when it reaches twice it.
 #   PC_HEAVY_MEM_PSI_OVERRIDE_FILE  dynamic test/operator override: its first
 #                         line is the numeric full-avg10 sample and takes
 #                         precedence over /proc and the scalar override.
@@ -727,6 +746,13 @@ _pc_heavy_internal_preempt_run() {
   local _psi_next_sample=0 _psi_last_undetermined=''
   local _psi_finalization_seen_at='' _psi_finalization_expired=0
   local _psi_selected_id='' _psi_total_mib=0 _psi_record_count=0 _psi_unreadable_count=0
+  # Per-job peak memory (WI-10005184); see PC_HEAVY_PEAK_LEDGER in the header.
+  # `-` not `:-` so an explicitly EMPTY value disables the ledger.
+  local _peak_ledger="${PC_HEAVY_PEAK_LEDGER-$_preempt_pid_dir/job-peaks.tsv}"
+  local _peak_sample_sec="${PC_HEAVY_PEAK_SAMPLE_SEC:-2}"
+  local _peak_ledger_max="${PC_HEAVY_PEAK_LEDGER_MAX:-500}"
+  local _peak_label="${PC_HEAVY_PEAK_LABEL:-}"
+  local _peak_anon_kib=0 _peak_rss_kib=0 _peak_samples=0 _peak_next_sample=0 _peak_started_at=0
 
   # The outer wrapper uses this private sentinel to distinguish a supervisor
   # that never started from a real child exit. Touch it before any setup that
@@ -762,6 +788,11 @@ _pc_heavy_internal_preempt_run() {
   case "$_preempt_term_grace" in ''|*[!0-9]*) _preempt_term_grace=30 ;; esac
   case "$_preempt_poll" in ''|*[!0-9.]*) _preempt_poll=0.1 ;; esac
   case "$_preempt_ready_max" in ''|*[!0-9]*) _preempt_ready_max=600 ;; esac
+  case "$_peak_ledger" in 0|off|OFF|false|FALSE|no|NO) _peak_ledger='' ;; esac
+  case "$_peak_sample_sec" in ''|0|*[!0-9]*) _peak_sample_sec=2 ;; esac
+  case "$_peak_ledger_max" in ''|0|*[!0-9]*) _peak_ledger_max=500 ;; esac
+  # One ledger line per job: no field separator or line break may survive.
+  _peak_label="${_peak_label//[$'\t\n\r']/ }"
   case "$_preempt_caller_pid" in ''|*[!0-9]*) _preempt_caller_pid=''; _preempt_caller_start_ticks='' ;; esac
   case "$_preempt_caller_start_ticks" in
     ''|*[!0-9]*) _preempt_caller_pid=''; _preempt_caller_start_ticks='' ;;
@@ -884,6 +915,80 @@ _pc_heavy_internal_preempt_run() {
         rm -f "$_result_tmp" 2>/dev/null || true
       fi
     fi
+  }
+
+  # Per-job peak memory (WI-10005184). An admitted job shares its caller's
+  # cgroup, so memory.current answers for the caller, not the job. The job's
+  # own process tree is exact: walk it from the leader through
+  # /proc/<pid>/task/*/children (CONFIG_PROC_CHILDREN, on by default in stock
+  # Debian/Ubuntu kernels) and sum RssAnon/VmRSS from each /proc/<pid>/status.
+  # Deliberately NOT `ps -s <sid>`: that scans every process on the host and
+  # measured ~0.64 s of CPU per call on a ~10k-process box (2026-10-02), far
+  # too costly at a 2 s cadence times every running heavy job. This walk reads
+  # only the job's own entries. A descendant that re-parents away (double-fork
+  # daemon) leaves the tree and is not counted; heavy jobs do not do that.
+  _peak_sample() {
+    local -a _queue=() _kids=()
+    local _pid='' _f='' _k='' _v='' _rest='' _anon=0 _rss=0 _seen=0 _visited=0
+    [ -n "${_peak_ledger:-}" ] || return 0
+    case "${_preempt_child_pid:-}" in ''|*[!0-9]*) return 0 ;; esac
+    _queue=("$_preempt_child_pid")
+    # The bound only guards a pathological tree; a real job is far below it.
+    while [ "${#_queue[@]}" -gt 0 ] && [ "$_visited" -lt 4096 ]; do
+      _pid="${_queue[0]}"
+      _queue=("${_queue[@]:1}")
+      _visited=$(( _visited + 1 ))
+      case "$_pid" in ''|*[!0-9]*) continue ;; esac
+      # Redirect stderr FIRST: a process that exits mid-walk makes the input
+      # redirection fail, and that must stay silent.
+      if { while read -r _k _v _rest; do
+             case "$_k" in
+               RssAnon:) _anon=$(( _anon + _v )) ;;
+               VmRSS:) _rss=$(( _rss + _v )) ;;
+             esac
+           done; } 2>/dev/null < "/proc/$_pid/status"; then
+        _seen=$(( _seen + 1 ))
+      fi
+      for _f in /proc/"$_pid"/task/*/children; do
+        [ -r "$_f" ] || continue
+        _kids=()
+        # The file has no trailing newline, so read returns 1 after filling.
+        read -r -a _kids 2>/dev/null < "$_f" || true
+        [ "${#_kids[@]}" -gt 0 ] && _queue+=("${_kids[@]}")
+      done
+    done
+    [ "$_seen" -gt 0 ] || return 0
+    _peak_samples=$(( _peak_samples + 1 ))
+    if [ "$_anon" -gt "$_peak_anon_kib" ]; then _peak_anon_kib="$_anon"; fi
+    if [ "$_rss" -gt "$_peak_rss_kib" ]; then _peak_rss_kib="$_rss"; fi
+    return 0
+  }
+
+  # Append this job's peak once the leader has exited. Best effort: a busy
+  # lock or an unwritable directory loses one line and never fails the job.
+  _peak_record() {
+    local _rc="$1" _now=0
+    [ -n "${_peak_ledger:-}" ] || return 0
+    [ "${_peak_samples:-0}" -gt 0 ] || return 0
+    printf -v _now '%(%s)T' -1
+    mkdir -p "$(dirname "$_peak_ledger")" 2>/dev/null || true
+    (
+      flock -w 2 9 || exit 0
+      printf 'at=%s anon_mib=%s rss_mib=%s samples=%s secs=%s exit=%s label=%s\n' \
+        "$_now" "$(( _peak_anon_kib / 1024 ))" "$(( _peak_rss_kib / 1024 ))" \
+        "$_peak_samples" "$(( _now - _peak_started_at ))" "$_rc" "$_peak_label" \
+        >> "$_peak_ledger" || exit 0
+      _lines="$(wc -l < "$_peak_ledger" 2>/dev/null)" || exit 0
+      if [ "${_lines:-0}" -ge $(( _peak_ledger_max * 2 )) ]; then
+        _trim="$_peak_ledger.$$.trim"
+        if tail -n "$_peak_ledger_max" "$_peak_ledger" > "$_trim" 2>/dev/null; then
+          mv -f "$_trim" "$_peak_ledger" 2>/dev/null || rm -f "$_trim" 2>/dev/null
+        else
+          rm -f "$_trim" 2>/dev/null
+        fi
+      fi
+    ) 9>>"$_peak_ledger.lock" 2>/dev/null || true
+    return 0
   }
 
   _psi_field() {
@@ -1357,7 +1462,7 @@ _pc_heavy_internal_preempt_run() {
     esac
     unset PC_HEAVY_PREEMPT_NOTIFY_FD
     unset PC_HEAVY_CALLER_PID PC_HEAVY_CALLER_START_TICKS PC_HEAVY_DURABLE_CALLER
-    unset PC_HEAVY_PREEMPT_START_FILE
+    unset PC_HEAVY_PREEMPT_START_FILE PC_HEAVY_PEAK_LABEL
     _pid_file="$1"
     shift
     printf "%s\n" "$$" > "$_pid_file"
@@ -1394,6 +1499,7 @@ _pc_heavy_internal_preempt_run() {
       ;;
   esac
   _psi_init
+  printf -v _peak_started_at '%(%s)T' -1
 
   # The waitable leader defines COMMAND completion. A command may deliberately
   # daemonize a stdio-detached descendant; waiting for the whole process group
@@ -1424,6 +1530,10 @@ _pc_heavy_internal_preempt_run() {
         return "$_psi_tick_rc"
       fi
       _psi_next_sample=$(( _preempt_now + _psi_sample_sec ))
+    fi
+    if [ -n "$_peak_ledger" ] && [ "$_preempt_now" -ge "$_peak_next_sample" ]; then
+      _peak_sample
+      _peak_next_sample=$(( _preempt_now + _peak_sample_sec ))
     fi
     if _preempt_writer_is_held; then
       # Once the child has completed its irreversible derivation and published
@@ -1486,6 +1596,7 @@ _pc_heavy_internal_preempt_run() {
 
   wait "$_preempt_wait_pid"
   local _rc=$?
+  _peak_record "$_rc"
   rm -f "$_preempt_pid_file" 2>/dev/null || true
   _psi_remove_record
   _preempt_cleanup_ready_marker
@@ -3215,6 +3326,21 @@ echo "[pc-heavy] slot acquired — starting real work" >&2
 # The child self-limits via the slot it now (or effectively) holds — tell the
 # admission gate not to also deny it.
 export PC_HEAVY_BYPASS=1
+
+# Label for the per-job peak ledger (WI-10005184): the first three non-option
+# words of the command, basenames only, so `npx tsc -p packages/operator-core`
+# records as `npx tsc operator-core`. Diagnostic only — budgeting reads the
+# numbers, never the label. A caller may set its own PC_HEAVY_PEAK_LABEL.
+if [ -z "${PC_HEAVY_PEAK_LABEL:-}" ]; then
+  _peak_words=()
+  for _peak_word in "$@"; do
+    case "$_peak_word" in -*) continue ;; esac
+    _peak_words+=("${_peak_word##*/}")
+    [ "${#_peak_words[@]}" -ge 3 ] && break
+  done
+  _peak_label="${_peak_words[*]:-}"
+  export PC_HEAVY_PEAK_LABEL="${_peak_label:0:80}"
+fi
 
 # Lower CPU (and IO, when available) priority so a held run yields to
 # interactive work and the CPUWeight-protected critical services.

@@ -115,7 +115,10 @@ function seed(
 }
 
 /** Run the hook for one ordinary edit; the sweep runs before its acquire. */
-async function runEdit(toolUseId = 'live-edit') {
+async function runEdit(
+  toolUseId = 'live-edit',
+  hookEnvOverrides: Record<string, string | undefined> = {},
+) {
   const file = join(repo, 'target.ts');
   fs.writeFileSync(file, 'export const a = 1;\n');
   return runHookProcess('bash', [HOOK], {
@@ -127,6 +130,7 @@ async function runEdit(toolUseId = 'live-edit') {
       cwd: repo,
     }),
     env: hookFixtureEnv({
+      ...hookEnvOverrides,
       HOME: home,
       PAPERCUSP_SID: OWNER,
       PAPERCUSP_LOCK_SID: OWNER,
@@ -153,6 +157,7 @@ describe('EI-22176521893516708 — orphaned-claim reconcile', () => {
       {
         PATH: '/usr/bin',
         PAPERCUSP_AGENT_SESSION: '1',
+        PAPERCUSP_FOREIGN_OFFER_ID: 'parent-offer',
         PAPERCUSP_OPERATOR_URL: 'http://session-only.invalid',
         CLAUDE_CODE_SESSION_ID: 'parent-session',
       },
@@ -162,7 +167,38 @@ describe('EI-22176521893516708 — orphaned-claim reconcile', () => {
     expect(env.PAPERCUSP_SID).toBe(OWNER);
     expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:12345');
     expect(env.PAPERCUSP_AGENT_SESSION).toBeUndefined();
+    expect(env.PAPERCUSP_FOREIGN_OFFER_ID).toBeUndefined();
     expect(env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+  });
+
+  it('filters an inherited foreign offer before the host orphan sweep', async () => {
+    const priorOffer = process.env.PAPERCUSP_FOREIGN_OFFER_ID;
+    process.env.PAPERCUSP_FOREIGN_OFFER_ID = 'inherited-offer';
+    seed('orphan', { lockId: 'orphan-lock', ageSec: GRACE_SEC + 5 });
+    try {
+      await runEdit('inherited-offer-edit');
+      expect(releasedIds()).toContain('orphan-lock');
+      expect(exists('last-orphan-sweep.json')).toBe(true);
+    } finally {
+      if (priorOffer === undefined) delete process.env.PAPERCUSP_FOREIGN_OFFER_ID;
+      else process.env.PAPERCUSP_FOREIGN_OFFER_ID = priorOffer;
+    }
+  });
+
+  it('fails closed on an explicit foreign offer before orphan sweeping', async () => {
+    seed('orphan', { lockId: 'orphan-lock', ageSec: GRACE_SEC + 5 });
+    const r = await runEdit('foreign-offer-edit', {
+      PAPERCUSP_FOREIGN_OFFER_ID: 'controlled-offer',
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.name).toBeUndefined();
+    expect(releasedIds()).not.toContain('orphan-lock');
+    expect(exists('orphan.lock')).toBe(true);
+    expect(exists('last-orphan-sweep.json')).toBe(false);
   });
 
   it('releases an orphan whose PostToolUse never ran, and clears its cache entry', async () => {

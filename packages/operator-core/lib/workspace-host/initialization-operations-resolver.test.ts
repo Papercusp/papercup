@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER,
   WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
   assertWorkspaceHostSecretIsolation,
   type WorkspaceHostDesiredSpec,
@@ -31,6 +32,7 @@ import {
   WorkspaceHostInstanceUnavailableError,
   enrollAwsSsmHostKeys,
   enrollGcpIapHostKeys,
+  ec2ConsoleBootstrapStatusSource,
   establishAwsSsmHostKeyTrust,
   gcpBootstrapStatusSource,
   parseEc2ConsoleHostKeys,
@@ -1222,6 +1224,54 @@ describe('gcpBootstrapStatusSource (WI-10002837)', () => {
   it('ignores a bootstrap key under another namespace', async () => {
     const { read } = sourceReturning([{ namespace: 'other', key: 'bootstrap', value: 'failed exit=1 phase= error=' }]);
     await expect(read()).resolves.toBeNull();
+  });
+});
+
+describe('ec2ConsoleBootstrapStatusSource (aws-byoc-gcp-parity D-013)', () => {
+  const instanceId = 'i-0123456789abcdef0';
+  const marker = WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER;
+
+  function sourceReturning(output: string | undefined) {
+    const getConsoleOutput = vi.fn(async () => output);
+    return { getConsoleOutput, read: ec2ConsoleBootstrapStatusSource({ getConsoleOutput }, instanceId) };
+  }
+
+  it('reads the report the bootstrap printed on the serial console of the registered instance', async () => {
+    const { getConsoleOutput, read } = sourceReturning(
+      [
+        '[  OK  ] Reached target Cloud-init target.',
+        `${marker} failed exit=100 phase=apt-install error=apt-get install failed`,
+      ].join('\r\n'),
+    );
+    await expect(read()).resolves.toEqual({
+      state: 'failed',
+      exitCode: 100,
+      phase: 'apt-install',
+      error: 'apt-get install failed',
+    });
+    expect(getConsoleOutput).toHaveBeenCalledWith(instanceId);
+  });
+
+  it('takes the LAST report, so the running line the push writes supersedes an earlier failure', async () => {
+    const { read } = sourceReturning(
+      [`${marker} failed exit=1 phase=mount error=device missing`, 'reboot: Restarting system', `${marker} running`].join(
+        '\n',
+      ),
+    );
+    await expect(read()).resolves.toEqual({ state: 'running' });
+  });
+
+  it('is null when the console holds no report yet, or no output at all, so the wait keeps probing', async () => {
+    await expect(sourceReturning('Ubuntu 24.04 LTS ip-10-0-0-5 ttyS0\n').read()).resolves.toBeNull();
+    await expect(sourceReturning(undefined).read()).resolves.toBeNull();
+  });
+
+  it('propagates an EC2 error, which the readiness wait reads as no report', async () => {
+    const read = ec2ConsoleBootstrapStatusSource(
+      { getConsoleOutput: async () => Promise.reject(new Error('UnauthorizedOperation')) },
+      instanceId,
+    );
+    await expect(read()).rejects.toThrow('UnauthorizedOperation');
   });
 });
 

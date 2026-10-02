@@ -48,6 +48,7 @@ import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
+  applyClaimPathReadDeps,
 } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
@@ -155,6 +156,9 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL).simple();
+  // WI-10005221: promotion now reaches the work-item emit path, whose key-fire latch reads
+  // harness_shared.event_awaits. Apply the shared claim-path substrate, as dependency-writer does.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql
     .unsafe(
       `
