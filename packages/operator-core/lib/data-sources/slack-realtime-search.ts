@@ -15,7 +15,7 @@
  */
 import type { TokenStorage } from '../oauth/token';
 import { fsTokenStorage } from '../oauth/storage-fs';
-import { SLACK_SOCKET_PLUGIN, slackSocketCredentialField } from '../external-triggers/slack';
+import { SLACK_SOCKET_PLUGIN, slackSocketCredentialField } from '../external-triggers/slack-credential-ref';
 import type { LiveSearchAdapter, LiveSearchHit, LiveSearchInput } from './live-search-adapter';
 
 export const SLACK_SEARCH_CONTEXT_URL = 'https://slack.com/api/assistant.search.context';
