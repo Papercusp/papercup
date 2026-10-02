@@ -3021,7 +3021,10 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       const name = (listing as { name?: unknown }).name;
       if (typeof name !== 'string') return false;
       const projected = lookupByMcpName(name);
-      return projected !== undefined && projected.capabilities.every((capability) => caps.has(capability));
+      return projected !== undefined &&
+        (spawnRes.ctx.authenticatedPrincipal.allowedTools === undefined ||
+          spawnRes.ctx.authenticatedPrincipal.allowedTools.has(name)) &&
+        projected.capabilities.every((capability) => caps.has(capability));
     });
     // external-app-access P-003: an app key sees only the tools its scopes let it call —
     // the same policy the dispatch kernel seat enforces (connected-apps/enforce.ts).

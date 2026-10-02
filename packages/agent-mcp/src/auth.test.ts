@@ -77,7 +77,10 @@ beforeEach(() => {
   listenerHandleCalls = 0;
 });
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.clearAllMocks();
+});
 
 describe('resolveBearer', () => {
   it('returns null for an empty bearer (no PG lookup)', async () => {
@@ -134,7 +137,7 @@ describe('resolveBearer', () => {
       { token: bearer, kind: 'pi', harness_slug: 'pi:sess-1', workspace_id: 'ws1' },
     ];
     principalRows = [
-      { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: new Date() },
+      { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], allowed_tools: null, ended_at: new Date(), expires_at: new Date(Date.now() + 60_000) },
     ];
     expect(await resolveBearer(bearer)).toBeNull();
   });
@@ -145,11 +148,36 @@ describe('resolveBearer', () => {
       { token: bearer, kind: 'pi', harness_slug: 'pi:sess-1', workspace_id: 'ws1' },
     ];
     principalRows = [
-      { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: null },
+      { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], allowed_tools: ['harness:status'], ended_at: null, expires_at: new Date(Date.now() + 60_000) },
     ];
     const p = await resolveBearer(bearer);
     expect(p!.kind).toBe('pi');
     expect(p!.capabilities.has('harness:read')).toBe(true);
+    expect(p!.allowedTools?.has('harness:status')).toBe(true);
+    expect(p!.allowedTools?.has('harness:list')).toBe(false);
+  });
+
+  it('rejects a PI bearer at its durable expiry, even if it was cached while valid', async () => {
+    vi.useFakeTimers();
+    const now = new Date('2026-10-02T14:00:00.000Z');
+    vi.setSystemTime(now);
+    const bearer = 'pi-bearer-token-abcdef12';
+    const expiresAt = new Date(now.getTime() + 5_000);
+    tokenIndexRows = [
+      { token: bearer, kind: 'pi', harness_slug: 'pi:sess-1', workspace_id: 'ws1' },
+    ];
+    principalRows = [
+      {
+        bearer_hash: hashOf(bearer), capabilities: ['harness:read'],
+        allowed_tools: ['harness:status'], ended_at: null, expires_at: expiresAt,
+      },
+    ];
+
+    expect(await resolveBearer(bearer)).not.toBeNull();
+    expect(withWorkspaceCalls).toBe(1);
+    vi.advanceTimersByTime(5_001);
+    expect(await resolveBearer(bearer)).toBeNull();
+    expect(withWorkspaceCalls).toBe(2);
   });
 
   it('serves a cached principal without re-loading capabilities, and re-loads after invalidate()', async () => {
@@ -182,7 +210,7 @@ describe('resolveBearer', () => {
       { token: bearer, kind: 'pi', harness_slug: 'pi:sess-1', workspace_id: 'ws1' },
     ];
     principalRows = [
-      { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: new Date() },
+      { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], allowed_tools: null, ended_at: new Date(), expires_at: new Date(Date.now() + 60_000) },
     ];
     expect(await resolveBearer(bearer)).toBeNull();
     expect(withWorkspaceCalls).toBe(1);
@@ -281,7 +309,7 @@ describe('resolveBearer', () => {
         { token: bearer, kind: 'pi', harness_slug: 'pi:sess-1', workspace_id: 'ws1' },
       ];
       principalRows = [
-        { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: new Date() },
+        { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], allowed_tools: null, ended_at: new Date(), expires_at: new Date(Date.now() + 60_000) },
       ];
       expect(await resolveBearer(bearer)).toBeNull();
       expect(withWorkspaceCalls).toBe(1);
@@ -290,7 +318,7 @@ describe('resolveBearer', () => {
       // Session has since been (re)started — the expired negative entry must
       // not mask it.
       principalRows = [
-        { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], ended_at: null },
+        { bearer_hash: hashOf(bearer), capabilities: ['harness:read'], allowed_tools: ['harness:status'], ended_at: null, expires_at: new Date(Date.now() + 60_000) },
       ];
       const p = await resolveBearer(bearer);
       expect(p).not.toBeNull();
