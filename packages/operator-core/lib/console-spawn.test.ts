@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events';
 // spread — only `spawn` is stubbed, so this execFileSync is the real one
 // (used to prove one-liners parse/execute under actual bash).
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import * as nodePty from '@lydell/node-pty';
@@ -745,6 +745,60 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
       rmSync(cwd, { recursive: true, force: true });
     }
   }, 10_000);
+
+  // WI-10005243: the write path went async (fs/promises). Pin the user-visible
+  // contract it must keep: an existing user .mcp.json is moved to the one-shot
+  // backup, a READ-ONLY stale .mcp.json is still replaced (rename needs only the
+  // directory's write bit), and no temp file is left behind.
+  it('backs up the user .mcp.json once, replaces a read-only one, and leaves no temp file', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'papercup-headless-mcp-bak-'));
+    const mcpJsonContents = '{"mcpServers":{"papercusp":{"url":"http://127.0.0.1"}}}';
+    spawnMock.mockImplementation(() => fakeChild(7779));
+    const run = () =>
+      spawnHeadless({
+        envelope: { ...envelope, cwd, mcpJsonContents },
+        label: 'hl',
+        logDir: null,
+        writeMcpJson: true,
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+
+    try {
+      writeFileSync(join(cwd, '.mcp.json'), '{"user":true}');
+      expect((await run()).status).toBe('ok');
+      expect(readFileSync(join(cwd, '.mcp.json.papercusp.bak'), 'utf8')).toBe('{"user":true}');
+      expect(readFileSync(join(cwd, '.mcp.json'), 'utf8')).toBe(mcpJsonContents);
+
+      // Second launch: the backup already exists, so the stale file is NOT moved
+      // aside. Make it read-only to reproduce the 2026-07-11 EACCES regression.
+      chmodSync(join(cwd, '.mcp.json'), 0o444);
+      expect((await run()).status).toBe('ok');
+      expect(readFileSync(join(cwd, '.mcp.json'), 'utf8')).toBe(mcpJsonContents);
+      expect(readFileSync(join(cwd, '.mcp.json.papercusp.bak'), 'utf8')).toBe('{"user":true}');
+
+      expect(readdirSync(cwd).filter((f) => f.startsWith('.mcp.json.tmp-'))).toEqual([]);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  // WI-10005227 / WI-10005243 recurrence guard: spawnConsole/spawnHeadless run on
+  // the operator's and bg-host's event loop, and a sync rename over an existing
+  // .mcp.json blocked bg-host's main thread 22-156 ms (ext4 flushes the replaced
+  // file's data at rename). The .mcp.json writer must stay on fs/promises.
+  it('keeps the .mcp.json writer off the event loop (no *Sync fs calls)', () => {
+    const src = readFileSync(join(__dirname, 'console-spawn.ts'), 'utf8');
+    const start = src.indexOf('async function writeMcpJsonFile(');
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf('\n}\n', start);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    // The slice must contain the write it guards, or the guard passes vacuously.
+    expect(body).toMatch(/\bawait fsp\.rename\(tmp, mcpPath\)/);
+    expect(body).toMatch(/\bawait fsp\.writeFile\(tmp, /);
+    expect(body).not.toMatch(/\b\w+Sync\(/);
+  });
 
   it('falls back to bash -lc (no terminal emulator, no systemd-run) detached with a log fd, and reports ok+pid when the session outlives the probe', async () => {
     spawnMock.mockImplementation(() => fakeChild(7777)); // never exits = a live agent

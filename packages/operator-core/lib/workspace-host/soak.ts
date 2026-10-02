@@ -140,7 +140,14 @@ export interface WorkspaceHostSoakSample {
 
 /** One provider read of the instance. `unreadable` = we could not ask, not that it is gone. */
 export type WorkspaceHostSoakInstanceReading =
-  | { kind: 'observed'; status: string; instanceId?: string; sourceImage?: string }
+  | {
+      kind: 'observed';
+      status: string;
+      instanceId?: string;
+      sourceImage?: string;
+      /** True when the cloud may stop this instance on its own (a GCP spot VM). WI-10005210. */
+      preemptible?: boolean;
+    }
   | { kind: 'absent' }
   | { kind: 'unreadable'; detail: string };
 

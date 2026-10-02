@@ -34,7 +34,7 @@ import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
 import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
-import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
+import { linkWorkItemRefDependencies, workItemRefDependencyRefusal } from './work-item-ref-blocker-edges';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -217,7 +217,13 @@ async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: W
       workItem,
       migration,
       activeBlockers: activeExternalBlockers(workItem.payload),
-      ...(refused.length ? { code: 'work_item_ref_dependency_refused', error: refused.map((r) => r.error).join(' | ') } : {}),
+      ...(refused.length
+        ? {
+            code: 'work_item_ref_dependency_refused',
+            error: refused.map((r) => r.error).join(' | '),
+            refusal: workItemRefDependencyRefusal(input.id, refused.map((r) => r.ref).join(',')),
+          }
+        : {}),
     };
   }
 
@@ -260,7 +266,13 @@ async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: W
     activeBlockers: active,
     blockerHistory: blockers,
     lifecycle,
-    ...(refused.length ? { code: 'work_item_ref_dependency_refused', error: refused.map((r) => r.error).join(' | ') } : {}),
+    ...(refused.length
+      ? {
+          code: 'work_item_ref_dependency_refused',
+          error: refused.map((r) => r.error).join(' | '),
+          refusal: workItemRefDependencyRefusal(input.id, refused.map((r) => r.ref).join(',')),
+        }
+      : {}),
   };
 }
 
@@ -432,7 +444,9 @@ export default defineTool({
               referents,
               by: identity.ownerId,
             });
-            if (!linked.ok) return { ok: false as const, id: input.id, error: linked.error, code: linked.code };
+            if (!linked.ok) {
+              return { ok: false as const, id: input.id, error: linked.error, code: linked.code, refusal: linked.refusal };
+            }
             return {
               ok: true as const,
               id: input.id,

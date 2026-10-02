@@ -5,7 +5,11 @@ import type { WorkspaceHostSoakInstanceReading, WorkspaceHostSoakReachOutcome, W
 import {
   probeWorkspaceHostStandingHealth,
   runWorkspaceHostStandingHealthPass,
+  workspaceHostReclaimOperationId,
+  workspaceHostSpotReclaimed,
   workspaceHostStandingHealthIsFresh,
+  WORKSPACE_HOST_SPOT_RECLAIMED_CHECK,
+  type WorkspaceHostReclaimRestartSeams,
   WORKSPACE_HOST_STANDING_HEALTH_FRESH_MS,
   WORKSPACE_HOST_STANDING_HEALTH_SUBJECT_ID,
   type WorkspaceHostStandingHealthRuntime,
@@ -305,5 +309,144 @@ describe('agent-login expiry in the standing attestation (WI-10003720)', () => {
       ok: null,
       detail: 'not measured: ssh exited 255',
     });
+  });
+});
+
+describe('spot reclaim recovery (WI-10005210)', () => {
+  const spot = (status: string): WorkspaceHostSoakInstanceReading => ({
+    kind: 'observed',
+    status,
+    instanceId: 'i-spot',
+    sourceImage: IMAGE,
+    preemptible: true,
+  });
+
+  function reclaimSeams(plan: Awaited<ReturnType<WorkspaceHostReclaimRestartSeams['prepare']>> | Error) {
+    const prepared: { hostId: string; operationId: string }[] = [];
+    const enqueued: { operationId: string; input: unknown }[] = [];
+    const seams: WorkspaceHostReclaimRestartSeams = {
+      prepare: async (t, operationId) => {
+        prepared.push({ hostId: t.hostId, operationId });
+        if (plan instanceof Error) throw plan;
+        return plan;
+      },
+      enqueue: async (p) => {
+        enqueued.push(p);
+        return { kind: 'restart-enqueued', operationId: p.operationId };
+      },
+    };
+    return { seams, prepared, enqueued };
+  }
+
+  it('flags only a STOPPED SPOT instance as reclaimed', () => {
+    expect(workspaceHostSpotReclaimed(spot('TERMINATED'))).toBe(true);
+    expect(workspaceHostSpotReclaimed(spot('stopped'))).toBe(true);
+    expect(workspaceHostSpotReclaimed(spot('RUNNING'))).toBe(false);
+    expect(workspaceHostSpotReclaimed(spot('STOPPING'))).toBe(false);
+    // An on-demand host the cloud reports stopped is NOT restarted: nothing reclaims on-demand VMs.
+    expect(workspaceHostSpotReclaimed({ kind: 'observed', status: 'TERMINATED', instanceId: 'i-1' })).toBe(false);
+    expect(workspaceHostSpotReclaimed({ kind: 'absent' })).toBe(false);
+    expect(workspaceHostSpotReclaimed({ kind: 'unreadable', detail: 'x' })).toBe(false);
+  });
+
+  it('attests a reclaimed spot host with a failing spot-reclaimed check and no IAP reach', async () => {
+    const { runtime, reachSubjects } = fakeRuntime([], { h: { reading: spot('TERMINATED') } });
+    const attestation = await probeWorkspaceHostStandingHealth({ workspaceId: WS, hostId: 'h' }, runtime);
+    expect(attestation.status).toBe('unreachable');
+    expect(attestation.checks).toEqual([
+      { name: 'compute-running', ok: false, detail: 'TERMINATED' },
+      {
+        name: WORKSPACE_HOST_SPOT_RECLAIMED_CHECK,
+        ok: false,
+        detail: 'spot instance is TERMINATED: the cloud reclaimed it while the host is meant to run',
+      },
+      { name: 'controller-reach', ok: null, detail: 'not attempted: the instance is TERMINATED, not RUNNING' },
+    ]);
+    expect(reachSubjects).toEqual([]);
+  });
+
+  it('a RUNNING spot host carries no reclaim check (no vacuous checks)', async () => {
+    const { runtime } = fakeRuntime([], { h: { reading: spot('RUNNING') } });
+    const attestation = await probeWorkspaceHostStandingHealth({ workspaceId: WS, hostId: 'h' }, runtime);
+    expect(attestation.checks.map((c) => c.name)).not.toContain(WORKSPACE_HOST_SPOT_RECLAIMED_CHECK);
+  });
+
+  it('restarts only the reclaimed host, with a replay-stable operation id, after recording its health', async () => {
+    const { runtime, steps, recorded } = fakeRuntime([target('spot-down'), target('fine'), target('ondemand-down')], {
+      'spot-down': { reading: spot('TERMINATED') },
+      'ondemand-down': { reading: { kind: 'observed', status: 'TERMINATED', instanceId: 'i-od' } },
+    });
+    const { seams, prepared, enqueued } = reclaimSeams({ kind: 'restart', operationId: 'op-x', input: { action: 'start' } });
+    runtime.reclaim = seams;
+
+    const result = await runWorkspaceHostStandingHealthPass(runtime);
+
+    const expectedOp = workspaceHostReclaimOperationId({ workspaceId: WS, hostId: 'spot-down' }, NOW.getTime());
+    expect(expectedOp).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(workspaceHostReclaimOperationId({ workspaceId: WS, hostId: 'spot-down' }, NOW.getTime())).toBe(expectedOp);
+    expect(workspaceHostReclaimOperationId({ workspaceId: WS, hostId: 'spot-down' }, NOW.getTime() + 1)).not.toBe(expectedOp);
+    expect(prepared).toEqual([{ hostId: 'spot-down', operationId: expectedOp }]);
+    expect(enqueued).toEqual([{ operationId: 'op-x', input: { action: 'start' } }]);
+    // The prepare runs in its own checkpointed step, after the host's attestation step.
+    expect(steps).toEqual([
+      'standing-health-list',
+      `standing-health-host:${WS}:spot-down`,
+      `standing-health-reclaim:${WS}:spot-down`,
+      `standing-health-host:${WS}:fine`,
+      `standing-health-host:${WS}:ondemand-down`,
+    ]);
+    expect(recorded.map((r) => r.attestation.hostId)).toEqual(['spot-down', 'fine', 'ondemand-down']);
+    const byHost = Object.fromEntries(
+      result.outcomes.map((o) => [o.hostId, o.kind === 'attested' ? o.recovery : 'not-attested']),
+    );
+    expect(byHost).toEqual({
+      'spot-down': { kind: 'restart-enqueued', operationId: 'op-x' },
+      fine: undefined,
+      'ondemand-down': undefined,
+    });
+  });
+
+  it('reports a skipped restart with its reason and enqueues nothing', async () => {
+    const { runtime } = fakeRuntime([target('h')], { h: { reading: spot('TERMINATED') } });
+    const { seams, enqueued } = reclaimSeams({ kind: 'skip', reason: "desired state is now 'stopped'" });
+    runtime.reclaim = seams;
+    const result = await runWorkspaceHostStandingHealthPass(runtime);
+    expect(enqueued).toEqual([]);
+    expect(result.outcomes[0]).toMatchObject({
+      kind: 'attested',
+      recovery: { kind: 'restart-skipped', reason: "desired state is now 'stopped'" },
+    });
+  });
+
+  it('a prepare or enqueue that throws is a reported restart failure, and the pass keeps going', async () => {
+    const { runtime } = fakeRuntime([target('a'), target('b')], {
+      a: { reading: spot('TERMINATED') },
+      b: { reading: spot('TERMINATED') },
+    });
+    let calls = 0;
+    runtime.reclaim = {
+      prepare: async (t, operationId) => {
+        if (t.hostId === 'a') throw new Error('connection closed');
+        return { kind: 'restart', operationId, input: {} };
+      },
+      enqueue: async () => {
+        calls += 1;
+        throw new Error('queue unavailable');
+      },
+    };
+    const result = await runWorkspaceHostStandingHealthPass(runtime);
+    expect(calls).toBe(1);
+    expect(result.outcomes.map((o) => (o.kind === 'attested' ? o.recovery : undefined))).toEqual([
+      { kind: 'restart-failed', error: 'could not prepare the restart: connection closed' },
+      { kind: 'restart-failed', error: 'queue unavailable' },
+    ]);
+  });
+
+  it('without reclaim seams a reclaimed host is still attested, just not restarted', async () => {
+    const { runtime, steps } = fakeRuntime([target('h')], { h: { reading: spot('TERMINATED') } });
+    const result = await runWorkspaceHostStandingHealthPass(runtime);
+    expect(steps).toEqual(['standing-health-list', `standing-health-host:${WS}:h`]);
+    expect(result.outcomes[0]).toMatchObject({ kind: 'attested', status: 'unreachable' });
+    expect(result.outcomes[0]).not.toHaveProperty('recovery');
   });
 });

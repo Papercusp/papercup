@@ -182,7 +182,7 @@ beforeAll(async () => {
            ${harnessSlug},
            'P4WI-' || lpad(g::text, 5, '0'),
            CASE WHEN g = ${DEEP} THEN 'deep-only-match' ELSE 'ordinary work item ' || g END,
-           '',
+           CASE WHEN g = ${DEEP} THEN 'mobile detail description' ELSE '' END,
            (ARRAY['open','blocked','wip','done'])[1 + (g % 4)],
            CASE WHEN g % 3 = 0 THEN 'feature' WHEN g % 3 = 1 THEN 'bug' ELSE 'change' END,
            'su-' || (g % 6),
@@ -210,6 +210,23 @@ afterAll(async () => {
 });
 
 describe('workItems.byHarness + workItems.summary real-PG contract', () => {
+  it('preserves mobile harness and summary details on the existing scoped cursor reader', async () => {
+    const predicate = buildWorkItemsPredicate(normalizeWorkItemsListArgs({
+      harnessSlug, filters: { id: rowFor(DEEP).id }, limit: 200,
+    }));
+    const detailed = await readWorkItemsPageFromStore(sql, workspaceId, predicate, { includeDetails: true });
+    expect(detailed.rows).toHaveLength(1);
+    expect(detailed.rows[0]).toMatchObject({
+      id: rowFor(DEEP).id, harness: harnessSlug, summary: 'mobile detail description',
+      createdAt: new Date(BASE_TS - DEEP).toISOString(),
+    });
+    const lean = await readWorkItemsPageFromStore(sql, workspaceId, predicate);
+    expect(lean.rows[0]?.summary).toBe('');
+    expect(lean.rows[0]?.createdAt).toBeUndefined();
+    const foreign = await readWorkItemsPageFromStore(sql, `${workspaceId}-foreign`, predicate, { includeDetails: true });
+    expect(foreign.rows).toEqual([]);
+  });
+
   it('carries current acceptance, stale reasons and evidence on a bounded row without leaking payload or body', async () => {
     const id = rowFor(DEEP).id;
     const source = { kind: rowFor(DEEP).kind, title: 'deep-only-match', summary: 'source content' };

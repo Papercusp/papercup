@@ -12,7 +12,7 @@
  * it proves the route wiring (principal mapping, param parsing, response
  * shaping, the work_items-native attention filter) without standing up PG.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { RouteContext, RouteDefinition } from '../define-route';
 
@@ -166,8 +166,15 @@ function routeByPath(routes: RouteDefinition<any>[], method: string, path: strin
   return def;
 }
 
+beforeEach(() => {
+  m.readWorkItemsPageFromStore.mockImplementation(async () => ({
+    rows: await m.listWorkItems({}), hasMore: false, nextCursor: null,
+  }));
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   m.readWorkItemsPageFromStore.mockReset();
 });
 
@@ -309,10 +316,12 @@ describe('device/attention', () => {
       id: `action-${i}`, kind: 'bug', family: 'issue', state: 'open', title: 'Needs triage',
       harness: 'papercup', summary: 'Keep the existing mobile description',
     }));
-    m.listWorkItems.mockResolvedValueOnce(recent as never);
+    const cursor1 = JSON.stringify({ updatedTs: 2, id: 'recent-199' });
+    const cursor2 = JSON.stringify({ updatedTs: 1, id: 'action-199' });
     m.readWorkItemsPageFromStore
-      .mockResolvedValueOnce({ rows: [...recent, ...actionable.slice(0, 100)], hasMore: true, nextCursor: 'page-2' })
-      .mockResolvedValueOnce({ rows: actionable.slice(100), hasMore: false, nextCursor: null });
+      .mockResolvedValueOnce({ rows: recent, hasMore: true, nextCursor: cursor1 })
+      .mockResolvedValueOnce({ rows: actionable.slice(0, 200), hasMore: true, nextCursor: cursor2 })
+      .mockResolvedValueOnce({ rows: actionable.slice(200), hasMore: false, nextCursor: null });
     const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
     const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
     expect(res.status).toBe(200);
@@ -320,8 +329,55 @@ describe('device/attention', () => {
     expect(body.workItems.map((w: { id: string }) => w.id)).toEqual(actionable.map(w => w.id));
     expect(body.counts.workItems).toBe(203);
     expect(m.withWorkspace).toHaveBeenCalledWith('ws-e4', expect.any(Function));
-    expect(m.readWorkItemsPageFromStore).toHaveBeenCalledTimes(2);
-    expect(m.readWorkItemsPageFromStore.mock.calls[1]?.[2].args.cursor).toEqual(JSON.parse('"page-2"'));
+    expect(m.readWorkItemsPageFromStore).toHaveBeenCalledTimes(3);
+    expect(m.readWorkItemsPageFromStore.mock.calls[1]?.[2].args.cursor).toEqual(JSON.parse(cursor1));
+    expect(m.readWorkItemsPageFromStore.mock.calls[0]?.[2].args).toMatchObject({
+      harnessSlugs: ['other-pot', 'papercup'], limit: 200,
+      filters: { states: ['blocked', 'failing', 'needs-human', 'open'] },
+    });
+    expect(body.workItems[202]).toMatchObject({ harness: 'papercup', summary: 'Keep the existing mobile description' });
+  });
+
+  it('drains canonical group pages and merges a group split at the default page boundary', async () => {
+    const items = Array.from({ length: 101 }, (_, i) => ({ id: `attention-${i}` }));
+    m.dispatchProjectedTool
+      .mockResolvedValueOnce({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [{
+        key: 'p1', planSlug: 'p1', items: items.slice(0, 100),
+        _meta: { total: 101, returned: 100, hasMore: true, nextOffset: 100 },
+      }] }) }] } })
+      .mockResolvedValueOnce({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [{
+        key: 'p1', planSlug: 'p1', items: items.slice(100),
+        _meta: { total: 101, returned: 1, hasMore: false, nextOffset: null },
+      }] }) }] } });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.groups).toEqual([{ key: 'p1', planSlug: 'p1', items }]);
+    expect(body.counts.groups).toBe(1);
+    expect(m.dispatchProjectedTool.mock.calls[1]?.[2]).toEqual({ limit: 100, offset: 100, payloadTier: 'full' });
+  });
+
+  it('returns unavailable when a source cannot continue its incomplete work-item page', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.readWorkItemsPageFromStore.mockResolvedValueOnce({ rows: [{ kind: 'bug', family: 'issue', state: 'open' }], hasMore: true, nextCursor: null });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'attention_unavailable' });
+    expect(warning).toHaveBeenCalledWith('[device/attention] work-item pages failed:', 'Incomplete work-item attention page');
+  });
+
+  it.each([
+    { groups: [], _projection: { truncated: true } },
+    { groups: [{ items: [], _meta: { total: 1, returned: 0, hasMore: false } }] },
+    { groups: [{ items: [{ id: 'a' }], _meta: { total: 2, returned: 1, hasMore: true, nextOffset: 0 } }] },
+  ])('returns unavailable for a truncated or inconsistent canonical group page %#', async (page) => {
+    m.dispatchProjectedTool.mockResolvedValueOnce({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify(page) }] } });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'attention_unavailable' });
   });
 
   it('declares device auth + cors', () => {

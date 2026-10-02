@@ -7,6 +7,7 @@ import {
   computeActivityLaneHealth,
   summarizeLearningLoopHealth,
   singletonRoutineName,
+  DEFAULT_RESUME_FIRE_GRACE_MS,
   type LearningLoopSpec,
   type LearningRoutineRow,
 } from './learning-loop-health';
@@ -44,6 +45,40 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     });
     expect(cal.status).toBe('stale');
     expect(cal.daysSinceFire).toBe(5);
+  });
+
+  it('keeps a due loop pending briefly after a recorded resume, then restores the stale verdict', () => {
+    const resumedAtMs = NOW - 30_000;
+    const row = sRow('calibration', {
+      lastFiredAt: daysAgo(65),
+      nextFireAt: daysAgo(65),
+      lastPauseResumedAtMs: resumedAtMs,
+    });
+    const [duringGrace] = computeLearningLoopHealth([LOOPS[0]], [row], { nowMs: NOW, staleAfterDays: 3 });
+
+    expect(duringGrace.status).toBe('pending');
+    expect(summarizeLearningLoopHealth([duringGrace]).needsAttention).toEqual([]);
+
+    const [afterGrace] = computeLearningLoopHealth([LOOPS[0]], [row], {
+      nowMs: resumedAtMs + DEFAULT_RESUME_FIRE_GRACE_MS + 1,
+      staleAfterDays: 3,
+    });
+    expect(afterGrace.status).toBe('stale');
+  });
+
+  it('does not let pre-pause domain activity override a recent resume grace', () => {
+    const resumedAtMs = NOW - 30_000;
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { lastFiredAt: daysAgo(65), nextFireAt: daysAgo(65), lastPauseResumedAtMs: resumedAtMs })],
+      {
+        nowMs: NOW,
+        staleAfterDays: 3,
+        activityByBlueprintId: { scout: { lastActivityAt: daysAgo(65), source: 'scout_ticks' } },
+      },
+    );
+
+    expect(scout.status).toBe('pending');
   });
 
   it('keeps a long-cadence loop healthy while its next scheduled fire is still ahead', () => {

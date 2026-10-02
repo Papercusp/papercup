@@ -38,6 +38,13 @@ describe('lintOwnerQuestionSlots', () => {
     expect(lintOwnerQuestionSlots('question for the owner: keep the legacy route?').flagged).toBe(true);
   });
 
+  it('does not treat the coord:ask owner-UI-only tool name as an owner question', () => {
+    const line =
+      'The intentional coord:ask owner-UI-only message is caller-side; generic unauthorized workspace-scope remains structural.';
+    expect(lintOwnerQuestionSlots(line)).toEqual({ flagged: false, matches: [] });
+    expect(lintOwnerQuestionSlots(`${line} Separately, ask the owner which behavior should ship.`).flagged).toBe(true);
+  });
+
   it('flags blocked-on-owner-answer shapes', () => {
     expect(lintOwnerQuestionSlots('waiting on the owner to pick the pricing model').flagged).toBe(true);
     expect(lintOwnerQuestionSlots("blocked on owner's decision about the schema split").flagged).toBe(true);

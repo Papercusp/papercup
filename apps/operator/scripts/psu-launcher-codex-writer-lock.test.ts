@@ -43,6 +43,7 @@ import {
   findFlockWriteHolderPid,
   codexThreadWriterLockPath,
   codexThreadWriterHolder,
+  codexThreadWriterStatErrorCode,
   codexResumeHome,
   codexActiveWriterMessage,
 } from './psu-launcher.mjs';
@@ -188,6 +189,20 @@ describe('codexThreadWriterHolder', () => {
     });
     expect(got.held).toBe(false);
     expect(got.reason).toBe('no-lock-file');
+    expect(got.statErrorCodes).toEqual(['ENOENT']);
+  });
+
+  it('preserves a non-missing lock stat error as a distinct diagnostic', () => {
+    const home = homeWithLocks([LIVE_THREAD + '.lock']);
+    const statError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const got = codexThreadWriterHolder(home, LIVE_THREAD, {
+      readProcLocks: () => PROC_LOCKS,
+      statFile: () => { throw statError; },
+    });
+    expect(got.held).toBe(false);
+    expect(got.reason).toBe('stat-error-EACCES');
+    expect(got.statErrorCodes).toEqual(['EACCES']);
+    expect(codexThreadWriterStatErrorCode({ code: 'not a safe code' })).toBe('unknown');
   });
 
   it('FAILS OPEN when there is no CODEX_HOME to inspect', () => {

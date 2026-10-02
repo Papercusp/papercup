@@ -8,7 +8,76 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
-import type { WorkspaceHostStandingHealthTarget } from './standing-health';
+import type { RunWorkspaceHostLifecycleInput } from './lifecycle-runner';
+import { readWorkspaceHostConnection, readWorkspaceHostDestroyTarget } from './observability-store';
+import type { WorkspaceHostReclaimRestartPlan, WorkspaceHostStandingHealthTarget } from './standing-health';
+
+/** The actor a spot-reclaim restart is attributed to in lifecycle records (WI-10005210). */
+export const WORKSPACE_HOST_SPOT_RECLAIM_ACTOR = 'system:workspace-host-spot-reclaim';
+
+/** The lifecycle request a reclaim restart enqueues (the DBOS start input). */
+export type WorkspaceHostReclaimRestartInput = Omit<RunWorkspaceHostLifecycleInput, 'provider' | 'store' | 'signal'> & {
+  operationId: string;
+};
+
+/** The host's desired state RIGHT NOW, read with the same admin pool the target list uses. */
+export async function readWorkspaceHostDesiredState(
+  workspaceId: string,
+  hostId: string,
+  sql?: Sql,
+): Promise<string | null> {
+  const db = sql ?? getOrgPg().sql;
+  const rows = await db<Array<{ desired_state: string }>>`
+    SELECT desired_state
+      FROM harness_shared.workspace_hosts
+     WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+     LIMIT 1
+  `;
+  return rows[0]?.desired_state ?? null;
+}
+
+export interface WorkspaceHostReclaimRestartDeps {
+  readDesiredState?: (workspaceId: string, hostId: string) => Promise<string | null>;
+  readTarget?: (workspaceId: string, hostId: string) => ReturnType<typeof readWorkspaceHostDestroyTarget>;
+  readConnection?: (workspaceId: string, connectionId: string) => ReturnType<typeof readWorkspaceHostConnection>;
+}
+
+/**
+ * Build the lifecycle `start` for a reclaimed spot host, or say why not (WI-10005210).
+ *
+ * The desired state is re-read here rather than trusted from the target list: a controller stop
+ * that completed after the list was taken leaves a stopped spot VM that is the customer's choice,
+ * not a reclaim, and restarting it would undo the stop. The request is the same shape the
+ * workspace-host action route builds for a `start`.
+ */
+export async function prepareWorkspaceHostReclaimRestart(
+  target: { workspaceId: string; hostId: string },
+  operationId: string,
+  deps: WorkspaceHostReclaimRestartDeps = {},
+): Promise<WorkspaceHostReclaimRestartPlan> {
+  const { workspaceId, hostId } = target;
+  const desiredState = await (deps.readDesiredState ?? readWorkspaceHostDesiredState)(workspaceId, hostId);
+  if (desiredState === null) return { kind: 'skip', reason: 'the host row is gone' };
+  if (!(WORKSPACE_HOST_STANDING_HEALTH_DESIRED_STATES as readonly string[]).includes(desiredState)) {
+    return { kind: 'skip', reason: `desired state is now '${desiredState}', so the stop was ordered, not a reclaim` };
+  }
+  const host = await (deps.readTarget ?? ((ws, id) => readWorkspaceHostDestroyTarget(ws, id)))(workspaceId, hostId);
+  if (!host) return { kind: 'skip', reason: 'the host row is gone' };
+  const stored = await (deps.readConnection ?? ((ws, id) => readWorkspaceHostConnection(ws, id)))(
+    workspaceId,
+    host.connectionId,
+  );
+  if (!stored) return { kind: 'skip', reason: `workspace-host connection '${host.connectionId}' was not found` };
+  const input: WorkspaceHostReclaimRestartInput = {
+    workspaceId,
+    hostId,
+    action: 'start',
+    connection: { ...stored.connection, scope: host.desired.scope },
+    operationId,
+    actorId: WORKSPACE_HOST_SPOT_RECLAIM_ACTOR,
+  };
+  return { kind: 'restart', operationId, input };
+}
 
 /**
  * Lifecycle states in which a host is meant to be up. `repairing`, `provisioning`, `stopped` and the

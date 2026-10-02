@@ -40,12 +40,12 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -294,7 +294,21 @@ function isSignedSingleAgentMcpConfig(contents: string): boolean {
   return /[?&]sig=[^&"'\s]+/.test(contents);
 }
 
-function writeMcpJsonFile(envelope: ConsoleEnvelope, enabled: boolean): string | null {
+/** Async existence probe — the fs/promises analogue of existsSync (false on any error). */
+function pathExists(p: string): Promise<boolean> {
+  return fsp.access(p).then(
+    () => true,
+    () => false,
+  );
+}
+
+// WI-10005243: this runs inside spawnConsole/spawnHeadless, which execute on the
+// operator's and bg-host's event loop. The tmp write + rename over an existing
+// .mcp.json measured 22 ms and 156 ms of main-thread block on bg-host (bpftrace,
+// 2026-10-02), because ext4 flushes the replaced file's data at rename
+// (auto_da_alloc). Every fs call here is therefore async; a source guard in
+// console-spawn.test.ts keeps the *Sync forms out of this function.
+async function writeMcpJsonFile(envelope: ConsoleEnvelope, enabled: boolean): Promise<string | null> {
   if (!enabled || !envelope.mcpJsonContents) return null;
 
   // EI-23765667869335651: a signed single-agent door must NOT be written into a
@@ -325,9 +339,9 @@ function writeMcpJsonFile(envelope: ConsoleEnvelope, enabled: boolean): string |
 
   try {
     const mcpPath = join(envelope.cwd, '.mcp.json');
-    if (existsSync(mcpPath)) {
+    if (await pathExists(mcpPath)) {
       const bak = join(envelope.cwd, '.mcp.json.papercusp.bak');
-      if (!existsSync(bak)) renameSync(mcpPath, bak);
+      if (!(await pathExists(bak))) await fsp.rename(mcpPath, bak);
     }
     // Atomic write via temp-file + rename instead of a direct writeFileSync.
     // WHY (owner-hit 2026-07-11: resume/fork consoles failed with HTTP 500
@@ -346,15 +360,13 @@ function writeMcpJsonFile(envelope: ConsoleEnvelope, enabled: boolean): string |
       envelope.cwd,
       `.mcp.json.tmp-${process.pid}-${Date.now()}-${randomBytes(6).toString('hex')}`,
     );
-    writeFileSync(tmp, envelope.mcpJsonContents);
+    await fsp.writeFile(tmp, envelope.mcpJsonContents);
     try {
-      renameSync(tmp, mcpPath);
+      await fsp.rename(tmp, mcpPath);
     } catch (e) {
-      try {
-        unlinkSync(tmp);
-      } catch {
+      await fsp.unlink(tmp).catch(() => {
         /* best-effort temp cleanup */
-      }
+      });
       throw e;
     }
   } catch (e: any) {
@@ -1620,7 +1632,7 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
   const { envelope } = opts;
 
   // 1. Optional .mcp.json displacement (backup the user's, write ours).
-  const mcpJsonError = writeMcpJsonFile(envelope, opts.writeMcpJson ?? false);
+  const mcpJsonError = await writeMcpJsonFile(envelope, opts.writeMcpJson ?? false);
   if (mcpJsonError) {
     return { status: 'error', error: mcpJsonError, code: 500 };
   }
@@ -2612,7 +2624,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
 
 async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnConsoleResult> {
   const { envelope } = opts;
-  const mcpJsonError = writeMcpJsonFile(envelope, opts.writeMcpJson ?? false);
+  const mcpJsonError = await writeMcpJsonFile(envelope, opts.writeMcpJson ?? false);
   if (mcpJsonError) {
     return { status: 'error', error: mcpJsonError, code: 500 };
   }

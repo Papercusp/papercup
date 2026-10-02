@@ -12,13 +12,47 @@ import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { resolveWorkspaceHostSoakSeams } from '../workspace-host/soak-seams';
 import { recordWorkspaceHostHealth } from '../workspace-host/observability-store';
 import { DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY } from '../workspace-host/provisioning-runner';
-import { listWorkspaceHostStandingHealthTargets } from '../workspace-host/standing-health-store';
+import {
+  listWorkspaceHostStandingHealthTargets,
+  prepareWorkspaceHostReclaimRestart,
+  type WorkspaceHostReclaimRestartInput,
+} from '../workspace-host/standing-health-store';
 import {
   runWorkspaceHostStandingHealthPass,
   WORKSPACE_HOST_STANDING_HEALTH_CRONTAB,
+  type WorkspaceHostReclaimRecovery,
+  type WorkspaceHostReclaimRestartSeams,
   type WorkspaceHostStandingHealthPassResult,
   type WorkspaceHostStandingHealthRuntime,
 } from '../workspace-host/standing-health';
+/**
+ * Restart a reclaimed spot host with the controller's own lifecycle `start` (WI-10005210).
+ * `enqueue` runs at the workflow layer of the standing-health tick, where DBOS allows starting a
+ * child workflow; the per-host dedup id makes a busy host a skip, never a second operation.
+ *
+ * The lifecycle module is imported lazily: it registers the provisioning workflow and its queue at
+ * load, which the host has already done at boot, and an eager import would drag that registration
+ * into every importer of this schedule.
+ */
+export function workspaceHostReclaimRestartSeams(
+  enqueue?: (input: WorkspaceHostReclaimRestartInput) => Promise<unknown>,
+): WorkspaceHostReclaimRestartSeams {
+  return {
+    prepare: (target, operationId) => prepareWorkspaceHostReclaimRestart(target, operationId),
+    enqueue: async ({ operationId, input }): Promise<WorkspaceHostReclaimRecovery> => {
+      const lifecycle = await import('./workspace-host-provision-workflow');
+      try {
+        await (enqueue ?? lifecycle.enqueueWorkspaceHostLifecycleWorkflow)(input as WorkspaceHostReclaimRestartInput);
+        return { kind: 'restart-enqueued', operationId };
+      } catch (error) {
+        if (error instanceof lifecycle.WorkspaceHostProvisioningConflictError) {
+          return { kind: 'restart-skipped', reason: 'another lifecycle operation holds the host' };
+        }
+        throw error;
+      }
+    },
+  };
+}
 
 export const WORKSPACE_HOST_HEALTH_WORKFLOW_NAME = 'workspaceHostStandingHealth';
 
@@ -32,7 +66,15 @@ export function workspaceHostStandingHealthDbosRuntime(): WorkspaceHostStandingH
     resolveSeams: (input) => resolveWorkspaceHostSoakSeams(input),
     recordHealth: recordWorkspaceHostHealth,
     now: () => new Date(),
+    reclaim: workspaceHostReclaimRestartSeams(),
   };
+}
+
+function recoveryNote(recovery: WorkspaceHostReclaimRecovery | undefined): string {
+  if (!recovery) return '';
+  if (recovery.kind === 'restart-enqueued') return ` (spot reclaimed, restart enqueued ${recovery.operationId})`;
+  if (recovery.kind === 'restart-skipped') return ` (spot reclaimed, restart skipped: ${recovery.reason})`;
+  return ` (spot reclaimed, restart FAILED: ${recovery.error})`;
 }
 
 /** A one-line summary, or null when every probed host is healthy and nothing failed. */
@@ -42,7 +84,9 @@ export function workspaceHostStandingHealthSummary(result: WorkspaceHostStanding
   const failed = result.outcomes.filter((outcome) => outcome.kind === 'record-failed');
   if (unhealthy.length === 0 && failed.length === 0) return null;
   const parts = [
-    ...unhealthy.map((outcome) => `${outcome.workspaceId}/${outcome.hostId}=${outcome.status}`),
+    ...unhealthy.map(
+      (outcome) => `${outcome.workspaceId}/${outcome.hostId}=${outcome.status}${recoveryNote(outcome.recovery)}`,
+    ),
     ...failed.map((outcome) => `${outcome.workspaceId}/${outcome.hostId} record failed: ${outcome.error}`),
   ];
   return (

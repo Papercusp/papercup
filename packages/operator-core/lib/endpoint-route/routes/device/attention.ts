@@ -27,8 +27,14 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import '../../../agent-tools/index';
+import { withWorkspace } from '@papercusp/db-org';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
-import { listWorkItems, type WorkItem } from '../../../work-items';
+import { listHarnessesFor } from '../../../device-harnesses';
+import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
+import {
+  buildWorkItemsPredicate, normalizeWorkItemsListArgs, readWorkItemsPageFromStore,
+  type WorkItemsListRow,
+} from '../../../sync-resolver/work-items-list-query';
 import {
   releaseGateTile,
   poolTile,
@@ -42,7 +48,7 @@ const FEATURE_ATTENTION_STATES = new Set(['needs-human', 'blocked', 'failing']);
 const unavailableAttention = () => Response.json({ error: 'attention_unavailable' }, { status: 503 });
 
 /** Is this work-item worth surfacing in the human's inbox? */
-function isAttentionWorkItem(wi: WorkItem): boolean {
+function isAttentionWorkItem(wi: { family: string; kind: string; state: string }): boolean {
   if (wi.family === 'feature') return FEATURE_ATTENTION_STATES.has(wi.state);
   // issue-family: open bugs/changes await triage; delegated `task`s are the
   // operator's own work, not the human's inbox.
@@ -71,30 +77,89 @@ const attention = defineTool({
     };
 
     // 1. Canonical attention groups (plan items + coord + smoke + reviews).
-    let groups: unknown[];
+    type InboxGroup = {
+      key?: string; planSlug?: string | null; harnessSlug?: string | null; items: unknown[];
+      _meta?: { hasMore?: boolean; nextOffset?: number | null; total?: number; returned?: number };
+      [key: string]: unknown;
+    };
+    const groups: InboxGroup[] = [];
     const attentionTool = lookupByMcpName('plans:attention');
     if (!attentionTool) return unavailableAttention();
     try {
-      const dispatched = await dispatchProjectedTool(attentionTool, 'plans:attention', {}, toolCtx, {});
-      if (dispatched.result?.isError) return unavailableAttention();
-      const parsed = JSON.parse((dispatched.result?.content[0] as { text?: string })?.text ?? '{}') as {
-        ok?: boolean;
-        groups?: unknown[];
-      };
-      if (parsed.ok === false || !Array.isArray(parsed.groups)) return unavailableAttention();
-      groups = parsed.groups;
+      let offset = 0;
+      let expectedTotal: number | undefined;
+      let received = 0;
+      const byKey = new Map<string, InboxGroup>();
+      do {
+        if (ctx.signal.aborted) return unavailableAttention();
+        const dispatched = await dispatchProjectedTool(attentionTool, 'plans:attention', {
+          limit: 100, offset, payloadTier: 'full',
+        }, toolCtx, {});
+        if (dispatched.result?.isError) return unavailableAttention();
+        const parsed = JSON.parse((dispatched.result?.content[0] as { text?: string })?.text ?? '{}') as {
+          ok?: boolean; groups?: InboxGroup[]; _projection?: { truncated?: boolean };
+        };
+        if (parsed.ok === false || parsed._projection?.truncated || !Array.isArray(parsed.groups)) return unavailableAttention();
+        const meta = parsed.groups.find(g => g._meta)?._meta;
+        let pageItems = 0;
+        for (const group of parsed.groups) {
+          if (!Array.isArray(group.items)) return unavailableAttention();
+          pageItems += group.items.length;
+          const { _meta: _pageMeta, ...completeGroup } = group;
+          const key = group.key ?? `${group.harnessSlug ?? ''}#${group.planSlug ?? 'alerts'}`;
+          const prior = byKey.get(key);
+          if (prior) prior.items.push(...group.items);
+          else {
+            const copy = { ...completeGroup, items: [...group.items] };
+            byKey.set(key, copy);
+            groups.push(copy);
+          }
+        }
+        if (meta?.returned !== undefined && meta.returned !== pageItems) return unavailableAttention();
+        if (meta?.total !== undefined) {
+          if (expectedTotal !== undefined && expectedTotal !== meta.total) return unavailableAttention();
+          expectedTotal = meta.total;
+        }
+        received += pageItems;
+        if (!meta?.hasMore) {
+          if (expectedTotal !== undefined && expectedTotal !== received) return unavailableAttention();
+          break;
+        }
+        if (!Number.isInteger(meta.nextOffset) || meta.nextOffset! <= offset || pageItems === 0) return unavailableAttention();
+        offset = meta.nextOffset!;
+      } while (true);
     } catch (e) {
       console.warn('[device/attention] plans:attention failed:', (e as Error)?.message ?? e);
       return unavailableAttention();
     }
 
     // 2. Work-items-native layer — attention-worthy items across the workspace.
-    let workItems: WorkItem[] = [];
+    let workItems: WorkItemsListRow[];
     try {
-      const all = await listWorkItems({ limit: 200 });
-      workItems = all.filter(isAttentionWorkItem);
+      const harnesses = await listHarnessesFor(principal.workspaceId, { includeHiveHomes: true });
+      const harnessSlugs = [...new Set([operatorHomeHarnessSlug(), ...harnesses.map(h => h.slug)])];
+      workItems = await withWorkspace(principal.workspaceId, async sql => {
+        const items: WorkItemsListRow[] = [];
+        let cursor: string | null = null;
+        const seenCursors = new Set<string>();
+        do {
+          if (ctx.signal.aborted) throw new Error('Attention request aborted');
+          const predicate = buildWorkItemsPredicate(normalizeWorkItemsListArgs({
+            harnessSlugs, limit: 200, cursor,
+            filters: { states: [...FEATURE_ATTENTION_STATES, 'open'] },
+          }));
+          const page = await readWorkItemsPageFromStore(sql, principal.workspaceId, predicate, { includeDetails: true });
+          items.push(...page.rows.filter(isAttentionWorkItem));
+          if (!page.hasMore) return items;
+          if (!page.nextCursor || seenCursors.has(page.nextCursor) || page.rows.length === 0) {
+            throw new Error('Incomplete work-item attention page');
+          }
+          seenCursors.add(page.nextCursor);
+          cursor = page.nextCursor;
+        } while (true);
+      });
     } catch (e) {
-      console.warn('[device/attention] listWorkItems failed:', (e as Error)?.message ?? e);
+      console.warn('[device/attention] work-item pages failed:', (e as Error)?.message ?? e);
       return unavailableAttention();
     }
 

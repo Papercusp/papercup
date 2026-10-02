@@ -111,6 +111,12 @@ export interface GcpInstanceObservation extends GcpResourceObservation {
   defguardIp?: string;
   agentOnline?: boolean;
   recreateInput?: GcpInstanceInsertInput;
+  /**
+   * The instance's scheduling.provisioningModel as GCP reports it. 'SPOT' means GCP may stop the
+   * VM at any time; a spot host the controller did not stop is RECLAIMED and must be restarted
+   * (standing-health.ts, WI-10005210). Absent when GCP omitted the field.
+   */
+  provisioningModel?: 'SPOT' | 'STANDARD';
 }
 
 export interface GcpDiskObservation extends GcpResourceObservation {

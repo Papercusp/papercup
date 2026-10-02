@@ -973,6 +973,19 @@ async function callTool(
   )) as CallResult;
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+/** Read one JSON payload block without concatenating separate advisory text blocks. */
+function jsonOf(r: CallResult): unknown {
+  for (const item of r.content) {
+    if (typeof item.text !== 'string') continue;
+    try {
+      return JSON.parse(item.text);
+    } catch {
+      // MCP results may carry non-JSON advisory text in separate content blocks.
+    }
+  }
+  if (r.structuredContent !== undefined) return r.structuredContent;
+  throw new Error('MCP result did not contain a JSON text item or structuredContent');
+}
 
 /** Exercise the SDK lifecycle independently of the HTTP adapter's handler capture. */
 async function withSdkHost<T>(extra: unknown, run: (client: Client) => Promise<T>, connection: 'memory' | 'uds' | 'listener' | 'http'): Promise<T> {
@@ -1099,7 +1112,7 @@ function assertPolicyResultParity(
   expect(native._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
 }
 
-describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the HTTP assembly', (connection) => {
+describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the real HTTP assembly', (connection) => {
   it('negotiates existing capabilities and exposes the same allowed catalog', async () => {
     const extra = extraFor(signedUrl({ tools: 'gatingtest:scoped,gatingtest:engineer' }));
     const http = await listTools(extra);
@@ -1115,7 +1128,11 @@ describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SD
   it('preserves policy metadata, dispatcher scope and compact content through the SDK', async () => {
     const extra = superuserExtra('&workspace=ws-test');
     const args = { projection: { pipe: [{ op: 'count' }] } };
-    const http = await callTool('gatingtest:scoped', args, extra);
+    const http = await withSdkHost(
+      extra,
+      client => client.callTool({ name: 'gatingtest:scoped', arguments: args }),
+      'http',
+    );
     await withSdkHost(extra, async (client) => {
       const native = await client.callTool({ name: 'gatingtest:scoped', arguments: args });
       assertPolicyResultParity(native, http);
@@ -1260,7 +1277,7 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
       expect(correlationId).toBeTruthy();
       expect(foreignAnswer).toMatchObject({ ok: false, status: 404 });
       expect(acceptedAnswer).toEqual({ ok: true });
-      expect(JSON.parse(textOf(result))).toMatchObject({
+      expect(jsonOf(result)).toMatchObject({
         ok: true, picks: [{ option_id: 'browse', label: 'Show me the templates' }],
       });
       expect(h.resolveBearer).toHaveBeenCalledWith('test-pi-card-bearer');
@@ -2423,7 +2440,7 @@ describe('validation refusals do not reserve MCP replay keys', () => {
       { idempotencyKey: validationKey },
     );
     expect(corrected.isError).toBeUndefined();
-    expect(JSON.parse(textOf(corrected))).toEqual({ ok: true, accepted: 'ok' });
+    expect(jsonOf(corrected)).toEqual({ ok: true, accepted: 'ok' });
     expect(replayValidationSeen).toHaveLength(1);
     expect(h.replayStores.map((row) => row.idempotencyKey)).toEqual([validationKey]);
 

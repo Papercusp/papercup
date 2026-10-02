@@ -78,6 +78,35 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)).toBeUndefined();
   });
 
+  it('EI-24800378908837374: a reply to one all-hive fan-out copy leaves no sibling broadcast unread', async () => {
+    const firstCopy = await sendMessage(LEADER, {
+      to: ['*'],
+      summary: 'Avi: pause work',
+      expectsReply: true,
+      extra: { allHiveBroadcast: true },
+    });
+    await sendMessage(LEADER, {
+      to: ['*'],
+      summary: 'Avi: pause work',
+      expectsReply: true,
+      extra: { allHiveBroadcast: true },
+    });
+    const directAsk = await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'please confirm the next lane',
+      expectsReply: true,
+    });
+    await sendMessage(MEMBER, {
+      to: [LEADER.ownerId],
+      summary: 'acknowledged the broadcast',
+      related_msg_id: firstCopy.msg_id,
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)?.count).toBe(1);
+    expect(map.get(MEMBER.ownerId)?.newest[0]?.msgId).toBe(directAsk.msg_id);
+  });
+
   it('EI-22458045233456597: one exact reply clears an earlier same-goal ask cluster, but not a later ask', async () => {
     const goalRef = 'EI-22458045233456597#cluster';
     const firstAsk = await sendMessage(LEADER, {

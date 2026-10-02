@@ -49,4 +49,21 @@ describe('workspace-host standing health workflow', () => {
       '[workspace-host-health] c: 2 attested, 1 not healthy, 1 not recorded | w/h2=unreachable | w/h3 record failed: connection closed',
     );
   });
+
+  it('says what happened to each reclaimed spot host (WI-10005210)', () => {
+    const summary = workspaceHostStandingHealthSummary({
+      controllerId: 'c',
+      outcomes: [
+        { kind: 'attested', workspaceId: 'w', hostId: 'a', status: 'unreachable', checks: [], recovery: { kind: 'restart-enqueued', operationId: 'op-1' } },
+        { kind: 'attested', workspaceId: 'w', hostId: 'b', status: 'unreachable', checks: [], recovery: { kind: 'restart-skipped', reason: 'another lifecycle operation holds the host' } },
+        { kind: 'attested', workspaceId: 'w', hostId: 'c', status: 'unreachable', checks: [], recovery: { kind: 'restart-failed', error: 'quota' } },
+      ],
+    });
+    expect(summary).toBe(
+      '[workspace-host-health] c: 3 attested, 3 not healthy, 0 not recorded' +
+        ' | w/a=unreachable (spot reclaimed, restart enqueued op-1)' +
+        ' | w/b=unreachable (spot reclaimed, restart skipped: another lifecycle operation holds the host)' +
+        ' | w/c=unreachable (spot reclaimed, restart FAILED: quota)',
+    );
+  });
 });

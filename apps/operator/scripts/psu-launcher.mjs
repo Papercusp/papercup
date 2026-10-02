@@ -12222,11 +12222,18 @@ export function codexThreadWriterLockPath(codexHome, sessionId) {
   return join(codexHome, "thread-writer-locks", `${sessionId}.lock`);
 }
 
+export function codexThreadWriterStatErrorCode(error) {
+  const code = error && typeof error === "object" && typeof error.code === "string"
+    ? error.code
+    : "unknown";
+  return /^[A-Z0-9_]{1,32}$/.test(code) ? code : "unknown";
+}
+
 const readProcLocksText = () => readFileSync("/proc/locks", "utf8");
 
 /**
  * Is a codex thread currently open by a live writer?
- * `{ held, pid, lockPath, sessionId, reason }` — fail-open on every error path.
+ * `{ held, pid, lockPath, sessionId, reason, statErrorCodes? }` — fail-open on every error path.
  *
  * `sessionId` null ⇒ scan the whole home. psu resumes a tracked row with no
  * recorded native id as `resume --last`, which lands on the home's most recent
@@ -12246,12 +12253,13 @@ export function codexThreadWriterHolder(
     listDir = safeReaddir,
   } = {},
 ) {
-  const miss = (reason, lockPath = null) => ({
+  const miss = (reason, lockPath = null, statErrorCodes = []) => ({
     held: false,
     pid: null,
     lockPath,
     sessionId: null,
     reason,
+    ...(statErrorCodes.length ? { statErrorCodes } : {}),
   });
   if (!codexHome) return miss("no-home");
   let procLocks;
@@ -12283,11 +12291,13 @@ export function codexThreadWriterHolder(
   // so they must not be conflated. Only a candidate we could actually stat proves
   // a lock file exists.
   let sawLockFile = false;
+  const statErrorCodes = [];
   for (const c of candidates) {
     let st;
     try {
       st = statFile(c.lockPath);
-    } catch {
+    } catch (error) {
+      statErrorCodes.push(codexThreadWriterStatErrorCode(error));
       continue; // never opened, or already cleaned up
     }
     sawLockFile = true;
@@ -12304,11 +12314,17 @@ export function codexThreadWriterHolder(
         lockPath: c.lockPath,
         sessionId: c.sessionId,
         reason: "held",
+        ...(statErrorCodes.length ? { statErrorCodes } : {}),
       };
   }
+  const nonMissingStatError = statErrorCodes.find((code) => code !== "ENOENT");
+  const reason = nonMissingStatError
+    ? "stat-error-" + nonMissingStatError
+    : sawLockFile ? "free" : "no-lock-file";
   return miss(
-    sawLockFile ? "free" : "no-lock-file",
+    reason,
     candidates[0]?.lockPath ?? null,
+    statErrorCodes,
   );
 }
 

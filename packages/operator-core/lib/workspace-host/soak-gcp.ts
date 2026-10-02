@@ -78,6 +78,7 @@ export async function resolveGcpWorkspaceHostSoakSeams(
         status: instance.status,
         ...(instance.instanceId ? { instanceId: instance.instanceId } : {}),
         ...(instance.sourceImage ? { sourceImage: instance.sourceImage } : {}),
+        ...(instance.provisioningModel === 'SPOT' ? { preemptible: true } : {}),
       };
     },
     { isTransient: isTransientNetworkError, sleep: defaultSoakSleep(input.timing) },

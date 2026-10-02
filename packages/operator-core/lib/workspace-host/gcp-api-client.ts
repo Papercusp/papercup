@@ -1204,8 +1204,10 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         )
       : undefined;
     const recreated = recreateInput(raw, bootDisk, zone);
+    const model = raw.scheduling?.provisioningModel;
     return {
       ...observedResource(raw, this.now()),
+      ...(model === 'SPOT' || model === 'STANDARD' ? { provisioningModel: model } : {}),
       status: raw.status ?? 'PROVISIONING',
       ...(raw.id !== undefined && raw.id !== null ? { instanceId: String(raw.id) } : {}),
       attachedDiskNames: (raw.disks ?? [])

@@ -60,6 +60,7 @@ HOST_WORKER_OUTPUTS=(
   event-loop-sentinel.worker.mjs
   snapshot-fold.worker.mjs
   mutation-probe-closure.worker.mjs
+  admission-jobs.worker.mjs
 )
 
 # Dependency-free on-disk scripts that the bundled host resolves as SIBLINGS of
@@ -120,7 +121,8 @@ bundle_host_workers() {
   for source in \
     "$repo_root/packages/operator-core/lib/event-loop-sentinel.worker.ts" \
     "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts" \
-    "$repo_root/packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.worker.ts"; do
+    "$repo_root/packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.worker.ts" \
+    "$repo_root/packages/operator-core/lib/release/admission-jobs.worker.ts"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
     BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"

@@ -141,6 +141,14 @@ vi.mock('../../release/frozen-repair-edit-ledger', async (importOriginal) => ({
 vi.mock('../../release/admission-import-completeness', () => ({
   importCompletenessPreflight: mocks.importPreflight,
 }));
+// WI-10005223: production runs these jobs on a worker thread, where vi.mock cannot reach.
+// Route them through the REAL job dispatcher inline, so the builder mocks above still apply
+// and the spec → preflight-closure rebuild (admissionPreflightFromSpec) is exercised too.
+// The worker path itself is covered by release/admission-offthread.test.ts.
+vi.mock('../../release/admission-offthread', async () => {
+  const { executeAdmissionJob } = await import('../../release/admission-jobs');
+  return { runAdmissionJob: async (job: Parameters<typeof executeAdmissionJob>[0]) => executeAdmissionJob(job) };
+});
 /** P-020: what the hunk-exact builder returns for a clean single-path replay. */
 const HX_SOURCE = 'h'.repeat(40);
 const hunkExactOf = (paths = ['lib/red.test.ts']) => ({

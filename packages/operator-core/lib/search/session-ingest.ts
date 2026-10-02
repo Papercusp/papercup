@@ -1583,11 +1583,12 @@ export function stampTurnProvenance(row: TurnRow): void {
   row.turn_origin_verdict = verdict;
 }
 
-async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
+export async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   if (!rows.length) return 0;
   for (const row of rows) stampTurnProvenance(row);
   const candidates = rows.filter((row) => row.prompt_hash && row.ts && row.turn_origin_verdict === UNENROLLED_ORIGIN_VERDICT);
   if (candidates.length) {
+    const sourceKinds = [...new Set(candidates.map((row) => row.source_kind))];
     const sessionIds = [...new Set(candidates.map((row) => row.session_id))];
     const promptHashes = [...new Set(candidates.map((row) => row.prompt_hash!))];
     const times = candidates.map((row) => Date.parse(row.ts!)).filter(Number.isFinite);
@@ -1598,7 +1599,7 @@ async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
         SELECT source_kind, session_id, prompt_hash, submitted_at
           FROM harness_shared.session_prompt_origin_stamps
          WHERE workspace_id = ${activeWorkspaceId()}
-           AND source_kind = 'claude'
+           AND source_kind = ANY(${sql.array(sourceKinds)}::text[])
            AND session_id = ANY(${sql.array(sessionIds)}::text[])
            AND prompt_hash = ANY(${sql.array(promptHashes)}::text[])
            AND submitted_at BETWEEN ${from} AND ${to}

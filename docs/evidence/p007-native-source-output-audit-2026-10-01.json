@@ -1,8 +1,25 @@
 {
-  "scope": "Cheap source and saved-output topology audit of P007 r163; diagnostic hypothesis, not root-cause verification or R7 acceptance",
+  "scope": "P007 source-qualified diagnostic history and current host localization; recorded threshold failures, not root-cause verification or R7 acceptance",
   "workItem": "WI-10002829",
+  "r167HostDiagnosticFire134": {
+    "scope": "ONE changed cold host-milestone diagnostic on new payload/SPA/manifest; native suite failed, no root/product/R7 acceptance",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r167-native-summary.json",
+    "summarySha256": "8979884eb992e69cdec514f89141fc69d20050cb37219faf1010936e67470851",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r167-cleanup-receipt.json",
+    "cleanupSha256": "ce233b18955771a1bd09478617130be7748f12ede5426c2f1d4016f2a2860af3",
+    "verifierRun": "20261002T025022Z-3056190",
+    "receipt": "perfrun-1790909702586-xvy0f9",
+    "verdict": "Parent and suite exit1; FAIL popup4949ms/FCP1501ms/LCP4822ms. Native receipt is retained with the original thresholds.",
+    "actualLcp": "P.pclsb-acct__foot joins the first footer node true; Plans subtitle is a different node false.",
+    "hostLocalization": "Expanded Accounts sidebar and fallback first observed1427ms. Footer joins the first sidebar true and Accounts container true; container/footer first observed3264ms. Footer first frame4662ms, eligible4664ms, actual LCP4822ms. This localizes observation intervals inside the Accounts branch and after candidate discovery; it does not identify import, insertion or paint cause.",
+    "unavailableAttribution": "Operator-shell containmentfalse forbids shell timing attribution. Fallback containmentnull at candidate discovery does not negate its earlier observation. Page resources list is empty and gives no import/fetch timing proof.",
+    "nativeSink": "Owned renderer3434203 initial environment retains four empty discovery paths. Measured fd38 target/inode6827731 and source-file stat match the tmpfs log on device29; root inode6827608. GST relative574-to811 span0.888023ms is separate from page epoch time; initiating caller and loaded core maps remain unmeasured.",
+    "confounds": "Sampler300samples/3239.519241ms total work is an observer cost, not independent latency attribution. Prepared API bundle6b62ca6ec805 differs from prior diagnostics; no paired comparison. Original whole saved SPA source/build graph is unknown. Media restriction remains diagnostic only.",
+    "cleanupVerification": "Exact5 recorded native/API/bridge/driver PIDs absent; port33700 refused; private source snapshot, socket, home, three profiles and identity/hash-checked tmpfs logs/root removed. Unrelated default advert and work logs preserved; no signals sent. All current source/payload/raw references match.",
+    "next": "Cheaply trace current and exact frozen Accounts lazy/mount/frame path to discriminate within-branch work from the later frame interval before changing diagnostics. Do not replay unchanged r167/r166/r165/r164/r163. Root/product/R7/five-cold-five-warm remain open."
+  },
   "r167HostMilestonePreparationFire134": {
-    "scope": "Fresh canonical host milestone payload on an independent saved diagnostic SPA; native outcome pending, no product repair or R7 acceptance",
+    "scope": "Fresh canonical host milestone payload on an independent saved diagnostic SPA; native outcome recorded separately in r167HostDiagnosticFire134, no product repair or R7 acceptance",
     "manifest": "$HOME/.papercusp/perf/p007-native-current/r167-instrument-manifest.json",
     "manifestSha256": "89fe6978a5523383a741fac473e5fcde6ec656958b14e6d0a9d37266bd6098ab",
     "assertion": "$HOME/.papercusp/perf/p007-native-current/r167-run-assertion.sh",

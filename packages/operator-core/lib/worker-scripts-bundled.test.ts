@@ -76,6 +76,11 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     source: 'packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.worker.ts',
     output: 'mutation-probe-closure.worker.mjs',
   },
+  {
+    // WI-10005223: frozen-repair admission git off the operator main thread.
+    source: 'packages/operator-core/lib/release/admission-jobs.worker.ts',
+    output: 'admission-jobs.worker.mjs',
+  },
 ];
 
 /**

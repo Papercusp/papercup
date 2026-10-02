@@ -125,13 +125,16 @@ vi.mock("@/app/harness/Modal", () => ({
     open,
     title,
     children,
+    onOpenChange,
   }: {
     open: boolean;
     title: string;
     children: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
   }) =>
     open ? (
       <section role="dialog" aria-label={title}>
+        <button aria-label="Close modal" onClick={() => onOpenChange?.(false)} />
         {children}
       </section>
     ) : null,
@@ -698,6 +701,22 @@ const awsConnectionRow = {
 } satisfies CloudWorkspacesControlRow;
 
 describe("CloudWorkspacesPage — AWS parity", () => {
+  it("dismisses the restore dialog through the Modal lifecycle callback", () => {
+    H.rows = [awsConnectionRow, {
+      ...workspaceRow, target: "aws", connectionId: awsConnectionRow.id,
+      capabilities: { ...workspaceRow.capabilities, restore: true },
+      resources: [{ logicalKey: "snapshot", kind: "snapshot", state: "applied", providerId: "snapshot-1", attempts: 1 }],
+    }];
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "More actions for research-control" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Restore snapshot" }));
+    const dialog = screen.getByRole("dialog", { name: "Restore research-control" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close modal" }));
+    expect(screen.queryByRole("dialog", { name: "Restore research-control" })).toBeNull();
+    expect(H.mutate).not.toHaveBeenCalled();
+  });
+
   it("collects AWS launch resources and SDK references without GCP fields", async () => {
     H.rows = [];
     render(<CloudWorkspacesPage />);

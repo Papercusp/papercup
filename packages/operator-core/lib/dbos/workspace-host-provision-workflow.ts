@@ -650,6 +650,38 @@ export async function startWorkspaceHostLifecycleWorkflow(
   }
 }
 
+/**
+ * Durably enqueue a lifecycle operation and return at once, without waiting out the admission
+ * window. For a caller that is itself a DBOS workflow (the standing-health pass restarting a
+ * reclaimed spot host, WI-10005210): it must start the child at the workflow layer and must not
+ * block on the child's result. A host another operation already holds raises
+ * `WorkspaceHostProvisioningConflictError`, exactly as the admitting route does.
+ */
+export async function enqueueWorkspaceHostLifecycleWorkflow(
+  input: StartWorkspaceHostLifecycleInput & { operationId: string },
+): Promise<WorkspaceHostOperationAcceptance> {
+  validateWorkspaceHostLifecycleRequest(input);
+  const workflowInput: WorkspaceHostLifecycleWorkflowInput = input;
+  const keys = workspaceHostWorkflowKeys({
+    workspaceId: input.workspaceId,
+    hostId: input.hostId,
+    operationId: input.operationId,
+  });
+  try {
+    await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
+      workflowID: keys.workflowId,
+      queueName: workspaceHostProvisioningQueue.name,
+      enqueueOptions: { deduplicationID: keys.deduplicationId },
+    })(workflowInput);
+  } catch (error) {
+    if (isWorkspaceHostProvisioningDedupConflict(error)) {
+      throw new WorkspaceHostProvisioningConflictError(input.hostId);
+    }
+    throw rehydrateWorkspaceHostProvisioningError(error);
+  }
+  return { status: 'accepted', operationId: input.operationId, hostId: input.hostId };
+}
+
 export class WorkspaceHostOperationIdentityConflictError extends Error {
   constructor() {
     super('Workspace-host operation ID is already bound to a different request');

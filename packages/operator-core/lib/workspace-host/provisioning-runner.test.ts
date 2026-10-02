@@ -209,6 +209,23 @@ describe('runWorkspaceHostProvisioning', () => {
     expect(store.beginOperation).not.toHaveBeenCalled();
   });
 
+  it('refuses canary evidence admitted for a different workspace, even when its identity labels agree', async () => {
+    // WI-10005226: isolate the workspaceId guard. Labels are derived from the foreign evidence so the
+    // label/identity checks agree and only the canary.workspaceId === input.workspaceId check can refuse.
+    const foreign: WorkspaceHostCanaryAdmission = { ...canary, workspaceId: 'ws-2' };
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness([planStep('create-instance')]);
+    await expect(runWorkspaceHostProvisioning({
+      ...runInput(provider, store),
+      desired: { ...desired, labels: workspaceHostCanaryIdentityLabels(foreign) },
+      canary: foreign,
+    })).rejects.toThrow(/canary\.workspaceId must match the active workspace/);
+    expect(provider.validateConnection).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(store.upsertHost).not.toHaveBeenCalled();
+    expect(store.beginOperation).not.toHaveBeenCalled();
+  });
+
   it('persists the exact pre-run economics before creating a canary resource', async () => {
     const { store } = storeHarness();
     vi.mocked(store.upsertHost).mockResolvedValue(undefined);

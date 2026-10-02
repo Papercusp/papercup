@@ -3245,9 +3245,10 @@ export function findFlockWriteHolderPid(procLocksText: any, { major, minor, inod
 }): number | null;
 /** `<CODEX_HOME>/thread-writer-locks/<uuid>.lock`. Pure — exported for tests. */
 export function codexThreadWriterLockPath(codexHome: any, sessionId: any): string | null;
+export function codexThreadWriterStatErrorCode(error: any): any;
 /**
  * Is a codex thread currently open by a live writer?
- * `{ held, pid, lockPath, sessionId, reason }` — fail-open on every error path.
+ * `{ held, pid, lockPath, sessionId, reason, statErrorCodes? }` — fail-open on every error path.
  *
  * `sessionId` null ⇒ scan the whole home. psu resumes a tracked row with no
  * recorded native id as `resume --last`, which lands on the home's most recent
@@ -3263,12 +3264,14 @@ export function codexThreadWriterHolder(codexHome: any, sessionId: any, { readPr
     statFile?: import("fs").StatSyncFn | undefined;
     listDir?: typeof safeReaddir | undefined;
 }): {
+    statErrorCodes?: any[] | undefined;
     held: boolean;
     pid: null;
     lockPath: null;
     sessionId: null;
     reason: any;
 } | {
+    statErrorCodes?: any[] | undefined;
     held: boolean;
     pid: number;
     lockPath: string | null;

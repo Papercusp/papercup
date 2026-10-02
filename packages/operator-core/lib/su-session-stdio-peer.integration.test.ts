@@ -1223,9 +1223,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
     const { resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
-    const { mintCarryRespawnArgs, codexThreadWriterLockPath, codexThreadWriterHolder } = await vi.importActual<{
+    const { mintCarryRespawnArgs, codexThreadWriterLockPath, codexThreadWriterHolder,
+      codexThreadWriterStatErrorCode } = await vi.importActual<{
       codexThreadWriterLockPath: (home: string, threadId: string) => string;
-      codexThreadWriterHolder: (home: string, threadId: string) => { held: boolean; pid: number | null; reason: string };
+      codexThreadWriterHolder: (home: string, threadId: string) => {
+        held: boolean; pid: number | null; reason: string; statErrorCodes?: string[];
+      };
+      codexThreadWriterStatErrorCode: (error: unknown) => string;
       mintCarryRespawnArgs: (args: string[], options: Record<string, unknown>) => {
       args: string[]; carryText: string; launchContextPath: string; codexAgentsPath: string; predecessorSessionId: string;
     } }>('../../../apps/operator/scripts/psu-launcher.mjs');
@@ -1313,12 +1317,20 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     try {
       const assertSourceGuards = () => {
         for (const guard of sourceGuards) {
-          const file = (() => { try { return lstatSync(guard.path, { bigint: true }); } catch { return null; } })();
+          let fileStatErrorCode: string | null = null;
+          const file = (() => {
+            try { return lstatSync(guard.path, { bigint: true }); }
+            catch (error) {
+              fileStatErrorCode = codexThreadWriterStatErrorCode(error);
+              return null;
+            }
+          })();
           const holder = codexThreadWriterHolder(nativeHome, guard.threadId);
           const peerState = guard.peer.receiptState?.();
           const peerPid = guard.peer.pid();
           const missing = [
-            !file?.isFile() && 'lock-file-missing',
+            !file?.isFile() && (fileStatErrorCode && fileStatErrorCode !== 'ENOENT'
+              ? 'lock-file-stat-error-' + fileStatErrorCode : 'lock-file-missing'),
             file && (file.dev !== guard.device || file.ino !== guard.inode) && 'lock-inode-changed',
             peerState?.exited !== false && 'guard-peer-exited',
             !holder.held && `flock-${holder.reason}`,
@@ -1328,9 +1340,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             at: new Date().toISOString(), phase, threadId: guard.threadId, path: guard.path,
             expectedDevice: guard.device.toString(), expectedInode: guard.inode.toString(),
             fileIsFile: file?.isFile() ?? false, actualDevice: file?.dev.toString() ?? null,
-            actualInode: file?.ino.toString() ?? null,
+            actualInode: file?.ino.toString() ?? null, fileStatErrorCode,
             peerPid, peerExited: peerState?.exited ?? null,
             holderHeld: holder.held, holderPid: holder.pid, holderReason: holder.reason,
+            holderStatErrorCodes: holder.statErrorCodes ?? [],
           };
           sourceGuardObservations.push(observation);
           if (missing.length) throw new Error(`frozen source native writer guard lost (${missing.join(',')}; probe=${JSON.stringify(observation)})`);

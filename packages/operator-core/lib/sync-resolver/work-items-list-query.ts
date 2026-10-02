@@ -100,6 +100,8 @@ export interface WorkItemsCompiledPredicate {
 
 export interface WorkItemsListRow {
   id: string;
+  harness?: string;
+  createdAt?: string;
   kind: string;
   family: 'feature' | 'issue';
   title: string;
@@ -388,13 +390,15 @@ function pageWithSpineSql(sql: OrgSql, keys: SqlFragment) {
  * Hydrate the bounded key set in CTE `page` (cheap scoped columns + spine) with
  * the payload-derived columns. Only page rows are detoasted.
  */
-function hydratePageSql(sql: OrgSql, workspaceId: string) {
+function hydratePageSql(sql: OrgSql, workspaceId: string, includeDetails = false) {
   return sql`
     SELECT p.id,
            p.harness_slug AS "harnessSlug",
            p.kind,
            p.family,
            p.title,
+           ${includeDetails ? sql`COALESCE(wi.summary, '')` : sql`''::text`} AS summary,
+           ${includeDetails ? sql`wi.created_ts` : sql`NULL::bigint`} AS "createdTs",
            p.state,
            p.assignee,
            ${assignedBySql(sql)} AS "assignedBy",
@@ -432,6 +436,7 @@ export function workItemsPageSql(
   sql: OrgSql,
   workspaceId: string,
   args: NormalizedWorkItemsListArgs,
+  includeDetails = false,
 ) {
   const take = args.limit + 1;
   const cursor = args.cursor;
@@ -469,7 +474,7 @@ export function workItemsPageSql(
     WITH ${latestSpineCte(sql, workspaceId, args)},
     ${scopedCte(sql, workspaceId, args, pageNeeds(args))},
     ${pageWithSpineSql(sql, keys)}
-    ${hydratePageSql(sql, workspaceId)}`;
+    ${hydratePageSql(sql, workspaceId, includeDetails)}`;
 }
 
 /** Bounded per-state fair sample for pickers/HUD boards (never corpus-complete). */
@@ -502,6 +507,8 @@ function workItemsFairStatesSql(
 interface WorkItemsDbRow {
   id: string;
   harnessSlug: string;
+  summary?: string;
+  createdTs?: number | string | null;
   kind: string;
   family: 'feature' | 'issue';
   title: string;
@@ -530,10 +537,12 @@ function mapWorkItemsRow(row: WorkItemsDbRow): WorkItemsListRow & { updatedTs: n
   const updatedTs = numberOrNull(row.updatedTs) ?? 0;
   return {
     id: row.id,
+    harness: row.harnessSlug,
+    ...(row.createdTs != null ? { createdAt: new Date(numberOrNull(row.createdTs) ?? 0).toISOString() } : {}),
     kind: row.kind,
     family: row.family,
     title: row.title,
-    summary: '',
+    summary: row.summary ?? '',
     state: row.state,
     assignee: row.assignee,
     assignedBy: row.assignedBy,
@@ -607,6 +616,9 @@ export async function readWorkItemsPageFromStore(
   sql: OrgSql,
   workspaceId: string,
   predicate: WorkItemsCompiledPredicate,
+  // Mobile retains the existing WorkItem summary/date contract; hydrate these
+  // fields only for bounded page keys, leaving the desktop's lean default intact.
+  options: { includeDetails?: boolean } = {},
 ): Promise<BoundedListPage<WorkItemsListRow>> {
   const args = predicate.args;
   if (args.fairStates.length > 0) {
@@ -615,7 +627,7 @@ export async function readWorkItemsPageFromStore(
     return { rows: rows.map(row => ({ ...mapWorkItemsRow(row), presentation: presentations.get(`${row.harnessSlug}#${row.id}`) })), nextCursor: null, hasMore: false };
   }
 
-  const rows = await sql<WorkItemsDbRow[]>`${workItemsPageSql(sql, workspaceId, args)}`;
+  const rows = await sql<WorkItemsDbRow[]>`${workItemsPageSql(sql, workspaceId, args, options.includeDetails)}`;
   const hasMore = rows.length > args.limit;
   const pageRows = hasMore ? rows.slice(0, args.limit) : rows;
   const presentations = await readWorkItemPresentations(sql, workspaceId, pageRows);

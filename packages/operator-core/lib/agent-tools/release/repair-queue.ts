@@ -40,19 +40,12 @@ import {
   recordFrozenRepairEdit,
   type FrozenRepairEditLedgerRow,
 } from '../../release/frozen-repair-edit-ledger';
-import {
-  buildCommittedPatchSource,
-  buildHunkExactSource,
-  summarizeForeignHunks,
-  type HunkExactSuccess,
-} from '../../release/hunk-exact-admission';
-import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
-import { importCompletenessPreflight } from '../../release/admission-import-completeness';
-import {
-  chainAdmissionPreflights,
-  lockfileManifestConsistencyPreflight,
-} from '../../release/admission-lockfile-consistency';
-import { admitPathsOntoRepairHead, realAdmissionGit, retractAdmission } from '../../release/repair-head-admission';
+import { summarizeForeignHunks, type HunkExactSuccess } from '../../release/hunk-exact-admission';
+import { integrationBranch } from '../../release/judged-sha-containment';
+import { realAdmissionGit } from '../../release/repair-head-admission';
+// WI-10005223: every admission git sequence below runs on the admission worker thread, never
+// on the operator main thread (a single admit measured up to 61.8s of blocked event loop).
+import { runAdmissionJob } from '../../release/admission-offthread';
 import {
   createCheckpointTreeFixPrecheckRunner,
   evaluateFixPrecheck,
@@ -963,8 +956,8 @@ export default defineTool({
           ...base,
         });
       }
-      const containmentAt = (judgedSha: string) =>
-        paths.length ? containmentForPaths(paths, judgedSha, root, undefined, branch) : null;
+      const containmentAt = async (judgedSha: string) =>
+        paths.length ? runAdmissionJob({ kind: 'containment', paths, judgedSha, root, branch }) : null;
       if (paths.length === 0) {
         return json({
           ok: false,
@@ -1004,7 +997,7 @@ export default defineTool({
             updatedAtMs: queue.updatedAtMs,
           },
           expectedQueueIdentity,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           ...base,
         });
       }
@@ -1104,13 +1097,16 @@ export default defineTool({
       let patch: FrozenRepairAdmission['patch'];
       let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
       if (args.patchCommit !== undefined) {
-        const built = buildCommittedPatchSource({
-          root,
-          repairHead: queue.repairHead,
-          patchCommit: args.patchCommit,
-          integrationRef: branch,
-          paths,
-          reason: args.reason!,
+        const built = await runAdmissionJob({
+          kind: 'committed-patch',
+          input: {
+            root,
+            repairHead: queue.repairHead,
+            patchCommit: args.patchCommit,
+            integrationRef: branch,
+            paths,
+            reason: args.reason!,
+          },
         });
         if (!built.ok) {
           return json({
@@ -1140,13 +1136,17 @@ export default defineTool({
             detail:
               "wholeBlob:true admits staging's whole blob of each path, which may carry other agents' concurrent work (D-008) — say why that is safe in `reason` (≥ 8 chars). Prefer the default hunk-exact admission, or includeHunksFrom:[<agent>] for a shared fix.",
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             ...base,
           });
         }
         if (args.sourceCommit !== undefined) {
-          const resolved = realAdmissionGit(['rev-parse', '--verify', `${args.sourceCommit}^{commit}`], { cwd: root });
+          const resolved = await runAdmissionJob({
+            kind: 'git',
+            argv: ['rev-parse', '--verify', `${args.sourceCommit}^{commit}`],
+            cwd: root,
+          });
           const resolvedSha = resolved.stdout.trim();
           if (resolved.status !== 0 || !FULL_COMMIT_SHA.test(resolvedSha)) {
             return json({
@@ -1162,7 +1162,11 @@ export default defineTool({
               ...base,
             });
           }
-          const ancestor = realAdmissionGit(['merge-base', '--is-ancestor', resolvedSha, branch], { cwd: root });
+          const ancestor = await runAdmissionJob({
+            kind: 'git',
+            argv: ['merge-base', '--is-ancestor', resolvedSha, branch],
+            cwd: root,
+          });
           if (ancestor.status !== 0) {
             return json({
               ok: false,
@@ -1194,20 +1198,23 @@ export default defineTool({
             reason: 'ledger-unavailable',
             detail: `the edit ledger could not be read (${ledgerReadError}) — hunk-exact admission cannot tell your hunks from a peer's. Retry, or admit explicitly with wholeBlob:true and a reason.`,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             ...base,
           });
         }
-        const built = buildHunkExactSource({
-          root,
-          candidate: queue.candidate,
-          repairHead: queue.repairHead,
-          paths,
-          ledger: ledgerRows,
-          actor: identity.ownerId,
-          includeHunksFrom,
-          nowMs: Date.now(),
+        const built = await runAdmissionJob({
+          kind: 'hunk-exact',
+          input: {
+            root,
+            candidate: queue.candidate,
+            repairHead: queue.repairHead,
+            paths,
+            ledger: ledgerRows,
+            actor: identity.ownerId,
+            includeHunksFrom,
+            nowMs: Date.now(),
+          },
         });
         if (!built.ok) {
           return json({
@@ -1224,7 +1231,7 @@ export default defineTool({
             ...(built.step ? { step: built.step } : {}),
             exits: built.exits,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             ...base,
           });
@@ -1257,46 +1264,43 @@ export default defineTool({
           detail:
             'skipPrecheck:true opts a confirmed admission OUT of the R6 pre-check (the built commit is not measured before publication) — say why that is safe in `precheckReason` (≥ 8 chars); it is recorded on the ledger entry.',
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           mode,
         });
       }
       const precheckApplies = !dryRun && !skipPrecheck && population.files.length > 0;
       const buildAdmission = (dry: boolean) =>
-        admitPathsOntoRepairHead({
-          root,
-          candidate: queue.candidate,
-          repairHead: queue.repairHead,
-          paths,
-          source: {
-            ref: sourceRef,
-            ...(wholeBlob && args.sourceCommit !== undefined ? { recordAsRef: branch } : {}),
+        runAdmissionJob({
+          kind: 'admit',
+          input: {
+            root,
+            candidate: queue.candidate,
+            repairHead: queue.repairHead,
+            paths,
+            source: {
+              ref: sourceRef,
+              ...(wholeBlob && args.sourceCommit !== undefined ? { recordAsRef: branch } : {}),
+            },
+            actor: identity.ownerId,
+            reason: args.reason,
+            nowMs: Date.now(),
+            dryRun: dry,
           },
-          actor: identity.ownerId,
-          reason: args.reason,
-          nowMs: Date.now(),
-          dryRun: dry,
           // P-004: the proved commit must resolve every relative import of every admitted TS/JS
           // file, or the door refuses `admission-incomplete` naming the sibling to admit. The
-          // The pinned whole-blob source is consulted when supplied; other modes preserve the
+          // pinned whole-blob source is consulted when supplied; other modes preserve the
           // integration branch as the suggestion source. Nothing is admitted on the caller's behalf.
           // WI-10004232: and a lockfile workspace entry it moves must still agree with its manifest,
-          // or npm install rewrites the lock and the promoted pin can never certify.
-          preflight: chainAdmissionPreflights(
-            importCompletenessPreflight({
-              root,
-              probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
-              ...(wholeBlob ? { enforceSourceCohort: true } : {}),
-            }),
-            lockfileManifestConsistencyPreflight({
-              root,
-              probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
-            }),
-          ),
+          // or npm install rewrites the lock and the promoted pin can never certify. Both checks
+          // are rebuilt from this spec on the worker thread (admissionPreflightFromSpec).
+          preflight: {
+            probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
+            ...(wholeBlob ? { enforceSourceCohort: true as const } : {}),
+          },
         });
       // Build the immutable candidate first. Publication is the effect boundary,
       // and must happen only while the condition claim row is locked below.
-      let outcome = buildAdmission(true);
+      let outcome = await buildAdmission(true);
       // WI-10004151 part 2: an admitted lockfile/patch moves repairHead onto dependency inputs
       // the gate must materialise (`--ensure-ref`) before it can judge anything. Ask the SAME
       // script now whether that would succeed, so a lock no installed tree can produce is
@@ -1324,7 +1328,7 @@ export default defineTool({
           dependencyGeneration,
           builtCommit: outcome.commit,
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           mode,
           note:
             'Nothing was published. The gate could never materialise these dependency inputs, so verification would park. ' +
@@ -1516,7 +1520,7 @@ export default defineTool({
             precheckResults: precheck.ran ? precheck.results : [],
             builtCommit,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             mode,
             note: precheck.ran
               ? 'R6: nothing was published — the admission commit was built and measured but the lineage ref did not move. ' +
@@ -1587,7 +1591,7 @@ export default defineTool({
             verdict: 'already-admitted',
             detail: outcome.detail,
             judgedSha: queue.repairHead,
-            containment: containmentAt(queue.repairHead),
+            containment: await containmentAt(queue.repairHead),
             ...base,
           });
         }
@@ -1614,7 +1618,7 @@ export default defineTool({
               }
             : {}),
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           ...base,
         });
       }
@@ -1648,7 +1652,7 @@ export default defineTool({
           proof,
           precheck: precheckEntry,
           ...(dependencyGeneration ? { dependencyGeneration } : {}),
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           note:
             `Pass confirm:true to publish admission ${outcome.commit.slice(0, 12)} onto ${outcome.lineageRef} ` +
             'and advance repairHead to it (phase ready-to-verify). The immutable candidate is never touched; ' +
@@ -1666,11 +1670,9 @@ export default defineTool({
       try {
         next = markFrozenRepairAdmitted(queue, entry);
       } catch (err) {
-        const retracted = retractAdmission({
-          root,
-          candidate: queue.candidate,
-          published: outcome.commit,
-          previousRepairHead: queue.repairHead,
+        const retracted = await runAdmissionJob({
+          kind: 'retract',
+          input: { root, candidate: queue.candidate, published: outcome.commit, previousRepairHead: queue.repairHead },
         });
         return json({
           ok: false,
@@ -1680,7 +1682,7 @@ export default defineTool({
           reason: 'lineage-ref-moved',
           detail: `${(err as Error).message}${retracted ? ' (lineage ref retracted)' : ' (lineage ref could NOT be retracted — it is at the unrecorded admission; re-read the queue)'}`,
           judgedSha: queue.repairHead,
-          containment: containmentAt(queue.repairHead),
+          containment: await containmentAt(queue.repairHead),
           ...base,
         });
       }
@@ -1700,11 +1702,9 @@ export default defineTool({
       }
       let retracted: boolean | null = null;
       if (!persisted) {
-        retracted = retractAdmission({
-          root,
-          candidate: queue.candidate,
-          published: outcome.commit,
-          previousRepairHead: queue.repairHead,
+        retracted = await runAdmissionJob({
+          kind: 'retract',
+          input: { root, candidate: queue.candidate, published: outcome.commit, previousRepairHead: queue.repairHead },
         });
       }
       const auditRecorded = await recordAudit(identity.ownerId, {
@@ -1753,7 +1753,7 @@ export default defineTool({
         ...provenance,
         precheck: precheckEntry,
         ...(dependencyGeneration ? { dependencyGeneration } : {}),
-        containment: containmentAt(judgedSha),
+        containment: await containmentAt(judgedSha),
         persisted,
         auditRecorded,
         ...base,

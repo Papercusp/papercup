@@ -33,6 +33,8 @@ export const DEFAULT_LOOP_STALE_AFTER_DAYS = 3;
 
 const DAY_MS = 86_400_000;
 const DEFAULT_ACTIVITY_LAG_GRACE_MS = 5 * 60_000;
+/** Give the scheduler one short tick window to produce the first fire after an explicit resume. */
+export const DEFAULT_RESUME_FIRE_GRACE_MS = 5 * 60_000;
 
 /** A routine row, narrowed to what the classifier reads. */
 export interface LearningRoutineRow {
@@ -44,6 +46,8 @@ export interface LearningRoutineRow {
   /** ISO timestamp of the NEXT scheduled fire, or null if unknown — distinguishes a
    *  just-activated loop awaiting its first fire (`pending`) from a stuck one (`stale`). */
   nextFireAt?: string | null;
+  /** Persisted `metadata.lastPause.resumedAtMs`; lets health reads distinguish a recent resume. */
+  lastPauseResumedAtMs?: number | null;
   /**
    * WI-7069's sibling gap (EI-19370236916382521): `metadata.pause.reviewBy` on the routine
    * row (set via `routines:set { active:false, reviewBy }`) — the DARK_FLAGS_REVIEW_BY
@@ -91,7 +95,7 @@ export interface LearningLoopSpec {
 
 export type LearningLoopStatus =
   | 'firing' // active + fired within the stale window
-  | 'pending' // active + never fired but its first fire is still ahead (just armed)
+  | 'pending' // active + awaiting its first fire after arming or a recent resume
   | 'stale' // active but has not fired in > the stale window (a wedge — investigate)
   | 'dark-by-design' // a frontier loop, inactive (expected until the owner arms it)
   | 'should-be-on-but-dark' // an ALWAYS-ON loop that is inactive (a real gap)
@@ -199,6 +203,16 @@ export function computeLearningLoopHealth(
     const lastFiredAt = row?.lastFiredAt ?? null;
     const firedMs = lastFiredAt ? Date.parse(lastFiredAt) : NaN;
     const nextMs = row?.nextFireAt ? Date.parse(row.nextFireAt) : NaN;
+    const resumedAtMs = row?.lastPauseResumedAtMs;
+    const sinceResumeMs = typeof resumedAtMs === 'number' ? opts.nowMs - resumedAtMs : NaN;
+    const awaitingPostResumeFire =
+      active &&
+      typeof resumedAtMs === 'number' &&
+      Number.isFinite(resumedAtMs) &&
+      sinceResumeMs >= 0 &&
+      sinceResumeMs <= DEFAULT_RESUME_FIRE_GRACE_MS &&
+      (Number.isNaN(firedMs) || firedMs < resumedAtMs) &&
+      (Number.isNaN(nextMs) || nextMs <= opts.nowMs);
     const daysSinceFire = Number.isNaN(firedMs) ? null : Math.floor((opts.nowMs - firedMs) / DAY_MS);
     const activity = opts.activityByBlueprintId?.[loop.blueprintId] ?? null;
     const activityLastAt = activity?.lastActivityAt ?? null;
@@ -208,6 +222,7 @@ export function computeLearningLoopHealth(
     let status: LearningLoopStatus;
     if (!row) status = 'absent';
     else if (!active) status = alwaysOn ? 'should-be-on-but-dark' : 'dark-by-design';
+    else if (awaitingPostResumeFire) status = 'pending';
     else if (Number.isNaN(firedMs)) {
       // Active but NEVER fired: `pending` if its first fire is still ahead (just
       // activated — e.g. prompt-ablation right after the frontier arming), `stale`
@@ -223,13 +238,13 @@ export function computeLearningLoopHealth(
     } else if (opts.nowMs - firedMs > staleMs) status = 'stale';
     else status = 'firing';
 
-    if (active && activity && activity.mode === 'since-fire') {
+    if (active && !awaitingPostResumeFire && activity && activity.mode === 'since-fire') {
       // Judge only the LAST fire: did it produce activity by the time it should have?
       // A never-fired loop is left to the routine verdict above (pending / stale).
       const grace = activity.graceMs ?? DEFAULT_ACTIVITY_LAG_GRACE_MS;
       const unproven = !Number.isNaN(firedMs) && (Number.isNaN(activityMs) || activityMs < firedMs);
       if (unproven && opts.nowMs - firedMs > grace) status = 'stale';
-    } else if (active && activity) {
+    } else if (active && !awaitingPostResumeFire && activity) {
       const activityGraceMs = opts.activityLagGraceMs ?? DEFAULT_ACTIVITY_LAG_GRACE_MS;
       const fireAgeMs = opts.nowMs - firedMs;
       const activityIsStale = Number.isNaN(activityMs) || opts.nowMs - activityMs > staleMs;

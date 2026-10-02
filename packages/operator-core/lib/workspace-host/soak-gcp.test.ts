@@ -56,6 +56,19 @@ describe('soak instance read (WI-10002796)', () => {
     expect(sleep).toHaveBeenCalledWith(WORKSPACE_HOST_SOAK_READ_RETRY_MS);
   });
 
+  it('marks a SPOT instance preemptible, so standing health can tell a reclaim from a stop (WI-10005210)', async () => {
+    const spot = await readWith(vi.fn(async () => ({ ...running, status: 'TERMINATED', provisioningModel: 'SPOT' })));
+    expect(spot.reading).toEqual({
+      kind: 'observed',
+      status: 'TERMINATED',
+      instanceId: running.instanceId,
+      sourceImage: running.sourceImage,
+      preemptible: true,
+    });
+    const standard = await readWith(vi.fn(async () => ({ ...running, provisioningModel: 'STANDARD' })));
+    expect(standard.reading).not.toHaveProperty('preemptible');
+  });
+
   it('stays unreadable after the attempt budget, naming the cause code and the attempts', async () => {
     const getInstance = vi.fn(async () => {
       throw fetchFailed();

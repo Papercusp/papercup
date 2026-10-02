@@ -27,6 +27,7 @@
  *    trivially ok, so they are not written here. And a host that could not be asked is still
  *    attested, with `ok: null` checks naming why, so "unknown" is visible rather than absent.
  */
+import { createHash } from 'node:crypto';
 import {
   resolveWorkspaceHostHealthStatus,
   type WorkspaceHostHealthAttestation,
@@ -78,9 +79,44 @@ export type WorkspaceHostStandingHealthOutcome =
       hostId: string;
       status: WorkspaceHostHealthAttestation['status'];
       checks: readonly WorkspaceHostHealthCheck[];
+      /** Present only for a reclaimed spot host (WI-10005210). */
+      recovery?: WorkspaceHostReclaimRecovery;
     }
   | { kind: 'skipped-fresh'; workspaceId: string; hostId: string; attestedAt: string }
   | { kind: 'record-failed'; workspaceId: string; hostId: string; error: string };
+
+/**
+ * What the pass did about a reclaimed spot host (WI-10005210). Carried on the host's `attested`
+ * outcome, so a reclaim that was seen but not restarted says why instead of vanishing.
+ */
+export type WorkspaceHostReclaimRecovery =
+  | { kind: 'restart-enqueued'; operationId: string }
+  | { kind: 'restart-skipped'; reason: string }
+  | { kind: 'restart-failed'; error: string };
+
+/**
+ * The prepared restart of a reclaimed host. `input` is opaque here: the composition root builds
+ * the lifecycle request and hands it back to its own `enqueue`, so this module needs no
+ * dependency on the lifecycle workflow.
+ */
+export type WorkspaceHostReclaimRestartPlan =
+  | { kind: 'restart'; operationId: string; input: unknown }
+  | { kind: 'skip'; reason: string };
+
+export interface WorkspaceHostReclaimRestartSeams {
+  /**
+   * Re-read the host and build the start request. Runs INSIDE a step. It must return `skip` when
+   * the host is no longer meant to be up: a controller stop that finished after the target list
+   * leaves a stopped spot VM that is NOT a reclaim.
+   */
+  prepare(target: { workspaceId: string; hostId: string }, operationId: string): Promise<WorkspaceHostReclaimRestartPlan>;
+  /**
+   * Durably enqueue the start. Called at the WORKFLOW layer, outside any step, because DBOS forbids
+   * starting a workflow from inside a step. Report a busy host (another lifecycle operation holds
+   * it) as `restart-skipped`, not as a failure.
+   */
+  enqueue(plan: { operationId: string; input: unknown }): Promise<WorkspaceHostReclaimRecovery>;
+}
 
 export interface WorkspaceHostStandingHealthRuntime {
   /** A checkpointed step: on replay its recorded result is returned without re-running `fn`. */
@@ -93,6 +129,8 @@ export interface WorkspaceHostStandingHealthRuntime {
   /** Wall clock, read ONLY inside steps so a replay sees the recorded value. */
   now(): Date;
   freshMs?: number;
+  /** Restart reclaimed spot hosts. Absent: a reclaim is still attested, just not restarted. */
+  reclaim?: WorkspaceHostReclaimRestartSeams;
 }
 
 export interface WorkspaceHostStandingHealthPassResult {
@@ -115,6 +153,49 @@ function reachBlocker(reading: WorkspaceHostSoakInstanceReading): string | null 
   if (reading.status !== 'RUNNING') return `the instance is ${reading.status}, not RUNNING`;
   if (!reading.instanceId) return 'the provider returned no instance id';
   return null;
+}
+
+/** Cloud statuses for a stopped instance: GCP's TERMINATED, EC2's stopped. */
+const WORKSPACE_HOST_STOPPED_STATUSES: ReadonlySet<string> = new Set(['TERMINATED', 'stopped']);
+
+/** The check a reclaimed spot host carries; the pass keys its restart off this name. */
+export const WORKSPACE_HOST_SPOT_RECLAIMED_CHECK = 'spot-reclaimed';
+
+/**
+ * True when the cloud stopped a spot (preemptible) host on its own (WI-10005210).
+ *
+ * A spot VM can be stopped by the cloud at any time, and GCP will not restart it (spot requires
+ * `automaticRestart: false`). The pass only probes hosts whose `desired_state` says they should be
+ * up, and a stop the controller orders moves the row to `stopped` when it completes, so a stopped
+ * spot VM here is a reclaim. The one exception, a stop that completed after the target list, is
+ * caught by the re-read in `WorkspaceHostReclaimRestartSeams.prepare`.
+ */
+export function workspaceHostSpotReclaimed(reading: WorkspaceHostSoakInstanceReading): boolean {
+  return reading.kind === 'observed' && reading.preemptible === true && WORKSPACE_HOST_STOPPED_STATUSES.has(reading.status);
+}
+
+function spotReclaimedCheck(status: string): WorkspaceHostHealthCheck {
+  return {
+    name: WORKSPACE_HOST_SPOT_RECLAIMED_CHECK,
+    ok: false,
+    detail: `spot instance is ${status}: the cloud reclaimed it while the host is meant to run`,
+  };
+}
+
+/**
+ * One restart per host per pass: hashing the pass's recorded clock keeps a replay on the same
+ * operation (and so on the same DBOS workflow id) instead of minting a second start.
+ */
+export function workspaceHostReclaimOperationId(target: { workspaceId: string; hostId: string }, passNowMs: number): string {
+  const hex = createHash('sha256')
+    .update(`workspace-host-spot-reclaim:${target.workspaceId}:${target.hostId}:${passNowMs}`)
+    .digest('hex')
+    .slice(0, 32)
+    .split('');
+  hex[12] = '5';
+  hex[16] = ((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  const s = hex.join('');
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20, 32)}`;
 }
 
 /**
@@ -174,7 +255,12 @@ export async function probeWorkspaceHostStandingHealth(
         agentChecks = workspaceHostAgentCredentialChecks(expiry, new Date(observedAt));
       }
     }
-    checks = [workspaceHostComputeCheck(reading), reach, ...agentChecks];
+    checks = [
+      workspaceHostComputeCheck(reading),
+      ...(workspaceHostSpotReclaimed(reading) && reading.kind === 'observed' ? [spotReclaimedCheck(reading.status)] : []),
+      reach,
+      ...agentChecks,
+    ];
   }
   const compute = checks.find((check) => check.name === 'compute-running');
   return {
@@ -228,7 +314,43 @@ export async function runWorkspaceHostStandingHealthPass(
         return { kind: 'attested', workspaceId, hostId, status: attestation.status, checks: attestation.checks };
       },
     );
-    outcomes.push(outcome);
+    const reclaimed =
+      outcome.kind === 'attested' &&
+      outcome.checks.some((check) => check.name === WORKSPACE_HOST_SPOT_RECLAIMED_CHECK && check.ok === false);
+    if (reclaimed && runtime.reclaim) {
+      const recovery = await recoverReclaimedHost(runtime, runtime.reclaim, { workspaceId, hostId }, listed.nowMs);
+      outcomes.push({ ...outcome, recovery });
+    } else {
+      outcomes.push(outcome);
+    }
   }
   return { controllerId: runtime.controllerId, outcomes };
+}
+
+type PreparedReclaim = WorkspaceHostReclaimRestartPlan | { kind: 'error'; error: string };
+
+/**
+ * Restart a reclaimed spot host through the controller's own lifecycle `start`, never a direct
+ * provider call: the lifecycle workflow is deduplicated per host, so a restart can never run
+ * beside a stop, repair or destroy another operation already holds.
+ */
+async function recoverReclaimedHost(
+  runtime: WorkspaceHostStandingHealthRuntime,
+  reclaim: WorkspaceHostReclaimRestartSeams,
+  target: { workspaceId: string; hostId: string },
+  passNowMs: number,
+): Promise<WorkspaceHostReclaimRecovery> {
+  const operationId = workspaceHostReclaimOperationId(target, passNowMs);
+  const plan = await runtime.step(
+    `standing-health-reclaim:${target.workspaceId}:${target.hostId}`,
+    async (): Promise<PreparedReclaim> =>
+      reclaim.prepare(target, operationId).catch((error: unknown) => ({ kind: 'error', error: errorDetail(error) })),
+  );
+  if (plan.kind === 'skip') return { kind: 'restart-skipped', reason: plan.reason };
+  if (plan.kind === 'error') return { kind: 'restart-failed', error: `could not prepare the restart: ${plan.error}` };
+  try {
+    return await reclaim.enqueue({ operationId: plan.operationId, input: plan.input });
+  } catch (error) {
+    return { kind: 'restart-failed', error: errorDetail(error) };
+  }
 }
