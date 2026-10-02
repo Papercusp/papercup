@@ -578,6 +578,7 @@ export default defineTool({
     let brainBackend = operatorBackend;
     let brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
     let failedOver = false;
+    try {
     emitChatEvent(ctx, {
       type: 'provenance',
       engine: brainEngine,
@@ -708,7 +709,6 @@ export default defineTool({
           }
         }
       } catch (err) {
-        await revokeCustomerPiSession();
         throw new Error(
           `operator converse failed: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -755,10 +755,11 @@ export default defineTool({
         }
       }
     }
-
-    // Revoke the customer-run bearer as soon as the model stream is finished.
-    // expires_at remains the durable fallback if the host dies before here.
-    await revokeCustomerPiSession();
+    } finally {
+      // Revoke the customer-run bearer as soon as the model stream is finished.
+      // expires_at remains the durable fallback if the host dies before here.
+      await revokeCustomerPiSession();
+    }
 
     // Definitive failure: nothing produced across all attempts. Surface
     // it as an error rather than masquerading a dead brain as an empty

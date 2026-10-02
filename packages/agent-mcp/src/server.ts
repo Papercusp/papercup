@@ -583,6 +583,12 @@ export async function readResource(opts: ReadResourceOptions): Promise<ReadResou
     if (!principal) {
       return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
     }
+    if (principal.allowedTools !== undefined) {
+      return {
+        ok: false,
+        error: { code: 'tool_scope_only', message: 'This principal is scoped to its exact MCP tool allowlist' },
+      };
+    }
     return readScratchResource(opts.uri, principal);
   }
 
