@@ -453,6 +453,11 @@ export function bindNativeLoaderMappedObjects(stderr: string, windows: NativePro
   }
   type ObjectMap = { object: string; namespace: string; loadBias: string; mappedSize: string;
     dynamicAddress: string; programHeaderAddress: string; line: number };
+  // Node probes legacy registration, then Node-API registration/version via
+  // dlsym. glibc labels a missing optional symbol '(fatal)' even when Node's
+  // supported fallback succeeds. Recognize only these startup probes; bind
+  // their exact addon file and recorded Node ABI after the address joins.
+  const registrationProbeLookups: Array<{line:number;object:string;symbol:string}> = [];
   const active = new Map<string, ObjectMap>(), retired: ObjectMap[] = [];
   let pending: Partial<ObjectMap> | undefined;
   const lines = stderr.split('\n'), firstMarker = lines.findIndex(line => line.startsWith('PC_NATIVE_RUN\t'));
@@ -464,6 +469,7 @@ export function bindNativeLoaderMappedObjects(stderr: string, windows: NativePro
     const destroyed = text.match(/^file=(.+) \[(\d+)\];\s+destroying link map$/);
     const dynamic = text.match(/^dynamic:\s+(0x[\da-f]+)\s+base:\s+(0x[\da-f]+)\s+size:\s+(0x[\da-f]+)$/i);
     const phdr = text.match(/^entry:\s+0x[\da-f]+\s+phdr:\s+(0x[\da-f]+)\s+phnum:\s+(\d+)$/i);
+    const probe=text.match(/^(\/.+\.node): error: symbol lookup error: undefined symbol: (node_register_module_v[1-9]\d*|napi_register_module_v1|node_api_module_get_api_version_v1) \(fatal\)$/);
     if (generated && !pending) {
       pending = { object: generated[1], namespace: generated[2], line: index+1 };
     } else if (pending && dynamic && pending.dynamicAddress === undefined) {
@@ -479,8 +485,10 @@ export function bindNativeLoaderMappedObjects(stderr: string, windows: NativePro
       const key = destroyed[2]+'\0'+destroyed[1], object = active.get(key);
       if (!object) throw new Error('native loader destruction does not bind generated object');
       retired.push(object); active.delete(key);
+    } else if (!pending && probe) {
+      registrationProbeLookups.push({line:index+1,object:probe[1],symbol:probe[2]});
     } else if (pending || /generating link map|destroying link map|^dynamic:|^entry:|error:|fatal:/i.test(text)) {
-      throw new Error('native loader incomplete or unsupported object evidence');
+      throw new Error('native loader incomplete or unsupported object evidence at line '+(index+1)+': '+text);
     }
   }
   if (pending || !active.size) throw new Error('native loader generated object population incomplete');
@@ -498,7 +506,13 @@ export function bindNativeLoaderMappedObjects(stderr: string, windows: NativePro
     return { ...object, file: dynamicMaps[0].file };
   });
   const joinedFiles = new Set(objectMapJoins.map(join=>join.file.path));
-  return { processId: firstRun.processId, runTag: firstRun.runTag, objectMapJoins, retiredBeforeFirstRun: retired,
+  for(const probe of registrationProbeLookups) {
+    const abi=firstRun.runtime!.loaderProcess?.nodeModuleVersion;
+    if (typeof abi!=='string' || !/^[1-9]\d*$/.test(abi)
+      || probe.symbol.startsWith('node_register_module_v') && probe.symbol!=='node_register_module_v'+abi
+      || !objectMapJoins.some(join=>join.file.path===probe.object)) throw new Error('native loader Node registration probe does not bind loaded addon/ABI');
+  }
+  return { processId: firstRun.processId, runTag: firstRun.runTag, objectMapJoins, registrationProbeLookups, retiredBeforeFirstRun: retired,
     unjoinedMappedFiles: libraries.filter(file=>!joinedFiles.has(file.path)),
     noLoaderActivityDuringPopulation: activity.noLoaderActivityDuringPopulation,
     completeBeforeInferenceClosureVerified: false as const,
@@ -596,7 +610,9 @@ export function bindNativeLoaderClosure(stderrBytes: Buffer, windows: NativeProf
   for(const [index,line] of stderr.split('\n').entries()) {
     const row=line.match(/^\s*(\d+):\s*(.*)$/);
     if(!row || Number(row[1])!==firstRun.processId) continue;
-    if(/error:|fatal:/i.test(row[2])) throw new Error('native loader failed capture');
+    if(/error:|fatal:/i.test(row[2]) && !mapped.registrationProbeLookups.some(probe=>probe.line===index+1)) {
+      throw new Error('native loader failed capture');
+    }
     if(index>=firstMarker) continue;
     const init=row[2].match(/^calling (?:preinit|init):\s+(.+)$/), transfer=row[2].match(/^transferring control:\s+(.+)$/);
     if (/calling (?:preinit|init):|transferring control:/i.test(row[2]) && !init && !transfer) {

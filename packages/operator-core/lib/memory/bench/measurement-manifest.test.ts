@@ -116,6 +116,20 @@ describe('generated loader object to retained file joins', () => {
     expect(result.retiredBeforeFirstRun.map(x=>x.object)).toEqual(['transient.so']);
     expect(result.unjoinedMappedFiles.map(x=>x.path)).toEqual(['/runtime/node']);
   });
+  it.each(['node_register_module_v141','napi_register_module_v1','node_api_module_get_api_version_v1'])
+    ('records the exact startup Node addon %s lookup without suppressing general failures',symbol=>{
+      const event=sample();event.runtime!.libraries[0].path='/resolved/addon.node';
+      event.runtime!.loaderProcess={nodeModuleVersion:'141'} as any;
+      const rows=[...object('/resolved/addon.node'),`123: /resolved/addon.node: error: symbol lookup error: undefined symbol: ${symbol} (fatal)`];
+      const result=bindNativeLoaderMappedObjects(log(...rows),[window],event);
+      expect(result.registrationProbeLookups).toEqual([{line:4,object:'/resolved/addon.node',symbol}]);
+      for(const unsupported of ['other_required_symbol','node_register_module_v140']) {
+        expect(()=>bindNativeLoaderMappedObjects(log(...rows.slice(0,-1),
+          `123: /resolved/addon.node: error: symbol lookup error: undefined symbol: ${unsupported} (fatal)`),[window],event)).toThrow('native loader');
+      }
+      expect(()=>bindNativeLoaderMappedObjects(log(...rows.slice(0,-1),
+        `123: /different/addon.node: error: symbol lookup error: undefined symbol: ${symbol} (fatal)`),[window],event)).toThrow('native loader');
+    });
   it.each(['missing-ranges','bad-range','overlap','dynamic','header','split-file','missing-detail','namespace',
     'repeated-object','unbound-destroy','wrong-sample','late-sample','bad-fingerprint','foreign-detail'])('refuses %s evidence', failure => {
     const event=sample(); let rows=object();
