@@ -4,6 +4,7 @@ import type { AwsInstanceObservation } from './aws-provider';
 import { AwsWorkspaceHostSdkError } from './aws-sdk-client';
 import { pinWorkspaceHostSoakSubject } from './soak';
 import { awsWorkspaceHostSoakReading, resolveAwsWorkspaceHostSoakSeams } from './soak-aws';
+import { workspaceHostSpotReclaimed } from './standing-health';
 import { WORKSPACE_HOST_SOAK_READ_ATTEMPTS, WORKSPACE_HOST_SOAK_READ_RETRY_MS } from './soak-ssh-probe';
 
 const desired = {
@@ -101,6 +102,25 @@ describe('AWS soak instance read (P-007)', () => {
     expect(awsWorkspaceHostSoakReading(undefined)).toEqual({ kind: 'absent' });
     expect(awsWorkspaceHostSoakReading(observation({ state: 'stopped' }))).toMatchObject({ kind: 'observed', status: 'STOPPED' });
     expect(awsWorkspaceHostSoakReading(observation({ state: 'shutting-down' }))).toMatchObject({ status: 'SHUTTING_DOWN' });
+  });
+
+  it('marks a spot instance preemptible, and only a spot instance (WI-10005389)', () => {
+    expect(awsWorkspaceHostSoakReading(observation({ spotInstanceRequestId: 'sir-1' }))).toMatchObject({
+      preemptible: true,
+    });
+    expect(awsWorkspaceHostSoakReading(observation())).not.toHaveProperty('preemptible');
+  });
+
+  // The two halves of the reclaim test were each correct alone and never met: the AWS reading
+  // upper-cases EC2's state, and the standing-health stopped set held the raw lower-case name, so
+  // an interrupted AWS spot host was never flagged (WI-10005389). Compose them here.
+  it('reads an interrupted spot instance as reclaimed through the standing-health verdict', () => {
+    const interrupted = observation({ state: 'stopped', spotInstanceRequestId: 'sir-1' });
+    expect(workspaceHostSpotReclaimed(awsWorkspaceHostSoakReading(interrupted))).toBe(true);
+    expect(workspaceHostSpotReclaimed(awsWorkspaceHostSoakReading(observation({ state: 'stopped' })))).toBe(false);
+    expect(
+      workspaceHostSpotReclaimed(awsWorkspaceHostSoakReading(observation({ spotInstanceRequestId: 'sir-1' }))),
+    ).toBe(false);
   });
 
   it('asks again after a throttled read, so one retryable AWS error does not cost a measured sample', async () => {
