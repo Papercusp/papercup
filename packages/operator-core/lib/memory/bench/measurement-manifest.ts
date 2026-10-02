@@ -372,9 +372,15 @@ export function inspectNativeLoaderActivity(stderr: string, windows: NativeProfi
     if (!w.runTag || expected.has(w.runTag) || w.processId !== processId
       || !Number.isSafeInteger(w.processId) || w.processId <= 0
       || !Number.isSafeInteger(w.nativeThreadId) || w.nativeThreadId <= 0
+      || typeof w.startMonotonicNs !== 'string' || typeof w.endMonotonicNs !== 'string'
       || !/^[1-9]\d*$/.test(w.startMonotonicNs) || !/^[1-9]\d*$/.test(w.endMonotonicNs)
       || BigInt(w.startMonotonicNs) >= BigInt(w.endMonotonicNs)) throw new Error('invalid native loader request population');
     expected.set(w.runTag, w);
+  }
+  for (let i=0;i<windows.length;i++) for (let j=i+1;j<windows.length;j++) {
+    const a=windows[i],b=windows[j];
+    if (a.nativeThreadId===b.nativeThreadId && BigInt(a.startMonotonicNs)<BigInt(b.endMonotonicNs)
+      && BigInt(b.startMonotonicNs)<BigInt(a.endMonotonicNs)) throw new Error('overlapping native loader request windows');
   }
   const seen = new Map<string, string[]>(), markers: number[] = [], lines = stderr.split('\n');
   let previousNs = 0n;

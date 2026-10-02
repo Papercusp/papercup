@@ -28,6 +28,13 @@ describe('native loader population evidence', () => {
     expect(result.activity.map(x=>x.operation)).toEqual(['generating-map','init','fini','destroying-map']);
     expect(result.activity[0].namespace).toBe('2');
   });
+  it('rejects invalid and overlapping native request populations before inspecting logs', () => {
+    expect(()=>inspectNativeLoaderActivity(log(),[])).toThrow('population');
+    expect(()=>inspectNativeLoaderActivity(log(),[window,window])).toThrow('population');
+    expect(()=>inspectNativeLoaderActivity(log(),[{...window,startMonotonicNs:100 as any}])).toThrow('population');
+    expect(()=>inspectNativeLoaderActivity(log(),[window,{...window,runTag:'second',startMonotonicNs:'150',endMonotonicNs:'250'}]))
+      .toThrow('overlapping');
+  });
   it.each(['missing-start','missing-end','duplicate','tag','thread','clock','process','malformed','startup','format'])
     ('rejects %s evidence', failure => {
       let text = log();
