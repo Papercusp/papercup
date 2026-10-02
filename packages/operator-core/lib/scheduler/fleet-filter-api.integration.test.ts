@@ -30,9 +30,15 @@ const member = 'su-fleet-filter-member-' + randomUUID();
 const solo = 'su-fleet-filter-solo-' + randomUUID();
 writeFileSync(join(process.env.PAPERCUSP_HOME, 'superuser-token'), randomBytes(32).toString('hex'), { mode: 0o600 });
 const log = openSync(join(dir, 'host.log'), 'a');
-const host = spawn(process.execPath, [join(dir, 'hono-host.mjs')], { env: process.env, stdio: ['ignore', log, log] });
+let host;
 const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL, { max: 1, onnotice: () => {} });
 const receipts = [];
+function verifyMiss(result) {
+  assert.equal(result.ok, false);
+  assert.equal(result.workItem ?? null, null);
+  assert.equal(result.possiblyClaimed ?? false, false, 'Timeout is not a verified miss');
+  assert.match(result.error, /no claimable work-item matched|SPEC EXHAUSTED/);
+}
 function call(owner, name, args, refusal = false) {
   const start = performance.now();
   return new Promise((resolve, reject) => {
@@ -50,11 +56,7 @@ function call(owner, name, args, refusal = false) {
           assert.equal(result.ownerId, owner); assert.equal(result.workspaceId, ws);
         } else {
           assert.equal(result.ok, !refusal, out.slice(-1500));
-          if (refusal) {
-            assert.equal(result.workItem ?? null, null);
-            assert.equal(result.possiblyClaimed ?? false, false, 'Timeout is not a verified miss');
-            assert.match(result.error, /no claimable work-item matched|SPEC EXHAUSTED/);
-          }
+          if (refusal) verifyMiss(result);
         }
         resolve({ result, durationMs: receipt.durationMs });
       } catch (error) { reject(new Error(name + ': ' + error + ' ' + out.slice(-1500))); }
@@ -72,6 +74,19 @@ const spec = (id, filter, priority) => ({ specVersion:'1.0',specId:id,revision:6
 const strictFilter = {all:[{field:'kind',op:'in',value:['feature']},
   {not:{field:'title',op:'word',value:'p2p'}}]};
 try {
+  // Both prior harness failure classes are checked before booting a host:
+  // tool-specific refusal envelopes and object-valued JSONB fixture writes.
+  verifyMiss({ok:false,error:'SPEC EXHAUSTED',reason:'spec_exhausted'});
+  verifyMiss({ok:false,error:'no claimable work-item matched'});
+  assert.throws(()=>verifyMiss({ok:false,error:'timeout',possiblyClaimed:true}));
+  const holdStatement = "UPDATE harness_shared.work_items SET payload=jsonb_build_object('_claimHold',true) WHERE workspace_id=$1 AND feature_id=$2";
+  const [holdControl] = await sql.unsafe("SELECT jsonb_typeof(jsonb_build_object('_claimHold',true)) AS kind, jsonb_build_object('_claimHold',true)->>'_claimHold' AS held");
+  assert.equal(holdControl.kind,'object'); assert.equal(holdControl.held,'true');
+  await sql.unsafe('EXPLAIN ' + holdStatement,[ws,'F-FILTER-FLOORED']);
+  await sql.unsafe('EXPLAIN UPDATE harness_shared.work_items SET status=$3,taken_by=NULL,taken_at=NULL WHERE workspace_id=$1 AND feature_id=$2',[ws,'F-FILTER-INSIDE','done']);
+  await sql.unsafe('EXPLAIN SELECT feature_id,taken_by FROM harness_shared.work_items WHERE workspace_id=$1 AND taken_by IS NOT NULL',[ws]);
+  await sql.unsafe('EXPLAIN INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,origin,title,created_ts,updated_ts,feature_order) VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$7,$8)',[ws,'F-FILTER-INSIDE','feature','open','local','Admitted feature',Date.now(),100]);
+  host = spawn(process.execPath, [join(dir, 'hono-host.mjs')], {env:process.env,stdio:['ignore',log,log]});
   let health;
   const deadline = Date.now() + 90000;
   while (Date.now() < deadline) {
@@ -95,8 +110,9 @@ try {
   // A nonterminal feature keeps an empty claimable lane distinct from terminal
   // exhaustion. Its ordinary claim hold must survive every pull unchanged.
   await seed('F-FILTER-FLOORED','feature','Nonterminal held feature',100);
-  await sql.unsafe('UPDATE harness_shared.work_items SET payload=$3::jsonb WHERE workspace_id=$1 AND feature_id=$2',
-    [ws,'F-FILTER-FLOORED',JSON.stringify({_claimHold:true})]);
+  await sql.unsafe(holdStatement,[ws,'F-FILTER-FLOORED']);
+  const [heldControl] = await sql.unsafe('SELECT jsonb_typeof(payload) AS kind,payload FROM harness_shared.work_items WHERE workspace_id=$1 AND feature_id=$2',[ws,'F-FILTER-FLOORED']);
+  assert.equal(heldControl.kind,'object'); assert.equal(heldControl.payload._claimHold,true);
   await call(leader,'scheduler:set_claim_spec',{fleet,harness:ws,spec:spec('strict-feature-fleet',strictFilter,false)});
   await call(member,'fleet:join',{fleet,as:'member'});
   const inherited = await call(member,'scheduler:get_claim_spec',{cupId:member});
@@ -144,9 +160,11 @@ try {
   console.log('FLEET_FILTER_API_PROOF=' + JSON.stringify(proof));
 } finally {
   await sql.end({timeout:3});
-  host.kill('SIGTERM');
-  await Promise.race([new Promise(resolve=>host.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,5000))]);
-  if(host.exitCode===null)host.kill('SIGKILL');
+  if (host) {
+    host.kill('SIGTERM');
+    await Promise.race([new Promise(resolve=>host.once('exit',resolve)),new Promise(resolve=>setTimeout(resolve,5000))]);
+    if(host.exitCode===null)host.kill('SIGKILL');
+  }
 }
 `;
 
