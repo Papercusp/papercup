@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { posix } from 'node:path';
 import {
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
   WORKSPACE_HOST_PUI_COMPANION_PATH,
@@ -324,6 +325,16 @@ export const WORKSPACE_HOST_AGENT_NODE_SHA256: Readonly<Record<'x64' | 'arm64', 
  */
 export const WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT = '/usr/local/lib/papercusp-agent-toolchain';
 export const WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN = `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT}/bin`;
+
+/**
+ * WI-10005362: the shared typecheck service's systemd USER template units (one instance per
+ * checkout, the instance being the systemd-escaped checkout path). The operator sets
+ * `PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE=<this base>` on hosted agents only when the socket unit file
+ * exists, and the checkout's own `scripts/lib/tsc-service.mjs` starts the instance on demand.
+ */
+export const WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE = 'papercusp-tsc-service';
+export const WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE = `/etc/systemd/user/${WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE}@.socket`;
+export const WORKSPACE_HOST_TSC_SERVICE_UNIT_FILE = `/etc/systemd/user/${WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE}@.service`;
 
 /**
  * The pinned local-inference runtime (D-266).
@@ -1846,6 +1857,86 @@ function customerHeavyAdmissionInstallLines(): string[] {
   ];
 }
 
+/**
+ * WI-10005362 (plan agent-capacity-and-cost-gcp-2026-09-30, D-021's lever): install the shared
+ * typecheck service as systemd USER template units, so every hosted agent's scoped
+ * `lint:tsc --files` in a papercusp checkout is answered by one loaded tsgo program (~1.5 s) instead
+ * of a full compile (measured on a spot e2-standard-16: 312 CPU-s, 14 GB peak per check).
+ *
+ * A template because the host's checkouts are cloned under the workspace root AFTER this script ran,
+ * so no fixed-ROOT unit (the tower's papercup-tsc-service) can name them. The instance is the
+ * systemd-escaped checkout path (`%f` resolves it back); the checkout's own client starts it on
+ * demand in the agent account's user manager (agents run over a loopback SSH login, so pam_systemd
+ * provides one). It runs the CHECKOUT's own server script with the toolchain's Node, as the
+ * customer: no Papercusp runtime code and no credential cross (D-043).
+ *
+ * Memory: one operator-core program is 5-9 GiB loaded. MemoryMax is a quarter of host RAM clamped to
+ * 10-16 GiB, and hosts under 24 GiB get no service (the bootstrap removes the units, so the operator
+ * stops advertising them). The service's RSS lowers MemAvailable, which pc-heavy's admission reads
+ * live, so the two budgets cannot double-book. A killed or refused service costs speed, never a
+ * verdict: the client falls back to the full compile.
+ */
+export function customerTscServiceInstallLines(
+  paths: { readonly unitDir?: string; readonly meminfo?: string } = {},
+): string[] {
+  const base = WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE;
+  const unitDir = paths.unitDir ?? posix.dirname(WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE);
+  const socketUnit = posix.join(unitDir, `${base}@.socket`);
+  const serviceUnit = posix.join(unitDir, `${base}@.service`);
+  return [
+    '',
+    '# WI-10005362: the shared typecheck service, one user-unit instance per papercusp checkout.',
+    `MEM_TOTAL_GIB=$(( $(awk '/^MemTotal:/{print $2}' ${shellQuote(paths.meminfo ?? '/proc/meminfo')}) / 1048576 ))`,
+    'if (( MEM_TOTAL_GIB >= 24 )); then',
+    '  TSC_MAX_GIB=$(( MEM_TOTAL_GIB / 4 )); (( TSC_MAX_GIB > 16 )) && TSC_MAX_GIB=16; (( TSC_MAX_GIB < 10 )) && TSC_MAX_GIB=10',
+    '  TSC_HIGH_GIB=$(( TSC_MAX_GIB - 2 )); TSC_RSS_RESET_GIB=$(( TSC_MAX_GIB - 4 ))',
+    '  TSC_MAX_PROJECTS=1; (( TSC_MAX_GIB >= 14 )) && TSC_MAX_PROJECTS=2',
+    `  install -d -m 0755 -o root -g root -- ${shellQuote(unitDir)}`,
+    `  cat > ${shellQuote(`${socketUnit}.next`)} <<PAPERCUSP_TSC_SOCKET`,
+    '[Unit]',
+    'Description=Papercusp shared typecheck service socket for %f (WI-10005362)',
+    '',
+    '[Socket]',
+    `ListenStream=%t/${base}-%i.sock`,
+    'SocketMode=0600',
+    'PAPERCUSP_TSC_SOCKET',
+    `  cat > ${shellQuote(`${serviceUnit}.next`)} <<PAPERCUSP_TSC_SERVICE`,
+    '[Unit]',
+    'Description=Papercusp shared typecheck service for %f (WI-10005362)',
+    `Requires=${base}@%i.socket`,
+    `After=${base}@%i.socket`,
+    'ConditionPathExists=%f/scripts/tsc-service/server.mjs',
+    '',
+    '[Service]',
+    'Type=simple',
+    'Environment=PATH=$TOOLCHAIN_ROOT/bin:/usr/local/bin:/usr/bin:/bin',
+    'Environment=PAPERCUSP_TSC_SERVICE_ROOT=%f',
+    'Environment=PAPERCUSP_TSC_SERVICE_IDLE_SEC=1200',
+    'Environment=PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB=$TSC_RSS_RESET_GIB',
+    'Environment=PAPERCUSP_TSC_SERVICE_MAX_PROJECTS=$TSC_MAX_PROJECTS',
+    'WorkingDirectory=%f',
+    'ExecStart=$TOOLCHAIN_ROOT/bin/node %f/scripts/tsc-service/server.mjs',
+    'Restart=on-failure',
+    'RestartSec=2',
+    'Nice=10',
+    'CPUWeight=50',
+    'MemoryAccounting=yes',
+    'MemoryHigh=${TSC_HIGH_GIB}G',
+    'MemoryMax=${TSC_MAX_GIB}G',
+    'MemorySwapMax=0',
+    'PAPERCUSP_TSC_SERVICE',
+    `  chown root:root -- ${shellQuote(`${socketUnit}.next`)} ${shellQuote(`${serviceUnit}.next`)}`,
+    `  chmod 0644 -- ${shellQuote(`${socketUnit}.next`)} ${shellQuote(`${serviceUnit}.next`)}`,
+    `  mv -f -- ${shellQuote(`${socketUnit}.next`)} ${shellQuote(socketUnit)}`,
+    `  mv -f -- ${shellQuote(`${serviceUnit}.next`)} ${shellQuote(serviceUnit)}`,
+    '  echo "PAPERCUSP_TSC_SERVICE status=installed memoryMaxGiB=$TSC_MAX_GIB maxProjects=$TSC_MAX_PROJECTS"',
+    'else',
+    `  rm -f -- ${shellQuote(socketUnit)} ${shellQuote(serviceUnit)}`,
+    '  echo "PAPERCUSP_TSC_SERVICE status=absent reason=host-memory-below-24GiB memTotalGiB=$MEM_TOTAL_GIB (hosted agents pay a full compile per scoped typecheck)"',
+    'fi',
+  ];
+}
+
 function customerAgentToolchainInstallLines(
   installs: readonly WorkspaceHostAgentRuntimeInstall[],
 ): string[] {
@@ -1905,6 +1996,7 @@ function customerAgentToolchainInstallLines(
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$RELEASE_DIR" || die "customer account can read the Papercusp release (D-043)"',
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME" || die "customer agent toolchain path exposes the platform agent home"',
   );
+  lines.push(...customerTscServiceInstallLines());
   return lines;
 }
 

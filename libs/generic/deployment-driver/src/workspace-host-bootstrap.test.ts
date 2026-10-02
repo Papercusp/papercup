@@ -28,6 +28,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_AGENT_NODE_SHA256,
   WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+  customerTscServiceInstallLines,
   WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT,
   WORKSPACE_HOST_AGENT_NODE_VERSION,
   WORKSPACE_HOST_OLLAMA_SHA256,
@@ -322,6 +323,77 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
     expect(script).toContain('install -m 0755 -o root -g root -- "$RELEASE_DIR/scripts/pc-heavy.sh" "$TOOLCHAIN_NEXT/lib/heavy-admission/pc-heavy.sh"');
     expect(script).toContain('PAPERCUSP_HEAVY_ADMISSION status=installed');
     expect(script).toContain('PAPERCUSP_HEAVY_ADMISSION status=absent');
+  });
+
+  // WI-10005362: the shared typecheck service's user template units, written by the real lines
+  // into a temp unit dir against a fake /proc/meminfo (root-only install/chown shimmed).
+  describe('shared typecheck service template units', () => {
+    function runLines(memTotalKiB: number, preexisting = false) {
+      const dir = mkdtempSync(join(tmpdir(), 'tsc-units-'));
+      const unitDir = join(dir, 'user');
+      const meminfo = join(dir, 'meminfo');
+      writeFileSync(meminfo, `MemTotal:       ${memTotalKiB} kB\nMemFree:        1 kB\n`);
+      if (preexisting) {
+        mkdirSync(unitDir);
+        writeFileSync(join(unitDir, 'papercusp-tsc-service@.socket'), 'old');
+        writeFileSync(join(unitDir, 'papercusp-tsc-service@.service'), 'old');
+      }
+      const script = [
+        'set -euo pipefail',
+        'install() { mkdir -p -- "${@: -1}"; }',
+        'chown() { :; }',
+        'TOOLCHAIN_ROOT=/usr/local/lib/papercusp-agent-toolchain',
+        ...customerTscServiceInstallLines({ unitDir, meminfo }),
+      ].join('\n');
+      const run = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+      const read = (name: string) => {
+        try {
+          return readFileSync(join(unitDir, name), 'utf8');
+        } catch {
+          return null;
+        }
+      };
+      const out = { run, socket: read('papercusp-tsc-service@.socket'), service: read('papercusp-tsc-service@.service') };
+      rmSync(dir, { recursive: true, force: true });
+      return out;
+    }
+
+    it('installs a per-checkout socket + service sized from host RAM on a 64 GB host', () => {
+      const { run, socket, service } = runLines(65_843_000);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('PAPERCUSP_TSC_SERVICE status=installed memoryMaxGiB=15 maxProjects=2');
+      expect(socket).toContain('ListenStream=%t/papercusp-tsc-service-%i.sock');
+      expect(socket).toContain('SocketMode=0600');
+      expect(service).toContain('ExecStart=/usr/local/lib/papercusp-agent-toolchain/bin/node %f/scripts/tsc-service/server.mjs');
+      expect(service).toContain('Environment=PAPERCUSP_TSC_SERVICE_ROOT=%f');
+      expect(service).toContain('ConditionPathExists=%f/scripts/tsc-service/server.mjs');
+      expect(service).toContain('Requires=papercusp-tsc-service@%i.socket');
+      expect(service).toMatch(/^MemoryHigh=13G$/m);
+      expect(service).toMatch(/^MemoryMax=15G$/m);
+      expect(service).toMatch(/^Environment=PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB=11$/m);
+      expect(service).not.toContain('$');
+    });
+
+    it('caps the service at 16 GiB and one project below 56 GiB', () => {
+      expect(runLines(268_435_456).service).toMatch(/^MemoryMax=16G$/m);
+      const small = runLines(33_554_432);
+      expect(small.service).toMatch(/^MemoryMax=10G$/m);
+      expect(small.service).toMatch(/^Environment=PAPERCUSP_TSC_SERVICE_MAX_PROJECTS=1$/m);
+    });
+
+    it('removes previously installed units on a host under 24 GiB, so the operator stops advertising them', () => {
+      const { run, socket, service } = runLines(16_384_000, true);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('PAPERCUSP_TSC_SERVICE status=absent reason=host-memory-below-24GiB memTotalGiB=15');
+      expect(socket).toBeNull();
+      expect(service).toBeNull();
+    });
+
+    it('runs after the toolchain is in place, inside the customer toolchain block', () => {
+      const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+      expect(script.indexOf('PAPERCUSP_TSC_SERVICE status=installed')).toBeGreaterThan(script.indexOf('mv -T -- "$TOOLCHAIN_NEXT" "$TOOLCHAIN_ROOT"'));
+      expect(buildWorkspaceHostBootstrap(input())).not.toContain('PAPERCUSP_TSC_SERVICE status=');
+    });
   });
 
   it('publishes no customer agent toolchain on a host that installs no vendor runtime', () => {
