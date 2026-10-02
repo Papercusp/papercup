@@ -420,6 +420,57 @@ function retainedPreparedFixture() {
 }
 
 describe('incremental relevance vector reuse', () => {
+  it('binds distinct declared vector inputs for two cells of one shared manifest', async () => {
+    const f = retainedPreparedFixture(), firstDonor = f.donor.cells.find((c) => c.bar === 'relevance')!;
+    const secondDonor = { ...structuredClone(firstDonor), id: 'relevance-second', output: 'relevance-second' };
+    f.donor.cells.push(secondDonor);
+    const sharedManifest = f.pin('shared-donor-manifest', f.donor);
+    f.raw.manifestSha256 = sharedManifest.sha256;
+    f.completion.manifestSha256 = sharedManifest.sha256;
+    f.completion.completed[0].raw = f.pin('shared-first-raw', f.raw);
+    const secondVectors = structuredClone(f.vectors);
+    secondVectors.vectors.mdenseon.docVectors = secondVectors.keys.map((_, i) => f.unit(i + 16));
+    secondVectors.vectors.mdenseon.queryVectors = secondVectors.queryIds.map((_, i) => f.unit(i + 32));
+    const secondVectorRef = f.pin('shared-second-vectors', secondVectors);
+    f.completion.completed.push({ cellId: secondDonor.id,
+      raw: f.pin('shared-second-raw', { ...f.raw, cellId: secondDonor.id }), vectors: secondVectorRef });
+    f.p.manifest.inputs.reuseManifest = sharedManifest;
+    f.p.manifest.inputs.reuseCompletion = f.pin('shared-completion', f.completion);
+    f.p.manifest.inputs.reuseVectorsFirst = f.p.manifest.inputs.reuseVectors;
+    f.p.manifest.inputs.reuseVectorsSecond = secondVectorRef;
+    f.p.cell.inputIds.push('reuseVectorsFirst');
+    f.p.cell.parameters.reuseVectorsInput = 'reuseVectorsFirst';
+    const secondCell = structuredClone(f.p.cell);
+    secondCell.id = secondDonor.id; secondCell.output = secondDonor.output;
+    secondCell.parameters.reuseCellId = secondDonor.id;
+    secondCell.parameters.reuseVectorsInput = 'reuseVectorsSecond';
+    secondCell.inputIds = secondCell.inputIds.filter((id) => id !== 'reuseVectorsFirst');
+    secondCell.inputIds.push('reuseVectorsSecond');
+    f.p.manifest.cells.push(secondCell);
+    const first = (await loadRetainedRelevanceVectors(f.p, 'memory'))!;
+    const second = (await loadRetainedRelevanceVectors({ ...f.p, cell: secondCell }, 'memory'))!;
+    expect(first.docVectors).toEqual(f.vectors.vectors.mdenseon.docVectors);
+    expect(second.docVectors).toEqual(secondVectors.vectors.mdenseon.docVectors);
+    expect(first.evidence.vectors).toEqual(f.p.manifest.inputs.reuseVectorsFirst);
+    expect(second.evidence.vectors).toEqual(secondVectorRef);
+    expect(first.queryVectors[0]).toEqual(f.unit(4));
+    expect(second.queryVectors[0]).toEqual(f.unit(36));
+    // A declared input is not permission to use another cell's completed vectors.
+    secondCell.inputIds.push('reuseVectorsFirst');
+    secondCell.parameters.reuseVectorsInput = 'reuseVectorsFirst';
+    await expect(loadRetainedRelevanceVectors({ ...f.p, cell: secondCell }, 'memory'))
+      .rejects.toThrow('completed receipt mismatch');
+  });
+  it.each([null, 0, false, {}, [], ''])('refuses invalid shared manifest vector selector %j', async (selector) => {
+    const f = retainedPreparedFixture(); f.p.cell.parameters.reuseVectorsInput = selector;
+    await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('invalid retained relevance vector input');
+  });
+  it.each(['undeclared', 'missing'])('refuses a shared manifest %s selected vector input', async (failure) => {
+    const f = retainedPreparedFixture(); f.p.cell.parameters.reuseVectorsInput = 'cellVectors';
+    if (failure === 'undeclared') f.p.manifest.inputs.cellVectors = f.p.manifest.inputs.reuseVectors;
+    else f.p.cell.inputIds.push('cellVectors');
+    await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('inputs must be declared on the cell');
+  });
   it('reuses exact completed document and query embeddings despite new labels/order, embedding only new queries', async () => {
     const f = retainedPreparedFixture(), retained = (await loadRetainedRelevanceVectors(f.p, 'memory'))!;
     expect(retained.docVectors).toEqual(f.vectors.vectors.mdenseon.docVectors);
