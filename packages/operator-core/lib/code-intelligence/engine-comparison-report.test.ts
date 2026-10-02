@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ArmReport, CaseMeasurement, EngineRunMeta, PhaseCost, UpdateFixtureResult } from './engine-comparison';
 import { ARM_ORDER, deriveRunMeta, orderReports, parseCliArgs, preregHash, renderEvidence } from './engine-comparison-report';
+import { stripCommentsOnly } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const COST: PhaseCost = { wallMs: 60_000, peakRssKb: 2_048_000, ok: true, error: null, loadAvg1: 12 };
 const META: EngineRunMeta = { runId: 'run-1', seed: 0, createdAt: '2026-10-01T00:00:00.000Z', preregHash: 'abc' };
@@ -177,15 +178,18 @@ describe('engine-comparison-cli aggregate() — recurrence guard (EI-24858052475
   // proven falsifiable against the exact pre-fix shape inside this same test, so it cannot pass vacuously.
   // Clock reads AND file-mtime reads: an mtime is a filesystem property that a cp / fresh clone / the gate's
   // checkpoint checkout resets, so deriving run identity from it made the bytes depend on checkout time.
-  // Line comments are stripped first: a comment explaining "never mtimes" must not trip the detector (the
-  // textual self-match trap). `(^|\s)//` only, so a `https://` inside a string is left alone.
-  const stripLineComments = (src: string): string => src.replace(/(^|\s)\/\/[^\n]*/g, '$1');
-  const readsClock = (src: string): boolean => /new Date\(|Date\.now\(|\.stat\(|mtime/i.test(stripLineComments(src));
+  // Use the maintained lexer so comments disappear without corrupting literals.
+  const readsClock = (src: string): boolean => /new Date\(|Date\.now\(|\.stat\(|mtime/i.test(stripCommentsOnly(src, 'engine-comparison-cli.ts'));
   const aggregateBody = (src: string): string => {
     const start = src.indexOf('async function aggregate(');
     const end = src.indexOf('\n}\n', start);
     return start === -1 || end === -1 ? '' : src.slice(start, end);
   };
+
+  it('ignores clock descriptions in line and block comments without hiding real reads after a URL literal', () => {
+    expect(readsClock('/* Date.now() */\n// fs.stat(file).mtimeMs\nconst x = 1;')).toBe(false);
+    expect(readsClock('const url = "https://example.invalid"; Date.now();')).toBe(true);
+  });
 
   it('the detector flags the pre-fix clock-derived meta (negative control)', () => {
     const preFix = "async function aggregate(d: string) {\n  const meta = { runId: `x-${new Date().toISOString().slice(0, 10)}`, createdAt: new Date().toISOString() };\n}\n";
