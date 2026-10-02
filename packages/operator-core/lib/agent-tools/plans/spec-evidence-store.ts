@@ -1134,6 +1134,11 @@ export interface ListSpecEvidenceOptions {
    * why — never from an evaluator, a gate, or anything that counts evidence.
    */
   includeRetracted?: boolean;
+  /**
+   * Historical audit cutoff. When set with includeRetracted:true, return only
+   * bindings that existed and had not yet been withdrawn at this instant.
+   */
+  auditAsOf?: Date;
   limit?: number;
 }
 
@@ -1459,6 +1464,9 @@ export async function supersedeSpecEvidenceAtRevision(options: SupersedeSpecEvid
 }
 
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
+  if (options.auditAsOf && options.includeRetracted !== true) {
+    throw new Error('auditAsOf requires includeRetracted:true');
+  }
   // No namespace selected can never match a row, so say so without a round-trip. Kept
   // explicit rather than leaning on `= ANY('{}')`: a reader must not have to know that
   // Postgres happens to return nothing, and the alternative reading — an empty filter
@@ -1474,6 +1482,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const bindingIds = options.bindingIds;
   const limit = options.limit ?? 200;
   const includeRetracted = options.includeRetracted === true;
+  const auditAsOf = options.auditAsOf ?? null;
   const specRevision = options.specRevision;
   const specFingerprint = options.specFingerprint;
   const replayCurrent = options.current ?? [];
@@ -1582,6 +1591,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
        AND (${evidenceRefs.length} = 0 OR b.evidence_ref = ANY(${evidenceRefs}::text[]))
        AND ${bindingIdFilter}
        AND (${includeRetracted}::boolean IS TRUE OR b.retracted_at IS NULL)
+       AND (
+         ${auditAsOf}::timestamptz IS NULL
+         OR (
+           b.created_at <= ${auditAsOf}::timestamptz
+           AND (b.retracted_at IS NULL OR b.retracted_at > ${auditAsOf}::timestamptz)
+         )
+       )
      ORDER BY b.observed_at DESC, b.id DESC
       LIMIT ${limit}`;
       const scorecardIds = [
