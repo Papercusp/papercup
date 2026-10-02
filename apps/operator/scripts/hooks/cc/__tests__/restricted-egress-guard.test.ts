@@ -198,7 +198,11 @@ describe('sandboxedBashCommand', () => {
   const bwrapWorks = spawnSync('/usr/bin/bwrap', ['--dev-bind', '/', '/', '--unshare-net', '/bin/true']).status === 0;
 
   it.skipIf(!bwrapWorks)('really has no network: a host listener is reachable outside and unreachable inside (real bwrap)', async () => {
-    const server = createServer((socket) => socket.end('hi'));
+    // The probe closes as soon as it connects; swallow the resulting reset so it is not an unhandled error.
+    const server = createServer((socket) => {
+      socket.on('error', () => {});
+      socket.end();
+    });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const { port } = server.address() as AddressInfo;
     try {

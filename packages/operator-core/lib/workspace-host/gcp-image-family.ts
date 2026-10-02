@@ -19,17 +19,24 @@ import {
 
 export const GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION = 'papercusp-gcp-image-family-release-v1';
 
-/** Guest capabilities that must survive the provider-specific image build. */
+/**
+ * Guest capabilities that must survive the provider-specific image build, named by the RPM
+ * the CentOS Stream 9 bootc image (infra/images/bootc/workspace-host.Containerfile)
+ * installs. The GCE disk is rendered from that same image (bake-cloud-images.sh), so each
+ * name must be checkable with `rpm -q` against it. The Ubuntu-era names never existed
+ * there: ufw maps to nftables and unattended-upgrades to dnf-automatic (RPM-EQUIVALENCE.md;
+ * WI-10005618, the GCP twin of WI-10005605).
+ */
 export const GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS = [
   'acl',
   'ca-certificates',
   'curl',
+  'dnf-automatic',
   'google-guest-agent',
   'jq',
   'minisign',
+  'nftables',
   'openssh-server',
-  'ufw',
-  'unattended-upgrades',
 ] as const;
 
 export interface GcpImmutableImageCoordinates {

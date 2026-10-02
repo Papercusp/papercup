@@ -103,6 +103,8 @@ ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 #     look correct inside RUN, then revert after COMMIT. Replace both with fresh
 #     inodes in this same layer; the P-306 probe checks the committed image.
 COPY papercusp-google-oslogin.conf /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf
+# GCE transport is skipped off GCE, as amazon-ssm-agent is off EC2 (WI-10005618).
+COPY papercusp-google-guest-agent-gce-only.conf /usr/lib/systemd/system/google-guest-agent.service.d/papercusp-gce-only.conf
 # AWS transport (WI-10005605): amazon-ssm-agent is the session/command channel the AWS
 # provider and its connection profile require. AWS ships it as a standalone signed RPM,
 # not from a dnf repository, so it is pinned by VERSION and by the SHA-256 of the exact

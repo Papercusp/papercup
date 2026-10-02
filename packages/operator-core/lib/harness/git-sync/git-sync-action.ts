@@ -3421,14 +3421,20 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // maps these superproject-root-relative paths into each submodule before add.
     let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
     // WI-10005576 / R-10: the census also reads THIS tree, so a write made inside an
-    // active personal-disclosure window without a native edit tool is held too.
+    // active personal-disclosure window without a native edit tool is held too. An explicit
+    // null repoPath (manual fire) names no tree, so there is nothing for the window read to scan;
+    // the ledger-backed restricted holdings still apply.
     const readCensus = () =>
-      readGitSyncCensusStrict({
-        window: {
-          repoPath,
-          runGit: (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args), { signal: liveness.signal }),
-        },
-      });
+      readGitSyncCensusStrict(
+        repoPath
+          ? {
+              window: {
+                repoPath,
+                runGit: (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args), { signal: liveness.signal }),
+              },
+            }
+          : {},
+      );
     try {
       // EI-21876778499591361: ride out a TRANSIENT pg contention timeout on this read instead of
       // skipping the tick. Failing CLOSED below is right for an UNREADABLE lock plane — staging a
