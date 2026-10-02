@@ -37,7 +37,13 @@ export type SettlementResidualReason =
   | 'identity-unavailable'
   | 'missing-from-commit'
   | 'content-mismatch'
-  | 'superseded-before-commit';
+  | 'superseded-before-commit'
+  /**
+   * WI-10005343: the declared path is not a repository pathspec at all (absolute, `..`-escaping,
+   * or pathspec magic) — a report URI, an out-of-repo file, a `/tmp` artifact. No commit can ever
+   * hold it, so the verdict is deterministic, unlike `identity-unavailable`.
+   */
+  | 'not-a-repository-path';
 export type SettlementResidualPath = { path: string; reason: SettlementResidualReason };
 /** Current working-tree blob of one path: null = absent, undefined = could not read. */
 type CompletionWorkingTreeLookup = (repoRoot: string, path: string, shaLength: number) => string | null | undefined;
@@ -116,9 +122,20 @@ export async function residualPathsForCommit(
   const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
   if (!parsed.success || !SHA_RE.test(commitSha)) return undefined;
   const receipt = parsed.data;
-  const committed = await (signal
-    ? lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths, { signal })
-    : lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths));
+  // WI-10005343: `git ls-tree` exits 128 on the WHOLE call for a path outside the repository
+  // (`/reports/rpt_…`, `/tmp/…`, `/home/…/.config/…` — measured in legacy manifests written
+  // before out-of-repo artifacts were excluded at close). The `!committed` branch below then
+  // read that deterministic refusal as a transient timeout, so the row was skipped as
+  // lookup-unavailable on every pass forever (33 consecutive fires for WI-10002141) and kept
+  // the settlement health verdict `failing`. Such a path can be in no commit: classify it
+  // here and look up only real repository paths.
+  const lookupPaths = receipt.normalizedPaths.filter(batchSafeDeclaredPath);
+  const committed =
+    lookupPaths.length === 0
+      ? new Map<string, HeadBlobResolution>()
+      : await (signal
+          ? lookup(receipt.repositoryRoot, commitSha, lookupPaths, { signal })
+          : lookup(receipt.repositoryRoot, commitSha, lookupPaths));
   if (signal?.aborted) return undefined;
   // EI-24807349327024992: a whole-batch lookup failure measured NOTHING about this row. The
   // exact-tree lookup runs every `git ls-tree` under a 5s per-call timeout, so under load
@@ -134,6 +151,10 @@ export async function residualPathsForCommit(
   );
   const residualPaths: SettlementResidualPath[] = [];
   for (const path of receipt.normalizedPaths) {
+    if (!batchSafeDeclaredPath(path)) {
+      residualPaths.push({ path, reason: 'not-a-repository-path' });
+      continue;
+    }
     const expected = closeIdentity.get(path);
     if (!expected) {
       residualPaths.push({ path, reason: 'identity-unavailable' });
@@ -330,7 +351,8 @@ function confirmedTreeStampForSettlement(
  * A declared path git accepts as a pathspec inside the repository. `git ls-tree` exits 128
  * on the whole call for a path outside the repository (`/reports/...` was measured in the
  * live candidate set on 2026-10-02), so one such path would fail the batched read for every
- * row. Rows that declare one fall through to their own per-row read.
+ * row. Rows that declare one fall through to their own per-row read, which classifies that
+ * path as `not-a-repository-path` and looks up only the rest (WI-10005343).
  */
 function batchSafeDeclaredPath(path: unknown): path is string {
   if (typeof path !== 'string' || path.length === 0) return false;

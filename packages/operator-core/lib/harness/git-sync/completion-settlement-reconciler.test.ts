@@ -77,6 +77,80 @@ describe('residualPathsForCommit', () => {
     expect(laterWorkingTreeIdentity).not.toEqual(lookup.mock.results[0]?.value);
   });
 
+  // WI-10005343: a legacy manifest (written before out-of-repo artifacts were excluded at close)
+  // can declare `/reports/rpt_…` or `/tmp/…`. `git ls-tree` exits 128 on the whole call for such
+  // a path, which the reconciler read as a transient lookup failure on EVERY pass forever.
+  it('classifies non-repository paths deterministically and never passes them to the tree lookup', async () => {
+    const legacy = {
+      ...manifest,
+      normalizedPaths: ['/reports/rpt_1', 'a.ts', 'plan:/papercusp/x', '../escape.ts', ':(glob)*'],
+      contentIdentity: [
+        { path: '/reports/rpt_1', workingTreeBlobSha: null, headBlobSha: null },
+        { path: 'a.ts', workingTreeBlobSha: 'd'.repeat(40), headBlobSha: null },
+        { path: 'plan:/papercusp/x', workingTreeBlobSha: null, headBlobSha: null },
+        { path: '../escape.ts', workingTreeBlobSha: null, headBlobSha: null },
+        { path: ':(glob)*', workingTreeBlobSha: null, headBlobSha: null },
+      ],
+    };
+    const lookup = vi.fn(
+      () =>
+        new Map([
+          ['a.ts', resolved('d'.repeat(40))],
+          ['plan:/papercusp/x', absent()],
+        ]),
+    );
+    expect(await residualPathsForCommit(legacy, SHA, lookup)).toEqual([
+      { path: '/reports/rpt_1', reason: 'not-a-repository-path' },
+      { path: 'plan:/papercusp/x', reason: 'identity-unavailable' },
+      { path: '../escape.ts', reason: 'not-a-repository-path' },
+      { path: ':(glob)*', reason: 'not-a-repository-path' },
+    ]);
+    expect(lookup).toHaveBeenCalledWith('/repo', SHA, ['a.ts', 'plan:/papercusp/x']);
+  });
+
+  it('records an all-non-repository manifest without any git read', async () => {
+    const outOfRepo = {
+      ...manifest,
+      normalizedPaths: ['/tmp/shot.png'],
+      contentIdentity: [{ path: '/tmp/shot.png', workingTreeBlobSha: null, headBlobSha: null }],
+    };
+    const lookup = vi.fn(() => undefined);
+    expect(await residualPathsForCommit(outOfRepo, SHA, lookup)).toEqual([
+      { path: '/tmp/shot.png', reason: 'not-a-repository-path' },
+    ]);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  // CONTROL against the real reader: the same out-of-repo path makes `git ls-tree` refuse the
+  // whole call, which is the failure the classification above routes around.
+  it('real completionHeadBlobMap measures nothing for an out-of-repo path (the bug this guards)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'settle-outside-'));
+    TEMP_ROOTS.push(root);
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 't@t');
+    git('config', 'user.name', 't');
+    writeFileSync(join(root, 'a.ts'), 'x\n');
+    git('add', 'a.ts');
+    git('commit', '-q', '-m', 'a');
+    const head = git('rev-parse', 'HEAD');
+    const blob = git('rev-parse', 'HEAD:a.ts');
+    expect(await completionHeadBlobMap(root, head, ['a.ts', '/reports/rpt_1'])).toBeUndefined();
+    const legacy = {
+      ...manifest,
+      repositoryRoot: root,
+      headSha: head,
+      normalizedPaths: ['/reports/rpt_1', 'a.ts'],
+      contentIdentity: [
+        { path: '/reports/rpt_1', workingTreeBlobSha: null, headBlobSha: null },
+        { path: 'a.ts', workingTreeBlobSha: blob, headBlobSha: blob },
+      ],
+    };
+    expect(await residualPathsForCommit(legacy, head, completionHeadBlobMap)).toEqual([
+      { path: '/reports/rpt_1', reason: 'not-a-repository-path' },
+    ]);
+  });
+
   it('persists deterministic residue for partial and mismatched commits', async () => {
     expect(
       await residualPathsForCommit(
