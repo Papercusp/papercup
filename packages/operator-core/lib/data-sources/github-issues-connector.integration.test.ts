@@ -33,6 +33,7 @@ import {
   type GitHubIssuesClient,
   type GitHubUser,
 } from './github-issues-connector';
+import { runGitHubIssuesSync } from '../harness/routines/github-issues-sync-action';
 import { countWorkItems, countWorkItemsByState, listWorkItems, searchWorkItems } from '../work-items';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
@@ -304,12 +305,14 @@ describe('GitHub Issues ticket connector (P-019)', () => {
 
   it('default work reads (list, counts, search) never return an ingested ticket; an explicit ask does (R-13)', async () => {
     const gh = fakeGitHub();
-    const source = await connect();
-    await syncGitHubRepoMembership(sql, source, { client: gh.client });
+    await connect();
     // Baselines BEFORE ingestion: the default reads must not move when tickets land.
     const countBefore = await countWorkItems({ harness: HARNESS });
     const byStateBefore = await countWorkItemsByState({ harness: HARNESS });
-    await pollGitHubIssuesOnce(sql, source, { client: gh.client, now: () => T0 });
+    // Ingest through the scheduled production entry (system:github-issues-sync), which runs
+    // the membership sync and the poll exactly as a routine fire does.
+    const fired = await runGitHubIssuesSync({ workspaceId: WS, triggerConfig: {} }, { sql, client: gh.client, now: () => T0 });
+    expect(fired).toMatchObject({ sources: 1, membershipSynced: 1, polled: 1, failures: [] });
 
     const connectorIds = (items: ReadonlyArray<{ id: string }>) =>
       items.map((i) => i.id).filter((id) => /^TK[TS]-/.test(id)).sort();
@@ -332,6 +335,46 @@ describe('GitHub Issues ticket connector (P-019)', () => {
     expect(await countWorkItems({ harness: HARNESS, natures: ['record'] })).toBe(2);
     const searched = await searchWorkItems('Gazebo', { harness: HARNESS, semantic: false, natures: ['record'] });
     expect(connectorIds(searched.items)).toHaveLength(1);
+  });
+
+  it('system:github-issues-sync syncs membership once per interval and keeps that marker across the poll', async () => {
+    const gh = fakeGitHub();
+    const source = await connect();
+    const first = await runGitHubIssuesSync({ workspaceId: WS, triggerConfig: {} }, { sql, client: gh.client, now: () => T0 });
+    expect(first).toMatchObject({ sources: 1, membershipSynced: 1, polled: 1, paused: 0, failures: [] });
+    expect(first.tickets.created).toBe(2);
+    const after = await reread(source);
+    expect(after.status).toBe('connected');
+    expect(after.cursor.membership).toEqual({ syncedAt: T0.toISOString(), members: 2 });
+    expect(after.cursor.tickets).toBeTruthy();
+    expect((await repoList()).members).toHaveLength(2);
+
+    const second = await runGitHubIssuesSync({ workspaceId: WS, triggerConfig: {} }, { sql, client: gh.client, now: () => new Date(T0.getTime() + 60_000) });
+    expect(second).toMatchObject({ membershipSynced: 0, polled: 1, failures: [] });
+    expect(second.tickets.created).toBe(0);
+  });
+
+  it('system:github-issues-sync skips a rate-limited source without calling GitHub and marks a failing source degraded', async () => {
+    const gh = fakeGitHub();
+    let source = await connect();
+    gh.rateLimitOnce.set('issues', 120);
+    const limited = await runGitHubIssuesSync({ workspaceId: WS, triggerConfig: {} }, { sql, client: gh.client, now: () => T0 });
+    expect(limited).toMatchObject({ rateLimited: 1, polled: 0, failures: [] });
+
+    gh.calls.length = 0;
+    const skipped = await runGitHubIssuesSync({ workspaceId: WS, triggerConfig: {} }, { sql, client: gh.client, now: () => new Date(T0.getTime() + 60_000) });
+    expect(skipped).toMatchObject({ sources: 1, paused: 1, polled: 0, membershipSynced: 0 });
+    expect(gh.calls).toEqual([]);
+
+    const broken: GitHubIssuesClient = {
+      ...gh.client,
+      repos: { listCollaborators: async () => { throw new Error('collaborators_boom'); } },
+    };
+    await sql`UPDATE harness_shared.data_sources SET cursor = '{}'::jsonb WHERE id = ${source.id}::uuid`;
+    const failed = await runGitHubIssuesSync({ workspaceId: WS, triggerConfig: {} }, { sql, client: broken, now: () => T0 });
+    expect(failed.failures).toEqual([{ sourceId: source.id, error: 'collaborators_boom' }]);
+    source = await reread(source);
+    expect(source.status).toBe('degraded');
   });
 
   it('re-polls idempotently: tickets update in place, no duplicate change or document', async () => {
