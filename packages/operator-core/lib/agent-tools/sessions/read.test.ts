@@ -8,6 +8,7 @@
  * for programmatic callers while ordinary model-facing text remains doored.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { deferredSqlAnswer, isDisclosureLedgerSql } from '../../../test/_fake-sql';
 
 const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
 const resolveSearchFilters = vi.hoisted(() => vi.fn());
@@ -57,8 +58,9 @@ const readArgsSchema = readModule.default.args as {
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
 
+/** Every awaited transcript query answers `rows`; the D-006 ledger reads answer "no disclosures". */
 function makeTx(rows: unknown[]) {
-  return vi.fn(async () => rows);
+  return vi.fn((...args: unknown[]) => deferredSqlAnswer(args, () => rows));
 }
 
 describe('sessions:read EI-20236684982538421 — structured large-window response', () => {
@@ -469,7 +471,9 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, 'codex', 'sess-live');
-    expect(tx).toHaveBeenCalledTimes(1);
+    // One transcript query; the turn belongs to a peer, so the D-006 ledger is also read.
+    expect(tx.mock.calls.filter((call) => !isDisclosureLedgerSql(call))).toHaveLength(1);
+    expect(tx.mock.calls.filter((call) => isDisclosureLedgerSql(call))).toHaveLength(1);
   });
 
   it("reads session:'self' across the caller's predecessor and successor sessions", async () => {
