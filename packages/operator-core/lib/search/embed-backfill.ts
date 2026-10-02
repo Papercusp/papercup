@@ -814,7 +814,7 @@ export const TARGETS: SweepTarget[] = [
       },
       {
         file: 'packages/operator-core/lib/consult/peers-know.ts',
-        evidence: ['JOIN harness_shared.consult_state c', 'WITH best AS (${chunkAwareVectorLegSql(handle, {'],
+        evidence: ['JOIN harness_shared.consult_state c', 'WITH best AS (${chunkAwareVectorLegSql(sql as unknown as PgHandle, {'],
       },
     ],
   },
