@@ -38,7 +38,9 @@ TMPD=${P529_TMP:-/tmp/p529}
 ARMS=${P529_ARMS:-a,b}
 MEMGIB=${P529_MEM_PER_SLOT_GIB:-}
 case "$ARMS" in a,b|b) ;; *) echo "P529_ERROR P529_ARMS must be a,b or b (got $ARMS)" >&2; exit 2 ;; esac
-case "$MEMGIB" in ''|[1-9]|[1-9][0-9]) ;; *) echo "P529_ERROR P529_MEM_PER_SLOT_GIB must be 1-99 (got $MEMGIB)" >&2; exit 2 ;; esac
+case "$MEMGIB" in ''|[1-9]|[1-9][0-9]|derived) ;; *) echo "P529_ERROR P529_MEM_PER_SLOT_GIB must be 1-99 or derived (got $MEMGIB)" >&2; exit 2 ;; esac
+OVERLAY=${P529_PC_HEAVY_OVERLAY:-}
+[ -z "$OVERLAY" ] || [ -f "$OVERLAY" ] || { echo "P529_ERROR P529_PC_HEAVY_OVERLAY=$OVERLAY is not a file" >&2; exit 2; }
 ts() { date -u +%FT%TZ; }
 [ -d "$PREP/node_modules/.bin" ] || { echo "P529_ERROR no prepared checkout at $PREP" >&2; exit 2; }
 mkdir -p "$TMPD" || exit 1
