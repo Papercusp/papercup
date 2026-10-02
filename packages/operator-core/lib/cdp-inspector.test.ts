@@ -2,10 +2,11 @@
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
-import { closeInspector, createCdpClient, readPinnedState, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
 
 class FakeWebSocket extends EventEmitter {
   static instances: FakeWebSocket[] = [];
@@ -59,6 +60,47 @@ function makeClient(responses: Map<string, unknown>, options: Record<string, unk
     ...options,
   });
 }
+
+describe('PID-bound host configuration facts', () => {
+  it('normalizes only fixed boot flags and observes worker state without leaking arbitrary environment', async () => {
+    const effects: string[] = [];
+    const inspect = async (env: Record<string, string>, cluster: object, hostFacts = true) => {
+      const client = { evaluate: async (expression: string) => ({ result: { value: runInNewContext(expression, {
+        process: { pid: 7, env, uptime: () => 1, memoryUsage: () => ({ heapUsed: 100 }),
+          getBuiltinModule: (name: string) => {
+            effects.push(name);
+            if (name === 'v8') return { getHeapStatistics: () => ({ used_heap_size: 100 }) };
+            if (name === 'cluster') return cluster;
+            throw Error('Unexpected builtin');
+          } },
+      }) } }) };
+      return readProcessMemory(client, { expectedPid: 7, hostFacts });
+    };
+    const env = { PAPERCUSP_BACKGROUND_WORKERS: 'private-enabled-value', PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_SPAWNER_SIDECAR_MODE: '1', PRIVATE_TOKEN: 'never-export-this' };
+    const primary = await inspect(env, { isPrimary: true, isWorker: false, workers: { 1: {}, 2: {} } });
+    expect(primary.hostFacts).toMatchObject({ backgroundWorkersOverride: 'enabled', stagingPort: true,
+      cluster: { isPrimary: true, isWorker: false, workerId: null, primaryWorkerCount: 2 },
+      sidecarFlags: { spawner: true, substrate: false } });
+    expect(JSON.stringify(primary)).not.toMatch(/private-enabled-value|never-export-this|PRIVATE_TOKEN/);
+    expect((await inspect({ PAPERCUSP_BACKGROUND_WORKERS: '0' },
+      { isPrimary: false, isWorker: true, worker: { id: 3 } })).hostFacts).toMatchObject({
+      backgroundWorkersOverride: 'disabled', stagingPort: false,
+      cluster: { isPrimary: false, isWorker: true, workerId: 3, primaryWorkerCount: null } });
+    expect((await inspect({}, { isPrimary: true, isWorker: false })).hostFacts.backgroundWorkersOverride).toBe('unset');
+    effects.length = 0;
+    expect(await inspect(env, {}, false)).not.toHaveProperty('hostFacts');
+    expect(effects).toEqual(['v8']);
+  });
+
+  it('rejects invalid opt-in and wrong targets before accepting host facts', async () => {
+    let evaluations = 0;
+    const client = { evaluate: async () => { evaluations++; return { result: { value: { pid: 8 } } }; } };
+    await expect(readProcessMemory(client, { expectedPid: 7, hostFacts: 'yes' as any })).rejects.toThrow('boolean');
+    expect(evaluations).toBe(0);
+    await expect(readProcessMemory(client, { expectedPid: 7, hostFacts: true })).rejects.toThrow('PID mismatch');
+  });
+});
 
 describe('named pinned payload attribution on a real Node inspector', () => {
   it('attributes individual cache values fairly with protected keys, stable digests and no application effects', async () => {
@@ -369,6 +411,10 @@ describe('bounded function caller attribution on a real Node inspector', () => {
       expect(endpoint, stderr).toBeTruthy();
       client = createCdpClient(endpoint!);
       await client.connect();
+      const counters = await readProcessMemory(client, { expectedPid: child.pid!, hostFacts: true });
+      expect(counters.hostFacts.cluster).toMatchObject({ isPrimary: true, isWorker: false, workerId: null });
+      expect(counters.memory.heapUsed).toBeGreaterThan(0);
+      expect(await readProcessMemory(client, { expectedPid: child.pid! })).not.toHaveProperty('hostFacts');
       client.ws.on?.('message', data => { if (JSON.parse(String(data)).method === 'Debugger.paused') pauses++; });
       const traced = { evaluate: client.evaluate, send: async (method: string, args?: Record<string, unknown>) => {
         requests.push({ method, args }); return client!.send(method, args);

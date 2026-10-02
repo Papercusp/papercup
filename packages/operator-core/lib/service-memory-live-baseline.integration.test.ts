@@ -9,6 +9,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, validatePinnedStateOptions } from '../../../scripts/cdp-inspector.mjs';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
+import { requestOnlyHost } from './background-workers';
 
 const root = resolve(__dirname, '../../..');
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
@@ -122,6 +123,36 @@ function processInventory(main: ResourceRow, children: ResourceRow[],
 function assertIdentity(before: { pid: number; startTicks: string; executableSha256: string }, after: typeof before) {
   if (before.pid !== after.pid || before.startTicks !== after.startTicks ||
       before.executableSha256 !== after.executableSha256) throw Error('Serving process identity changed');
+}
+
+function counterTarget(main: ResourceRow, rows: ResourceRow[], pid: number) {
+  const inventory = processInventory(main, rows, []);
+  const target = pid === main.pid ? main : rows.find(row => row.pid === pid);
+  if (!target || (pid !== main.pid && inventory.observed.find(row => row.pid === pid)?.role !==
+      'same-entry-operator-descendant')) throw Error('Counter target must be the main or exact same-entry descendant');
+  return target;
+}
+
+function configuredHostRole(facts: any) {
+  if (!facts || typeof facts.cluster?.isPrimary !== 'boolean' ||
+      typeof facts.cluster?.isWorker !== 'boolean' || facts.cluster.isPrimary === facts.cluster.isWorker ||
+      !['unset', 'disabled', 'enabled'].includes(facts.backgroundWorkersOverride) ||
+      typeof facts.stagingPort !== 'boolean' ||
+      ['substrate', 'spawner', 'gateway', 'embed', 'resourceHealth'].some(key => typeof facts.sidecarFlags?.[key] !== 'boolean')) {
+    throw Error('Incomplete host configuration facts');
+  }
+  const requestOnly = requestOnlyHost({
+    PAPERCUSP_BACKGROUND_WORKERS: facts.backgroundWorkersOverride === 'unset' ? undefined :
+      facts.backgroundWorkersOverride === 'disabled' ? '0' : '1',
+    PAPERCUSP_HONO_PORT: facts.stagingPort ? '3170' : undefined,
+  });
+  // Priority is the observed hono-host entry's boot divert, not inferred from
+  // argv, port inheritance or the presence of another host in its ancestry.
+  const sidecar = ['substrate', 'spawner', 'gateway', 'embed', 'resourceHealth']
+    .find(key => facts.sidecarFlags[key]);
+  return { clusterRole: facts.cluster.isWorker ? 'worker' : 'primary',
+    requestOnly, configuredSidecar: sidecar ?? null,
+    requestAssignment: 'unknown', allocationOwner: 'unknown' };
 }
 
 function parseDiscoveryNamespace(raw?: string, limits?: PinnedLimits): string | undefined {
@@ -267,6 +298,36 @@ describe('actual current-build operator memory baseline', () => {
     expect(inventory.lifetimeDefinition).toContain('not proof of exit');
   });
 
+  it('selects counter targets only through checked exact-entry ancestry', () => {
+    const main = { pid: 1, parentPid: 0, startTicks: '1', executable: '/node', executableSha256: 'a',
+      command: { script: '/runtime/hono-host.mjs', sha256: 'x', esbuildService: false },
+      pssBytes: 100, rssBytes: 200, anonymousBytes: 80 };
+    const wrapper = { ...main, pid: 2, parentPid: 1, command: { ...main.command, script: '/wrapper.mjs' } };
+    const child = { ...main, pid: 3, parentPid: 2 };
+    expect(counterTarget(main, [wrapper, child], 3)).toBe(child);
+    expect(counterTarget(main, [], 1)).toBe(main);
+    for (const rows of [[wrapper], [wrapper, { ...child, executableSha256: 'b' }],
+      [wrapper, { ...child, command: { ...child.command, script: '/other/hono-host.mjs' } }]]) {
+      expect(() => counterTarget(main, rows, 3)).toThrow('Counter target');
+    }
+    expect(() => counterTarget(main, [child], 3)).toThrow('ancestry');
+  });
+
+  it('distinguishes request-only primaries, actual cluster workers and configured sidecars without assigning requests', () => {
+    const facts = { cluster: { isPrimary: true, isWorker: false }, backgroundWorkersOverride: 'unset',
+      stagingPort: true, sidecarFlags: { substrate: false, spawner: false, gateway: false, embed: false, resourceHealth: false } };
+    expect(configuredHostRole(facts)).toEqual({ clusterRole: 'primary', requestOnly: true,
+      configuredSidecar: null, requestAssignment: 'unknown', allocationOwner: 'unknown' });
+    expect(configuredHostRole({ ...facts, backgroundWorkersOverride: 'enabled' }).requestOnly).toBe(false);
+    expect(configuredHostRole({ ...facts, stagingPort: false }).requestOnly).toBe(false);
+    expect(configuredHostRole({ ...facts, stagingPort: false, backgroundWorkersOverride: 'disabled',
+      cluster: { isPrimary: false, isWorker: true } })).toMatchObject({ clusterRole: 'worker', requestOnly: true });
+    expect(configuredHostRole({ ...facts, sidecarFlags: { ...facts.sidecarFlags, spawner: true } }))
+      .toMatchObject({ configuredSidecar: 'spawner', clusterRole: 'primary', requestAssignment: 'unknown' });
+    expect(() => configuredHostRole({ ...facts, cluster: { isPrimary: true, isWorker: true } })).toThrow('Incomplete');
+    expect(() => configuredHostRole({ ...facts, sidecarFlags: {} })).toThrow('Incomplete');
+  });
+
   it('rejects stale, incomplete and private discovery selections before claiming payload coverage', () => {
     const a = 'a'.repeat(64), b = 'b'.repeat(64), other = 'c'.repeat(64);
     const page = { status: 'map', undigestibleKeys: 0,
@@ -296,6 +357,7 @@ describe('actual current-build operator memory baseline', () => {
 
   it.runIf(Boolean(process.env.PAPERCUSP_P011_LIVE_PID))('measures unforced live idle and ordinary HTTP windows on the named staging process', async () => {
     const pid = Number(process.env.PAPERCUSP_P011_LIVE_PID);
+    const counterPid = Number(process.env.PAPERCUSP_P011_COUNTER_PID ?? pid);
     const base = process.env.PAPERCUSP_P011_LIVE_URL;
     const expectedBuild = process.env.PAPERCUSP_P011_LIVE_BUILD;
     const destination = process.env.PAPERCUSP_P011_REPORT;
@@ -315,13 +377,25 @@ describe('actual current-build operator memory baseline', () => {
       ...pinnedLimits, expectedPid: pid, owners: pinnedOwners, operatorCacheEntries,
     });
     expect(Number.isInteger(pid) && pid > 0).toBe(true);
+    expect(Number.isInteger(counterPid) && counterPid > 0).toBe(true);
     expect(base).toBe('http://127.0.0.1:3170');
     expect(expectedBuild).toMatch(/^[a-f0-9]{7,40}$/);
     if (!destination || !existsSync(dirname(resolve(root, destination)))) throw Error('Canonical evidence parent required');
     const path = resolve(root, destination);
     const before = processSample(pid);
+    // Check only the selected target's ancestry before opening its inspector;
+    // unrelated deep utility subtrees cannot turn valid selection into a cap.
+    const initialRows: ResourceRow[] = [];
+    let ancestor = counterPid;
+    while (ancestor !== pid) {
+      if (ancestor <= 1 || initialRows.length >= 16 || initialRows.some(row => row.pid === ancestor)) {
+        throw Error('Initial counter-target ancestry cap or unrelated target');
+      }
+      const row = processSample(ancestor); initialRows.push(row); ancestor = row.parentPid;
+    }
+    const counterBefore = counterTarget(before, initialRows, counterPid);
     const report: any = { schemaVersion: 1, plane: 'live-current-build-operator-api',
-      incomplete: true, pid, buildSha: expectedBuild, startedAt: new Date().toISOString(),
+      incomplete: true, pid, counterPid, buildSha: expectedBuild, startedAt: new Date().toISOString(),
       samples: [], windows: [], requests: [], operations: [], cleanup: {},
       metricDefinitions: { pssBytes: 'smaps_rollup Pss kernel kB times 1024',
         heapAndNative: 'V8/Node counters, overlapping with PSS; no additive native-residual estimate',
@@ -329,7 +403,7 @@ describe('actual current-build operator memory baseline', () => {
         observerMs: 'wall time for inspector counter read and proc descendant census' },
       limits: { windows: 3, idleMs: 2000, requestsPerWindow: 8, concurrency: 2, descendantsPerSample: 64 },
       pinnedOwners, pinnedLimits, operatorCacheEntries,
-      limitations: ['Main service PID only; HTTP requests may be served by sibling workers.',
+      limitations: ['Counters cover one explicitly selected main/descendant PID; HTTP request assignment remains unknown.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
         'Current disk bundle hash is recorded separately from the health-reported loaded build.'] };
@@ -344,10 +418,11 @@ describe('actual current-build operator memory baseline', () => {
       expect(value.sha).toBe(expectedBuild);
       expect(value.bundleStale).toBeUndefined();
       assertIdentity(before, processSample(pid));
+      assertIdentity(counterBefore, processSample(counterPid));
       return { sha: value.sha, version: value.version, at: new Date().toISOString() };
     };
     const attach = async () => {
-      for (const candidate of listenerPorts(pid).filter(value => value !== 3170)) {
+      for (const candidate of listenerPorts(counterPid).filter(value => value !== 3170)) {
         try {
           const response = await fetch(`http://127.0.0.1:${candidate}/json/list`, { signal: AbortSignal.timeout(500) });
           if (!response.ok) continue;
@@ -355,7 +430,7 @@ describe('actual current-build operator memory baseline', () => {
           const target = targets.find((row: any) => row.type === 'node' && row.webSocketDebuggerUrl);
           if (!target) continue;
           const connection = createCdpClient(target.webSocketDebuggerUrl);
-          try { await connection.connect(); await readProcessMemory(connection, { expectedPid: pid }); }
+          try { await connection.connect(); await readProcessMemory(connection, { expectedPid: counterPid }); }
           catch (error) { connection.close(); throw error; }
           client = connection; port = candidate; return true;
         } catch { /* An unrelated listener is not an inspector. */ }
@@ -366,24 +441,23 @@ describe('actual current-build operator memory baseline', () => {
     try {
       report.healthBefore = await health();
       expect(listenerPorts(pid)).toContain(3170);
-      const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
-      const entry = argv.find(value => value.endsWith('/hono-host.mjs'));
+      const entry = before.command.script;
       if (!entry) throw Error('Serving bundle entry unobserved');
-      const bundlePath = resolve(readlinkSync(`/proc/${pid}/cwd`), entry);
+      const bundlePath = entry;
       report.bundle = { path: bundlePath, argvEntry: entry, diskSha256: hash(readFileSync(bundlePath)) };
       report.inspectorWasOpen = await attach();
       if (!client) {
-        process.kill(pid, 'SIGUSR1'); opened = true;
+        process.kill(counterPid, 'SIGUSR1'); opened = true;
         for (let attempt = 0; attempt < 20 && !client; attempt++) { await wait(250); await attach(); }
       }
       if (!client || !port) throw Error('PID-bound inspector unavailable');
-      report.inspector = { pid, port, openedByProbe: opened };
+      report.inspector = { pid: counterPid, port, openedByProbe: opened };
       let effectivePinnedLimits = pinnedLimits;
       if (discoveryNamespace) {
         const pages: any[] = [];
         let offset = 0;
         for (let page = 0; page < 2; page++) {
-          const discovery = await readPinnedState(client, { ...pinnedLimits, expectedPid: pid,
+          const discovery = await readPinnedState(client, { ...pinnedLimits, expectedPid: counterPid,
             owners: pinnedOwners, operatorCacheEntries, maxCacheEntries: 256,
             maxEntryEntries: 128, maxEntryObjects: 64, cacheEntryOffset: offset });
           assertIdentity(before, processSample(pid));
@@ -431,10 +505,10 @@ describe('actual current-build operator memory baseline', () => {
       };
       const sample = async (label: string) => {
         const started = performance.now();
-        const memory = await readProcessMemory(client!, { expectedPid: pid });
+        const memory = await readProcessMemory(client!, { expectedPid: counterPid, hostFacts: true });
         const pinnedState = process.env.PAPERCUSP_P011_PINNED_STATE ? await readPinnedState(client!, {
           ...effectivePinnedLimits,
-          expectedPid: pid, owners: pinnedOwners, operatorCacheEntries,
+          expectedPid: counterPid, owners: pinnedOwners, operatorCacheEntries,
         }) : undefined;
         if (effectivePinnedLimits?.cacheKeyDigests) assertCacheSelection(pinnedState!.roots[0].cacheEntries,
           effectivePinnedLimits!.cacheKeyDigests!);
@@ -443,8 +517,11 @@ describe('actual current-build operator memory baseline', () => {
         missedDescendants = [];
         const childRows = descendants(pid);
         const inventory = processInventory(os, childRows, missedDescendants, previousProcesses);
+        const counterOs = counterTarget(os, childRows, counterPid);
+        assertIdentity(counterBefore, counterOs);
         previousProcesses = [os, ...childRows];
-        report.samples.push({ label, at: new Date().toISOString(), ...memory, os, pinnedState,
+        report.samples.push({ label, at: new Date().toISOString(), ...memory, os, counterOs,
+          configuredHostRole: configuredHostRole(memory.hostFacts), pinnedState,
           descendants: childRows, inventory, observerMs: performance.now() - started }); publish();
       };
       const query = '/api/zero-harness/rest-query?name=workItems.byHarness&args=' +
@@ -473,7 +550,7 @@ describe('actual current-build operator memory baseline', () => {
       expect(report.samples).toHaveLength(9); expect(report.requests).toHaveLength(24);
       expect(report.samples.every((row: any) => row.os.pssBytes > 0 && row.memory.heapUsed > 0)).toBe(true);
       if (process.env.PAPERCUSP_P011_PINNED_STATE) expect(report.samples.every((row: any) =>
-        row.pinnedState.pid === pid && row.pinnedState.registryPresent &&
+        row.pinnedState.pid === counterPid && row.pinnedState.registryPresent &&
         row.pinnedState.population >= row.pinnedState.checked && row.pinnedState.checked > 0)).toBe(true);
       if (pinnedOwners) expect(report.samples.every((row: any) =>
         row.pinnedState.selection?.missingOwners.length === 0 &&
@@ -493,10 +570,12 @@ describe('actual current-build operator memory baseline', () => {
         if (client && opened && port) report.cleanup.inspector = await closeInspector(client, port);
         else { client?.close(); report.cleanup.inspector = { preservedPreexisting: true }; }
         assertIdentity(before, processSample(pid)); report.cleanup.processIdentityPreserved = true;
+        assertIdentity(counterBefore, processSample(counterPid)); report.cleanup.counterIdentityPreserved = true;
       } catch (error) { report.cleanup.error = String(error); report.incomplete = true; throw error; }
       finally { report.endedAt = new Date().toISOString(); publish(); }
     }
     expect(report.cleanup.processIdentityPreserved).toBe(true);
+    expect(report.cleanup.counterIdentityPreserved).toBe(true);
     expect(report.operations).toEqual([]);
   }, 100_000);
 });

@@ -1256,12 +1256,15 @@ export interface GitSyncLockHolding {
   goalRef?: string;
 }
 
-/** A dirty path excluded from this pass because a live editor holds its lock. */
+/** A dirty path deferred by this pass. Missing `reason` is the legacy live-lock shape. */
 export interface GitSyncSkippedPath {
   scope: string;
   path: string;
-  owner: string;
-  intent: string;
+  owner?: string;
+  intent?: string;
+  /** Other per-path deferral classes; omitted for live-lock rows. */
+  reason?: 'migration-reservation';
+  detail?: string;
 }
 
 /** True when two repo-relative paths overlap as a file or directory lock. */
@@ -3931,7 +3934,13 @@ interface CommitRepoOpts {
 }
 
 /** The commit-stage seam for the shared migration reservation admission guard. */
-export type MigrationReservationChecker = (dirtyPaths: readonly string[]) => Promise<void>;
+export interface MigrationReservationRefusal {
+  path: string;
+  reason: string;
+}
+export type MigrationReservationChecker = (
+  dirtyPaths: readonly string[],
+) => Promise<readonly MigrationReservationRefusal[]>;
 
 const migrationPaths = (paths: readonly string[]): string[] =>
   paths.filter((path) => armedMigrationFilename(path) !== null);
@@ -3939,16 +3948,59 @@ const migrationPaths = (paths: readonly string[]): string[] =>
 async function checkMigrationReservations(
   options: CommitRepoOpts,
   paths: readonly string[],
-): Promise<string | null> {
-  if (!options.migrationReservationChecker) return null;
+): Promise<
+  | { ok: true; refusals: MigrationReservationRefusal[] }
+  | { ok: false; error: string }
+> {
+  if (!options.migrationReservationChecker) return { ok: true, refusals: [] };
   const candidates = migrationPaths(paths);
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return { ok: true, refusals: [] };
   try {
-    await options.migrationReservationChecker(candidates);
-    return null;
+    const checked = await options.migrationReservationChecker(candidates);
+    if (!Array.isArray(checked)) return { ok: false, error: 'checker returned a non-array result' };
+    const candidateSet = new Set(candidates);
+    if (
+      checked.some(
+        (entry) =>
+          !entry ||
+          typeof entry.path !== 'string' ||
+          !candidateSet.has(entry.path) ||
+          typeof entry.reason !== 'string' ||
+          entry.reason.length === 0,
+      )
+    ) {
+      return { ok: false, error: 'checker returned an invalid or out-of-scope refusal' };
+    }
+    const byPath = new Map(checked.map((entry) => [entry.path, entry]));
+    return { ok: true, refusals: [...byPath.values()] };
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function migrationReservationSkips(
+  scope: string,
+  refusals: readonly MigrationReservationRefusal[],
+  skippedPaths: GitSyncSkippedPath[],
+  log: (message: string) => void,
+): string[] {
+  const paths: string[] = [];
+  for (const refusal of refusals) {
+    if (paths.includes(refusal.path)) continue;
+    paths.push(refusal.path);
+    if (
+      !skippedPaths.some((entry) => entry.path === refusal.path && entry.reason === 'migration-reservation')
+    ) {
+      skippedPaths.push({
+        scope,
+        path: refusal.path,
+        reason: 'migration-reservation',
+        detail: refusal.reason,
+      });
+    }
+    log(`[git-sync] ${scope}: deferring migration ${refusal.path} — ${refusal.reason}`);
+  }
+  return paths;
 }
 
 

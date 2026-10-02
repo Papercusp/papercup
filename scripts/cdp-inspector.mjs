@@ -60,21 +60,45 @@ export class CdpTransportClosedError extends Error {
  * Inspector evaluations have no ESM dynamic-import callback on Node targets;
  * getBuiltinModule reaches the target's existing builtin instead. The caller
  * must name its PID so a reused inspector port cannot silently sample a peer.
+ * Opt-in host facts contain only cluster state and fixed, normalized boot flags;
+ * they describe configuration, not request assignment or retained ownership.
  * These counters are not a retainer graph or an estimate of total native bytes.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
- * @param {{ expectedPid?: number }} [options]
+ * @param {{ expectedPid?: number, hostFacts?: boolean }} [options]
  */
-export async function readProcessMemory(client, { expectedPid } = {}) {
+export async function readProcessMemory(client, { expectedPid, hostFacts = false } = {}) {
   if (!Number.isInteger(expectedPid) || expectedPid <= 0) {
     throw new TypeError('readProcessMemory requires a positive expectedPid');
   }
+  if (typeof hostFacts !== 'boolean') throw new TypeError('hostFacts must be boolean');
   const result = await client.evaluate(String.raw`(() => {
     if (typeof process.getBuiltinModule !== 'function') {
       throw new Error('This Node target does not support getBuiltinModule');
     }
     const v8 = process.getBuiltinModule('v8');
+    let hostFacts;
+    if (${hostFacts}) {
+      const cluster = process.getBuiltinModule('cluster');
+      const env = process.env;
+      hostFacts = {
+        cluster: { isPrimary: cluster.isPrimary, isWorker: cluster.isWorker,
+          workerId: cluster.worker?.id ?? null,
+          primaryWorkerCount: cluster.isPrimary ? Object.keys(cluster.workers ?? {}).length : null },
+        backgroundWorkersOverride: env.PAPERCUSP_BACKGROUND_WORKERS == null ? 'unset' :
+          env.PAPERCUSP_BACKGROUND_WORKERS === '0' ? 'disabled' : 'enabled',
+        stagingPort: env.PAPERCUSP_HONO_PORT === '3170',
+        sidecarFlags: {
+          substrate: env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1',
+          spawner: env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1',
+          gateway: env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1',
+          embed: env.PAPERCUSP_EMBED_SIDECAR_MODE === '1',
+          resourceHealth: env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1',
+        },
+      };
+    }
     return { pid: process.pid, at: Date.now(), uptime: process.uptime(),
-      memory: process.memoryUsage(), heap: v8.getHeapStatistics() };
+      memory: process.memoryUsage(), heap: v8.getHeapStatistics(),
+      ...(hostFacts ? { hostFacts } : {}) };
   })()`, { returnByValue: true });
   const sample = result?.result?.value;
   if (sample?.pid !== expectedPid) {

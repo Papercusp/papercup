@@ -5156,3 +5156,29 @@ These are local-current-build observations, not a shared bg-host adoption
 receipt. D-006 still reserves shared-host changes to the runtime owner's
 coordinated route. Historical wait cause, app impact, live adoption and
 R-8 acceptance remain open.
+
+### Bounded natural owner-backfill receipts — October 2, 16:48–16:53Z
+
+The shared bg-host's existing `session-ingest` logger recorded two ordinary
+Claude sweeps. At 16:48:55.601Z it reported `requested=3589`,
+`inputSha256=da79f531d93b783554b4403a59859dc7dac10f2896a1b1bd624581bd2b68a498`,
+`durationMs=1050.8`, `updated=0`; at 16:53:22.132Z it reported
+`requested=3604`,
+`inputSha256=545e231a1c8f6c6e8cd4164eba64f550faf890b8d209a1fe3a29648eb9845b8c`,
+`durationMs=1011.9`, `updated=0`. Both receipts say `status=completed` and
+zero sweep errors. The bounded source was `logs:read` on
+`papercusp-bg-host.service`, filtered to `[session-ingest] +` in the last
+90 minutes; only these two matching sweep lines were returned. In
+`session-ingest.ts`, `requested` is the per-sweep owner map size,
+`inputSha256` hashes the exact ordered UNNEST arrays, and `updated` is the
+PostgreSQL UPDATE row count. The input hashes differ, but neither sweep
+changed a turn owner.
+
+This is a two-sweep, zero-update observation on the loaded shared runtime,
+not a reproduction or explanation of the earlier 1,123,628 ms UPDATE that
+changed 3,873 turns. `dev:pipeline_position` for `session-ingest.ts` with
+`testClass=background-federation` reported bg-host build `c194aeb678` and
+`containsChange=false` by `start-after-mtime`, so these receipts do not prove
+adoption of the October 2 fork-owner fix. D-006 still governs shared-host
+adoption; the loaded-source identity and historical wait/app-impact evidence
+remain open for R-8.

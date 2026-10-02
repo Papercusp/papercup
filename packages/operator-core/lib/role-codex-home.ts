@@ -837,6 +837,23 @@ export function writeCodexLockHooks(
     });
   }
 
+  // WI-10001350: use the same migration reservation policy for Codex's native
+  // apply_patch payloads as the Claude hooks. This shared path matcher accepts
+  // apply_patch plus Edit/Write/MCP writer inputs; baking the managed root lets
+  // the guard resolve Codex's repository-relative patch targets safely.
+  const migrationReservation = join(dir, 'pretooluse-unreserved-migration-guard.mjs');
+  if (existsSync(migrationReservation)) {
+    preToolUse.push({
+      matcher: CODEX_CONTROL_BYTES_PRE_MATCHER,
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${migrationReservation}`,
+        },
+      ],
+    });
+  }
+
   // P-010 (fleet-friction-remediation-2026-08-21): an apply_patch envelope may
   // carry at most ONE operation per target path, and violating that rejects the
   // WHOLE patch — deterministically, before anything is written. The class was

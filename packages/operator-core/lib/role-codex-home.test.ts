@@ -104,6 +104,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-control-bytes-content-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-generated-file-edit-guard.mjs'), '#!/usr/bin/env node\n');
+  writeFileSync(join(dir, 'pretooluse-unreserved-migration-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'userpromptsubmit-provenance.sh'), '#!/usr/bin/env bash\n');
   return dir;
@@ -332,6 +333,14 @@ describe('writeRoleCodexHome', () => {
     expect(generatedFiles.matcher).toBe(
       '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$',
     );
+    const migrationReservation = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-unreserved-migration-guard.mjs'),
+    );
+    expect(migrationReservation).toBeTruthy();
+    expect(migrationReservation.matcher).toBe(
+      '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$',
+    );
+    expect(migrationReservation.hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
     expect(hooks.hooks.PostToolUse[0].matcher).toBe(
       '^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$',

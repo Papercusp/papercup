@@ -6,12 +6,15 @@
  * Inspector evaluations have no ESM dynamic-import callback on Node targets;
  * getBuiltinModule reaches the target's existing builtin instead. The caller
  * must name its PID so a reused inspector port cannot silently sample a peer.
+ * Opt-in host facts contain only cluster state and fixed, normalized boot flags;
+ * they describe configuration, not request assignment or retained ownership.
  * These counters are not a retainer graph or an estimate of total native bytes.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
- * @param {{ expectedPid?: number }} [options]
+ * @param {{ expectedPid?: number, hostFacts?: boolean }} [options]
  */
-export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid }?: {
+export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, hostFacts }?: {
     expectedPid?: number;
+    hostFacts?: boolean;
 }): Promise<any>;
 /**
  * Inspect logical payloads reachable from existing module-singleton roots.

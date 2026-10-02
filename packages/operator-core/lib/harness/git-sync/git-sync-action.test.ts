@@ -4538,10 +4538,13 @@ describe('WI-10001350 migration-reservation admission wiring', () => {
     const opts = runGitSyncMock.mock.calls[0]?.[1] as RunGitSyncOpts;
     expect(opts.migrationReservationChecker).toEqual(expect.any(Function));
     const beforeRead = templateCalls.length;
-    await expect(opts.migrationReservationChecker!(['README.md'])).resolves.toBeUndefined();
-    await expect(opts.migrationReservationChecker!(['libs/db/sql/999-new-migration.sql'])).rejects.toThrow(
-      '[migration-reservation-guard] 999-new-migration.sql has no reservation row',
-    );
+    await expect(opts.migrationReservationChecker!(['README.md'])).resolves.toEqual([]);
+    await expect(opts.migrationReservationChecker!(['libs/db/sql/999-new-migration.sql'])).resolves.toEqual([
+      {
+        path: 'libs/db/sql/999-new-migration.sql',
+        reason: '[migration-reservation-guard] 999-new-migration.sql has no reservation row',
+      },
+    ]);
     const migrationReads = templateCalls
       .slice(beforeRead)
       .filter((call) => call.text.includes('migration_reservations'));

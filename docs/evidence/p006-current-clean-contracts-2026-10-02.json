@@ -3494,5 +3494,26 @@
     "callerCorrections": "Initial positive-control flag selected historical mode and refused before mutation; removed. Generic positive bindings used after canonicalTestPath refused eight local-run mappings; seven mutation writes had already succeeded and were not retried. CTE ledger read refused tenant classification; direct bounded exact-file read succeeded. Both explicit-full spill and result-door manifest encodings decoded at their recorded boundary. No incidental DRAIN issue filed.",
     "next": "Continue BREACH@3 required unit+integration/l4 and three calibrated scenarios. Legacy17382 remains binding-only retained pending verified replacements. D014 remains leader-dependent. Preserve P007/P008 independent12WIchecks each plus12loopchecks, all source/runtime limits. No sharedrestart, unchanged native/P001/P002 rerun, P2P or LIVE_GATE_OPS."
   },
-  "next": "UNMEASURED@3 governs PASS/l3; WINDOW and NUMERATOR renewed on current maintained unit27/clean PG44 proof. Fresh accepted28 census16PASS12FAIL0UNKNOWN at staging0e0589da83. See p003UnmeasuredFire199. Continue BREACH@3 required unit+integration/l4, retained legacy17382 and calibrated three scenarios; do not replay completed unchanged controls. D014 versus UNMEASURED-ADMISSION remains leader-dependent. Preserve D003/D013FAIL/D014/D016, independent rubric ratification, successful real-goal card, closure audit and shipment. P007/P008 remain independently OPEN; no unchanged native/P001/P002 or LIVE_GATE_OPS."
+  "p003BreachFire202": {
+    "recordedAt": "2026-10-02T16:51:00Z",
+    "spec": "WOE-P003-BREACH@3, fingerprint 4109510795b2328f307a95477d5eeff218e6797445dbf2221740be21d4860a0a",
+    "sourcePin": "420c28a3f8d43b340625b826bba2180c0520d61a",
+    "sourceAndTestHashes": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a9743dd8697f69cebf68a092ad7519cf4b38236df54442ee697938d09a8c53a8",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "10f66f7026d3a1202bc1029b468b47c0411c6f4e9f01c0022059f8e16a794c44",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "b01dd12cb540349894c2a61b61d262b303f08faa0953c8aab8f892a5b032f8ad"
+    },
+    "cleanPositiveRuns": { "unit": 20542226, "integration": 20542229, "result": "30/30 unit and 44/44 real-PG integration pass, no skips; both ledger rows clean at the same commit" },
+    "cleanMutationRuns": {
+      "below-window-survives": { "baseline": 20542258, "unmutatedCopy": 20542259, "caught": 20542260 },
+      "breach-paused-needs-human": { "baseline": 20542270, "unmutatedCopy": 20542271, "caught": 20542273 },
+      "paused-preserved": { "baseline": 20542276, "unmutatedCopy": 20542280, "caught": 20542282 }
+    },
+    "mutationMethod": "Maintained scripts/mutation-probe.sh copy-out overlay in clean /tmp/pcv/papercusp-lint-as-committed-420c28a3f8-arN9BP. Each selected one intended assertion plus two CALIBRATION tests; baseline and unmutated copy passed, mutant failed only the intended assertion, tree integrity verified. paused-preserved unit is a static SQL guard pin paired with the real-PG lifecycle test, not an independent behavioral lifecycle proof.",
+    "bindings": [22107, 22108, 22109, 22110, 22111, 22112, 22113],
+    "oldBinding": { "id": 17382, "status": "retracted", "scope": "binding only; historical test run 20323411 retained" },
+    "acceptance": "Selected BREACH@3 PASS/l4; unfiltered governing evaluator reports BREACH@3 PASS. Full accepted 28-clause governing census remains FAIL (13 pass, 15 fail) because other clauses, including four P-003 clauses made stale by the BREACH source/test change, still need renewal or proof.",
+    "limits": "No LIVE_GATE_OPS, P2P, shared restart or P-007/P-008 source work. Independent rubric ratification, successful real-goal card, closure audit and shipment remain open."
+  },
+  "next": "BREACH@3 governs PASS/l4 at clean commit 420c28a3f8. Renew P-003 MEASURED-ADMISSION, NUMERATOR, UNMEASURED and WINDOW source/test-stale bindings with current clean proof, then complete UNMEASURED-ADMISSION/D014 and the remaining P-004/P-005/P-006 acceptance work. Preserve D003/D013FAIL/D014/D016, P-007/P-008 independent lanes, and avoid LIVE_GATE_OPS/P2P."
 }

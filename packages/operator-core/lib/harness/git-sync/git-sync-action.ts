@@ -214,7 +214,7 @@ import {
 import { deriveGenesisBaselineSha } from './genesis-baseline';
 import { appendPipelineEvent } from './pipeline-events';
 import { DEFAULT_CONTENT_DETECTORS } from '../../content-lint/registry';
-import { assertDirtyMigrationReservations } from '../../migration-reservation';
+import { checkDirtyMigrationReservations } from '../../migration-reservation';
 import {
   runGitSync,
   runGitBounded,
@@ -3559,7 +3559,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // DB-independent in tests and callers that inject a different checker.
         migrationReservationChecker: async (dirtyPaths) => {
           const { sql } = getOrgPg();
-          await assertDirtyMigrationReservations(sql, dirtyPaths);
+          return await checkDirtyMigrationReservations(sql, dirtyPaths);
         },
         // Holdings may be released during setup. Do not also copy them into
         // explicit exclusions, which intentionally survive every refresh.
