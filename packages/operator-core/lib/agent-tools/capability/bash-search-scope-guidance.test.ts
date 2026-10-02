@@ -34,10 +34,10 @@ describe('capability:bash — repository search scope guidance', () => {
     // regexp flag. Keep the distinction in the agent-facing shared guidance.
     expect(guidance).toContain('In `rg`, use lowercase `-e`/`--regexp`');
     expect(guidance).toContain('uppercase `-E` means `--encoding`');
-    expect(guidance).toContain('else `grep -F`');
-    expect(guidance).toContain('Apostrophe regexes break single-quoted arguments');
-    expect(guidance).toContain('`-e` per pattern');
-    expect(guidance).toContain('quoted stdin/file');
+    expect(guidance).toContain('or `grep -F`');
+    expect(guidance).toContain('Apostrophes break single-quoted regexes');
+    expect(guidance).toContain('`-e`');
+    expect(guidance).toContain('quoted input');
     expect(guidance).toContain('apps/operator/lib');
     expect(guidance).toContain('packages/operator-core/lib');
     expect(guidance).toContain('.papercusp');

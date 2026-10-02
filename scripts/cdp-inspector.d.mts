@@ -13,6 +13,28 @@
 export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid }?: {
     expectedPid?: number;
 }): Promise<any>;
+/**
+ * Inspect logical payloads reachable from existing module-singleton roots.
+ * No GC, queryObjects, getters, proxy traps or application iterators run.
+ * Shared objects belong to the first observed root for counting purposes only.
+ * Enumeration time is included; these counts are not retained heap/native bytes.
+ * Exact owner selection bypasses registry order. Remaining global work/time
+ * budgets are divided among remaining roots; enumeration can overrun time.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
+ * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
+ *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
+ *   owners?: string[] }} options
+ */
+export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs, owners, }: {
+    expectedPid: number;
+    maxSlots?: number;
+    maxObjects?: number;
+    maxEntries?: number;
+    maxFields?: number;
+    maxDepth?: number;
+    budgetMs?: number;
+    owners?: string[];
+}): Promise<any>;
 /** @typedef {{ pid: number, startedAt: number, until: number, endedAt: number,
  *   total: number, observerMs: number, limited: boolean,
  *   calls: Record<string, { calls: number, stacks: string[] }> }} FunctionCallTrace */

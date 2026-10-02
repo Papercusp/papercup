@@ -83,6 +83,143 @@ export async function readProcessMemory(client, { expectedPid } = {}) {
   return sample;
 }
 
+/**
+ * Inspect logical payloads reachable from existing module-singleton roots.
+ * No GC, queryObjects, getters, proxy traps or application iterators run.
+ * Shared objects belong to the first observed root for counting purposes only.
+ * Enumeration time is included; these counts are not retained heap/native bytes.
+ * Exact owner selection bypasses registry order. Remaining global work/time
+ * budgets are divided among remaining roots; enumeration can overrun time.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
+ * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
+ *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
+ *   owners?: string[] }} options
+ */
+export async function readPinnedState(client, {
+  expectedPid, maxSlots = 256, maxObjects = 4096, maxEntries = 8192,
+  maxFields = 32, maxDepth = 5, budgetMs = 50, owners,
+}) {
+  const limits = { maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs };
+  if (!Number.isInteger(expectedPid) || expectedPid < 1 ||
+      Object.values(limits).some(value => !Number.isInteger(value) || value < 1) ||
+      maxSlots > 512 || maxObjects > 16384 || maxEntries > 32768 ||
+      maxFields > 64 || maxDepth > 8 || budgetMs > 200 ||
+      (owners !== undefined && (!Array.isArray(owners) || owners.length < 1 || owners.length > 64 ||
+        new Set(owners).size !== owners.length || owners.some(name => typeof name !== 'string' ||
+          name.length < 1 || name.length > 512)))) throw new TypeError('invalid pinned-state limits/PID/owners');
+  const result = await client.evaluate(`(() => {
+    if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
+    const limits = ${JSON.stringify(limits)}, owners = ${JSON.stringify(owners ?? null)}, start = performance.now();
+    const types = process.getBuiltinModule('util').types;
+    const mapSize = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
+    const setSize = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
+    const arrayBufferSize = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get;
+    const typedSize = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength').get;
+    const dataViewSize = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength').get;
+    const slots = Object.getOwnPropertyDescriptor(globalThis, Symbol.for('@papercusp/module-singleton.slots'))?.value;
+    if (!slots || types.isProxy(slots) || !types.isMap(slots)) return {
+      pid: process.pid, registryPresent: false, population: null, checked: 0, roots: [], limits,
+      observerMs: performance.now() - start, limited: false };
+    const seen = new WeakSet(), roots = [];
+    let objects = 0, entries = 0, limited = false;
+    const expired = () => performance.now() - start >= limits.budgetMs;
+    const population = mapSize.call(slots);
+    const missingOwners = owners?.filter(name => !Map.prototype.has.call(slots, name)) ?? [];
+    const selectedPopulation = owners ? owners.length - missingOwners.length : population;
+    const candidates = owners ? owners.filter(name => Map.prototype.has.call(slots, name))
+      .map(name => [name, Map.prototype.get.call(slots, name)]) : Map.prototype.entries.call(slots);
+    const rootCount = Math.min(selectedPopulation, limits.maxSlots);
+    for (const [name, slot] of candidates) {
+      if (roots.length >= limits.maxSlots || expired()) { limited = true; break; }
+      if (typeof name !== 'string') { limited = true; continue; }
+      const rootStart = performance.now(), remainingRoots = Math.max(1, rootCount - roots.length);
+      const quota = { entries: Math.max(1, Math.floor((limits.maxEntries - entries) / remainingRoots)),
+        objects: Math.max(1, Math.floor((limits.maxObjects - objects) / remainingRoots)),
+        budgetMs: Math.max(0, (limits.budgetMs - (rootStart - start)) / remainingRoots) };
+      const entryEnd = Math.min(limits.maxEntries, entries + quota.entries);
+      const objectEnd = Math.min(limits.maxObjects, objects + quota.objects);
+      const rootExpired = () => expired() || performance.now() - rootStart >= quota.budgetMs;
+      const exhausted = () => entries >= entryEnd || objects >= objectEnd || rootExpired();
+      const row = { owner: name.slice(0, 160), ownerTruncated: name.length > 160,
+        quota, entries: 0,
+        objects: 0, maps: 0, mapEntries: 0, arrays: 0, arrayEntries: 0, sets: 0, setEntries: 0,
+        stringCodeUnits: 0, byteViewExtents: 0, arrayBufferExtents: 0, sharedEdges: 0,
+        accessorsSkipped: 0, proxiesSkipped: 0, fieldsLimited: 0, depthLimited: 0, traversalLimited: false };
+      const visit = (value, depth) => {
+        if (exhausted()) {
+          row.traversalLimited = limited = true; return;
+        }
+        if (typeof value === 'string') { row.stringCodeUnits += value.length; return; }
+        if (!value || typeof value !== 'object') return;
+        if (types.isProxy(value)) { row.proxiesSkipped++; return; }
+        if (seen.has(value)) { row.sharedEdges++; return; }
+        seen.add(value); objects++; row.objects++;
+        if (ArrayBuffer.isView(value)) {
+          row.byteViewExtents += (types.isDataView(value) ? dataViewSize : typedSize).call(value); return;
+        }
+        if (types.isArrayBuffer(value)) { row.arrayBufferExtents += arrayBufferSize.call(value); return; }
+        const map = types.isMap(value), set = types.isSet(value), array = Array.isArray(value);
+        if (map) { row.maps++; row.mapEntries += mapSize.call(value); }
+        if (set) { row.sets++; row.setEntries += setSize.call(value); }
+        if (array) { row.arrays++; row.arrayEntries += Object.getOwnPropertyDescriptor(value, 'length').value; }
+        if (depth >= limits.maxDepth) { row.depthLimited++; limited = true; return; }
+        if (map || set) {
+          const iterator = map ? Map.prototype.entries.call(value) : Set.prototype.values.call(value);
+          for (const item of iterator) {
+            if (exhausted()) {
+              row.traversalLimited = limited = true; break;
+            }
+            entries++; row.entries++;
+            if (map) { visit(item[0], depth + 1); visit(item[1], depth + 1); }
+            else visit(item, depth + 1);
+          }
+          return;
+        }
+        if (array) {
+          const length = Object.getOwnPropertyDescriptor(value, 'length').value;
+          for (let i = 0; i < length; i++) {
+            if (exhausted()) {
+              row.traversalLimited = limited = true; break;
+            }
+            entries++; row.entries++;
+            const field = Object.getOwnPropertyDescriptor(value, String(i));
+            if (field && 'value' in field) visit(field.value, depth + 1);
+            else if (field) row.accessorsSkipped++;
+          }
+          return;
+        }
+        // Symbols, non-enumerable fields and function closures are excluded.
+        // Object.keys does not walk potentially proxied prototypes. V8 key
+        // enumeration latency is observed, rather than promised a hard bound.
+        const keys = Object.keys(value);
+        if (keys.length > limits.maxFields) { row.fieldsLimited++; limited = true; }
+        for (const key of keys.slice(0, limits.maxFields)) {
+          if (exhausted()) {
+            row.traversalLimited = limited = true; break;
+          }
+          entries++; row.entries++;
+          const field = Object.getOwnPropertyDescriptor(value, key);
+          if (field && 'value' in field) visit(field.value, depth + 1); else row.accessorsSkipped++;
+        }
+      };
+      if (!slot || typeof slot !== 'object' || types.isProxy(slot)) row.proxiesSkipped++;
+      else {
+        const field = Object.getOwnPropertyDescriptor(slot, 'value');
+        if (field && 'value' in field) visit(field.value, 0); else row.accessorsSkipped++;
+      }
+      roots.push(row);
+    }
+    return { pid: process.pid, registryPresent: true, population, checked: roots.length,
+      selection: { requestedOwners: owners, selectedPopulation, missingOwners,
+        excludedBySelection: population - selectedPopulation,
+        selectedNotChecked: selectedPopulation - roots.length },
+      notChecked: population - roots.length, objects, entries, roots, limits,
+      limited, observerMs: performance.now() - start,
+      definition: 'Bounded reachable logical payloads under named roots; not total retained heap/native bytes.' };
+  })()`, { returnByValue: true });
+  return result.result.value;
+}
+
 /** @typedef {{ pid: number, startedAt: number, until: number, endedAt: number,
  *   total: number, observerMs: number, limited: boolean,
  *   calls: Record<string, { calls: number, stacks: string[] }> }} FunctionCallTrace */

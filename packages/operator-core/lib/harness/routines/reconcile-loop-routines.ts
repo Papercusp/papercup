@@ -850,6 +850,13 @@ interface LoopRow {
    *  in flight — the psu-host stacks the queued prompt into the NEXT turn — so a missing
    *  loop-origin turn is EXPECTED until that in-flight turn ends, not evidence of a failed wake. */
   last_wake_channel?: string | null;
+  /** EI-24791346664119438: the DISPATCH clock (`created_at`) of that same latest row.
+   *  `last_wake_at` prefers `delivered_at`, which is a SETTLE stamp: the coalesce / turn-end
+   *  settle paths write `delivered_at = now()` when they close the row, which can be AFTER the
+   *  loop-fire turn it opened has already ended (measured 2026-10-02, su-9ec5d030: 5 of 7 fires
+   *  had a loop-fire prompt 1-3s after created_at and its reply 1-4s BEFORE delivered_at). So the
+   *  loop-turn proof is floored on this clock, never on the settle clock. */
+  last_wake_created_at?: Date | string | null;
   /** Strict per-fire loop-turn completion clock. This is the latest assistant
    *  turn paired to a user prompt carrying `turn_origin='loop-fire'`, not an
    *  owner-wide assistant/journal signal. */
@@ -940,7 +947,7 @@ function deliveredWakeWithoutLoopTurn(
   if (wakeAtMs == null || wakeAtMs <= lastFiredMs) return null;
 
   const loopTurnAtMs = tsMs(row.last_loop_turn_at);
-  if (loopTurnAtMs != null && loopTurnAtMs >= wakeAtMs) return null;
+  if (loopTurnAtMs != null && loopTurnAtMs >= loopTurnFloorMs(row, wakeAtMs)) return null;
 
   const intervalMs = row.interval_sec * 1000;
   // EI-22127560919383327: a 'suppressed-redundant' delivery was settled by the await engine
@@ -1004,6 +1011,18 @@ function deliveredWakeWithoutLoopTurn(
   return { kind: 'retry', completedAt: wakeAtMs, via: 'delivered-wake-no-loop-turn' };
 }
 
+/** EI-24791346664119438: the earliest clock a loop-origin assistant reply may carry and still
+ *  count as proof for the latest delivered wake — the wake's DISPATCH time (`created_at`), not
+ *  its settle-time `delivered_at` (see `LoopRow.last_wake_created_at`). A short loop-fire turn
+ *  routinely ends before the settle stamp lands; flooring on `delivered_at` scored those real
+ *  turns as 'delivered-wake-no-loop-turn' → recordFire('error'), and five of them opened the
+ *  fire-gate backoff that withheld the next fire. Legacy/unit rows without the dispatch clock
+ *  keep the delivery clock. */
+function loopTurnFloorMs(row: LoopRow, wakeAtMs: number): number {
+  const createdAtMs = tsMs(row.last_wake_created_at ?? null);
+  return createdAtMs != null && createdAtMs < wakeAtMs ? createdAtMs : wakeAtMs;
+}
+
 /** Return the strict loop-origin assistant completion for this fire, when the
  *  provenance clock proves it belongs to the latest delivered wake. */
 function loopTurnCompletionAt(row: LoopRow, lastFiredMs: number): number | null {
@@ -1012,7 +1031,9 @@ function loopTurnCompletionAt(row: LoopRow, lastFiredMs: number): number | null 
   if (loopTurnAtMs == null || loopTurnAtMs <= lastFiredMs) return null;
 
   const wakeAtMs = tsMs(row.last_wake_at);
-  if (row.last_wake_status === 'delivered' && wakeAtMs != null && loopTurnAtMs < wakeAtMs) return null;
+  if (row.last_wake_status === 'delivered' && wakeAtMs != null && loopTurnAtMs < loopTurnFloorMs(row, wakeAtMs)) {
+    return null;
+  }
   return loopTurnAtMs;
 }
 
@@ -1256,6 +1277,7 @@ export async function reconcileLoopRoutines(
            fs.last_fired_at AS fire_state_last_fired_at,
            fs.last_withheld_at AS fire_state_last_withheld_at,
            lw.last_wake_at,
+           lw.last_wake_created_at,
            lw.status AS last_wake_status,
            lw.channel AS last_wake_channel,
            -- EI-21743034835075378: pair each loop-fire USER prompt with the
@@ -1370,7 +1392,8 @@ export async function reconcileLoopRoutines(
       LEFT JOIN LATERAL (
         SELECT w.status,
                w.channel,
-               COALESCE(w.delivered_at, w.created_at) AS last_wake_at
+               COALESCE(w.delivered_at, w.created_at) AS last_wake_at,
+               w.created_at AS last_wake_created_at
           FROM harness_shared.event_wake_deliveries w
          WHERE w.subscriber_id = r.target_owner_id
            AND w.source = ('loop:' || r.id)
@@ -1638,7 +1661,9 @@ export async function reconcileLoopRoutines(
         row.last_wake_status === 'delivered' &&
         wakeAtMs != null &&
         wakeAtMs > lastFiredMs &&
-        (loopTurnAtMs == null || loopTurnAtMs < wakeAtMs) &&
+        // loopTurnCompletionAt already floors on the dispatch clock (EI-24791346664119438),
+        // so a non-null value here is proof for this wake.
+        loopTurnAtMs == null &&
         // WI-2140827: the suppression is a GRACE, so it has to expire. Unbounded, it was the
         // other half of the wedge documented in deliveredWakeWithoutLoopTurn(): the strict
         // loop-origin clock is the discriminator only while it can still plausibly arrive, and

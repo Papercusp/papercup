@@ -661,6 +661,73 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
     );
   });
 
+  // EI-24791346664119438: `delivered_at` is a SETTLE stamp (coalesce / turn-end settles write
+  // now()), so a SHORT loop-fire turn can end before it lands. Measured 2026-10-02: fire prompt
+  // at created+1s, reply at delivered-2s. Flooring the proof on delivered_at scored that real
+  // turn as 'delivered-wake-no-loop-turn' → recordFire('error') → fire-gate backoff.
+  it('credits a short loop-origin turn that ended before the delivery settle stamp, floored on the dispatch clock', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 42_000), // coalesced settle, after the turn ended
+            last_wake_channel: 'coalesced',
+            last_loop_turn_at: pgString(T0 + 40_000),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000, // past the delivery grace, where the old floor retried as error
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'loop-turn', completedAt: T0 + 40_000 });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-loop-origin', 'loop-loop-turn', 'ok');
+    expect(recordFire).not.toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  it('still refuses a loop-origin turn that predates the wake dispatch clock', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 42_000),
+            last_wake_channel: 'coalesced',
+            // After the claim, but before this wake was even dispatched: not proof for it.
+            last_loop_turn_at: pgString(T0 + 500),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'delivered-wake-no-loop-turn' });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
   it('does not suppress the legacy completion ladder for a non-delivered wake', async () => {
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
