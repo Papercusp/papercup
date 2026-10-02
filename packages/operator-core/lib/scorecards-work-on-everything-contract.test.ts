@@ -79,6 +79,38 @@ describe('Work on everything scorecard contract', () => {
     });
   });
 
+  it('cannot hide an eligible plan with no materialized fleet behind passing stewardship criteria', () => {
+    const keys = [
+      'goal-mode-foundation',
+      'frontier-scope-sovereignty',
+      'delegated-execution-and-drain-health',
+      'claim-flow-and-completion-integrity',
+      'retired-tier-nonresurrection',
+      'plan-fleet-materialization',
+      'owner-steering-and-reporting',
+    ];
+    const passing = Object.fromEntries(keys.map((key) => [key, rating()])) as ObservationRatings;
+    expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, passing, keys))
+      .toMatchObject({ verdict: 'pass', criticalFailures: [], coverage: { sufficient: true } });
+
+    const eligibleButUnplaced: ObservationRatings = {
+      ...passing,
+      'plan-fleet-materialization': rating({
+        rating: 'fail',
+        evidence: 'An eligible non-idle worklist head had no plan fleet, blocker, or terminal disposition.',
+      }),
+    };
+    expect(computeWorkOnEverythingRollup(
+      WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC,
+      eligibleButUnplaced,
+      keys,
+    )).toMatchObject({
+      verdict: 'fail',
+      criticalFailures: ['plan-fleet-materialization'],
+      coverage: { sufficient: true },
+    });
+  });
+
   it('reports insufficient critical coverage as unassessable', () => {
     const ratings = {
       'goal-mode-foundation': rating(),
