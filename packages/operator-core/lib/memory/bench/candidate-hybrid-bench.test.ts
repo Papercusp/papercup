@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateHeldout,
-  selectCandidateSources, candidateSourcePartition, candidateMemoryEntry, accountIndependentSources, type HeldoutQuery } from './candidate-hybrid-bench';
+  selectCandidateSources, candidateSourcePartition, candidateMemoryEntry, accountIndependentSources, type HeldoutQuery, type Snapshot } from './candidate-hybrid-bench';
 import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES,
   mdenseOnPrompt, embedRequestedExecution } from '@papercusp/memory';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
@@ -27,7 +27,7 @@ describe('independent accessible-source accounting', () => {
     const memory = Array.from({ length: 12 }, (_, i) => candidateMemoryEntry({ id: String(i), text: `frozen ${i}`,
       source_session: i === 11 ? null : `origin-${Math.floor(i / 2)}` }));
     const prose = memory.map((e, i) => ({ key: `doc-${i}`, text: `prose ${i}`, kind: 'doc', metadata: { cluster: `page-${Math.floor(i / 2)}` } }));
-    const population = { memory: { entries: memory }, prose: { entries: prose } };
+    const population: Snapshot['suites'] = { memory: { entries: memory }, prose: { entries: prose } };
     const suites = selectCandidateSources(population, { seed, memoryLimit: 8, proseBudget: 8, maxClusterRows: 2, requireMemorySource: true });
     const snapshot = { formatVersion: 1 as const, snapshotAt, seed, suites };
     const selectedKeys = { memory: suites.memory.entries.map((e) => e.key), prose: suites.prose.entries.map((e) => e.key) };
