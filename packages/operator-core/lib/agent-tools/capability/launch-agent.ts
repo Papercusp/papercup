@@ -419,6 +419,8 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
   return { profileArgs, modeArgs };
 }
 
+const RESUME_FORK_BRIEF_CALL_CONSTRAINT = 'resume or fork => non-empty top-level brief required';
+
 export default defineTool({
   name: 'capability:launch-agent',
   description:
@@ -714,11 +716,15 @@ export default defineTool({
       // while publishing the same cross-field rule to MCP/compact-schema clients.
       // A root oneOf would be erased by flattenForOpenAi; dependentSchemas is
       // preserved as an object-rooted JSON Schema constraint.
+      // This validator-owned call annotation preserves the separate
+      // resume/fork brief requirement in tools:find, whose structural
+      // projection correctly keeps `brief` optional for fresh launches.
       .meta({
         dependentSchemas: {
           successor: { not: { required: ['restoreVisible'] } },
           restoreVisible: { not: { required: ['successor'] } },
         },
+        'x-papercusp-call-constraint': RESUME_FORK_BRIEF_CALL_CONSTRAINT,
       });
   })(),
   async handler(args, ctx) {
