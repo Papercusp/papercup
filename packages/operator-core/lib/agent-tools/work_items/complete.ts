@@ -217,7 +217,7 @@ import { GATE_RED_STREAK_CONDITION_PREFIX, isOwnNodeAuthoredRemoteRow } from '..
 import { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX } from '../../coord/actionable-conditions';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
-import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import {
   COMPLETION_OBJECT_EXAMPLE,
@@ -5747,6 +5747,8 @@ const workItemsCompleteTool = defineTool({
       },
     ),
   ),
+  // Reuse the envelope produced by runBulk; per-item finish/warning fields stay open.
+  result: bulkEnvelopeSchema(),
   // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions
   // get a compact workItem ref per result instead of the full echoed row;
   // outcome fields (ok/error/holder/hint/reflect) pass through verbatim —
