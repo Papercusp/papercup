@@ -2833,7 +2833,25 @@ export async function getNextWorkItem(
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
   resolutionStep('candidate-worker-binding-read');
   const operationClaims = await import('../blueprint/operation-worker-binding');
-  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(ws, bee.assignee);
+  // This authority read ran on the unbounded shared admin pool BEFORE the ladder's
+  // 15s deadline. A queued read could exhaust the public 30s claim watchdog without
+  // entering any of the bounded feature attempts. Use the caller's dedicated claim
+  // pool and bound acquisition + statements; keep the helper's legacy behavior for
+  // all other claim doors that do not opt into error propagation.
+  const operationClaimRead = await boundedOrgTxn(
+    (tx) => operationClaims.readActiveOperationWorkerClaimBinding(ws, bee.assignee, {
+      sql: tx,
+      throwOnError: true,
+    }),
+    {
+      client: sql,
+      signal: opts.signal,
+      readOnly: true,
+      acquireTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      statementTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      lockTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+    },
+  );
   if (operationClaimRead.status === 'unavailable') {
     throw new Error(`operation claim authority unavailable: ${operationClaimRead.reason}`);
   }

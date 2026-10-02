@@ -283,6 +283,39 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     // The pre-fix form: the claim UPDATE issued directly on the pool handle.
     expect(src).not.toMatch(/await sql<FeatureRowDb\[\]>`\s*\n?\s*UPDATE harness_shared\.harness_features_consolidated/);
   });
+
+  it('bounds candidate authority reads before entering the feature ladder', async () => {
+    await seedFeature('F-candidate-bound');
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'candidate-bound',
+      revision: 1,
+      view: { filter: { field: 'id', op: '=', value: 'F-candidate-bound' } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    let releaseLock!: () => void;
+    let locked!: () => void;
+    const holding = db.sql.begin(async (tx) => {
+      await tx`LOCK TABLE harness_shared.adv_sessions IN ACCESS EXCLUSIVE MODE`;
+      locked();
+      await new Promise<void>((resolve) => { releaseLock = resolve; });
+    });
+    await new Promise<void>((resolve) => { locked = resolve; });
+    const steps: string[] = [];
+    try {
+      await expect(getNextWorkItem(s, BEE, {
+        harness: H,
+        onResolutionStep: (step) => steps.push(step),
+      })).rejects.toBeInstanceOf(OrgTxnTimeoutError);
+      expect(steps).toEqual(['candidate-ready-flag-read', 'candidate-worker-binding-read']);
+    } finally {
+      releaseLock();
+      await holding;
+    }
+    // The timeout was the authority read, not an empty spec view: after the lock
+    // clears the same spec and candidate must become claimable without widening.
+    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-candidate-bound');
+  });
 });
 
 describe('get_next — spec filter + rank selects the correct item', () => {

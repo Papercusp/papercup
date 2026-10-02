@@ -407,10 +407,11 @@ export function describeOperationReceiptReadFault(err: unknown): string {
 export async function readActiveOperationWorkerClaimBinding(
   workspaceId: string,
   ownerId: string,
+  opts?: { sql?: Sql; throwOnError?: boolean },
 ): Promise<ActiveOperationWorkerClaimRead> {
   if (!workspaceId.trim() || !ownerId.trim()) return { status: 'unavailable', reason: 'claim target scope is missing' };
   try {
-    const { sql } = getOrgPg();
+    const sql = opts?.sql ?? getOrgPg().sql;
     const [session] = await sql<Array<{ id: number; role: string | null }>>`
       SELECT id, role FROM harness_shared.adv_sessions
        WHERE workspace_id = ${workspaceId} AND coord_owner_id = ${ownerId}
@@ -509,6 +510,9 @@ export async function readActiveOperationWorkerClaimBinding(
       },
     };
   } catch (err) {
+    // The scheduler's bounded transaction must see PostgreSQL timeout errors intact
+    // so it can report contention rather than a generic operation-authority failure.
+    if (opts?.throwOnError) throw err;
     return { status: 'unavailable', reason: describeOperationReceiptReadFault(err) };
   }
 }
