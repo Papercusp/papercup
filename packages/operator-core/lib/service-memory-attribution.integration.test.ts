@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSyn
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { HOST_MALLOC_ARENA_MAX } from '../../../apps/operator/bin/malloc-arena-reexec';
@@ -31,6 +31,12 @@ function readCohortReport(path: string, result: {
     errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
     stdoutBytes: Buffer.byteLength(result.stdout ?? ''), stderrBytes: Buffer.byteLength(result.stderr ?? '') };
   return report;
+}
+
+async function readSourceRequest(chunks: AsyncIterable<Buffer>) {
+  const parts: Buffer[] = [];
+  for await (const chunk of chunks) parts.push(chunk);
+  return JSON.parse(Buffer.concat(parts).toString('utf8'));
 }
 
 // queryObjects triggers GC and enumerates survivors. Its aggregate sizes are
@@ -108,6 +114,15 @@ async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
 }
 
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
+  it('preserves source bytes when request chunks split a UTF-8 character', async () => {
+    const text = 'export const label = "A→🙂éZ";';
+    const body = Buffer.from(JSON.stringify({ path: 'unicode.ts', text }));
+    for (let split = 1; split < body.length; split++) {
+      const chunks = async function* () { yield body.subarray(0, split); yield body.subarray(split); };
+      expect(await readSourceRequest(chunks())).toEqual({ path: 'unicode.ts', text });
+    }
+  });
+
   it('attributes exercised content-lint transforms to matched request-host and executable descendant samples', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-content-lint-cohort-'));
     const sourcePath = 'packages/operator-core/lib/content-lint/esbuild-transform.ts';
@@ -126,15 +141,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     const compilerPath = resolve(root, 'node_modules/@esbuild/linux-x64/bin/esbuild');
     const compilerHash = hash(readFileSync(compilerPath));
     const reports: any[] = [];
+    let completeReport: any;
+    let failure: unknown;
+    const reportPath = process.env.PAPERCUSP_P011_CALLER_REPORT ? resolve(root, process.env.PAPERCUSP_P011_CALLER_REPORT) : null;
+    if (reportPath) expect(existsSync(dirname(reportPath)), 'Evidence destination must exist before starting a host.').toBe(true);
     writeFileSync(entry, `
       import { createServer } from 'node:http';
       import { findEsbuildTransformError } from ${JSON.stringify(join(root, sourcePath))};
+      ${readSourceRequest.toString()}
       globalThis.p011Compiler = require('esbuild');
       const mode = process.env.P011_COHORT_MODE;
       createServer(async (request, response) => {
         try {
-          let body = ''; for await (const chunk of request) body += chunk;
-          const value = JSON.parse(body);
+          const value = await readSourceRequest(request);
           const error = request.url === '/warm' || mode === 'transform'
             ? await findEsbuildTransformError(value.path, value.text) : null;
           response.setHeader('content-type', 'application/json');
@@ -190,7 +209,9 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           client = createCdpClient(inspectorEndpoints(stderr).at(-1)!);
           await client.connect();
           client.ws.on?.('message', data => { if (JSON.parse(String(data)).method === 'Debugger.paused') pauses++; });
+          let requestSequence = 0;
           const request = async (path: string, text: string, route = '/check') => {
+            const requestId = requestSequence++;
             const started = performance.now();
             const response = await fetch('http://127.0.0.1:' + ready.port + route, {
               method: 'POST', body: JSON.stringify({ path, text }), signal: AbortSignal.timeout(10_000),
@@ -199,7 +220,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             expect(response.status, responseText).toBe(200);
             const value = JSON.parse(responseText);
             expect(value.sourceBytes).toBe(Buffer.byteLength(text));
-            report.requests.push({ path, route, sourceSha256: hash(text), sourceBytes: Buffer.byteLength(text),
+            report.requests.push({ requestId, path, route, sourceSha256: hash(text), sourceBytes: Buffer.byteLength(text),
               error: value.error, elapsedMs: performance.now() - started });
             return value;
           };
@@ -244,6 +265,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           const roots = await client.evaluate("Object.keys(globalThis).filter(key => key.startsWith('__papercuspCdpTrace_'))", { returnByValue: true });
           expect(roots.result.value).toEqual([]);
           expect(pauses).toBe(0); report.pauses = pauses;
+        } catch (error) {
+          report.error = String(error); throw error;
         } finally {
           client?.close();
           host.kill('SIGTERM');
@@ -266,9 +289,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         }
       }
       expect(hash(readFileSync(join(root, sourcePath)))).toBe(sourceHash);
-      expect(reports[0].requests.map((row: any) => [row.path, row.sourceSha256, row.sourceBytes])).toEqual(
-        reports[1].requests.map((row: any) => [row.path, row.sourceSha256, row.sourceBytes]));
-      const report = { schemaVersion: 1, plane: 'current-source-private-content-lint-http-fixture', buildSha,
+      const scheduledInputs = (report: any) => [...report.requests].sort((a, b) => a.requestId - b.requestId)
+        .map(row => [row.requestId, row.path, row.route, row.sourceSha256, row.sourceBytes]);
+      // Concurrent completions may arrive in different orders. Match the
+      // scheduled requests, preserving multiplicity and each window's order.
+      expect(scheduledInputs(reports[0])).toEqual(scheduledInputs(reports[1]));
+      completeReport = { schemaVersion: 1, incomplete: false, plane: 'current-source-private-content-lint-http-fixture', buildSha,
         bundleHash: hash(readFileSync(bundle)), graph, compiler: { path: compilerPath, sha256: compilerHash },
         workload: { windows: 3, requestsPerWindow: 3, concurrency: 3, inputFiles: fixtureSources.map(row => ({ path: row.path, sha256: hash(row.text) })) },
         reports, limitations: [
@@ -278,11 +304,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           'Named exercised content-lint caller does not attribute the historical 4.2 GiB production census.',
           'Compiler trace adds bounded diagnostic overhead; control receives identical source bytes without transform work.',
         ] };
-      if (process.env.PAPERCUSP_P011_CALLER_REPORT) writeFileSync(process.env.PAPERCUSP_P011_CALLER_REPORT, JSON.stringify(report, null, 2) + '\n');
       console.log('P011_CONTENT_LINT_COHORT ' + JSON.stringify(reports.map(row => ({ mode: row.mode,
         calls: row.trace.calls.transform.calls, parentPssKb: row.samples.map((sample: any) => sample.parent.pssKb),
         compilerPssKb: row.samples.map((sample: any) => sample.children[0].pssKb), reaped: row.reaped }))));
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    } catch (error) { failure = error; throw error; }
+    finally {
+      try {
+        if (reportPath) writeFileSync(reportPath,
+          JSON.stringify(completeReport ?? { schemaVersion: 1, incomplete: true, buildSha, sourcePath, sourceHash,
+            error: String(failure), reports }, null, 2) + '\n');
+      } catch (error) {
+        throw new AggregateError(failure ? [failure, error] : [error], 'Compiler cohort evidence write failed');
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
   }, 90_000);
 
   it('compares real closure and transform services in isolated processes and reaps their descendants', () => {
