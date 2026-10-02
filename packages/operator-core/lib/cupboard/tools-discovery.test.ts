@@ -347,6 +347,35 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     );
   });
 
+  it('groups matching branch requirements before the compact union-hint cap', () => {
+    const branches = [
+      {
+        additionalProperties: false,
+        required: ['kind', 'workItem'],
+        properties: { kind: { const: 'work-item' }, workItem: { type: 'string' } },
+      },
+      {
+        additionalProperties: false,
+        required: ['kind', 'fleet'],
+        properties: { kind: { const: 'fleet-leader' }, fleet: { type: 'string' } },
+      },
+      {
+        additionalProperties: false,
+        required: ['kind', 'turnRef', 'quote'],
+        properties: {
+          kind: { const: 'owner-turn' },
+          turnRef: { type: 'string' },
+          quote: { type: 'string' },
+        },
+      },
+    ];
+
+    const hint = unionConditionalHint(branches);
+    expect(hint).toContain('when kind=owner-turn => turnRef,quote required');
+    expect(hint).toContain('when kind!=owner-turn => turnRef,quote forbidden');
+    expect(hint.length).toBeLessThanOrEqual(UNION_CONDITIONAL_HINT_MAX_CHARS);
+  });
+
   it('treats omitted fields as forbidden only for closed union branches', () => {
     const closedBranches = [
       {

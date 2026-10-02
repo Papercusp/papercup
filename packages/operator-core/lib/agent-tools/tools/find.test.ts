@@ -1158,6 +1158,14 @@ describe('handler — graceful degrade + result shape', () => {
     );
   });
 
+  it('publishes all loop:arm monitor-authority branch requirements in discovery', async () => {
+    const out = await callHandler({ query: 'loop:arm', limit: 1 });
+    const schema = out.hits.find((hit) => hit.tool === 'loop:arm')?.argSchema ?? '';
+
+    expect(schema).toContain('when kind=owner-turn => turnRef,quote required');
+    expect(schema).toContain('when kind!=owner-turn => turnRef,quote forbidden');
+  });
+
   it('keeps recipes:run authority alternatives visible in compact discovery', async () => {
     expect(recipesRun.name).toBe('recipes:run');
     const { schemaByTool } = buildCorpus();

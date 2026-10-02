@@ -1,4 +1,19 @@
 {
+  "r170PreparationFire149": {
+    "scope": "Fresh r170 preparation only; native result pending. Verified v5 lifecycle sampler is the changed detector, with current paired callbacks and popup timeout driver preserved.",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r170-instrument-manifest.json",
+    "manifestSha256": "26c79cafa0032b705a461993ce5e6c1c6b89e92c83fef661d1c0d2ba3e38cff7",
+    "assertionSha256": "2c479cf2fe25f8203a7594ce62c1ce736bb86aa128f851362ef6a66c99e1b269",
+    "spaIndexSha256": "26f8d3a28bfadcbc5b94374697843292aceb5cdcb4fb0b95e916697eadb918b0",
+    "verification": "Independent app and raw baseline, exact single-script index reconstruction,21 source/config bindings, two freshly compiled payloads, source/log fingerprints for78PASS and separate tsc, fresh owned roots absent, assertion bash syntax PASS.",
+    "reused": "Maintained probe builders, baseline and frozen app from r169, existing assertion and desktop-native verifier route. No new collector, service, or app scaffold.",
+    "attemptAudit": "r168 late-total/phase-start gap repaired by maintained driver guards Fire142; r169 prior-owned disappearance gap repaired by v5 sampler Fire147 with78PASS. No unchanged native replay. Both detector classes are guarded before this fresh diagnostic.",
+    "hypothesis": "On repeated session loss, exact previously owned native identities have missing or replaced procfs entries.",
+    "alternative": "The same lifetime remains present or zombie despite discovery/session loss; unavailable reads stay inconclusive.",
+    "requiredObservation": "Retain exact per-lifetime v5 observations, actualLCP candidate join, paired timer/frame/read times and popup attempt-scoped timing or honest session loss. Missing PID entries cannot identify exit signal or reaping.",
+    "limits": "Original whole frozen SPA graph unknown; current private API, separate clocks, media restriction and observer work remain confounds. Guard proof and this preparation do not establish product repair, cause, R7, or shipment.",
+    "next": "One changed owned native diagnostic through scripts/verify-tauri-headless.sh, preserve terminal verdict and identity-checked owned cleanup. P006/P008 acceptance remains separate."
+  },
   "nativeLifecycleGuardFire147": {
     "scope": "Current maintained sampler v5 and real Node suite only; no new native popup run, causal performance result or P007/R7 acceptance.",
     "nativeSession": "01a0faf9-8eb8-7592-b491-7a32e2ee21e6",

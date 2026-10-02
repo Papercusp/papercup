@@ -662,6 +662,15 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
     }
     if (allValues.size < 2) continue;
 
+    const relationGroups = new Map<
+      string,
+      {
+        targets: string[];
+        requiredCondition: string | null;
+        forbiddenCondition: string;
+      }
+    >();
+
     for (const target of targetNames) {
       if (target === discriminator) continue;
       const statuses = new Map<string, 'required' | 'optional' | 'forbidden'>();
@@ -697,38 +706,52 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
 
       if (!valid || statuses.size !== allValues.size || forbiddenValues.size === 0) continue;
 
+      let requiredCondition: string | null = null;
+      let forbiddenCondition: string | null = null;
+
       // Preserve the established two-sided form when every branch is either
       // required or forbidden. It is more informative than a one-sided
       // prohibition and keeps the existing compact contract stable.
       if (requiredValues.size > 0 && optionalValues.size === 0) {
         const requiredList = [...requiredValues.values()];
         const forbiddenList = [...forbiddenValues.values()];
-        const requiredCondition =
+        requiredCondition =
           requiredList.length === 1 && forbiddenList.length > 0
             ? unionConditionText(discriminator, requiredList)
             : forbiddenList.length === 1 && requiredList.length > 0
               ? unionConditionText(discriminator, forbiddenList, true)
               : unionConditionText(discriminator, requiredList);
-        const forbiddenCondition =
+        forbiddenCondition =
           requiredList.length === 1 && forbiddenList.length > 0
             ? unionConditionText(discriminator, requiredList, true)
             : forbiddenList.length === 1 && requiredList.length > 0
               ? unionConditionText(discriminator, forbiddenList)
               : unionConditionText(discriminator, forbiddenList);
         if (!requiredCondition || !forbiddenCondition) continue;
-
-        const relation = `when ${requiredCondition} => ${target} required; when ${forbiddenCondition} => ${target} forbidden`;
-        const candidate = relations.length > 0 ? `${relations.join('; ')}; ${relation}` : relation;
-        if (candidate.length > UNION_CONDITIONAL_HINT_MAX_CHARS) continue;
-        relations.push(relation);
-        if (relations.length >= UNION_CONDITIONAL_HINT_MAX_RELATIONS) return relations.join('; ');
-        continue;
+      } else {
+        forbiddenCondition = unionConditionText(discriminator, [...forbiddenValues.values()]);
+        if (!forbiddenCondition) continue;
       }
 
-      const forbiddenList = [...forbiddenValues.values()];
-      const forbiddenCondition = unionConditionText(discriminator, forbiddenList);
-      if (!forbiddenCondition) continue;
-      const relation = `when ${forbiddenCondition} => ${target} forbidden`;
+      // Group fields with the same branch-status vector before the compact
+      // character cap. Otherwise a single discriminator with several parallel
+      // fields can silently lose its later constraints (for example, owner-turn
+      // `quote` after `turnRef`) even though the shared rule text is identical.
+      const signature = JSON.stringify({
+        required: [...requiredValues.keys()].sort(),
+        optional: [...optionalValues.keys()].sort(),
+        forbidden: [...forbiddenValues.keys()].sort(),
+      });
+      const group = relationGroups.get(signature);
+      if (group) group.targets.push(target);
+      else relationGroups.set(signature, { targets: [target], requiredCondition, forbiddenCondition });
+    }
+
+    for (const group of relationGroups.values()) {
+      const targets = group.targets.join(',');
+      const relation = group.requiredCondition
+        ? `when ${group.requiredCondition} => ${targets} required; when ${group.forbiddenCondition} => ${targets} forbidden`
+        : `when ${group.forbiddenCondition} => ${targets} forbidden`;
       const candidate = relations.length > 0 ? `${relations.join('; ')}; ${relation}` : relation;
       if (candidate.length > UNION_CONDITIONAL_HINT_MAX_CHARS) continue;
       relations.push(relation);

@@ -4,6 +4,29 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## Fresh lifecycle diagnostic preparation — 2026-10-02, Fire149
+
+Prepared r170 from an independent copy of the preserved app and raw baseline,
+using the maintained startup and Web Vitals builders. The manifest binds 21
+current source/config files, both compiled payloads, the shell, baseline, SPA
+index, verifier and assertion. Exact source and log fingerprints recover the
+78-pass v5 guard suite and its separate successful typecheck. Index reconstruction,
+independent file identity, initially absent private roots and assertion syntax
+checks passed before launch. The maintained desktop-native runtime route was read.
+
+One changed diagnostic is running as managed task `0muqithvq6lk7ndmy4e`.
+Its detector retains previously owned native lifetimes after discovery loss;
+the paired callback and attempt-scoped popup driver remain in place. No native
+result is claimed at this boundary. Media discovery restrictions, observer work,
+distinct clocks, changing private API and unknown original whole-SPA graph
+remain limits. P-007 cause, product repair, R-7 and its frozen cold/warm cohort
+remain open; P-006 and P-008 acceptance remain separate.
+
+Exact preparation fingerprints and failure-class audit:
+`r170PreparationFire149` in `p007-native-source-output-audit-2026-10-01.json`.
+Runtime artifacts are under `$HOME/.papercusp/perf/p007-native-current/r170-*`;
+recover the existing managed task before considering any new launch.
+
 ## Native disappearance detector — 2026-10-02, Fire147
 
 The maintained v4 sampler forgot previously observed identities when they

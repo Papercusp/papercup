@@ -101,7 +101,7 @@ async function admissions(): Promise<AdmissionDb[]> {
 /** Every non-connector work item this test minted, with its admission count. */
 async function mintedWork(): Promise<Array<{ feature_id: string; created_by: string | null; admission_count: number }>> {
   return sql<Array<{ feature_id: string; created_by: string | null; admission_count: number }>>`
-    SELECT w.feature_id, w.created_by,
+    SELECT w.feature_id, w.payload->'_ei'->>'created_by' AS created_by,
            (SELECT count(*)::int FROM harness_shared.work_admissions a
              WHERE a.workspace_id = w.workspace_id AND a.work_item_id = w.feature_id) AS admission_count
       FROM harness_shared.work_items w
