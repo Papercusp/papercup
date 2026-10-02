@@ -105,7 +105,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(projected.description).toContain(
       'If that window includes multiple native sessions, `session_id` is null',
     );
-    expect(projected.description).toContain('`session_ids` lists the represented sessions');
+    expect(projected.description).toContain('`session_ids` lists them');
     expect(projected.description).toContain("each turn's `ref` identifies its source");
   });
 
