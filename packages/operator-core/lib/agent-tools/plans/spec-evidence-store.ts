@@ -1320,7 +1320,6 @@ export async function listWorkItemSpecRevisionEdges(options: {
 }): Promise<WorkItemSpecRevisionEdge[]> {
   const scope = await resolvePlanScope({
     harnessSlug: options.harnessSlug,
-    workspaceId: options.workspaceId,
   });
   const planSlug = options.planSlug;
   const rows = await withWorkspace(
@@ -1477,7 +1476,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // Postgres happens to return nothing, and the alternative reading — an empty filter
   // meaning "every plan" — is the exact silent-widening this whole plan exists to remove.
   if (options.planSlugs.length === 0) return [];
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const scope = await resolvePlanScope({
+    harnessSlug: options.harnessSlug,
+    workspaceId: options.workspaceId,
+  });
   const planSlugs = options.planSlugs;
   const workItemIds = options.workItemIds ?? [];
   const specIds = options.specIds ?? [];
