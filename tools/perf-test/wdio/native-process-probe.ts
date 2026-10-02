@@ -45,6 +45,63 @@ export interface NativeProbeOptions {
   debugFile?: string;
 }
 
+const MAX_TRACKED_IDENTITIES = 64;
+interface PreviouslyOwnedProcess {
+  pid: number;
+  identity: string;
+  kind: 'app' | 'webkit';
+  appPid: number;
+  appIdentity: string;
+  readCompletedEpochMs: number;
+}
+
+/** Check only identities already observed in the owned subtree. A missing proc
+ * entry cannot establish an exit signal or a wait/reaping receipt: these targets
+ * are not children of this sampler. Do not rediscover by executable/name. */
+function observeMissingOwnedProcess(target: PreviouslyOwnedProcess, boot: string,
+  discoveryIncomplete: boolean, proc: ProcReader) {
+  const readStartedEpochMs = Date.now();
+  type StatRead = { status: 'captured'; stat: string } | { status: 'missing' | 'unavailable' };
+  const read = (): StatRead => {
+    try {
+      const file = `/proc/${target.pid}/stat`;
+      const stat = proc.readBounded ? proc.readBounded(file, 4096) : proc.read(file);
+      return Buffer.byteLength(stat) <= 4096 ? { status: 'captured', stat } : { status: 'unavailable' };
+    } catch (error) {
+      return { status: (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'missing' : 'unavailable' };
+    }
+  };
+  let status: 'procfs-missing' | 'identity-replaced' | 'same-identity-present' | 'zombie' | 'unavailable' = 'unavailable';
+  let state: string | null = null;
+  let parentPid: number | null = null;
+  try {
+    const before = read();
+    const after = read();
+    if (proc.read('/proc/sys/kernel/random/boot_id').trim() === boot) {
+      if (before.status === 'missing' && after.status === 'missing') status = 'procfs-missing';
+      else if (before.status === 'captured' && after.status === 'captured') {
+        const beforeIdentity = linuxProcessIdentityFromStat(boot, before.stat);
+        const afterIdentity = linuxProcessIdentityFromStat(boot, after.stat);
+        if (beforeIdentity && beforeIdentity === afterIdentity) {
+          if (afterIdentity !== target.identity) status = 'identity-replaced';
+          else {
+            state = linuxProcStateFromStat(after.stat);
+            parentPid = linuxPpidFromProcStat(after.stat);
+            if (state !== null && parentPid !== null) status = state === 'Z' ? 'zombie' : 'same-identity-present';
+            else { state = null; parentPid = null; }
+          }
+        }
+      }
+    }
+  } catch { /* Unknown read/reboot evidence stays unavailable; never serialize raw errors. */ }
+  return { pid: target.pid, identity: target.identity, kind: target.kind,
+    appPid: target.appPid, appIdentity: target.appIdentity,
+    lastOwnedReadCompletedEpochMs: target.readCompletedEpochMs,
+    readStartedEpochMs, readCompletedEpochMs: Date.now(), discoveryIncomplete,
+    status, state, parentPid, signal: null, exitCode: null,
+    reaping: status === 'zombie' ? 'not-reaped' as const : 'unknown' as const };
+}
+
 // Exact keys, never a prefix allowlist or an inherited process.env snapshot.
 const ENVIRONMENT_KEYS = ['GST_REGISTRY', 'GST_REGISTRY_1_0', 'GST_REGISTRY_UPDATE',
   'GST_REGISTRY_FORK', 'GST_PLUGIN_PATH', 'GST_PLUGIN_PATH_1_0',
@@ -189,7 +246,11 @@ export function schedstatDelta(before: ReturnType<typeof parseSchedstat>, after:
 /** Discover through every task's children: GLib can spawn from a worker thread.
  * No global /proc name match, inherited environment, or PID-only attribution. */
 export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: ProcReader = liveProc,
-  capturedEnvironmentIdentities: ReadonlySet<string> = new Set()) {
+  capturedEnvironmentIdentities: ReadonlySet<string> = new Set(),
+  previouslyOwned: readonly PreviouslyOwnedProcess[] = []) {
+  if (previouslyOwned.length > MAX_TRACKED_IDENTITIES) throw new Error('Native diagnostic exceeds 64-identity bound');
+  if (previouslyOwned.some(({ pid, identity }) => !Number.isSafeInteger(pid) || pid <= 0 ||
+      !/^linux:[^:]+:[0-9]+$/.test(identity))) throw new Error('Native diagnostic invalid previously observed identity');
   const readStartedEpochMs = Date.now();
   const started = performance.now();
   const boot = proc.read('/proc/sys/kernel/random/boot_id').trim();
@@ -272,12 +333,16 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
       unavailable.push(`${node.pid}: ${String(error).slice(0, 200)}`);
     }
   }
-  if (identity(options.driverPid) !== options.driverIdentity) throw new Error('Native diagnostic driver exited/reused');
+  const current = new Set(processes.map(({ pid, identity }) => `${pid}:${identity}`));
+  const lifecycle = previouslyOwned.filter(({ pid, identity }) => !current.has(`${pid}:${identity}`))
+    .map((target) => observeMissingOwnedProcess(target, boot, unavailable.length > 0, proc));
+  if (proc.read('/proc/sys/kernel/random/boot_id').trim() !== boot ||
+      identity(options.driverPid) !== options.driverIdentity) throw new Error('Native diagnostic driver exited/reused');
   let runqueueMeasured = false;
   try { runqueueMeasured = proc.read('/proc/sys/kernel/sched_schedstats').trim() === '1'; } catch { /* unknown */ }
   return { readStartedEpochMs, readCompletedEpochMs: Date.now(), readDurationMs: performance.now() - started,
     clock: 'Date.now' as const, counterUnit: 'ns' as const, task: 'main' as const,
-    runqueueMeasured, processes, unavailable };
+    runqueueMeasured, processes, unavailable, lifecycle };
 }
 
 type NativeTarget = ReturnType<typeof collectOwnedWebKitSample>['processes'][number];
@@ -381,7 +446,7 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
   const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks, environment: true,
     outputDescriptors: true, debugFile: process.env.GST_DEBUG_FILE };
   // Exclusive create prevents a rerun from overwriting earlier diagnostic evidence.
-  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v4',
+  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v5',
     options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: MAX_SAMPLES,
     persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES,
     environment: { keys: ENVIRONMENT_KEYS, maxBytes: MAX_ENVIRONMENT_BYTES,
@@ -391,6 +456,9 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
       maxInfoBytes: MAX_DESCRIPTOR_BYTES, maxDebugFileDescriptors: MAX_DEBUG_FILE_DESCRIPTORS,
       persistence: 'per-sample-buffered', source: 'owned process file descriptors and fdinfo in procfs',
       limitation: 'descriptor topology, not syscall duration; requested debug path must also match measured native environment' },
+    lifecycle: { maxIdentities: MAX_TRACKED_IDENTITIES, maxStatBytes: 4096,
+      source: 'two bracketed procfs stat reads of previously observed owned identities',
+      limitation: 'missing procfs entries and PID replacement do not prove a signal or reaping; no wait receipt is available for non-child targets' },
     stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, debuggerTimeoutMs: 4_000,
       maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });
   return fork(__filename, [JSON.stringify(options), file], {
@@ -414,6 +482,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const started = performance.now();
   const buffer = new NativeSampleBuffer();
   const capturedEnvironmentIdentities = new Set<string>();
+  const previouslyOwned = new Map<string, PreviouslyOwnedProcess>();
   let samples = 0;
   let finished = false;
   const stackRows: ReturnType<typeof captureOwnedNativeStacks>[] = [];
@@ -432,9 +501,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
     if (finished) return;
     if (samples >= MAX_SAMPLES || performance.now() - started >= 120_000) return finish('bound');
     try {
-      const sample = collectOwnedWebKitSample(options, liveProc, capturedEnvironmentIdentities);
+      const sample = collectOwnedWebKitSample(options, liveProc, capturedEnvironmentIdentities,
+        [...previouslyOwned.values()]);
+      const newKeys = new Set(sample.processes.map(({ pid, identity }) => `${pid}:${identity}`)
+        .filter((key) => !previouslyOwned.has(key)));
+      if (previouslyOwned.size + newKeys.size > MAX_TRACKED_IDENTITIES) return finish('identity-bound');
       if (!buffer.add(sample)) return finish('buffer-bound');
       for (const row of sample.processes) {
+        // Retain only lifetime references, not environment/descriptor snapshots.
+        previouslyOwned.set(`${row.pid}:${row.identity}`, { pid: row.pid, identity: row.identity,
+          kind: row.kind, appPid: row.appPid, appIdentity: row.appIdentity,
+          readCompletedEpochMs: row.readCompletedEpochMs });
         if (row.environment) capturedEnvironmentIdentities.add(`${row.pid}:${row.identity}`);
       }
       samples++;
