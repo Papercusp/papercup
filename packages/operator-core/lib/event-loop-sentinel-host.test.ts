@@ -330,8 +330,9 @@ describe('startEventLoopSentinel', () => {
   it.skipIf(process.platform !== 'linux')('WI-10005529: identifies a responsive parked main with a missing heartbeat', () => {
     const result = runParkedDiagnosticTrial('idle');
     expect(result.status).toBe(0);
-    expect(result.files).toHaveLength(1);
+    expect(result.files, result.stderr).toHaveLength(1);
     expect(result.stderr).toContain('mainThreadInspectorResponse: responsive');
+    expect(result.stderr).toContain('mainThreadEventLoopResponse: responsive');
     expect(result.stderr).toContain('mainThreadActivity: parked');
     expect(result.stderr).toContain('STALL profiled');
   }, 30_000);
@@ -339,16 +340,16 @@ describe('startEventLoopSentinel', () => {
   it.skipIf(process.platform !== 'linux')('WI-10005529: bounds an unanswered parked probe while observations continue', () => {
     const result = runParkedDiagnosticTrial('blocked');
     expect(result.status).toBe(0);
-    expect(result.files).toEqual([]);
-    expect(result.stderr).toContain('mainThreadInspectorResponse: not-answered');
-    expect(result.stderr).toContain('Profiler.enable not answered within 3000ms');
+    expect(result.files, result.stderr).toEqual([]);
+    expect(result.stderr).toContain('mainThreadEventLoopResponse: not-answered');
+    expect(result.stderr).toContain('Runtime.evaluate not answered within 3000ms');
     expect(result.stderr).toContain('WEDGED — observe mode, NOT killing');
   }, 30_000);
 
   it.skipIf(process.platform !== 'linux')('WI-10005529: discards a probe answered only after heartbeat recovery', () => {
     const result = runParkedDiagnosticTrial('recovered');
     expect(result.status).toBe(0);
-    expect(result.files).toEqual([]);
+    expect(result.files, result.stderr).toEqual([]);
     expect(result.stderr).toContain('STALL profile discarded — heartbeat recovered before profiler start');
     expect(result.stderr).not.toContain('STALL profiled');
   }, 30_000);
@@ -357,6 +358,7 @@ describe('startEventLoopSentinel', () => {
     const result = runParkedDiagnosticTrial('idle', 'kill');
     expect(result.signal).toBe('SIGKILL');
     expect(result.stderr).toContain('mainThreadInspectorResponse: responsive');
+    expect(result.stderr).toContain('mainThreadEventLoopResponse: responsive');
     expect(result.stderr).toContain('WEDGED — SIGKILLing the host');
   }, 30_000);
 
