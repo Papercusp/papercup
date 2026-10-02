@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { findIdentityLeakError, identityLeakScopeMatches } from './identity-leak';
 import { DEFAULT_CONTENT_DETECTORS, identityLeakDetector } from './registry';
 import { detectContentOffenders } from '../harness/git-sync/content-guard';
+import { serializeIdentitySafeJson } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../');
 
@@ -55,6 +56,30 @@ function makeRunGit(superprojectProbe: { code: number; stdout: string }, dirty =
 const LEAKY = `ExecStart=${['', 'home', 'somedev', '.local', 'bin', 'thing'].join('/')}\n`;
 
 describe('findIdentityLeakError', () => {
+  it('publishes portable memory reports without changing counters, hashes, scope or the original', async () => {
+    const executable = ['', 'home', 'somedev', 'bin', 'node'].join('/');
+    const original = { incomplete: false, limitations: ['Ambient baseline; no paired savings'],
+      samples: [{ os: { pid: 42, startTicks: '123', executable, executableSha256: 'a'.repeat(64),
+        pssBytes: 123456, rssBytes: 234567 }, error: 'Failed at ' + executable }],
+      requests: [{ responseSha256: 'b'.repeat(64), rows: 32, elapsedMs: 1.75 }] };
+    const raw = JSON.stringify(original, null, 2) + '\n';
+    expect(await findIdentityLeakError('docs/evidence/memory.json', raw, REPO_ROOT)).toBeTruthy();
+    const portable = serializeIdentitySafeJson(original, []);
+    expect(await findIdentityLeakError('docs/evidence/memory.json', portable, REPO_ROOT)).toBeNull();
+    const parsed = JSON.parse(portable);
+    expect(parsed).toEqual({ ...original, samples: [{ os: { ...original.samples[0].os,
+      executable: '/home/builduser/bin/node' }, error: 'Failed at /home/builduser/bin/node' }] });
+    expect(original.samples[0].os.executable).toBe(executable);
+    expect(serializeIdentitySafeJson(parsed, [])).toBe(portable);
+  });
+
+  it('preserves escaped strings and refuses a redaction that would rename a report field', () => {
+    const value = { note: 'quote " and newline\n', bytes: 0, missing: null };
+    expect(JSON.parse(serializeIdentitySafeJson(value, []))).toEqual(value);
+    expect(() => serializeIdentitySafeJson({ ['build-' + 'secret-host']: 1 }, [['build-hostname', 'secret-host']]))
+      .toThrow('key contains a machine identity');
+  });
+
   it('flags a hardcoded home path and names the fix', async () => {
     const err = await findIdentityLeakError('svc.service', LEAKY, REPO_ROOT);
     expect(err).toBeTruthy();
