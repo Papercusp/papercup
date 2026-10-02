@@ -712,9 +712,9 @@ const rootCarryAliasField = z.string().max(CHECKPOINT_CAP).nullish();
  * `checkpointFromRootAliases` as the root (explicit `checkpoint` wins). One
  * `$defs` id keeps the published argSchema (PINNED shrink-only) from growing 7×.
  */
-const itemCarryAliasField = rootCarryAliasField
-  .describe('carry alias folded into this entry\'s checkpoint (explicit `checkpoint` wins)')
-  .meta({ id: 'work-items-checkpoint-carry-alias-v1' });
+// No `.describe`: compact delivery INLINES $refs (schema-ref-inline.ts), so a description
+// here is paid 7x there (+558 B measured). The entry's `checkpoint` description documents it.
+const itemCarryAliasField = rootCarryAliasField.meta({ id: 'work-items-checkpoint-carry-alias-v1' });
 
 function checkpointFromRootAliases(args: {
   checkpoint?: string | null;

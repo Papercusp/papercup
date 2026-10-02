@@ -662,7 +662,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(24670);
+    // WI-10005640: 24670 -> 24340. items[] entries gained the 7 loop carry aliases
+    // (shared $defs ref) while the duplicated item-level append/unchanged prose was condensed.
+    expect(JSON.stringify(json)).toHaveLength(24340);
 
     const hasSchemaField = (value: unknown, field: string): boolean => {
       value = resolveRef(value);
