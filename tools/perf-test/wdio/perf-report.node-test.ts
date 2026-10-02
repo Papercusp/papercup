@@ -668,6 +668,7 @@ function startupRenderFixture() {
   let deadline: (() => void) | null = null;
   let disconnected = 0;
   let rectReads = 0;
+  const milestones = new Map<string, unknown>();
   const listeners = new Map<string, () => void>();
   const parent = { parentElement: null, style: { display: 'block', visibility: 'visible', opacity: '0' } };
   const element = { parentElement: parent, isConnected: true,
@@ -688,13 +689,17 @@ function startupRenderFixture() {
     getComputedStyle: (node: typeof element | typeof parent) => node.style,
   };
   const values = { window: fakeWindow, document: { fonts, documentElement: {},
-    querySelector: (selector: string) => selector === '.pclsb-acct__foot' ? target : subtitleTarget },
+    querySelector: (selector: string) => selector === '.pclsb-acct__foot' ? target
+      : selector === '.plans-pane__masthead-subtitle' ? subtitleTarget : milestones.get(selector) ?? null },
     performance: { now: () => clock }, Storage: undefined };
   for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, value: values[name] });
   return { fakeWindow, element, parent, subtitle, subtitleParent, fonts, listeners, tick: (ms: number) => { clock = ms; },
     insert: () => { target = element; mutation?.(); }, replace: () => { target = { ...element }; mutation?.(); },
     insertSubtitle: () => { subtitleTarget = subtitle; mutation?.(); },
     replaceSubtitle: () => { subtitleTarget = { ...subtitle }; mutation?.(); },
+    insertMilestone: (selector: string, contains = (node: unknown) => node === element || node === subtitle) => {
+      milestones.set(selector, { isConnected: true, contains }); mutation?.();
+    },
     mutate: () => mutation?.(),
     runFrame: () => { const pending = [...frames.values()]; frames.clear(); for (const fn of pending) fn(); },
     expire: () => deadline?.(), pendingFrame: () => frames.size !== 0,
@@ -705,6 +710,48 @@ function startupRenderFixture() {
     } },
   };
 }
+
+test('bundled startup milestones distinguish late Accounts mount from an earlier sidebar without layout or content reads', () => {
+  const f = startupRenderFixture();
+  try {
+    Function(buildStartupStorageProbeScript())();
+    const probe = (f.fakeWindow as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe;
+    f.tick(100); f.insertMilestone('[data-testid="operator-shell"], .pc-advshell');
+    f.tick(200); f.insertMilestone('[data-testid="left-sidebar"][data-tab="accounts"][data-collapsed="false"]');
+    f.tick(210); f.insertMilestone('.pclsb__body > .pclsb-panel__empty', () => false);
+    f.tick(900); f.insertMilestone('.pclsb-acct');
+    f.tick(910); f.insert();
+    assert.equal(f.rectReads(), 0);
+    f.parent.style.opacity = '1'; f.tick(1000); f.runFrame();
+    const report = probe.stop().render;
+    assert.deepEqual(report.milestones.map((row) => row.firstObservedAtMs), [100, 200, 210, 900]);
+    assert(report.milestones.every((row) => row.stopReason === 'observed'));
+    assert.deepEqual(report.milestoneMatchesAtFirstObservation.map((row) => row.matches), [true, true, false, true]);
+    assert.equal(report.firstObservedAtMs, 910);
+    assert.equal(report.firstEligibleFrameAtMs, 1000);
+    assert.equal(probe.renderCandidateMatches(f.element), true);
+    assert(!JSON.stringify(report).includes('textContent'));
+    assert.equal(f.pendingFrame(), false);
+  } finally { f.restore(); }
+});
+
+test('startup milestone attribution distinguishes a replaced host, unavailable containment and unobserved mount', () => {
+  const f = startupRenderFixture();
+  try {
+    const probe = installStartupStorageProbe();
+    f.tick(100); f.insertMilestone('[data-testid="operator-shell"], .pc-advshell', () => false);
+    f.tick(200); f.insertMilestone('[data-testid="left-sidebar"][data-tab="accounts"][data-collapsed="false"]', () => { throw new Error('private ancestor'); });
+    f.tick(300); f.insertMilestone('[data-testid="operator-shell"], .pc-advshell');
+    f.tick(400); f.insert();
+    const report = probe.stop().render;
+    assert.deepEqual(report.milestoneMatchesAtFirstObservation.map((row) => row.matches), [false, null, null, null]);
+    assert.equal(report.milestones[0]!.firstObservedAtMs, 100, 'replacement cannot rewrite the earlier host identity');
+    assert(report.milestones[1]!.unavailable.includes('containment-read'));
+    assert.equal(report.milestones[3]!.firstObservedAtMs, null);
+    assert.equal(report.milestones[3]!.stopReason, 'stopped');
+    assert(!JSON.stringify(report).includes('private ancestor'));
+  } finally { f.restore(); }
+});
 
 test('bundled startup probe separates late DOM discovery, ancestor visibility and font readiness', async () => {
   const f = startupRenderFixture();
@@ -850,9 +897,12 @@ test('startup render observation bounds mutations, cancels frames and distinguis
     assert.equal(capped.firstObservedAtMs, null);
     assert.equal(capped.mutationCallbacks, 1000);
     assert(capped.candidates.every((row) => row.stopReason === 'mutation-cap' && row.mutationCallbacks === 1000));
+    assert(capped.milestones.every((row) => row.reads === 1000 && row.stopReason === 'read-cap'));
     const expired = installStartupStorageProbe();
     f.tick(60_001); f.expire();
-    assert.equal(expired.stop().render.stopReason, 'deadline');
+    const deadlineReport = expired.stop().render;
+    assert.equal(deadlineReport.stopReason, 'deadline');
+    assert(deadlineReport.milestones.every((row) => row.stopReason === 'deadline'));
     const pending = installStartupStorageProbe();
     f.insert(); assert(f.pendingFrame());
     pending.stop(); assert.equal(f.pendingFrame(), false);
@@ -861,6 +911,7 @@ test('startup render observation bounds mutations, cancels frames and distinguis
     assert.equal(missing.stopReason, 'unavailable');
     assert(missing.unavailable.includes('MutationObserver'));
     assert(missing.candidates.every((row) => row.stopReason === 'unavailable' && row.unavailable.includes('MutationObserver')));
+    assert(missing.milestones.every((row) => row.stopReason === 'unavailable' && row.unavailable.includes('MutationObserver')));
   } finally { f.restore(); }
 });
 

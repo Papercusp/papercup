@@ -102,7 +102,19 @@ export function installStartupStorageProbe() {
     firstEligibleFrameAtMs: null as number | null,
     mutationCallbacks: 0, frameReads: 0, maxMutationCallbacks: 1000, maxFrameReads: 32,
     totalObserverWorkMs: 0, stopReason: 'collecting', unavailable: [] as string[],
+    milestoneMatchesAtFirstObservation: [] as Array<{ selector: string; matches: boolean | null }>,
   }));
+  // These selectors mirror the current and frozen shell/Accounts host path.
+  // A callback is an observation, not a mount/import completion timestamp. Keep
+  // the first node identity so a replacement cannot inherit an earlier timing.
+  const milestones = ['[data-testid="operator-shell"], .pc-advshell',
+    '[data-testid="left-sidebar"][data-tab="accounts"][data-collapsed="false"]',
+    '.pclsb__body > .pclsb-panel__empty', '.pclsb-acct'].map((selector) => ({
+    element: null as HTMLElement | null,
+    report: { selector, firstObservedAtMs: null as number | null, reads: 0, maxReads: 1000,
+      stopReason: 'collecting', unavailable: [] as string[] },
+  }));
+  let milestoneObserverWorkMs = 0;
   const render = renderCandidates[0]!; // Preserve the existing footer report.
   const fontsReport = { initialStatus: null as string | null, readyAtMs: null as number | null,
     events: [] as Array<{ event: string; atMs: number; status: string }>, dropped: 0 };
@@ -120,9 +132,15 @@ export function installStartupStorageProbe() {
     if (candidates.every(({ report }) => report.stopReason !== 'collecting')) {
       renderObserver?.disconnect();
       renderObserver = null;
+      for (const { report } of milestones) {
+        if (report.stopReason === 'collecting') report.stopReason = 'candidates-complete';
+      }
     }
   };
   const stopRenderDom = (reason: string) => {
+    for (const { report } of milestones) {
+      if (report.stopReason === 'collecting') report.stopReason = reason;
+    }
     for (const candidate of candidates) stopCandidate(candidate, reason);
   };
   const stopRender = () => {
@@ -132,6 +150,34 @@ export function installStartupStorageProbe() {
     renderDeadline = null;
     for (const restore of fontRestores.splice(0)) restore();
   };
+  const findMilestones = () => {
+    for (const milestone of milestones) {
+      const { report } = milestone;
+      if (report.stopReason !== 'collecting') continue;
+      if (performance.now() - startedAtMs >= 60_000) { report.stopReason = 'deadline'; continue; }
+      if (report.reads >= report.maxReads) { report.stopReason = 'read-cap'; continue; }
+      const began = performance.now();
+      report.reads++;
+      try {
+        const element = document.querySelector<HTMLElement>(report.selector);
+        if (element) {
+          milestone.element = element;
+          report.firstObservedAtMs = performance.now();
+          report.stopReason = 'observed';
+        }
+      } catch { report.unavailable.push('candidate-read'); report.stopReason = 'unavailable'; }
+      finally { milestoneObserverWorkMs += performance.now() - began; }
+    }
+  };
+  const joinMilestones = (element: HTMLElement) => milestones.map((milestone) => {
+    let matches: boolean | null = null;
+    const began = performance.now();
+    try {
+      if (milestone.element?.isConnected) matches = milestone.element.contains(element);
+    } catch { milestone.report.unavailable.push('containment-read'); }
+    finally { milestoneObserverWorkMs += performance.now() - began; }
+    return { selector: milestone.report.selector, matches };
+  });
   const findRenderCandidate = (candidate: Candidate) => {
     const render = candidate.report;
     if (!renderActive || render.stopReason !== 'collecting') return;
@@ -145,7 +191,10 @@ export function installStartupStorageProbe() {
         stopCandidate(candidate, 'candidate-replaced'); return;
       }
       candidate.element = element;
-      render.firstObservedAtMs ??= performance.now();
+      if (render.firstObservedAtMs === null) {
+        render.firstObservedAtMs = performance.now();
+        render.milestoneMatchesAtFirstObservation = joinMilestones(element);
+      }
       if (candidate.frame !== null) return;
       candidate.frame = window.requestAnimationFrame(() => {
         candidate.frame = null;
@@ -176,9 +225,13 @@ export function installStartupStorageProbe() {
     } catch { render.unavailable.push('candidate-read'); stopCandidate(candidate, 'unavailable'); }
     finally { render.totalObserverWorkMs += performance.now() - began; }
   };
-  const findRenderCandidates = () => { for (const candidate of candidates) findRenderCandidate(candidate); };
+  const findRenderCandidates = () => {
+    findMilestones();
+    for (const candidate of candidates) findRenderCandidate(candidate);
+  };
   const renderUnavailable = (reason: string) => {
     for (const { report } of candidates) report.unavailable.push(reason);
+    for (const { report } of milestones) report.unavailable.push(reason);
   };
   if (typeof document === 'undefined' || !document.documentElement) renderUnavailable('document');
   if (typeof window.MutationObserver !== 'function') renderUnavailable('MutationObserver');
@@ -189,6 +242,7 @@ export function installStartupStorageProbe() {
   else {
     try {
       renderObserver = new window.MutationObserver(() => {
+        findMilestones();
         for (const candidate of candidates) {
           const render = candidate.report;
           if (render.stopReason !== 'collecting') continue;
@@ -243,6 +297,9 @@ export function installStartupStorageProbe() {
       nativeStartup: { rows: nativeStartupRows.slice(), dropped: nativeStartupDropped, maxRows: 20 },
       render: { ...render, fonts: { ...fontsReport, events: fontsReport.events.slice() },
         unavailable: render.unavailable.slice(),
+        milestoneObserverWorkMs,
+        milestoneScope: 'first DOM callback observation; containment at candidate discovery; not mount, import completion or paint',
+        milestones: milestones.map(({ report }) => ({ ...report, unavailable: report.unavailable.slice() })),
         candidates: renderCandidates.map((report) => ({ ...report, unavailable: report.unavailable.slice() })) } };
   } };
   (window as unknown as { __pcStartupStorageProbe: typeof probe }).__pcStartupStorageProbe = probe;
