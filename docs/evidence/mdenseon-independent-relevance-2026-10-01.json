@@ -2828,6 +2828,129 @@
       "newEmbeddingMatrixStarted": false
     }
   },
+  "retainedVectorReusePreparation": {
+    "status": "qualified existing evaluator extension; new-label inference has not started",
+    "reuse": "Existing frozen manifest cells, completed raw/vector receipts and canonical evaluator; no parallel vector cache or production model/index change.",
+    "contract": {
+      "optIn": "relevance cell parameters.reuseCellId plus declared reuseManifest, reuseCompletion and reuseVectors inputs",
+      "binding": "completed receipt links vector file to exact raw cell, manifest, owner, arm, snapshot, document order and old accepted query order",
+      "armMustMatch": "artifacts, prompts, tokenizer, runtime, native dimensions, execution device/dtype/threads/transport",
+      "queryReuse": "exact id/text/class/source/partition identity; new relevance labels and query order may differ",
+      "incrementalExecution": "only missing new queries are embedded; original document and query arrays are retained, and new vectors join back to the complete accepted order",
+      "timing": "new-query inference only; not comparable to a full cold/document inference pass",
+      "allReused": "CLI refuses before starting a worker; offline scoring is the appropriate route"
+    },
+    "qualification": {
+      "frameworkRunId": "ed8a3d42-f23f-48fa-94fd-717c5ca48c53",
+      "testRunIds": [20569066, 20569067, 20569068, 20569069, 20569071],
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "five focused conventional files; identity-negative and incremental callback controls, not a new model measurement",
+      "typecheck": {
+        "at": "2026-10-02T21:54:30.200Z",
+        "head": "7c93480f1c",
+        "namedFiles": 6,
+        "checkedFiles": 17,
+        "errors": 0
+      }
+    },
+    "offlineAssessment": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-vector-qualification-v1/assessment.json",
+      "sha256": "71353b971293fa8cd9e36226d92a527f3952c4312c8c1a192eef59a1cfdafa16",
+      "bytes": 34581,
+      "completedCells": 6,
+      "exactDocumentArraysAcrossCells": 3081,
+      "exactQueryArraysAcrossCells": 324,
+      "modelCalls": 0,
+      "reproduction": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-vector-qualification-v1/reproduce.mjs",
+        "sha256": "7a448dadbfa1f6bc5cb5b880cad96a8ab063d9c9cca0e35041cd68de8be4f127",
+        "bytes": 4914
+      }
+    },
+    "sourceFiles": [
+      {"path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "sha256": "b23d471736c4e739971a353563054503587c3b85024719ef771cc262750bfa8e", "bytes": 64216},
+      {"path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts", "sha256": "5523ba56b8e616385e018f18c53146a73926dd73aa95261a14f9c429e6376565", "bytes": 47338},
+      {"path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts", "sha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890", "bytes": 50956}
+    ],
+    "acceptanceEstablished": false
+  },
+  "fencedCallRecovery": {
+    "workItem": "WI-10005689",
+    "status": "parser and exact-call recovery qualified; independent cohort continuation launched",
+    "previousCollection": {
+      "taskId": "0murgmfgh1apzqap8su",
+      "terminal": "failed1 at2026-10-02T21:35:57.223Z",
+      "raw": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v5-all-snapshot/memory-judge-1-64-q896.json",
+        "sha256": "10cdda7bc8fbb6a7a8d8d1ffe73bae919eee1b3626e6a6dae11055601af9e3e6",
+        "bytes": 97709
+      },
+      "finding": "result.json null; full-text JSON.parse failed on prose. One exact fenced object contains64 valid votes. Earlier prose braces defeat first-to-last-brace extraction.",
+      "stopReason": "end_turn",
+      "outputTokens": 3561,
+      "costUsd": 0.123744,
+      "providerFailure": false
+    },
+    "repair": {
+      "reuse": "Maintained Scout parseLlmJson, followed by unchanged strict author/numeric-vote schema, local-index/coverage and truncation guards.",
+      "exactCallRecovery": "Extend existing immutable reference chain with reuseCallsFrom/--reuse-calls-from; require same full contract, budget, snapshot and owner plus exact prompt/invocation lineage.",
+      "authorContinuity": "Hash-pinned author ancestry preserves original prose questions even if the partial donor stopped in memory judging.",
+      "rawRewritten": false,
+      "syntheticJudgments": false
+    },
+    "beforeRegression": {
+      "runId": "87c175c0-7f7f-422d-9879-ac0434d19857",
+      "testRunIds": [20568545],
+      "passed": 0,
+      "failed": 1,
+      "skipped": 55,
+      "skipReason": "explicit single-name regression filter"
+    },
+    "qualification": {
+      "runId": "ed8a3d42-f23f-48fa-94fd-717c5ca48c53",
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "assessment": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/fenced-call-recovery-v1.json",
+        "sha256": "60906b8907ee4b1aeb13e3058cbb2e2c943db233afbee4d470322be00f041b28",
+        "bytes": 189946
+      },
+      "originalRawPinsVerified": 316,
+      "immutableReferencesRecovered": 316,
+      "actualFailedResponseStrictVotes": 64,
+      "modelCalls": 0,
+      "stop": "intercepted first missing priced call before transport",
+      "identityHash": "b96c76750cd57ba514fd079f5ae5bd3f0bc11d1f083103e8a2eeb67751a92647"
+    },
+    "continuation": {
+      "taskId": "0muri7xef1lno8oqb57",
+      "bashId": "28ee2a34-7cd",
+      "log": ".papercusp/scratch/bash-28ee2a34-7cd.log",
+      "deadline": "2026-10-02T23:57:49.955Z",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v6-fenced-recovery",
+      "launchSource": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/resume-blind-labels-v6-fenced-recovery.sh",
+      "preRetryHarnessAudit": ["WI-10005689 comment1156276", "WI-10004537 comment1156278"],
+      "gatewayFailureGuard": "WI-10005666 is done; CLI installs override store before flag and applies existing gateway routing",
+      "noParallelCollector": "previous task confirmed terminal before this launch"
+    },
+    "sourceFiles": [
+      {"path": "packages/operator-core/lib/memory/bench/judged.ts", "sha256": "63ae6638b2a78ba20c77dc025549800adee657105fca86d19b818d99529bbc46", "bytes": 45741},
+      {"path": "packages/operator-core/lib/memory/bench/judged.test.ts", "sha256": "34bc3fe38ff1ede3885d8a7d1980bfb57ac60c6bdfc0dabef02d5c774c6d6d5f", "bytes": 44879},
+      {"path": "packages/operator-core/lib/memory/bench/judged-cli.ts", "sha256": "6258774bf0e0b033456a6af5df39b6a47f2aad7d69c9bc121448bb566df9b534", "bytes": 3561},
+      {"path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts", "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12", "bytes": 3485},
+      {"path": "packages/operator-core/lib/scout/llm-json.ts", "sha256": "b82f95fc67c7567abc0063680b23e01f87eb73ff76e6c8aa6f4e309f2c8fdb54", "bytes": 1006}
+    ],
+    "acceptance": {
+      "p003Complete": false,
+      "fullAccessibleCensusExhausted": false,
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
