@@ -23,7 +23,8 @@ const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
 }));
 
-vi.mock("../identity", () => ({
+vi.mock("../identity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../identity")>()),
   resolveAgentIdentity: (ctx: { ownerId?: string }) => ({
     ownerId: ctx?.ownerId ?? "owner-a",
   }),

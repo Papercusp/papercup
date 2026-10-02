@@ -7,7 +7,13 @@ export declare const RESTRICTED_HOLD_PREFLIGHT_DONE: 'admitted-by-testing-run';
 export declare const RESTRICTED_HOLD_PREFLIGHT_CLI: string;
 
 export type RestrictedHoldPreflightRefusal = { verdict: 'refuse'; error: string; hint: string };
-export type RestrictedHoldPreflightResult = { verdict: 'admit' | 'skipped' } | RestrictedHoldPreflightRefusal;
+export type RestrictedHoldPreflightSkipReason = 'testing-run' | 'nested-in-vitest';
+export type RestrictedHoldPreflightResult =
+  | { verdict: 'admit' }
+  | { verdict: 'skipped'; reason: RestrictedHoldPreflightSkipReason }
+  | RestrictedHoldPreflightRefusal;
+
+export declare function restrictedHoldPreflightSkipReason(env: NodeJS.ProcessEnv): RestrictedHoldPreflightSkipReason | null;
 
 export declare function interpretRestrictedHoldPreflight(result: {
   status: number | null;

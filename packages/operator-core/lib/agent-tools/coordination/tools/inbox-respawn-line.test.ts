@@ -40,7 +40,8 @@ const M = vi.hoisted(() => ({
   readFleetWindDownLoopEndAuthorization: vi.fn(async () => null as boolean | null),
 }));
 
-vi.mock("../identity", () => ({
+vi.mock("../identity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../identity")>()),
   resolveAgentIdentity: (ctx: { ownerId?: string }) => ({
     ownerId: ctx?.ownerId ?? "owner-a",
   }),

@@ -11,7 +11,7 @@
 // entry (restricted-hold-preflight-cli.ts) that runs the exact `restrictedHoldRefusal` testing:run
 // uses. It fails CLOSED: no marker line, bad JSON, a crash or a timeout all refuse.
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** stdout marker the CLI prints exactly once, followed by a JSON verdict. */
 export const RESTRICTED_HOLD_PREFLIGHT_MARKER = 'RESTRICTED_HOLD_PREFLIGHT';
@@ -28,8 +28,13 @@ export const RESTRICTED_HOLD_PREFLIGHT_EXIT = Object.freeze({ admit: 0, misuse: 
 export const RESTRICTED_HOLD_PREFLIGHT_ENV = 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT';
 export const RESTRICTED_HOLD_PREFLIGHT_DONE = 'admitted-by-testing-run';
 
-/** Repo-relative path of the operator-core entry the router spawns. */
-export const RESTRICTED_HOLD_PREFLIGHT_CLI = 'packages/operator-core/lib/agent-tools/testing/restricted-hold-preflight-cli.ts';
+/**
+ * Absolute path of the operator-core entry the router spawns — resolved from THIS module, never
+ * from the checkout being checked, so the census code that runs is always this repo's own.
+ */
+export const RESTRICTED_HOLD_PREFLIGHT_CLI = fileURLToPath(
+  new URL('../../packages/operator-core/lib/agent-tools/testing/restricted-hold-preflight-cli.ts', import.meta.url),
+);
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -70,12 +75,29 @@ export function interpretRestrictedHoldPreflight(result) {
 }
 
 /**
+ * Why this router invocation needs no preflight of its own, or null when it does.
+ * - testing:run already ran `restrictedHoldRefusal` over the same files in-process.
+ * - The router is nested inside a vitest process tree (a test that drives the router). That test
+ *   process has already executed everything it loads, so the fence belongs at the ROOT of the run
+ *   (testing:run, or this router's own top-level invocation), not at every nested hop. Without
+ *   this, each in-test router call would pay a ~2s census spawn and a Postgres dependency.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {'testing-run' | 'nested-in-vitest' | null}
+ */
+export function restrictedHoldPreflightSkipReason(env) {
+  if (env[RESTRICTED_HOLD_PREFLIGHT_ENV] === RESTRICTED_HOLD_PREFLIGHT_DONE) return 'testing-run';
+  if (env.VITEST) return 'nested-in-vitest';
+  return null;
+}
+
+/**
  * @param {{ repoRoot: string, files: string[], env?: NodeJS.ProcessEnv, timeoutMs?: number, spawn?: typeof spawnSync }} opts
- * @returns {{ verdict: 'admit' | 'skipped' } | { verdict: 'refuse', error: string, hint: string }}
+ * @returns {{ verdict: 'admit' } | { verdict: 'skipped', reason: 'testing-run' | 'nested-in-vitest' } | { verdict: 'refuse', error: string, hint: string }}
  */
 export function runRestrictedHoldPreflight({ repoRoot, files, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
-  if (env[RESTRICTED_HOLD_PREFLIGHT_ENV] === RESTRICTED_HOLD_PREFLIGHT_DONE) return { verdict: 'skipped' };
-  const result = spawn(process.execPath, ['--import', 'tsx', join(repoRoot, RESTRICTED_HOLD_PREFLIGHT_CLI), repoRoot, ...files], {
+  const skip = restrictedHoldPreflightSkipReason(env);
+  if (skip) return { verdict: 'skipped', reason: skip };
+  const result = spawn(process.execPath, ['--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, repoRoot, ...files], {
     cwd: repoRoot,
     env,
     encoding: 'utf8',
