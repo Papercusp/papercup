@@ -1482,6 +1482,87 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(result.error.cause.stack).toContain('/provider/execution.ts:12:3');
   });
 
+  it.each([0, 1])('retains the captured exit %s when governor finalization fails after close', async (status) => {
+    const origin = Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+    const child = Object.assign(new EventEmitter(), {
+      pid: 424242,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    const spawnImpl = vi.fn(() => child);
+    const governedProcessImpl = vi.fn(async (_options: unknown, run: Function) => {
+      await run(undefined, undefined, { inherited: true });
+      throw origin;
+    });
+    const promise = runCapturedTestProcess('vitest', ['run', 'a.test.ts'], {
+      cwd: REPO_ROOT,
+      files: ['a.test.ts'],
+      spawnImpl,
+      governedProcessImpl,
+      systemdRunPath: null,
+      setsidPath: null,
+      onProgress: vi.fn(),
+    });
+    child.stdout.write('a.test.ts (1 test)\n');
+    child.stderr.write('captured child diagnostic\n');
+    child.emit('close', status, null);
+    const result = await promise;
+
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(governedProcessImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status,
+      signal: null,
+      stdout: 'a.test.ts (1 test)\n',
+      stderr: 'captured child diagnostic\n',
+      error: null,
+      timedOut: false,
+    });
+    expect(result.governedAdmissionError).not.toBe(true);
+    expect(result.governedFinalizationError.cause).toBe(origin);
+    expect(result.actualDemand).toBeDefined();
+  });
+
+  it.each([0, 1])('keeps the measured verdict and refuses an overall green after finalization failure, child exit %s', async (status) => {
+    const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let code: number;
+    try {
+      code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        runCapturedTestProcessImpl: async () => ({
+          status,
+          signal: null,
+          stdout: `Test Files 1 ${status === 0 ? 'passed' : 'failed'} (1)\nTests 1 ${status === 0 ? 'passed' : 'failed'} (1)\n`,
+          stderr: '',
+          error: null,
+          timedOut: false,
+          governedFinalizationError: new Error('receipt finish failed', {
+            cause: new Error('original settlement stack'),
+          }),
+        }),
+      });
+    } finally {
+      if (readyMarker === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
+      if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+      stdoutSpy.mockRestore();
+    }
+    const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(code).toBe(3);
+    expect(output).toContain(`TEST_FILE_RESULT requested=1 executed=1 matched=1 status=${status === 0 ? 'passed' : 'failed'}`);
+    expect(output).toContain('finalizationError=true');
+    expect(errors).toContain('TEST_FILE_FINALIZATION_ERROR');
+    expect(errors).toContain('receipt finish failed');
+    expect(errors).toContain('original settlement stack');
+    expect(errors).not.toContain('TEST_FILE_ADMISSION_ERROR');
+    expect(errors).not.toContain('no test file ran');
+  });
+
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
