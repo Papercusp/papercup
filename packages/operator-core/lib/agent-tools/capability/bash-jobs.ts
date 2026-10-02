@@ -2035,7 +2035,9 @@ export interface RunOptions {
   sandboxEnabled?: boolean;
   /** Confined profile: wrapper unavailability refuses before the command starts. */
   sandboxRequired?: boolean;
-  /** Internal deterministic test seam; never exposed as a tool argument. */
+  /** Server-owned wrapper overrides — never exposed as a tool argument. Tests use it
+   *  as a deterministic seam; capability:bash sets `{ denyAllEgress: true, srtBin: null }`
+   *  for a caller holding a personal disclosure (WI-10005589, BAR R-11). */
   sandboxBuildOpts?: Omit<BuildSandboxOpts, 'enabled' | 'required' | 'background'>;
   /** task-manager P-008 provenance — the agent id this job is FOR, and the
    *  work-item it is attributable to. Optional because a caller that does not know

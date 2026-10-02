@@ -73,8 +73,11 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // wrong matcher rides in unnoticed. (The `toEqual` above still pins install ORDER, which
     // is the part that carries meaning: hooks fire in registration order.)
     const matcherOf = (name: string): string | undefined => hookMatcherOf(cfg, 'PreToolUse', name);
-    // P-007 / BAR R-11: the client-native egress tools only — capability:bash is gated server-side.
-    expect(matcherOf('pretooluse-restricted-egress-guard.mjs')).toBe('Bash|WebFetch');
+    // P-007 / BAR R-11: the client-native egress tools — capability:bash is gated server-side.
+    // WI-10005589 / D-012: plus edits of agent runtime files and every non-Papercusp MCP tool.
+    expect(matcherOf('pretooluse-restricted-egress-guard.mjs')).toBe(
+      'Bash|WebFetch|Edit|Write|MultiEdit|NotebookEdit|mcp__(?!papercusp).*',
+    );
 
     expect(matcherOf('pretooluse-locks-acquire.sh')).toBe(FILE_WRITE_MATCHER);
     expect(matcherOf('pretooluse-activity-report.sh')).toBe('*');

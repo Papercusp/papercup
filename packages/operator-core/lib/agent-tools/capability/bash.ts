@@ -727,6 +727,14 @@ export default defineTool({
     } catch {
       callerSid = '';
     }
+    // WI-10005589 / D-012 (BAR R-11): a session holding a personal disclosure runs
+    // its shell with NO network — the existing bwrap wrapper with --unshare-net,
+    // never srt (whose domain allowlist IS network), and required, so a host with
+    // no working bwrap refuses before spawn. Matching provider names in the text
+    // (above) cannot see a host built at run time; an empty network namespace can.
+    // Fail closed: an unreadable ledger (null) also runs offline.
+    const { readSessionRestriction } = await import('../../personal-vault/binding-enforcement');
+    const runOffline = (await readSessionRestriction(callerSid || null)) !== false;
     const childEnv = {
       ...(desktopEnv ?? {}),
       ...integrationEnv,
@@ -794,8 +802,9 @@ export default defineTool({
         cwd,
         stateDir: ctx.stateDir,
         ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
-        sandboxEnabled: sandboxPolicy.enabled,
-        sandboxRequired: sandboxPolicy.required,
+        sandboxEnabled: runOffline || sandboxPolicy.enabled,
+        sandboxRequired: runOffline || sandboxPolicy.required,
+        ...(runOffline ? { sandboxBuildOpts: { denyAllEgress: true, srtBin: null } } : {}),
         ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
         ...(redactValues.length > 0 ? { redactValues } : {}),
         ...provenance,

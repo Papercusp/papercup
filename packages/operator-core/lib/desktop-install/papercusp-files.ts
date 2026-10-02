@@ -3286,11 +3286,14 @@ export function mergeClaudeHookSettings(
       matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-secrets-guard.mjs'),
     });
-  // merge_restricted_egress_guard_hook — PreToolUse, matcher 'Bash|WebFetch' (P-007 / BAR R-11).
-  // The client-native tools never pass through capability:bash's server-side egress check.
+  // merge_restricted_egress_guard_hook — PreToolUse (P-007 / BAR R-11). The client-native
+  // tools never pass through capability:bash's server-side egress check. WI-10005589 / D-012
+  // widened the matcher: a restricted session's Bash is rewritten to run with no network,
+  // and WebFetch, non-Papercusp MCP tools and edits of agent runtime files are denied.
+  // Must equal the hook's own RESTRICTED_EGRESS_MATCHER (claude-hooks.test.ts pins both).
   if (has('pretooluse-restricted-egress-guard.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-restricted-egress-guard.mjs'), {
-      matcher: 'Bash|WebFetch',
+      matcher: 'Bash|WebFetch|Edit|Write|MultiEdit|NotebookEdit|mcp__(?!papercusp).*',
       hooks: cmd('pretooluse-restricted-egress-guard.mjs'),
     });
   // merge_nul_byte_edit_guard_hook — PreToolUse, matcher 'Edit|MultiEdit' (EI-18896033546676518).

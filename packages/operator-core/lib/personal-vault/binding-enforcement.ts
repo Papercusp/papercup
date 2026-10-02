@@ -111,6 +111,26 @@ export async function checkRestrictedEgress(
   };
 }
 
+/**
+ * Whether `ownerId` must run its shell and fetch tools with NO network (WI-10005589,
+ * D-012): true when it holds an unreleased disclosure, null when the ledger cannot
+ * be read (callers fail closed and treat null as restricted), false otherwise or
+ * for an unattributable caller (D-004: such a caller is never delivered restricted
+ * content, so it is never restricted).
+ */
+export async function readSessionRestriction(
+  ownerId: string | null | undefined,
+  deps: RestrictedEgressDeps = defaultRestrictedEgressDeps,
+): Promise<boolean | null> {
+  const owner = ownerId?.trim();
+  if (!owner) return false;
+  try {
+    return await deps.hasActiveDisclosure(owner);
+  } catch {
+    return null;
+  }
+}
+
 /** The capability:bash refusal payload for a refused verdict, or null to proceed. */
 export function egressRefusalPayload(verdict: RestrictedEgressVerdict): {
   ok: false;
