@@ -10,6 +10,7 @@ import {
   createHostedFirstWorkspace,
   firstWorkspaceIdentity,
   gcpFirstWorkspaceDesiredSpec,
+  PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL,
   type HostedFirstWorkspaceDependencies,
   type HostedFirstWorkspaceRequest,
 } from './first-workspace';
@@ -689,6 +690,12 @@ describe("hosted first-workspace in Papercusp's AWS cloud (aws-byoc-gcp-parity P
     expect(() => awsFirstWorkspaceDesiredSpec({ hostId: 'host-other', record, infrastructure }))
       .toThrow('Papercusp-hosted delegation reserves a different host');
     expect(awsFirstWorkspaceDesiredSpec({ hostId: 'host-reserved', record, infrastructure })).toMatchObject({ hostId: 'host-reserved' });
+    // WI-10005389: a new Papercusp-hosted AWS host is spot, like a hosted GCP host (D-028).
+    expect(
+      (awsFirstWorkspaceDesiredSpec({ hostId: 'host-reserved', record, infrastructure }) as { provider: Record<string, unknown> })
+        .provider.provisioningModel,
+    ).toBe(PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL);
+    expect(PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL).toBe('spot');
   });
 });
 
