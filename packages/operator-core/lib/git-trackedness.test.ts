@@ -60,56 +60,56 @@ afterEach(() => {
 });
 
 describe('git trackedness under a torn index (WI-10005009)', () => {
-  it('answers true for a committed path when the index is truncated to half its size', () => {
+  it('answers true for a committed path when the index is truncated to half its size', async () => {
     const { dir, subject } = repoWithCommittedSubject();
-    expect(isGitTrackedPath(dir, subject)).toBe(true);
+    expect(await isGitTrackedPath(dir, subject)).toBe(true);
     truncateSync(indexPath(dir), Math.floor(statSync(indexPath(dir)).size / 2));
     // Calibration: the raw index read really does misreport, so this is not vacuous.
     expect(rawIndexSaysTracked(dir, subject)).toBe(false);
-    expect(isGitTrackedPath(dir, subject)).toBe(true);
-    expect(isCommittedAtHead(dir, subject)).toBe(true);
+    expect(await isGitTrackedPath(dir, subject)).toBe(true);
+    expect(await isCommittedAtHead(dir, subject)).toBe(true);
     expect(formatCheckIsTracked(subject, dir)).toBe(true);
   });
 
-  it('answers true for a committed path when the index is zero bytes', () => {
+  it('answers true for a committed path when the index is zero bytes', async () => {
     const { dir, subject } = repoWithCommittedSubject();
     truncateSync(indexPath(dir), 0);
     expect(rawIndexSaysTracked(dir, subject)).toBe(false);
-    expect(isGitTrackedPath(dir, subject)).toBe(true);
+    expect(await isGitTrackedPath(dir, subject)).toBe(true);
     expect(formatCheckIsTracked(subject, dir)).toBe(true);
   });
 
-  it('still answers false for a genuinely untracked path, torn index or not', () => {
+  it('still answers false for a genuinely untracked path, torn index or not', async () => {
     const { dir } = repoWithCommittedSubject();
     writeFileSync(path.join(dir, 'zz', 'untracked.ts'), 'new\n');
-    expect(isGitTrackedPath(dir, 'zz/untracked.ts')).toBe(false);
+    expect(await isGitTrackedPath(dir, 'zz/untracked.ts')).toBe(false);
     expect(formatCheckIsTracked('zz/untracked.ts', dir)).toBe(false);
     truncateSync(indexPath(dir), Math.floor(statSync(indexPath(dir)).size / 2));
     // A torn index may answer 1 (false) or fail outright (unknown); either is honest.
     // What must never happen is the HEAD cross-check inventing a positive.
-    expect(isGitTrackedPath(dir, 'zz/untracked.ts')).not.toBe(true);
-    expect(isCommittedAtHead(dir, 'zz/untracked.ts')).toBe(false);
+    expect(await isGitTrackedPath(dir, 'zz/untracked.ts')).not.toBe(true);
+    expect(await isCommittedAtHead(dir, 'zz/untracked.ts')).toBe(false);
     expect(formatCheckIsTracked('zz/untracked.ts', dir)).toBe(false);
   });
 
-  it('keeps index semantics for a staged, not yet committed path', () => {
+  it('keeps index semantics for a staged, not yet committed path', async () => {
     const { dir } = repoWithCommittedSubject();
     writeFileSync(path.join(dir, 'zz', 'staged.ts'), 'staged\n');
     git(dir, 'add', '--', 'zz/staged.ts');
-    expect(isCommittedAtHead(dir, 'zz/staged.ts')).toBe(false);
-    expect(isGitTrackedPath(dir, 'zz/staged.ts')).toBe(true);
+    expect(await isCommittedAtHead(dir, 'zz/staged.ts')).toBe(false);
+    expect(await isGitTrackedPath(dir, 'zz/staged.ts')).toBe(true);
   });
 
-  it('resolves a path relative to a subdirectory cwd, the shape plan-audits uses', () => {
+  it('resolves a path relative to a subdirectory cwd, the shape plan-audits uses', async () => {
     const { dir } = repoWithCommittedSubject();
-    expect(isCommittedAtHead(path.join(dir, 'zz'), 'subject.ts')).toBe(true);
-    expect(isCommittedAtHead(path.join(dir, 'zz'), 'missing.ts')).toBe(false);
+    expect(await isCommittedAtHead(path.join(dir, 'zz'), 'subject.ts')).toBe(true);
+    expect(await isCommittedAtHead(path.join(dir, 'zz'), 'missing.ts')).toBe(false);
   });
 
-  it('reports unknown from HEAD before the first commit and keeps the index answer', () => {
+  it('reports unknown from HEAD before the first commit and keeps the index answer', async () => {
     const dir = freshRepo();
     writeFileSync(path.join(dir, 'loose.ts'), 'loose\n');
-    expect(isCommittedAtHead(dir, 'loose.ts')).toBeUndefined();
-    expect(isGitTrackedPath(dir, 'loose.ts')).toBe(false);
+    expect(await isCommittedAtHead(dir, 'loose.ts')).toBeUndefined();
+    expect(await isGitTrackedPath(dir, 'loose.ts')).toBe(false);
   });
 });

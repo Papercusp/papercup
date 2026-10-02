@@ -1,8 +1,25 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as nodePath from 'node:path';
 
 /** `undefined` means Git could not establish ownership; callers should fail open. */
-export type GitTrackednessProbe = (repoRoot: string, repoRelativePath: string) => boolean | null | undefined;
+export type GitTrackednessProbe = (
+  repoRoot: string,
+  repoRelativePath: string,
+) => boolean | null | undefined | Promise<boolean | null | undefined>;
+
+function runGitOutput(args: readonly string[], maxBuffer = 1024 * 1024): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      [...args],
+      { encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL', maxBuffer },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      },
+    );
+  });
+}
 
 /**
  * Ask HEAD's tree (the object store, not the index) whether `pathFromCwd` is committed.
@@ -17,18 +34,10 @@ export type GitTrackednessProbe = (repoRoot: string, repoRelativePath: string) =
  * git 2.43.0). HEAD's tree cannot be half-written, so it is the cross-check for any
  * index "no".
  */
-export function isCommittedAtHead(cwd: string, pathFromCwd: string): boolean | undefined {
+export async function isCommittedAtHead(cwd: string, pathFromCwd: string): Promise<boolean | undefined> {
   try {
-    const listing = execFileSync(
-      'git',
+    const listing = await runGitOutput(
       ['-C', cwd, '--literal-pathspecs', 'ls-tree', '-z', '--name-only', 'HEAD', '--', pathFromCwd],
-      {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-        maxBuffer: 1024 * 1024,
-      },
     );
     return listing.length > 0;
   } catch {
@@ -42,23 +51,18 @@ export function isCommittedAtHead(cwd: string, pathFromCwd: string): boolean | u
  * for a path HEAD contains is a torn-index read (see isCommittedAtHead) and answers true.
  * Every other failure is uncertainty and must not suppress an advisory.
  */
-export function isGitTrackedPath(repoRoot: string, repoRelativePath: string): boolean | undefined {
+export async function isGitTrackedPath(repoRoot: string, repoRelativePath: string): Promise<boolean | undefined> {
   let status: unknown;
   try {
-    execFileSync('git', ['-C', repoRoot, 'ls-files', '--error-unmatch', '--', repoRelativePath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'ignore', 'ignore'],
-      timeout: 5_000,
-      killSignal: 'SIGKILL',
-    });
+    await runGitOutput(['-C', repoRoot, 'ls-files', '--error-unmatch', '--', repoRelativePath]);
     return true;
   } catch (error) {
-    status =
-      typeof error === 'object' && error !== null && 'status' in error
-        ? (error as { status?: unknown }).status
-        : undefined;
+    if (typeof error === 'object' && error !== null) {
+      const record = error as { status?: unknown; code?: unknown };
+      status = typeof record.status === 'number' ? record.status : record.code;
+    }
   }
-  if (isCommittedAtHead(repoRoot, repoRelativePath) === true) return true;
+  if (await isCommittedAtHead(repoRoot, repoRelativePath) === true) return true;
   return status === 1 ? false : undefined;
 }
 
