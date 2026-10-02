@@ -32,6 +32,7 @@ import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
 // which the `../../work-items` re-export cannot serve inside that module's import cycle.
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 import { familyOf, releaseWorkItem } from '../../work-items';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
 import {
@@ -364,7 +365,9 @@ export function specNamedIds(spec: unknown): string[] {
  *  all imported below) — mirrors buildFleetKindClaimSpec's ISSUE_FAMILY_CLAIM_KINDS
  *  in fleet_registry/launch-on-plan.ts (not re-exported from there to avoid a
  *  fleet_registry → agent-tools/scheduler import edge for one literal set). */
-const ISSUE_FAMILY_KINDS = new Set(['bug', 'change', 'task']);
+// The shared family route list (P-009, D-022): never a local copy. The R-3 work-predicate
+// lint (work-nature/work-predicate-lint.test.ts) fails a hardcoded kind list here.
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set<string>(ISSUE_FAMILY_ROUTE_KINDS);
 
 /**
  * EI-18741395910746959: pull the `kind in [...]` leaf's value out of a claim spec's
