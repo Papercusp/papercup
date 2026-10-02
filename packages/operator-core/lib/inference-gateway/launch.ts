@@ -232,8 +232,10 @@ function makeWindowProjector(
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
 ): (headers: Record<string, string | undefined>, status: number, model: string, accountId: string) => void {
   const WRITE_MIN_MS = 30_000;
-  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number }>();
-  return (headers, _status, model, accountId) => {
+  const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean }>();
+  return (headers, status, model, accountId) => {
+    const observedCredits = parseCodexRateLimitHeaders(headers).usageCreditsAvailable;
+    const usageCreditsAvailable = status === 429 ? false : observedCredits;
     let w = parseUnifiedWindow(headers);
     let w7 = parseUnified7dWindow(headers);
     if (
@@ -253,7 +255,8 @@ function makeWindowProjector(
       w.utilization === undefined &&
       w.windowResetAt === undefined &&
       w7.utilization7d === undefined &&
-      w7.windowResetAt7d === undefined
+      w7.windowResetAt7d === undefined &&
+      usageCreditsAvailable === undefined
     )
       return;
     const t = Date.now();
@@ -286,16 +289,18 @@ function makeWindowProjector(
     const resetAt = w.windowResetAt ?? prev?.resetAt ?? 0;
     const util7d = w7.utilization7d ?? prev?.util7d ?? 0;
     const resetAt7d = w7.windowResetAt7d ?? prev?.resetAt7d ?? 0;
-    if (prev && t - prev.at < WRITE_MIN_MS) return; // throttle
+    const creditChanged = usageCreditsAvailable !== undefined && usageCreditsAvailable !== prev?.usageCreditsAvailable;
+    if (prev && t - prev.at < WRITE_MIN_MS && !creditChanged) return; // throttle ordinary meter updates
     // Write on a meaningful move in EITHER window (≥0.03 utilization) or a reset roll.
     const significant =
       !prev ||
       Math.abs(util - prev.util) >= 0.03 ||
       resetAt !== prev.resetAt ||
       Math.abs(util7d - prev.util7d) >= 0.03 ||
-      resetAt7d !== prev.resetAt7d;
+      resetAt7d !== prev.resetAt7d ||
+      creditChanged;
     if (!significant) return;
-    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t });
+    last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t, usageCreditsAvailable: usageCreditsAvailable ?? prev?.usageCreditsAvailable });
     // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
     // burn-verdict wall the fresh reading implies (fact + severe-event on the transition
     // edge). Live traffic is the most frequent observer, so this is where an escalation
@@ -309,6 +314,7 @@ function makeWindowProjector(
             windowResetAt: resetAt || undefined,
             utilization7d: util7d || undefined,
             windowResetAt7d: resetAt7d || undefined,
+            usageCreditsAvailable,
           },
           t,
           ws,
@@ -1254,6 +1260,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           // When the store TOOK the reading — the gateway's store↔pool reconciliation (P-008) clears an
           // in-memory park only on a reading newer than the park it would clear.
           readingAt: a.rate?.utilizationAt,
+          usageCreditsAvailable: a.rate?.usageCreditsAvailable,
           // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
           // accountBurnAction applies the canonical freshness gate, so a days-old SHED verdict cannot
           // strand an otherwise recovered account after its projection has gone stale.

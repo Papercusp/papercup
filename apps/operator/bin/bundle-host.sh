@@ -292,6 +292,7 @@ bundle_rc=0
     --outfile="$TMPFILE" \
     --metafile="$METAFILE" \
     --banner:js="$HOST_BANNER" \
+    "${HOST_BANNER_DEFINES[@]}" \
     --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
     "${BUNDLED_SOURCE_SHA_DEFINE[@]}" \
     --log-limit=20 \
@@ -311,6 +312,16 @@ bundle_rc=0
   # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped
   # the escape is correct, just fatter, and is not worth failing a boot over.
   node "$SCRIPT_DIR/ascii-escape-bundle.mjs" "$TMPFILE"
+  # WI-10005299: syntax-gate the FINAL bytes before the swap. ascii-escape's own check only
+  # judges its rewrite, and on failure it keeps the input on the assumption that escaping
+  # broke it. When the INPUT was already invalid (a banner/module `__dirname` redeclaration),
+  # that shipped a bundle that died with a SyntaxError on every start. stdin + input-type keeps
+  # the ESM grammar for a temp path that has no .mjs extension. Failing here keeps the
+  # last-known-good $OUTFILE.
+  if ! node --input-type=module --check < "$TMPFILE"; then
+    echo "ERROR: the bundled $OUTFILE fails \`node --check\` (it would throw a SyntaxError at load); keeping the last-known-good bundle."
+    exit 1
+  fi
   mv -f "$TMPFILE" "$OUTFILE"
 ) 9>"$LOCKFILE" >"$BUILD_LOG" 2>&1 || bundle_rc=$?
 cat "$BUILD_LOG"

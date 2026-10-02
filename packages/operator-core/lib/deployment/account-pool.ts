@@ -213,6 +213,8 @@ export interface AccountRateState {
   windowResetAt?: number;
   /** Epoch ms `utilization`/`windowResetAt` were last observed — lets the selector ignore stale budget. */
   utilizationAt?: number;
+  /** Codex upstream credit eligibility; included-meter exhaustion alone is not an account wall. */
+  usageCreditsAvailable?: boolean;
   /**
    * Unified-7d (weekly) rolling utilization (a fraction; 1.0 = 100%) from
    * `anthropic-ratelimit-unified-7d-utilization` — the LONGER Claude Max limit alongside the 5h.
@@ -556,7 +558,7 @@ export function recordAccountReset(pool: AccountPool, id: string, opts: { resetW
 export function recordAccountWindow(
   pool: AccountPool,
   id: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean },
   now: number,
 ): AccountPool {
   return {
@@ -569,6 +571,7 @@ export function recordAccountWindow(
         utilization7d: w.utilization7d ?? a.rate.utilization7d,
         windowResetAt7d: w.windowResetAt7d ?? a.rate.windowResetAt7d,
         utilizationAt: now,
+        usageCreditsAvailable: w.usageCreditsAvailable ?? a.rate.usageCreditsAvailable,
         // WI-41147: retain a spaced history of 7d readings so the burn governor can derive
         // d(utilization7d)/dt. Only a real 7d observation appends — a 5h-only update leaves
         // the history untouched (appending the STALE carried-forward 7d value would flatten
@@ -800,7 +803,7 @@ export const SOFT_PIN_AFFINITY_WEIGHT = Number(process.env.PAPERCUSP_SPAWN_SOFT_
  */
 export function accountBurnVerdict(rate: AccountRateState, now: number): BurnVerdict {
   const at = rate.utilizationAt;
-  if (at === undefined || now - at > DRAIN_UTIL_STALE_MS) {
+  if (rate.usageCreditsAvailable === true || at === undefined || now - at > DRAIN_UTIL_STALE_MS) {
     return {
       burnRatePerHr: null,
       headroomFraction: rate.utilization7d !== undefined && Number.isFinite(rate.utilization7d)
@@ -816,7 +819,9 @@ export function accountBurnVerdict(rate: AccountRateState, now: number): BurnVer
       // the deciding branch rather than re-derived from `utilization7d` by a reader (P-001).
       disposition: 'no-verdict',
       reason:
-        at === undefined
+        rate.usageCreditsAvailable === true
+          ? 'Codex usage credits available — included allowance does not bound account capacity'
+          : at === undefined
           ? 'usage window never observed — burn governor stands down'
           : 'usage reading stale — burn governor stands down (the wall machinery owns stale readings)',
     };
@@ -874,7 +879,10 @@ export function drainUtil7d(a: ClaudeAccount, now: number): number {
  * in favor of an account with real headroom in both windows (7d-aware-account-selection-2026-06-17).
  */
 export function effectiveDrainUtil(a: ClaudeAccount, now: number): number {
-  return Math.max(drainUtil(a, now), drainUtil7d(a, now));
+  const included = Math.max(drainUtil(a, now), drainUtil7d(a, now));
+  return accountProvider(a) === 'codex' && a.rate.usageCreditsAvailable === true && included >= DRAIN_FULL_UTIL
+    ? 0
+    : included;
 }
 
 /**
@@ -909,6 +917,7 @@ export function accountFull(a: ClaudeAccount, now: number): boolean {
  * (provider-supplied) window reset itself.
  */
 export function usageWalledUntil(a: ClaudeAccount, now: number): number {
+  if (accountProvider(a) === 'codex' && a.rate.usageCreditsAvailable === true) return 0;
   let until = 0;
   const r = a.rate;
   if (drainUtil(a, now) >= DRAIN_FULL_UTIL && r.windowResetAt !== undefined && r.windowResetAt > now) {

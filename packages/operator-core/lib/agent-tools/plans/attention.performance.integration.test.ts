@@ -219,7 +219,7 @@ describe('R-5 real PostgreSQL attention macro', () => {
       workload: { plans: PLAN_COUNT, itemsPerPlan: ITEMS_PER_PLAN, windows: WINDOWS, warmReads: WARM_READS, concurrency: CONCURRENCY },
       sourceStart: hashes(), windows,
       baselineDefinition: 'Current real handler full feed, JSON round trip, then production count/ref derivation. Consumer counterfactual; not an old source checkout.',
-      coldDefinition: 'Operator L1 cleared; PostgreSQL buffers and process imports remain warm. Not a physical cold database.',
+      coldDefinition: 'Production cache.bumpTags clears L1 and durable L2 before each cold window; both invalidations are joined. PostgreSQL buffers and process imports remain warm. This measures a full aggregate rebuild, not a physical cold database.',
       limitations: ['Attention only; no orientation/obligation/fact timing.', 'Named source hashes are not a complete imported graph.', 'No deployment or historical source-tree performance claim.'],
     };
     const publish = () => {
@@ -287,12 +287,12 @@ describe('R-5 real PostgreSQL attention macro', () => {
         for (const arm of arms) {
           const row: Window = { window, arm, samples: [], complete: false };
           windows.push(row); publish();
-          resetOperatorCacheForTests();
+          await invalidateAttention();
           row.samples.push(await read(arm, 'counts', 'cold'));
           for (let i = 0; i < WARM_READS; i++) row.samples.push(await read(arm, i % 2 ? 'refs' : 'counts', 'warm'));
           row.samples.push(...await Promise.all(Array.from({ length: CONCURRENCY }, (_, i) =>
             read(arm, i % 2 ? 'refs' : 'counts', 'warm-concurrent'))));
-          resetOperatorCacheForTests();
+          await invalidateAttention();
           row.samples.push(...await Promise.all(Array.from({ length: CONCURRENCY }, (_, i) =>
             read(arm, i % 2 ? 'refs' : 'counts', 'cold-concurrent'))));
           row.complete = true; publish();

@@ -589,6 +589,20 @@ export default defineTool({
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'Concrete probe to run before relying on the claim.',
                 ).optional(),
+                falsifier: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.falsifier,
+                  'The concrete result or observation that means this claim is false and must be retracted or corrected ' +
+                    '(same contract as facts:assert `falsifier`). A probe says how to LOOK; the falsifier says what would ' +
+                    'mean you are WRONG — without one, any non-contradicting sample reads as confirmation.',
+                ).optional(),
+                sampleAdequate: z
+                  .boolean()
+                  .optional()
+                  .describe(
+                    'Set `false` when you probed but the sample could NOT discriminate the claim from its negation ' +
+                      '(e.g. both samples sat under the very threshold the claim is about). The evidence is kept as ' +
+                      'context and the row renders ? PREDICTED, never ✓. Omit when the sample was adequate.',
+                  ),
                 verified: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.verified,
                   'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
@@ -1192,7 +1206,15 @@ export default defineTool({
       if (typeof v === 'string') fields[key] = truncateCarryField(v, CARRY_TEXT_SOFT_CAP, key, repairs);
     }
     const capRows = <
-      T extends { id?: string; claim: string; recheck?: string; verified?: string; observed?: string; contested?: string },
+      T extends {
+        id?: string;
+        claim: string;
+        recheck?: string;
+        falsifier?: string;
+        verified?: string;
+        observed?: string;
+        contested?: string;
+      },
     >(
       rows: T[] | undefined,
       label: string,
@@ -1218,6 +1240,13 @@ export default defineTool({
         out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `${label}[${i}].claim`, repairs);
         if (typeof out.recheck === 'string')
           out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `${label}[${i}].recheck`, repairs);
+        if (typeof out.falsifier === 'string')
+          out.falsifier = truncateCarryField(
+            out.falsifier,
+            CARRY_ROW_SOFT_CAPS.falsifier,
+            `${label}[${i}].falsifier`,
+            repairs,
+          );
         // A ✓ is an affirmative claim. If its evidence contradicts that claim,
         // preserve the exact evidence but store it as contested so neither the
         // carry note nor a wake can present it as settled. Do this BEFORE capping

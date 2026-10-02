@@ -22,6 +22,19 @@ unverified for that path. Bounded journal/coredump reads for the owned app and
 renderer during the failure window returned no records. The crash-or-hang label
 and missing appsink warning do not establish a signal or cause.
 
+The maintained v4 sampler records current owned descendants but has no
+per-identity disappearance or exit-status observation. Its last app/renderer
+snapshot spans 04:39:09.083–09.090Z. The first follow-up at 09.190–09.191Z
+contains no process rows and an unavailable app `exe` read (`ENOENT`); later
+samples contain no process or unavailable rows. This corrects the initial
+overbroad audit wording: the first missing sample was unavailable, not clean
+absence. It does not distinguish death, zombie/reaping, reparenting or loss
+from discovery. The selected [upstream warning branch](https://chromium.googlesource.com/external/github.com/WebKit/webkit/+/f27346baf833b1134f43b57d859570103117aa87/Source/WebCore/platform/graphics/gstreamer/GStreamerSinksWorkarounds.cpp)
+logs and returns false; that function does not abort. The upstream commit has
+not been matched to the installed WebKit source, so it is a constraint on the
+inference, not a native causal proof. The next detector change belongs in the
+existing probe, with explicit unknown signal and process-reaping semantics.
+
 All 16 prepared source fingerprints still match. The summary preserves the
 raw logs, native process trace, API identity and exact hashes. Five owned PIDs,
 the source snapshot and socket were absent before cleanup. The saved tmpfs

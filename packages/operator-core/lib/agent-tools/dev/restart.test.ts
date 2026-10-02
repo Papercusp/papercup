@@ -273,6 +273,7 @@ const {
   configureBgHostEnvironmentDropInFreshnessReaderForTests,
   configureBgHostIntegrationRootResolverForTests,
   configureBgHostRestartFreshnessReaderForTests,
+  configurePeerInFlightEditsReaderForTests,
   configureStagingRestartReadinessReaderForTests,
   configureSystemdDaemonReloaderForTests,
   evaluateBgHostEnvironmentDropInFreshness,
@@ -310,6 +311,13 @@ const environmentDropInFreshnessM = vi.fn(
 /** WI-10003606: the root bg-host's own unit names — deliberately NOT the serving operator's. */
 const BG_HOST_UNIT_ROOT = '/fixture/canonical-tree';
 const bgHostRootM = vi.fn(async (): Promise<string | null> => BG_HOST_UNIT_ROOT);
+// EI-24790218658923698: the peer in-flight-edit advisory. Default: checked, nothing held.
+const peerEditsM = vi.fn(async (_workingDirectory: string | null, _selfOwner: string | null) => ({
+  checked: true,
+  tree: BG_HOST_UNIT_ROOT as string | null,
+  total: 0,
+  files: [] as { path: string; owner: string; intent: string }[],
+}));
 const systemdDaemonReloadM = vi.fn(async (): Promise<void> => undefined);
 const stagingReadinessM = vi.fn(
   async (before: { mainPid?: number }): Promise<StagingRestartReadiness> => ({
@@ -373,6 +381,8 @@ beforeEach(() => {
   configureBgHostEnvironmentDropInFreshnessReaderForTests(environmentDropInFreshnessM);
   bgHostRootM.mockResolvedValue(BG_HOST_UNIT_ROOT);
   configureBgHostIntegrationRootResolverForTests(bgHostRootM);
+  peerEditsM.mockResolvedValue({ checked: true, tree: BG_HOST_UNIT_ROOT, total: 0, files: [] });
+  configurePeerInFlightEditsReaderForTests(peerEditsM);
   configureStagingRestartReadinessReaderForTests(stagingReadinessM);
   configureSystemdDaemonReloaderForTests(systemdDaemonReloadM);
   releaseM.mockResolvedValue({
@@ -419,6 +429,7 @@ beforeEach(() => {
 afterAll(() => {
   configureBgHostRestartFreshnessReaderForTests();
   configureBgHostIntegrationRootResolverForTests();
+  configurePeerInFlightEditsReaderForTests();
   configureStagingRestartReadinessReaderForTests();
   configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
@@ -2431,6 +2442,67 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     expect(hint).toContain('MainPID=0 with ActiveState=activating means still starting, NOT failed');
     expect(hint).toContain('differs from 7777');
     expect(hint).not.toContain('dev:listening_ports');
+  });
+
+  // EI-24790218658923698: a crash at module import yields a fresh nonzero MainPID that dies
+  // seconds later, so "MainPID nonzero and different" alone passes on a crash-loop.
+  it('tells the caller to confirm bg-host STAYS up, naming the pre-restart NRestarts', () => {
+    const hint = restartVerificationHint('bg-host', 'papercusp-bg-host.service', 7777, 4);
+    expect(hint).toContain('STAYS up');
+    expect(hint).toContain('NRestarts still 4');
+    expect(hint).toContain("logs:read { unit: 'papercusp-bg-host.service'");
+    expect(restartVerificationHint('bg-host', 'papercusp-bg-host.service', 7777)).toContain(
+      'NRestarts still at its pre-restart value',
+    );
+  });
+
+  it("names peers' in-flight edits in the tree it boots, so a host that does not stay up has its suspects", async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(11)));
+    mockResolvedTyped(probeM, { ok: true, mainPid: 7777, secondsSinceStart: 99999, nRestarts: 2 });
+    preflightM.mockResolvedValue(bootVerdict({ target: 'bg-host', requestedRoot: `${BG_HOST_UNIT_ROOT}/apps/operator` }));
+    const edit = {
+      path: 'packages/operator-core/lib/agent-tools/plans/rubric-template.ts',
+      owner: 'su-peer',
+      intent: 'rubric evidence runtime id',
+    };
+    peerEditsM.mockResolvedValue({ checked: true, tree: BG_HOST_UNIT_ROOT, total: 1, files: [edit] });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(peerEditsM).toHaveBeenCalledWith(`${BG_HOST_UNIT_ROOT}/apps/operator`, 'me');
+    expect(b).toMatchObject({ ok: true, restarted: true, peerInFlightEdits: { checked: true, total: 1, files: [edit] } });
+    expect(b.note).toContain('rubric-template.ts (su-peer)');
+    expect(b.note).toContain('mid-edit by other agents');
+    expect(b.verifyWith).toContain('NRestarts still 2');
+  });
+
+  it('omits the advisory when no peer holds a source file in the booted tree', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(11)));
+    mockResolvedTyped(probeM, { ok: true, mainPid: 7777, secondsSinceStart: 99999 });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({ ok: true, restarted: true });
+    expect(b).not.toHaveProperty('peerInFlightEdits');
+    expect(b.note).not.toContain('mid-edit by other agents');
   });
 
   it('claims the bg-host cooldown marker with the WIDENED ~13min TTL (780s), not the generic 120s one', async () => {

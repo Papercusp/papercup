@@ -86,6 +86,7 @@ import { workspaceTxnOptionsForExclusiveWait } from '../locks/resource-acquire-w
 import { probeServiceStart, probeSystemdDaemonReloadNeed, type ServiceStartInfo } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget, prepareStagingSchemaForRestart } from './restart-preflight';
+import { peerInFlightEditsNote, readPeerInFlightEdits, type PeerInFlightEdits } from './restart-peer-edits';
 import {
   checkBgHostQuiesce,
   isQuiesceSensitiveTarget,
@@ -573,6 +574,27 @@ export function configureBgHostIntegrationRootResolverForTests(
   bgHostIntegrationRootResolver = resolver;
 }
 
+/**
+ * EI-24790218658923698: which files another agent is mid-edit on in the tree the unit
+ * boots from (see restart-peer-edits.ts). Advisory only — fails soft to checked:false.
+ */
+export type PeerInFlightEditsReader = (
+  workingDirectory: string | null,
+  selfOwner: string | null,
+) => Promise<PeerInFlightEdits>;
+
+const defaultPeerInFlightEditsReader: PeerInFlightEditsReader = (workingDirectory, selfOwner) =>
+  readPeerInFlightEdits(workingDirectory, selfOwner);
+
+let peerInFlightEditsReader = defaultPeerInFlightEditsReader;
+
+/** Test seam — tests never read the real lock plane or shell out to git. */
+export function configurePeerInFlightEditsReaderForTests(
+  reader: PeerInFlightEditsReader = defaultPeerInFlightEditsReader,
+): void {
+  peerInFlightEditsReader = reader;
+}
+
 const UNKNOWN_BG_HOST_FRESHNESS: BgHostRestartFreshness = {
   bundleMtimeMs: null,
   newestSourceMtimeMs: null,
@@ -667,7 +689,12 @@ const RESTART_TARGET_PORTS: Partial<Record<RestartTarget, number>> = {
  * transient startup state; recommending a one-shot MainPID comparison turns
  * that bookkeeping lag into a false failed-restart report.
  */
-export function restartVerificationHint(target: RestartTarget, unit: string, beforePid: number | null): string {
+export function restartVerificationHint(
+  target: RestartTarget,
+  unit: string,
+  beforePid: number | null,
+  beforeNRestarts?: number,
+): string {
   const port = RESTART_TARGET_PORTS[target];
   if (port !== undefined) {
     return (
@@ -684,7 +711,15 @@ export function restartVerificationHint(target: RestartTarget, unit: string, bef
         beforePid ? ` and differs from ${beforePid}` : ''
       }, while checking \`systemctl --user show ${unit} -p ActiveState --value\`. ` +
       `MainPID=0 with ActiveState=activating means still starting, NOT failed — do not trigger a second restart ` +
-      `while this startup poll is in progress.`
+      `while this startup poll is in progress. ` +
+      // EI-24790218658923698: a crash at module import (e.g. an unrepresentable tool args
+      // schema in a peer's uncommitted edit) yields a FRESH, nonzero MainPID that dies
+      // seconds later, so the check above alone passes on a crash-loop. systemd's NRestarts
+      // counts only its own Restart= restarts, so a deliberate restart leaves it unchanged.
+      `Then confirm it STAYS up: ~60s after MainPID appears, re-read \`-p MainPID -p NRestarts\` and expect the same ` +
+      `MainPID and NRestarts still ${typeof beforeNRestarts === 'number' ? beforeNRestarts : 'at its pre-restart value'}. ` +
+      `A climbing NRestarts is a crash-loop: read logs:read { unit: '${unit}', since: '-5min', level: 'err' } for the ` +
+      `boot error, and check peerInFlightEdits (files other agents are mid-edit on) first.`
     );
   }
 
@@ -1536,6 +1571,14 @@ export default defineTool({
       });
     }
 
+    // EI-24790218658923698: a restart boots the unit's WHOLE working tree, including files
+    // another agent is mid-edit on. Advisory, never a refusal (a fleet this size always has
+    // live edit locks), but it names the suspects up front so a host that does not stay up
+    // is diagnosed in one read. Clean deploy checkouts report nothing by construction.
+    const peerInFlightEdits: PeerInFlightEdits | null = bootIntegrity
+      ? await peerInFlightEditsReader(bootIntegrity.requestedRoot || null, ownerId).catch(() => null)
+      : null;
+
     // WI-2140796: refuse to restart bg-host while a P-101 seed cut (or similar) holds
     // it deliberately quiesced (systemd mask + a marker written by
     // cut-seed-quiesced.sh). Placed HERE for the same reason as the boot-integrity
@@ -2286,6 +2329,7 @@ export default defineTool({
               : {}),
             ...(gatewayReadiness ? { gatewayReadiness } : {}),
             ...(stagingReadiness ? { stagingReadiness } : {}),
+            ...(peerInFlightEdits?.checked && peerInFlightEdits.total > 0 ? { peerInFlightEdits } : {}),
             ...(stagingSchemaPreparation
               ? {
                   staging_schema_preparation: {
@@ -2300,7 +2344,7 @@ export default defineTool({
               ? `GET ${gatewayHealthUrl()} after a NEW MainPID (observed ${gatewayReadiness.observedPid}; bounded wait ~${
                   GATEWAY_RESTART_PID_WAIT_MS / 1000
                 }s)`
-              : restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
+              : restartVerificationHint(target, cfg.unit, before.mainPid ?? null, before.nRestarts),
             note: gatewayReadiness
               ? `Gateway restart completed: MainPID changed to ${gatewayReadiness.observedPid}; ${gatewayHealthUrl()} responded ${
                   gatewayReadiness.health?.detail ?? 'successfully'
@@ -2329,7 +2373,7 @@ export default defineTool({
                     target === 'bg-host'
                       ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
                       : ''
-                  }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}`,
+                  }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}${peerInFlightEditsNote(peerInFlightEdits, cfg.unit)}`,
           });
         };
         if (target === 'staging') {

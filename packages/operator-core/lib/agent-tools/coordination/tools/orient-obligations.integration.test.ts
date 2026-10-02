@@ -1,6 +1,11 @@
 /** P-007: the advertised complete-agenda recovery must reach the real GOAL reader. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { assertFact } from '../../../agent-facts/store';
+import { runWithWorkspace } from '../../../workspace-als';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_baseline-coord-fixture';
 import { setMode } from '../../../modes/store';
 import * as obligationReader from '../../../agent-obligation-reader';
@@ -57,8 +62,8 @@ afterAll(async () => {
   await fx.dispose();
 });
 
-async function readOrientation() {
-  const result = await orientTool.handler(
+async function readOrientation(overrides: Record<string, unknown> = {}) {
+  const result = await runWithWorkspace(WS, () => orientTool.handler(
     {
       mode: 'monitor',
       harness: 'papercusp',
@@ -69,6 +74,7 @@ async function readOrientation() {
       includePlanEvents: false,
       includeCatchup: false,
       includeRecipes: false,
+      ...overrides,
     },
     {
       isSuperuser: true,
@@ -79,8 +85,13 @@ async function readOrientation() {
       log: vi.fn(),
       progress: vi.fn(),
     } as never,
-  );
-  return (result as { data: { obligations: obligationReader.AgentObligationBrief; goalPortfolio: goalSettings.GoalPortfolioBrief | null } }).data;
+  ));
+  return (result as { data: {
+    obligations: obligationReader.AgentObligationBrief;
+    goalPortfolio: goalSettings.GoalPortfolioBrief | null;
+    facts?: Array<{ scope: string; ref: string | null; body: string }> | null;
+    factsNarrowed?: unknown;
+  } }).data;
 }
 
 describe('GOAL-holder complete agenda recovery through coord:orient', () => {
@@ -236,6 +247,100 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const reinjectedAfterCold = await deliver(2_000);
     for (const line of actionLines) expect(reinjectedAfterCold).toContain(line);
   }, 90_000);
+
+  it('preserves independently seeded facts and obligation states across real source writes before R-5 timing', async () => {
+    const dueAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+    const realAgenda = obligationReader.readAgentObligationAgenda;
+    // Only the supported observation clock is fixed. Every provider and store
+    // remains real PostgreSQL; expected values below come from the seed contract.
+    vi.spyOn(obligationReader, 'readAgentObligationAgenda')
+      .mockImplementation(input => realAgenda({ ...input, now: dueAt }));
+    const sources = [
+      'packages/operator-core/lib/agent-tools/coordination/tools/orient.ts',
+      'packages/operator-core/lib/agent-tools/coordination/tools/orient-obligations.integration.test.ts',
+      'packages/operator-core/lib/agent-obligation-reader.ts',
+      'packages/operator-core/lib/agent-obligation-providers.ts',
+      'packages/operator-core/lib/agent-obligations.ts',
+      'packages/operator-core/lib/agent-facts/store.ts',
+      'packages/operator-core/lib/goal-launch-settings.ts',
+    ];
+    const hashes = () => sources.map(path => ({ path,
+      sha256: createHash('sha256').update(readFileSync(resolve(__dirname, '../../../../../..', path))).digest('hex'),
+    }));
+    const snapshots: unknown[] = [];
+    const report: Record<string, unknown> = { schemaVersion: 1, incomplete: true,
+      sourceStart: hashes(), snapshots,
+      scope: 'Production orient handler, real GOAL providers and fact store; phase guard only, no full R-5 or shipment claim.',
+    };
+    const publish = () => {
+      if (process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT) {
+        writeFileSync(process.env.PAPERCUSP_R5_ORIENT_PHASE_REPORT, JSON.stringify(report, null, 2) + '\n');
+      }
+    };
+    const key = `r5-orient-${RUN}`;
+    const fact = async (scope: 'owner' | 'harness', factKey: string, body: string, audienceScope?: string) => {
+      const receipt = await assertFact({ workspaceId: WS, scope,
+        scopeRef: scope === 'owner' ? OWNER : 'papercusp', key: factKey, body,
+        createdBy: OWNER, ttlSec: 3_600, ...(audienceScope ? { audienceScope } : {}),
+      }, fx.admin);
+      expect(receipt.key).toBe(factKey);
+      expect(receipt.body).toBe(body);
+    };
+    const expectedFacts = (changed: boolean) => [
+      { scope: 'owner', ref: OWNER, body: `R-5 ordinary owner fact ${key}${changed ? ' updated' : ''}` },
+      { scope: 'owner', ref: OWNER, body: `R-5 owner guard rail ${key}` },
+      { scope: 'harness', ref: 'papercusp', body: `R-5 harness fact ${key}` },
+    ].sort((a, b) => a.body.localeCompare(b.body));
+    const read = async (phase: string, changed = false, paused = false) => {
+      const start = performance.now();
+      const data = await readOrientation({ mode: 'full' });
+      const ms = performance.now() - start;
+      const facts = (data.facts ?? []).map(({ scope, ref, body }) => ({ scope, ref, body }))
+        .sort((a, b) => a.body.localeCompare(b.body));
+      const states = data.obligations?.evaluations.map(row => ({ ruleId: row.ruleId, status: row.status }))
+        .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
+      snapshots.push({ phase, ms, facts, states, primary: data.obligations?.primary.map(row => row.ruleId) });
+      publish();
+      expect(data.factsNarrowed).toBeUndefined();
+      expect(facts).toEqual(expectedFacts(changed));
+      expect(data.goalPortfolio?.goal.id).toBe(GOAL);
+      expect(data.goalPortfolio?.goal.status).toBe(paused ? 'paused' : 'active');
+      expect(data.goalPortfolio?.worklist).toEqual([]);
+      expect(states).toEqual([
+        { ruleId: 'goal-owner-report', status: paused ? 'not-applicable' : 'due' },
+        { ruleId: 'goal-plan-placement', status: 'not-applicable' },
+        { ruleId: 'goal-planning-needed', status: paused ? 'not-applicable' : 'due' },
+        { ruleId: 'owner-directive-disposition', status: 'not-applicable' },
+        { ruleId: 'waiting-on-progress', status: 'not-applicable' },
+      ].sort((a, b) => a.ruleId.localeCompare(b.ruleId)));
+      expect(data.obligations.evaluations.every(row => row.scope.workspaceId === WS && row.scope.ownerId === OWNER)).toBe(true);
+      expect(data.obligations.primary.map(row => row.ruleId).sort())
+        .toEqual(paused ? [] : ['goal-owner-report', 'goal-planning-needed']);
+      return ms;
+    };
+    publish();
+    try {
+      await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
+      await fact('owner', `guard-rail:${key}`, `R-5 owner guard rail ${key}`);
+      await fact('harness', key, `R-5 harness fact ${key}`);
+      await fact('owner', `hidden-${key}`, `R-5 hidden fleet fact ${key}`, `fleet:unjoined-${RUN}`);
+      await read('seeded-guard');
+      await fact('owner', key, `R-5 ordinary owner fact ${key} updated`);
+      await read('fact-write-guard', true);
+      await fx.admin`UPDATE harness_shared.goals SET status = 'paused' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      await read('goal-stop-guard', true, true);
+      report.sourceEnd = hashes();
+      expect(report.sourceEnd).toEqual(report.sourceStart);
+      report.incomplete = false;
+    } catch (error) {
+      report.error = error instanceof Error ? error.stack : String(error);
+      throw error;
+    } finally {
+      publish();
+      await fx.admin`UPDATE harness_shared.goals SET status = 'active' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      await fx.admin`DELETE FROM harness_shared.agent_facts WHERE created_by = ${OWNER} AND key IN (${key}, ${`guard-rail:${key}`}, ${`hidden-${key}`})`;
+    }
+  }, 180_000);
 
   it('returns the canonical full agenda from the production handler', async () => {
     // Observe the real read without replacing it. A second read can legitimately

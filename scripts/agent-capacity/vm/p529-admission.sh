@@ -76,8 +76,12 @@ if [ "$MEMGIB" = derived ]; then
   # DELIBERATELY: the first 10 measured jobs run at the 14 GiB default, then the derived value
   # applies. P529_PEAK_SEED=<tsv> pre-seeds the ledger from a prior run instead.
   export PC_HEAVY_MEM_CLAMP=1 PC_HEAVY_MEM_PER_SLOT_MIN_SPAN_SEC=0 PC_HEAVY_PEAK_LEDGER="$PC_HEAVY_DIR/job-peaks.tsv"
-  mkdir -p "$PC_HEAVY_DIR" && chmod 1777 "$PC_HEAVY_DIR" 2>/dev/null || true
-  if [ -n "${P529_PEAK_SEED:-}" ]; then cp "$P529_PEAK_SEED" "$PC_HEAVY_PEAK_LEDGER" || exit 2; fi
+  # pc-heavy creates the pool dir itself; pre-creating it would make the preflight's own
+  # "the sandbox's pc-heavy reached the shared pool" check vacuous, so only a seed does.
+  if [ -n "${P529_PEAK_SEED:-}" ]; then
+    mkdir -p "$PC_HEAVY_DIR" && chmod 1777 "$PC_HEAVY_DIR" 2>/dev/null
+    cp "$P529_PEAK_SEED" "$PC_HEAVY_PEAK_LEDGER" || exit 2
+  fi
   echo "P529_DERIVED ledger=$PC_HEAVY_PEAK_LEDGER min_span_sec=0 seed=${P529_PEAK_SEED:-none}"
 elif [ -n "$MEMGIB" ]; then
   export PC_HEAVY_MEM_CLAMP=1 PC_HEAVY_MEM_PER_SLOT_GIB="$MEMGIB"
@@ -134,7 +138,8 @@ import math, sys
 rows = []
 try:
     for line in open(sys.argv[1]):
-        f = dict(kv.split("=", 1) for kv in line.split() if "=" in kv)
+        # label= is last and free text, so parse only the fields before it.
+        f = dict(kv.split("=", 1) for kv in line.split(" label=", 1)[0].split() if "=" in kv)
         if int(f.get("samples", 0)) >= 3:
             rows.append(int(f.get("anon_mib", 0)))
 except FileNotFoundError:

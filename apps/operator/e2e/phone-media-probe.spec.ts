@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 import { access, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';

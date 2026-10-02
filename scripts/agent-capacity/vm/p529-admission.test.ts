@@ -109,8 +109,89 @@ describe('vm/p529-admission.sh (faked p005-ramp.sh, real shim installer)', () =>
     expect(readFileSync(path.join(bin(), 'vitest'), 'utf8')).not.toContain('PC_HEAVY_SHIM_V1');
   });
 
+  it('P529_MEM_PER_SLOT_GIB=derived keeps the clamp on with no fixed reserve, overlays pc-heavy for the arm only, and reports the D-030 derived reserve (WI-10005184)', () => {
+    const pch = path.join(bin(), '..', '..', 'scripts', 'pc-heavy.sh');
+    const original = readFileSync(pch, 'utf8');
+    const overlay = path.join(home, 'pc-heavy-new.sh');
+    writeFileSync(overlay, `${original}# OVERLAY_MARK\n`);
+    const seed = path.join(home, 'seed.tsv');
+    writeFileSync(seed, 'at=100 anon_mib=1000 rss_mib=1200 samples=5 secs=10 exit=0 label=seed\n');
+    // The ramp stands in for pc-heavy's monitor: 11 measured jobs (max 9000 MiB) plus two rows the
+    // D-030 rule must ignore (one sample only; a label carrying a decoy samples=/anon_mib= token).
+    const rows = [...Array.from({ length: 10 }, (_, i) => 2000 + i * 100), 9000]
+      .map((mib, i) => `at=${200 + i} anon_mib=${mib} rss_mib=${mib + 500} samples=4 secs=8 exit=0 label=npx vitest run`)
+      .concat([
+        'at=300 anon_mib=50000 rss_mib=50000 samples=1 secs=1 exit=0 label=npx tsc',
+        'at=301 anon_mib=100 rss_mib=100 samples=2 secs=4 exit=0 label=x samples=99 anon_mib=99999',
+      ]);
+    writeFileSync(
+      path.join(vmDir(), 'p005-ramp.sh'),
+      `${readFileSync(path.join(vmDir(), 'p005-ramp.sh'), 'utf8')}echo "OVERLAY=$(grep -c OVERLAY_MARK '${pch}' || true)" >> "$HOME/ramp.log"\n` +
+        `[ -n "\${PC_HEAVY_PEAK_LEDGER:-}" ] && printf '%s\\n' ${rows.map((r) => `'${r}'`).join(' ')} >> "$PC_HEAVY_PEAK_LEDGER"\n`,
+    );
+    const out = execFileSync('bash', [path.join(vmDir(), 'p529-admission.sh'), '16', '32 40', '600'], {
+      encoding: 'utf8',
+      cwd: home,
+      env: {
+        ...process.env,
+        PATH: `${home}/bin:${process.env.PATH}`,
+        HOME: home,
+        P529_TMP: tmp(),
+        P529_ARMS: 'b',
+        P529_MEM_PER_SLOT_GIB: 'derived',
+        P529_PC_HEAVY_OVERLAY: overlay,
+        P529_PEAK_SEED: seed,
+      },
+    });
+    const pool = `${tmp()}/slots-k16mderived`;
+    expect(out).toMatch(new RegExp(`^P529_DERIVED ledger=${pool}/job-peaks\\.tsv min_span_sec=0 seed=${seed}$`, 'm'));
+    expect(out).toMatch(/^P529_OVERLAY pc-heavy=\S+ sha256=[0-9a-f]{16}$/m);
+    const log = readFileSync(path.join(home, 'ramp.log'), 'utf8').trim().split('\n');
+    expect(log[0]).toMatch(/^ARM p529-k16mderived sel=all steps=32 40 dur=600 shim=1 /);
+    for (const kv of ['PC_HEAVY_MEM_CLAMP=1 ', 'PC_HEAVY_MEM_PER_SLOT_MIN_SPAN_SEC=0 ', `PC_HEAVY_PEAK_LEDGER=${pool}/job-peaks.tsv `])
+      expect(`${log[0]} `).toContain(kv);
+    expect(log[0]).not.toContain('PC_HEAVY_MEM_PER_SLOT_GIB=');
+    expect(log[1]).toBe('OVERLAY=1');
+    // seed row + 11 measured rows count; the 1-sample and 2-sample rows do not.
+    expect(out).toMatch(/^P529_LEDGER rows_ge3=12 window=12 max_anon_mib=9000 derived_gib=10$/m);
+    expect(readFileSync(path.join(home, 'capacity', 'fp', 'p529-peaks-k16mderived.tsv'), 'utf8')).toContain('anon_mib=9000');
+    expect(out).toMatch(/^P529_OVERLAY_RESTORED$/m);
+    expect(readFileSync(pch, 'utf8')).toBe(original);
+  });
+
+  it('restores the prepared pc-heavy even when the arm aborts at the sandbox preflight', () => {
+    const pch = path.join(bin(), '..', '..', 'scripts', 'pc-heavy.sh');
+    const original = readFileSync(pch, 'utf8');
+    const overlay = path.join(home, 'pc-heavy-new.sh');
+    writeFileSync(overlay, `${original}# OVERLAY_MARK\n`);
+    let err: { status?: number; stdout?: string } = {};
+    try {
+      execFileSync('bash', [path.join(vmDir(), 'p529-admission.sh'), '16', '32', '600'], {
+        encoding: 'utf8',
+        cwd: home,
+        stdio: 'pipe',
+        env: {
+          ...process.env,
+          PATH: `${home}/bin:${process.env.PATH}`,
+          HOME: home,
+          P529_TMP: tmp(),
+          P529_ARMS: 'b',
+          P529_MEM_PER_SLOT_GIB: 'derived',
+          P529_PC_HEAVY_OVERLAY: overlay,
+          FAKE_PRIVATE_TMP: path.join(home, 'private'),
+        },
+      });
+    } catch (e) {
+      err = e as typeof err;
+    }
+    expect(err.status).toBe(4);
+    expect(err.stdout).toMatch(/^P529_OVERLAY_RESTORED$/m);
+    expect(readFileSync(pch, 'utf8')).toBe(original);
+  });
+
   it.each([
     ['P529_ARMS', 'a'],
+    ['P529_PC_HEAVY_OVERLAY', '/nonexistent/pc-heavy.sh'],
     ['P529_MEM_PER_SLOT_GIB', '0'],
     ['P529_MEM_PER_SLOT_GIB', 'x6'],
   ])('refuses %s=%s before touching the prepared checkout', (k, v) => {

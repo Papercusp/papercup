@@ -386,10 +386,10 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
     persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES,
     environment: { keys: ENVIRONMENT_KEYS, maxBytes: MAX_ENVIRONMENT_BYTES,
       maxValueBytes: MAX_ENVIRONMENT_VALUE_BYTES, persistence: 'once-per-pid-identity',
-      source: '/proc/<owned-pid>/environ', limitation: 'initial process environment; later in-process changes may be invisible' },
+      source: 'owned process environment in procfs', limitation: 'initial process environment; later in-process changes may be invisible' },
     output: { descriptors: [1, 2], debugFile: options.debugFile ?? null,
       maxInfoBytes: MAX_DESCRIPTOR_BYTES, maxDebugFileDescriptors: MAX_DEBUG_FILE_DESCRIPTORS,
-      persistence: 'per-sample-buffered', source: '/proc/<owned-pid>/fd and fdinfo',
+      persistence: 'per-sample-buffered', source: 'owned process file descriptors and fdinfo in procfs',
       limitation: 'descriptor topology, not syscall duration; requested debug path must also match measured native environment' },
     stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, debuggerTimeoutMs: 4_000,
       maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });

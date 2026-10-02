@@ -69,6 +69,7 @@ export interface CapacityWindows {
   windowResetAt?: number;
   utilization7d?: number;
   windowResetAt7d?: number;
+  usageCreditsAvailable?: boolean;
   /** Codex only: which METER the reading came from — `premium` (the meter the pool projection
    *  describes) or `base_model_inference` (the Luna reserve tier, a separate budget that must
    *  never be projected into the premium slots — EI-22103680502746318). Absent for Anthropic. */
@@ -131,6 +132,7 @@ export function storedWindows(a: ClaudeAccount): CapacityWindows {
     windowResetAt: r.windowResetAt,
     utilization7d: r.utilization7d,
     windowResetAt7d: r.windowResetAt7d,
+    ...(r.usageCreditsAvailable !== undefined ? { usageCreditsAvailable: r.usageCreditsAvailable } : {}),
   };
 }
 
@@ -341,6 +343,8 @@ export async function probeAccountCapacity(
       });
       const windows = parseCapacityHeaders(h);
       const sawHeader = Object.keys(windows).length > 0;
+      // A real upstream quota refusal wins over a positive wallet balance.
+      if (res.status === 429) windows.usageCreditsAvailable = false;
       if (sawHeader) {
         return {
           ...base,
