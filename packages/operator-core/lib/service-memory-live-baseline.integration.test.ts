@@ -4,7 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readlinkSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, validatePinnedStateOptions } from '../../../scripts/cdp-inspector.mjs';
@@ -85,6 +85,16 @@ function processCommand(argv: string[], cwd: string, executable: string) {
 }
 
 type ResourceRow = ReturnType<typeof processSample>;
+function descendantEntryRole(main: ResourceRow, row: ResourceRow) {
+  const entry = main.command.script;
+  if (!entry?.endsWith('/hono-host.mjs') || row.executableSha256 !== main.executableSha256) return 'other-descendant';
+  if (row.command.script === entry) return 'same-entry-operator-descendant';
+  // The production resolver opts only the spawner into this exact sibling.
+  // A similarly named file elsewhere is not an identified serving artifact.
+  if (row.command.script === join(dirname(entry), 'spawner-sidecar.mjs')) return 'maintained-spawner-descendant';
+  return 'other-descendant';
+}
+
 function processInventory(main: ResourceRow, children: ResourceRow[],
   missed: { pid: number; parentPid: number; reason: string }[], previous: ResourceRow[] = []) {
   const rows = [main, ...children];
@@ -103,8 +113,7 @@ function processInventory(main: ResourceRow, children: ResourceRow[],
   const classified = rows.map(row => ({ pid: row.pid, startTicks: row.startTicks,
     executableSha256: row.executableSha256,
     role: row.pid === main.pid ? 'named-main' : row.command.esbuildService ? 'native-esbuild-service' :
-      main.command.script?.endsWith('/hono-host.mjs') && row.command.script === main.command.script &&
-      row.executableSha256 === main.executableSha256 ? 'same-entry-operator-descendant' : 'other-descendant',
+      descendantEntryRole(main, row),
     pssBytes: row.pssBytes }));
   return { observed: classified, notChecked: missed,
     censusComplete: missed.length === 0,
@@ -128,9 +137,17 @@ function assertIdentity(before: { pid: number; startTicks: string; executableSha
 function counterTarget(main: ResourceRow, rows: ResourceRow[], pid: number) {
   const inventory = processInventory(main, rows, []);
   const target = pid === main.pid ? main : rows.find(row => row.pid === pid);
-  if (!target || (pid !== main.pid && inventory.observed.find(row => row.pid === pid)?.role !==
-      'same-entry-operator-descendant')) throw Error('Counter target must be the main or exact same-entry descendant');
+  const role = inventory.observed.find(row => row.pid === pid)?.role;
+  if (!target || (pid !== main.pid && role !== 'same-entry-operator-descendant' &&
+      role !== 'maintained-spawner-descendant')) throw Error('Counter target must be the main or exact maintained descendant');
   return target;
+}
+
+function assertCounterRole(main: ResourceRow, target: ResourceRow, facts: any) {
+  const role = configuredHostRole(facts);
+  if (target.pid !== main.pid && descendantEntryRole(main, target) === 'maintained-spawner-descendant' &&
+      role.configuredSidecar !== 'spawner') throw Error('Maintained spawner entry did not report the configured spawner role');
+  return role;
 }
 
 function configuredHostRole(facts: any) {
@@ -313,6 +330,30 @@ describe('actual current-build operator memory baseline', () => {
     expect(() => counterTarget(main, [child], 3)).toThrow('ancestry');
   });
 
+  it('binds standalone counters to the exact maintained sibling, executable, ancestry and configured role', () => {
+    const main = { pid: 1, parentPid: 0, startTicks: '1', executable: '/node', executableSha256: 'a',
+      command: { script: '/runtime/hono-host.mjs', sha256: 'x', esbuildService: false },
+      pssBytes: 100, rssBytes: 200, anonymousBytes: 80 };
+    const spawner = { ...main, pid: 2, parentPid: 1, startTicks: '2',
+      command: { ...main.command, script: '/runtime/spawner-sidecar.mjs' } };
+    const child = { ...spawner, pid: 3, parentPid: 2, startTicks: '3' };
+    const facts = { cluster: { isPrimary: true, isWorker: false }, backgroundWorkersOverride: 'disabled',
+      stagingPort: false, sidecarFlags: { substrate: false, spawner: true, gateway: false, embed: false, resourceHealth: false } };
+    expect(counterTarget(main, [spawner, child], 3)).toBe(child);
+    expect(processInventory(main, [spawner, child], []).observed.map(row => row.role))
+      .toEqual(['named-main', 'maintained-spawner-descendant', 'maintained-spawner-descendant']);
+    expect(assertCounterRole(main, child, facts)).toMatchObject({ configuredSidecar: 'spawner', allocationOwner: 'unknown' });
+    expect(() => assertCounterRole(main, child, { ...facts, sidecarFlags: { ...facts.sidecarFlags, spawner: false } }))
+      .toThrow('configured spawner role');
+    for (const decoy of [{ ...child, executableSha256: 'other' },
+      { ...child, command: { ...child.command, script: '/other/spawner-sidecar.mjs' } },
+      { ...child, command: { ...child.command, script: '/runtime/spawner-sidecar.mjs.backup' } }]) {
+      expect(() => counterTarget(main, [spawner, decoy], 3)).toThrow('Counter target');
+    }
+    expect(() => counterTarget(main, [child], 3)).toThrow('ancestry');
+    expect(() => assertIdentity(child, { ...child, startTicks: 'reused' })).toThrow('identity changed');
+  });
+
   it('distinguishes request-only primaries, actual cluster workers and configured sidecars without assigning requests', () => {
     const facts = { cluster: { isPrimary: true, isWorker: false }, backgroundWorkersOverride: 'unset',
       stagingPort: true, sidecarFlags: { substrate: false, spawner: false, gateway: false, embed: false, resourceHealth: false } };
@@ -408,6 +449,7 @@ describe('actual current-build operator memory baseline', () => {
       limitations: ['Counters cover one explicitly selected main/descendant PID; HTTP request assignment remains unknown.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
+        'A maintained sibling entry is bound to the main build only by its observed path/executable/ancestry; its loaded build is not advertised separately.',
         'Current disk bundle hash is recorded separately from the health-reported loaded build.'] };
     const publish = () => writeFileSync(path, serializeIdentitySafeJson(report));
     let client: ReturnType<typeof createCdpClient> | undefined;
@@ -447,6 +489,11 @@ describe('actual current-build operator memory baseline', () => {
       if (!entry) throw Error('Serving bundle entry unobserved');
       const bundlePath = entry;
       report.bundle = { path: bundlePath, argvEntry: entry, diskSha256: hash(readFileSync(bundlePath)) };
+      const counterEntry = counterBefore.command.script;
+      if (!counterEntry) throw Error('Counter bundle entry unobserved');
+      report.counterBundle = { path: counterEntry, argvEntry: counterEntry,
+        diskSha256: hash(readFileSync(counterEntry)), loadedBuild: 'unknown',
+        role: counterPid === pid ? 'named-main' : descendantEntryRole(before, counterBefore) };
       report.inspectorWasOpen = await attach();
       if (!client) {
         process.kill(counterPid, 'SIGUSR1'); opened = true;
@@ -523,7 +570,7 @@ describe('actual current-build operator memory baseline', () => {
         assertIdentity(counterBefore, counterOs);
         previousProcesses = [os, ...childRows];
         report.samples.push({ label, at: new Date().toISOString(), ...memory, os, counterOs,
-          configuredHostRole: configuredHostRole(memory.hostFacts), pinnedState,
+          configuredHostRole: assertCounterRole(before, counterOs, memory.hostFacts), pinnedState,
           descendants: childRows, inventory, observerMs: performance.now() - started }); publish();
         expect(memory.heapSpaces.length).toBeGreaterThan(0);
         expect(memory.heapSpaces.every((space: any) => typeof space.space_name === 'string' &&
