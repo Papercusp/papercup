@@ -165,7 +165,7 @@ describe('GCP workspace-host credential references', () => {
   });
 
   // WI-10005446: each active-user resolution forks three gcloud CLIs (~0.7 CPU-s each) from
-  // bg-host, which re-resolved about every 45 s. The memo reuses one resolution for a window
+  // bg-host, in bursts during GCP operations. The memo reuses one resolution for a window
   // shorter than gcloud's own 300 s refresh margin.
   describe('gcloud active-user memo', () => {
     const auth = (n: number) => ({ accessToken: `${SECRET}-${n}`, identity: 'developer@example.com', projectId: PROJECT });

@@ -554,8 +554,9 @@ export async function acquireGcpGcloudActiveUserAuth(
 /** Resolve the selected non-secret connection reference to a token supplier. */
 /**
  * How long one gcloud active-user resolution (account, access token, project) is reused.
- * Each resolution forks three gcloud CLIs at about 0.7 CPU-s each, and bg-host re-resolved
- * roughly every 45 s (measured 2026-10-02, WI-10005446). gcloud refreshes a user token that
+ * Each resolution forks three gcloud CLIs at about 0.7 CPU-s each. bg-host re-resolved 5 times
+ * in one 229 s window, though not in a later 15-min one: the load is bursty, tied to GCP
+ * operations (measured 2026-10-02, WI-10005446). gcloud refreshes a user token that
  * expires within 300 s before printing it (_CREDENTIALS_EXPIRY_WINDOW in
  * googlecloudsdk/core/credentials/store.py), so a token reused for at most 180 s still has
  * about 120 s of validity at its last use. The clock starts when the resolution starts.
