@@ -90,7 +90,8 @@ describe('pc-heavy wait loops read the clock without forking (EI-218945205575497
     },
     {
       label: 'ordinary heavy-slot queue (per-tick read)',
-      anchor: 'break 2; fi',
+      // The sweep body became _try_acquire_slot (WI-10005334); this is the loop's acquire line.
+      anchor: 'if _try_acquire_slot; then break; fi',
       read: '_now="${EPOCHSECONDS:-$(date +%s)}"',
     },
     {

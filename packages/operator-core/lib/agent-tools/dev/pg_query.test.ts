@@ -515,6 +515,30 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       expect(pgReadQueryMock).not.toHaveBeenCalled();
     });
 
+    it('gives test_runs-specific guidance when positiveControlSql hits the CI-row tenant warning', async () => {
+      advisoryMock
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(
+          '⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI/dogfood-reporter rows.',
+        );
+      const positiveControlSql =
+        "SELECT id FROM harness_shared.test_runs WHERE workspace_id = 'ws-1' AND harness_slug = 'h-1'";
+
+      const res = await pgQueryTool.handler(
+        { sql: 'SELECT 1', positiveControlSql } as never,
+        { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
+      );
+      const payload = payloadOf(res as never);
+
+      expect((res as { isError?: boolean }).isError).toBe(true);
+      expect(payload).toMatchObject({ reason: 'positive_control_tenant_scope_required' });
+      expect(payload.error).toContain('For a local reporter positive control');
+      expect(payload.error).toContain('CI/gate controls, filter by source or commit_sha');
+      expect(payload.error).toContain('workspace_id/harness_slug alone are insufficient');
+      expect(payload.error).not.toContain('Add tenant predicate(s) to positiveControlSql');
+      expect(pgReadQueryMock).not.toHaveBeenCalled();
+    });
+
     // EI-22633261796522656: local reporter rows can be recovered by a bounded
     // id group. The primary and positive-control reads must both pass the same
     // tenant guard so the handler can execute the evidence probe without the

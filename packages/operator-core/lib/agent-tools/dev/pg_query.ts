@@ -858,9 +858,16 @@ export default defineTool({
         ? await buildTenantScopeAdvisory(args.positiveControlSql, tenantScope).catch(() => null)
         : null;
       if (positiveControlTenantAdvisory && !args.allowUnscoped) {
+        const correction = positiveControlTenantAdvisory.startsWith('⚠ harness_shared.test_runs:')
+          ? 'For a local reporter positive control, use an exact file_path = value with both tenant predicates and a bounded LIMIT, ' +
+            'or a bounded id/run_group_id with both tenant predicates; for CI/gate controls, filter by source or commit_sha. ' +
+            'An open-ended file_path LIKE does not establish local identity, and workspace_id/harness_slug alone are ' +
+            'insufficient because CI/gate rows have NULL-by-design tenant columns. Pass allowUnscoped: true only for a ' +
+            'deliberate broader read.'
+          : 'Add tenant predicate(s) to positiveControlSql, or pass allowUnscoped: true for a deliberate cross-tenant read.';
         return jsonError(
           'positive_control_tenant_scope_required',
-          `${positiveControlTenantAdvisory} Add the tenant predicate(s) to positiveControlSql, or pass allowUnscoped: true for a deliberate cross-tenant read.`,
+          `${positiveControlTenantAdvisory} ${correction}`,
         );
       }
       const result = await pgReadQuery(sql, {

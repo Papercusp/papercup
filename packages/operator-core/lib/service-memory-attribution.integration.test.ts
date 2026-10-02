@@ -2,7 +2,7 @@
  * This measures one request-only host, not the production six-worker/background cohort.
  * Allocation samples and completed query bytes do not prove a retained-state owner.
  */
-import { cpSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, existsSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -37,6 +37,18 @@ async function readSourceRequest(chunks: AsyncIterable<Buffer>) {
   const parts: Buffer[] = [];
   for await (const chunk of chunks) parts.push(chunk);
   return JSON.parse(Buffer.concat(parts).toString('utf8'));
+}
+
+// Database/runtime launchers can emit substantial output before the cohort
+// publishes its first report. Do not buffer that output in spawnSync.
+function runCohortWithLog(args: string[], options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }, logPath: string) {
+  const descriptor = openSync(logPath, 'w');
+  try {
+    const result = spawnSync(process.execPath, args, { ...options, stdio: ['ignore', descriptor, descriptor] });
+    const bytes = readFileSync(logPath);
+    return { ...result, stdout: '', stderr: bytes.subarray(Math.max(0, bytes.length - 4000)).toString('utf8'),
+      log: { path: logPath, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } };
+  } finally { closeSync(descriptor); }
 }
 
 // queryObjects triggers GC and enumerates survivors. Its aggregate sizes are
@@ -121,6 +133,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const chunks = async function* () { yield body.subarray(0, split); yield body.subarray(split); };
       expect(await readSourceRequest(chunks())).toEqual({ path: 'unicode.ts', text });
     }
+  });
+
+  it('keeps launcher output on disk before the first cohort report exists', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'papercusp-cohort-output-'));
+    try {
+      const report = join(directory, 'report.json');
+      const result = runCohortWithLog(['-e',
+        "process.stdout.write('x'.repeat(1024*1024)); require('node:fs').writeFileSync(process.argv[1], JSON.stringify({incomplete:false}));", report],
+      { cwd: root, env: process.env, timeout: 5000 }, join(directory, 'launcher.log'));
+      expect(result.status).toBe(0); expect(result.error).toBeUndefined();
+      expect(result.log.bytes).toBe(1024 * 1024);
+      expect(JSON.parse(readFileSync(report, 'utf8')).incomplete).toBe(false);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
   it('attributes exercised content-lint transforms to matched request-host and executable descendant samples', async () => {
@@ -531,7 +556,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const inspectorPath = pathToFileURL(join(root, 'scripts/cdp-inspector.mjs')).href;
       const probe = String.raw`
         const fs = require('node:fs'), path = require('node:path');
-        const { spawn } = require('node:child_process');
+        const { spawn, spawnSync } = require('node:child_process');
         const { createHash } = require('node:crypto');
         const e = process.env, wait = ms => new Promise(resolve => setTimeout(resolve, ms));
         const hash = value => createHash('sha256').update(value).digest('hex');
@@ -546,6 +571,16 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           ] };
         const publish = () => { fs.writeFileSync(e.TEST_REPORT_PATH, JSON.stringify(report, null, 2)); };
         const home = path.join(e.PAPERCUSP_WORKSPACES_ROOT, e.PAPERCUSP_WORKSPACE_ID, 'operator-home');
+        // The lock authority requires a physical repository domain. Initialize
+        // only this disposable fixture: no commit, branch switch or remote.
+        if (!home.startsWith(e.PAPERCUSP_WORKSPACES_ROOT + path.sep)) throw Error('fixture root escaped private workspace');
+        const initialized = spawnSync('git', ['init', '--quiet', home], { encoding: 'utf8', timeout: 5000 });
+        const repository = spawnSync('git', ['-C', home, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 });
+        if (initialized.status !== 0 || repository.status !== 0 || repository.stdout.trim() !== home) {
+          throw Error('Private mutation repository preflight failed: ' + initialized.stderr + repository.stderr);
+        }
+        report.repositoryPreflight = { root: repository.stdout.trim(), initialized: true, noCommit: true };
+        publish();
         const source = 'export const values = [' + Array.from({length: 30000}, (_, i) => JSON.stringify('controlled-source-' + i)).join(',') + '];\n';
         const test = "import { values } from './subject'; export const observed = values.length;\n";
         fs.writeFileSync(path.join(home, 'subject.ts'), source);
@@ -582,7 +617,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             const cohort = { mode, samples: [], requests: [], descendants: [], pauses: 0, reaped: false };
             report.cohorts.push(cohort); publish();
             const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', e.TEST_BUNDLE_PATH], {
-              cwd: path.join(process.cwd(), 'apps/operator'), env: { ...e, MALLOC_ARENA_MAX: e.TEST_MALLOC_ARENA_MAX },
+              cwd: path.join(process.cwd(), 'apps/operator'), env: { ...e, MALLOC_ARENA_MAX: e.TEST_MALLOC_ARENA_MAX,
+                PAPERCUSP_INTEGRATION_ROOT: home, PAPERCUSP_CANONICAL_TREE: home },
               stdio: ['ignore', 'pipe', 'pipe'] });
             const exited = new Promise(resolve => child.once('exit', resolve));
             let startup = '', tail = '', client, lease, poll;
@@ -605,15 +641,16 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             };
             try {
               const deadline = Date.now() + 150000;
+              let ready = false;
               let endpoint;
               while (Date.now() < deadline) {
                 if (child.exitCode !== null || child.signalCode !== null) throw Error('host exited: ' + tail);
                 endpoint = [...startup.matchAll(/^Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+)\r?$/gm)].at(-1)?.[1];
                 try { const r = await fetch(e.PAPERCUSP_OPERATOR_URL + '/api/health/ready', { signal: AbortSignal.timeout(1000) });
-                  if ((await r.json()).ready && endpoint) break; } catch {}
+                  if ((await r.json()).ready && endpoint) { ready = true; break; } } catch {}
                 await wait(250);
               }
-              if (!endpoint) throw Error('host inspector/readiness timeout: ' + tail);
+              if (!ready || !endpoint) throw Error('host inspector/readiness timeout: ' + tail);
               client = createCdpClient(endpoint, { requestTimeoutMs: 5000 }); await client.connect();
               const identity = (await client.evaluate('({pid:process.pid,entry:process.argv[1]})', { returnByValue: true })).result.value;
               if (identity.pid !== child.pid || identity.entry !== e.TEST_BUNDLE_PATH) throw Error('serving PID/entry mismatch');
@@ -641,6 +678,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                 for (let window = 0; window < 3; window++) {
                   const response = await call('testing:run', { files: ['caller.test.ts'], timeoutMs: 1000 });
                   cohort.requests.push({ window, ...response });
+                  if (response.value?.root !== home) throw Error('Testing request escaped the private repository: ' + response.value?.root);
                   if (response.value?.error !== 'mutation_probe_active') throw Error('Expected real mutation refusal: ' + JSON.stringify(response.value));
                   await sample('window-' + window);
                 }
@@ -669,14 +707,16 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           report.incomplete = false; publish();
         })().catch(error => { report.error = String(error); publish(); process.exitCode = 1; });
       `;
-      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api',
-        '--', process.execPath, '-e', probe], { cwd: root, encoding: 'utf8', timeout: 360_000, maxBuffer: 128 * 1024,
+      const logPath = process.env.PAPERCUSP_P011_SERVING_COMPILER_LOG || join(directory, 'launcher.log');
+      const result = runCohortWithLog([join(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api',
+        '--', process.execPath, '-e', probe], { cwd: root, timeout: 360_000,
         env: { ...process.env, TEST_BUNDLE_PATH: bundle, TEST_BUNDLE_HASH: bundleHash, TEST_WORKER_HASH: workerHash,
           TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_REPORT_PATH: reportPath, TEST_INSPECTOR_PATH: inspectorPath,
-          TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } });
+          TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } }, logPath);
       const report = readCohortReport(reportPath, result);
+      report.runner.log = result.log;
       if (destination) writeFileSync(resolve(root, destination), JSON.stringify(report, null, 2) + '\n');
-      expect(result.status, report.error ?? result.stderr.slice(-2000)).toBe(0);
+      expect(result.status, existsSync(reportPath) ? report.error : result.stderr.slice(-2000)).toBe(0);
       expect(report.incomplete).toBe(false);
       expect(report.cohorts).toHaveLength(2);
       const [control, compiler] = report.cohorts;

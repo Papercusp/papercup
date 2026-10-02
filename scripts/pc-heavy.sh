@@ -2345,15 +2345,18 @@ _mem_class_peak_mib() {
         if (NR == 1 || $1 > hi) hi = $1
       }
       END {
-        if (NR < min || hi - lo < span) exit 1
+        if (NR == 0) exit 1
+        # Too little history to LOOSEN on, but the largest peak seen is still
+        # a floor (rows are sorted ascending, so v[NR] is the max).
+        if (NR < min || hi - lo < span) { print "cold", v[NR]; exit 0 }
         i = int((q * NR + 99) / 100); if (i < 1) i = 1; if (i > NR) i = NR
-        print v[i]
+        print "derived", v[i]
       }'
 }
 
 _mem_per_slot_resolve() {
   local _env="${PC_HEAVY_MEM_PER_SLOT_GIB:-}" _ledger='' _q='' _window='' _min='' _span='' _mib=''
-  local _class='' _gib=0 _tc_def="${PC_HEAVY_MEM_RESERVE_TYPECHECK_DEFAULT_GIB:-14}"
+  local _class='' _gib=0 _peak='' _kind='' _src='' _tc_def="${PC_HEAVY_MEM_RESERVE_TYPECHECK_DEFAULT_GIB:-14}"
   local _ot_def="${PC_HEAVY_MEM_RESERVE_OTHER_DEFAULT_GIB:-4}"
   case "$_tc_def" in ''|0|*[!0-9]*) _tc_def=14 ;; esac
   case "$_ot_def" in ''|0|*[!0-9]*) _ot_def=4 ;; esac
@@ -2387,16 +2390,33 @@ _mem_per_slot_resolve() {
       case "$_min" in ''|0|*[!0-9]*) _min=10 ;; esac
       case "$_span" in ''|*[!0-9]*) _span=86400 ;; esac
       for _class in typecheck other; do
-        _mib="$(_mem_class_peak_mib "$_class" "$_ledger" "$_q" "$_window" "$_min" "$_span")" || continue
+        _peak="$(_mem_class_peak_mib "$_class" "$_ledger" "$_q" "$_window" "$_min" "$_span")" || continue
+        _kind="${_peak%% *}"
+        _mib="${_peak#* }"
+        case "$_kind:$_mib" in derived:*|cold:*) ;; *) continue ;; esac
         case "$_mib" in ''|*[!0-9]*) continue ;; esac
         # +10% headroom, ceil to GiB: ceil(mib * 1.1 / 1024) == ceil(mib * 11 / 10240).
         _gib=$(( (_mib * 11 + 10239) / 10240 ))
         [ "$_gib" -lt 1 ] && _gib=1
         [ "$_gib" -gt 64 ] && _gib=64
+        _src="derived:q${_q}-of-${_mib}MiB"
+        if [ "$_kind" = cold ]; then
+          # Cold start keeps the class constant — unless this class has already
+          # been seen to use more. The constants are per class now, and the
+          # `other` one (4 GiB) sits under jobs a wrapper script can hide a
+          # compile in (measured on the dev tower 2026-10-02: a `bash` wrapper
+          # around tsc peaked at 15 GiB as `other`).
+          _src="cold-start-max:${_mib}MiB"
+          if [ "$_class" = typecheck ]; then
+            [ "$_gib" -gt "$_mem_reserve_typecheck_gib" ] || continue
+          else
+            [ "$_gib" -gt "$_mem_reserve_other_gib" ] || continue
+          fi
+        fi
         if [ "$_class" = typecheck ]; then
-          _mem_reserve_typecheck_gib="$_gib"; _mem_reserve_typecheck_source="derived:q${_q}-of-${_mib}MiB"
+          _mem_reserve_typecheck_gib="$_gib"; _mem_reserve_typecheck_source="$_src"
         else
-          _mem_reserve_other_gib="$_gib"; _mem_reserve_other_source="derived:q${_q}-of-${_mib}MiB"
+          _mem_reserve_other_gib="$_gib"; _mem_reserve_other_source="$_src"
         fi
       done
     fi

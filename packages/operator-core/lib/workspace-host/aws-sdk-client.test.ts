@@ -107,6 +107,8 @@ class FakeAws {
   readonly regionsBuilt: string[] = [];
   account = ACCOUNT;
   instanceState: string = 'running';
+  /** EC2's StateReason on described instances (WI-10005332); absent by default, as for a healthy instance. */
+  instanceStateReason?: { Code: string; Message?: string };
   ssmDenied = false;
   /** SSM agent PingStatus for every instance (D-013 waits for Online before pushing). */
   ssmPingStatus = 'Online';
@@ -203,6 +205,7 @@ class FakeAws {
                 InstanceId: i.id,
                 ImageId: 'ami-0abc',
                 State: { Name: this.instanceState },
+                ...(this.instanceStateReason ? { StateReason: this.instanceStateReason } : {}),
                 BlockDeviceMappings: [{ DeviceName: '/dev/sda1', Ebs: { VolumeId: 'vol-root' } }],
               },
             ],
@@ -871,6 +874,33 @@ describe('waits and enrichment honour their contracts', () => {
     const observed = await client.waitForInstanceState('i-slow', 'running');
     expect(observed).toMatchObject({ instanceId: 'i-slow', state: 'pending' });
     expect(aws.commands('DescribeInstancesCommand').length).toBeGreaterThan(1);
+  });
+
+  it('a launch EC2 terminated reports its StateReason, scrubbed of credential material (WI-10005332)', async () => {
+    const { aws, client } = setup();
+    aws.instances.set('i-dead', { id: 'i-dead', token: 'dead' });
+    aws.instanceState = 'terminated';
+    aws.instanceStateReason = {
+      Code: 'Client.InvalidKMSKey.InvalidState',
+      Message: `Client.InvalidKMSKey.InvalidState: key unusable for session ${TOKEN}`,
+    };
+    const observed = await client.describeInstance('i-dead');
+    expect(observed).toMatchObject({
+      instanceId: 'i-dead',
+      state: 'terminated',
+      stateReason: { code: 'Client.InvalidKMSKey.InvalidState' },
+    });
+    expect(observed?.stateReason?.message).toContain('key unusable');
+    expect(observed?.stateReason?.message).toContain('[redacted]');
+    expect(JSON.stringify(observed)).not.toContain(TOKEN);
+  });
+
+  it('a healthy instance carries no StateReason', async () => {
+    const { aws, client } = setup();
+    aws.instances.set('i-ok', { id: 'i-ok', token: 'ok' });
+    const observed = await client.describeInstance('i-ok');
+    expect(observed).toBeDefined();
+    expect(observed).not.toHaveProperty('stateReason');
   });
 
   it('SSM access denied leaves ssmOnline unmeasured instead of false', async () => {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   runFakeWorkspaceHostProviderContractSuite,
+  workspaceHostProviderRetryClass,
   type WorkspaceHostApplyResult,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderContext,
@@ -11,6 +12,7 @@ import {
 } from '@papercusp/deployment-driver';
 import {
   AWS_WORKSPACE_HOST_CLIENT_TOKEN_LENGTH,
+  AwsInstanceLaunchFailedError,
   awsWorkspaceHostClientToken,
   createAwsWorkspaceHostProvider,
   type AwsCommandInvocationObservation,
@@ -112,6 +114,11 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
   /** Groups EC2 "does not return" — simulates an unverifiable group. */
   readonly hiddenSecurityGroups = new Set<string>();
   readonly describedSecurityGroups: string[][] = [];
+  /**
+   * When set, a wait for `running` observes the launch ending in this state instead (EC2's waiter
+   * reports the instance it gave up on). Models a launch EC2 terminates, e.g. an unusable KMS key.
+   */
+  launchFailure?: { state: 'shutting-down' | 'terminated'; stateReason: { code: string; message?: string } };
 
   private readonly instances = new Map<string, AwsInstanceObservation>();
   private readonly volumes = new Map<string, AwsVolumeObservation>();
@@ -265,6 +272,12 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     return id ? this.instances.get(id) : undefined;
   }
 
+  setInstanceState(instanceId: string, state: AwsEc2InstanceState): void {
+    const current = this.instances.get(instanceId);
+    if (!current) throw new Error(`fake EC2 has no instance ${instanceId}`);
+    this.instances.set(instanceId, { ...current, state, observedAt: NOW });
+  }
+
   async describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined> {
     this.describedInstances.push(instanceId);
     return this.instances.get(instanceId);
@@ -277,6 +290,17 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     this.waitedInstanceStates.push({ id: instanceId, state });
     const current = this.instances.get(instanceId);
     if (!current) return undefined;
+    if (state === 'running' && this.launchFailure) {
+      const failed: AwsInstanceObservation = {
+        ...current,
+        state: this.launchFailure.state,
+        stateReason: this.launchFailure.stateReason,
+        ssmOnline: false,
+        observedAt: NOW,
+      };
+      this.instances.set(instanceId, failed);
+      return failed;
+    }
     const observed: AwsInstanceObservation = {
       ...current,
       state,
@@ -812,6 +836,122 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
     expect(reconciled.state).toBe('unchanged');
     expect('resource' in reconciled && reconciled.resource?.providerId).toBe('i-00000000000000001');
     expect(client.runInstancesCalls).toHaveLength(1);
+  });
+});
+
+// WI-10005332: EC2 can terminate an instance during launch (an unusable KMS key, a capacity
+// shortfall). A repeated RunInstances with the same ClientToken returns that SAME instance, so
+// the run-instance step can never succeed by retrying; it must fail terminally, not report
+// in-progress and be reconciled forever.
+describe('AWS workspace-host provider launch that EC2 terminates (WI-10005332)', () => {
+  async function planWithVolume(provider: ReturnType<typeof createAwsWorkspaceHostProvider>) {
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'operation-launch', idempotencyKey: 'operation-launch', desired: desired() },
+      context(),
+    );
+    const volumeResult = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0], knownResources: [] },
+      context(),
+    );
+    const runStep = plan.steps[1];
+    expect(runStep.id).toBe('run-instance');
+    return { plan, runStep, volume: requireAppliedResource(volumeResult) };
+  }
+
+  it('fails the run-instance step terminally when the launched instance terminates for a client-side cause', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, runStep, volume } = await planWithVolume(provider);
+    client.launchFailure = {
+      state: 'terminated',
+      stateReason: {
+        code: 'Client.InvalidKMSKey.InvalidState',
+        message: 'Client.InvalidKMSKey.InvalidState: The KMS key provided is in an incorrect state',
+      },
+    };
+
+    const error = await provider
+      .apply({ planId: plan.planId, operationId: plan.operationId, step: runStep, knownResources: [volume] }, context())
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(error).toBeInstanceOf(AwsInstanceLaunchFailedError);
+    const launchError = error as AwsInstanceLaunchFailedError;
+    expect(launchError.code).toBe('Client.InvalidKMSKey.InvalidState');
+    expect(launchError.transient).toBe(false);
+    expect(launchError.message).toContain('i-00000000000000001');
+    expect(launchError.message).toContain('KMS key provided is in an incorrect state');
+    expect(workspaceHostProviderRetryClass(launchError)).toBe('terminal');
+    expect(client.runInstancesCalls).toHaveLength(1);
+  });
+
+  it('marks an AWS-side launch failure transient for a new operation, while still failing this step terminally', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, runStep, volume } = await planWithVolume(provider);
+    client.launchFailure = {
+      state: 'shutting-down',
+      stateReason: { code: 'Server.InsufficientInstanceCapacity', message: 'Insufficient capacity.' },
+    };
+
+    const error = await provider
+      .apply({ planId: plan.planId, operationId: plan.operationId, step: runStep, knownResources: [volume] }, context())
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(error).toBeInstanceOf(AwsInstanceLaunchFailedError);
+    expect((error as AwsInstanceLaunchFailedError).transient).toBe(true);
+    expect((error as AwsInstanceLaunchFailedError).message).toContain('a new provision operation may succeed');
+    expect(workspaceHostProviderRetryClass(error)).toBe('terminal');
+  });
+
+  it('fails reconcile terminally when the ClientToken names a launch that is shutting down', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, runStep, volume } = await planWithVolume(provider);
+    const applied = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: runStep, knownResources: [volume] },
+      context(),
+    );
+    client.setInstanceState('i-00000000000000001', 'shutting-down');
+    client.launchFailure = {
+      state: 'terminated',
+      stateReason: { code: 'Client.VolumeLimitExceeded', message: 'Volume limit exceeded' },
+    };
+
+    const error = await provider
+      .reconcile(
+        {
+          planId: plan.planId,
+          operationId: plan.operationId,
+          step: runStep,
+          knownResources: [volume],
+          reason: 'ambiguous-timeout',
+          previousProviderRequestId: applied.providerRequestId,
+        },
+        context(),
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(error).toBeInstanceOf(AwsInstanceLaunchFailedError);
+    expect((error as AwsInstanceLaunchFailedError).code).toBe('Client.VolumeLimitExceeded');
+    expect(workspaceHostProviderRetryClass(error)).toBe('terminal');
+    expect(client.runInstancesCalls).toHaveLength(1);
+  });
+
+  it('still applies a launch that reaches running (control)', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, runStep, volume } = await planWithVolume(provider);
+    const applied = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: runStep, knownResources: [volume] },
+      context(),
+    );
+    expect(applied.state).toBe('applied');
+    expect(requireAppliedResource(applied).providerId).toBe('i-00000000000000001');
   });
 });
 

@@ -2119,7 +2119,7 @@
   "expansionV4": {
     "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32",
     "durableTaskId": "0muq5fy1x1d5o9gp1mz",
-    "status": "completed exit 0 at 2026-10-01T23:27:30Z; independent labels frozen, expanded model comparisons and power analysis pending",
+    "status": "independent labels completed and frozen at 2026-10-01T23:27:30Z; serialized V5 six-cell measurements and paired source analysis subsequently completed and verified; power/census acceptance remains open",
     "frozenAt": "2026-10-01T23:27:30.191Z",
     "identityHash": "74e512104a2f259c2f2a061511223e5ee82fc42843fceb8c3779f53c1917c72f",
     "measurementManifest": {
@@ -2131,7 +2131,7 @@
       "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/relevance-v4-freeze-audit.json",
       "sha256": "871aa1cf9fa0ace558dff5457b37300e6dfa60cb6b8e0d0864d1693bfa291868",
       "bytes": 3012,
-      "status": "manifest-qualified-inference-pending",
+      "status": "historical freeze-time snapshot: manifest qualified before inference; current measurement outcome is serializedMeasurementOutcome",
       "verification": "Validated both independent cohorts, exact labels and judgments, four aggregate raw judge files, declared source/toolchain/native fingerprints, and unchanged model/profile/tokenizer/prompt/execution contracts. Six fresh relevance cells are declared; the original V1 manifest and measurements remain intact."
     },
     "measurementRun": {
@@ -2177,7 +2177,7 @@
       "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v5.json",
       "sha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
       "bytes": 118479,
-      "status": "qualified, not launched; only runId and frozenAt differ from V4"
+      "status": "serialized V5 run completed and verified; only runId and frozenAt differ from V4; see serializedMeasurementOutcome for current raw/vector/analysis bindings"
     },
     "freezeAuditV5": {
       "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/relevance-v5-freeze-audit.json",
@@ -2253,13 +2253,13 @@
     "acceptanceComplete": false
   },
   "limitations": [
-    "Memory has five accepted heldout source targets; prose has two. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
+    "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
-    "The larger full accessible source census remains unexhausted. V2 stopped on provider rate limiting and V3 stopped on a malformed ambiguous judgment. V4 completed with eight memory and two prose heldout targets after conservative exclusions; its expanded model comparisons and source-group power analysis have not run.",
+    "The larger full accessible source census remains unexhausted. V2 stopped on provider rate limiting and V3 stopped on a malformed ambiguous judgment. V4 labels retain eight memory and two prose heldout targets after conservative exclusions; V5 subsequently completed all six expanded model comparisons and paired source-group analysis. Memory class/source margins remain unresolved.",
     "Cosine-only rejection margins do not establish calibrated production hybrid/entity/filter/decay negative rejection; P-004 remains pending.",
     "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance."
   ],
-  "next": "Measure the six expanded relevance cells from the qualified V4 manifest, retain vectors for hybrid reuse, then perform source-group power analysis. P-005 V6 runs in the qualified frozen runtime; P-006 and P-004 remain open under the existing plan. No superiority or census-exhaustion claim is established.",
+  "next": "Reuse the completed, verified V5 raw/vector receipts and paired source analysis; extend or exhaust the independently blinded source census for unresolved power. Controlled P-005 V7 is already complete; retain V6 as diagnostic history. P-004 may reuse the retained vectors, while P-006 GPU validation remains open. Do not replay completed matrices or infer superiority, census exhaustion, or model-adoption authority.",
   "reproduction": {
     "modelRunner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --manifest <frozen manifest> --manifest-sha256 <recorded SHA256> --cell <declared cell> --legs <declared model> --corpus <declared corpus> --mdenseon-model <qualified export> --out <declared private output>",
     "analysisModule": "packages/operator-core/lib/memory/bench/paired-leg-report.ts: compareSourceGroupedLegs(primary) and compareLegs(secondary), fed exact receipt perQuery rows and independent heldout labels",

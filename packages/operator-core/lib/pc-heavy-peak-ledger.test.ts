@@ -172,6 +172,16 @@ describe.skipIf(process.platform !== 'linux')('pc-heavy per-job peak ledger (WI-
       expect(admit()).toMatchObject({
         typecheck: { gib: 14, source: 'default' }, other: { gib: 4, source: 'derived:q100-of-3595MiB' },
       });
+      // Too little history to loosen on is still enough to TIGHTEN: a wrapper
+      // script that hid a 15 GiB compile as `other` lifts that class above its
+      // 4 GiB constant at once. ceil(15000 * 1.1 / 1024) = 17 GiB.
+      seed([
+        ...Array.from({ length: 3 }, () => ({ anon: 15_000, label: 'bash wrapper.sh' })),
+        { anon: 9000, ...TSC },
+      ], 60);
+      expect(admit()).toMatchObject({
+        typecheck: { gib: 14, source: 'default' }, other: { gib: 17, source: 'cold-start-max:15000MiB' },
+      });
     }, 30_000);
 
     it('derives a separate reserve per class from a mixed ledger, and sizes each job by its own class', () => {

@@ -11,7 +11,7 @@
  * writes attribute correctly.
  *
  * Usage:
- *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw]
+ *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw] [--allow-partial]
  * Examples:
  *   node scripts/mcp-call.mjs coord:whoami
  *   node scripts/mcp-call.mjs work_items:get '{"id":"EI-1750"}' --harness papercup
@@ -36,6 +36,9 @@
  * ok:false (top-level, or any `results[]` entry). The result is still printed
  * in full on stdout, so a caller that judges the answer itself can accept 5.
  * `--raw` prints the transport body unjudged and never exits 5.
+ * A door-projected PARTIAL result (root `_partial`, or a value that is an
+ * '[omitted: … see _projection.cursor]' placeholder) exits 6 after printing, unless
+ * `--allow-partial` is given (EI-24678010189721217).
  */
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -77,6 +80,59 @@ export function toolResultNotOkReason(result) {
     .find((v) => typeof v === 'string' && v.trim()) ?? 'no reason given';
   const reason = failed.length > 0 ? `${failed.length} of ${results.length} result(s) ok:false; first: ${detail}` : detail;
   return reason.length > 300 ? `${reason.slice(0, 297)}...` : reason;
+}
+
+/**
+ * Exit status when the server's output door PROJECTED the result (EI-24678010189721217).
+ * A forced projection replaces deep or long values with placeholder strings such as
+ * '[omitted: depth limit — recover: see _projection.cursor]'. Those survive JSON.parse
+ * and JSON.stringify, so a caller that copies a field (e.g. rubrics:amend dry-run
+ * preview.approval into an approval comment) posts the placeholder as if it were data.
+ * Measured twice: posts 1151113 (2026-09-30) and 1153517 (2026-10-01), two agents.
+ */
+export const MCP_CALL_PROJECTED_RESULT_EXIT = 6;
+
+// Anchored on purpose: a value that IS a placeholder, or a string the door cut with a
+// trailing TRUNCATED marker. Prose that merely QUOTES a placeholder mid-sentence (an
+// issue body describing this trap) is ordinary data and must not trip the guard.
+const OMITTED_PLACEHOLDER = /^\[omitted: [^\]]*see _projection\.cursor\]$/;
+const TRUNCATED_SUFFIX = /\[TRUNCATED \+[^\]]*see _projection\.cursor\]$/;
+
+/**
+ * Why a parsed tool result is a door-projected PARTIAL body, or null when it is
+ * complete: a root `_partial: true` / `_projection.truncated: true`, or any value
+ * that is a projection placeholder. Names up to five JSON paths so the caller can
+ * pick them explicitly.
+ * @param {unknown} result
+ * @returns {string | null}
+ */
+export function projectedResultReason(result) {
+  if (!result || typeof result !== 'object') return null;
+  const rootMarked = !Array.isArray(result)
+    && (result._partial === true || (result._projection && result._projection.truncated === true));
+  const paths = [];
+  const stack = [[result, '$', 0]];
+  let visited = 0;
+  while (stack.length > 0 && paths.length < 5 && visited < 100_000) {
+    const [value, path, depth] = stack.pop();
+    visited += 1;
+    if (typeof value === 'string') {
+      if (OMITTED_PLACEHOLDER.test(value) || TRUNCATED_SUFFIX.test(value)) paths.push(path);
+      continue;
+    }
+    if (!value || typeof value !== 'object' || depth > 64) continue;
+    if (Array.isArray(value)) {
+      for (let i = value.length - 1; i >= 0; i -= 1) stack.push([value[i], `${path}[${i}]`, depth + 1]);
+    } else {
+      for (const key of Object.keys(value).reverse()) {
+        if (key === '_projection') continue; // the door's own recovery metadata
+        stack.push([value[key], `${path}.${key}`, depth + 1]);
+      }
+    }
+  }
+  if (!rootMarked && paths.length === 0) return null;
+  const where = paths.length > 0 ? `placeholder value(s) at ${paths.join(', ')}` : 'root _partial marker';
+  return `door-projected partial result: ${where}`;
 }
 
 /**
@@ -216,7 +272,7 @@ export async function fetchWithConnectionRecovery(
  * explicitly selects the unscoped superuser session (`workspace=*`), which is
  * required for cross-workspace tools when the scoped-superuser clamp is ON.
  */
-export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces', 'help']);
+export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces', 'help', 'allowPartial']);
 export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port', 'idempotencyKey']);
 
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
@@ -564,7 +620,7 @@ export function isInvokedDirectly(
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (flags.help || !tool) {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--idempotency-key <key>|--idempotency-key=<key>] [--raw] [--allow-partial]');
     process.exit(flags.help ? 0 : 2);
   }
   let tok;
@@ -700,6 +756,13 @@ async function main() {
     // exitCode, never process.exit(): exiting here can cut off a large stdout
     // result that is still draining into a pipe.
     process.exitCode = MCP_CALL_TOOL_NOT_OK_EXIT;
+  }
+  const partial = projectedResultReason(out.result);
+  if (partial !== null) {
+    console.error(
+      `mcp-call: the result above is INCOMPLETE (${partial}). A field copied from it can be a placeholder string, not data. Re-run with a narrower \`projection: { pick: [...] }\` in the args, or read the spill named at _projection.cursor. ${flags.allowPartial ? '--allow-partial given: exit status unchanged.' : `Exiting ${MCP_CALL_PROJECTED_RESULT_EXIT}; pass --allow-partial to accept a partial read.`} (EI-24678010189721217)`,
+    );
+    if (!flags.allowPartial && process.exitCode == null) process.exitCode = MCP_CALL_PROJECTED_RESULT_EXIT;
   }
 }
 

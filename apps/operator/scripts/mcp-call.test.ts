@@ -10,6 +10,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   MCP_CALL_TOOL_NOT_OK_EXIT,
+  MCP_CALL_PROJECTED_RESULT_EXIT,
+  projectedResultReason,
   toolResultNotOkReason,
   buildMcpCallParams,
   buildMcpSessionQuery,
@@ -495,11 +497,11 @@ async function withFakeMcpEndpoint<T>(
 }
 
 /** Spawn the real script with stdout on a pipe, the way a shell `$(...)` reads it. */
-function runMcpCall(port: number, home: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runMcpCall(port: number, home: string, extraArgs: string[] = []): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((done, fail) => {
     const child = spawn(
       process.execPath,
-      [MCP_CALL_SCRIPT, 'work_items:create', '{}', '--port', String(port), '--client', 'mcp-call-exit-test', '--workspace', 'test-ws'],
+      [MCP_CALL_SCRIPT, 'work_items:create', '{}', '--port', String(port), '--client', 'mcp-call-exit-test', '--workspace', 'test-ws', ...extraArgs],
       { env: { ...process.env, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let stdout = '';
@@ -541,5 +543,43 @@ describe('mcp-call ok:false exit status (EI-24654733539966460)', () => {
     const run = await withFakeMcpEndpoint({ ok: true, id: 'EI-1' }, runMcpCall);
     expect(run.code, run.stderr).toBe(0);
     expect(JSON.parse(run.stdout)).toEqual({ ok: true, id: 'EI-1' });
+  });
+});
+
+// EI-24678010189721217: a door-projected rubrics:amend dry-run turned preview.approval.bars
+// into placeholder strings, and two agents posted them as an approval (posts 1151113, 1153517).
+describe('mcp-call door-projected partial result (EI-24678010189721217)', () => {
+  const PLACEHOLDER = '[omitted: depth limit — recover: see _projection.cursor]';
+  const projected = {
+    ok: true,
+    preview: { approval: { kind: 'acceptance-bar-amendment-approval', bars: [PLACEHOLDER, PLACEHOLDER] } },
+    _partial: true,
+    _projection: { kind: 'bounded-payload', truncated: true, next: `see ${PLACEHOLDER}` },
+  };
+
+  it('names the placeholder paths, and passes a clean body and prose that only quotes a placeholder', () => {
+    expect(projectedResultReason(projected))
+      .toBe('door-projected partial result: placeholder value(s) at $.preview.approval.bars[0], $.preview.approval.bars[1]');
+    expect(projectedResultReason({ ok: true, summary: `long text…[TRUNCATED +5001 chars — see _projection.cursor]` }))
+      .toBe('door-projected partial result: placeholder value(s) at $.summary');
+    expect(projectedResultReason({ ok: true, _partial: true, rows: [] })).toBe('door-projected partial result: root _partial marker');
+    for (const clean of [
+      { ok: true, preview: { approval: { bars: [{ barKey: 'r-01', hash: 'abc' }] } } },
+      { ok: true, summary: `bars became '${PLACEHOLDER}' strings (EI-24678010189721217)` },
+      [PLACEHOLDER, 'x'].join(' '), null, undefined,
+    ]) {
+      expect(projectedResultReason(clean)).toBeNull();
+    }
+  });
+
+  it('exits 6 with the partial body still on stdout, and --allow-partial keeps exit 0', async () => {
+    const run = await withFakeMcpEndpoint(projected, runMcpCall);
+    expect(run.code, run.stderr).toBe(MCP_CALL_PROJECTED_RESULT_EXIT);
+    expect(JSON.parse(run.stdout)).toEqual(projected);
+    expect(run.stderr).toContain('the result above is INCOMPLETE (door-projected partial result: placeholder value(s) at $.preview.approval.bars[0]');
+
+    const allowed = await withFakeMcpEndpoint(projected, (port: number, home: string) => runMcpCall(port, home, ['--allow-partial']));
+    expect(allowed.code, allowed.stderr).toBe(0);
+    expect(allowed.stderr).toContain('--allow-partial given');
   });
 });

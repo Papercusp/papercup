@@ -31,7 +31,7 @@ export default defineTool({
   capability: 'activity:report',
   guidance: {
     when:
-      'From a turn-end / pre-tool-use / notification hook the moment it observes a structured ask (AskUserQuestion/ExitPlanMode mirror), a permission-wait, or that ask being answered. Almost never called by hand.',
+      'From a turn-end / pre-tool-use / notification hook the moment it observes a structured ask (AskUserQuestion/ExitPlanMode mirror), a permission-wait, or that ask being answered. Almost never called by hand — EXCEPT kind:"suppressed_ask": call it yourself when you decide NOT to re-send an owner ask ("do not ask a 4th time") instead of burying that in a checkpoint. Pass question + decideBy (ISO) + defaultIfUnanswered; it stays on the owner feed after you end.',
     notWhen:
       'To READ pending gates use `sessions:list-pending-gates`. For a genuine owner-facing escalation card, `coord:escalate` remains the preferred ask (D-001) — this tool is the blocked-SESSION signal, not the card itself.',
     seeAlso: ['sessions:list-pending-gates (read the open gates)', 'journal:record-turn (the sibling turn-end ingest)'],
