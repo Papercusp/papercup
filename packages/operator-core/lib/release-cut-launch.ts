@@ -183,6 +183,8 @@ export interface CutRuntimeEnv {
   fullHistory?: boolean;
   /** Explicit retry-only fast path: reuse a seed already cut in this isolated root. */
   reuseSeed?: boolean;
+  /** Reviewed private D-140 exact-content seed finding evidence, never a path skip. */
+  seedFindingProof?: string;
   /** Explicit new-build path: package the validated placeholder-only seed directory
    * without cutting or reusing a hive seed. Unlike reuseSeed, this does not restore
    * retry-owned version residue before launch. */
@@ -293,6 +295,7 @@ export function buildCutEnv(
     );
   }
   if (runtime.reuseSeed || runtime.seedless) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  if (runtime.seedFindingProof) env.PAPERCUSP_RELEASE_SEED_FINDING_PROOF = runtime.seedFindingProof;
   if (runtime.fullHistory) env.PAPERCUSP_SEED_DEPTH = '';
   // BOTH-OR-NEITHER, enforced HERE rather than discovered in the cut. release-local.sh's
   // release_task_journal_configure() hard-refuses a half-configured pair (`managed release

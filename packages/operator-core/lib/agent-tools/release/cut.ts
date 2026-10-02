@@ -123,6 +123,9 @@ const cutReuseSeedArg = z
   .boolean()
   .optional()
   .describe('Retry-only: reuse the already-completed seed in this isolated cut root (PAPERCUSP_SKIP_SEED_CUT=1).');
+const cutSeedFindingProofArg = z.string().trim().min(1).optional().describe(
+  'Private reviewed exact-content seed finding proof (D-140). The credential gate still scans every seed file and validates source, epoch keys, config, authentication and plaintext evidence; changed or missing evidence refuses the cut.',
+);
 const cutFullHistoryArg = z
   .boolean()
   .optional()
@@ -329,6 +332,7 @@ function cutRuntimeEnv(
     ownerEmail?: string;
     fullHistory?: boolean;
     reuseSeed?: boolean;
+    seedFindingProof?: string;
     seedless?: boolean;
     migrationBootSmokeOverride?: MigrationBootSmokeOverride;
   },
@@ -341,6 +345,7 @@ function cutRuntimeEnv(
     ...(harnessSlug ? { harnessSlug } : {}),
     ...(args.fullHistory ? { fullHistory: true } : {}),
     reuseSeed: args.reuseSeed,
+    ...(args.seedFindingProof ? { seedFindingProof: args.seedFindingProof } : {}),
     ...(args.seedless ? { seedless: true } : {}),
     ...(args.migrationBootSmokeOverride ? { migrationBootSmokeOverride: args.migrationBootSmokeOverride } : {}),
     // P-001: present ⇒ release-local.sh runs its phase journal and the cut becomes
@@ -947,6 +952,7 @@ export default defineTool({
       ownerEmail: cutOwnerEmailArg,
       fullHistory: cutFullHistoryArg,
       reuseSeed: cutReuseSeedArg,
+      seedFindingProof: cutSeedFindingProofArg,
       seedless: cutSeedlessArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg
         .optional()
@@ -1003,6 +1009,7 @@ export default defineTool({
       ownerEmail: cutOwnerEmailArg,
       fullHistory: cutFullHistoryArg,
       reuseSeed: cutReuseSeedArg,
+      seedFindingProof: cutSeedFindingProofArg,
       seedless: cutSeedlessArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg
         .optional()
