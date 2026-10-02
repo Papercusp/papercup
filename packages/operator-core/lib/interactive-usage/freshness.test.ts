@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import {
   evaluateInteractiveUsageFreshness,
+  INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS,
   INTERACTIVE_USAGE_FRESHNESS_WINDOW_MS,
   isInteractiveUsageUnmeasuredReason,
   readInteractiveUsageFreshness,
@@ -42,9 +43,54 @@ describe('interactive usage freshness', () => {
     expect(result).toMatchObject({ status: 'fresh', lastIngestedAtMs: NOW - 1_000 });
   });
 
+  it('scopes the interactive watermark to the requested goal', async () => {
+    const query = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [
+      {
+        latest_ingested_at: String(NOW - 31 * 60_000),
+        max_recent_ingest_lag_ms: String(20 * 60_000),
+      },
+    ]);
+    const result = await readInteractiveUsageFreshness(query as unknown as Sql, {
+      workspaceId: 'ws-1', goalId: 'goal-1', nowMs: NOW,
+    });
+    const queryText = query.mock.calls[0]?.[0].join(' ') ?? '';
+    expect(queryText).toContain('goal_id =');
+    expect(queryText).toContain('ingested_at - COALESCE(ts, ingested_at)');
+    expect(query.mock.calls[0]?.slice(1)).toContain('goal-1');
+    expect(result).toMatchObject({
+      status: 'stale',
+      lastIngestedAtMs: NOW - 31 * 60_000,
+      maxRecentIngestLagMs: 20 * 60_000,
+    });
+  });
+
+  it('marks a fresh receipt watermark stale when event-to-receipt lag exceeds 15 minutes', () => {
+    const justOverThreshold = evaluateInteractiveUsageFreshness(
+      NOW - 1_000,
+      NOW,
+      INTERACTIVE_USAGE_FRESHNESS_WINDOW_MS,
+      INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS + 1,
+    );
+    expect(justOverThreshold).toMatchObject({
+      status: 'stale',
+      maxRecentIngestLagMs: INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS + 1,
+      lagThresholdMs: INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS,
+      lagWindowMs: INTERACTIVE_USAGE_FRESHNESS_WINDOW_MS,
+    });
+    expect(justOverThreshold.reason).toContain('maximum recent interactive usage ingest lag');
+
+    expect(evaluateInteractiveUsageFreshness(
+      NOW - 1_000,
+      NOW,
+      INTERACTIVE_USAGE_FRESHNESS_WINDOW_MS,
+      INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS,
+    ).status).toBe('fresh');
+  });
+
   it('returns unavailable when the freshness read fails', async () => {
     const query = vi.fn(async () => { throw new Error('db unavailable'); });
     await expect(readInteractiveUsageFreshness(query as unknown as Sql, { workspaceId: 'ws-1', nowMs: NOW }))
       .resolves.toMatchObject({ status: 'unavailable', reason: expect.stringContaining('db unavailable') });
   });
+
 });

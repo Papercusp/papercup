@@ -33,7 +33,10 @@ import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { readInteractiveUsageFreshness, type InteractiveUsageFreshness } from '../interactive-usage/freshness';
+import {
+  readInteractiveUsageFreshness,
+  type InteractiveUsageFreshness,
+} from '../interactive-usage/freshness';
 
 /** How long an adapter may sit on unconsumed on-disk bytes before this
  *  watchdog alerts. Default 1 h — comfortably longer than the 2-min ingest
