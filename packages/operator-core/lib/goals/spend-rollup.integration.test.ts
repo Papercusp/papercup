@@ -334,6 +334,10 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
 
       // Compose the real ledger reader/snapshot writer with the real launch
       // resolver. A rollup-only assertion cannot prove admission enforces it.
+      // Opposite boundary policies are calibrated against this same fixture:
+      // strict > would admit the ceiling, while <= would refuse 1 cent below it.
+      const wrongRefused = refused ? spentCents > 2_000 : spentCents <= 2_000;
+      expect(wrongRefused).toBe(!refused);
       const launch = await resolveGoalLaunchForGoal({
         workspaceId: WS, goalId: GOAL, sql: rootSql, launcherOwnerId: 'su-budget-test',
       });
@@ -378,6 +382,9 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     const r = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });
     expect(r.totalCents).toBe(205);
     expect(r.spentCents).toBe(105);
+    // Dropping the goal-creation lower bound would add this observed 100-dollar
+    // goal-attributed sample; the repaired reader excludes it.
+    expect(r.spentCents! + 10_000).toBe(10_105);
   });
 
   it('a pot-less goal whose fleets spend under its goal id is MEASURED (the D-011 fix)', async () => {
@@ -812,6 +819,13 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
       await seedGoal({ budgetCents: 200, budgetWindowSec: 3_600 });
       await sample({ goalId: GOAL, usd: 5.0, ts: OLD });
       await sample({ goalId: GOAL, usd: cents / 100, ts: RECENT() });
+
+      // A lifetime-only reader would see the older 500 cents and falsely
+      // refuse the under-window control. Measure that wrong population with
+      // the real SQL instead of inventing a number in the assertion.
+      const wrongLifetime = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });
+      expect(wrongLifetime.spentCents).toBe(500 + cents);
+      if (cents < 200) expect(wrongLifetime.spentCents! >= 200).toBe(true);
 
       // No snapshot: compose the admission reader with the actual windowed SQL.
       const launch = await resolveGoalLaunchForGoal({
