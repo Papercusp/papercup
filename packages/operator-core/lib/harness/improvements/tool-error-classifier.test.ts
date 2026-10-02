@@ -77,7 +77,7 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     expect(unknown.classKey).not.toBe(normalizeSuspectedToolFailure(metadataToolFailure).classKey);
   });
 
-  it('does not collapse distinct error codes when contract and runtime metadata are unknown', () => {
+  it('classifies local MCP admission sheds as transient and keeps them distinct from structural failures', () => {
     const saturated = normalizeSuspectedToolFailure({
       toolName: 'ptool',
       errorCode: '-32000',
@@ -91,13 +91,21 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       message: 'malformed JSON before dispatch',
     });
 
-    // Both are currently structural, but they are different failure modes. The
-    // class-key arbiter must not coalesce the saturation report onto the malformed
-    // JSON report merely because neither caller supplied schema/runtime metadata.
-    expect(saturated.class).toBe('structural');
+    // A retryable shed is shared admission backpressure; malformed JSON remains
+    // structural. Their class-key identities must stay separate even without
+    // schema/runtime metadata.
+    expect(saturated.class).toBe('transient');
     expect(malformed.class).toBe('structural');
     expect(saturated.classKey).not.toBe(malformed.classKey);
     expect(saturated.watchdogKey).not.toBe(malformed.watchdogKey);
+  });
+
+  it.each([
+    'operator MCP admission is saturated — request shed, retry shortly',
+    'operator MCP admission is saturated — request shed; reason=loop_pressure_critical',
+    'operator MCP admission is saturated — request shed; reason=operator_admission_capacity',
+  ])('treats the operator admission response as transient: %s', (message) => {
+    expect(classifyToolError('-32000', 'request shed', message)).toBe('transient');
   });
 
   it('D-010: the filing signature ignores schema/runtime churn but keeps tool, family, error code and field', () => {
