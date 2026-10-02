@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { Script } from "node:vm";
-import { defaultEvidenceRoot, runHarness } from "@papercusp/verification-harness";
+import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from "@papercusp/verification-harness";
 
 // Fail before an expensive native boot if the public lifecycle labels drift.
 const lifecycleLabels = { start: "Start machine", stop: "Stop machine" };
@@ -174,6 +174,7 @@ return evidence.status === "passed"
 }
 
 const preflightOnly = process.argv.includes("--preflight");
+const selection = parseSelectionArgs(process.argv.slice(2));
 const result = await runHarness({
   contract: {
     name: "cloud-workspaces-aws",
@@ -183,7 +184,8 @@ const result = await runHarness({
     ],
   },
   evidenceRoot: defaultEvidenceRoot("cloud-workspaces-aws"),
-  selection: { only: preflightOnly ? ["selectors"] : null, from: null },
+  selection: preflightOnly ? { only: ["selectors"], from: null } : selection,
+  reuseFrom: selection.reuse,
   async runPhase(ctx) {
     if (ctx.phase === "selectors") {
       ctx.markStep("lifecycle-label-contract");

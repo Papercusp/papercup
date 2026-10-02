@@ -13,8 +13,9 @@ describe('AWS native UI verification contract', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'cloud-aws-contract-'));
     const run = (args: string[], vars: Record<string, string> = {}) =>
       new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-        const env = { ...process.env, VH_EVIDENCE_ROOT_BASE: root, VH_GUARD_RAIL_SOURCE: '', ...vars };
-        for (const name of Object.keys(env)) if (name.startsWith('VERIFY_TAURI_')) delete env[name as keyof typeof env];
+        const env: NodeJS.ProcessEnv = { ...process.env, VH_EVIDENCE_ROOT_BASE: root, VH_GUARD_RAIL_SOURCE: '' };
+        for (const name of Object.keys(env)) if (name.startsWith('VERIFY_TAURI_')) delete env[name];
+        Object.assign(env, vars);
         execFile(process.execPath, ['--import', 'tsx', SCRIPT, ...args], {
           cwd: REPO, env, timeout: 30_000,
         }, (error, stdout, stderr) => {
@@ -49,6 +50,16 @@ describe('AWS native UI verification contract', () => {
       ]);
       const retained = JSON.parse(await readFile(path.join(first.evidenceDir, 'result.json'), 'utf8'));
       expect(retained.verdict).toBe('pass');
+
+      const sharedDisplay = await run(['--from', 'native', '--reuse', first.evidenceDir], {
+        VERIFY_TAURI_PID: '0', VERIFY_TAURI_DISPLAY: ':0', PAPERCUSP_VERIFY_TAURI_ISOLATED: '1',
+      });
+      expect(sharedDisplay.code).toBe(1);
+      const third = await evidence();
+      expect(third.phases).toEqual([
+        expect.objectContaining({ phase: 'selectors', status: 'passed' }),
+        expect.objectContaining({ phase: 'native', status: 'failed', detail: expect.stringContaining('Refusing a shared database or desktop display') }),
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

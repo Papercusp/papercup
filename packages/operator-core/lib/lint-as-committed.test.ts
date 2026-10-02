@@ -590,12 +590,12 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       expect(extracted).toBe(committed);
       // Populating a standalone clone is not enough: the parent repository must mark
       // the submodule active or recursive Git scanners silently omit its real files.
-      const tracked = execFileSync('git', ['ls-files', '--error-unmatch', '-z', '--recurse-submodules', '--', subFile], {
+      const tracked = execFileSync('git', ['ls-files', '-z', '--recurse-submodules', '--', subFile], {
         cwd: workRoot,
         encoding: 'utf8',
         timeout: 30_000,
         killSignal: 'SIGKILL',
-      }).split('\0');
+      }).split('\0').filter((p) => existsSync(join(workRoot, p)));
       expect(tracked).toContain(subFile);
       // WI-10004898: the extracted tree must be CLEAN to the same `git status` the test-run
       // reporter samples for worktree_dirty, or no run inside it can ever be current proof.
