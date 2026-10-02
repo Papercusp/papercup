@@ -2234,6 +2234,39 @@ describe('affected-tests: detached-spawn tree guard (WI-10002061)', () => {
   });
 });
 
+/**
+ * WI-10005282 — `lint:no-eager-execfile-promisify` scans the whole tracked tree, but its only
+ * blocking runner was a GitHub Actions job that failed on every run, so 14 offenders landed
+ * unseen. These probes pin the registration that puts it on the gate's affected-suite path,
+ * including its `.mjs` half (the guard scans .ts, .mjs and .cjs).
+ */
+describe('affected-tests: eager execFile promisify guard (WI-10005282)', () => {
+  const SCRIPT = 'lint:no-eager-execfile-promisify';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+
+  it('attaches the real-tree scan for .ts and .mjs source outside its host workspace', () => {
+    expect(dryTasks('libs/test-config/src/dedicated-native-pg.ts')).toContain(TASK);
+    expect(dryTasks('apps/operator/lib/mcp-proxy/watchdog.mjs')).toContain(TASK);
+  });
+
+  it('attaches for its own detector and routing configuration', () => {
+    expect(dryTasks('scripts/check-no-eager-execfile-promisify.mjs')).toContain(TASK);
+    expect(dryTasks('scripts/affected-tests.mjs')).toContain(TASK);
+  });
+
+  it('does not attach to a file the tree scan excludes', () => {
+    expect(dryTasks('apps/operator/docs/nuqs-audit-2026-05-11.md')).not.toContain(TASK);
+    expect(dryTasks('packages/backup/src/hook.test.ts')).not.toContain(TASK);
+  });
+
+  it('keeps the host script pointed at the real-tree checker', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[SCRIPT]).toContain('check-no-eager-execfile-promisify.mjs');
+  });
+});
+
 describe('affected-tests: real host bundle guard (EI-24368307678871025)', () => {
   const SCRIPT = 'lint:host-bundle-builds';
   const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
