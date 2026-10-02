@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import {
   computeGoalSpendRollup,
+  goalSpendBreachDecision,
   GOAL_SPEND_LINEAGE_SCOPE,
   GOAL_SPEND_POT_SCOPE,
   GOAL_SPEND_SCOPE_RELATIONS,
@@ -165,6 +166,51 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
     expect(await lineageSpendForGoal(ledgerSql(null, '0', '0.40', 2, undefined, 1), opts)).toMatchObject({
       costUsd: 0.4, samples: 2, pricedSamples: 1, unpricedSamples: 1,
     });
+  });
+});
+
+describe('goal spend breach decision — lifecycle guard', () => {
+  const opts = {
+    workspaceId: 'breach-unit', goalId: 'breach-goal', windowSec: 3_600, nowMs: 10_000_000,
+    interactiveUsageFreshness: {
+      status: 'fresh', lastIngestedAtMs: 10_000_000, ageMs: 0, windowMs: 1_000,
+      maxRecentIngestLagMs: 0, lagThresholdMs: 1_000, lagWindowMs: 1_000,
+      reason: 'current fixture watermark',
+    } satisfies InteractiveUsageFreshness,
+  };
+
+  it('below-window-survives: diagnostic lifetime spend cannot pause a goal below its window ceiling', async () => {
+    const rollup = await computeGoalSpendRollup((async (strings: TemplateStringsArray) => {
+      const statement = strings.join('?');
+      if (statement.includes('AS inside_pot_cost')) return [{ cost: '0.50', samples: '1', priced_samples: '1', unpriced_samples: '0', sessions: '1', inside_pot_cost: '0' }];
+      if (statement.includes('WITH goal_owners AS')) return [{ cost: '0', samples: '0', priced_samples: '0', unpriced_samples: '0', sessions: '0' }];
+      return [{ harness_slug: 'old-diagnostic-pot', cost: '5.00', samples: '1', priced_samples: '1', unpriced_samples: '0', sessions: '1' }];
+    }) as unknown as Sql, opts);
+    expect(rollup.totalCents).toBe(500);
+    expect(rollup.spentCents).toBe(50);
+    expect(goalSpendBreachDecision(rollup, [], 200)).toBeNull();
+  });
+
+  it('breach-paused-needs-human: the windowed attributed ceiling selects a guarded pause', async () => {
+    const rollup = await computeGoalSpendRollup((async (strings: TemplateStringsArray) => {
+      const statement = strings.join('?');
+      if (statement.includes('AS inside_pot_cost')) return [{ cost: '2.00', samples: '1', priced_samples: '1', unpriced_samples: '0', sessions: '1', inside_pot_cost: '0' }];
+      if (statement.includes('WITH goal_owners AS')) return [{ cost: '0', samples: '0', priced_samples: '0', unpriced_samples: '0', sessions: '0' }];
+      return [];
+    }) as unknown as Sql, opts);
+    expect(goalSpendBreachDecision(rollup, [], 200)).toMatchObject({
+      judgedCents: 200, budgetBreached: true,
+      reasons: ['measured goal-attributed spend 200c reached budget 200c per 3600s window'],
+    });
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    expect(normalized).toContain("SET status = 'paused'");
+    expect(normalized).toContain("'needsHuman', true");
+  });
+
+  it('paused-preserved: the sweep and transition both restrict writes to active goals', () => {
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    expect(normalized).toContain("FROM harness_shared.goals WHERE status = 'active'");
+    expect(normalized).toContain("AND status = 'active' RETURNING id");
   });
 });
 
