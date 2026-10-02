@@ -241,6 +241,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'tools:invoke preserves the judge principal and wraps this expected missing_capability refusal as handler_error; the preserved code prefix must route to caller, not the structural bug lane',
   },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'watch:create — predicate registration failed its inline first eval (unwound): predicate_shape_mismatch: observed hex SHA is 40 characters but the operand is 10 characters; they are strict-prefix forms. Supply the same SHA width before registering this predicate.',
+    expectedClass: 'caller',
+    note: 'state:subscribe delegates predicate registration; a strict-prefix SHA operand is an intentional caller-input refusal that prevents a false wake, not a structural tool defect (EI-24876630811914890)',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

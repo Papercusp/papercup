@@ -74,12 +74,11 @@ export interface StallCaptureInput {
 }
 
 /**
- * Capture only a stall the existing evidence cannot explain: a thread that is
- * burning CPU (`spinning`, or `partial` when the sample straddles the stall's
- * start). A `parked` thread is blocked in a syscall, where the inspector
- * interrupt is not serviced until the syscall returns, and the worker already
- * names the wait. `unknown` means no CPU baseline, so the kind cannot be
- * trusted either way.
+ * Capture a stale heartbeat with a measured CPU verdict. `parked` alone cannot
+ * distinguish an idle main loop whose heartbeat stopped from a native wait.
+ * The worker bounds inspector requests, records whether they answer, and drops
+ * captures whose heartbeat recovers before profiling starts. `unknown` means
+ * no trustworthy CPU baseline.
  */
 export function shouldCaptureStallProfile(
   input: StallCaptureInput,
@@ -87,7 +86,7 @@ export function shouldCaptureStallProfile(
 ): boolean {
   if (input.inFlight || input.capturedThisStall) return false;
   if (!(input.stalenessMs >= cfg.afterMs)) return false;
-  if (input.cpuKind !== 'spinning' && input.cpuKind !== 'partial') return false;
+  if (input.cpuKind !== 'spinning' && input.cpuKind !== 'partial' && input.cpuKind !== 'parked') return false;
   if (input.lastCaptureAtMs != null && input.nowMs - input.lastCaptureAtMs < cfg.cooldownMs) {
     return false;
   }

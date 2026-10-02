@@ -1427,5 +1427,105 @@
     "modelGpuCapacityBindingVerified": false,
     "fullGpuPopulationComplete": false
   },
+  "nativeNodeLoaderClosureQualification": {
+    "status": "Actual FILE-parent Node worker model-free closure control verified; pretrained native CUDA-model closure and GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "rootCause": "The first actual Node closure control failed on glibc's '(fatal)' diagnostic for optional node_register_module_v141 lookup in the tokenizers Node addon. Node25.9 GetInitializerCallback probes that legacy symbol, then successfully falls back to GetNapiInitializerCallback; a missing optional dlsym symbol is not by itself a failed dlopen or process. The completed tiny ORT native requests and successful child exit distinguished this from addon load failure.",
+    "writer": {
+      "url": "https://raw.githubusercontent.com/nodejs/node/v25.9.0/src/node_binding.cc",
+      "functions": [
+        "DLib::GetSymbolAddress",
+        "GetInitializerCallback",
+        "GetNapiInitializerCallback",
+        "GetNapiAddonGetApiVersionCallback",
+        "DLOpen"
+      ],
+      "procedure": "GetSymbolAddress calls dlsym. DLOpen tries the legacy initializer then the Node-API initializer and optional API-version lookup; the successful alternative returns true."
+    },
+    "fix": "Capture process.versions.modules in loaderProcess. Record only exact startup missing legacy/Node-API registration/version lookup diagnostics, require the named .node file to bind a retained generated-map fingerprint, and require legacy ABI suffix to match the captured Node ABI. Return those diagnostics as registrationProbeLookups; reject all other errors and every in-population error/activity. A successful complete target receipt remains required.",
+    "verification": {
+      "runGroup": "6b6b788c-f774-486f-b9e8-01363de13260",
+      "testRunIds": [
+        20541940,
+        20541941
+      ],
+      "fileVerdicts": [
+        {
+          "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+          "status": "pass",
+          "testRunId": 20541940
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+          "status": "pass",
+          "testRunId": 20541941
+        }
+      ],
+      "counts": "Original foreground response was interrupted by a wake. testing:runs and testing:run-status recovered terminal pass/exit0 for both exact files; detailed case counts are not reconstructed from file-level status. Historical previous215-case run remains under nativeLoaderClosurePreparation.",
+      "receiptRecovery": "sessions:timeline31321275 confirms testing:run returned ok after28388ms. Source edits from the aborted wrapper were read and verified before any retry; no duplicate final test launch.",
+      "actualNodeControl": "Existing isolated130-byte CPU ORT fixture now runs from a real FILE parent, retains complete spawn-pipe stderr/terminal status and all three native request windows with first pre-Run runtime. A separate diagnostic assessor consumes only those retained observations; it sends no new model request. bindNativeLoaderClosure returns complete=true, zero mapped-file residue, exact first runTag and at least one fingerprinted .node generated-object join.",
+      "counterexamples": "Manifest adds three exact Node-registration probe positives and refuses wrong ABI, unrelated required symbol and an unbound addon path. Existing malformed/failed receipt, loader census, maps, alias-change and in-population activity failures remain covered.",
+      "typecheck": "After the final Node edits, core source/test plus14-file service scope and generic-memory source/input test+loaded imports pass with compilerexit0 (2026-10-02T16:00Z). MJS syntax and scoped diff checks pass.",
+      "priorFailures": [
+        {
+          "testRunId": 20541871,
+          "result": "Real Node control failed before parser adaptation; direct cross-package TypeScript import also refused TS6059."
+        },
+        {
+          "testRunId": 20541902,
+          "result": "Improved diagnostic identifies actual missing optional node_register_module_v141 probe at stderrline116."
+        }
+      ],
+      "testLayerRepair": "Do not import operator-core source into the memory package's compiler root. The real lower-layer worker capture is assessed through an isolated Node/tsx diagnostic process with retained JSON input; the memory source remains independent of operator-core.",
+      "transportFriction": "EI-24883959500462543: entire native Papercusp MCP namespace disappeared after mid-turn wake; sameSID ptool explicit --url=http://127.0.0.1:3070 --transport=http recovered claim/control/test evidence. Mistaken --port flag rejected by CLI before dispatch; no mutation was retried with unknown outcome."
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 30984,
+        "sha256": "14e0f79c408c8a2fb5dcad5423ada757b6778b272244e649d763ed505577e3ce"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 57686,
+        "sha256": "7c6d106c0cb3c99eb49b7ac6a3197281b721b942efdb7cb67203a22d07572817"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 54805,
+        "sha256": "ffe65f5f2fa113171b62800e9bfe30f53093f2a040bd481bd8abcf64811607c8"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 31953,
+        "sha256": "c6141d18129891099e719cf01f93d01cc81357c93e6591257c2ba219cb8d7d58"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 35876,
+        "sha256": "0e59c763606be6a3e56b90ca807ddf233ea0893b514e97449c4bbe4e0b957cea"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      }
+    ],
+    "supersedesCurrentPins": "These six pins are current for the Node-closure unit. nativeLoaderClosurePreparation/nativeMappedObjectPreparation and earlier proofs are historical; all immutable model/export/reference/V7/V5/R4/V6/Nsight captures remain unchanged.",
+    "next": "runtime-source-v5 does not exist as of this read. Reuse the qualified completed runtime-source-v4 source/dependency baseline and copier, overlay ALL currently tested workers/builder/candidate/manifest guards/tests/CUDA fixture, pin copied Node/Python and launcher/capture recipes, qualify source paths and actual FILE worker boot before/after admission, then matched CUDA/MONOTONIC/runtime/closure preflight before fresh full-model capture.",
+    "limitations": [
+      "This qualifies a model-free actual Node FILE-parent CPU fixture, not mDenseOn CUDA-model closure or GPU acceptance.",
+      "Scope is file-backed glibc ELF/addons plus separately hashed kernel vDSO; arbitrary mmap/JIT and CUDA attribution remain separate.",
+      "Detailed final per-case counts are unreported rather than inferred from recovered pass rows."
+    ],
+    "modelFreeNodeClosureVerified": true,
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "fullGpuPopulationComplete": false,
+    "modelGpuCapacityBindingVerified": false
+  },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
