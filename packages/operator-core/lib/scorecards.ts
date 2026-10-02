@@ -72,6 +72,8 @@ import { trackDetached } from './detached-imports';
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
 export const WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC = 'work-on-everything-stewardship-health';
+/** The per-run GOAL behavior-grading rubric (goal-agent-behavior-feedback-2026-09-06). */
+export const GOAL_BEHAVIOR_GRADING_RUBRIC = 'goal-mode-e2e';
 
 export type ScorecardRollup = NonNullable<StructuredObservation['rollup']>;
 
@@ -139,6 +141,41 @@ export function computeWorkOnEverythingRollup(
     criticalUnknowns,
     coverage,
   };
+}
+
+/**
+ * The rubric-specific rating contracts that the generic shape checks cannot express.
+ * Both the evaluate preflight and the emit door run this one entry point, so a rubric
+ * that gains a contract is enforced at both without touching either caller.
+ */
+export function validateRubricRatingContracts(rubricRef: string, ratings: ObservationRatings): void {
+  validateWorkOnEverythingEvidenceEnvelope(rubricRef, ratings);
+  validateGoalBehaviorUnknownDisclosure(rubricRef, ratings);
+}
+
+/**
+ * AUTO-BAR-R-3 (goal-agent-behavior-feedback-2026-09-06): a criterion whose opportunity
+ * never arose, or was never observed, is rated unknown/idle AND says why. The reason must
+ * be the structured `unknownReason`, not prose in `evidence`: the live R-3 census
+ * (behavior-grading-r3-no-opportunity.live.test.ts) reads only that field, and measured
+ * 2026-10-02 two judge-emitted cards that explained 20 unknowns in prose alone because
+ * nothing at emit required the field.
+ */
+export function validateGoalBehaviorUnknownDisclosure(rubricRef: string, ratings: ObservationRatings): void {
+  if (rubricRef !== GOAL_BEHAVIOR_GRADING_RUBRIC) return;
+  const undisclosed = Object.entries(ratings)
+    .filter(([, entry]) => {
+      const rating = entry.rating.trim().toLowerCase();
+      return (rating === 'unknown' || rating === 'idle') && !entry.unknownReason?.trim();
+    })
+    .map(([key]) => key);
+  if (undisclosed.length > 0) {
+    throw new Error(
+      `${GOAL_BEHAVIOR_GRADING_RUBRIC} unknown/idle rating(s) ${undisclosed.map((k) => `'${k}'`).join(', ')} ` +
+        'require unknownReason (idle | not-exercised | instrument-unavailable | retention-gap | ' +
+        'generation-mismatch | external-capacity | scope-mismatch | other); prose in evidence does not count',
+    );
+  }
 }
 
 /**
