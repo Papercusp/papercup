@@ -136,6 +136,11 @@ export interface PromotePlanResult {
   specQuality?: PlanSpecQualityGateVerdict;
   /** WI-10004234: the plan could not be read, so nothing was evaluated or minted. */
   planUnreadable?: true;
+  /**
+   * The plan row's `template` is not executable (spec-triad-policy SPEC_TRIAD_EXCLUDED_TEMPLATES,
+   * e.g. an acceptance rubric): nothing was promoted and no gate ran or filed (WI-10005441).
+   */
+  templateExcluded?: string;
   /** P-003: the shared BAR contract was not ready for promotion. */
   acceptanceBarBlocked?: true;
   acceptanceBarLifecycle?: AcceptanceBarLifecycleVerdict;
@@ -400,6 +405,7 @@ async function evaluateSpecTriadForPromotion(
         content: row.content,
         created: row.created,
         itemCount: Array.isArray(row.items) ? row.items.length : undefined,
+        template: row.template,
       },
       { flagEnabled: true, epoch: specTriadEpoch() },
     );
