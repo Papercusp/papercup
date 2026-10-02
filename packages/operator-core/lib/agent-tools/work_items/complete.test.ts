@@ -6207,6 +6207,40 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       }
     });
 
+    // WI-10005648: this tool alone seats ~10 KB of the 100 KB tool-delivery floor. Four nested
+    // records (verification, rootCauseVerification, coverage, selfReview) were published TWICE —
+    // once inside the `completion` $defs record and again, in full, as flat root aliases —
+    // which pushed the floor 3,428 B over budget and reded psu-launcher's budgetOverrun gate.
+    // The root alias must stay a POINTER; the typed shape lives under `completion`.
+    it('publishes the heavy nested completion records once, under completion, not again as root aliases (WI-10005648)', () => {
+      const json = z.toJSONSchema(complete.args as never) as JsonSchemaDocument & {
+        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ properties?: Record<string, unknown> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const single = branches.find((branch) => Boolean(branch.properties?.id));
+      expect(single).toBeDefined();
+
+      const record = resolveLocalSchemaRef(json, single?.properties?.completion) as {
+        properties?: Record<string, { properties?: unknown; $ref?: string }>;
+      };
+      for (const field of ['verification', 'rootCauseVerification', 'coverage', 'selfReview']) {
+        const alias = resolveLocalSchemaRef(json, single?.properties?.[field]) as {
+          type?: unknown;
+          properties?: unknown;
+        };
+        // Still a published, object-typed key (the single-item flat-alias contract) ...
+        expect(alias.type, `root alias ${field} must stay object-typed`).toBe('object');
+        // ... but a pointer, never a second copy of the record.
+        expect(alias.properties, `root alias ${field} must not re-publish its record`).toBeUndefined();
+        expect(JSON.stringify(alias).length, `root alias ${field} grew past a pointer`).toBeLessThan(300);
+
+        // The typed shape is still published exactly where the pointer says it is.
+        const typed = resolveLocalSchemaRef(json, record.properties?.[field]) as { properties?: unknown };
+        expect(typed.properties, `completion.${field} must carry the typed shape`).toBeDefined();
+      }
+    });
+
     it('publishes the single-item flat aliases that preprocessing accepts', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ properties?: Record<string, unknown> }>;
