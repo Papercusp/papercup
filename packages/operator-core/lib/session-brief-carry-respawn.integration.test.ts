@@ -15,9 +15,9 @@ const sessionBriefMigration = resolve(
   here,
   '../../../libs/papercusp/libs/db/sql/322-session-briefs-ei1742.sql',
 );
-// The live migration is still a draft while its activation safety is reviewed.
-// Apply its candidate DDL explicitly to this throwaway database so the test covers
-// both the missing-column failure and the real migrated write/consume/restore path.
+// Keep migration state isolated: prove the helper rejects the pre-migration
+// schema, then apply the migration to this throwaway database and exercise the
+// migrated write/consume/restore path.
 const pendingCarryMigration = resolve(
   here,
   '../../../libs/papercusp/libs/db/sql/1340-session-brief-pending-carry-respawn.sql',

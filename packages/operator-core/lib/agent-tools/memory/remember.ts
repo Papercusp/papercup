@@ -267,10 +267,19 @@ export default defineTool({
     // and refuse BEFORE the write-ahead journal so a later replay cannot
     // resurrect a federation request made while the feature was dark.
     if (args.shareable === true) {
-      const federationEnabled = await getFlag(
-        FLAGS.MEM0_FEDERATION_EGRESS,
-        'system',
-      ).catch(() => false);
+      let federationEnabled = false;
+      try {
+        federationEnabled = await withMemoryTimeout(
+          Promise.resolve()
+            .then(() => getFlag(FLAGS.MEM0_FEDERATION_EGRESS, 'system'))
+            .catch(() => false),
+          'memory:remember federation egress flag',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // This flag is an egress safety rail: an unavailable read stays closed.
+      }
       if (!federationEnabled) {
         return {
           content: [{ type: 'text', text: JSON.stringify({
@@ -412,9 +421,26 @@ export default defineTool({
     // rather than silently routed to "the workspace's only hive" — inferring an
     // egress target is exactly what the D-006 privacy default exists to prevent.
     if (args.shareable === true) {
-      const fedSlug = args.hive_slug
-        ? args.hive_slug
-        : await resolveFactFederationSlug(args.harness_slug);
+      let fedSlug: string | null;
+      try {
+        fedSlug = args.hive_slug
+          ? args.hive_slug
+          : await withMemoryTimeout(
+              Promise.resolve().then(() => resolveFactFederationSlug(args.harness_slug)),
+              'memory:remember federation scope resolution',
+              memoryToolTimeoutMs(),
+            );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false,
+            stored: false,
+            reason: 'memory_timeout',
+            step: 'federation_scope',
+          }) }],
+        };
+      }
       if (!fedSlug) {
         return {
           content: [{ type: 'text', text: JSON.stringify({
@@ -537,7 +563,20 @@ export default defineTool({
     const conflictWanted = !args.force && conflictCheckEnabled();
     // P-009 (D-016): Jev when a Jev key is stored, else Anthropic, else NO judge,
     // reported as such rather than as a no-op that looks like "nothing found".
-    const conflictJudge = conflictWanted ? await resolveConflictJudge() : null;
+    let conflictJudge: Awaited<ReturnType<typeof resolveConflictJudge>> | null = null;
+    if (conflictWanted) {
+      try {
+        conflictJudge = await withMemoryTimeout(
+          Promise.resolve().then(() => resolveConflictJudge()),
+          'memory:remember conflict-judge resolution',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // Conflict checking is advisory; an unavailable judge must not block the write.
+        conflictJudge = { available: false, reason: 'memory_timeout' };
+      }
+    }
     // Configured ON but inert — say so ONCE. That silence is what let a default-ON
     // contradiction guard sit dead in this operator (EI-18746586784230719).
     if (conflictJudge && !conflictJudge.available) warnConflictJudgeUnavailableOnce();
@@ -549,10 +588,25 @@ export default defineTool({
     // instead of being filtered out of every later turn. Jev only (the question and
     // threshold were measured on Jev); the flag is the kill switch. A flag-store error
     // skips the check (fail open), since this is hygiene, not a safety rail.
+    let substanceRefusalEnabled = false;
+    if (conflictJudge?.available === true && conflictJudge.backend === 'jev') {
+      try {
+        substanceRefusalEnabled = await withMemoryTimeout(
+          Promise.resolve()
+            .then(() => getFlag(FLAGS.MEMORY_CONTENT_FREE_REFUSAL, 'system'))
+            .catch(() => false),
+          'memory:remember content-free refusal flag',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // This hygiene flag is fail-open: skip the optional content check on timeout.
+      }
+    }
     const substanceWanted =
       conflictJudge?.available === true &&
       conflictJudge.backend === 'jev' &&
-      (await getFlag(FLAGS.MEMORY_CONTENT_FREE_REFUSAL, 'system').catch(() => false));
+      substanceRefusalEnabled;
     // Fail open, but never silently: when the check was wanted and no valid verdict
     // came back (Jev error, timeout, malformed answer, or the neighbour search
     // failing first), the save proceeds and both the stored row and the result say

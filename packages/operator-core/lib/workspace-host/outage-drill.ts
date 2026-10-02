@@ -173,11 +173,17 @@ export interface OutageDrillConfig {
   readonly agentCommand: string;
   /** Workspace directory on the host the agent writes into. */
   readonly workspaceDir: string;
-  /** Unique per run; the agent's output must be sha256(nonce). */
+  /** Unique per run; names the drill's files on the host. */
   readonly nonce: string;
-  /** How long the agent's task deliberately waits, so the block lands while it runs. */
-  readonly agentHoldSeconds?: number;
+  /**
+   * The value handed to the agent through its gate pipe once the outage is confirmed. The agent's output
+   * must be sha256(secret). It never appears in the prompt or in any file name, so the agent can only learn
+   * it by reading the pipe during the outage.
+   */
+  readonly secret: string;
   readonly agentTimeoutMs?: number;
+  /** How long the drill waits for the agent to open its gate pipe. Must stay under the host-exec timeout. */
+  readonly gateTimeoutSeconds?: number;
   readonly reconnectTimeoutMs?: number;
   readonly pollMs?: number;
 }
@@ -200,6 +206,8 @@ export interface OutageDrillEvidence {
     readonly exitCode: number | null;
     readonly output: string | null;
     readonly expected: string;
+    /** When the agent read its secret from the gate pipe; null if it never did. */
+    readonly gateReleasedAt: string | null;
     readonly completedAt: string | null;
   };
   readonly liftedAt: string | null;
@@ -233,6 +241,10 @@ export function evaluateOutageDrill(evidence: OutageDrillEvidence): OutageDrillV
   require(evidence.during.modelProviderReachable === true, 'the model provider was not reachable during the block');
   require(evidence.during.agentRunningWhenBlocked === true, 'the agent task was not running when the block landed');
   require(evidence.during.serviceActive === true, "the host's Papercusp service was not active during the block");
+  require(
+    evidence.agent.gateReleasedAt !== null && evidence.blockedAt !== null && evidence.agent.gateReleasedAt > evidence.blockedAt,
+    'the agent was never handed its secret during the outage',
+  );
   require(evidence.agent.exitCode === 0, `the agent task exited ${evidence.agent.exitCode ?? 'never'}`);
   require(evidence.agent.output === evidence.agent.expected, 'the agent output is missing or not the expected digest');
   require(
@@ -261,11 +273,20 @@ export function shellQuote(value: string): string {
 }
 
 /** The agent task: a deliberate wait (so the block lands mid-task), then a computed, checkable file. */
-export function agentTaskPrompt(nonce: string, outputPath: string, holdSeconds: number): string {
+/**
+ * The agent's task. Its first tool call blocks reading a named pipe that the drill fills only once the
+ * outage is confirmed, so the agent is provably mid-task when Papercusp disappears, and everything after
+ * that read (a model round trip, more tool calls, the file write) happens during the outage. The prompt
+ * never carries the value. There is no sleep: agent CLIs refuse a long foreground sleep (measured
+ * 2026-10-02 on host-19ff2a97befd83b51d2306fd: Claude Code backgrounded `sleep 90`, then exited 0 without
+ * doing the task).
+ */
+export function agentTaskPrompt(gatePath: string, outputPath: string): string {
   return [
-    `Use the Bash tool to run exactly: sleep ${holdSeconds}`,
-    `Then use the Bash tool to compute the SHA-256 hex digest of the string ${nonce} (no trailing newline),`,
-    `with: printf %s ${nonce} | sha256sum`,
+    `Use the Bash tool to run exactly: cat ${gatePath}`,
+    'That command waits until a value is written to the pipe, then prints the value.',
+    'Then use the Bash tool to compute the SHA-256 hex digest of exactly that printed value (no trailing newline),',
+    'with: printf %s <the printed value> | sha256sum',
     `Then write only that 64-character hex digest, with no other text, to the file ${outputPath}.`,
     'Reply DONE when the file is written.',
   ].join(' ');
@@ -278,9 +299,9 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
   const log = deps.log ?? (() => {});
   const iso = () => deps.now().toISOString();
   const pollMs = config.pollMs ?? 5_000;
-  const holdSeconds = config.agentHoldSeconds ?? 60;
   const outputPath = `${config.workspaceDir}/j5-drill-${config.nonce}.txt`;
   const exitFile = FLAG_FILE(config.workspaceDir, config.nonce, 'exit');
+  const gatePath = FLAG_FILE(config.workspaceDir, config.nonce, 'gate');
   const errors: string[] = [];
   const startedAt = iso();
 
@@ -318,7 +339,13 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
       serviceActive: null as boolean | null,
       papercuspConnectionsWhileBlocked: null as number | null,
     },
-    agent: { exitCode: null as number | null, output: null as string | null, expected: sha256Hex(config.nonce), completedAt: null as string | null },
+    agent: {
+      exitCode: null as number | null,
+      output: null as string | null,
+      expected: sha256Hex(config.secret),
+      gateReleasedAt: null as string | null,
+      completedAt: null as string | null,
+    },
     liftedAt: null as string | null,
     after: { connectorLastSeenAt: null as string | null, papercuspConnections: null as number | null, serviceActive: null as boolean | null },
     ruleDeleted: false,
@@ -339,9 +366,11 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
     log(`before: ${evidence.before.connections.filter((c) => c.class === 'papercusp').length} Papercusp connection(s)`);
 
     // Start the agent detached; its exit code lands in a file so a dropped SSH session cannot lose it.
-    const prompt = agentTaskPrompt(config.nonce, outputPath, holdSeconds);
+    // It blocks on its gate pipe until the drill hands it the secret during the outage.
+    const prompt = agentTaskPrompt(gatePath, outputPath);
     const launch =
-      `cd ${shellQuote(config.workspaceDir)} && rm -f ${shellQuote(exitFile)} && ` +
+      `cd ${shellQuote(config.workspaceDir)} && rm -f ${shellQuote(exitFile)} ${shellQuote(gatePath)} && ` +
+      `mkfifo -m 600 ${shellQuote(gatePath)} && ` +
       `nohup sh -c ${shellQuote(
         `${shellQuote(config.agentCommand)} -p ${shellQuote(prompt)} --allowedTools Bash,Write ` +
           `> ${shellQuote(FLAG_FILE(config.workspaceDir, config.nonce, 'log'))} 2>&1; echo $? > ${shellQuote(exitFile)}`,
@@ -368,6 +397,17 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
       (await deps.hostExec(`test -e ${shellQuote(exitFile)}`)).code !== 0;
     log(`during: papercusp reachable=${papercuspReachable}, agent running=${evidence.during.agentRunningWhenBlocked}`);
 
+    // Hand the agent its secret only now, with the outage confirmed. The write blocks until the agent's
+    // `cat` opens the pipe, so a timeout means the agent never got as far as reading it.
+    if (evidence.during.agentRunningWhenBlocked && !papercuspReachable) {
+      const gateSeconds = config.gateTimeoutSeconds ?? 60;
+      const write = `printf %s ${shellQuote(config.secret)} > ${shellQuote(gatePath)}`;
+      const released = await deps.hostExec(`timeout ${gateSeconds} sh -c ${shellQuote(write)}`);
+      if (released.code !== 0) throw new Error(`the agent never read its gate pipe within ${gateSeconds}s (exit ${released.code})`);
+      evidence.agent.gateReleasedAt = iso();
+      log(`gate released to the agent at ${evidence.agent.gateReleasedAt}`);
+    }
+
     const agentDeadline = deps.now().getTime() + (config.agentTimeoutMs ?? 15 * 60_000);
     let exitText = '';
     while (deps.now().getTime() < agentDeadline) {
@@ -383,6 +423,7 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
       const output = await deps.hostExec(`cat ${shellQuote(outputPath)} 2>/dev/null`);
       evidence.agent.output = output.code === 0 ? output.stdout.trim() : null;
     }
+    await deps.hostExec(`rm -f ${shellQuote(gatePath)}`);
     // Sampled at the END of the outage, so a connector that kept a socket alive is visible.
     evidence.during.serviceActive = await serviceActive();
     evidence.during.papercuspConnectionsWhileBlocked = classify(await ss()).filter((c) => c.class === 'papercusp').length;
