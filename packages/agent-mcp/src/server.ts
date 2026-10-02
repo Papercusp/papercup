@@ -289,7 +289,7 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
       error: { code: 'authorization_denied', message: `Principal ${principal.slug} is not allowed to call tool "${tool.name}"` },
     };
   }
-  if (!principal.capabilities.has(tool.capability)) {
+  if (!principal.capabilities.has(tool.capability) && !principal.capabilities.has('*')) {
     return {
       ok: false,
       error: {
@@ -676,7 +676,7 @@ export async function listPrompts(bearer: string): Promise<ListPromptsResult> {
   }
   if (principal.allowedTools !== undefined) return { ok: true, prompts: [] };
   const visible = getPromptCatalog().filter(
-    (p) => !p.capability || principal.capabilities.has(p.capability),
+    (p) => !p.capability || principal.capabilities.has(p.capability) || principal.capabilities.has('*'),
   );
   return {
     ok: true,
@@ -704,7 +704,7 @@ export async function getPrompt(opts: GetPromptOptions): Promise<GetPromptResult
       error: { code: 'tool_scope_only', message: 'This principal is scoped to its exact MCP tool allowlist' },
     };
   }
-  if (def.capability && !principal.capabilities.has(def.capability)) {
+  if (def.capability && !principal.capabilities.has(def.capability) && !principal.capabilities.has('*')) {
     return {
       ok: false,
       error: {
@@ -775,7 +775,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
       .filter((t) =>
         !principal ||
         ((principal.allowedTools === undefined || principal.allowedTools.has(t.name)) &&
-          principal.capabilities.has(t.capability)),
+          (principal.capabilities.has(t.capability) || principal.capabilities.has('*'))),
       )
       .map(async (t) => {
         // GUARDED conversion, never a raw z.toJSONSchema (EI-10996 / WI-4596).
