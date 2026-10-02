@@ -1912,7 +1912,8 @@ dependency_generation_incremental_supported() {
   [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] || return 1
   find . -maxdepth 0 -printf '' >/dev/null 2>&1 || return 1
   case "$(tar --version 2>/dev/null)" in *'GNU tar'*) ;; *) return 1 ;; esac
-  command -v gzip >/dev/null 2>&1 && command -v comm >/dev/null 2>&1
+  command -v gzip >/dev/null 2>&1 && command -v comm >/dev/null 2>&1 \
+    && printf '' | sha256sum -z >/dev/null 2>&1
 }
 
 # Write the C-sorted source records of one dependency tree to $2, pruned exactly
@@ -2021,13 +2022,47 @@ dependency_generation_records_carry() {
   printf '%s\n' "$line" >> "$dir/index"
 }
 
+# Write to $3/verified the unmatched regular files whose bytes equal the seed's.
+# A candidate matches a predecessor record on path, type, mode, owner, size and
+# mtime, and differs only in ctime or inode. Neither difference proves new bytes:
+# a hard-linked sibling checkout changes the link count of every source inode on
+# each refresh, which bumps every ctime, and a record inside the racy window is
+# not trusted. An in-place rewrite that keeps size and mtime fails the byte
+# comparison, so it is still copied (plan papercusp-log-performance-remediation
+# D-018). Any hashing failure only shrinks the verified set: those files are
+# copied, so a failure can never keep a wrong file.
+dependency_generation_incremental_verify() {
+  local src="$1" seed="$2" work="$3" live_pid live_rc=0 seed_rc=0
+  : > "$work/verified" || return 1
+  LC_ALL=C awk -F '\t' '
+    FILENAME == ARGV[1] { if ($2 == "f") id[$1 FS $3 FS $4 FS $5 FS $6 FS $7] = 1; next }
+    $2 == "f" && (($1 FS $3 FS $4 FS $5 FS $6 FS $7) in id) { print $1 }
+  ' "$work/predecessor" "$work/unmatched" > "$work/candidates" || return 1
+  [ -s "$work/candidates" ] || return 0
+  tr '\n' '\0' < "$work/candidates" > "$work/candidates0" || return 1
+  ( cd "$src" && xargs -0 -r sha256sum -z -- < "$work/candidates0" 2>/dev/null ) \
+    > "$work/live.sums" &
+  live_pid=$!
+  ( cd "$seed" && xargs -0 -r sha256sum -z -- < "$work/candidates0" 2>/dev/null ) \
+    > "$work/seed.sums" || seed_rc=$?
+  wait "$live_pid" || live_rc=$?
+  # 123: some file vanished or was unreadable, and sha256sum still printed a
+  # complete line for every file it hashed. Higher: xargs or sha256sum itself
+  # failed, so verify nothing and let every candidate be copied.
+  [ "$live_rc" -le 123 ] && [ "$seed_rc" -le 123 ] || return 0
+  tr '\0' '\n' < "$work/live.sums" | LC_ALL=C sort > "$work/live.sorted" || return 1
+  tr '\0' '\n' < "$work/seed.sums" | LC_ALL=C sort > "$work/seed.sorted" || return 1
+  # Each line is the 64-hex digest, two spaces, then the path.
+  LC_ALL=C comm -12 "$work/live.sorted" "$work/seed.sorted" | cut -c67- > "$work/verified"
+}
+
 # Build $dest as $src from $seed, the predecessor's copy of the same tree.
 # Exit 0: $dest is verified against $live_records. 76/77: the typed copy-lock
 # and headroom exits, which a full copy would hit too. Anything else: $dest is
 # removed and the caller copies the tree in full.
 dependency_generation_copy_incremental() {
   local src="$1" dest="$2" seed="$3" pred_records="$4" pred_captured_ns="$5"
-  local live_records="$6" work="$7" rc=0 floor kept copied removed copied_bytes
+  local live_records="$6" work="$7" rc=0 floor kept copied removed copied_bytes verified
   rm -rf -- "$work"
   mkdir -p "$work" || return 1
   gzip -dc -- "$pred_records" > "$work/predecessor" || return 1
@@ -2038,8 +2073,17 @@ dependency_generation_copy_incremental() {
     ($9 + 0) < (floor + 0) { print }
     END { if (bad) exit 3 }
   ' "$work/predecessor" > "$work/trusted" || return 1
-  LC_ALL=C comm -12 "$live_records" "$work/trusted" > "$work/kept" || return 1
-  LC_ALL=C comm -23 "$live_records" "$work/trusted" > "$work/changed" || return 1
+  LC_ALL=C comm -12 "$live_records" "$work/trusted" > "$work/exact" || return 1
+  LC_ALL=C comm -23 "$live_records" "$work/trusted" > "$work/unmatched" || return 1
+  dependency_generation_incremental_verify "$src" "$seed" "$work" || return 1
+  LC_ALL=C awk -F '\t' -v verified="$work/kept-verified" -v changed="$work/changed" '
+    FILENAME == ARGV[1] { same[$0] = 1; next }
+    ($1 in same) { print > verified; next }
+    { print > changed }
+  ' "$work/verified" "$work/unmatched" || return 1
+  touch "$work/kept-verified" "$work/changed" || return 1
+  # Both are subsequences of the C-sorted live records, so a merge keeps the order.
+  LC_ALL=C sort -m -o "$work/kept" "$work/exact" "$work/kept-verified" || return 1
   cut -f1 "$work/changed" | tr '\n' '\0' > "$work/copy0" || return 1
   # A seed path survives only as a reused file, or as a directory that still
   # exists live; tar then resets the metadata of every changed directory.
@@ -2054,6 +2098,7 @@ dependency_generation_copy_incremental() {
   copied="$(awk -F '\t' '$2 != "d" { n++ } END { print n + 0 }' "$work/changed")"
   copied_bytes="$(awk -F '\t' '$2 == "f" { s += $6 } END { printf "%.0f\n", s }' "$work/changed")"
   removed="$(awk 'END { print NR + 0 }' "$work/remove")"
+  verified="$(awk 'END { print NR + 0 }' "$work/kept-verified")"
 
   dependency_generation_acquire_copy_lock "incremental ${dest##*/tree/}" || return $?
   dependency_generation_check_headroom "$seed" "$dest" || rc=$?
@@ -2090,7 +2135,7 @@ dependency_generation_copy_incremental() {
     case "$rc" in 76|77) return "$rc" ;; *) return 1 ;; esac
   fi
   dependency_generation_log \
-    "INCREMENTAL schema=1 tree=${dest##*/tree/} kept=$kept copied=$copied removed=$removed copied_bytes=$copied_bytes"
+    "INCREMENTAL schema=1 tree=${dest##*/tree/} kept=$kept copied=$copied removed=$removed copied_bytes=$copied_bytes verified=$verified"
 }
 
 # Copy one changed or new tree into the build and store its source records.

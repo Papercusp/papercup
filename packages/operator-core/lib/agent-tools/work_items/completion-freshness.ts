@@ -321,6 +321,59 @@ type CompletionHistoryLocation = {
  */
 export type CompletionBlobHistoryVerdict = boolean | 'unmeasured' | undefined;
 
+/** Ancestor directories of a repo-relative path, outermost first: 'a/b/c.ts' gives ['a', 'a/b']. */
+function ancestorPrefixes(path: string): string[] {
+  const segments = path.split('/');
+  return segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join('/'));
+}
+
+/**
+ * Which of `prefixes` are gitlinks at one commit: prefix to the pinned submodule commit,
+ * or null when the prefix is a tree, a blob, or absent there. `'unmeasured'` means the read
+ * timed out (or the pass aborted); undefined is a deterministic refusal.
+ */
+type GitlinkPrefixRead = ReadonlyMap<string, string | null> | 'unmeasured' | undefined;
+type GitlinkPrefixReader = (
+  root: string,
+  commitSha: string,
+  prefixes: readonly string[],
+  opts: GitSpawnOptions,
+) => Promise<GitlinkPrefixRead>;
+
+/** One non-recursive ls-tree answers every requested prefix at once. */
+async function readGitlinkPrefixes(
+  root: string,
+  commitSha: string,
+  prefixes: readonly string[],
+  opts: GitSpawnOptions,
+): Promise<GitlinkPrefixRead> {
+  const entries: string[] = [];
+  const outcome = await streamGitFields(
+    ['-C', root, 'ls-tree', '-z', commitSha, '--', ...prefixes.map((prefix) => ':(literal)' + prefix)],
+    (entry) => {
+      if (entry) entries.push(entry);
+    },
+    // One entry per requested prefix: bounded output, so the sidecar can run it.
+    // The settlement reconciler issues these on every git-sync pass from bg-host
+    // (~8/s traced 2026-10-01, ~54 ms of frozen loop per local fork).
+    { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
+  );
+  if (opts.signal?.aborted || outcome === 'timeout') return 'unmeasured';
+  if (outcome !== 'complete') return undefined;
+  const gitlinks = new Map<string, string | null>(prefixes.map((prefix) => [prefix, null]));
+  for (const entry of entries) {
+    const tab = entry.indexOf('\t');
+    if (tab < 0) continue;
+    const [mode, type, sha] = entry.slice(0, tab).split(/\s+/);
+    const name = entry.slice(tab + 1);
+    if (mode !== '160000' || type !== 'commit' || !sha || !OBJECT_SHA_RE.test(sha)) continue;
+    // A gitlink that is an ancestor of a requested path is itself one of the requested
+    // prefixes, so entries outside the request can be ignored.
+    if (gitlinks.has(name)) gitlinks.set(name, sha);
+  }
+  return gitlinks;
+}
+
 /**
  * Resolve a declared path to the repository and commit that own it at one
  * superproject commit. Gitlinks are read from that commit's tree, not from the
@@ -332,40 +385,24 @@ async function completionHistoryLocation(
   commitSha: string,
   path: string,
   opts: GitSpawnOptions,
+  readGitlinks: GitlinkPrefixReader = readGitlinkPrefixes,
 ): Promise<CompletionHistoryLocation | 'unmeasured' | undefined> {
   if (opts.signal?.aborted) return 'unmeasured';
   const root = nodePath.resolve(repoRoot);
-  const prefixes = path
-    .split('/')
-    .slice(0, -1)
-    .map((_, index, segments) => segments.slice(0, index + 1).join('/'));
+  const prefixes = ancestorPrefixes(path);
   if (prefixes.length === 0) return { repositoryRoot: root, commitSha, path };
 
-  const entries: string[] = [];
-  const outcome = await streamGitFields(
-    ['-C', root, 'ls-tree', '-z', commitSha, '--', ...prefixes.map((prefix) => ':(literal)' + prefix)],
-    (entry) => {
-      if (entry) entries.push(entry);
-    },
-    // One entry per ancestor prefix: bounded output, so the sidecar can run it.
-    // The settlement reconciler issues these on every git-sync pass from bg-host
-    // (~8/s traced 2026-10-01, ~54 ms of frozen loop per local fork).
-    { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
-  );
-  if (opts.signal?.aborted || outcome === 'timeout') return 'unmeasured';
-  if (outcome !== 'complete') return undefined;
+  const gitlinks = await readGitlinks(root, commitSha, prefixes, opts);
+  if (opts.signal?.aborted || gitlinks === 'unmeasured') return 'unmeasured';
+  if (!gitlinks) return undefined;
 
+  // Prefixes run outermost first, so the last gitlink seen is the deepest one.
   let bestPrefix: string | undefined;
   let bestSha: string | undefined;
-  for (const entry of entries) {
-    const tab = entry.indexOf('\t');
-    if (tab < 0) continue;
-    const [mode, type, sha] = entry.slice(0, tab).split(/\s+/);
-    const candidate = entry.slice(tab + 1);
-    if (mode !== '160000' || type !== 'commit' || !sha || !OBJECT_SHA_RE.test(sha)) continue;
-    if (!path.startsWith(candidate + '/')) continue;
-    if (bestPrefix && bestPrefix.length >= candidate.length) continue;
-    bestPrefix = candidate;
+  for (const prefix of prefixes) {
+    const sha = gitlinks.get(prefix);
+    if (!sha) continue;
+    bestPrefix = prefix;
     bestSha = sha;
   }
   if (!bestPrefix || !bestSha) return { repositoryRoot: root, commitSha, path };
@@ -374,7 +411,7 @@ async function completionHistoryLocation(
   if (!nestedRoot.startsWith(root + nodePath.sep)) return undefined;
   const nestedPath = path.slice(bestPrefix.length + 1);
   if (!nestedPath) return undefined;
-  return completionHistoryLocation(nestedRoot, bestSha, nestedPath, opts);
+  return completionHistoryLocation(nestedRoot, bestSha, nestedPath, opts, readGitlinks);
 }
 
 /**
@@ -396,6 +433,130 @@ export async function completionBlobHistoryContains(
   blobSha: string,
   opts: GitSpawnOptions = {},
 ): Promise<CompletionBlobHistoryVerdict> {
+  return blobHistoryContains(readGitlinkPrefixes, repoRoot, fromHeadSha, toCommitSha, rawPath, blobSha, opts);
+}
+
+/**
+ * WI-10005357: a {@link completionBlobHistoryContains} whose gitlink reads are shared.
+ *
+ * Every settlement row in one git-sync pass is checked against the SAME emitted commit,
+ * and a row's declared paths share directories. Resolving each path on its own cost one
+ * `ls-tree` per path per side (plus one per submodule level): ~655 of ~843 git execs in a
+ * traced 90 s pass (2026-10-02), each a governed sidecar read, so no pass ever finished.
+ *
+ * The answer for a prefix depends only on (repository, commit, prefix), and a commit is
+ * immutable, so one reader per pass memoizes it. Concurrent rows share an in-flight read.
+ * A `'unmeasured'` answer (timeout or abort) is never kept, so a later ask retries it.
+ */
+export interface CompletionBlobHistoryReader {
+  /** Same contract as {@link completionBlobHistoryContains}. */
+  readonly contains: typeof completionBlobHistoryContains;
+  /**
+   * Announce paths that a later `contains` may resolve at this commit. Nothing is read
+   * here: the first read at the commit folds in every announced path's prefixes, so a
+   * row's paths (or a whole pass's paths at the emitted commit) cost one ls-tree, not one
+   * each. Announced paths that resolve into a submodule are announced there too.
+   */
+  hint(repoRoot: string, commitSha: string, paths: readonly string[]): void;
+  /** How many gitlink ls-tree reads this reader has issued. */
+  gitlinkReads(): number;
+}
+
+export function createCompletionBlobHistoryReader(
+  readGitlinks: GitlinkPrefixReader = readGitlinkPrefixes,
+): CompletionBlobHistoryReader {
+  type Answer = string | null | 'unmeasured' | undefined;
+  const keyOf = (root: string, commitSha: string) => root + '\0' + commitSha;
+  /** (root, commit) → prefix → its answer, settled or in flight. */
+  const answers = new Map<string, Map<string, Promise<Answer>>>();
+  /** (root, commit) → paths announced through hint(). */
+  const announced = new Map<string, Set<string>>();
+  let reads = 0;
+
+  const announce = (root: string, commitSha: string, paths: Iterable<string>) => {
+    const key = keyOf(root, commitSha);
+    const set = announced.get(key) ?? new Set<string>();
+    for (const path of paths) set.add(path);
+    announced.set(key, set);
+  };
+
+  /** Announce, one level down, every announced path that lives under a gitlink just read. */
+  const propagate = (root: string, commitSha: string, gitlinks: ReadonlyMap<string, string | null>) => {
+    const paths = announced.get(keyOf(root, commitSha));
+    if (!paths) return;
+    const nested = new Map<string, { root: string; sha: string; paths: string[] }>();
+    for (const path of paths) {
+      let prefix: string | undefined;
+      for (const candidate of ancestorPrefixes(path)) if (gitlinks.get(candidate)) prefix = candidate;
+      if (!prefix) continue;
+      const sha = gitlinks.get(prefix)!;
+      const nestedRoot = nodePath.resolve(root, prefix);
+      if (!nestedRoot.startsWith(root + nodePath.sep)) continue;
+      const group = nested.get(keyOf(nestedRoot, sha)) ?? { root: nestedRoot, sha, paths: [] };
+      group.paths.push(path.slice(prefix.length + 1));
+      nested.set(keyOf(nestedRoot, sha), group);
+    }
+    for (const group of nested.values()) announce(group.root, group.sha, group.paths);
+  };
+
+  const sharedRead: GitlinkPrefixReader = async (root, commitSha, prefixes, opts) => {
+    const key = keyOf(root, commitSha);
+    let table = answers.get(key);
+    if (!table) {
+      table = new Map();
+      answers.set(key, table);
+    }
+    const known = table;
+    if (prefixes.some((prefix) => !known.has(prefix))) {
+      const wanted = new Set(prefixes.filter((prefix) => !known.has(prefix)));
+      for (const path of announced.get(key) ?? []) {
+        for (const prefix of ancestorPrefixes(path)) if (!known.has(prefix)) wanted.add(prefix);
+      }
+      const batch = [...wanted];
+      reads += 1;
+      const read = readGitlinks(root, commitSha, batch, opts).then(
+        (result) => {
+          if (result && result !== 'unmeasured') propagate(root, commitSha, result);
+          return result;
+        },
+        // A reader that throws measured nothing; retry rather than persist residue.
+        (): GitlinkPrefixRead => 'unmeasured',
+      );
+      for (const prefix of batch) {
+        const answer = read.then((result): Answer =>
+          result === 'unmeasured' || result === undefined ? result : (result.get(prefix) ?? null),
+        );
+        known.set(prefix, answer);
+        void answer.then((value) => {
+          if (value === 'unmeasured' && known.get(prefix) === answer) known.delete(prefix);
+        });
+      }
+    }
+    const settled = await Promise.all(prefixes.map((prefix) => known.get(prefix)!));
+    if (settled.includes('unmeasured')) return 'unmeasured';
+    if (settled.includes(undefined)) return undefined;
+    return new Map(prefixes.map((prefix, index) => [prefix, settled[index] as string | null]));
+  };
+
+  return {
+    contains: (repoRoot, fromHeadSha, toCommitSha, rawPath, blobSha, opts = {}) =>
+      blobHistoryContains(sharedRead, repoRoot, fromHeadSha, toCommitSha, rawPath, blobSha, opts),
+    hint: (repoRoot, commitSha, paths) => {
+      if (SHA_RE.test(commitSha)) announce(nodePath.resolve(repoRoot), commitSha, paths);
+    },
+    gitlinkReads: () => reads,
+  };
+}
+
+async function blobHistoryContains(
+  readGitlinks: GitlinkPrefixReader,
+  repoRoot: string,
+  fromHeadSha: string,
+  toCommitSha: string,
+  rawPath: string,
+  blobSha: string,
+  opts: GitSpawnOptions,
+): Promise<CompletionBlobHistoryVerdict> {
   if (opts.signal?.aborted) return 'unmeasured';
   if (!SHA_RE.test(fromHeadSha) || !SHA_RE.test(toCommitSha) || !OBJECT_SHA_RE.test(blobSha)) {
     return undefined;
@@ -403,9 +564,9 @@ export async function completionBlobHistoryContains(
   const path = normalizedRepoPath(repoRoot, rawPath);
   if (!path || path !== rawPath) return undefined;
 
-  const from = await completionHistoryLocation(repoRoot, fromHeadSha, path, opts);
+  const from = await completionHistoryLocation(repoRoot, fromHeadSha, path, opts, readGitlinks);
   if (from === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
-  const to = await completionHistoryLocation(repoRoot, toCommitSha, path, opts);
+  const to = await completionHistoryLocation(repoRoot, toCommitSha, path, opts, readGitlinks);
   if (to === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
   if (!from || !to) return undefined;
   if (from.repositoryRoot !== to.repositoryRoot || from.path !== to.path) return undefined;

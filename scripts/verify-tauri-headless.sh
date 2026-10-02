@@ -926,7 +926,7 @@ shared_schema_readiness_preflight() {
   (
     cd "$REPO_DIR/apps/operator" || exit 74
     set -a
-    if [ -f .env.local ]; then . ./.env.local; fi
+    if [ -f .env.local ]; then . ./.env.local || exit 74; fi
     set +a
     timeout --kill-after=1s 8s node "$DESKTOP_DIR/bin/dev-operator-pg-probe.mjs" --repo-root "$REPO_DIR" --require-applied-schema
   ) || status=$?

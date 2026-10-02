@@ -349,3 +349,70 @@ describe('P-012 / D-024: the by-id claim refuses every non-agent category', () =
     expect(refusedAgent).toEqual([]);
   });
 });
+
+describe('D-035: work_items:set_state and work_items:complete refuse every non-agent category by id', () => {
+  // The by-id claim above is one of THREE doors that act on a row by id. A real-model S36 run
+  // (test_runs 20493622) worked record/document/event/human rows through set_state and
+  // complete without claiming them. These cases drive the REAL handlers, so a mutant that
+  // drops either door's `return notAgentWork` is caught here, not only a broken helper.
+  const categoryAgent = (s: Seeded) => s.nature === 'work' && s.audience === 'agent';
+  // An attributable caller: resolveAgentIdentity refuses an empty context before any door runs.
+  const PROBE_CTX = { isSuperuser: true, uiClientId: 'door-probe', workspaceId: WS, harnessSlug: H } as never;
+  const firstResult = (out: unknown) => {
+    const data = (out as { data?: { results?: Array<Record<string, unknown>> } & Record<string, unknown> }).data;
+    return (data?.results?.[0] ?? data ?? {}) as Record<string, unknown>;
+  };
+
+  it('the shared gate refuses every non-agent seed at both doors and passes every agent seed', async () => {
+    const { refuseNonAgentWorkAtDoor, NOT_AGENT_WORK } = await import('./agent-work-door-gate');
+    const nonAgent = SEEDS.filter((s) => !categoryAgent(s));
+    const agent = SEEDS.filter(categoryAgent);
+    expect(nonAgent.length).toBeGreaterThan(0);
+    expect(agent.length).toBeGreaterThan(0);
+    for (const door of ['work_items:set_state', 'work_items:complete'] as const) {
+      const passedNonAgent: string[] = [];
+      for (const s of nonAgent) {
+        const r = await refuseNonAgentWorkAtDoor(door, s.id, H);
+        if (r?.error !== NOT_AGENT_WORK || r.door !== door || r.nature !== s.nature) passedNonAgent.push(label(s.id));
+      }
+      expect(passedNonAgent).toEqual([]);
+      const refusedAgent: string[] = [];
+      for (const s of agent) if ((await refuseNonAgentWorkAtDoor(door, s.id, H)) !== null) refusedAgent.push(label(s.id));
+      expect(refusedAgent).toEqual([]);
+    }
+  });
+
+  it('the set_state and complete handlers refuse every non-agent seed and write nothing', async () => {
+    const setState = (await import('../agent-tools/work_items/set_state')).default;
+    const complete = (await import('../agent-tools/work_items/complete')).default;
+    const nonAgent = SEEDS.filter((s) => !categoryAgent(s));
+    const before = new Map(nonAgent.map((s) => [s.id, s.status]));
+
+    const setStateLeaks: string[] = [];
+    const completeLeaks: string[] = [];
+    for (const s of nonAgent) {
+      const viaSetState = firstResult(await setState.handler({ id: s.id, state: 'wip', harness: H } as never, PROBE_CTX));
+      if (viaSetState.error !== 'not_agent_work') setStateLeaks.push(`${label(s.id)} → ${JSON.stringify(viaSetState).slice(0, 160)}`);
+      const viaComplete = firstResult(
+        await complete.handler(
+          {
+            id: s.id,
+            harness: H,
+            state: 'done',
+            assumptions: 'none',
+            completion: { summary: 'door probe', testsRun: 'none', testResult: 'none', verifiedHow: 'none', filesChanged: [] },
+          } as never,
+          PROBE_CTX,
+        ),
+      );
+      if (viaComplete.error !== 'not_agent_work') completeLeaks.push(`${label(s.id)} → ${JSON.stringify(viaComplete).slice(0, 160)}`);
+    }
+    expect(setStateLeaks).toEqual([]);
+    expect(completeLeaks).toEqual([]);
+
+    const rows = await db.sql<{ feature_id: string; status: string }[]>`
+      SELECT feature_id, status FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ANY(${[...before.keys()]})`;
+    expect(rows.filter((r) => r.status !== before.get(r.feature_id)).map((r) => label(r.feature_id))).toEqual([]);
+  });
+});

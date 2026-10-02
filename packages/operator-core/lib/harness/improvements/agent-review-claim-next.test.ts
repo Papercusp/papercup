@@ -29,7 +29,7 @@ import {
   type AgentReviewLedgerGrade,
 } from './agent-review';
 
-function item(id: string): WorkItem {
+function item(id: string, round = 1): WorkItem {
   return {
     id,
     kind: 'change',
@@ -41,7 +41,7 @@ function item(id: string): WorkItem {
     state: 'open',
     assignee: null,
     payload: {
-      agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: id, round: 1 },
+      agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: id, round },
     },
     origin: 'local',
   } as unknown as WorkItem;
@@ -106,6 +106,30 @@ describe('claimNextAgentReview skips and converges rows the ledger already settl
     expect(claimed?.id).toBe('WI-B');
     expect(t.claimWorkItem.mock.calls.map((c) => c[0])).toEqual(['WI-B']);
     expect((t.items.get('WI-A')!.payload as any).agentReview.status).toBe('pending');
+  });
+
+  it('hands out a resubmitted round whose ledger still carries the PRIOR round grade (WI-10005365)', async () => {
+    // Round 1 was graded 3/5 with feedback; the submitter revised and resubmitted, which advances
+    // the round without clearing the ledger row. That grade decided round 1 — it is not a
+    // verdict on round 2, so the pickup must not replay it.
+    const t = build({
+      'WI-A': {
+        ideaId: 'WI-A',
+        workItemId: 'WI-A',
+        grade: 3,
+        feedback: 'round-1 asks, already answered by the revision',
+        gradedBy: 'su-round1-reviewer',
+      },
+    });
+    t.items.set('WI-A', item('WI-A', 2));
+
+    const claimed = await claimNextAgentReview({ reviewer: 'su-reviewer', harnessSlug: 'papercusp' }, t.deps);
+
+    expect(claimed?.id).toBe('WI-A');
+    expect(t.claimWorkItem.mock.calls.map((c) => c[0])).toEqual(['WI-A']);
+    const review = (t.items.get('WI-A')!.payload as any).agentReview;
+    expect(review).toMatchObject({ status: 'pending', round: 2 });
+    expect(t.deps.deliverRevision).not.toHaveBeenCalled();
   });
 
   it('still claims an ordinary pending row whose ledger row carries no standing grade', async () => {

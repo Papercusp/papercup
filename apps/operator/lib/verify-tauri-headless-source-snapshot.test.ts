@@ -446,14 +446,15 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
   });
 
   it("estimates with the copy filters and admits before rsync can allocate bytes", () => {
+    const snapshotCommands = operatorSnapshotSource.replace(/\\\n\s*/g, "");
     expect(
-      operatorSnapshotSource.indexOf('reserve_verifier_disk "$source_bytes"'),
+      snapshotCommands.indexOf('reserve_verifier_disk "$source_bytes"'),
     ).toBeLessThan(
-      operatorSnapshotSource.indexOf(
+      snapshotCommands.indexOf(
         'rsync -a --delete "${source_filters[@]}"',
       ),
     );
-    expect(operatorSnapshotSource).toContain(
+    expect(snapshotCommands).toContain(
       'rsync -an --stats "${source_filters[@]}"',
     );
     expect(src.slice(src.indexOf('BOOT_ONLY_ENV="$WORK/env.sh"'))).toContain(
@@ -473,6 +474,10 @@ describe("P-008 J1G — a file vanishing from the live tree does not fail the sn
     const script = [
       "set -uo pipefail",
       "source_filters=(); REPO_DIR=/nonexistent; snapshot_root=/nonexistent",
+      // The production copy now goes through the shared heavy-admission seam.
+      // This fixture tests rsync disposition, so forward its actual command
+      // through that seam without acquiring a real host-wide build slot.
+      'vh_probe_admitted_exec() { shift; [ "$1" != -- ] || shift; "$@"; }',
       `rsync() { return ${rc}; }`,
       `copy() {\n${copyBlock}\necho copied\n}`,
       "copy",

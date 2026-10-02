@@ -2,6 +2,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -3196,6 +3197,9 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
           copied: '2',
           removed: '3',
           copied_bytes: String('v2-0\n'.length + 'new\n'.length),
+          // f0.js matched its record except for ctime and inode, so its bytes were
+          // compared with the predecessor's copy, found different, and copied.
+          verified: '0',
         },
       ]);
       const secondPath = publishedPath(second.stdout);
@@ -3220,20 +3224,75 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
   );
 
   it(
-    'never trusts a record captured within the racy window',
+    'never trusts a record captured within the racy window: it compares the bytes',
     () => {
       const integration = makeIntegration();
       writeFileSync(join(integration, 'node_modules/pkg/stable.js'), 'stable\n');
+      writeFileSync(join(integration, 'node_modules/pkg/racy.js'), 'racy-1\n');
       const first = publish(integration, incrementalEnv('3600'));
       expect(first.status, first.stderr).toBe(0);
+
+      // The predecessor's copy of racy.js holds other bytes of the same size, mode
+      // and nanosecond mtime, so the generation still validates and its live
+      // record still matches exactly. Only a byte comparison can tell.
+      const seeded = join(publishedPath(first.stdout), 'tree/node_modules/pkg/racy.js');
+      const timeRef = join(dirname(integration), 'racy-time-ref');
+      writeFileSync(timeRef, '');
+      execFileSync('touch', ['-r', seeded, timeRef]);
+      const frozenMode = statSync(seeded).mode & 0o7777;
+      chmodSync(seeded, 0o644);
+      writeFileSync(seeded, 'racy-X\n');
+      chmodSync(seeded, frozenMode);
+      execFileSync('touch', ['-r', timeRef, seeded]);
 
       writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
       const second = publish(integration, incrementalEnv('3600'));
       expect(second.status, second.stderr).toBe(0);
-      // With a zero window stable.js would be kept; inside the window nothing is.
+      // Inside the window no record is trusted. stable.js is kept because its
+      // bytes equal the predecessor's copy; racy.js is copied because they differ.
       expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toMatchObject([
-        { tree: 'node_modules', kept: '0', copied: '2' },
+        { tree: 'node_modules', kept: '1', copied: '2', verified: '1' },
       ]);
+      const secondTree = join(publishedPath(second.stdout), 'tree/node_modules');
+      expect(treeContents(secondTree)).toEqual(treeContents(join(integration, 'node_modules')));
+      expect(readFileSync(join(secondTree, 'pkg/racy.js'), 'utf8')).toBe('racy-1\n');
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'reuses files whose only change is ctime from a hard-linked sibling checkout',
+    () => {
+      const integration = makeIntegration();
+      const pkg = join(integration, 'node_modules/pkg');
+      for (let i = 0; i < 10; i += 1) {
+        writeFileSync(join(pkg, `f${i}.js`), `v1-${i}\n`);
+        utimesSync(join(pkg, `f${i}.js`), npmEpoch, npmEpoch);
+      }
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+
+      // A staging refresh hard-links every source file into a sibling checkout and
+      // later removes the old links. Every ctime moves; no byte changes.
+      const sibling = join(dirname(integration), 'staging-links');
+      mkdirSync(sibling);
+      const files = readdirSync(pkg).filter((name) => statSync(join(pkg, name)).isFile());
+      for (const name of files) linkSync(join(pkg, name), join(sibling, name));
+      rmSync(sibling, { recursive: true });
+      // One real change, so the tree is rebuilt at all.
+      writeFileSync(join(pkg, 'f9.js'), 'v2-9-longer\n');
+
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      const [record] = telemetryRecords(second.stderr, 'INCREMENTAL');
+      // Before D-018 every churned file failed the exact match and was copied.
+      expect(record).toMatchObject({
+        tree: 'node_modules',
+        kept: String(files.length - 1),
+        copied: '1',
+        verified: String(files.length - 1),
+        copied_bytes: String('v2-9-longer\n'.length),
+      });
       expect(
         treeContents(join(publishedPath(second.stdout), 'tree/node_modules')),
       ).toEqual(treeContents(join(integration, 'node_modules')));

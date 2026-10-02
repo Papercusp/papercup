@@ -998,7 +998,14 @@ export async function claimNextAgentReview(
     // and is refused or ignored). Converge it here from the standing grade instead, then move
     // on. Best-effort: a row that cannot converge (e.g. a low grade with no feedback) is
     // skipped, never handed out. (EI-24720168531118378)
-    const standing = await deps.readLedgerGrade(review.ledgerIdeaId);
+    //
+    // ROUND 1 ONLY. A standing grade is sovereign only when it pre-dates enrollment, which is
+    // round 1. Resubmit and re-entry advance the round without clearing the ledger row, so in
+    // round >= 2 the standing grade is the one that ALREADY decided an earlier round.
+    // Converging from it replays the old grade and feedback as the new round, bounces the
+    // item back to its submitter, and no reviewer ever sees the revision (WI-10005365).
+    // A fresh grade in round >= 2 arrives through blender:grade-idea, which reconciles it itself.
+    const standing = review.round === 1 ? await deps.readLedgerGrade(review.ledgerIdeaId) : null;
     if (standing && standing.grade != null && standing.workItemId === workItem.id) {
       try {
         await reconcileAgentReviewGrade(

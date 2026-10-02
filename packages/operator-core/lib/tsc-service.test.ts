@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import {
   TSC_SERVICE_ENV,
+  TSC_SERVICE_UNIT_TEMPLATE_ENV,
   baselineWithinScope,
   checkedSetFor,
   lineAndCharacter,
@@ -18,8 +19,12 @@ import {
   readTextOrNull,
   renderDiagnostics,
   serviceProjectFromTscCommand,
+  systemdEscapePath,
   tscServiceEligibility,
   tscServiceSocketPath,
+  tscServiceTemplateSocket,
+  tscServiceTemplateSocketUnit,
+  typecheckViaService,
 } from '../../../scripts/lib/tsc-service.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import { parseTscErrors } from '../../../scripts/lib/tsc-baseline-gate.mjs';
@@ -70,6 +75,85 @@ describe('tscServiceSocketPath', () => {
   it('prefers the explicit override, then XDG_RUNTIME_DIR', () => {
     expect(tscServiceSocketPath({ PAPERCUSP_TSC_SERVICE_SOCKET: '/tmp/x.sock' })).toBe('/tmp/x.sock');
     expect(tscServiceSocketPath({ XDG_RUNTIME_DIR: '/run/user/7' })).toBe('/run/user/7/papercusp-tsc-service.sock');
+  });
+});
+
+// WI-10005362: hosted hosts run one template instance per checkout.
+describe('systemdEscapePath', () => {
+  it('matches `systemd-escape --path` (vectors captured from systemd 255)', () => {
+    expect(systemdEscapePath('/srv/papercusp/workspaces/papercusp')).toBe('srv-papercusp-workspaces-papercusp');
+    expect(systemdEscapePath('/srv/papercusp/workspaces/papercusp-desktop/')).toBe('srv-papercusp-workspaces-papercusp\\x2ddesktop');
+    expect(systemdEscapePath('/home/x/.dir/a b/ü')).toBe('home-x-.dir-a\\x20b-\\xc3\\xbc');
+    expect(systemdEscapePath('/')).toBe('-');
+    expect(systemdEscapePath('/a//b/./c')).toBe('a-b-c');
+    expect(systemdEscapePath('/.hidden/x')).toBe('\\x2ehidden-x');
+  });
+
+  it('names the socket unit for the resolved checkout', () => {
+    expect(tscServiceTemplateSocketUnit('papercusp-tsc-service', '/srv/papercusp/workspaces/papercusp/')).toBe(
+      'papercusp-tsc-service@srv-papercusp-workspaces-papercusp.socket',
+    );
+  });
+});
+
+describe('tscServiceTemplateSocket', () => {
+  const unit = 'papercusp-tsc-service@srv-w-repo.socket';
+  type Call = { command: string; args: string[]; env: Record<string, string | undefined> };
+  function fakeRun(results: Array<{ status: number | null; stdout?: string; stderr?: string }>) {
+    const calls: Call[] = [];
+    const run = (command: string, args: string[], options: { env: Record<string, string | undefined> }) => {
+      calls.push({ command, args, env: options.env });
+      return results[calls.length - 1] ?? { status: 1, stdout: '', stderr: 'unexpected call' };
+    };
+    return { calls, run };
+  }
+
+  it('starts the instance socket, then returns the path systemd bound (without the type suffix)', () => {
+    const { calls, run } = fakeRun([
+      { status: 0, stdout: '' },
+      { status: 0, stdout: '/run/user/1001/papercusp-tsc-service-srv-w-repo.sock (Stream)\n' },
+    ]);
+    const located = tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/w/repo', env: {}, run });
+    expect(located).toEqual({ unit, socketPath: '/run/user/1001/papercusp-tsc-service-srv-w-repo.sock' });
+    expect(calls.map((c) => [c.command, ...c.args])).toEqual([
+      ['systemctl', '--user', 'start', unit],
+      ['systemctl', '--user', 'show', '-p', 'Listen', '--value', unit],
+    ]);
+    // systemctl --user finds the user bus through XDG_RUNTIME_DIR, which an SSH exec may not carry.
+    expect(calls[0].env.XDG_RUNTIME_DIR).toMatch(/^\/run\/user\/\d+$/);
+  });
+
+  it('reports a failed start without asking for the socket, so the caller falls back to the CLI', () => {
+    const { calls, run } = fakeRun([{ status: 5, stderr: 'Unit papercusp-tsc-service@srv-w-repo.socket not found.\n' }]);
+    const located = tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/w/repo', env: { XDG_RUNTIME_DIR: '/run/user/9' }, run });
+    expect(located).toEqual({ unit, error: expect.stringContaining('not found') });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].env.XDG_RUNTIME_DIR).toBe('/run/user/9');
+  });
+
+  it('refuses a unit that bound no unix socket', () => {
+    const { run } = fakeRun([{ status: 0 }, { status: 0, stdout: '\n' }]);
+    expect(tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/w/repo', env: {}, run })).toEqual({
+      unit,
+      error: `${unit} reports no unix socket`,
+    });
+  });
+});
+
+describe('typecheckViaService under a unit template', () => {
+  it('falls back (returns null and says why) when the template instance cannot start', async () => {
+    const lines: string[] = [];
+    const response = await typecheckViaService({
+      root: '/nonexistent/checkout',
+      project: '/nonexistent/checkout/tsconfig.json',
+      files: ['a.ts'],
+      label: 'test',
+      log: (line) => lines.push(line),
+      // A template name no user manager has: the real `systemctl --user start` refuses it.
+      env: { [TSC_SERVICE_UNIT_TEMPLATE_ENV]: 'papercusp-tsc-service-test-absent', XDG_RUNTIME_DIR: '/nonexistent/runtime' },
+    });
+    expect(response).toBeNull();
+    expect(lines.join('\n')).toMatch(/TSC_SERVICE unavailable .*papercusp-tsc-service-test-absent@nonexistent-checkout\.socket/);
   });
 });
 
