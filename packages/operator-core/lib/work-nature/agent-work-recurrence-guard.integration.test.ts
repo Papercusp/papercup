@@ -284,6 +284,28 @@ describe('P-012: a drained self-select door serves only agent work', () => {
   });
 });
 
+describe('P-012: the guard can fail (permanent negative control)', () => {
+  // A guard that has never failed is untested. This neuters the ONE predicate inside the
+  // test database only (never the shared tree), drains the claim doors, and requires the
+  // guard's own condition to find non-agent rows. If the doors ever stop routing through
+  // work_item_is_agent_work, this control starts serving nothing extra and fails, which
+  // says the self-select assertions above have gone vacuous.
+  it('with work_item_is_agent_work neutered to true, the claim doors serve non-agent rows', async () => {
+    const rows = await db.sql<{ def: string }[]>`
+      SELECT pg_get_functiondef('harness_shared.work_item_is_agent_work(text,text,text,boolean)'::regprocedure) AS def`;
+    const original = rows[0]!.def;
+    const neutered = original.replace(/AS \$function\$[\s\S]*?\$function\$/, 'AS $function$ SELECT true $function$');
+    expect(neutered).not.toBe(original);
+    await db.sql.unsafe(neutered);
+    try {
+      const served = [...(await drain(DRAIN_DOORS[0]!)), ...(await drain(DRAIN_DOORS[1]!))];
+      expect(served.filter((id) => !EXPECTED.has(id)).length).toBeGreaterThan(0);
+    } finally {
+      await db.sql.unsafe(original);
+    }
+  });
+});
+
 describe('P-012: the claimable preview surfaces only agent work', () => {
   it('readIssueClaimability (work_items:claimable) never lists a non-agent row', async () => {
     const result = await readIssueClaimability(undefined, { harness: H, workspaceId: WS, client: db.sql as never }, { limit: 100 });
