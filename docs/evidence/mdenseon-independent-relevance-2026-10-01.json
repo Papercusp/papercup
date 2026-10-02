@@ -2662,6 +2662,172 @@
       "verificationInferencePerformed": false
     }
   },
+  "sourceCollectionExpansion": {
+    "status": "snapshot-source-complete independent collection resumed; labels and judgments pending",
+    "qualification": {
+      "runId": "f714f523-c9b2-4959-a985-b4b745d36f58",
+      "testRunIds": [
+        20568280,
+        20568281,
+        20568282,
+        20568283,
+        20568284,
+        20568285
+      ],
+      "passed": 137,
+      "failed": 0,
+      "skipped": 0,
+      "files": 6,
+      "sourceFiles": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged.ts",
+          "sha256": "5fb944932629f1c33683e9b4aaead1b33a89b005ed06cfe7a56b29856273f819",
+          "bytes": 42854
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+          "sha256": "d25f3408badd683c902de5b7652797899b028b751c644d51bece2d83f41899c4",
+          "bytes": 3462
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+          "sha256": "5295d1adab475f12904573fba0bce36eb79daf11dcf89892d1d4f47dc0415948",
+          "bytes": 36704
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+          "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12",
+          "bytes": 3485
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+          "sha256": "86288f53331a6bfec3d0d9ad41b4cc93ffe23d519348f4d66df9e382a3b5f3b4",
+          "bytes": 27552
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.test.ts",
+          "sha256": "dbbec0e73e0e25a3b9d63b409d0144ef8c69bcb5d00df2d4110fe16d988b3085",
+          "bytes": 20561
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/paired-leg-report.ts",
+          "sha256": "9f7d0c616cd85eecb02274d3d5ce6c07b888cf9a66e52769dcd36514a2b43fda",
+          "bytes": 15631
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/paired-leg-report.test.ts",
+          "sha256": "4a1ef6fe6d08cdb083d97bb626ed5e1995b55255b27135c5d7380772d1f18d5e",
+          "bytes": 12914
+        }
+      ],
+      "latestTypecheck": {
+        "at": "2026-10-02T21:13:03.552Z",
+        "head": "5bbc3e8c94",
+        "namedFiles": 2,
+        "checkedFiles": 2,
+        "errors": 0
+      },
+      "broaderTypecheck": {
+        "at": "2026-10-02T21:07:10.582Z",
+        "head": "3e2c34be44",
+        "namedFiles": 6,
+        "checkedFiles": 183,
+        "errors": 0
+      }
+    },
+    "selection": {
+      "targetsPerPartition": "all",
+      "resolvedSnapshotSources": {
+        "memory": {
+          "calibration": 65,
+          "test": 218
+        },
+        "prose": {
+          "calibration": 34,
+          "test": 109
+        }
+      },
+      "sourcePartitionSeedChanged": false,
+      "snapshotChanged": false,
+      "priorAuthorsDonor": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32",
+      "documentChunk": 64,
+      "questionChunk": 64,
+      "scope": "all selected snapshot sources; full eligible census remains larger"
+    },
+    "firstAttempt": {
+      "taskId": "0murg3q49rirkwnntfa",
+      "bashId": "4d5e4ae2-5db",
+      "launch": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/launch-blind-labels-v5-all-snapshot.sh",
+        "sha256": "223d9dcb258a0b221e16318b1f9483550c0744815e98cd877b9073a957903cff",
+        "bytes": 2952
+      },
+      "terminal": "failed1 at2026-10-02T21:01:44.452Z",
+      "log": {
+        "path": ".papercusp/scratch/bash-4d5e4ae2-5db.log",
+        "sha256": "601fef8e55495b512b3522e611872e6b8c900069c5477a3605c71fb1858fd633",
+        "bytes": 12742
+      },
+      "retainedReusedAuthorFiles": 32,
+      "newAuthorReceipts": 0,
+      "labelsCompleted": false,
+      "judgmentsCompleted": false,
+      "failure": "provider429 at first new author because standalone CLI did not initialize enabled gateway endpoints"
+    },
+    "gatewayRepair": {
+      "workItem": "WI-10005666",
+      "rootCause": "judged-cli omitted flag-aware gateway bootstrap; unset SDK endpoints made the existing transport default to direct api.anthropic.com. Runtime override-store installation was also required before flag resolution.",
+      "reuse": "existing installFlagOverrideStore, FLAGS.INFERENCE_GATEWAY/getFlag and applyGatewayLlmEnv; no new account policy/credentials/backend/model",
+      "before": {
+        "runId": "539c3ad7-3ab8-4f10-81dd-6cecbde68971",
+        "testRunIds": [
+          20568187
+        ],
+        "passed": 0,
+        "failed": 3,
+        "skipped": 0
+      },
+      "runtimeFlag": "papercusp-inference-gateway: true with configured override store; operator/staging/bg-host/gateway attestation consistent at1790975461605",
+      "afterFirstFormerlyFailingAuthor": {
+        "raw": {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v5-all-snapshot/memory-author-b511820b0a11d71ac5b9.json",
+          "sha256": "acb7aa9f4f4e7c32c0e307156c7db7e23d6dfc245cb74f48632856ed0e22605b",
+          "bytes": 4154
+        },
+        "identityHash": "810d465b3faf7f74a959495e6ea2ddf49e752a9a0c3164f2b5bccde770294389",
+        "invocationId": "acdf9e43-a90b-4e09-b40f-5bd0af96fb73",
+        "promptSha256": "8a13891689954ec2eca86d2a8765596c153005335d9f0d3bfe452ef7e82c4c2f",
+        "model": "claude-sonnet-4-6",
+        "finishedAt": "2026-10-02T21:13:14.982Z",
+        "servedAccount": "aviynw7",
+        "stopReason": "end_turn",
+        "inputTokens": 430,
+        "outputTokens": 226,
+        "costUsd": 0.00468
+      }
+    },
+    "resume": {
+      "taskId": "0murgmfgh1apzqap8su",
+      "bashId": "fef8b2f4-98b",
+      "launch": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/resume-blind-labels-v5-all-snapshot-gateway-v1.sh",
+        "sha256": "59f3532ae883ffebf9a5973d418a07643ad708efc96097b0f683d27ced98ffda",
+        "bytes": 3360
+      },
+      "log": ".papercusp/scratch/bash-fef8b2f4-98b.log",
+      "deadline": "2026-10-02T23:13:07.304Z",
+      "identityHash": "810d465b3faf7f74a959495e6ea2ddf49e752a9a0c3164f2b5bccde770294389",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v5-all-snapshot",
+      "observation": "actual new authors are completing; no final label/judgment receipt yet",
+      "latestNewAuthorReceiptCount": 33
+    },
+    "acceptance": {
+      "p003Complete": false,
+      "fullAccessibleSourceCensusExhausted": false,
+      "modelAdoptionAuthorized": false,
+      "newEmbeddingMatrixStarted": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
