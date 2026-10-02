@@ -378,7 +378,11 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       const start = performance.now();
       const data = await readOrientation({ mode: 'full' });
       const ms = performance.now() - start;
+      // Harness-scoped facts are shared by every run of this file: a run killed before its
+      // `finally` leaves a 1h-TTL harness fact behind. Compare only this run's marker; the
+      // hidden fleet fact carries it too, so an audience-scope leak still fails here.
       const facts = (data.facts ?? []).map(({ scope, ref, body }) => ({ scope, ref, body }))
+        .filter(({ body }) => body.includes(key))
         .sort((a, b) => a.body.localeCompare(b.body));
       const states = data.obligations?.evaluations.map(row => ({ ruleId: row.ruleId, status: row.status }))
         .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
