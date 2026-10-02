@@ -315,10 +315,10 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     const evidenceRef = 'packages/operator-core/lib/reconnect.test.ts#reconnect';
     // A repeated reference can name separate active bindings when their evidence kinds differ.
     const evidence: Awaited<ReturnType<typeof listSpecEvidence>> = [
-      { id: 18924, evidenceKind: 'test', evidenceRef },
-      { id: 18874, evidenceKind: 'fixture', evidenceRef },
-      { id: 18875, evidenceKind: 'coverage-census', evidenceRef },
-    ].map((row) => ({
+      { id: 18924, evidenceKind: 'test' as const, evidenceRef },
+      { id: 18874, evidenceKind: 'fixture' as const, evidenceRef },
+      { id: 18875, evidenceKind: 'coverage-census' as const, evidenceRef },
+    ].map((row): Awaited<ReturnType<typeof listSpecEvidence>>[number] => ({
       ...row,
       workItemId: 'WI-123',
       planSlug: 'plan-a',

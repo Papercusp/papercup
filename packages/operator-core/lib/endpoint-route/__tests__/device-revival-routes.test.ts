@@ -67,7 +67,9 @@ const m = vi.hoisted(() => ({
     exhausted: false, healthyCount: 1, walledCount: 0, totalCount: 1,
     accounts: [{ id: 'test-account', provider: 'openai', available: true, usageWalled: false }],
   })),
-  dispatchProjectedTool: vi.fn(async (_tool: unknown, name: string) => {
+  dispatchProjectedTool: vi.fn(async (_tool: unknown, name: string,
+    _args: { harness?: string; [key: string]: unknown },
+    _ctx: { harnessSlug?: string; workspaceId: string }, _options: Record<string, unknown>) => {
     if (name === 'plans:attention') {
       return { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [{ planSlug: 'p1', items: [] }] }) }] } };
     }
@@ -314,11 +316,8 @@ describe('device/attention', () => {
     // Exercise the exact resolver used by plans:attention, before any source
     // can fabricate a successful empty feed.
     expect(() => harnessScopedCtx(undefined, {})).toThrow();
-    m.dispatchProjectedTool.mockImplementationOnce(async (_tool, name, ...call) => {
+    m.dispatchProjectedTool.mockImplementationOnce(async (_tool, name, args, toolCtx) => {
       expect(name).toBe('plans:attention');
-      const [args, toolCtx] = call as [
-        { harness?: string }, { harnessSlug?: string; workspaceId: string },
-      ];
       const scoped = harnessScopedCtx(args.harness, toolCtx);
       expect(scoped).toMatchObject({ harnessSlug: 'papercup', workspaceId: 'ws-e4' });
       return { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({

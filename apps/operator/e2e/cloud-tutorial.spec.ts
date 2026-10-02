@@ -148,7 +148,8 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
 test('guide remains keyboard operable with reduced motion and passes axe in active and paused states', async ({ page }) => {
   const fixture = await setupJourney(page, false);
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.addInitScript(() => {
+  const geometryReview = process.env.PAPERCUSP_TUTORIAL_GEOMETRY_REVIEW === '1';
+  await page.addInitScript((captureGeometry) => {
     const behaviors: Array<ScrollBehavior | undefined> = [];
     Object.defineProperty(window, '__tutorialScrollBehaviors', { value: behaviors });
     const snapshots: unknown[] = [];
@@ -165,17 +166,21 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
         active: document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName,
         rect: input?.getBoundingClientRect().toJSON(), viewport: { width: innerWidth, height: innerHeight }, ancestors, stack });
     };
-    document.addEventListener('focusin', () => snapshot('focusin'), true);
-    document.addEventListener('scroll', () => snapshot('scroll'), true);
+    if (captureGeometry) {
+      document.addEventListener('focusin', () => snapshot('focusin'), true);
+      document.addEventListener('scroll', () => snapshot('scroll'), true);
+    }
     const scroll = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (options) {
       if (typeof options === 'object') behaviors.push(options.behavior);
-      snapshot(`scrollIntoView:${this.getAttribute('data-tutorial-target') ?? this.tagName}:before`, new Error().stack);
+      if (captureGeometry) snapshot(`scrollIntoView:${this.getAttribute('data-tutorial-target') ?? this.tagName}:before`, new Error().stack);
       scroll.call(this, options);
-      snapshot('scrollIntoView:after');
-      requestAnimationFrame(() => snapshot('scrollIntoView:next-frame'));
+      if (captureGeometry) {
+        snapshot('scrollIntoView:after');
+        requestAnimationFrame(() => snapshot('scrollIntoView:next-frame'));
+      }
     };
-  });
+  }, geometryReview);
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
   await fixture.sync.waitForServed(['workspaceHosts.control']);
   const guide = page.getByRole('region', { name: 'First agent guide' });
@@ -190,7 +195,7 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
     // Check before fill/Tab can scroll the newly mounted field into view.
     await expect(label).toBeInViewport({ ratio: 1 });
   } finally {
-    await test.info().attach('connection-focus-geometry', { contentType: 'application/json', body: JSON.stringify(
+    if (geometryReview) await test.info().attach('connection-focus-geometry', { contentType: 'application/json', body: JSON.stringify(
       await page.evaluate(() => (window as unknown as { __tutorialFocusGeometry: unknown[] }).__tutorialFocusGeometry)) });
   }
   await label.fill('Keyboard project'); await page.keyboard.press('Tab');

@@ -2538,6 +2538,10 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
         {
           owner: 'peer-2',
           owner_label: 'peer-two',
+          resource: 'bg-host-cooldown',
+          lock_id: 'COOL-PEER',
+          acquired_ts: new Date(),
+          fence_seq: 1,
           mode: 'exclusive',
           status: 'held',
           reason: '',

@@ -49,7 +49,7 @@ vi.mock('./source', () => ({
 }));
 vi.mock('../../plan-items/assignments', () => ({ unassignItem: vi.fn(async () => null) }));
 vi.mock('../../plan-items/claims', () => ({
-  getClaim: () => reconcileMocks.getClaim(),
+  getClaim: (...args: Parameters<typeof import('../../plan-items/claims').getClaim>) => reconcileMocks.getClaim(...args),
 }));
 vi.mock('../../plan-items/reconcile-linked-work-items', async (orig) => ({
   ...(await orig<typeof import('../../plan-items/reconcile-linked-work-items')>()),
