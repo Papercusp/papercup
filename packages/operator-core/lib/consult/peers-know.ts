@@ -110,6 +110,12 @@ export async function peersKnowLookup(
           qVec,
           limit: 1,
           mode: 'retrieve',
+          // 'exact' (generic-rag-chunking D-040): the filter keeps a few hundred
+          // settled questions, so the chunk leg reaches their chunks through the
+          // chunk table's key index instead of scanning the whole surface and
+          // re-reading consult_state for a hash join. Same-time A/B, 30 queries x 3:
+          // p50 12.2 -> 9.3 ms, p95 14.6 -> 11.4 ms, same top hit 90/90.
+          scan: 'exact',
           parentFilter: s`cs.workspace_id = ${params.workspaceId}
                           AND cs.state = 'closed_answered'
                           AND (cs.outcome->>'source' IS DISTINCT FROM 'archive')`,
