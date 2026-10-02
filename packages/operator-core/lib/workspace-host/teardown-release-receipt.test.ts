@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS, type GcpWorkspaceHostResourceCensus } from './gcp-safety';
+import { AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS } from './aws-safety';
 import {
   WORKSPACE_HOST_RESOURCE_CENSUS_STAGE,
   workspaceHostResourceCensusOutcome,
@@ -42,15 +43,16 @@ describe('teardown.resource-census', () => {
   it('binds an AWS host to the AWS kind set, so a GCP census can never close an AWS release', () => {
     expect(workspaceHostResourceCensusStage('aws').identity).toEqual({
       provider: 'aws',
-      kinds: ['disk', 'snapshot', 'vm'],
+      kinds: ['disk', 'snapshot', 'spot-request', 'vm'],
     });
     expect(() => workspaceHostResourceCensusStage('azure')).toThrow(/no controller-independent workspace-host census/);
   });
 
   it('judges AWS coverage against the AWS kinds only (no GCP network kinds required)', () => {
     const awsCensus = census({
-      inventoryEvidence: census()
-        .inventoryEvidence.filter((evidence) => ['vm', 'disk', 'snapshot'].includes(evidence.kind)),
+      inventoryEvidence: AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.map((kind) => ({
+        kind, strategy: 'managed-labels' as const, providerEvidenceRef: `aws://inventory/${kind}`,
+      })),
     });
     const committed = workspaceHostResourceCensusOutcome({
       subject: SUBJECT,
@@ -71,14 +73,16 @@ describe('teardown.resource-census', () => {
     expect(asGcp.outcome).toBe('refused');
     expect(asGcp.evidenceRefs).toContain('census-uncovered:nat');
 
-    const awsMissingSnapshot = workspaceHostResourceCensusOutcome({
-      subject: SUBJECT,
-      disposition: 'discard',
-      provider: 'aws',
-      census: census({ inventoryEvidence: awsCensus.inventoryEvidence.filter((evidence) => evidence.kind !== 'snapshot') }),
-    });
-    expect(awsMissingSnapshot.outcome).toBe('refused');
-    expect(awsMissingSnapshot.evidenceRefs).toContain('census-uncovered:snapshot');
+    for (const missingKind of AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS) {
+      const incomplete = workspaceHostResourceCensusOutcome({
+        subject: SUBJECT,
+        disposition: 'discard',
+        provider: 'aws',
+        census: census({ inventoryEvidence: awsCensus.inventoryEvidence.filter((evidence) => evidence.kind !== missingKind) }),
+      });
+      expect(incomplete.outcome).toBe('refused');
+      expect(incomplete.evidenceRefs).toContain(`census-uncovered:${missingKind}`);
+    }
   });
 
   it('commits a clean census whose inventory covered every kind, naming each kind it read', () => {
