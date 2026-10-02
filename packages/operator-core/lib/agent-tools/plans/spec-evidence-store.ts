@@ -1105,6 +1105,8 @@ export interface ListSpecEvidenceOptions {
   sourceValIds?: string[];
   evidenceKinds?: SpecEvidenceKind[];
   evidenceRefs?: string[];
+  /** Restrict a replay to exact immutable binding rows; [] selects no rows. */
+  bindingIds?: number[];
   current?: EvidenceCurrentInput[];
   /** Pin reads to one immutable clause revision instead of the live revision pointer. */
   specRevision?: number;
@@ -1469,6 +1471,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const sourceValIds = options.sourceValIds ?? [];
   const evidenceKinds = options.evidenceKinds ?? [];
   const evidenceRefs = options.evidenceRefs ?? [];
+  const bindingIds = options.bindingIds;
   const limit = options.limit ?? 200;
   const includeRetracted = options.includeRetracted === true;
   const specRevision = options.specRevision;
@@ -1531,6 +1534,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       const specIsCurrent = options.replaySnapshot
         ? replaySnapshotMatch
         : tx`(b.spec_revision = c.current_revision AND b.spec_fingerprint = r.content_hash)`;
+      const bindingIdFilter = bindingIds === undefined
+        ? tx`TRUE`
+        : tx`b.id = ANY(${bindingIds}::bigint[])`;
       const rows = await tx<EvidenceRow[]>`
     SELECT b.id, b.work_item_id, b.plan_slug, b.spec_id, c.source_val_id,
            b.spec_revision, c.current_revision, b.spec_fingerprint,
@@ -1574,6 +1580,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
        AND (${sourceValIds.length} = 0 OR c.source_val_id = ANY(${sourceValIds}::text[]))
        AND (${evidenceKinds.length} = 0 OR b.evidence_kind = ANY(${evidenceKinds}::text[]))
        AND (${evidenceRefs.length} = 0 OR b.evidence_ref = ANY(${evidenceRefs}::text[]))
+       AND ${bindingIdFilter}
        AND (${includeRetracted}::boolean IS TRUE OR b.retracted_at IS NULL)
      ORDER BY b.observed_at DESC, b.id DESC
       LIMIT ${limit}`;
