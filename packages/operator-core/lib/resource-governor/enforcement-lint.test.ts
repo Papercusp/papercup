@@ -195,6 +195,41 @@ describe('resource governor enforcement lint', () => {
     ).not.toContain('unbounded-resident-queue');
   });
 
+  it('dispositions the persisted result memo without hiding a new work queue or lost persistence', () => {
+    const path = 'packages/operator-core/lib/agent-tools/work_items/completion-freshness.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:unbounded-resident-queue`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(scanInventory([[path, source + '\npendingQueue.push(work);']])).toContain(finding);
+    expect(scanInventory([[path, source + '\npending.set(job.id, job);']])).toContain(finding);
+    expect(scanInventory([[path, source.replace('await store.save(', 'await forget(')]])).toContain(finding);
+  });
+
+  it('bounds the bench provenance exception to its sole Git read', () => {
+    const path = 'packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
+    expect(scanInventory([[path, source.replace('timeout: 30_000', 'timeout: undefined')]])).toContain(finding);
+    expect(scanInventory([[path, source.replace("execFileSync('git'", "execFileSync('worker'")]])).toContain(finding);
+  });
+
+  it('keeps finite native diagnostic dispositions scoped to their reviewed starts and lifecycle', () => {
+    const heapPath = 'scripts/analyze-heap-snapshots.mjs';
+    const heap = readFileSync(ROOT + heapPath, 'utf8');
+    const nativePath = 'packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs';
+    const native = readFileSync(ROOT + nativePath, 'utf8');
+    for (const [path, source] of [[heapPath, heap], [nativePath, native]]) {
+      const finding = `${path}:resource-start-outside-admission`;
+      expect(scanInventory([[path, source]])).not.toContain(finding);
+      expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
+    }
+    expect(scanInventory([[heapPath, heap.replace('timeout: 60_000', 'timeout: undefined')]])).toContain(`${heapPath}:resource-start-outside-admission`);
+    expect(scanInventory([[nativePath, native.replace('await worker.terminate()', 'await ignoreWorker()')]])).toContain(`${nativePath}:resource-start-outside-admission`);
+    expect(scanInventory([[nativePath, native.replace('71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10', 'other-graph')]])).toContain(`${nativePath}:resource-start-outside-admission`);
+  });
+
   it('allows physical upstream constraints only when the writer carries explicit evidence', () => {
     // Annotated so `disposition` keeps its literal type: an un-annotated array literal
     // widens it to `string`, which stopped satisfying ResourceGovernorInventoryRow once
