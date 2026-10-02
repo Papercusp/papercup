@@ -372,8 +372,17 @@ export interface JoinHarnessSwarmOpts {
    * (cheap — a Map scan, no I/O); a throw is treated as false (never blocks
    * the keepalive). Omitted ⇒ byte-identical pre-WI-1534 behavior (fast window
    * only, then flat 60s slow cadence).
+   *
+   * WI-10005270: a stall gets its OWN fast window — `fastWindowMs` from when
+   * this first reads true — then stalled-triggered refreshes back off
+   * exponentially (doubling from `refreshMs`) up to `stalledMaxRefreshMs`.
    */
   hasStalledLogs?: () => boolean;
+  /**
+   * WI-10005270: cap on the stalled-refresh backoff (see `hasStalledLogs`).
+   * Default `DEFAULT_SUBSTRATE_STALLED_MAX_REFRESH_MS`.
+   */
+  stalledMaxRefreshMs?: number;
   /**
    * EI-13317 escalation ladder: once this topic HAD a live peer and then sits
    * at ZERO live peers for this long — DESPITE the refresh() self-heal loop
@@ -1875,6 +1884,15 @@ export const DEFAULT_SUBSTRATE_REFRESH_MS = 2500;
 export const DEFAULT_SUBSTRATE_FAST_WINDOW_MS = 120_000;
 export const DEFAULT_SUBSTRATE_SLOW_REFRESH_MS = 60_000;
 /**
+ * WI-10005270: the ceiling of the stalled-log refresh backoff. Before it, a
+ * stall re-armed the 2.5 s cadence FOREVER: an admitted remote log whose machine
+ * is offline never regains a peer, so bg-host re-announced ~47 topics every 2.5 s
+ * (5.35 DHT announce queries/s, ~12% of its main thread, measured 2026-10-02).
+ * Half the slow keepalive keeps a long stall retried 2x as often as WI-1534's
+ * 80-min case, without the permanent fast loop.
+ */
+export const DEFAULT_SUBSTRATE_STALLED_MAX_REFRESH_MS = 30_000;
+/**
  * EI-13317: how long a topic that previously had a live peer must sit at
  * ZERO live peers — despite the refresh() self-heal loop actively ticking —
  * before escalating to a forced topic leave+rejoin (a fresh discovery
@@ -3062,6 +3080,14 @@ export async function joinHarnessSwarm(
     const refreshMs = opts.refreshMs ?? DEFAULT_SUBSTRATE_REFRESH_MS;
     const fastWindowMs = opts.fastWindowMs ?? DEFAULT_SUBSTRATE_FAST_WINDOW_MS;
     const slowRefreshMs = opts.slowRefreshMs ?? DEFAULT_SUBSTRATE_SLOW_REFRESH_MS;
+    const stalledMaxRefreshMs = Math.max(
+      refreshMs,
+      opts.stalledMaxRefreshMs ?? DEFAULT_SUBSTRATE_STALLED_MAX_REFRESH_MS,
+    );
+    /** WI-10005270: when the current stall was first seen (null = no stall). */
+    let stallSinceMs: number | null = null;
+    /** WI-10005270: the current stalled-refresh interval (doubles to the cap). */
+    let stalledIntervalMs = refreshMs;
     if (refreshMs > 0) {
       // P-007: this join's tick body. It is registered on the swarm's ONE shared
       // refresh loop (see registerSwarmRefresh above) instead of arming a timer
@@ -3304,8 +3330,20 @@ export async function joinHarnessSwarm(
             stalled = false;
           }
         }
+        // WI-10005270: a stall gets its own fast window, then backs off. The
+        // ladder restarts whenever the stall clears or the join's fast window
+        // is live (new join / peer loss — connectivity changed).
+        if (!stalled) stallSinceMs = null;
+        else if (stallSinceMs === null) stallSinceMs = now;
+        if (!stalled || inFastWindow) stalledIntervalMs = refreshMs;
+        const stallBackingOff = stallSinceMs !== null && now - stallSinceMs >= fastWindowMs;
+        const stalledDue =
+          stalled && now - lastRefreshMs >= (stallBackingOff ? stalledIntervalMs : refreshMs);
         const slowDue = now - lastRefreshMs >= slowRefreshMs;
-        if (!inFastWindow && !stalled && !slowDue) return;
+        if (!inFastWindow && !stalledDue && !slowDue) return;
+        if (stalledDue && stallBackingOff && !inFastWindow) {
+          stalledIntervalMs = Math.min(stalledIntervalMs * 2, stalledMaxRefreshMs);
+        }
         lastRefreshMs = now;
         try {
           // Re-announce (server) + re-lookup (client) — the same call the

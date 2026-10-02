@@ -558,6 +558,8 @@ export interface BootHarnessOpts {
   swarmRefreshMs?: number;
   swarmFastWindowMs?: number;
   swarmSlowRefreshMs?: number;
+  /** WI-10005270: cap on the stalled-log refresh backoff (swarm.ts `stalledMaxRefreshMs`). */
+  swarmStalledMaxRefreshMs?: number;
   /**
    * WI-752 / FED-2 join-retry base interval (ms). When the boot-time swarm join
    * FAILS (→ local-only), retry it on a bounded exponential backoff starting at
@@ -6057,8 +6059,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         refreshMs: opts.swarmRefreshMs,
         fastWindowMs: opts.swarmFastWindowMs,
         slowRefreshMs: opts.swarmSlowRefreshMs,
-        // WI-1534 anti-entropy: keep the self-heal loop in its FAST cadence
-        // whenever an admitted remote log has zero live replicator peers —
+        stalledMaxRefreshMs: opts.swarmStalledMaxRefreshMs,
+        // WI-1534 anti-entropy: re-arm the self-heal loop's FAST cadence
+        // (WI-10005270: for one fast window, then an exponential backoff to
+        // stalledMaxRefreshMs) whenever an admitted remote log has zero live replicator peers —
         // on a quiescent hive (no connection churn) this is the ONLY thing
         // that re-arms it; otherwise it settles into the 60s slow keepalive
         // and a genuinely stalled/zombie peer can go unresynced for as long

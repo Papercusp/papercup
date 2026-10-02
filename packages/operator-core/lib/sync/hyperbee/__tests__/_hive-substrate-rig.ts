@@ -378,6 +378,7 @@ export interface SwarmTimingOverride {
   refreshMs?: number;
   fastWindowMs?: number;
   slowRefreshMs?: number;
+  stalledMaxRefreshMs?: number;
 }
 
 export interface HivePeer {
@@ -422,6 +423,7 @@ async function bootHivePeer(opts: {
     swarmRefreshMs: opts.swarmTiming?.refreshMs,
     swarmFastWindowMs: opts.swarmTiming?.fastWindowMs,
     swarmSlowRefreshMs: opts.swarmTiming?.slowRefreshMs,
+    swarmStalledMaxRefreshMs: opts.swarmTiming?.stalledMaxRefreshMs,
   });
   cleanups.push(async () => {
     await handle?.close();
