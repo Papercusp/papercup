@@ -164,6 +164,18 @@ describe('native mDenseOn boundary evidence', () => {
     expect(summarizeNativeBoundaries(request, rows, 'cpu')).toMatchObject({
       singlePopulationCompatible: true, batchPopulationCompatible: false, notCheckedCells: ['padded', 'mixed-length'] });
   });
+  it('distinguishes actual worker input evidence from independent tokenizer predictions', () => {
+    const { request, rows } = fixture();
+    expect(summarizeNativeBoundaries(request, rows, 'cpu')).toMatchObject({ workerInputTraceVerified: false });
+    const row = rows[0];
+    row.inputTraces = [{ model: request.export, device: 'cpu', observedAt: '2026-10-02T00:00:00Z',
+      inputShape: [1, row.inputIds.length], inputIds: [...row.inputIds], attentionMask: row.inputIds.map(() => 1) }];
+    expect(summarizeNativeBoundaries(request, [row], 'cpu', 'single-short-query')).toMatchObject({
+      workerInputTraceVerified: true, diagnosticCompatible: true });
+    row.inputTraces[0].inputIds[0]++;
+    expect(summarizeNativeBoundaries(request, [row], 'cpu', 'single-short-query')).toMatchObject({
+      passedFixedVectorGates: true, tokenIdsEqual: true, workerInputTraceVerified: false, diagnosticCompatible: false });
+  });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
     const { request, rows } = fixture();
     if (failure === 'partial') rows.pop();
