@@ -886,6 +886,24 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  it('fails closed when a legacy historical replay has no graded-card creation time', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue({ ...legacyReplayConsistencyGradedCard(), createdAt: undefined });
+    const dispatchTool = vi.fn().mockResolvedValue({ ok: false, error: 'selection_empty', count: 0 });
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: REPLAY_SPLIT_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_uncorroborated' });
+    expect((res as { error?: string }).error).toContain('graded card creation time or workspace scope is unavailable');
+    expect(dispatchTool).toHaveBeenCalledOnce();
+    expect(replaySpecTestAdequacyForHistoricalAudit).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('defers the grading audit when the exact evaluator replay reports build drift', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());

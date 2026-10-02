@@ -7,6 +7,8 @@ const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
   scorecardRows: [] as Array<Record<string, unknown>>,
   queries: [] as Array<{ sql: string; values: unknown[] }>,
+  workspaceScopes: [] as string[],
+  planScopeOptions: [] as Array<{ harnessSlug?: string; workspaceId?: string }>,
   measurementRoot: '',
 }));
 
@@ -14,7 +16,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
-    withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
+    withWorkspace: async <T>(workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
+      h.workspaceScopes.push(workspaceId);
       const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
         h.queries.push({ sql, values });
@@ -29,7 +32,10 @@ vi.mock('./source', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./source')>();
   return {
     ...actual,
-    resolvePlanScope: async () => ({ workspaceId: 'workspace-test', harnessSlug: 'papercusp' }),
+    resolvePlanScope: async (options: { harnessSlug?: string; workspaceId?: string } = {}) => {
+      h.planScopeOptions.push(options);
+      return { workspaceId: options.workspaceId ?? 'workspace-test', harnessSlug: 'papercusp' };
+    },
   };
 });
 
@@ -296,6 +302,21 @@ describe('listSpecEvidence timestamp normalization', () => {
     h.rows = [];
     h.scorecardRows = [];
     h.queries = [];
+    h.workspaceScopes = [];
+    h.planScopeOptions = [];
+  });
+
+  it('pins historical evidence reads to the explicitly supplied workspace', async () => {
+    await listSpecEvidence({
+      harnessSlug: 'papercusp',
+      workspaceId: 'workspace-historical',
+      planSlugs: ['plan-one'],
+    });
+
+    expect(h.planScopeOptions).toEqual([
+      { harnessSlug: 'papercusp', workspaceId: 'workspace-historical' },
+    ]);
+    expect(h.workspaceScopes).toEqual(['workspace-historical']);
   });
 
   it('accepts PostgreSQL timestamp strings instead of assuming Date instances', async () => {

@@ -57,6 +57,7 @@
  */
 import { spawnSync } from "node:child_process";
 import {
+  realpathSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -996,7 +997,16 @@ export async function main(argv = process.argv.slice(2)) {
   return publishDependencyGeneration({ repoRoot });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isInvokedDirectly(argv1, moduleUrl) {
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly(process.argv[1], import.meta.url)) {
   main()
     .then((status) => {
       process.exitCode = status;

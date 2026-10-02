@@ -1083,6 +1083,8 @@ function parseProvisionalScorecardProof(issueId: string, value: unknown): Provis
 
 export interface ListSpecEvidenceOptions {
   harnessSlug?: string;
+  /** Pin historical audit reads to the workspace recorded on the graded card. */
+  workspaceId?: string;
   /**
    * The plan namespaces to read evidence from — an ARRAY, not a single slug, since P-013.
    *
@@ -1316,7 +1318,10 @@ export async function listWorkItemSpecRevisionEdges(options: {
   planSlug?: string;
   workItemId: string;
 }): Promise<WorkItemSpecRevisionEdge[]> {
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const scope = await resolvePlanScope({
+    harnessSlug: options.harnessSlug,
+    workspaceId: options.workspaceId,
+  });
   const planSlug = options.planSlug;
   const rows = await withWorkspace(
     scope.workspaceId,

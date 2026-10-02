@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   cacheVerifyArgs,
@@ -772,4 +774,44 @@ test("test:file runs Vitest under the repo install reader mutex", () => {
     packageJson.scripts["test:file"],
     /bash scripts\/pc-heavy\.sh node scripts\/npm-install-safe\.mjs --exec-under-lock -- node scripts\/test-files\.mjs$/,
   );
+});
+
+test("symlinked npm-install-safe CLI executes reader commands", () => {
+  const root = mkdtempSync(join(tmpdir(), "npm-install-safe-symlink-"));
+  const cliLink = join(root, "npm-install-safe.mjs");
+  try {
+    symlinkSync(
+      fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url)),
+      cliLink,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        cliLink,
+        "--repo-root",
+        root,
+        "--exec-under-lock",
+        "--",
+        process.execPath,
+        "-e",
+        'process.stdout.write("npm-install-safe-symlink-reader-ran")',
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, "locks"),
+        },
+        timeout: 10_000,
+      },
+    );
+
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /NPM_INSTALL_SAFE guarding reader/);
+    assert.match(result.stdout, /npm-install-safe-symlink-reader-ran/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

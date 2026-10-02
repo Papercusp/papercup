@@ -2505,7 +2505,7 @@ export async function emitScorecard(
         gradedObservation,
         args.ratings,
         deps.dispatchTool,
-        { gradedCardCreatedAt: graded.createdAt, workspaceId: identityWorkspace },
+        { gradedCardCreatedAt: graded?.createdAt, workspaceId: identityWorkspace },
       );
       if (replayConsistencyError) {
         if (

@@ -491,6 +491,13 @@ for (const existing of [false, true]) {
     // Fitting a terminal must not increase its own container every frame and
     // continuously move the lesson's real controls out from under the user.
     expect(Math.max(...heights.slice(5)) - Math.min(...heights.slice(5))).toBeLessThan(2);
+    // An observer cannot send PTY input; the embedded terminal must let the
+    // keyboard user return to the lesson and session controls.
+    const terminalInput = page.getByRole('region', { name: 'Browser workspace session for My workspace' }).locator('.xterm-helper-textarea');
+    await terminalInput.focus(); await page.keyboard.press('Tab');
+    await expect(terminalInput).not.toBeFocused();
+    await terminalInput.focus(); await page.keyboard.press('Shift+Tab');
+    await expect(terminalInput).not.toBeFocused();
     expect(fixture.writes.filter(write => write.path.endsWith('/launch-su'))).toHaveLength(0);
     expect(fixture.socketMessages.filter(message => message.type === 'desktop.start')).toHaveLength(0);
     await page.getByRole('button', { name: '+ New session', exact: true }).click();
@@ -501,6 +508,23 @@ for (const existing of [false, true]) {
     await expect.poll(() => fixture.prompt).toContain('Lesson request:');
     await expect(guide.getByRole('heading', { name: 'Inspect the result' })).toBeVisible();
     await expect(page.locator('[data-tutorial-target="cloud-result"]')).toContainText(ANSWER);
+    // Pause through the product control so the spotlight no longer overlaps
+    // the answer. An inconclusive axe row is not a measured contrast pass.
+    await guide.getByRole('button', { name: 'Pause', exact: true }).click();
+    for (const role of ['user', 'assistant'] as const) {
+      const selector = `[data-tutorial-target="cloud-result"] .pc-chat__turn--${role} .pc-chat__p`;
+      const resultText = page.locator(selector).first();
+      await resultText.scrollIntoViewIfNeeded();
+      await expect(resultText).toBeInViewport({ ratio: 1 });
+      const resultContrast = await new AxeBuilder({ page }).include(selector).withRules(['color-contrast']).analyze();
+      const contrastPath = test.info().outputPath(`lesson-result-${role}-contrast.json`);
+      await writeFile(contrastPath, JSON.stringify(resultContrast));
+      await test.info().attach(`lesson-result-${role}-contrast`, { contentType: 'application/json', path: contrastPath });
+      expect(resultContrast.violations).toEqual([]);
+      expect(resultContrast.incomplete.filter(result => result.id === 'color-contrast')).toEqual([]);
+      expect(resultContrast.passes.find(result => result.id === 'color-contrast')?.nodes.length).toBeGreaterThan(0);
+    }
+    await guide.getByRole('button', { name: 'Resume guide', exact: true }).click();
     await page.getByRole('button', { name: "I've inspected this answer" }).click();
     await expect(guide).toContainText('Your first agent lesson is complete.');
     await expect(guide).toContainText('6 of 6 steps confirmed');
