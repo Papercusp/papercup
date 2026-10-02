@@ -151,7 +151,7 @@ describe('session_turn_windows_sync_trg — maintenance', () => {
   it('INSERT writes the windows, UPDATE OF text rewrites them, DELETE cascades them away', async () => {
     await seedTurn('w1', 'sx', 0, 'z'.repeat(1000));
     expect(await count('sx')).toBe(3);
-    await sql`UPDATE harness_shared.session_turns SET text = ${'q'.repeat(100)} WHERE session_id = 'sx'`;
+    await sql`UPDATE harness_shared.session_turns SET text = ${'q'.repeat(100)}, chunked_at = NULL WHERE session_id = 'sx'`;
     expect(await count('sx')).toBe(1);
     const [w] = await sql<Array<{ wtext: string }>>`
       SELECT wtext FROM harness_shared.session_turn_windows WHERE session_id = 'sx'`;

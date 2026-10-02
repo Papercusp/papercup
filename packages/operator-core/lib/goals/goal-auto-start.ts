@@ -50,7 +50,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { setMode } from '../modes/store';
 import { getOrgPg } from '@papercusp/db-org';
 import { readGoalHistoryContext } from '../prior-attempt-context';
-import { isHarnessInScope } from '../work-scope-policy';
+import { isHarnessInScope, primeWorkScopePolicy } from '../work-scope-policy';
 
 export interface AutoStartGoalInput {
   /** Workspace to file the goal under (default: the active workspace). */
@@ -113,6 +113,8 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   const sourceScope = input.harnessSlug?.trim();
   if (!sourceScope) throw new Error('no harness in scope — goals are filed against an install_slug');
   let installSlug = sourceScope;
+  // Prime first: an unprimed policy cache fails OPEN for ~60s after boot.
+  await primeWorkScopePolicy();
   const sourceInScope = isHarnessInScope(sourceScope);
   if (sourceScope === workspaceId || !sourceInScope) {
     const { loadHarnessRegistry } = await import('../harness-registry');

@@ -282,7 +282,7 @@ describe('trigger maintenance keeps windows current AFTER the backfill', () => {
     await seed('g', 1, 'freshly inserted zqtrigone turn');
     expect(keys((await exactVia('zqtrigone', 'windows')).hits)).toEqual(['g:1']);
 
-    await sql`UPDATE harness_shared.session_turns SET text = 'rewritten to carry zqtrigtwo instead' WHERE session_id = 'g' AND turn_idx = 1`;
+    await sql`UPDATE harness_shared.session_turns SET text = 'rewritten to carry zqtrigtwo instead', chunked_at = NULL WHERE session_id = 'g' AND turn_idx = 1`;
     expect(keys((await exactVia('zqtrigone', 'windows')).hits)).toEqual([]);
     expect(keys((await exactVia('zqtrigtwo', 'windows')).hits)).toEqual(['g:1']);
 

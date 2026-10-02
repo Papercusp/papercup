@@ -380,7 +380,7 @@ export async function runRecencyWalk(
              AND (${slice.loMs === null ? null : new Date(slice.loMs).toISOString()}::timestamptz IS NULL OR ts >= ${slice.loMs === null ? null : new Date(slice.loMs).toISOString()}::timestamptz)
              AND (${slice.hiMs === null ? null : new Date(slice.hiMs).toISOString()}::timestamptz IS NULL OR ts < ${slice.hiMs === null ? null : new Date(slice.hiMs).toISOString()}::timestamptz)
              AND position(${needle} in lower(text)) > 0
-           ORDER BY ts DESC
+           ORDER BY session_turns.ts DESC
            LIMIT ${want}
         `) as unknown as LiteralRow[];
       });

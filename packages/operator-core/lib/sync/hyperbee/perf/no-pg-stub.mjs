@@ -202,6 +202,9 @@ export const setPgDiagnosticContextResolver = stub('setPgDiagnosticContextResolv
 // 2026-09-28: snapshot-read helper operator-core newly binds from @papercusp/db-org
 // (carry-note.integration.test.ts and friends).
 export const acquireSnapshot = stub('acquireSnapshot');
+// 2026-10-02: completed-query diagnostic row type operator-core newly names from
+// @papercusp/db-org (service-memory-attribution.integration.test.ts).
+export const PgResultDiagnostic = stub('PgResultDiagnostic');
 
 export default new Proxy(
   {},
