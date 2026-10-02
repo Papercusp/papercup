@@ -48,6 +48,7 @@ import { loadGoldSetFixture } from './gold-set';
 import { BENCH_SCOPE, makeBackendCtx, type BackendCtx, type BenchBackendName } from './run-bench';
 import { candidateSourcePartition, type Snapshot, type HeldoutQuery } from './candidate-hybrid-bench';
 import { MEASUREMENT_CLASSES, fingerprintFile, hashJson, measurementOwner, validateIndependentCohort } from './measurement-manifest';
+import { parseLlmJson } from '../../scout/llm-json';
 
 // =============================================================================
 // Frozen judging contract (D-005)
@@ -731,7 +732,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
           { sources: groups.get(group)!.map((e) => ({ key: e.key, text: e.text })) });
         authors.push({ invocationId: raw.invocationId, promptSha256: raw.promptSha256,
           receipt: await fingerprintFile(path.join(root, `${corpus}-author-${targetId}.json`)) });
-        const generated = blindQuestionSchema.parse(raw.result.json ?? JSON.parse(raw.result.text)).queries;
+        const generated = blindQuestionSchema.parse(parseLlmJson(raw.result)).queries;
         if (new Set(generated.map((q) => q.class)).size !== 4) throw new Error('author omitted/duplicated a query class');
         for (const q of generated) questions.push({ id: `${corpus}-${targetId}-${q.class}`, class: q.class,
           query: q.query, group, partition, expected: [] });
@@ -756,7 +757,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
             { questions: batch.map((q, index) => ({ index, query: q.query })), sources: chunk.map((e, index) => ({ index, text: e.text })) });
           if (invocationIds.has(raw.invocationId)) throw new Error('reused blind judge invocation');
           invocationIds.add(raw.invocationId);
-          const votes = parseBlindChunkVotes(raw.result.json ?? JSON.parse(raw.result.text), batch, chunk);
+          const votes = parseBlindChunkVotes(parseLlmJson(raw.result), batch, chunk);
           for (const vote of votes) {
             const row = combined.get(vote.queryId)!;
             row.relevantKeys.push(...vote.relevantKeys); row.ambiguous ||= vote.ambiguous;

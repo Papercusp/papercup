@@ -122,6 +122,45 @@ describe('blind label collection through the injected stateless transport', () =
     };
     return { root, snapshot, llm, get calls() { return calls; } };
   }
+  it('handles fenced blind replies after prose with earlier JSON-like braces without rewriting raw receipts', async () => {
+    const f = fixture();
+    try {
+      const llm: LlmCallFn = async (opts) => {
+        const result = await f.llm(opts);
+        return { ...result, json: undefined, stopReason: 'end_turn',
+          text: `Prose notation { q: index, d: [] } is not JSON.\n\`\`\`json\n${result.text}\n\`\`\`\nEnd of response.` };
+      };
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'fenced'), llm, targetsPerPartition: 1 });
+      const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
+      expect(labels.memory).toHaveLength(8); expect(labels.prose).toHaveLength(8);
+      expect(f.calls).toBe(8);
+      const raw = JSON.parse(fs.readFileSync(path.join(path.dirname(receipt.labels.path), 'memory-judge-1-0.json'), 'utf8'));
+      expect(raw.result.text).toContain('{ q: index, d: [] }');
+      expect(raw.result.json).toBeUndefined();
+      expect(raw.promptSha256).toBe(hashJson({ system: raw.system, messages: raw.messages, model: raw.model }));
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['invalid-json', 'missing-votes', 'out-of-range', 'truncated'])
+    ('does not accept %s as a fenced transport repair', async (failure) => {
+      const f = fixture();
+      try {
+        const out = path.join(f.root, 'refused');
+        const llm: LlmCallFn = async (opts) => {
+          const result = await f.llm(opts);
+          if (!JSON.parse(opts.messages[0].content).questions) return result;
+          const payload = result.json as { votes: Array<{ q: number; d: number[]; a: boolean }> };
+          if (failure === 'missing-votes') payload.votes.pop();
+          if (failure === 'out-of-range') payload.votes[0].q = 999;
+          return { ...result, json: undefined, stopReason: failure === 'truncated' ? 'max_tokens' : 'end_turn',
+            text: `\`\`\`json\n${failure === 'invalid-json' ? '{broken' : JSON.stringify(payload)}\n\`\`\`` };
+        };
+        await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 }))
+          .rejects.toThrow(/invalid blind|incomplete blind|outside|incomplete\/unpriced/);
+        expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(true);
+        expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
+        expect(fs.existsSync(path.join(out, 'judgments.json'))).toBe(false);
+      } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+    });
   it('retains separate raw calls, labels from full-chunk consensus and exact-input recovery guards', async () => {
     const f = fixture(), { root, snapshot, llm } = f;
     try {
