@@ -34,8 +34,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // @ts-expect-error — plain-JS repo guard, intentionally not typed
-import { checkIdentityKeyedClassification, buildCensusChildEnv } from '../../../../../scripts/check-identity-keyed-classification.mjs';
+import { checkIdentityKeyedClassification, buildCensusChildEnv, CENSUS_TEST_REL, TEST_REUSE_SKIP_LIST_ENV } from '../../../../../scripts/check-identity-keyed-classification.mjs';
 import { resolveTestRunSource } from '../../testing-run-source';
+import {
+  PC_TEST_REUSE_SKIP_LIST_ENV,
+  REUSE_SKIP_LIST_SCHEMA,
+  executedSourceRunContext,
+  executedSourceRunnerIdentity,
+} from '@papercusp/test-config/test-pass-reuse-skip';
 
 const REAL_SCHEMA = resolve(
   __dirname,
@@ -89,6 +95,57 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
     expect(tracked.IDENTITY_KEYED_SCHEMA_PATH).toBeUndefined();
     expect(resolveTestRunSource(tracked)).toBe('ci');
   });
+
+  // WI-10004340 (verify 1b0ba635, repairHead 405e4000): the gate arms
+  // PC_TEST_REUSE_SKIP_LIST for its own vitest run, and the census file is ON that
+  // list whenever it holds a pass proof. Inherited by the nested run, it excluded
+  // the only target ("No test files found") and both spawning cases reported a
+  // false verdict. The channel name is pinned to the reader's own constant so a
+  // rename cannot silently re-open the leak.
+  it('never hands the gate reuse skip list to the nested census run', () => {
+    expect(TEST_REUSE_SKIP_LIST_ENV).toBe(PC_TEST_REUSE_SKIP_LIST_ENV);
+    const gateEnv = { [PC_TEST_REUSE_SKIP_LIST_ENV]: '/tmp/pcv/reuse-skip-x.json', KEEP: 'y' };
+    for (const schemaAbs of [null, '/tmp/candidate-generated.ts']) {
+      const child = buildCensusChildEnv(gateEnv, schemaAbs);
+      expect(child[PC_TEST_REUSE_SKIP_LIST_ENV]).toBeUndefined();
+      expect(child.KEEP).toBe('y');
+    }
+    // The caller's env is copied, never mutated.
+    expect(gateEnv[PC_TEST_REUSE_SKIP_LIST_ENV]).toBe('/tmp/pcv/reuse-skip-x.json');
+  });
+
+  it(
+    'CALIBRATION under the gate reuse env: still runs the census file when it is on the skip list',
+    async () => {
+      // End-to-end falsifier: a real, APPLICABLE skip list naming the census file,
+      // exported the way the gate exports it. Before the fix the nested vitest
+      // excluded its only target and this returned a non-classified verdict.
+      const dir = mkdtempSync(join(tmpdir(), 'identity-keyed-reuse-'));
+      const listPath = join(dir, 'reuse-skip-test.json');
+      writeFileSync(
+        listPath,
+        JSON.stringify({
+          schema: REUSE_SKIP_LIST_SCHEMA,
+          files: [CENSUS_TEST_REL],
+          runContext: executedSourceRunContext(process.env),
+          runnerIdentity: executedSourceRunnerIdentity(),
+          judgedSha: '0'.repeat(40),
+        }),
+      );
+      const prior = process.env[PC_TEST_REUSE_SKIP_LIST_ENV];
+      process.env[PC_TEST_REUSE_SKIP_LIST_ENV] = listPath;
+      try {
+        const verdict = checkIdentityKeyedClassification({});
+        expect(verdict.code, verdict.output?.slice(-1500)).toBe('classified');
+        expect(verdict.ok).toBe(true);
+      } finally {
+        if (prior === undefined) delete process.env[PC_TEST_REUSE_SKIP_LIST_ENV];
+        else process.env[PC_TEST_REUSE_SKIP_LIST_ENV] = prior;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 
   it(
     'FIRES: refuses a candidate schema carrying an unclassified identity-keyed column',
