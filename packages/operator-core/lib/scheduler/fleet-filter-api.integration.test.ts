@@ -50,7 +50,11 @@ function call(owner, name, args, refusal = false) {
           assert.equal(result.ownerId, owner); assert.equal(result.workspaceId, ws);
         } else {
           assert.equal(result.ok, !refusal, out.slice(-1500));
-          if (refusal) assert.match(result.error, /no claimable work-item matched/);
+          if (refusal) {
+            assert.equal(result.workItem ?? null, null);
+            assert.equal(result.possiblyClaimed ?? false, false, 'Timeout is not a verified miss');
+            assert.match(result.error, /no claimable work-item matched|SPEC EXHAUSTED/);
+          }
         }
         resolve({ result, durationMs: receipt.durationMs });
       } catch (error) { reject(new Error(name + ': ' + error + ' ' + out.slice(-1500))); }
@@ -88,6 +92,11 @@ try {
   await seed('F-FILTER-INSIDE','feature','Admitted feature',100);
   await seed('WI-FILTER-OUTSIDE','change','Adjacent change',1);
   await seed('F-FILTER-P2P','feature','p2p excluded feature',0);
+  // A nonterminal feature keeps an empty claimable lane distinct from terminal
+  // exhaustion. Its ordinary claim hold must survive every pull unchanged.
+  await seed('F-FILTER-FLOORED','feature','Nonterminal held feature',100);
+  await sql.unsafe('UPDATE harness_shared.work_items SET payload=$3::jsonb WHERE workspace_id=$1 AND feature_id=$2',
+    [ws,'F-FILTER-FLOORED',JSON.stringify({_claimHold:true})]);
   await call(leader,'scheduler:set_claim_spec',{fleet,harness:ws,spec:spec('strict-feature-fleet',strictFilter,false)});
   await call(member,'fleet:join',{fleet,as:'member'});
   const inherited = await call(member,'scheduler:get_claim_spec',{cupId:member});
