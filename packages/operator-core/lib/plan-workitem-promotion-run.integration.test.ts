@@ -41,6 +41,7 @@ const h = vi.hoisted(() => ({
   plans: new Map<
     string,
     {
+      harnessSlug?: string;
       items: { id: string; status: string; text?: string; blockedBy?: string[]; phase?: string | null }[];
       title?: string;
       content?: string;
@@ -196,6 +197,7 @@ vi.mock('./agent-tools/plans/source', async (importOriginal) => {
         },
         row: {
           content: p.content ?? '',
+          harnessSlug: p.harnessSlug ?? HARNESS,
           created: p.created ?? null,
           nowState: p.nowState ?? null,
           opStatus: p.opStatus ?? null,
@@ -255,6 +257,7 @@ vi.mock('./plan-items/convert', async () => {
 });
 
 const run = await import('./plan-workitem-promotion-run');
+const acceptanceLifecycle = await import('./acceptance-bar-lifecycle-evaluator');
 const convert = await import('./plan-items/convert');
 const { planItemRef, PLAN_ITEM_KIND } = await import('./issue-blocks-merge');
 const topicFeed = await import('./topics-feed');
@@ -518,6 +521,9 @@ created: 2026-08-21
 
   it('mints one PLACEABLE feature work-item per OPEN item, tied to the plan; done/dropped are skipped', async () => {
     h.plans.set(PLAN, {
+      // `readPlanBySlug` returns the plan-storage identity after resolving an app/install
+      // alias. Promotion must carry that identity into the lower-level acceptance snapshot read.
+      harnessSlug: 'resolved-plan-home',
       items: [
         { id: 'P-001', status: 'todo', text: 'Build the frontier gate' },
         { id: 'P-002', status: 'wip', text: 'Wire the runner' },
@@ -637,6 +643,8 @@ created: 2026-08-21
     };
 
     const first = await run.promotePlanItems({ ...base, planRun, itemKind: 'feature' });
+    expect(acceptanceLifecycle.readAndEvaluateAcceptanceBarLifecycle)
+      .toHaveBeenLastCalledWith(PLAN, 'pre-start', { harnessSlug: 'resolved-plan-home' });
     expect(first.promoted).toBe(2);
     expect(first.workItems).toHaveLength(2);
     expect(first.workItems.map((item) => ({
