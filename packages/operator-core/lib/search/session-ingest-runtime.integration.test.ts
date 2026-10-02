@@ -619,6 +619,72 @@ describe('current-build ingestion on a private background runtime', () => {
           parameterHash: createHash('sha256').update(JSON.stringify(captured.parameters)).digest('hex'),
           useful: claudeUseful, continuation: claudeContinuation, noTail: claudeNoTail,
           plans: ownerUpdatePlans, rollbackPreserved: true };
+        // A fork seeds a copy of its source transcript under a different owner
+        // without changing the native id. Make the born file newer so the old
+        // newest-first/Map-overwrite path incorrectly selected the fork seed.
+        const bornId = '019f4fa9-4a09-78c0-8a35-ffff00000001';
+        const bornOwner = 'private-claude-born';
+        const forkOwner = 'private-claude-fork';
+        const bornDir = join(e.PAPERCUSP_HOME, 'session-claude', bornOwner, 'projects', 'private-cwd');
+        const forkDir = join(e.PAPERCUSP_HOME, 'session-claude', forkOwner, 'projects', 'private-cwd');
+        const ownerIndex = join(e.PAPERCUSP_HOME, 'psu-session-owners');
+        await Promise.all([mkdir(bornDir, { recursive: true }), mkdir(forkDir, { recursive: true }),
+          mkdir(ownerIndex, { recursive: true })]);
+        const forkLine = JSON.stringify({ type: 'user', uuid: bornId + '-turn-0',
+          timestamp: '2026-10-01T00:00:00Z', message: { role: 'user', content: 'Synthetic born-owner fork seed transcript turn' } }) + '\n';
+        const bornPath = join(bornDir, bornId + '.jsonl');
+        const forkPath = join(forkDir, bornId + '.jsonl');
+        await Promise.all([writeFile(bornPath, forkLine), writeFile(forkPath, forkLine),
+          writeFile(join(ownerIndex, bornId), JSON.stringify({ v: 1, ownerId: bornOwner }) + '\n')]);
+        const now = Date.now();
+        await utimes(forkPath, (now - 60_000) / 1000, (now - 60_000) / 1000);
+        await utimes(bornPath, now / 1000, now / 1000);
+        const seeded = await runSessionIngestOnce();
+        assert.equal(seeded.errors, 0, JSON.stringify(seeded));
+        const seededRows = await sql.unsafe(
+          'SELECT owner FROM harness_shared.session_turns WHERE source_kind = $1 AND session_id = $2',
+          ['claude', bornId]);
+        assert.equal(seededRows.length, 1);
+        assert.equal(seededRows[0].owner, bornOwner, 'fork seed must not replace the born transcript owner');
+        await sql.unsafe('UPDATE harness_shared.session_turns SET owner = $1 WHERE source_kind = $2 AND session_id = $3',
+          [forkOwner, 'claude', bornId]);
+        const repairedSeed = await runSessionIngestOnce();
+        assert.equal(repairedSeed.errors, 0, JSON.stringify(repairedSeed));
+        const repairedRows = await sql.unsafe(
+          'SELECT owner FROM harness_shared.session_turns WHERE source_kind = $1 AND session_id = $2',
+          ['claude', bornId]);
+        assert.deepEqual(repairedRows.map(row => row.owner), [bornOwner],
+          'EOF-only owner backfill must keep the birth identity');
+        await writeFile(forkPath, forkLine + JSON.stringify({ type: 'user', uuid: bornId + '-turn-1',
+          timestamp: '2026-10-01T00:00:01Z', message: { role: 'user', content: 'Synthetic fork seed appended turn' } }) + '\n');
+        const singleFile = await ingestFileNow(forkPath);
+        assert.equal(singleFile.inserted, 1);
+        const singleFileRows = await sql.unsafe(
+          'SELECT owner FROM harness_shared.session_turns WHERE source_kind = $1 AND session_id = $2 ORDER BY turn_idx',
+          ['claude', bornId]);
+        assert.deepEqual(singleFileRows.map(row => row.owner), [bornOwner, bornOwner],
+          'read-time single-file ingest must use the same birth identity');
+        await rm(bornPath);
+        await sql.unsafe('UPDATE harness_shared.session_turns SET owner = $1 WHERE source_kind = $2 AND session_id = $3',
+          [forkOwner, 'claude', bornId]);
+        const damagedParts = await sql.unsafe(
+          'UPDATE harness_shared.session_turn_parts SET owner = $1 WHERE source_kind = $2 AND session_id = $3',
+          [forkOwner, 'claude', bornId]);
+        assert.ok(damagedParts.count > 0, 'the companion parts index must exercise its repair');
+        const archivedBorn = await runSessionIngestOnce();
+        assert.equal(archivedBorn.errors, 0, JSON.stringify(archivedBorn));
+        assert.equal(archivedBorn.metadataBackfills.find(r => r.sourceKind === 'claude' && r.operation === 'partOwners').updated,
+          damagedParts.count);
+        const archiveRows = await sql.unsafe(
+          'SELECT owner FROM harness_shared.session_turns WHERE source_kind = $1 AND session_id = $2 ORDER BY turn_idx',
+          ['claude', bornId]);
+        assert.deepEqual(archiveRows.map(row => row.owner), [bornOwner, bornOwner],
+          'fork seed alone must retain birth identity after the original file is archived');
+        const archiveParts = await sql.unsafe(
+          'SELECT owner FROM harness_shared.session_turn_parts WHERE source_kind = $1 AND session_id = $2',
+          ['claude', bornId]);
+        assert.ok(archiveParts.length > 0 && archiveParts.every(row => row.owner === bornOwner),
+          'faithful parts must retain birth identity after the original file is archived');
         if (corpusHash) assert.equal(corpusHash,
           createHash('sha256').update(readFileSync(e.TEST_INGEST_CORPUS_PATH)).digest('hex'));
         assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
