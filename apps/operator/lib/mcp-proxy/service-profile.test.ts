@@ -11,8 +11,16 @@ const stagingService = readFileSync(
   new URL('../../scripts/systemd/papercup-mcp-proxy-staging.service', import.meta.url),
   'utf8',
 );
+const backgroundService = readFileSync(
+  new URL('../../scripts/systemd/papercup-mcp-proxy-bg-host.service', import.meta.url),
+  'utf8',
+);
 const stagingHost = readFileSync(
   new URL('../../scripts/systemd/papercup-staging-api.service.d/95-bundled-entry.conf', import.meta.url),
+  'utf8',
+);
+const backgroundHost = readFileSync(
+  new URL('../../scripts/systemd/papercup-bg-host.service.d/99-mcp-proxy.conf', import.meta.url),
   'utf8',
 );
 
@@ -42,5 +50,14 @@ describe('papercup-mcp-proxy staging restart profile', () => {
     expect(callerRetryMs).toBe(proxyRetryMs);
     expect(stagingService).toMatch(/^Environment=PAPERCUSP_MCP_PROXY_PORT=9171$/m);
     expect(stagingService).toMatch(/^Environment=PAPERCUSP_MCP_PROXY_TARGET_PORT=3170$/m);
+  });
+});
+
+describe('papercup-mcp-proxy background-host restart profile', () => {
+  it('pins the stable client route and proxy upstream to the same :3271 vintage', () => {
+    expect(serviceEnvNumber('PAPERCUSP_MCP_PROXY_PORT', backgroundService)).toBe(9271);
+    expect(serviceEnvNumber('PAPERCUSP_MCP_PROXY_TARGET_PORT', backgroundService)).toBe(3271);
+    expect(backgroundHost).toMatch(/^Environment=PAPERCUSP_MCP_PROXY_BASE=http:\/\/127\.0\.0\.1:9271$/m);
+    expect(backgroundHost).toMatch(/^Environment=PAPERCUSP_MCP_PROXY_TARGET_PORT=3271$/m);
   });
 });

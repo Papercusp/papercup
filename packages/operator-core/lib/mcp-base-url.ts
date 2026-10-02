@@ -10,8 +10,10 @@
  * OPT-IN (safe by construction): live `:3070` launches use `PAPERCUSP_MCP_PROXY_BASE` (for
  * example `http://127.0.0.1:9071`). A local staging `:3170` launch may separately use
  * `PAPERCUSP_MCP_STAGING_PROXY_PORT` (for example `9171`); that proxy forwards only to staging and
- * stays available during staging restarts. Other explicit non-live ports remain direct, so a
- * reviewer or hermetic run cannot cross runtime vintages. Unset proxy configuration (CI, a fresh
+ * stays available during staging restarts. The background host `:3271` may use
+ * `PAPERCUSP_MCP_PROXY_BASE` only when `PAPERCUSP_MCP_PROXY_TARGET_PORT=3271`, so it also stays on
+ * its own runtime vintage. Other explicit non-live ports remain direct, so a reviewer or hermetic
+ * run cannot cross runtime vintages. Unset proxy configuration (CI, a fresh
  * deploy with no proxy) leaves the caller's own operator base unchanged. The signed/superuser query
  * params + bearer header are preserved either way (the proxy is a pure passthrough), so auth is
  * unaffected.
@@ -24,6 +26,7 @@
  */
 export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
   const proxy = process.env.PAPERCUSP_MCP_PROXY_BASE?.trim();
+  const proxyTargetPort = process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT?.trim();
   const stagingProxyPort = process.env.PAPERCUSP_MCP_STAGING_PROXY_PORT?.trim();
   let operatorPort = '';
   let isLocalHttpOperator = false;
@@ -48,12 +51,22 @@ export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
   const stagingProxy = operatorPort === '3170' && isLocalHttpOperator && hasValidStagingProxyPort
     ? `http://127.0.0.1:${stagingProxyPortNumber}`
     : undefined;
+  // The background host restarts independently of the live and staging hosts. Its
+  // dedicated proxy is safe only when its configured upstream is this exact local
+  // vintage; the default :9071 proxy fronts green :3070 and must never receive :3271
+  // traffic. This mirrors spawn-mcp.ts's same-host target check.
+  const backgroundHostProxy = operatorPort === '3271' &&
+    isLocalHttpOperator &&
+    proxy && proxy.length > 0 &&
+    proxyTargetPort === '3271'
+    ? proxy
+    : undefined;
 
   // The default resilient proxy is intentionally a live-operator (:3070) transport.
   // Other explicit non-live ports (:3271 current-build, hermetic gym/smoke hosts, …)
   // stay authoritative; only local staging may opt into its dedicated same-vintage proxy.
   const isExplicitNonLiveRuntime = operatorPort.length > 0 && operatorPort !== '3070';
-  const base = stagingProxy || (proxy && proxy.length > 0 && !isExplicitNonLiveRuntime
+  const base = stagingProxy || backgroundHostProxy || (proxy && proxy.length > 0 && !isExplicitNonLiveRuntime
     ? proxy
     : operatorBaseUrl);
   return base.replace(/\/$/, '');

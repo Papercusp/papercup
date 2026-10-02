@@ -12,10 +12,20 @@ import {
 } from './mcp-base-url';
 
 const KEY = 'PAPERCUSP_MCP_PROXY_BASE';
+const TARGET_PORT_KEY = 'PAPERCUSP_MCP_PROXY_TARGET_PORT';
 const STAGING_PROXY_PORT_KEY = 'PAPERCUSP_MCP_STAGING_PROXY_PORT';
+const ORIGINAL_ENV = {
+  proxy: process.env[KEY],
+  targetPort: process.env[TARGET_PORT_KEY],
+  stagingProxyPort: process.env[STAGING_PROXY_PORT_KEY],
+};
 afterEach(() => {
-  delete process.env[KEY];
-  delete process.env[STAGING_PROXY_PORT_KEY];
+  if (ORIGINAL_ENV.proxy === undefined) delete process.env[KEY];
+  else process.env[KEY] = ORIGINAL_ENV.proxy;
+  if (ORIGINAL_ENV.targetPort === undefined) delete process.env[TARGET_PORT_KEY];
+  else process.env[TARGET_PORT_KEY] = ORIGINAL_ENV.targetPort;
+  if (ORIGINAL_ENV.stagingProxyPort === undefined) delete process.env[STAGING_PROXY_PORT_KEY];
+  else process.env[STAGING_PROXY_PORT_KEY] = ORIGINAL_ENV.stagingProxyPort;
 });
 
 describe('resolveAgentMcpBaseUrl', () => {
@@ -32,6 +42,7 @@ describe('resolveAgentMcpBaseUrl', () => {
 
   it('every explicit non-live operator port stays direct when the :3070 proxy is configured', () => {
     process.env[KEY] = 'http://127.0.0.1:9071';
+    process.env[TARGET_PORT_KEY] = '3070';
     expect(resolveAgentMcpBaseUrl('http://localhost:3170')).toBe('http://localhost:3170');
     expect(resolveAgentMcpBaseUrl('http://127.0.0.1:3170/')).toBe('http://127.0.0.1:3170');
     expect(resolveAgentMcpBaseUrl('http://localhost:3271')).toBe('http://localhost:3271');
@@ -46,6 +57,21 @@ describe('resolveAgentMcpBaseUrl', () => {
     expect(resolveAgentMcpBaseUrl('http://localhost:3271')).toBe('http://localhost:3271');
     expect(resolveAgentMcpBaseUrl('http://example.com:3170')).toBe('http://example.com:3170');
     expect(resolveAgentMcpBaseUrl('https://localhost:3170')).toBe('https://localhost:3170');
+  });
+
+  it('routes a local :3271 background host only through a proxy explicitly pinned to :3271', () => {
+    process.env[KEY] = 'http://127.0.0.1:9271';
+    process.env[TARGET_PORT_KEY] = '3271';
+    expect(resolveAgentMcpBaseUrl('http://localhost:3271')).toBe('http://127.0.0.1:9271');
+    expect(resolveAgentMcpBaseUrl('http://127.0.0.1:3271/')).toBe('http://127.0.0.1:9271');
+    expect(resolveAgentMcpBaseUrl('http://localhost:3170')).toBe('http://localhost:3170');
+    expect(resolveAgentMcpBaseUrl('http://example.com:3271')).toBe('http://example.com:3271');
+  });
+
+  it('keeps :3271 direct when the configured proxy fronts another runtime vintage', () => {
+    process.env[KEY] = 'http://127.0.0.1:9071';
+    process.env[TARGET_PORT_KEY] = '3070';
+    expect(resolveAgentMcpBaseUrl('http://localhost:3271')).toBe('http://localhost:3271');
   });
 
   it('keeps local staging direct when the staging proxy port is invalid', () => {
