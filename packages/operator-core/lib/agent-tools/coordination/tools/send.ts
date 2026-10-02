@@ -137,8 +137,11 @@ import { chunkOverCapMessage, type ChunkPartMeta } from './send-chunking';
 import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-org';
 import {
   GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_FIELDS,
+  GOAL_OWNER_REPORT_HEADINGS,
   parseGoalOwnerReport,
   stampGoalOwnerReport,
+  type GoalOwnerReportField,
   type GoalOwnerReportStamp,
 } from '../../../goal-owner-report';
 
@@ -850,8 +853,28 @@ export type GoalOwnerReportVerdict =
   | { kind: 'none' }
   | { kind: 'skip' }
   | { kind: 'warning'; warning: string }
+  | {
+      kind: 'not-stamped';
+      diagnostic: {
+        status: 'not-stamped';
+        goalId: string;
+        reason: 'not-attempted';
+        missing: GoalOwnerReportField[];
+        bodyAuthoredChars?: number;
+        bodyDeliveryCap: number;
+        message: string;
+      };
+    }
   | { kind: 'stamped'; stamp: GoalOwnerReportStamp }
   | { kind: 'refused'; result: BulkItemResult };
+
+function hasAllGoalOwnerReportLabels(body: SendMsg['body']): boolean {
+  const text = sectionsToText(toSections(body));
+  return GOAL_OWNER_REPORT_FIELDS.every((field) => {
+    const label = GOAL_OWNER_REPORT_HEADINGS[field].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${label}\\b`, 'i').test(text);
+  });
+}
 
 /**
  * Judge a message against the GOAL owner-report contract.
@@ -871,7 +894,12 @@ export async function evaluateGoalOwnerReport(
 ): Promise<GoalOwnerReportVerdict> {
   if (!msg.to.includes('human')) return { kind: 'none' };
   const parsed = parseGoalOwnerReport(msg.body);
-  if (!parsed.attempted) return { kind: 'none' };
+  // A complete set of labels in the body that is not parseable as headings is
+  // still report-like. Resolve the active goal for this narrow case so the
+  // sender gets an explicit not-stamped result instead of a silent kind:none.
+  // Ordinary owner-facing prose stays on the cheap path without a mode-store read.
+  const unrecognizedReportShape = !parsed.attempted && hasAllGoalOwnerReportLabels(msg.body);
+  if (!parsed.attempted && !unrecognizedReportShape) return { kind: 'none' };
   let goalId: string | null = null;
   if (!identity.workspaceId || identity.workspaceId === '*') {
     return {
@@ -896,6 +924,25 @@ export async function evaluateGoalOwnerReport(
   if (!goalId) return { kind: 'none' };
   const authoredBodyChars = bodyTextLength(msg.body);
   const overCap = authoredBodyChars !== null && authoredBodyChars > DEFAULT_INBOX_BODY_CAP;
+  if (unrecognizedReportShape) {
+    const multipartNote = overCap && authoredBodyChars !== null
+      ? ` The ${authoredBodyChars}-character body exceeded the ${DEFAULT_INBOX_BODY_CAP}-character cap and was delivered in parts; multipart sends cannot reset the report cadence.`
+      : '';
+    return {
+      kind: 'not-stamped',
+      diagnostic: {
+        status: 'not-stamped',
+        goalId,
+        reason: 'not-attempted',
+        missing: [...GOAL_OWNER_REPORT_FIELDS],
+        ...(authoredBodyChars !== null ? { bodyAuthoredChars: authoredBodyChars } : {}),
+        bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP,
+        message:
+          `GOAL owner report for ${goalId} was delivered but not stamped: no report headings were recognized at the start of a body line or section. Use exactly one non-empty section headed ${GOAL_OWNER_REPORT_FIELDS.map((field) => GOAL_OWNER_REPORT_HEADINGS[field]).join(', ')}; this send will not reset the report cadence.` +
+          multipartNote,
+      },
+    };
+  }
   const overCapNote = overCap
     ? ` The body has ${authoredBodyChars} characters, above the ${DEFAULT_INBOX_BODY_CAP}-character inbox cap. ` +
       'A GOAL owner report must fit in one message so the four-section report is delivered as a unit. Nothing was sent; shorten it and retry.'
@@ -1037,6 +1084,8 @@ async function sendOne(
     goalReportVerdict.kind === 'stamped' ? goalReportVerdict.stamp : null;
   const goalOwnerReportWarning: string | null =
     goalReportVerdict.kind === 'warning' ? goalReportVerdict.warning : null;
+  const goalOwnerReportDiagnostic =
+    goalReportVerdict.kind === 'not-stamped' ? goalReportVerdict.diagnostic : null;
 
   // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
   // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
@@ -1286,7 +1335,9 @@ async function sendOne(
   // trust this stamp (or their explicitly bounded legacy compatibility arm),
   // never the mere fact that a message reached the human.
   if (goalOwnerReport) extra[GOAL_OWNER_REPORT_FIELD] = goalOwnerReport;
-  if (goalOwnerReportWarning) {
+  if (goalOwnerReportDiagnostic) {
+    extra.goalOwnerReportValidation = goalOwnerReportDiagnostic;
+  } else if (goalOwnerReportWarning) {
     extra.goalOwnerReportValidation = { status: 'unknown', reason: goalOwnerReportWarning };
   }
   // P-013: the declared side effect rides the envelope so the ACTUATION probe
@@ -2409,6 +2460,7 @@ async function sendOne(
           },
         }
       : {}),
+    ...(goalOwnerReportDiagnostic ? { goalOwnerReport: goalOwnerReportDiagnostic } : {}),
     ...(goalOwnerReportWarning ? { goalOwnerReportWarning } : {}),
   };
 }

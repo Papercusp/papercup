@@ -574,7 +574,7 @@ export async function buildConsoleEnvelope(
       // No-ops on an already-healthy dir; never throws.
       if (row.coordOwnerId) {
         const { ensureInteractiveClaudeConfig } = await import('./interactive-claude-config');
-        ensureInteractiveClaudeConfig({ sid: row.coordOwnerId });
+        await ensureInteractiveClaudeConfig({ sid: row.coordOwnerId });
       }
     }
     const verb = opts.fork ? 'forking' : 'resuming';

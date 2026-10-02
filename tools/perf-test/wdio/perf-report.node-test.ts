@@ -669,6 +669,7 @@ function startupRenderFixture() {
   let disconnected = 0;
   let rectReads = 0;
   const milestones = new Map<string, unknown>();
+  let watchedAttributes: string[] = [];
   const listeners = new Map<string, () => void>();
   const parent = { parentElement: null, style: { display: 'block', visibility: 'visible', opacity: '0' } };
   const element = { parentElement: parent, isConnected: true,
@@ -681,7 +682,8 @@ function startupRenderFixture() {
     removeEventListener: (name: string) => listeners.delete(name) };
   const fakeWindow = { innerWidth: 1280, innerHeight: 720,
     MutationObserver: class { constructor(fn: () => void) { mutation = fn; }
-      observe() {} disconnect() { disconnected++; mutation = null; } },
+      observe(_root: unknown, options: { attributeFilter?: string[] }) { watchedAttributes = options.attributeFilter ?? []; }
+      disconnect() { disconnected++; mutation = null; } },
     requestAnimationFrame: (fn: () => void) => { const id = ++nextFrame; frames.set(id, fn); return id; },
     cancelAnimationFrame: (id: number) => { frames.delete(id); },
     setTimeout: (fn: () => void) => { deadline = fn; return 2; },
@@ -697,8 +699,9 @@ function startupRenderFixture() {
     insert: () => { target = element; mutation?.(); }, replace: () => { target = { ...element }; mutation?.(); },
     insertSubtitle: () => { subtitleTarget = subtitle; mutation?.(); },
     replaceSubtitle: () => { subtitleTarget = { ...subtitle }; mutation?.(); },
-    insertMilestone: (selector: string, contains = (node: unknown) => node === element || node === subtitle) => {
-      milestones.set(selector, { isConnected: true, contains }); mutation?.();
+    insertMilestone: (selector: string, contains = (node: unknown) => node === element || node === subtitle, attribute?: string) => {
+      milestones.set(selector, { isConnected: true, contains });
+      if (!attribute || watchedAttributes.includes(attribute)) mutation?.();
     },
     mutate: () => mutation?.(),
     runFrame: () => { const pending = [...frames.values()]; frames.clear(); for (const fn of pending) fn(); },
@@ -750,6 +753,19 @@ test('startup milestone attribution distinguishes a replaced host, unavailable c
     assert.equal(report.milestones[3]!.firstObservedAtMs, null);
     assert.equal(report.milestones[3]!.stopReason, 'stopped');
     assert(!JSON.stringify(report).includes('private ancestor'));
+  } finally { f.restore(); }
+});
+
+test('startup milestone observes attribute-only Accounts host activation before a later footer', () => {
+  const f = startupRenderFixture();
+  try {
+    const probe = installStartupStorageProbe();
+    f.tick(200); f.insertMilestone('[data-testid="left-sidebar"][data-tab="accounts"][data-collapsed="false"]', () => true, 'data-collapsed');
+    f.tick(400); f.insert();
+    const report = probe.stop().render;
+    assert.equal(report.milestones[1]!.firstObservedAtMs, 200);
+    assert.equal(report.milestoneMatchesAtFirstObservation[1]!.matches, true);
+    assert.equal(f.rectReads(), 0);
   } finally { f.restore(); }
 });
 

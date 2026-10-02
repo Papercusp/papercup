@@ -1,0 +1,348 @@
+{
+  "scope": "Cheap source and saved-output topology audit of P007 r163; diagnostic hypothesis, not root-cause verification or R7 acceptance",
+  "workItem": "WI-10002829",
+  "r166DiagnosticRecoveredFire129": {
+    "scope": "Recovered terminal r166 two-candidate native diagnostic; fail and identity-checked cleanup, no new runtime launched on fire129",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r166-native-summary.json",
+    "summarySha256": "1cd462b10142071b99f2f4e47553c1e4e6af8a033a5855fd1edcec3cf27f76cf",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r166-cleanup-receipt.json",
+    "cleanupSha256": "c7e255d218d66a6cd4702d1311c4ec13ac599b4b536805688c4d9dfbd2b89b38",
+    "verifierRun": "20261002T013407Z-1614351",
+    "receipt": "perfrun-1790905138611-miy4il",
+    "verdict": "FAIL; popup4036ms exceeded1500ms, FCP2226ms passed3000ms, LCP7642ms exceeded4000ms",
+    "actualLcp": "P.pclsb-acct__foot; footer identity true and Plans subtitle identity false",
+    "footerObservation": "First DOM6892ms, first frame/eligible7556ms, actual LCP7642ms; geometry/ancestor styles are not paint, clipping or occlusion",
+    "subtitleObservation": "First DOM4393ms, first frame5502ms/eligible5503ms; false actual-node join prevents subtitle attribution",
+    "fontObservation": "Initially loaded; ready418ms, no observed events; scoped FontFaceSet lifecycle only",
+    "nativeObservation": "Renderer1911244 actual env captured; fd38 captured tmpfs path/inode6773772. Root device29/inode6773648 and preserved log hashes verified before removal; no separate file-inode stat was retained. GST init_pre574 to successful811 span1.188364ms; initiating caller/core maps unmeasured.",
+    "limits": "Sampler266samples/2393.539651ms work and render3+2ms are unpaired. Different API bundle dbc30505e557 vs r165 eb21c5707e; no cross-run speedup attribution. FontFaceSet ready418/no events is scoped, not no font-delay proof; Long Tasks unsupported and resources[] empty are not absence-of-work evidence. GST relative/page performance.now/native Date.now remain separate clocks. Empty discovery disables media capability, diagnostic only; no initiating native caller, product/R7 or5cold5warm claim.",
+    "interpretation": "True footer identity joins first DOM observation6892ms, first frame/geometry eligibility7556ms to actual LCP7642ms. Subtitle observation4393ms/eligibility5503ms has false actual-node join. Most elapsed document time precedes footer observation; callback and frame delay do not prove insertion/paint or a lazy/server/native root cause. Static footer is outside loading conditional in current AccountsTab source; original frozen source/build graph unknown.",
+    "cleanupResult": "Recorded7PIDs absent, port33700 refused, source removed by verifier. Exact tmpfs root inode/device and copied log hashes verified before removal. Own socket/private home/three profiles removed; unrelated default advert and work logs preserved. Both deliberate input holds released.",
+    "sourceProof": "Current six source hashes/two bundled payloads match manifest. Saved61PASS0skip+tsc logs hashes match; no unnecessary test replay.",
+    "next": "Cheaply trace footer mount/visibility and account-tab host in current source and exact frozen compiled output; any next native run must change a justified diagnostic and have explicit same-node attribution. Do not replay unchanged r166/r165/r164/r163; retain product/R7 acceptance limits."
+  },
+  "actualLcpSensorPreparationFire126": {
+    "scope": "Dated dual-candidate maintained source/payload guards at Fire126; host milestone extension now supersedes source. No product repair or R7 acceptance.",
+    "renderPath": {
+      "source": "apps/operator/app/_components/plans/PlansPane.tsx",
+      "observation": "The static Plans subtitle is in the masthead before the planList.loading conditional. OperatorChatSidebar.tsx lazy-loads PlansPane under its plansOpen Suspense branch. No measured lazy-load/mount or server-data cause is asserted.",
+      "savedCompiledPath": "r165-app sidecar/spa assets: OperatorChatSidebar-b2e0287f.js loads PlansPane-96d43bfe.js, which imports the masthead-bearing PlanPopupModal-c59aee92.js. Selected saved compiled structure agrees with the current source; original complete source/build graph remains unknown."
+    },
+    "reused": "installStartupStorageProbe, buildStartupStorageProbeScript, buildWebVitalsBundle and the canonical perf-report.node-test.ts suite",
+    "change": "One shared bounded DOM observer tracks the footer and Plans subtitle independently. Existing footer fields remain footer-only; render.candidates holds separate timings and startupCandidates holds actual LCP identity matches per selector. Missing LCP elements/unobserved/replaced candidates return null; a different observed node returns false. Font lifecycle is document-scoped and frame eligibility is not paint.",
+    "regression": "Pre-fix canonical suite:57PASS3FAIL0skip; two candidate tests expose missing per-candidate reporting and the third exposes premature observation shutdown. Final canonical suite:61PASS0FAIL0skip; exact bundled Web Vitals callback tested against subtitle, footer and absent LCP elements. Package typecheck PASS.",
+    "sourceSha256": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "57bec1bbff36659ed83c4c407e1986c56ec916841f34beaf9428cb892f373033",
+      "tools/perf-test/wdio/web-vitals-probe.ts": "a538a91400867c8f598026a75198783e1504bcc887c76ead017145e642835fc4",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "beb09a15f313d3094a7cab357caf1e3f2a613704bf10f40dad139b9797f1c1f8"
+    },
+    "commands": [
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "logs": {
+      "/tmp/p007-fire126-subtitle-red.log": "b83e9b063cb90dd949b4f8ed7ffcd187889282471a20f652bd88b4d23a6397be",
+      "/tmp/p007-fire126-subtitle-unit.log": "35114dc7db8673e9989527654202895de20f79f92fdb97b2b0f5159e43581126",
+      "/tmp/p007-fire126-subtitle-type.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "nextPredictions": {
+      "lateDom": "If actual LCP matches a candidate and its first DOM observation is near LCP, investigate before-node mount/lazy work; this does not identify the root cause.",
+      "lateEligibility": "If actual LCP matches a candidate observed earlier but eligibility is near LCP, inspect its ancestor/geometry/render path.",
+      "laterPaint": "If actual LCP matches an early eligible candidate yet LCP is later, insertion and simple geometry are insufficient; investigate paint/font/native work with observer and API limits.",
+      "unavailable": "False/null join or unavailable/capped candidate cannot explain the actual LCP. Retain honest thresholds and all failed cohorts."
+    }
+  },
+  "r165DiagnosticFire125": {
+    "scope": "ONE changed cold native footer sensor run; failed performance verdict and verified owned cleanup; no product repair or R7 acceptance",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r165-native-summary.json",
+    "summarySha256": "cf735d1b85a22b175b634c30bae9dbb12317ad01a1d8900c67fde246d098f7ee",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r165-cleanup-receipt.json",
+    "cleanupSha256": "47dfa4eb6e46f092b1221ff6878d291fab69f68902c9f21db73152434f8a4a14",
+    "verifierRun": "20261002T005934Z-3078364",
+    "receipt": "perfrun-1790903140889-egszbx",
+    "verdict": "FAIL; popup660ms/FCP1650ms passed, LCP4587ms exceeded4000ms",
+    "actualLcp": "SPAN.plans-pane__masthead-subtitle; startupCandidateMatches:null",
+    "footerObservation": "First DOM5276ms; first frame/eligible frame6449ms; frame eligibility is geometry/ancestor-style evidence, not paint, clipping or occlusion",
+    "fontObservation": "FontFaceSet initially loaded, ready320ms, no observed events; this is not a general no-font-delay claim",
+    "nativeObservation": "Owned renderer3503808 environment and fd38 matched tmpfs log inode6750275/device29; GST init0.935ms; registry absent after run; loaded-core maps not measured",
+    "interpretation": "The actual LCP differs from the selected footer and its callback identity join is unobserved. Footer timestamps cannot explain this LCP. Current source and frozen compiled output share the static Plans masthead class/text, but original complete source/build graph and this node's insertion/eligibility timing are unknown.",
+    "limits": "Render work2ms and sampler work2294ms are unpaired. API bundle eb21c5707e differs from r164. GST/page/native clocks remain distinct. Media discovery suppression is diagnostic only; no causal speedup, initiating caller or product/R7 claim.",
+    "cleanupResult": "Parent verifier terminal exit1; owned API/bridge/driver/app/renderer processes and source absent, port33701 refused. Exact tmpfs root device/inode and saved log hashes verified before removal; private home/profiles removed, unrelated default advert preserved, work logs retained. Both frozen-input holds released.",
+    "next": "Before another changed native run, trace and instrument the actual LCP subject in the maintained early sensor; retain explicit true/false/null node joins and original provenance limits. Do not replay unchanged r165/r164/r163."
+  },
+  "r165PreparationFire125": {
+    "scope": "Pre-launch preparation evidence for r165; the completed diagnostic and limitations are stored separately above",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r165-instrument-manifest.json",
+    "manifestSha256": "9682a939a12906f8ef46b5ea39c6f96f7aadcd4802b8e5656c5e4c69169e62b4",
+    "assertionSha256": "847d9aa120d9b108f8e868e744f7f9fb67640f5979d4603414ab95988687f44d",
+    "installedSpaIndexSha256": "291783ce57ddc1445657eba87cef0b3cd70ce9459b04540e199e4fd039b22178",
+    "startupPayloadSha256": "db31a3f73d5d8c2f5d755d7805d7ea32992af23974860909f386d0e5808e8828",
+    "webVitalsPayloadSha256": "af8af0c9f6bc427a4e66e71f00dbf3485c1b86483004fd2204f38ccef36db114",
+    "guards": "Current six source hashes, shell, actual GUI sidecar/spa index, preflight, verifier, saved unit/typecheck logs, both regenerated bundles and fresh output/root checks passed before launch; bash syntax passed",
+    "preservedLimits": "Original frozen application source/build graph remains unknown. Existing empty media discovery and tmpfs GST sink remain diagnostic only. Same-node identity is required for timing attribution; frame eligibility is not paint. Observer work and API changes remain unpaired.",
+    "preparationCorrection": "Exact base-index hash refused a leftover insertion newline before native launch; consume the one injected newline and verify original baseline hash. First shell exit0 masked the Node failure; corrected preparation used set -e and explicit receipts.",
+    "routeEvidence": "dev:pipeline_position desktop-native read timed out; recovered its maintained serving-runtimes.ts writer: native verifier with provenance, freshness and owned teardown. No serving-runtime evidence was returned by the timed-out call.",
+    "verifierLog": "$HOME/.papercusp/perf/p007-native-current/run-165-verifier-prepare-boot.log"
+  },
+  "renderProbePreparationFire122": {
+    "scope": "Maintained early diagnostic sensor and source/bundle audit; no new native run, product fix or R7 acceptance",
+    "sourceHead": "771eeb8a2fd73ae8eacf5ec320739358b026cec0",
+    "savedLcp": {
+      "receipt": "perfrun-1790899858998-30l02o",
+      "tag": "P",
+      "className": "pclsb-acct__foot",
+      "renderMs": 5417,
+      "loadMs": 0,
+      "size": 13275
+    },
+    "sourceAudit": {
+      "component": "packages/operator-ui/src/accounts/AccountsTab.tsx",
+      "componentSha256": "abf7723ee34ef0416ac58070682fe44ba8af69f5b54ac8ab36399884a024d61d",
+      "adapterSha256": "a6e8dbff573a1e702ddbd3469ebdb67d011d96fcc88d309531d11d49d7412ecc",
+      "railSourceSha256": "b69b98c0d1102c29d222b9c06d032a2d844a4b74f9ce6a434dfcfbb3595738c5",
+      "observations": [
+        "The source and compiled Accounts component render the footer outside the accounts loading/list conditional.",
+        "The compiled rail uses Accounts as its default, an open-rail conditional and a lazy panel under Suspense.",
+        "Correction: hydration controls rail width, not the Accounts mount conditional. No measured after-hydration mount ordering is asserted.",
+        "The saved trace has no first DOM/frame candidate timestamps, no font lifecycle evidence and an empty resource timing list. Request/LCP proximity is not a render cause."
+      ],
+      "frozenAssetSha256": {
+        "src-a219fb19.js": "4b360754c896aa1d5541381829d122c5c56be34c8e9472af7ff6f7be7d94c63a",
+        "AccountsTab-d66f6c68.js": "a3e0354e847799258531be205e240db1b7f5afdfa356803a66e94c761f8d86c2",
+        "left-sidebar.styles-5de3ec84.js": "0707514eeed26ba991deee6be119d2a7ca0709d2be990f52ccf26f67bed72a8b",
+        "LeftSidebar-2bf966fe.js": "37d6750312b30713813c7d56afad753f727752d1bf5ce96081a4554f32dabc2f"
+      },
+      "provenance": "First three exact asset hashes match r132-spa-manifest.json. This rail filename is absent from r132/r144 manifests. These reads establish saved compiled structure and selected asset continuity, not whole-module current-source or build-graph provenance."
+    },
+    "sensor": {
+      "reused": "installStartupStorageProbe and its existing diagnostic index/bundle; readPageStartupTrace already snapshots its report before IPC",
+      "fields": "firstObservedAtMs, firstFrameAtMs, firstEligibleFrameAtMs, frameReads, mutationCallbacks, totalObserverWorkMs, stopReason, unavailable, fonts",
+      "lcpJoin": "startupCandidateMatches compares the actual LCP DOM node with the observed candidate; null is unobserved and false cannot inherit its timing",
+      "limits": "1000 mutation callbacks, 32 frame reads, 8 font events, 60-second deadline; cancellation and explicit unavailable/candidate-replaced states",
+      "interpretation": "Frame geometry/ancestor styles are eligibility evidence, not actual paint, clipping or occlusion. Observer work is unpaired; native behavior and latency remain unmeasured."
+    },
+    "verification": {
+      "unitCommand": "npm --prefix tools/perf-test/wdio run test:unit",
+      "typecheckCommand": "npm --prefix tools/perf-test/wdio run typecheck",
+      "red": "Two added guards failed before implementation: missing render report. Existing 55 tests passed.",
+      "final": "58 passed, 0 failed, 0 skipped; typecheck exit 0. Both injected bundles compile.",
+      "sourceSha256": "e2dd1dfaff95210a5bb52d6d20b7b718fb10e4d0b9e90e90af76139d1e12cd5b",
+      "vitalsSha256": "626487a11a0e1409109809e0aeb36dc73391de08931059c70bab9a7fc1f32452",
+      "testSha256": "6ac0182b00890412e45d72cc6f98a8173104cd24651fb4f4e4b7de6ab091231b",
+      "unitLog": "/tmp/p007-render-unit-fire122-final.log",
+      "unitLogSha256": "5f61a982fdec22a3d4d763d95cb44562d4d1d7f39567b09afd5f3d98b3950ea7",
+      "typecheckLog": "/tmp/p007-render-typecheck-fire122-final.log",
+      "typecheckLogSha256": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "next": "Prepare a new owned frozen diagnostic SPA containing both updated probes and verify source/shell/SPA identities before one changed cold native run. Never reinterpret r164 as this sensor's runtime proof. Preserve empty browser profiles, API identity/observer limits, cleanup and diagnostic-only media suppression."
+  },
+  "r164Diagnostic": {
+    "scope": "One changed cold native tmpfs GST-output diagnostic; product repair and R7 acceptance remain open",
+    "verifierRun": "20261002T000746Z-3608343",
+    "verifierExit": 1,
+    "phases": {
+      "prepare": "pass",
+      "boot": "pass",
+      "assert": "fail"
+    },
+    "receipt": "perfrun-1790899858998-30l02o",
+    "popupMs": 835,
+    "fcpMs": 1162,
+    "lcpMs": 5417,
+    "verdict": "fail",
+    "intervention": "Retained r163 cold profiles, empty plugin discovery and INFO categories; moved GST_DEBUG_FILE to owned per-PID tmpfs files. The v4 descriptor probe adds unpaired observer work.",
+    "ownedRenderer": {
+      "pid": 3783338,
+      "environment": "Captured GST_DEBUG_FILE and all four empty plugin paths",
+      "descriptor": 38,
+      "path": "/dev/shm/p007-r164-d1608f11-20261001T234500Z/gst.3783338.log",
+      "inode": "6708905",
+      "device": 29,
+      "mountId": "35",
+      "mountEvidence": "Current audit mountinfo resolves sampled mnt_id 35 to tmpfs at /dev/shm; the sampled descriptor matches the live file inode/device. Renderer mount-namespace identity was not saved.",
+      "descriptorSamples": {
+        "captured": 170,
+        "notOpen": 18,
+        "unavailable": 1
+      },
+      "mappedCore": "Unavailable: extra live audit failed at ESM/CJS import before its body; no maps artifact was created"
+    },
+    "gstreamer": {
+      "firstTwoInfoGapMs": 0.026812,
+      "initSpanMs": 0.662399,
+      "registryValidationToUnchangedMs": 0.004399,
+      "registryCacheAbsentAfterRun": true,
+      "journalWaitSamples": 0,
+      "population": "189 retained samples of the owned renderer main task; other threads and unsampled intervals are outside this observation"
+    },
+    "interpretation": "Supports selected GST log-sink contribution to r163 delay; this single unpaired run does not establish a causal effect size or initiating caller. Empty discovery still disables media diagnostically.",
+    "remainingLcp": {
+      "element": "P.pclsb-acct__foot",
+      "source": "packages/operator-ui/src/accounts/AccountsTab.tsx:494",
+      "adapter": "apps/operator-vite/src/components/left-sidebar/AccountsTab.tsx re-exports the maintained component",
+      "frozenModule": "$HOME/.papercusp/perf/p007-native-current/r160-spa/assets/src-a219fb19.js",
+      "scope": "Exact class/footer text match current source and frozen module, not whole-module provenance or delay cause. The footer is outside the current source's account-loading conditional; do not assume accounts.pool gates it."
+    },
+    "api": {
+      "sha": "aecf5f4f70",
+      "bundleSha256": "588c451d0109017010877a7ebf26a4e8e764a05c8743f97a3a7ebec6bdcc20fb",
+      "baselineSha": "d1a2e44b61",
+      "baselineBundleSha256": "c05486235c14ef338eac3886228f0362f3972ebddb687fca3ed0dfff403c2268",
+      "comparison": "Different bundles; no causal popup/page comparison"
+    },
+    "observer": {
+      "samples": 229,
+      "sampleWorkMs": 1729.112352,
+      "storageCap": 200,
+      "storageDropped": 217,
+      "scope": "Work duration is not paired latency overhead; GST/native/page clocks remain distinct"
+    },
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r164-native-summary.json",
+    "summarySha256": "1624e677a4189c8d3692df62137429ea57c9efe66df3d54a6d599e3014da2ff9",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r164-cleanup-receipt.json",
+    "cleanupSha256": "487dd48ddf95ba3b3650cdc0ec8616768a307958660d1376fc3d06c2c44253aa",
+    "cleanupResult": "Owned API/bridge/native processes and source absent, port closed. Exact stale socket, inode/device-checked tmpfs root and preserved logs, private home and three profiles removed; unrelated advert and harness logs preserved. Frozen input lock released, no pending exec.",
+    "next": "Trace the footer's actual render trigger and frozen-module provenance before a changed diagnostic/product fix; keep R7 five-cold/five-warm acceptance open"
+  },
+  "baseline": {
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r163-native-summary.json",
+    "sha256": "66d699b86e39599ad20a3b40832d31283ceb76aae70e2302ae430f26f4c02138",
+    "rendererPid": 858394,
+    "firstTwoInitLogGapMs": 9057.767828,
+    "initSpanMs": 9059.146176,
+    "initialGST_DEBUG_FILE": "measured absent",
+    "savedActualDescriptorEvidence": "unavailable; v3 trace has no descriptor fields and owned runtime has already ended"
+  },
+  "vendorSource": {
+    "archiveUrl": "https://archive.ubuntu.com/ubuntu/pool/main/g/gstreamer1.0/gstreamer1.0_1.24.2.orig.tar.xz",
+    "archiveSha256": "9cafdd23bd180f1681c56cd3a6879a8497ccf24da6f422a6b6f356fa074a8481",
+    "debianArchiveUrl": "https://archive.ubuntu.com/ubuntu/pool/main/g/gstreamer1.0/gstreamer1.0_1.24.2-1ubuntu0.1.debian.tar.xz",
+    "debianArchiveSha256": "a2e8ac4ff91003ca640e62c2d29afa1cee706ecc0988a28aa3c3e23e12e1591b",
+    "gst.cSha256": "84e1780ada601f3b6f883113fd85c605428260ec5c1657b214d8bc10a8f172a0",
+    "gstinfo.cSha256": "df96d44a840f0612ecbd8a57fe53ce457d5408283b66638f5224278c22c2a64b",
+    "patchSeries": [
+      "CVE-2024-47606.patch"
+    ],
+    "patchesTouchGstOrGstinfo": false,
+    "observations": [
+      "gst.c:574 and :575 are adjacent GST_INFO calls with no registry operation between them.",
+      "gstinfo.c:397-415 selects GST_DEBUG_FILE, stdout for '-', or stderr by default and registers the default handler.",
+      "gstinfo.c:620-625 invokes registered handlers synchronously; additional runtime handlers cannot be excluded from source alone.",
+      "gstinfo.c:1431-1443 formats the message then records elapsed time before the output call.",
+      "Linux no-color path gstinfo.c:1660-1666 calls fprintf and fflush. No fsync is asserted.",
+      "The interval between log timestamps includes the first handler's work and the second preamble; it is not an isolated write duration."
+    ]
+  },
+  "runnerTopology": {
+    "assertion": "$HOME/.papercusp/perf/p007-native-current/r163-run-assertion.sh:78",
+    "assertionOutput": "WDIO stdout and stderr redirected to run-163-popup-native-timing.log",
+    "driverSource": "tools/perf-test/wdio/wdio.conf.ts:668-671 uses inherited stdout/stderr",
+    "tauriDriverInstallRecord": "tauri-driver 2.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
+    "tauriDriverBinarySha256": "5830f9af7b64b79aac0cf2ad4e64f07c7a3cf59a24a11a1878a9643978ffe5e7",
+    "tauriDriverArchiveUrl": "https://static.crates.io/crates/tauri-driver/tauri-driver-2.0.6.crate",
+    "tauriDriverArchiveSha256": "24dc39bd26a65361c1c8e067636bbff1d9dd7e2fc58ff874edfba33acab0e6d0",
+    "tauriDriverWebdriverRsSha256": "806d234eaf505e8027f7fba86489449dcdb39576ed53b43d0edd440813ba9527",
+    "tauriDriverSourceObservation": "webdriver.rs:49-60 sends native WebDriver stdout to null and leaves stderr inherited; main.rs:42-44 spawns the command. Source version agrees with installation record, not a reproducible-build attestation.",
+    "webKitWebDriverBinarySha256": "488118541ba1dbeaca658073af84322900485b9435bc4fbb43eb1faf21db8b70",
+    "missingSeam": "Actual WebKit app/renderer stderr forwarding or reopening was not measured in r163. Source routing is an inference, not historical descriptor proof."
+  },
+  "currentStorageSnapshot": {
+    "measuredBy": "code:run task 0muq6b97z4djm6f13v3 exit0",
+    "wdioLogAndBufferedNativeTrace": {
+      "mount": "/",
+      "source": "/dev/nvme1n1p2",
+      "fsType": "ext4",
+      "device": "259:3"
+    },
+    "verifierTauriLog": {
+      "path": "/tmp/pcv/verify-tauri-headless.6qFGsJ/tauri.log",
+      "mount": "/tmp",
+      "source": "/dev/nvme0n1[/tmp]",
+      "fsType": "xfs"
+    },
+    "alternativeLogDestination": {
+      "mount": "/dev/shm",
+      "fsType": "tmpfs"
+    },
+    "limitation": "Current mount lookup does not prove the historical renderer descriptor or a shared-storage causal mechanism."
+  },
+  "discrimination": {
+    "hypothesis": "Synchronous GST debug output to the inherited ext4-backed stderr materially contributes to the startup gap.",
+    "alternativeHypothesis": "Other native work, another handler or scheduling sustains the gap independently of the selected GST log output.",
+    "nextPreparation": "The prior v4 preparation was exercised in r164: selected renderer GST environment/file descriptor was measured; loaded-core mapping remains unavailable. New footer render preparation is recorded separately in renderProbePreparationFire122.",
+    "changedDiagnostic": "One new cold diagnostic may retain r163 inputs and category thresholds but set GST_DEBUG_FILE to an owned tmpfs path. Measure actual renderer environment and descriptor/mount, preserve all logs after sampling, then remove only owned files. No unchanged r163 rerun.",
+    "predictedObservations": {
+      "hypothesis": "Verified GST output descriptor moves to tmpfs; adjacent-message gap and journal-wait samples fall materially. A result is support only, because one unpaired run and API differences remain confounded.",
+      "alternativeHypothesis": "Verified tmpfs GST output still exhibits the adjacent-message/startup gap or native blocking elsewhere. This refutes sufficiency of moving this output but does not assign a new cause."
+    },
+    "stopConditions": [
+      "Descriptor/environment intervention unavailable or mismatched",
+      "No changed diagnostic input",
+      "Source/shell/SPA/identity guard failure"
+    ],
+    "acceptanceLimits": [
+      "Empty plugin paths disable media and remain diagnostic only",
+      "Clocks remain separate",
+      "Observer work is not measured paired overhead",
+      "API bundle differences prevent causal popup comparison",
+      "P007 root repair and R7 five-cold/five-warm acceptance remain open"
+    ]
+  },
+  "verification": {
+    "command": "npm --prefix tools/perf-test/wdio run test:unit; npm --prefix tools/perf-test/wdio run typecheck",
+    "tests": {
+      "pass": 55,
+      "fail": 0,
+      "skip": 0
+    },
+    "typecheck": "PASS",
+    "sourceSha256": "38d063260c2ca2bff26957f0bb80631fa9b875b431c731db5d2849f87a098426",
+    "testSha256": "6790e3e326d77cf6528063681dfd0ca1ca86cf27012e70695535930cef135de0",
+    "unitLog": "/tmp/p007-descriptor-unit-20261001-r3.log",
+    "unitLogSha256": "697802553b1303339930baccd65b661701b08ee033e7c25f927d1d5d7de2e40e",
+    "typecheckLog": "/tmp/p007-descriptor-typecheck-20261001-r3.log",
+    "typecheckLogSha256": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+    "coverage": "Canonical Node fixtures guard owned lifetime and descriptor replacement, unreadable/oversized/partial discovery, exact large counters and exclusion of unrelated descriptors. Maintained real-fork integration observes actual fd2 capture and buffered persistence. These tests do not measure a Tauri log-sink intervention.",
+    "preparedManifest": "$HOME/.papercusp/perf/p007-native-current/r164-instrument-manifest.json",
+    "preparedAssertion": "$HOME/.papercusp/perf/p007-native-current/r164-run-assertion.sh",
+    "preparation": "Source/shell/SPA/preflight/fresh-output and tmpfs-root absence checks plus bash syntax passed. No native diagnostic launched."
+  },
+  "toolFriction": "First read-only code:run inventory wrapper returned HTTP502/outcome_unknown. No identical job was retried. Later ledger lookup did not show that inventory task in the returned window; its launch outcome remains unknown. Two later reduced audits completed exit0. No DRAIN incidental issue was filed.",
+  "artifactReferenceConvention": {
+    "home": "Resolve literal $HOME prefixes using the actual home directory. Repository-relative source paths resolve from the canonical staging root. These references preserve original artifact identities and SHA256 checks; they are not new runtime proof."
+  },
+  "actualHostMilestonePreparationFire131": {
+    "scope": "Maintained early DOM sensor preparation and selected frozen compiled topology; no new native run, import completion timing, cause, product repair or R7 acceptance",
+    "reused": "installStartupStorageProbe shared MutationObserver, buildStartupStorageProbeScript and canonical perf-report.node-test.ts suite; no new service or probe lifecycle",
+    "sourceObservation": "LeftSidebar defaults to accounts with lsb=true, renders the active tab only under presentedOpen, and wraps its lazy AccountsTab in Suspense. The footer is static outside AccountsTab loading/list conditional. Suite collects startup Web Vitals before the popup interaction.",
+    "frozenObservation": "Exact r166 LeftSidebar-2bf966fe.js retains accounts default, expanded accounts host attributes and Suspense fallback. Its lazy AccountsTab-d66f6c68.js shim imports src-a219fb19.js, which contains accounts.pool and the static footer. This checks selected compiled edges, not original complete source/build provenance or duration.",
+    "change": "Track first DOM observations of operator shell, expanded accounts sidebar, Suspense fallback and Accounts container. Retain each first node and join its containment at candidate discovery as true/false/null. No layout or text reads in mutation callbacks; four selectors,1000 reads each,60s deadline, cleanup and work accounting reuse existing lifecycle.",
+    "regression": "Pre-fix canonical61PASS2FAIL0skip, both missing milestone fields. Final canonical63PASS0FAIL0skip and package tscPASS. Exact bundled chronological test separates early sidebar from later Accounts container/footer; replaced host, unavailable containment, unobserved mount, read cap/deadline/unavailable observer and cleanup guarded.",
+    "sourceSha256": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "d5f1ca30978420da533b91f4388cd5e5e52b02ca60e87fa3d1696fd6a25a365b",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "4183d995593a17ce411ae7219606959f1621a5b2ab38bb7f31367b7e59e4508c",
+      "apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx": "b69b98c0d1102c29d222b9c06d032a2d844a4b74f9ce6a434dfcfbb3595738c5",
+      "apps/operator-vite/src/components/left-sidebar/AccountsTab.tsx": "a6e8dbff573a1e702ddbd3469ebdb67d011d96fcc88d309531d11d49d7412ecc",
+      "packages/operator-ui/src/accounts/AccountsTab.tsx": "abf7723ee34ef0416ac58070682fe44ba8af69f5b54ac8ab36399884a024d61d",
+      "packages/operator-ui/src/accounts/accounts-tab.styles.ts": "f8c4bb0926794b067c4d3d04b56ba5a47f60b09f957fe12cccb781a6573f5aee"
+    },
+    "selectedCompiledSha256": {
+      "LeftSidebar-2bf966fe.js": "37d6750312b30713813c7d56afad753f727752d1bf5ce96081a4554f32dabc2f",
+      "AccountsTab-d66f6c68.js": "a3e0354e847799258531be205e240db1b7f5afdfa356803a66e94c761f8d86c2",
+      "src-a219fb19.js": "4b360754c896aa1d5541381829d122c5c56be34c8e9472af7ff6f7be7d94c63a"
+    },
+    "logs": {
+      "/tmp/p007-fire131-milestones-red.log": "c4ee92dedd24674682ad4e698435ae41c44207b0d22af54b64a6e0892cd6b368",
+      "/tmp/p007-fire131-milestones-unit.log": "2a383d2d093a2949efc967119b49f8cbc5e3f0bec3f9600864b0c1dbd004871f",
+      "/tmp/p007-fire131-milestones-type.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "predictions": {
+      "beforeHost": "Matched shell/sidebar first observed near the actual candidate => investigate before-host work; callback time does not establish insertion.",
+      "insideHost": "Matched expanded accounts sidebar observed early, fallback observed, matched Accounts container late => delay inside the Accounts mount branch; does not prove lazy import caused it.",
+      "afterContainer": "Matched Accounts container and candidate early, eligible frame/LCP late => host/module mount timing is insufficient.",
+      "unavailable": "False/null host containment or actual LCP join forbids host timing attribution. Unobserved fallback is not proof there was no suspension."
+    },
+    "identityLeakRemediation": "Current evidence document was quarantined for machine-specific home path literals. Replace them with resolvable $HOME references while preserving underlying artifact hashes; use registered identity-leak content lint to guard the document.",
+    "next": "Compile fresh early/WV payloads into a new private diagnostic SPA, bind exact changed source/artifact hashes with existing maintained preparation, then one justified changed native diagnostic. Never replay unchanged r166/r165/r164/r163. Native caller/product/R7/five-cold-five-warm remain open."
+  }
+}

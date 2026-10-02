@@ -157,7 +157,7 @@ async function startRematerializeJob({
           import('@papercusp/orchestrator/session-launch-dirs'),
         ]);
         if (sessionClaudeConfigDir(stamp.owner) === stamp.session_root) {
-          ensureInteractiveClaudeConfig({ sid: stamp.owner });
+          await ensureInteractiveClaudeConfig({ sid: stamp.owner });
         }
       } catch (e) {
         console.warn(`[rematerialize] interactive-config seed failed for ${sessionId}: ${(e as Error)?.message ?? e}`);
@@ -1473,7 +1473,7 @@ const ensureClaudeConfig = defineTool({
       });
     }
     const { ensureInteractiveClaudeConfig } = await import('../../../interactive-claude-config');
-    const { configDir, repaired } = ensureInteractiveClaudeConfig({ sid: owner });
+    const { configDir, repaired } = await ensureInteractiveClaudeConfig({ sid: owner });
     return new Response(JSON.stringify({ ok: true, owner, configDir, repaired }), {
       status: 200,
       headers: JSON_HEADERS,

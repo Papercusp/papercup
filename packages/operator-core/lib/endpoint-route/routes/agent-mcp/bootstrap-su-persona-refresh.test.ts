@@ -407,6 +407,18 @@ describe('POST bootstrap-su/persona-refresh — fail-soft is the contract', () =
   });
 });
 
+// WI-10005227 recurrence guard: this route runs on bg-host's event loop. A sync
+// rename over the existing ~150 KB refresh file blocked that loop 567 ms on ext4
+// (journal wait + auto_da_alloc flush), so the write path must stay on fs/promises.
+describe('persona-refresh write path stays off the event loop (WI-10005227)', () => {
+  it('uses async fs for the atomic tmp+rename write, never the *Sync forms', () => {
+    const src = readFileSync(join(__dirname, 'bootstrap-su-persona-refresh.ts'), 'utf8');
+    expect(src).toMatch(/\bawait rename\(tmp, promptFile\)/);
+    expect(src).toMatch(/\bawait writeFile\(tmp, promptText/);
+    expect(src).not.toMatch(/\b(?:mkdirSync|writeFileSync|chmodSync|renameSync)\(/);
+  });
+});
+
 afterAll(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
 });

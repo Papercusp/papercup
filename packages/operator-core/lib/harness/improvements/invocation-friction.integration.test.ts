@@ -41,6 +41,9 @@ async function seed(workspace = 'ws-a') {
 const success = async (): Promise<CaptureImprovementResult> => ({
   ok: true, created: false, issue: { id: 'EI-1' } as EngineerIssue, possibleDuplicates: [],
 });
+const coalesced = async (): Promise<CaptureImprovementResult> => ({
+  ok: true, created: false, reason: 'coalesced', possibleDuplicates: [],
+});
 
 /** Exercise the real correlation/promotion logic against persisted payloads.
  * Only issue storage/tagging seams are injected; no application DB or scheduler.
@@ -199,6 +202,26 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(rows[1]).toMatchObject({ id: recent.id, metadata_json: { frictionCapture: 'delivered' } });
     expect(capture).toHaveBeenCalledTimes(1);
     expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture })).toEqual({ delivered: 0, pending: 0, expired: 0 });
+  });
+
+  it('persists safe failure class/code for retry and clears them after successful delivery', async () => {
+    const ref = await seed();
+    const failure = Object.assign(new Error('sensitive invocation detail'), {code:'23505'});
+    const failCapture = vi.fn(async () => { throw failure; });
+    await expect(recoverInvocationFriction('ws-a', { sql: sql(), capture: failCapture }))
+      .rejects.toThrow('failure classes: Error/23505=1');
+    const [failed] = await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id='ws-a' AND id=${ref.id}`;
+    expect(failed.metadata_json).toMatchObject({frictionCapture:'pending',frictionFailureClass:'Error',frictionFailureCode:'23505'});
+    expect(JSON.stringify(failed.metadata_json)).not.toContain('sensitive invocation detail');
+
+    expect(await recoverInvocationFriction('ws-a', {sql:sql(),capture:coalesced}))
+      .toEqual({delivered:1,pending:0,expired:0});
+    const [delivered] = await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id='ws-a' AND id=${ref.id}`;
+    expect(delivered.metadata_json).toMatchObject({frictionCapture:'delivered'});
+    expect(delivered.metadata_json).not.toHaveProperty('frictionFailureClass');
+    expect(delivered.metadata_json).not.toHaveProperty('frictionFailureCode');
   });
 
   it('concurrent delivery skips the row lock and never crosses workspace scope', async () => {

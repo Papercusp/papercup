@@ -235,7 +235,7 @@ export default defineTool({
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
     notWhen:
-      "Do not treat `assignee:null` on an item carrying `plan_ref`/`payload.plan_item` as unclaimed: `plans:items { slug }` may show live coverage. `sourcePlanSlug` filters persisted item provenance only; it does not include ad-hoc work merely performed while a session/fleet declared that plan. Scheduler `plan` predicates use item provenance too; for current lane status use scheduler:get_next or work_items:claimable. Never a drain backlog: non-work natures are data; drains read the work predicate via work_items:claimable.",
+      "Do not treat `assignee:null` on an item carrying `plan_ref`/`payload.plan_item` as unclaimed: `plans:items { slug }` may show live coverage. `sourcePlanSlug` filters persisted item provenance only; it does not include ad-hoc work merely performed while a session/fleet declared that plan. Scheduler `plan` predicates use item provenance too; for current lane status use scheduler:get_next or work_items:claimable.",
     seeAlso: [
       'work_items:claimable (issue-family: how many / which are ACTUALLY claimable — the full claim floors, unlike admissibleOnly here)',
       'work_items:set_priority (steer the backlog order you just read)',

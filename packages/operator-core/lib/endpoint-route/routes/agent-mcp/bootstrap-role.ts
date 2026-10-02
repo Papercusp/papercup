@@ -806,7 +806,7 @@ const post = defineTool({
     let claudeConfigDir: string | null = null;
     if (agent === 'claude') {
       try {
-        claudeConfigDir = writeInteractiveClaudeConfig({
+        claudeConfigDir = (await writeInteractiveClaudeConfig({
           sid,
           // WI-3280: park the role prompt so the SessionStart recovery hook can
           // re-deliver it if claude's self-re-exec drops the launch argv.
@@ -815,7 +815,7 @@ const post = defineTool({
           // directory can't wedge a headless role spawn forever on an
           // external-CLAUDE.md-imports / trust-dialog TTY prompt.
           cwd: spec.cwd,
-        }).configDir;
+        })).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-role] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);
       }

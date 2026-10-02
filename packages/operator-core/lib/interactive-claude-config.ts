@@ -971,7 +971,7 @@ export function syncPersonalClaudeMemory(configDir: string, include: boolean, ho
  * no `~/.claude` yet simply yields a dir with a fresh `projects/` (the session
  * runs as a first-run user would) — never throws.
  */
-export function writeInteractiveClaudeConfig(opts: {
+export async function writeInteractiveClaudeConfig(opts: {
   /** Per-session coord-owner id (`PAPERCUSP_SID`). Keys the dir via the shared
    *  helper, so launch and the wake-executor resume leg resolve the same path. */
   sid: string;
@@ -1006,7 +1006,7 @@ export function writeInteractiveClaudeConfig(opts: {
    * already known-trusted (e.g. a resume into an existing session's cwd).
    */
   cwd?: string;
-}): InteractiveClaudeConfig {
+}): Promise<InteractiveClaudeConfig> {
   const home = opts.home ?? homedir();
   const configDir = sessionClaudeConfigDir(opts.sid);
   mkdirSync(configDir, { recursive: true });
@@ -1035,7 +1035,11 @@ export function writeInteractiveClaudeConfig(opts: {
       // gets an empty dir claude would have created on first global use anyway.
       // (psu-login-inherit: fresh-box credential promotion.)
       mkdirSync(join(home, '.claude'), { recursive: true });
-      reconcileClaudeCredentials({ home });
+      // WI-10005186: awaited, async — this runs on the operator main thread
+      // (bootstrap/resume request routes), and a propagating pass renames one
+      // temp file per credential fork; synchronous, that froze the event loop
+      // in ext4 journal waits.
+      await reconcileClaudeCredentials({ home });
     } catch {
       /* claude surfaces a stale credential the same as before this existed */
     }
@@ -1187,12 +1191,12 @@ export function isInteractiveClaudeConfigReady(configDir: string): boolean {
  * Never throws — a launch must never fail on config repair; a failed repair
  * degrades to exactly today's behavior.
  */
-export function ensureInteractiveClaudeConfig(opts: {
+export async function ensureInteractiveClaudeConfig(opts: {
   /** Per-session coord-owner id (`PAPERCUSP_SID`) — keys the dir. */
   sid: string;
   /** Source HOME (testability); defaults to the process home. */
   home?: string;
-}): { configDir: string; repaired: boolean } {
+}): Promise<{ configDir: string; repaired: boolean }> {
   const configDir = sessionClaudeConfigDir(opts.sid);
   if (isInteractiveClaudeConfigReady(configDir)) return { configDir, repaired: false };
   try {
@@ -1204,7 +1208,7 @@ export function ensureInteractiveClaudeConfig(opts: {
     // user's — losing its accrued state is the point), a dangling link, or a
     // corrupt file. A healthy or pruned dir returned above, untouched.
     rmSync(join(configDir, '.claude.json'), { force: true });
-    writeInteractiveClaudeConfig({ sid: opts.sid, home: opts.home });
+    await writeInteractiveClaudeConfig({ sid: opts.sid, home: opts.home });
     return { configDir, repaired: true };
   } catch {
     return { configDir, repaired: false };

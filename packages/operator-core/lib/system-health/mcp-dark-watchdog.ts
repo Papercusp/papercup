@@ -866,7 +866,7 @@ async function runInteractiveHealStep(
     let repaired = false;
     try {
       const { ensureInteractiveClaudeConfig } = await import('../interactive-claude-config');
-      ({ repaired } = ensureInteractiveClaudeConfig({ sid: step.ownerId }));
+      ({ repaired } = await ensureInteractiveClaudeConfig({ sid: step.ownerId }));
       if (repaired) out.configRepaired.push(step.ownerId);
     } catch {
       // Never let config repair block the heal it is trying to enable.

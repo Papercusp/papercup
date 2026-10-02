@@ -975,7 +975,9 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
        WHERE workspace_id = ${workspaceId}
          AND payload #>> '{processLifecycleCandidate,taskId}' = ANY(${taskIds as string[]}::text[])
          AND payload #> '{out,processLifecycleVerdict}' IS NOT NULL
-       ORDER BY payload #>> '{processLifecycleCandidate,taskId}', updated_ts DESC
+       ORDER BY payload #>> '{processLifecycleCandidate,taskId}',
+                payload #>> '{out,processLifecycleVerdict,decidedAt}' DESC NULLS LAST,
+                updated_ts DESC
     `;
     for (const row of rows) {
       const verdict = processLifecycleVerdictFrom(row.verdict);

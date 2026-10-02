@@ -119,6 +119,7 @@ import {
   FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
   diagnoseFleetScopeRetiredPlans,
   fleetLeaderUnavailableRefusal,
+  fleetScopeRefusalContract,
   fleetScopeLeaderRemedy,
   fleetScopedMiss,
   hasLiveFleetRouteTarget,
@@ -2037,6 +2038,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       scoped: true,
       code: 'fleet_scope_violation',
       reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      refusal: fleetScopeRefusalContract('fleet_scope_violation', scope),
       scope,
     };
 
@@ -2081,6 +2083,27 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(remedy).not.toMatch(/fleet:resume/);
     });
 
+    it('states that completing a stamped work-item can reflect its plan item to done', () => {
+      const planViolation: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation,
+        scope: {
+          ...scope,
+          record: {
+            ...scope.record,
+            spec: {
+              ...scope.record.spec,
+              view: { filter: { field: 'plan', op: '=' as const, value: 'stamped-plan' } },
+            },
+          },
+        },
+      };
+
+      const remedy = fleetScopeLeaderRemedy(planViolation);
+
+      expect(remedy).toMatch(/completing the stamped work-item may reflect its plan item to `done`/);
+      expect(remedy).toMatch(/closing that plan item later may also auto-resolve this work-item as residue/i);
+    });
+
     it('fleetScopeLeaderRemedy routes a fleet_winding_down refusal at fleet:resume, NOT a spec widen', () => {
       const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
         ...violation,
@@ -2099,6 +2122,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         scoped: true,
         code: 'fleet_scope_missing',
         reason: 'fleet member su-member belongs to \'p2p-release-verify\' but has no explicit spec',
+        refusal: fleetScopeRefusalContract('fleet_scope_missing', scope),
         scope: { ...scope, record: { ...scope.record, source: 'default' as const } },
       };
       const remedy = fleetScopeLeaderRemedy(missing);
@@ -2191,6 +2215,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       scoped: true,
       code: 'fleet_scope_violation',
       reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      refusal: fleetScopeRefusalContract('fleet_scope_violation', scope),
       scope,
     };
 

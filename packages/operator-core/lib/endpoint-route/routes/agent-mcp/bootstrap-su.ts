@@ -3115,7 +3115,7 @@ export const bootstrapSu = defineTool({
       try {
         // P-020: a fleet-tier member gets the pruned plugin/MCP surface
         // (github/cloudflare/firecrawl plugins + the playwright mcpServer dropped).
-        claudeConfigDir = writeInteractiveClaudeConfig({
+        claudeConfigDir = (await writeInteractiveClaudeConfig({
           sid,
           prunePlugins: spec.personaTier === 'fleet',
           // WI-3280: park the playbook so the SessionStart recovery hook can
@@ -3126,7 +3126,7 @@ export const bootstrapSu = defineTool({
           // fleet member) can't wedge forever on an external-CLAUDE.md-
           // imports / trust-dialog TTY prompt nobody is there to answer.
           cwd,
-        }).configDir;
+        })).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-su] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);
       }

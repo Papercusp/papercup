@@ -27,7 +27,11 @@ function fixture(count = 1) {
     }
     if (query.includes('frictionAttemptAt') && query.includes('UPDATE')) {
       const row = rows.find(row => row.workspace_id === params[0] && row.id === params[1]);
-      if (row) row.metadata_json.frictionAttemptAt = params[2];
+      if (row) {
+        row.metadata_json.frictionAttemptAt = params[2];
+        row.metadata_json.frictionFailureClass = params[3];
+        row.metadata_json.frictionFailureCode = params[4] ?? null;
+      }
       return [];
     }
     return rows.filter(row => row.workspace_id === params[0] && row.metadata_json.frictionCapture === 'pending')
@@ -49,7 +53,11 @@ function fixture(count = 1) {
         if (query.includes('UPDATE harness_shared.tool_invocations')) { mark = row; return []; }
         throw new Error('Unexpected fixture SQL');
       } });
-      if (mark) mark.metadata_json.frictionCapture = 'delivered';
+      if (mark) {
+        mark.metadata_json.frictionCapture = 'delivered';
+        delete mark.metadata_json.frictionFailureClass;
+        delete mark.metadata_json.frictionFailureCode;
+      }
       return result;
     } finally { if (held) locked.delete(held); }
   } } as unknown as NonNullable<Parameters<typeof captureInvocationFriction>[1]>['sql'];
@@ -88,8 +96,16 @@ describe('R7 durable invocation capture', () => {
   it('does not mark a refused or unpersisted capture delivered', async () => {
     const f = fixture();
     f.capture.mockResolvedValueOnce({ ok: false, created: false });
-    await expect(captureInvocationFriction({ id: '1', workspaceId: 'ws-a' }, f)).rejects.toThrow('did not persist');
+    await expect(captureInvocationFriction({ id: '1', workspaceId: 'ws-a' }, f)).rejects.toThrow('did not accept');
     expect(f.rows[0].metadata_json.frictionCapture).toBe('pending');
+  });
+
+  it('marks an accepted coalesced occurrence delivered when no canonical issue is returned', async () => {
+    const f = fixture();
+    f.capture.mockResolvedValueOnce({ ok: true, created: false, reason: 'coalesced', possibleDuplicates: [] });
+    expect(await captureInvocationFriction({ id: '1', workspaceId: 'ws-a' }, f)).toBe(true);
+    expect(f.rows[0].metadata_json.frictionCapture).toBe('delivered');
+    expect(f.capture).toHaveBeenCalledTimes(1);
   });
 
   it('uses original scope/reporter/contract/build and strips unmeasured direct evidence', async () => {
@@ -135,7 +151,20 @@ describe('R7 durable invocation capture', () => {
     f.capture.mockRejectedValue(new Error('fixture failure'));
     await expect(recoverInvocationFriction('ws-a', f)).rejects.toThrow('100 failed');
     expect(f.rows[100].metadata_json.frictionAttemptAt).toBeUndefined();
+    expect(f.rows[0].metadata_json).toMatchObject({frictionFailureClass:'Error',frictionFailureCode:null});
     await expect(recoverInvocationFriction('ws-a', f)).rejects.toThrow('100 failed');
     expect(f.rows[100].metadata_json.frictionAttemptAt).toBeTypeOf('string');
+  });
+
+  it('reports only an allowlisted error class and code, never the exception message', async () => {
+    const f = fixture();
+    f.capture.mockRejectedValueOnce(Object.assign(new Error('sensitive invocation detail'), {code:'23505'}));
+    const error = await recoverInvocationFriction('ws-a', f).catch(value => value as Error);
+    expect(error.message).toContain('failure classes: Error/23505=1');
+    expect(error.message).not.toContain('sensitive invocation detail');
+    expect(f.rows[0].metadata_json).toMatchObject({
+      frictionCapture:'pending', frictionFailureClass:'Error', frictionFailureCode:'23505',
+    });
+    expect(JSON.stringify(f.rows[0].metadata_json)).not.toContain('sensitive invocation detail');
   });
 });

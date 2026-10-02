@@ -30,15 +30,34 @@ import { resolveHomePotSlug } from '../agent-tools/pot/_resolve';
 const order: string[] = [];
 /** SQL the rail actually issued through the mocked org tag, as (text, values) pairs. */
 const sqlLog: Array<{ text: string; values: unknown[] }> = [];
-const sqlTag = Object.assign(
-  (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.join(' ? ');
-    sqlLog.push({ text, values });
-    order.push(/INSERT/i.test(text) ? 'insert' : /DELETE/i.test(text) ? 'delete' : 'sql');
-    return Promise.resolve([]);
-  },
-  { begin: vi.fn() },
-);
+type ExistingRoutedGoal = { id: string; status: string; metadata: Record<string, unknown> | null };
+const routedGoalRows: ExistingRoutedGoal[] = [];
+const reservedReleaseMock = vi.fn(() => order.push('connection-release'));
+const executeSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const text = strings.join(' ? ');
+  sqlLog.push({ text, values });
+  const action = text.includes('pg_advisory_lock')
+    ? 'proposal-lock'
+    : text.includes('pg_advisory_unlock')
+      ? 'proposal-unlock'
+      : text.includes("metadata->>'routedProposalId'")
+        ? 'proposal-lookup'
+        : /INSERT/i.test(text)
+          ? 'insert'
+          : /DELETE/i.test(text)
+            ? 'delete'
+            : 'sql';
+  order.push(action);
+  if (text.includes("metadata->>'routedProposalId'")) {
+    const proposalId = values[1];
+    return Promise.resolve(routedGoalRows.filter((row) => row.metadata?.routedProposalId === proposalId));
+  }
+  return Promise.resolve([]);
+};
+const sqlTag = Object.assign(executeSql, {
+  begin: vi.fn(),
+  reserve: vi.fn(async () => Object.assign(executeSql, { release: reservedReleaseMock })),
+});
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
@@ -170,6 +189,7 @@ const INPUT = {
   title: 'Ship a paid app',
   killCriterion: 'no paying user by day 30',
   budgetCents: 50_000,
+  proposalId: 'scout-cycle-1:proposal-1',
 };
 const call = (extra: Record<string, unknown> = {}) => autoStartGoal({ ...INPUT, ...extra });
 
@@ -200,6 +220,8 @@ beforeEach(() => {
   });
   order.length = 0;
   sqlLog.length = 0;
+  routedGoalRows.length = 0;
+  reservedReleaseMock.mockClear();
   setModeCalls.length = 0;
   spawnHeadlessMock.mockImplementation(async () => {
     order.push('spawn');
@@ -220,6 +242,47 @@ beforeEach(() => {
   });
   replaceBlockedByMock.mockImplementation(async () => {
     order.push('deps-clear');
+  });
+});
+
+describe('goal-auto-start — routed proposal idempotency (WI-10004496)', () => {
+  it('holds the proposal mutex through creation and holder spawn', async () => {
+    const result = await call();
+
+    expect(result.reusedExistingGoal).toBe(false);
+    expect(order.indexOf('proposal-lock')).toBeLessThan(order.indexOf('proposal-lookup'));
+    expect(order.indexOf('proposal-lookup')).toBeLessThan(order.indexOf('insert'));
+    expect(order.indexOf('insert')).toBeLessThan(order.indexOf('spawn'));
+    expect(order.indexOf('spawn')).toBeLessThan(order.indexOf('proposal-unlock'));
+    expect(reservedReleaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the existing non-terminal goal and does not mint another holder for a routed proposal', async () => {
+    routedGoalRows.push({
+      id: 'goal-existing-123abc',
+      status: 'active',
+      metadata: { agentOwnerId: 'su-existing-holder', routedProposalId: INPUT.proposalId },
+    });
+
+    const result = await call();
+
+    expect(result).toMatchObject({
+      goalId: 'goal-existing-123abc',
+      agentOwnerId: 'su-existing-holder',
+      reusedExistingGoal: true,
+    });
+    expect(order).not.toContain('insert');
+    expect(setModeMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(reservedReleaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a missing routed proposal id before any database or spawn side effect', async () => {
+    await expect(call({ proposalId: '  ' })).rejects.toThrow(/proposalId for idempotency/);
+
+    expect(sqlLog).toHaveLength(0);
+    expect(sqlTag.reserve).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 });
 

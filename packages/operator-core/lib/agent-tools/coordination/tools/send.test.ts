@@ -2702,6 +2702,49 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
     });
   });
 
+  it('returns and persists a not-stamped diagnosis for inline report labels, including chunked sends without why', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, goalId);
+    const inlineReport = [
+      'MOVED since 00:00Z: P-006 advanced',
+      'COST: unknown (goal-pots rollup unavailable)',
+      'OWNER-WALLED: none',
+      'KILLED: stale experiment',
+      `Supporting detail: ${'recent movement evidence '.repeat(50)}`,
+    ].join(' ');
+
+    const b = await body({
+      to: ['human'],
+      summary: 'Goal owner report',
+      expects: 'none',
+      body: [{ text: inlineReport }],
+    });
+
+    expect(b.chunked).toHaveLength(1);
+    expect(b.chunked[0].parts).toBeGreaterThan(1);
+    const finalResult = b.results[b.results.length - 1];
+    expect(finalResult).toMatchObject({
+      ok: true,
+      goalOwnerReport: {
+        status: 'not-stamped',
+        goalId,
+        reason: 'not-attempted',
+        missing: ['moved', 'cost', 'ownerWalled', 'killed'],
+        bodyDeliveryCap: 600,
+        message: expect.stringContaining('will not reset the report cadence'),
+      },
+    });
+    expect(finalResult.goalOwnerReport.bodyAuthoredChars).toBeGreaterThan(600);
+    const finalSend = sendM.mock.calls[sendM.mock.calls.length - 1]![1] as { extra?: Record<string, any> };
+    expect(finalSend.extra?.goalOwnerReport).toBeUndefined();
+    expect(finalSend.extra?.goalOwnerReportValidation).toMatchObject({
+      status: 'not-stamped',
+      goalId,
+      reason: 'not-attempted',
+      missing: ['moved', 'cost', 'ownerWalled', 'killed'],
+    });
+    expect(getModeSubjectMock).toHaveBeenCalledWith('ws1', 'me', 'goal');
+  });
+
   it('refuses a partial attempted report before persistence and names every repair', async () => {
     mockResolvedOnceTyped(getModeSubjectMock, goalId);
     const b = await body({

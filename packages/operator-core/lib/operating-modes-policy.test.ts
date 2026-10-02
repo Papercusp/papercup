@@ -182,16 +182,22 @@ describe('su.mode-drain + work-natures doc — the work predicate is the only dr
     'utf8',
   );
   const PREDICATE = /work_item_is_agent_work\(nature, audience, lane,\s+needs_owner_action\)/;
+  // Overridable subject path (defaults to the real su.mode-drain objective) so
+  // scripts/mutation-probe.sh can prove this guard falsifiable against a COPY of the
+  // drain definition, never by mutating the shared tree.
+  const drainDoc = process.env.P011_DRAIN_DOC_PATH
+    ? readFileSync(process.env.P011_DRAIN_DOC_PATH, 'utf8')
+    : drain;
 
   it('the drain definition takes its backlog from the work predicate and nowhere else', () => {
-    expect(drain).toMatch(PREDICATE);
-    expect(drain).toContain("That predicate is the drain's only backlog source.");
-    expect(drain).toMatch(/`work_items:claimable`[\s\S]*`scheduler:get_next`/);
-    expect(drain).toMatch(/Never size or feed a\s+drain from a raw `harness_shared\.work_items` query/);
+    expect(drainDoc).toMatch(PREDICATE);
+    expect(drainDoc).toContain("That predicate is the drain's only backlog source.");
+    expect(drainDoc).toMatch(/`work_items:claimable`[\s\S]*`scheduler:get_next`/);
+    expect(drainDoc).toMatch(/Never size or feed a\s+drain from a raw `harness_shared\.work_items` query/);
     // The pre-P-011 SCOPE default selected by status alone; it must not come back.
-    expect(drain).not.toMatch(/non-terminal, unclaimed, not in-progress/);
-    expect(drain).toMatch(/\*\*audience human\*\*[\s\S]*never drains, claims or closes it/);
-    expect(drain).toContain('`work-natures-and-the-work-predicate`');
+    expect(drainDoc).not.toMatch(/non-terminal, unclaimed, not in-progress/);
+    expect(drainDoc).toMatch(/\*\*audience human\*\*[\s\S]*never drains, claims or closes it/);
+    expect(drainDoc).toContain('`work-natures-and-the-work-predicate`');
   });
 
   it('the four-natures doc defines every nature, gives the four examples, and names the same predicate', () => {

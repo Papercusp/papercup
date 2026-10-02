@@ -252,7 +252,7 @@ export function installStartupStorageProbe() {
         }
       });
       renderObserver.observe(document.documentElement, { subtree: true, childList: true, attributes: true,
-        attributeFilter: ['class', 'style', 'hidden'] });
+        attributeFilter: ['class', 'style', 'hidden', 'data-tab', 'data-collapsed'] });
       findRenderCandidates();
       const fonts = document.fonts;
       if (fonts) {

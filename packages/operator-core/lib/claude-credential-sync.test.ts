@@ -12,6 +12,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -95,12 +96,12 @@ afterEach(() => {
 });
 
 describe('reconcileClaudeCredentials', () => {
-  it('propagates the newest session bundle to the global file and stale forks', () => {
+  it('propagates the newest session bundle to the global file and stale forks', async () => {
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old'), mcpOAuth: { g: 1 } });
     writeCreds(sessionPath('su-stale'), { claudeAiOauth: bundle(NOW + 2 * HOUR, 'mid'), mcpOAuth: { s: 2 } });
     writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
 
-    const r = run();
+    const r = await run();
 
     expect(r.winner?.path).toBe(sessionPath('su-fresh'));
     expect(r.updated.sort()).toEqual([globalPath(), sessionPath('su-stale')].sort());
@@ -115,21 +116,21 @@ describe('reconcileClaudeCredentials', () => {
     expect(statSync(globalPath()).mode & 0o777).toBe(0o600);
   });
 
-  it('is idempotent: a converged tree produces zero writes', () => {
+  it('is idempotent: a converged tree produces zero writes', async () => {
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
     writeCreds(sessionPath('su-a'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
 
-    expect(run().updated).toEqual([sessionPath('su-a')]);
-    expect(run().updated).toEqual([]);
+    expect((await run()).updated).toEqual([sessionPath('su-a')]);
+    expect((await run()).updated).toEqual([]);
   });
 
-  it('skips symlinked session entries (they alias the global file)', () => {
+  it('skips symlinked session entries (they alias the global file)', async () => {
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
     mkdirSync(join(sessionRoot, 'su-linked'), { recursive: true });
     symlinkSync(globalPath(), sessionPath('su-linked'));
     writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
 
-    const r = run();
+    const r = await run();
 
     expect(lstatSync(sessionPath('su-linked')).isSymbolicLink()).toBe(true);
     expect(r.updated).toEqual([globalPath()]);
@@ -137,7 +138,7 @@ describe('reconcileClaudeCredentials', () => {
     expect(readJson(sessionPath('su-linked')).claudeAiOauth.accessToken).toBe('sk-ant-oat01-new');
   });
 
-  it('never lets invalid bundles win: no refreshToken, implausible expiry, garbage', () => {
+  it('never lets invalid bundles win: no refreshToken, implausible expiry, garbage', async () => {
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'real') });
     // A setup-token-shaped bundle (no refreshToken) with a 1-year expiry.
     writeCreds(sessionPath('su-setup'), {
@@ -149,7 +150,7 @@ describe('reconcileClaudeCredentials', () => {
     mkdirSync(join(sessionRoot, 'su-corrupt'), { recursive: true });
     writeFileSync(sessionPath('su-corrupt'), '{"claudeAiOauth": {"accessTo');
 
-    const r = run();
+    const r = await run();
 
     expect(r.winner?.path).toBe(globalPath());
     // The corrupt fork is healed with the winner; invalid-but-parseable forks too.
@@ -157,10 +158,10 @@ describe('reconcileClaudeCredentials', () => {
     expect(readJson(sessionPath('su-forged')).claudeAiOauth.accessToken).toBe('sk-ant-oat01-real');
   });
 
-  it('restores a missing global file from the freshest fork', () => {
+  it('restores a missing global file from the freshest fork', async () => {
     writeCreds(sessionPath('su-only'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new'), mcpOAuth: { s: 1 } });
 
-    const r = run();
+    const r = await run();
 
     expect(r.updated).toEqual([globalPath()]);
     expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-new');
@@ -169,7 +170,7 @@ describe('reconcileClaudeCredentials', () => {
     expect(statSync(globalPath()).mode & 0o777).toBe(0o600);
   });
 
-  it('does NOT materialize ~/.claude from a fork when the dir is absent — then promotes once it exists', () => {
+  it('does NOT materialize ~/.claude from a fork when the dir is absent — then promotes once it exists', async () => {
     // A truly fresh box: NO ~/.claude dir at all. A `claude /login` done INSIDE
     // a psu session leaves a real fork, but reconcile deliberately won't create
     // ~/.claude here — so the lone fork is stranded and a new psu session can't
@@ -179,7 +180,7 @@ describe('reconcileClaudeCredentials', () => {
     rmSync(join(home, '.claude'), { recursive: true, force: true });
     writeCreds(sessionPath('su-only'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
 
-    const r = run();
+    const r = await run();
     // Fork is the winner, but with no ~/.claude nothing is promoted to global.
     expect(r.winner?.path).toBe(sessionPath('su-only'));
     expect(r.updated).toEqual([]);
@@ -189,24 +190,24 @@ describe('reconcileClaudeCredentials', () => {
     // Pre-creating ~/.claude (what writeInteractiveClaudeConfig now does) lets
     // the SAME reconcile lift the fork to the global → inheritance works.
     mkdirSync(join(home, '.claude'), { recursive: true });
-    const r2 = run();
+    const r2 = await run();
     expect(r2.updated).toEqual([globalPath()]);
     expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-new');
   });
 
-  it('no-ops when nothing valid exists anywhere', () => {
+  it('no-ops when nothing valid exists anywhere', async () => {
     writeCreds(globalPath(), { mcpOAuth: { g: 1 } });
-    const r = run();
+    const r = await run();
     expect(r.winner).toBeNull();
     expect(r.updated).toEqual([]);
     expect(readJson(globalPath())).toEqual({ mcpOAuth: { g: 1 } });
   });
 
-  it('expired-but-newest still wins (an expired family member may still refresh)', () => {
+  it('expired-but-newest still wins (an expired family member may still refresh)', async () => {
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW - 4 * HOUR, 'older') });
     writeCreds(sessionPath('su-a'), { claudeAiOauth: bundle(NOW - 1 * HOUR, 'newest') });
 
-    const r = run();
+    const r = await run();
 
     expect(r.winner?.path).toBe(sessionPath('su-a'));
     expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-newest');
@@ -214,11 +215,11 @@ describe('reconcileClaudeCredentials', () => {
 });
 
 describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
-  it('darwin: seeds the global file from the login Keychain when no file creds exist', () => {
+  it('darwin: seeds the global file from the login Keychain when no file creds exist', async () => {
     // The owner's exact case: a signed-in Mac (creds in the Keychain, no ~/.claude/.credentials.json).
     installFakeKeychain(kcSecret(NOW + 8 * HOUR, 'kc'));
 
-    const r = runMac();
+    const r = await runMac();
 
     expect(r.winner?.path).toMatch(/^keychain:/);
     expect(r.updated).toEqual([globalPath()]);
@@ -232,11 +233,11 @@ describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
     expect(existsSync(join(process.cwd(), 'keychain:Claude Code-credentials'))).toBe(false);
   });
 
-  it('darwin: propagates the Keychain bundle into a stale session fork (sibling keys preserved)', () => {
+  it('darwin: propagates the Keychain bundle into a stale session fork (sibling keys preserved)', async () => {
     installFakeKeychain(kcSecret(NOW + 8 * HOUR, 'kc'));
     writeCreds(sessionPath('su-stale'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old'), mcpOAuth: { s: 1 } });
 
-    const r = runMac();
+    const r = await runMac();
 
     expect(r.winner?.path).toMatch(/^keychain:/);
     expect(r.updated.sort()).toEqual([globalPath(), sessionPath('su-stale')].sort());
@@ -245,14 +246,14 @@ describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
     expect(keychainWrites).toEqual([]);
   });
 
-  it('darwin: writes a newer fork bundle BACK to the Keychain (keeps the direct claude fresh)', () => {
+  it('darwin: writes a newer fork bundle BACK to the Keychain (keeps the direct claude fresh)', async () => {
     // A psu fork refreshed → its bundle out-dates the Keychain → must flow back so the owner's
     // direct `claude` (a Keychain reader) does not re-login when its own token expires.
     installFakeKeychain(kcSecret(NOW + 2 * HOUR, 'kc'));
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 2 * HOUR, 'kc') });
     writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'refreshed') });
 
-    const r = runMac();
+    const r = await runMac();
 
     expect(r.winner?.path).toBe(sessionPath('su-fresh'));
     expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-refreshed');
@@ -264,23 +265,23 @@ describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
     expect(existsSync(join(process.cwd(), 'keychain:Claude Code-credentials'))).toBe(false);
   });
 
-  it('darwin: a converged Keychain==file tree produces zero writes and no write-back', () => {
+  it('darwin: a converged Keychain==file tree produces zero writes and no write-back', async () => {
     installFakeKeychain(kcSecret(NOW + 8 * HOUR, 'kc'));
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'kc') });
 
-    const r = runMac();
+    const r = await runMac();
 
     expect(r.updated).toEqual([]);
     expect(r.keychainWriteBack).toBeNull();
     expect(keychainWrites).toEqual([]);
   });
 
-  it('darwin: an ACL-blocked / absent Keychain read leaves pure-file behaviour intact', () => {
+  it('darwin: an ACL-blocked / absent Keychain read leaves pure-file behaviour intact', async () => {
     installFakeKeychain(null); // errSecInteractionNotAllowed (non-GUI) or not signed in
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
     writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
 
-    const r = runMac();
+    const r = await runMac();
 
     expect(r.winner?.path).toBe(sessionPath('su-fresh'));
     expect(r.updated).toEqual([globalPath()]);
@@ -288,11 +289,11 @@ describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
     expect(keychainWrites).toEqual([]);
   });
 
-  it('darwin: a failed Keychain write-back still propagates to files (degrades, never throws)', () => {
+  it('darwin: a failed Keychain write-back still propagates to files (degrades, never throws)', async () => {
     installFakeKeychain(kcSecret(NOW + 2 * HOUR, 'kc'), /* writeOk */ false);
     writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'refreshed') });
 
-    const r = runMac();
+    const r = await runMac();
 
     expect(r.winner?.path).toBe(sessionPath('su-fresh'));
     expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-refreshed');
@@ -300,11 +301,11 @@ describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
     expect(r.keychainWriteBack).toBeNull(); // …but not confirmed
   });
 
-  it('non-darwin ignores the Keychain even if a reader would return a (winning) bundle', () => {
+  it('non-darwin ignores the Keychain even if a reader would return a (winning) bundle', async () => {
     installFakeKeychain(kcSecret(NOW + 20 * 24 * HOUR, 'kc')); // huge (but plausible) expiry → would win IF consulted
     writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
 
-    const r = reconcileClaudeCredentials({ home, sessionRoot, now: NOW, platform: 'linux', keychainAccount: 'testuser' });
+    const r = await reconcileClaudeCredentials({ home, sessionRoot, now: NOW, platform: 'linux', keychainAccount: 'testuser' });
 
     expect(r.winner?.path).toBe(globalPath());
     expect(r.keychainWriteBack).toBeNull();
@@ -351,4 +352,130 @@ describe('startClaudeCredentialSync — depth-bounded session watch (2026-07-10 
       handle.stop();
     }
   }, 20_000);
+});
+
+describe('reconcileClaudeCredentials — off the event loop (WI-10005186)', () => {
+  // The pass runs on the operator MAIN THREAD (the background pass and the bootstrap/
+  // resume request routes via writeInteractiveClaudeConfig). Synchronous, a propagating
+  // pass did one temp-write + rename per real-file fork (76 on the dev box) and froze the
+  // event loop in ext4 journal waits (:3170 2026-10-02 02:00:07Z: STALLED D, wchan
+  // wait_transaction_locked, syscall rename, path <owner>/.credentials.json.credsync-*).
+  const SYNC_CALL = /\b\w+Sync\s*\(/g;
+
+  it('yields to the event loop while the pass is in flight (a sync body would not)', async () => {
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    for (let i = 0; i < 20; i++) writeCreds(sessionPath(`su-${i}`), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
+
+    let turns = 0;
+    let done = false;
+    const spin = () => {
+      if (done) return;
+      turns++;
+      setImmediate(spin);
+    };
+    setImmediate(spin);
+    const pending = run();
+    // Nothing is written synchronously at the call site.
+    expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-old');
+    const r = await pending;
+    done = true;
+
+    expect(r.updated).toHaveLength(21);
+    expect(readJson(sessionPath('su-0')).claudeAiOauth.accessToken).toBe('sk-ant-oat01-new');
+    // A synchronous pass — even one wrapped in `async` or deferred to a microtask —
+    // completes before any setImmediate callback runs, leaving turns at 0.
+    expect(turns).toBeGreaterThan(0);
+  });
+
+  it('code-shape guard: the pass path makes no synchronous call', () => {
+    const src = readFileSync(new URL('./claude-credential-sync.ts', import.meta.url), 'utf8');
+    const end = src.indexOf('export function startClaudeCredentialSync');
+    expect(end).toBeGreaterThan(0); // the anchor exists — otherwise this guard checks nothing
+    const code = src
+      .slice(0, end)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+    expect(code).toContain('async function reconcileOnce'); // the region really holds the pass
+    expect(code.match(SYNC_CALL) ?? []).toEqual([]);
+    // Positive control: the detector does see a sync call when one is present.
+    expect('const s = lstatSync(p); renameSync (a, b);'.match(SYNC_CALL)).toHaveLength(2);
+  });
+
+  it('compare-before-swap: a fork that refreshes between the scan and the write is not clobbered', async () => {
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'winner') });
+    writeCreds(sessionPath('su-racer'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+
+    const r = await reconcileClaudeCredentials({
+      home,
+      sessionRoot,
+      now: NOW,
+      // claude rotates this fork's token after the scan read it, before our write lands.
+      _beforeWriteForTests: (p) => {
+        if (p === sessionPath('su-racer')) writeCreds(p, { claudeAiOauth: bundle(NOW + 9 * HOUR, 'rotated') });
+      },
+    });
+
+    expect(r.updated).toEqual([]);
+    expect(readJson(sessionPath('su-racer')).claudeAiOauth.accessToken).toBe('sk-ant-oat01-rotated');
+  });
+
+  it('compare-before-swap: merges onto the FRESH file, keeping sibling keys written since the scan', async () => {
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'winner') });
+    writeCreds(sessionPath('su-a'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old'), mcpOAuth: { s: 1 } });
+
+    const r = await reconcileClaudeCredentials({
+      home,
+      sessionRoot,
+      now: NOW,
+      _beforeWriteForTests: (p) => {
+        if (p === sessionPath('su-a')) {
+          writeCreds(p, { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old'), mcpOAuth: { s: 2 } });
+        }
+      },
+    });
+
+    expect(r.updated).toEqual([sessionPath('su-a')]);
+    expect(readJson(sessionPath('su-a')).claudeAiOauth.accessToken).toBe('sk-ant-oat01-winner');
+    expect(readJson(sessionPath('su-a')).mcpOAuth).toEqual({ s: 2 });
+  });
+
+  it('serializes overlapping passes: the second sees the converged tree and writes nothing', async () => {
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    for (let i = 0; i < 10; i++) writeCreds(sessionPath(`su-${i}`), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
+
+    const [a, b] = await Promise.all([run(), run()]);
+
+    expect(a.updated).toHaveLength(11);
+    expect(b.updated).toEqual([]);
+  });
+
+  it('a failed swap removes its temp file and the pass carries on', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'winner') });
+      writeCreds(sessionPath('su-blocked'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+      writeCreds(sessionPath('su-ok'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+
+      const r = await reconcileClaudeCredentials({
+        home,
+        sessionRoot,
+        now: NOW,
+        // The target turns into a non-empty directory, so the rename onto it fails.
+        _beforeWriteForTests: (p) => {
+          if (p === sessionPath('su-blocked')) {
+            rmSync(p, { force: true });
+            mkdirSync(join(p, 'occupied'), { recursive: true });
+          }
+        },
+      });
+
+      expect(r.updated).toEqual([sessionPath('su-ok')]);
+      expect(readdirSync(join(sessionRoot, 'su-blocked')).filter((n) => n.includes('.credsync-'))).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

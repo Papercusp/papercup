@@ -115,7 +115,9 @@ afterEach(() => setFlagOverridesForTest({}));
 
 describe('sweepWorkItemBlockerDefaults against the real work-items store', () => {
   it('does not select settled legacy features even when they retain a due owner blocker', async () => {
-    const payload = db.sql.json({ externalBlockers: [ask()] });
+    // ExternalBlockerRecord is an interface (no index signature), so it is not structurally a
+    // postgres JSONValue; the cast mirrors the repo-wide sql.json idiom for typed records.
+    const payload = db.sql.json({ externalBlockers: [ask()] } as unknown as postgres.JSONValue);
     for (const status of ['open', 'passed', 'deprecated']) {
       await db.sql`
         INSERT INTO harness_shared.work_items
