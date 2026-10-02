@@ -92,16 +92,14 @@ const ADEQUACY_DETAIL_KEYS = new Set([
   'provisionalProofBase',
 ]);
 const bindingDetailsSchema = z.record(z.string(), z.unknown()).superRefine((details, ctx) => {
-  if (details.adequacy === undefined) {
-    for (const key of Object.keys(details).filter((candidate) => ADEQUACY_DETAIL_KEYS.has(candidate))) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message:
-          `adequacy metadata must be nested under details.adequacy.${key}; ` +
-          `flat details.${key} is ignored by spec-test-adequacy`,
-      });
-    }
+  for (const key of Object.keys(details).filter((candidate) => ADEQUACY_DETAIL_KEYS.has(candidate))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [key],
+      message:
+        `adequacy metadata must be nested under details.adequacy.${key}; ` +
+        `flat details.${key} is ignored by spec-test-adequacy`,
+    });
   }
   if (details.adequacy === undefined) return;
   const parsed = adequacyBindingDetailsSchema.safeParse(details.adequacy);
