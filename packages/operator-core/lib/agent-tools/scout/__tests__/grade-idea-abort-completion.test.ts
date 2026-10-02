@@ -44,7 +44,7 @@ describe('blender:grade-idea abort-completion receipt (WI-10005670)', () => {
   });
 
   it('reports a late APPLIED grade as recorded, naming the ledger row and its stamp', () => {
-    const receipt = gradeIdeaTool.abortCompletionReceipt?.({}, toToolResult(outcome()), attempt);
+    const receipt = gradeIdeaTool.abortCompletionReceipt?.({ ideaId: 'idea-1', grade: 4 }, toToolResult(outcome()), attempt);
     expect(receipt).toEqual({
       status: 'recorded',
       effectRef: 'blender-grade-idea:idea-1:2026-10-02T10:00:00.000Z',
