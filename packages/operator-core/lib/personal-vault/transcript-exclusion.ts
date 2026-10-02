@@ -113,6 +113,25 @@ export class TranscriptExclusion {
     return covers(this.windowsByOwner.get(owner) ?? [], at) ? 'disclosure-window' : null;
   }
 
+  /**
+   * Why a WHOLE transcript span is withheld from the caller: any window of its
+   * owner (any other agent's, when the owner is unknown) overlapping
+   * [from, to]. A surface that cannot place individual turns — a raw-file grep —
+   * uses this so the decision depends on the session, never on the query.
+   * An unknown bound is open (fail closed). Load the exclusion with an untimed
+   * stamp per owner so every window of that owner is present.
+   */
+  withholdsSpan(span: { owner: string | null | undefined; from: string | Date | number | null | undefined; to: string | Date | number | null | undefined }): WithholdReason | null {
+    const owner = normOwner(span.owner);
+    const from = typeof span.from === 'number' ? span.from : toMs(span.from);
+    const to = typeof span.to === 'number' ? span.to : toMs(span.to);
+    const overlaps = (windows: readonly DisclosureWindow[]) =>
+      windows.some((w) => (to === null || w.from <= to) && (from === null || w.to === null || w.to > from));
+    if (owner === null) return overlaps(this.anyOwnerWindows) ? 'unattributed' : null;
+    if (this.selfOwners.has(owner)) return null;
+    return overlaps(this.windowsByOwner.get(owner) ?? []) ? 'disclosure-window' : null;
+  }
+
   /** Partition `turns`, keeping order. */
   partition<T>(turns: readonly T[], stampOf: (turn: T) => TranscriptTurnStamp): { kept: T[]; withheld: WithheldTally } {
     const kept: T[] = [];
