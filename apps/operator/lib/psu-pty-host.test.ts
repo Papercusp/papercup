@@ -3119,6 +3119,60 @@ describe('findNativeTranscriptMarker (fresh row provenance)', () => {
       home: scratch,
     })).toBe(transcript);
   });
+
+  it('requires the marker on the first fresh task user prompt, not a later prompt or assistant echo', () => {
+    const codexHome = pathJoin(scratch, 'codex-home');
+    const sessions = pathJoin(codexHome, 'sessions');
+    const transcript = pathJoin(sessions, 'rollout-fresh-native.jsonl');
+    nodeFs.mkdirSync(sessions, { recursive: true });
+    const marker = '⟦turn-origin:carry-respawn nonce:0123456789abcdef⟧';
+    const otherMarker = '⟦turn-origin:fleet-kickoff nonce:fedcba9876543210⟧';
+    const sinceMs = Date.now() - 1_000;
+    const userRow = (text: string) => ({
+      type: 'response_item',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+    });
+    const assistantEcho = {
+      type: 'response_item',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: marker }] },
+    };
+    const writeRows = (...rows: unknown[]) => {
+      nodeFs.writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+    };
+
+    // The first row is Codex's injected instructions context. The first task
+    // prompt is a fleet kickoff; later echoes cannot prove carry delivery.
+    writeRows(
+      userRow('# AGENTS.md instructions\nLaunch context'),
+      userRow(`${otherMarker}\nStart fleet work`),
+      assistantEcho,
+      userRow(`${marker}\nSaved carry note`),
+    );
+    expect(findNativeTranscriptMarker({
+      agent: 'codex',
+      env: { CODEX_HOME: codexHome },
+      marker,
+      sinceMs,
+      nativeId: 'fresh-native',
+      home: scratch,
+    })).toBeNull();
+
+    writeRows(
+      userRow('# AGENTS.md instructions\nLaunch context'),
+      userRow(`${marker}\nSaved carry note`),
+      assistantEcho,
+    );
+    expect(findNativeTranscriptMarker({
+      agent: 'codex',
+      env: { CODEX_HOME: codexHome },
+      marker,
+      sinceMs,
+      nativeId: 'fresh-native',
+      home: scratch,
+    })).toBe(transcript);
+  });
 });
 
 describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', () => {

@@ -115,7 +115,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Read a bounded window from indexed session transcripts. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. `session:'self'` spans YOUR OWN respawn chain, including predecessor turns. A self window may contain multiple native sessions: `session_id` is null, `session_ids` lists the represented sessions, and each turn's `ref` identifies its source. Pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. Search-only `query` and `mode` belong to sessions:search. " +
+    "Read indexed session turns. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. `session:'self'` spans YOUR OWN respawn chain, including predecessor turns. If that window includes multiple native sessions, `session_id` is null, `session_ids` lists them, and each turn's `ref` identifies its source. Pass a `session_turn:…` ref, coordinates, from/to range, or tail. `query` and `mode` belong to sessions:search. " +
     `Turn text is returned in ${SESSION_TURN_TEXT_CHUNK_CAP}-character chunks by default; clipped turns carry text_truncated, text_full_chars, and a readMore continuation (text_offset/text_limit). A turn at the index cap also reports source_completeness (see returns). ` +
     "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {

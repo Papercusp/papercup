@@ -103,7 +103,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
   it('documents the multi-session self-window contract', () => {
     expect(projected.description).toContain("`session:'self'` spans YOUR OWN respawn chain");
     expect(projected.description).toContain(
-      'A self window may contain multiple native sessions: `session_id` is null',
+      'If that window includes multiple native sessions, `session_id` is null',
     );
     expect(projected.description).toContain('`session_ids` lists the represented sessions');
     expect(projected.description).toContain("each turn's `ref` identifies its source");

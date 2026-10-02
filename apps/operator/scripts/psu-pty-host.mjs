@@ -851,17 +851,34 @@ export function composerEchoMarkerHeadLoss(
   return null;
 }
 
-/** The smallest truncation of `marker` that starts any string in `row`
- * (walked to a bounded depth), or null. */
-function truncatedMarkerLossInRow(marker, row, depth = 0) {
-  if (typeof row === 'string') return truncatedTurnOriginMarkerLoss(marker, row);
-  if (!row || typeof row !== 'object' || depth > 8) return null;
-  let best = null;
-  for (const value of Array.isArray(row) ? row : Object.values(row)) {
-    const lost = truncatedMarkerLossInRow(marker, value, depth + 1);
-    if (lost != null && (best == null || lost < best)) best = lost;
+/** Read the user-message content from Claude, Codex, or OMP native row shapes. */
+function nativeUserPromptContent(row) {
+  const payload = row?.payload && typeof row.payload === 'object' ? row.payload : null;
+  if (row?.type === 'user' && row?.message?.role === 'user') return row.message.content;
+  if (row?.type === 'response_item' && payload?.type === 'message' && payload?.role === 'user') {
+    return payload.content;
   }
-  return best;
+  if (row?.type === 'message' && row?.role === 'user') return row.content;
+  if (row?.message?.role === 'user') return row.message.content;
+  return null;
+}
+
+/** Flatten native user text blocks without reading metadata or assistant rows. */
+function nativeUserPromptText(content, depth = 0) {
+  if (typeof content === 'string') return content;
+  if (!content || typeof content !== 'object' || depth > 8) return '';
+  if (Array.isArray(content)) return content.map((part) => nativeUserPromptText(part, depth + 1)).join('');
+  if (typeof content.text === 'string') return content.text;
+  if (typeof content.content === 'string' || Array.isArray(content.content)) {
+    return nativeUserPromptText(content.content, depth + 1);
+  }
+  return '';
+}
+
+/** Codex stores its injected AGENTS.md launch context as a user row before the
+ * first task prompt. It is setup context, not a submitted task turn. */
+function isNativeLaunchContextPrompt(text) {
+  return String(text ?? '').replace(/\r\n?/g, '\n').trimStart().startsWith('# AGENTS.md instructions\n');
 }
 
 /** The ONE native-transcript scan behind marker and exact-prompt proofs.
@@ -920,18 +937,22 @@ function scanNativeTranscriptMarker({
         if (st.size < (markerBytes?.length ?? 1) || st.size > 64 * 1024 * 1024) continue;
         const body = readFileSync(path, 'utf8');
         for (const line of body.split(/\r?\n/)) {
-          if (needle && !line.includes(needle)) continue;
           let row;
           try { row = JSON.parse(line); }
           catch { continue; }
+          let userPromptText = null;
           if (expectedPrompt) {
             if (row?.type !== 'user' || row?.message?.role !== 'user' ||
                 typeof row?.message?.content !== 'string' ||
                 row.message.content.replace(/\r\n?/g, '\n').trimEnd() !== expectedPrompt) continue;
+          } else {
+            const userContent = nativeUserPromptContent(row);
+            if (userContent == null) continue;
+            userPromptText = nativeUserPromptText(userContent);
+            if (isNativeLaunchContextPrompt(userPromptText)) continue;
           }
-          const lostChars = expectedPrompt ? 0 : (allowTruncated ? truncatedMarkerLossInRow(marker, row) : 0);
-          if (lostChars == null) continue;
           const rawTimestamp = row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at;
+          let rowIsFresh = false;
           if (rawTimestamp != null) {
             let rowTimestampMs = typeof rawTimestamp === 'number'
               ? rawTimestamp
@@ -939,15 +960,28 @@ function scanNativeTranscriptMarker({
             if (Number.isFinite(rowTimestampMs) && rowTimestampMs > 0 && rowTimestampMs < 10_000_000_000) {
               rowTimestampMs *= 1_000; // numeric Unix seconds
             }
-            if (Number.isFinite(rowTimestampMs) && rowTimestampMs >= sinceMs) return { nativeRef: path, lostChars };
+            if (Number.isFinite(rowTimestampMs) && rowTimestampMs > 0) rowIsFresh = rowTimestampMs >= sinceMs;
             // An explicitly old or malformed row must never fall back to the
             // file's mtime; a later metadata append cannot refresh its proof.
-            continue;
+            else continue;
+          } else {
+            // Legacy native rows without their own timestamp are usable only when
+            // the transcript itself was created after this injection began.
+            rowIsFresh = Number.isFinite(st.birthtimeMs) && st.birthtimeMs >= sinceMs;
           }
-          // Legacy native rows without their own timestamp are usable only when
-          // the transcript itself was created after this injection began. An
-          // existing transcript's mtime can move for unrelated row types.
-          if (Number.isFinite(st.birthtimeMs) && st.birthtimeMs >= sinceMs) return { nativeRef: path, lostChars };
+          if (!rowIsFresh) continue;
+          if (expectedPrompt) return { nativeRef: path, lostChars: 0 };
+
+          // Only the first fresh task prompt can prove this injection. Looking
+          // for the marker anywhere in the transcript let a later user turn or
+          // assistant echo certify a successor whose first prompt was different.
+          const promptMarker = leadingTurnOriginMarker(userPromptText);
+          const lostChars = allowTruncated
+            ? truncatedTurnOriginMarkerLoss(marker, userPromptText)
+            : null;
+          if (promptMarker === marker) return { nativeRef: path, lostChars: 0 };
+          if (lostChars != null) return { nativeRef: path, lostChars };
+          break;
         }
       } catch {
         /* a concurrently-rotated transcript is simply not proof yet */

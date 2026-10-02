@@ -29,6 +29,7 @@ import {
   type ProseProfileSelection,
 } from '../search/prose-vector-dims';
 import { CONSULT_QUESTIONS_CHUNK_SURFACE } from '../search/chunks/registry';
+import { runChunkSyncTick } from '../search/chunks/tick';
 import {
   DEFAULT_ARCHIVE_FLOOR,
   getFeedbackCore,
@@ -2736,5 +2737,40 @@ describe('peersKnowLookup retrieve mode — an intent matching only the tail of 
     const ws = 'ws-pk-tail-foreign';
     await seedLongQuestion({ ws, conv: 'pk-long-foreign', tailTheta: 0, chunkProfile: EMBEDDER_DIM_SPECS.openai.profileId });
     expect(await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: ws, intent: INTENT })).toBeNull();
+  });
+
+  // generic-rag-chunking D-048: the surface holds only the population the reader
+  // searches, so the ANN chunk leg's candidates are (nearly) all slice members.
+  it('the consult surface chunks only settled questions and prunes one that leaves the set (D-048)', async () => {
+    const ws = 'ws-pk-sync-d048';
+    // A private surface name and workspace scope, so this sync neither selects nor
+    // prunes another test's rows; the population predicate is the registry's own.
+    const surface = {
+      ...CONSULT_QUESTIONS_CHUNK_SURFACE,
+      surface: 'consult_questions_d048_it',
+      eligibleSql: `(${CONSULT_QUESTIONS_CHUNK_SURFACE.eligibleSql}) AND p.workspace_id = '${ws}'`,
+    };
+    await seedLongQuestion({ ws, conv: 'pk-sync-settled', tailTheta: 0, chunks: false });
+    await seedLongQuestion({ ws, conv: 'pk-sync-copy', tailTheta: 0, chunks: false, outcome: { source: 'archive', answer: 'copied' } });
+    await seedLongQuestion({ ws, conv: 'pk-sync-active', tailTheta: 0, chunks: false, state: 'active' });
+    await seedLongQuestion({ ws, conv: 'pk-sync-cant-help', tailTheta: 0, chunks: false, state: 'closed_cant_help' });
+    const chunked = async () =>
+      (
+        await rootSql<{ conv: string }[]>`
+          SELECT DISTINCT parent_key[2] AS conv FROM harness_shared.text_chunks
+           WHERE surface = ${surface.surface} ORDER BY 1`
+      ).map((r) => r.conv);
+    const logger = { warn: () => {}, error: () => {} };
+
+    const first = await runChunkSyncTick({ sql: rootSql, surfaces: [surface], logger });
+    expect(first).toHaveProperty('surfaces');
+    expect(await chunked()).toEqual(['pk-sync-settled']);
+
+    // Re-opened: it leaves the settled set, and the engine's own prune removes its chunks.
+    await rootSql`
+      UPDATE harness_shared.consult_state SET state = 'active'
+       WHERE workspace_id = ${ws} AND conversation_id = 'pk-sync-settled'`;
+    await runChunkSyncTick({ sql: rootSql, surfaces: [surface], logger });
+    expect(await chunked()).toEqual([]);
   });
 });

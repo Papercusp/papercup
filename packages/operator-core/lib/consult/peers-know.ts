@@ -20,13 +20,13 @@
  * this never surfaces a copy-of-a-copy.
  */
 import type { Sql } from 'postgres';
-import { chunkAwareVectorLegSql, withIterativeScan, type PgHandle } from '@papercusp/search';
+import { chunkAwareVectorLegSql, type PgHandle } from '@papercusp/search';
 import { DEFAULT_ARCHIVE_FLOOR } from './get-feedback-core';
 import {
   proseProfilePredicateSql,
   type ProseProfileSelection,
 } from '../search/prose-vector-dims';
-import { CONSULT_QUESTIONS_CHUNK_SURFACE } from '../search/chunks/registry';
+import { CONSULT_QUESTIONS_CHUNK_SURFACE, consultSettledPredicate } from '../search/chunks/registry';
 
 /** Cap on the surfaced one-liner — the fold is a hint, not the thread. */
 export const PEERS_KNOW_ANSWER_CAP = 280;
@@ -35,9 +35,10 @@ export const PEERS_KNOW_ANSWER_CAP = 280;
  * "monitor" / "triage" would cosine-match half the archive at noise level). */
 export const PEERS_KNOW_MIN_INTENT_CHARS = 16;
 
-/** hnsw.ef_search for the ANN chunk leg (D-046): 40 agreed with the exact leg's
- * top-1 on 81/90 measured queries, 100 and 200 on 90/90. */
-export const PEERS_KNOW_EF_SEARCH = 100;
+/** Candidates the ANN chunk leg takes before the join back to the slice drops
+ * non-members (D-048): the default hnsw.ef_search, so an index scan returns all
+ * it found rather than stopping at the first workspace match. */
+export const PEERS_KNOW_CHUNK_CANDIDATES = 40;
 
 export interface PeersKnowHit {
   /** The settled answer's one-liner (outcome.answer, capped). */
@@ -103,10 +104,15 @@ export async function peersKnowLookup(
     // long question still surfaces it. `sim` is 1 - that distance, so the archive
     // floor applies to a chunk match after its margin.
     const profile = query.profile;
-    const rows = (await withIterativeScan(sql as unknown as PgHandle, (handle) => {
-      const s = handle as unknown as Sql;
-      return s`
-        WITH best AS (${chunkAwareVectorLegSql(handle, {
+    // One statement under default GUCs, deliberately NOT inside withIterativeScan
+    // (generic-rag-chunking D-048; the ordered-vector-query guard carries the
+    // exemption). The surface chunks only settled questions (its eligibleSql is
+    // the same predicate as the slice filter below), so nearly every ANN candidate
+    // is a slice member and an uncapped scan has nothing to discard. A chunk the
+    // default ef_search misses leaves its question to the parent leg: a recall
+    // loss, never a wrong answer.
+    const rows = (await sql`
+        WITH best AS (${chunkAwareVectorLegSql(sql as unknown as PgHandle, {
           surface: CONSULT_QUESTIONS_CHUNK_SURFACE,
           // Not 'c': the builder reserves that alias for the chunk table and throws,
           // which the catch below would turn into a silent null on every lookup.
@@ -114,24 +120,21 @@ export async function peersKnowLookup(
           qVec,
           limit: 1,
           mode: 'retrieve',
-          // Parent leg 'exact' (generic-rag-chunking D-040): the filter keeps a few
-          // hundred settled questions, ranked exhaustively. Chunk leg 'ann'
-          // (D-046): the exact chunk leg probed the key index once per settled
-          // question and detoasted each chunk vector, about 8 ms at p95 against a
-          // 3.5 ms budget (D-045). It now walks the consult_questions partial HNSW
-          // index (migration 1341) with slice membership as a filter: p95 5.92 ->
-          // 5.04 ms for the whole lookup, top-1 equal to exact on 90/90 at
-          // ef_search 100 (set below).
+          // Parent leg 'exact' (D-040): the filter keeps a few hundred settled
+          // questions, ranked exhaustively. Chunk leg 'ann' (D-046, D-048): the
+          // consult_questions partial HNSW index (migration 1341), filtered only by
+          // workspace; membership in the slice is the join after the LIMIT.
           scan: 'exact',
           chunkScan: 'ann',
-          parentFilter: s`cs.workspace_id = ${params.workspaceId}
-                          AND cs.state = 'closed_answered'
-                          AND (cs.outcome->>'source' IS DISTINCT FROM 'archive')`,
+          parentFilter: sql`cs.workspace_id = ${params.workspaceId}
+                            AND ${sql.unsafe(consultSettledPredicate('cs'))}`,
+          chunkFilter: sql`c.parent_key[1] = ${params.workspaceId}`,
+          chunkCandidates: PEERS_KNOW_CHUNK_CANDIDATES,
           // The embedding-space rule stays with the caller; a missing column fails closed.
           spaceFilter: (cols) =>
             cols.profileColumn && cols.modeColumn
-              ? proseProfilePredicateSql(s, profile, cols.profileColumn, cols.modeColumn)
-              : s`FALSE`,
+              ? proseProfilePredicateSql(sql, profile, cols.profileColumn, cols.modeColumn)
+              : sql`FALSE`,
         })})
         SELECT c.conversation_id, c.responder_id, c.outcome, c.closed_at, 1 - b.distance AS sim
           FROM best b
@@ -139,8 +142,7 @@ export async function peersKnowLookup(
             ON c.workspace_id = b.workspace_id AND c.conversation_id = b.conversation_id
       ORDER BY b.distance, c.conversation_id
          LIMIT 1
-      `;
-    }, { efSearch: PEERS_KNOW_EF_SEARCH })) as unknown as PeersKnowRow[];
+      `) as unknown as PeersKnowRow[];
     const top = rows[0];
     if (!top || Number(top.sim) < floor) return null;
     const answer = extractSettledAnswer(top.outcome);
