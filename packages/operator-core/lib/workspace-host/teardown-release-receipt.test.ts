@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS, type GcpWorkspaceHostResourceCensus } from './gcp-safety';
+import { GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS, type WorkspaceHostResourceCensus } from './gcp-safety';
 import { AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS } from './aws-safety';
 import {
   WORKSPACE_HOST_RESOURCE_CENSUS_STAGE,
@@ -10,7 +10,7 @@ import {
 
 const SUBJECT = { workspaceId: 'workspace-1', hostId: 'host-1' };
 
-function census(overrides: Partial<GcpWorkspaceHostResourceCensus> = {}): GcpWorkspaceHostResourceCensus {
+function census(overrides: Partial<WorkspaceHostResourceCensus> = {}): WorkspaceHostResourceCensus {
   return {
     controllerIndependent: true,
     inventoryComplete: true,

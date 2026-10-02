@@ -32,7 +32,10 @@ import routes from './attention';
 
 const attention = routes[0]!;
 const context: RouteContext = {
-  principal: { kind: 'device', slug: 'phone-test', workspaceId: 'paired-workspace' },
+  principal: {
+    kind: 'device', slug: 'phone-test', workspaceId: 'paired-workspace',
+    authMethod: 'jwt', trust: 'verified', capabilities: new Set(),
+  },
   input: undefined, params: {}, log: () => {}, signal: new AbortController().signal,
 };
 const read = () => attention.handler(new Request('http://localhost/api/device/attention'), context);
