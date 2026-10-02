@@ -76,6 +76,18 @@ function runCohortWithLog(args: string[], options: { cwd: string; timeout: numbe
   } finally { closeSync(descriptor); }
 }
 
+// Build both cohorts from one maintained bundle. The counterfactual restores
+// only the old full-read key; reject drift before starting any runtime.
+function restoreFullInboxKey(bundle: string) {
+  const pattern = /\.\.\.\(?boundedInbox \? \{\s*limit,\s*ambient: includeAmbient,\s*intents: !!args\.include_intents\s*\} : \{\}\)?/g;
+  const matches = [...bundle.matchAll(pattern)];
+  if (matches.length !== 1) throw Error('Expected exactly one normalized inbox key in bundle');
+  const match = matches[0];
+  const replacement = 'limit, ambient: includeAmbient, intents: !!args.include_intents';
+  return { bundle: bundle.slice(0, match.index) + replacement + bundle.slice(match.index! + match[0].length),
+    intervention: { offset: match.index, before: match[0], after: replacement } };
+}
+
 // queryObjects triggers GC and enumerates survivors. Its aggregate sizes are
 // container entries, not retained bytes; bound inspection and release the CDP
 // handles so the diagnostic cannot become a new retainer itself.
@@ -151,6 +163,214 @@ async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
 }
 
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
+  it('refuses absent or ambiguous full-key counterfactuals before preparing a runtime', () => {
+    const key = '...boundedInbox ? { limit, ambient: includeAmbient, intents: !!args.include_intents } : {}';
+    const restored = restoreFullInboxKey('prefix ' + key + ' suffix');
+    expect(restored.bundle).toBe('prefix limit, ambient: includeAmbient, intents: !!args.include_intents suffix');
+    expect(() => restoreFullInboxKey('unrelated bundle')).toThrow('exactly one');
+    expect(() => restoreFullInboxKey(key + key)).toThrow('exactly one');
+  });
+
+  it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT))('compares same-input full inbox keys on independent private HTTP hosts', async () => {
+    const destination = evidenceDestination(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT)!;
+    const directory = mkdtempSync(join(tmpdir(), 'papercusp-inbox-pair-'));
+    const current = join(directory, 'current/hono-host.mjs');
+    const baseline = join(directory, 'baseline/hono-host.mjs');
+    const rawReport = join(directory, 'report.json');
+    const sourcePaths = [
+      'packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts',
+      'packages/operator-core/lib/agent-tools/coordination/messages.ts',
+      'packages/operator-core/lib/cache/cached-read.ts',
+      'packages/operator-core/lib/cache/instance.ts',
+      'libs/generic/cache/src/cache.ts', 'libs/generic/cache/src/l1.ts',
+      'scripts/cdp-inspector.mjs', 'apps/operator/bin/bundle-host.sh',
+    ];
+    const sources = () => Object.fromEntries(sourcePaths.map(path =>
+      [path, createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
+    const beforeSources = sources();
+    const probe = String.raw`
+      const fs = require('node:fs'), path = require('node:path');
+      const { spawn } = require('node:child_process');
+      const { createHash } = require('node:crypto');
+      const { pathToFileURL } = require('node:url');
+      const postgres = require('postgres');
+      const e = process.env, wait = ms => new Promise(r => setTimeout(r, ms));
+      const hash = value => createHash('sha256').update(value).digest('hex');
+      const report = { schemaVersion: 1, plane: 'isolated-current-build-operator-api', incomplete: true,
+        workload: { population: 256, bodyCodeUnits: 32768, variants: 8, windows: 3, idleMs: 1000, concurrency: 8 },
+        cohorts: [], limitations: [
+          'Independent private request-only hosts; no production worker, background or historical recovery claim.',
+          'Baseline is the same emitted bundle with one guarded historical cache-key intervention.',
+          'Unforced heap/PSS windows include transient allocations; no GC, profiler or total native residual estimate.',
+          'Eight controlled full-read display variants are a counterexample workload, not measured production frequency.',
+          'Exact raw-cache content fingerprints are inspected after the resource windows.'
+        ] };
+      const publish = () => { fs.writeFileSync(e.TEST_REPORT_PATH, JSON.stringify(report));
+        console.error('P011_INBOX_PAIR_PROGRESS ' + JSON.stringify({ cohorts: report.cohorts.map(c =>
+          ({ mode: c.mode, samples: c.samples.length, windows: c.windows.length, reaped: c.reaped })), incomplete: report.incomplete })); };
+      const fields = pid => { const s = fs.readFileSync('/proc/' + pid + '/stat', 'utf8'); return s.slice(s.lastIndexOf(')') + 2).split(' '); };
+      const osMemory = pid => {
+        const stat = fields(pid), rollup = fs.readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8');
+        const bytes = name => { const m = rollup.match(new RegExp('^' + name + ':\\s+(\\d+) kB$', 'm'));
+          if (!m) throw Error('Missing process counter ' + name); return Number(m[1]) * 1024; };
+        return { pid, startTicks: stat[19], parentPid: Number(stat[1]), executable: fs.readlinkSync('/proc/' + pid + '/exe'),
+          executableSha256: hash(fs.readFileSync('/proc/' + pid + '/exe')), pssBytes: bytes('Pss'), rssBytes: bytes('Rss'), anonymousBytes: bytes('Anonymous') };
+      };
+      const descendants = pid => {
+        const rows = [];
+        const visit = p => { const text = fs.readFileSync('/proc/' + p + '/task/' + p + '/children', 'utf8').trim();
+          for (const child of text ? text.split(/\s+/).map(Number) : []) { if (rows.length >= 64) throw Error('Descendant census exceeded bound');
+            try { rows.push(osMemory(child)); visit(child); } catch (err) { if (err.code !== 'ENOENT' && err.code !== 'ESRCH') throw err; } } };
+        visit(pid); return rows;
+      };
+      let sql;
+      (async () => {
+        if (!e.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-') || e.PAPERCUSP_BACKGROUND_WORKERS !== '0')
+          throw Error('Private request-only operator-api profile required');
+        const { createCdpClient, readProcessMemory } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH));
+        sql = postgres(e.HARNESS_ADMIN_DATABASE_URL, { max: 1 });
+        report.database = (await sql.unsafe('select current_database() as database'))[0].database;
+        report.schema = (await sql.unsafe('select filename, sha256 from harness_shared.schema_migrations order by applied_at desc limit 1'))[0];
+        const variants = Array.from({ length: 8 }, (_, i) => ({ directed: true, limit: i + 1,
+          include_ambient: Boolean(i & 1), include_intents: Boolean(i & 2), max_body_chars: 1 }));
+        report.variants = variants;
+        for (const mode of ['baseline', 'shared']) {
+          const entry = mode === 'baseline' ? e.TEST_BASELINE_PATH : e.TEST_CURRENT_PATH;
+          const cohort = { mode, bundleSha256: hash(fs.readFileSync(entry)), samples: [], windows: [], pauses: 0, descendants: [], reaped: false };
+          report.cohorts.push(cohort); publish();
+          let host, client, startup = '', tail = '';
+          const seen = new Map();
+          const call = async (name, args) => {
+            const response = await fetch(e.PAPERCUSP_OPERATOR_URL + '/api/agent-mcp/run-tool', { method: 'POST',
+              headers: { 'content-type': 'application/json', 'x-papercusp-workspace': e.PAPERCUSP_WORKSPACE_ID },
+              body: JSON.stringify({ name, args, harness: e.PAPERCUSP_POT_HOME_SLUG, confirmed: true }), signal: AbortSignal.timeout(30000) });
+            const value = await response.json();
+            if (!response.ok || !value.ok) throw Error(name + ' failed: ' + JSON.stringify(value));
+            const body = value.result?.data ?? value.result;
+            const text = body?.content?.find(row => row.type === 'text')?.text;
+            return text ? JSON.parse(text) : body;
+          };
+          try {
+            host = spawn(process.execPath, ['--inspect=127.0.0.1:0', entry], {
+              cwd: path.join(process.cwd(), 'apps/operator'), detached: true,
+              env: { ...e, VITEST: '', MALLOC_ARENA_MAX: e.TEST_MALLOC_ARENA_MAX }, stdio: ['ignore', 'pipe', 'pipe'] });
+            cohort.pid = host.pid;
+            for (const stream of [host.stdout, host.stderr]) stream.on('data', value => {
+              tail = (tail + value.toString()).slice(-3000); if (stream === host.stderr) startup += value.toString(); });
+            const deadline = Date.now() + 150000;
+            let ready = false, endpoint;
+            while (Date.now() < deadline) {
+              if (host.exitCode !== null || host.signalCode !== null) throw Error('Host exited: ' + tail);
+              endpoint = [...startup.matchAll(/^Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+)\r?$/gm)].at(-1)?.[1];
+              try { const response = await fetch(e.PAPERCUSP_OPERATOR_URL + '/api/health/ready', { signal: AbortSignal.timeout(1000) });
+                if ((await response.json()).ready && endpoint) { ready = true; break; } } catch {}
+              await wait(250);
+            }
+            if (!ready || !endpoint) throw Error('Private host readiness/inspector failed: ' + tail);
+            client = createCdpClient(endpoint); await client.connect();
+            const identity = (await client.evaluate('({pid:process.pid,entry:process.argv[1]})', { returnByValue: true })).result.value;
+            if (identity.pid !== host.pid || identity.entry !== entry) throw Error('Inspector serving identity mismatch');
+            cohort.identity = { ...identity, ...osMemory(host.pid) };
+            client.ws.on('message', raw => { try { if (JSON.parse(String(raw)).method === 'Debugger.paused') cohort.pauses++; } catch {} });
+            const who = await call('coord:whoami', {});
+            if (!who.ownerId || who.workspaceId !== e.PAPERCUSP_WORKSPACE_ID) throw Error('Private caller identity unobserved');
+            cohort.ownerId = who.ownerId;
+            await sql.unsafe('delete from harness_shared.coord_event_log where workspace_id=$1 and surface=$2', [e.PAPERCUSP_WORKSPACE_ID, 'messages']);
+            await sql.unsafe('insert into harness_shared.coord_event_log (workspace_id,surface,writer_key,msg_id,body) ' +
+              "select $1,'messages','p011-author','p011-'||g,jsonb_build_object('msg_id','p011-'||g,'kind','message','from','p011-author','to',jsonb_build_array($2::text),'ts',to_char(timestamp '2026-01-01'+g*interval '1 second','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),'summary','P011 useful context '||g,'body',left(repeat('useful-context-'||g||' ',32768),32768)) from generate_series(1,256) g",
+              [e.PAPERCUSP_WORKSPACE_ID, who.ownerId]);
+            const fixture = await sql.unsafe("select body->>'msg_id' as id, body->>'body' as content from harness_shared.coord_event_log where workspace_id=$1 and surface='messages' order by body->>'msg_id'", [e.PAPERCUSP_WORKSPACE_ID]);
+            const digest = createHash('sha256'); for (const row of fixture) digest.update(JSON.stringify([row.id, row.content]));
+            cohort.fixture = { rows: fixture.length, stringCodeUnits: fixture.reduce((n, row) => n + row.content.length, 0), sha256: digest.digest('hex') };
+            // Warm dispatch/readiness before the resource baseline, then discard
+            // that private cache. Counters/PSS are sampled before reading content.
+            await call('coord:inbox', { directed: true, limit: 1, max_body_chars: 1 });
+            await client.evaluate("globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value.cache.clear()", { returnByValue: true });
+            const sample = async phase => {
+              const started = performance.now();
+              const memory = await readProcessMemory(client, { expectedPid: host.pid });
+              const os = osMemory(host.pid); if (os.startTicks !== cohort.identity.startTicks) throw Error('PID identity changed');
+              const children = descendants(host.pid); for (const row of children) seen.set(row.pid + ':' + row.startTicks, row);
+              const cache = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; const rows=[...s.cache.l1.map].filter(([key])=>key.includes('coord:inbox:')); return {enabled:s.cacheLayerOn, entries:rows.length, rows:rows.map(([,entry])=>entry.value.length)}; })()", { returnByValue: true })).result.value;
+              cohort.samples.push({ phase, ...memory, os, descendants: children, cache, observerMs: performance.now() - started }); publish();
+            };
+            await sample('before');
+            for (let window = 0; window < 3; window++) {
+              await sample('idle-' + window + '-start'); await wait(1000); await sample('idle-' + window + '-end');
+              const started = performance.now();
+              const results = await Promise.all(variants.map(args => call('coord:inbox', args)));
+              const outcomes = results.map((value, i) => ({ variant: i,
+                entries: value.entries?.map(row => ({ id: row.msg_id, summary: row.summary })),
+                total: value.summary?.total, returned: value.summary?.returned }));
+              if (outcomes.some((v, i) => v.total !== 256 || v.returned !== i + 1 || v.entries?.length !== i + 1))
+                throw Error('Concurrent useful response mismatch: ' + JSON.stringify(outcomes));
+              cohort.windows.push({ window, wallMs: performance.now() - started, outcomes });
+              await sample('workload-' + window + '-end');
+            }
+            await wait(1000); await sample('completion-idle');
+            const content = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; return [...s.cache.l1.map].filter(([key])=>key.includes('coord:inbox:')).map(([,entry])=>{ const h=process.getBuiltinModule('crypto').createHash('sha256'); const rows=entry.value.slice().sort((a,b)=>a.msg_id.localeCompare(b.msg_id)); for(const row of rows) h.update(JSON.stringify([row.msg_id,row.body])); return {rows:rows.length,sha256:h.digest('hex'),stringCodeUnits:rows.reduce((n,row)=>n+row.body.length,0)}; }); })()", { returnByValue: true })).result.value;
+            cohort.content = content;
+            if (content.length !== (mode === 'baseline' ? 8 : 1) || content.some(row =>
+                row.rows !== cohort.fixture.rows || row.sha256 !== cohort.fixture.sha256 || row.stringCodeUnits !== cohort.fixture.stringCodeUnits))
+              throw Error('Full raw cache content or sharing mismatch: ' + JSON.stringify(content));
+          } catch (err) { cohort.error = String(err); cohort.hostErrorTail = tail; throw err; }
+          finally {
+            client?.close();
+            if (host && host.exitCode === null && host.signalCode === null) {
+              const exited = new Promise(r => host.once('exit', r)); host.kill('SIGTERM'); await Promise.race([exited, wait(5000)]);
+              if (host.exitCode === null && host.signalCode === null) { process.kill(-host.pid, 'SIGKILL'); await exited; }
+            }
+            if (host) { try { process.kill(-host.pid, 'SIGKILL'); } catch (err) { if (err.code !== 'ESRCH') throw err; } }
+            cohort.reaped = Boolean(host && (host.exitCode !== null || host.signalCode !== null));
+            cohort.descendants = [...seen.values()];
+            cohort.unreaped = cohort.descendants.filter(row => { try { return fields(row.pid)[19] === row.startTicks; } catch { return false; } });
+            publish();
+          }
+        }
+        report.incomplete = false;
+      })().catch(err => { report.error = String(err); process.exitCode = 1; })
+      .finally(async () => { if (sql) await sql.end(); publish(); });
+    `;
+    try {
+      expect(() => new Function(probe)).not.toThrow();
+      symlinkSync(resolve(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
+      const build = runCohortWithLog([resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
+        '--exec-under-lock', '--', resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', current],
+      { cwd: root, env: process.env, timeout: 180000 }, join(directory, 'build.log'));
+      expect(build.status, build.stderr).toBe(0);
+      cpSync(dirname(current), dirname(baseline), { recursive: true });
+      const restored = restoreFullInboxKey(readFileSync(current, 'utf8'));
+      writeFileSync(baseline, restored.bundle);
+      const result = runCohortWithLog([resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--', process.execPath, '-e', probe],
+        { cwd: root, timeout: 360000, env: { ...process.env, TEST_CURRENT_PATH: current, TEST_BASELINE_PATH: baseline,
+          TEST_REPORT_PATH: rawReport, TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } },
+        join(directory, 'runtime.log'));
+      const report = readCohortReport(rawReport, result);
+      report.sources = { before: beforeSources, after: sources(), fullGraph: 'unknown' };
+      report.build = build.log; report.runtimeLog = result.log; report.intervention = restored.intervention;
+      writeFileSync(destination, serializeIdentitySafeJson(report));
+      expect(result.status, report.error ?? result.stderr).toBe(0);
+      expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(2);
+      expect(report.sources.before).toEqual(report.sources.after);
+      const [control, shared] = report.cohorts;
+      expect(control.fixture).toEqual(shared.fixture);
+      expect(control.windows.map((w: any) => w.outcomes)).toEqual(shared.windows.map((w: any) => w.outcomes));
+      for (const cohort of report.cohorts) {
+        expect(cohort.reaped).toBe(true); expect(cohort.unreaped).toEqual([]); expect(cohort.pauses).toBe(0);
+        expect(cohort.windows).toHaveLength(3); expect(cohort.samples).toHaveLength(11);
+        expect(cohort.content).toHaveLength(cohort.mode === 'baseline' ? 8 : 1);
+        for (const sample of cohort.samples) {
+          expect(sample.os.pssBytes).toBeGreaterThan(0); expect(sample.memory.heapUsed).toBeGreaterThan(0);
+          expect(sample.cache.enabled).toBe(true); expect(sample.os.startTicks).toBe(cohort.identity.startTicks);
+        }
+      }
+      // Report observed physical deltas without equating logical strings to
+      // retained heap or requiring nondeterministic allocator noise to be green.
+      console.log('P011_INBOX_PAIR_SUMMARY ' + JSON.stringify(report.cohorts.map((c: any) => ({ mode: c.mode,
+        pssBytes: c.samples.map((s: any) => s.os.pssBytes), heapUsed: c.samples.map((s: any) => s.memory.heapUsed) }))));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 570000);
+
   it.each(['linked', 'unobserved', 'unknown'] as const)('preserves completed query correlation %s across the inspector boundary', state => {
     const source = { processInstanceId: 'query-process', buildSha: 'abcdef123', poolInstanceId: 'query-pool' };
     const correlation = { processInstanceId: 'operation-process', buildSha: 'abcdef123', rowId: 'row-1',
@@ -276,8 +496,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         const seen = new Map<number, string>();
         const report: any = { mode, samples: [], requests: [], windows: [], trace: null, reaped: false };
         reports.push(report);
-        host.stdout.on('data', chunk => { stdout += chunk.toString(); });
-        host.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        host.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+        host.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
         const exited = new Promise<void>(resolve => host.once('exit', () => resolve()));
         try {
           const readyDeadline = Date.now() + 10_000;
@@ -520,8 +740,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let startup = '', stdout = '', client: any;
-    child.stderr.on('data', chunk => { startup += chunk.toString(); });
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { startup += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     try {
       const deadline = Date.now() + 20_000;
       while (!stdout.includes('\n') && Date.now() < deadline && child.exitCode === null) {
