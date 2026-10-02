@@ -53,6 +53,7 @@ import {
   type PathContainment,
 } from './candidate-contains';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
+import { gitRefContains } from './git-ref-contains';
 import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
 import {
   describeRefireBudget,
@@ -219,19 +220,13 @@ export function withGitReadBudget(
 
 /** Is `sha` an ancestor-or-equal of `ref` (i.e. does ref's history contain it)? */
 async function refContains(git: GitRunner, repo: string, ref: string, sha: string): Promise<boolean | null> {
-  // `${ref}..${sha}` = commits reachable from sha but NOT from ref. Zero of them
-  // means ref's history already contains sha (sha is an ancestor-or-equal of ref).
-  // rev-list prints a count on success, so this works through the plain GitRunner —
-  // unlike `merge-base --is-ancestor`, whose 0/1 exit a stdout-only runner swallows.
-  const contained = await git(repo, ['rev-list', '--count', `${ref}..${sha}`]);
-  // D-038 axis 2 — NEVER derive a verdict from an absence. GitRunner returns null
-  // on ANY failure, and the old `return contained === '0'` turned that into
-  // `false`: byte-IDENTICAL to the honest "this ref genuinely does not contain the
-  // commit". So a failed git read reported "your change has not reached this
-  // stage", and an agent waits for a stage it already passed. Exactly the
-  // `systemctl is-active` phantom-unit shape, in the pipeline's headline leg.
-  if (contained === null) return null;
-  return contained === '0';
+  // Ancestor-or-equal via `merge-base` (git-ref-contains.ts): the earlier
+  // `rev-list --count ${ref}..${sha}` read miscounted whenever `ref` headed a run of
+  // repair-queue admission commits (dated 2000-01-01), so every path read
+  // `inMain:false, deployed:false` on a release that contained it.
+  // D-038 axis 2 — NEVER derive a verdict from an absence: a failed read stays null,
+  // never `false`, or an agent waits for a stage it already passed.
+  return gitRefContains((args) => git(repo, args), ref, sha);
 }
 
 /**

@@ -152,6 +152,9 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+/** A `merge-base` answer that is no fixture's target sha — "not contained". */
+const NOT_AN_ANCESTOR = '0'.repeat(40);
+
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
 function fakeGit(opts: {
   submodules?: string[];
@@ -302,6 +305,15 @@ function fakeGit(opts: {
     }
     if (args[0] === 'log' && args.includes('--pretty=%H')) return opts.pathCommit ?? null;
     if (args[0] === 'log' && args.includes('--pretty=%s')) return opts.subject ?? 'subj';
+    // Containment is `merge-base <sha> <ref>` (git-ref-contains.ts): it prints `sha`
+    // itself exactly when `ref` contains it.
+    if (args[0] === 'merge-base' && args.length === 3) {
+      const [, sha, ref] = args;
+      if (opts.failRefs?.includes(ref)) return null; // the READ failed — not "not contained"
+      if (ref === sha) return sha;
+      const set = new Set(opts.contains?.[ref] ?? []);
+      return set.has(sha) ? sha : NOT_AN_ANCESTOR;
+    }
     if (args[0] === 'rev-list' && args[1] === '--count') {
       const [ref, sha] = args[2].split('..');
       if (opts.failRefs?.includes(ref)) return null; // the READ failed — not "not contained"
@@ -474,8 +486,8 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     });
     const inner = fakeGit({ pathCommit: 'abc1234567', subject: 'ordered fan-out' });
     const git: GitRunner = async (repo, args) => {
-      if (args[0] === 'rev-list' && args[1] === '--count' && containmentResolvers.length < 4) {
-        started.push(`contain:${args[2]}`);
+      if (args[0] === 'merge-base' && containmentResolvers.length < 4) {
+        started.push(`contain:${args[2]}..${args[1]}`);
         return new Promise<string | null>((resolve) => {
           containmentResolvers.push(resolve);
           if (containmentResolvers.length === 4) signalContainmentStarted();
@@ -513,7 +525,7 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     expect(started.slice(0, 4)).toEqual(['checkpoint', 'lock', 'ownership', 'candidates']);
     expect(containmentResolvers).toHaveLength(4);
 
-    for (const resolve of containmentResolvers) resolve('0');
+    for (const resolve of containmentResolvers) resolve('abc1234567');
     resolveCandidates({ judgingSha: null, nextCandidateSha: null });
     await expect(pending).resolves.toMatchObject({ repoRoot: '/repo' });
   });
@@ -5086,6 +5098,7 @@ describe('changeInCandidate (P-004)', () => {
         if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
         if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
         if (args[0] === 'rev-list') return '0';
+        if (args[0] === 'merge-base') return args[1];
         // The candidate COMMIT must resolve before any path verdict is computed — an
         // unresolvable sha is UNKNOWN, not a blanket "absent".
         if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
@@ -5122,6 +5135,7 @@ describe('changeInCandidate (P-004)', () => {
         if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
         if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
         if (args[0] === 'rev-list') return '0';
+        if (args[0] === 'merge-base') return args[1];
         if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
         if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith(':a.ts')) return '0'.repeat(40);
         if (args[0] === 'hash-object') return '0'.repeat(40);
@@ -5169,6 +5183,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);
           // HEAD matches the tree ⇒ committed-but-newer, i.e. reason 'newer-commit'.
@@ -5276,6 +5292,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'judging1:a.ts') return '0'.repeat(40);
           if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'next1:a.ts') return '1'.repeat(40);
@@ -5410,6 +5428,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           if (args[0] === 'status') return '';
           return null;
         };
@@ -5430,6 +5450,8 @@ describe('changeInCandidate (P-004)', () => {
           if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
           if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
           if (args[0] === 'rev-list') return '0';
+          if (args[0] === 'merge-base') return args[1];
+        if (args[0] === 'merge-base') return args[1];
           return null;
         };
       }
@@ -5568,6 +5590,7 @@ describe('gitPipelinePosition: release-content-drift note (EI-19327418148563597)
     if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
     if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
     if (args[0] === 'rev-list') return '0';
+    if (args[0] === 'merge-base') return args[1];
     return null;
   };
 

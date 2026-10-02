@@ -57,11 +57,12 @@ function fakeGit(opts: {
    */
   newestCommit?: Record<string, string>;
   /**
-   * `${ref}..${sha}` → the `rev-list --count` output (a decimal string). Absent key ⇒
-   * `null` (a FAILED read, the safe default so a test that does not care about ancestry
-   * never accidentally triggers the refinement).
+   * `${ref}..${sha}` → is `sha` an ancestor-or-equal of `ref`? Answered through
+   * `merge-base <sha> <ref>` (git-ref-contains.ts), which prints `sha` itself when it is.
+   * Absent key ⇒ `null` (a FAILED read, the safe default so a test that does not care
+   * about ancestry never accidentally triggers the refinement).
    */
-  revListCount?: Record<string, string>;
+  ancestry?: Record<string, boolean>;
 }): GitRead {
   return async (args) => {
     if (opts.allFail) return null;
@@ -82,8 +83,10 @@ function fakeGit(opts: {
       return opts.newestCommit?.[key] ?? '';
     }
     if (args[0] === 'log') return opts.log ?? '';
-    if (args[0] === 'rev-list' && args[1] === '--count') {
-      return opts.revListCount?.[args[2]] ?? null;
+    if (args[0] === 'merge-base' && args.length === 3) {
+      const contained = opts.ancestry?.[`${args[2]}..${args[1]}`];
+      if (contained === undefined) return null;
+      return contained ? args[1] : '0'.repeat(40);
     }
     if (args[0] === 'diff') return opts.diff ?? '';
     // `git ls-tree <sha> -- <path>`: an entry line when present, EXIT 0 WITH NO OUTPUT
@@ -361,7 +364,7 @@ describe('classifyPathsAgainstCandidate', () => {
         blobs: { 'cand:index.ts': SAME, 'HEAD:index.ts': SAME },
         tree: { 'index.ts': OTHER }, // a peer's uncommitted edit, unrelated to the caller
         newestCommit: { 'HEAD:index.ts': HEAD_SHA },
-        revListCount: { ['cand..' + HEAD_SHA]: '0' }, // 0 ⇒ HEAD_SHA is an ancestor-or-equal of cand
+        ancestry: { ['cand..' + HEAD_SHA]: true }, // HEAD_SHA is an ancestor-or-equal of cand
       });
       const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['index.ts']);
       // The recurrence-guard bar, verbatim: NOT missing, NOT a "your file" claim, NOT the
@@ -390,7 +393,7 @@ describe('classifyPathsAgainstCandidate', () => {
         blobs: { 'cand:index.ts': SAME, 'HEAD:index.ts': SAME },
         tree: { 'index.ts': OTHER },
         newestCommit: { 'HEAD:index.ts': HEAD_SHA },
-        revListCount: { ['cand..' + HEAD_SHA]: '3' }, // NOT an ancestor — 3 commits ahead
+        ancestry: { ['cand..' + HEAD_SHA]: false }, // NOT an ancestor
       });
       const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['index.ts']);
       expect(r.inCandidate).toBe(false);
@@ -413,7 +416,7 @@ describe('classifyPathsAgainstCandidate', () => {
         blobs: { 'cand:index.ts': SAME, 'HEAD:index.ts': SAME },
         tree: { 'index.ts': OTHER },
         newestCommit: { 'HEAD:index.ts': HEAD_SHA },
-        // revListCount unset ⇒ null ⇒ the rev-list read FAILED — must not be read as "ancestor".
+        // ancestry unset ⇒ null ⇒ the merge-base read FAILED — must not be read as "ancestor".
       });
       const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['index.ts']);
       expect(r.inCandidate).toBe(false);
@@ -428,7 +431,7 @@ describe('classifyPathsAgainstCandidate', () => {
         blobs: { 'HEAD:gone.ts': SAME }, // no 'cand:gone.ts' entry ⇒ candidateBlob is null
         tree: { 'gone.ts': OTHER }, // differs from HEAD ⇒ would otherwise read as 'uncommitted'
         newestCommit: { 'HEAD:gone.ts': HEAD_SHA },
-        revListCount: { ['cand..' + HEAD_SHA]: '0' },
+        ancestry: { ['cand..' + HEAD_SHA]: true },
       });
       const [r] = await classifyPathsAgainstCandidate(git, 'cand', ['gone.ts']);
       expect(r.inCandidate).toBeNull();
