@@ -2,7 +2,7 @@
 import { StrictMode, useEffect, useState } from "react";
 import { readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -18,10 +18,10 @@ import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
 
 describe("Assessed walkthrough dependencies", () => {
   it("pins the installed and locked stable MIT Joyride release and keeps Driver test-only", () => {
-    const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-    const lock = JSON.parse(readFileSync(new URL("../../../../package-lock.json", import.meta.url), "utf8"));
+    const manifest = JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(resolve(__dirname, "../../../../package-lock.json"), "utf8"));
     const require = createRequire(import.meta.url);
-    const installed = JSON.parse(readFileSync(new URL("../package.json", pathToFileURL(require.resolve("react-joyride"))), "utf8"));
+    const installed = JSON.parse(readFileSync(resolve(dirname(require.resolve("react-joyride")), "../package.json"), "utf8"));
     // D-014 assessed this exact release on React 19. A changed engine/version or
     // license requires fresh assessment, rather than silently inheriting proof.
     expect(manifest.dependencies["react-joyride"]).toBe("3.2.0");
@@ -34,13 +34,13 @@ describe("Assessed walkthrough dependencies", () => {
   });
 
   it("uses one production engine and only assessed existing frontend dependencies", () => {
-    const directory = new URL("./", import.meta.url);
+    const directory = __dirname;
     const imports = new Map<string, string[]>();
     const files = readdirSync(directory).filter(file => file.includes("cloud-tutorial")
       && /\.tsx?$/.test(file) && !file.includes(".test."));
     expect(files).toContain("cloud-tutorial-adapter.tsx");
     for (const file of files) {
-      const source = ts.createSourceFile(file, readFileSync(new URL(file, directory), "utf8"), ts.ScriptTarget.Latest, true);
+      const source = ts.createSourceFile(file, readFileSync(resolve(directory, file), "utf8"), ts.ScriptTarget.Latest, true);
       const modules: string[] = [];
       const visit = (node: ts.Node) => {
         if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier

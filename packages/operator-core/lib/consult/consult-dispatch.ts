@@ -111,6 +111,26 @@ export interface ConsultEvidenceSource {
 export function selectConsultEvidenceSource(
   refs: readonly ConsultDispatchEvidenceRef[] | undefined,
 ): ConsultEvidenceSource | null {
+  return rankConsultEvidenceSources(refs)[0] ?? null;
+}
+
+/**
+ * Every evidence session, best first, in the order {@link selectConsultEvidenceSource}
+ * takes its head from.
+ *
+ * EI-24833606853730057: one turn is routinely indexed under SEVERAL native session ids.
+ * A consult fork's seed copy, and every fork/carry descendant after it, replays its
+ * source's history with the same `ts` and `turn_idx`, so a candidate's evidence ties
+ * across sessions owned by DIFFERENT agents and the session-id tie-break picks one of
+ * them arbitrarily. Measured on two rubric-vetting consults: every walk took a foreign
+ * seed copy (`0b0ccf95…` over the expert's own `1010aec4…`) and was refused on
+ * ownership before any launch, so the whole menu ended `no_qualified_responder`. The
+ * dispatcher therefore walks this list and takes the first session that resolves to the
+ * candidate itself.
+ */
+export function rankConsultEvidenceSources(
+  refs: readonly ConsultDispatchEvidenceRef[] | undefined,
+): ConsultEvidenceSource[] {
   const groups = new Map<string, ConsultDispatchEvidenceRef[]>();
   for (const ref of refs ?? []) {
     if (!ref || typeof ref.session_id !== 'string' || !ref.session_id.trim() ||

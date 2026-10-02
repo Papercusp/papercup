@@ -48,6 +48,7 @@ import {
   type StartWorkspaceHostProvisioningInput,
 } from '../dbos/workspace-host-provision-workflow';
 import { dbosStarted } from '../dbos/bootstrap';
+import { PAPERCUSP_HOSTED_BRING_UP_AGENTS, type WorkspaceHostBringUp } from '../workspace-host/hosted-bring-up';
 import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
 import { createHostedTutorialProgressRoutes, createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
@@ -122,6 +123,12 @@ export interface HostedBrowserRouteDependencies {
   readonly provisioningAvailable?: () => boolean;
   /** The host the selected customer workspace is bound to, read under tenant RLS. */
   readonly readBoundHostId?: (
+    controlPlaneWorkspaceId: string,
+    customerWorkspaceId: string,
+    tx?: Sql,
+  ) => Promise<string | null>;
+  /** The selected customer workspace's lifecycle state, read under tenant RLS (D-015 bring-up). */
+  readonly readBoundWorkspaceState?: (
     controlPlaneWorkspaceId: string,
     customerWorkspaceId: string,
     tx?: Sql,
@@ -306,6 +313,44 @@ async function readCustomerWorkspaceHostId(
   return rows[0]?.workspace_host_id ?? null;
 }
 
+async function readCustomerWorkspaceState(
+  controlPlaneWorkspaceId: string,
+  customerWorkspaceId: string,
+  tx?: Sql,
+): Promise<string | null> {
+  if (!tx) throw new Error('readCustomerWorkspaceState requires the tenant transaction');
+  const rows = await tx<Array<{ state: string }>>`
+    SELECT state
+      FROM harness_shared.customer_workspaces
+     WHERE workspace_id = ${controlPlaneWorkspaceId}
+       AND id = ${customerWorkspaceId}
+       AND kind = 'hosted'
+  `;
+  return rows[0]?.state ?? null;
+}
+
+/**
+ * aws-byoc-gcp-parity D-015: a hosted provision of the host bound to a customer workspace that
+ * is still 'provisioning' owes that workspace its D-401 bring-up (initialize -> desktop pack ->
+ * connector -> active). Without it a RETRY of a failed first provision ends at the bare machine
+ * and the workspace stays 'provisioning' forever, Papercusp-hosted and BYOC alike.
+ *
+ * Derived on the server only. The caller has already been authorized for exactly this host (the
+ * one bound to the selected workspace), and a workspace in any other state gets none: the
+ * bring-up's empty-source initialize must never run against a host that already serves a
+ * workspace. GCP only, because the bring-up builder is (D-015 rule 3).
+ */
+export async function hostedProvisionBringUp(
+  input: StartWorkspaceHostProvisioningInput,
+  customerWorkspaceId: string | undefined,
+  readState: (customerWorkspaceId: string) => Promise<string | null>,
+): Promise<WorkspaceHostBringUp | undefined> {
+  if (!customerWorkspaceId) return undefined;
+  if (input.desired.target !== 'gcp' || input.desired.scope.kind !== 'project') return undefined;
+  if ((await readState(customerWorkspaceId)) !== 'provisioning') return undefined;
+  return { customerWorkspaceId, requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS };
+}
+
 function localProvisionRoute(
   config: HostedBrowserRouteConfiguration,
   principal: HostedPrincipal,
@@ -336,8 +381,16 @@ function localProvisionRoute(
     listLiveHostIds: (workspaceId, connectionId) =>
       wrapTenantRead(principal, runTenant, (tx) =>
         (deps.listLiveHostIds ?? listLiveWorkspaceHostIdsOnConnection)(workspaceId, connectionId, tx)),
-    startProvisioning: (input) =>
-      (deps.startProvisioning ?? startWorkspaceHostProvisioningWorkflow)({ ...input, actorId: principal.userId }),
+    startProvisioning: async (input) => {
+      const readState = deps.readBoundWorkspaceState ?? readCustomerWorkspaceState;
+      const bringUp = await hostedProvisionBringUp(input, principal.selectedWorkspaceId ?? undefined, (customerWorkspaceId) =>
+        wrapTenantRead(principal, runTenant, (tx) => readState(config.controlPlaneWorkspaceId, customerWorkspaceId, tx)));
+      return (deps.startProvisioning ?? startWorkspaceHostProvisioningWorkflow)({
+        ...input,
+        actorId: principal.userId,
+        ...(bringUp ? { bringUp } : {}),
+      });
+    },
   });
 }
 

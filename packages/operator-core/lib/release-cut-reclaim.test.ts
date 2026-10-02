@@ -393,6 +393,31 @@ describe('gather + execute against a real temporary repo', () => {
     expect(plan.verdicts.find((v) => v.path.endsWith('relcut-a'))?.disposition).toBe('named-only');
   });
 
+  it('runs the authored-work reads width-bounded and keeps each result with its own tree', async () => {
+    const trees = [1, 2, 3, 4, 5].map((i) => path.join(tmp, `relcut-${i}`));
+    for (const t of trees) g(repo, 'worktree', 'add', '-q', '--detach', t);
+    let inFlight = 0;
+    let peak = 0;
+    const authoredWork = vi.fn(async (tree: string) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight--;
+      return { ok: true as const, authored: tree.endsWith('relcut-3') ? ['x.ts'] : [], machineWritten: 0 };
+    });
+    // calibration: width 1 is the old serial loop, and the instrument must read exactly 1
+    await gather({ authoredWork, authoredConcurrency: 1 });
+    expect(peak).toBe(1);
+    authoredWork.mockClear();
+    const plan = await gather({ authoredWork, authoredConcurrency: 2 });
+    expect(authoredWork).toHaveBeenCalledTimes(5);
+    // serial (the 54s dry-run, EI-24849983022443070) would peak at 1; unbounded at 5
+    expect(peak).toBe(2);
+    const byTree = new Map(plan.verdicts.map((v) => [path.basename(v.path), v]));
+    expect(byTree.get('relcut-3')?.reasons).toEqual(['authored:x.ts']);
+    for (const n of [1, 2, 4, 5]) expect(byTree.get(`relcut-${n}`)?.disposition).toBe('named-only');
+  });
+
   it('dates a checkout by the newest reflog ENTRY, not the reflog file mtime a gc rewrites', () => {
     const tree = path.join(tmp, 'relcut-gc');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
@@ -519,6 +544,83 @@ describe('host event loop stays live during reclaim git + /proc work', () => {
     const pending = archiveTreeDiffs(binDir, path.join(binDir, 'out', 'a.patch'));
     expect(pending).toBeInstanceOf(Promise);
     await expect(pending).rejects.toThrow();
+  });
+});
+
+describe('inspectAuthoredWork reads submodules width-bounded (EI-24849983022443070)', () => {
+  const SHA = 'a'.repeat(40);
+  let binDir: string;
+  let log: string;
+  let savedPath: string | undefined;
+  beforeEach(() => {
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-subs-git-'));
+    log = path.join(binDir, 'calls.log');
+    fs.writeFileSync(
+      path.join(binDir, 'subs.txt'),
+      [1, 2, 3, 4, 5, 6].map((i) => ` ${SHA} sub/s${i} (heads/main)`).join('\n') + '\n',
+    );
+    // Each submodule status logs its start and end and holds 300ms, so the log ORDER
+    // shows how many ran at once without a wall-clock assertion. s6's commit is absent
+    // from the canonical checkout; RECLAIM_FAIL_SUB makes one submodule status fail.
+    fs.writeFileSync(
+      path.join(binDir, 'git'),
+      [
+        '#!/bin/sh',
+        'case "$*" in',
+        `  *"submodule status"*) cat '${path.join(binDir, 'subs.txt')}' ;;`,
+        `  *"rev-parse HEAD"*) echo ${SHA} ;;`,
+        '  *"for-each-ref"*) echo refs/heads/staging ;;',
+        '  *"--ignore-submodules=all"*)',
+        `    echo s >> '${log}'; sleep 0.3; echo e >> '${log}'`,
+        '    case "$*" in *"/$RECLAIM_FAIL_SUB "*) exit 1 ;; esac ;;',
+        '  *"cat-file"*) case "$*" in *sub/s6*) exit 1 ;; esac ;;',
+        'esac',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+  });
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    delete process.env.RECLAIM_FAIL_SUB;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  const peakOverlap = () => {
+    let cur = 0;
+    let peak = 0;
+    for (const ev of fs.readFileSync(log, 'utf8').split('\n')) {
+      if (ev === 's') peak = Math.max(peak, ++cur);
+      else if (ev === 'e') cur--;
+    }
+    return peak;
+  };
+
+  it('overlaps submodule reads up to the width, never past it, and reports in submodule order', async () => {
+    const tree = path.join(binDir, 'tree');
+    // calibration: width 1 is the old serial loop, and the log instrument must read exactly 1
+    await inspectAuthoredWork(tree, path.join(binDir, 'canon'), VERSION_PATHS, { submoduleConcurrency: 1 });
+    expect(peakOverlap()).toBe(1);
+    fs.rmSync(log);
+    const result = await inspectAuthoredWork(tree, path.join(binDir, 'canon'), VERSION_PATHS, { submoduleConcurrency: 3 });
+    expect(result).toEqual({
+      ok: true,
+      authored: [`sub/s6@${SHA.slice(0, 10)} (commit absent from canonical checkout)`],
+      machineWritten: 0,
+    });
+    expect(fs.readFileSync(log, 'utf8').split('\n').filter((l) => l === 's')).toHaveLength(6);
+    const peak = peakOverlap();
+    expect(peak).toBeGreaterThanOrEqual(2); // a serial loop peaks at exactly 1
+    expect(peak).toBeLessThanOrEqual(3);
+  });
+
+  it('still fails CLOSED when one submodule read fails', async () => {
+    process.env.RECLAIM_FAIL_SUB = 's2';
+    const result = await inspectAuthoredWork(path.join(binDir, 'tree'), path.join(binDir, 'canon'), VERSION_PATHS);
+    expect(result.ok).toBe(false);
   });
 });
 

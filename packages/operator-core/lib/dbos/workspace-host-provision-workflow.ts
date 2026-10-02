@@ -74,7 +74,9 @@ export interface StartWorkspaceHostProvisioningInput {
   actorId?: string;
   /**
    * D-401: set up the machine once it is built (initialize -> desktop pack -> workspace active).
-   * Only the Papercusp-hosted first-workspace door sets this; see `hosted-bring-up.ts`.
+   * Only the hosted doors set this: first-workspace for every GCP host, and the hosted provision
+   * route for a host whose customer workspace is still 'provisioning' (aws-byoc-gcp-parity
+   * D-015); see `hosted-bring-up.ts`.
    */
   bringUp?: WorkspaceHostBringUp;
 }
@@ -274,7 +276,8 @@ function isExistingHostLifecycle(input: WorkspaceHostWorkflowInput): input is Wo
  * D-407: an upgrade recreates the machine on a new boot disk and a repair re-runs its bootstrap,
  * so both invalidate what the bring-up installed -- the desktop pack and the connector's credential
  * with it. A host that was brought up for a Papercusp-hosted workspace (it holds a live connector
- * enrollment) is brought up again under the same operation; a BYOC host is left to its owner, as
+ * enrollment, which a portal BYOC host also holds since aws-byoc-gcp-parity D-015) is brought up
+ * again under the same operation; a desktop/local BYOC host is left to its owner, as
  * before. `restore` builds a DIFFERENT host, which this does not cover.
  */
 async function bringUpHostedHostAgain(input: WorkspaceHostLifecycleWorkflowInput): Promise<void> {

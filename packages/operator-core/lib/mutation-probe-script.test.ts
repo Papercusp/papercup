@@ -134,6 +134,34 @@ function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } 
 }
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it.each([
+    ['invalid syntax', 's/beta/'],
+    ['undeclared replacement state', 's/beta/$undefined_thing/'],
+    ['no match', 's/nosuchtext/x/'],
+    ['whitespace only', 's/beta/ beta /'],
+  ])('refuses %s before launching any baseline guard', (_label, mutation) => {
+    const marker = join(dir, 'guard-launched');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', mutation,
+      '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
+    ]);
+    expect(code, out).toBe(2);
+    expect(existsSync(marker)).toBe(false);
+    expect(out).not.toContain('running baseline guard');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('runs both baselines and the mutant guard after a valid preflight', () => {
+    const marker = join(dir, 'guard-phases');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q '^beta$' {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('runs from a frozen source when the launched script is rewritten during baseline', async () => {
     const launched = join(dir, 'mutable-probe.sh');
     const marker = join(dir, 'baseline-started');
@@ -1569,45 +1597,20 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     expect(restoredRecord()).toEqual(verifiedOriginal());
   });
 
-  it('clears its admission snapshot when an in-tree no-op mutation is refused', async () => {
+  it('clears its admission snapshot when an in-tree no-op is refused before baseline', () => {
     const root = realpathSync(dir);
     const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
     const manifest = join(admissionDir, 'original.manifest');
     const baselineStarted = join(dir, 'baseline-started');
-    const releaseBaseline = join(dir, 'release-baseline');
-    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then : > '
-      + `${JSON.stringify(baselineStarted)}; while [ ! -e ${JSON.stringify(releaseBaseline)} ]; do sleep 0.01; done; `
-      + 'fi; grep -q "^beta$" {}';
-    const child = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,
-      '--mutate', 's/nosuchtext/x/', '--test', guard], { stdio: ['ignore', 'pipe', 'pipe'] });
-    const output = createTextCollector();
-    output.attach(child.stdout);
-    output.attach(child.stderr);
-    const closed = new Promise<number>((resolveCode) => child.once('close', (code) => resolveCode(code ?? -1)));
-    let snapshotDir = '';
-    try {
-      const deadline = Date.now() + 10_000;
-      while (!existsSync(baselineStarted) && Date.now() < deadline) await sleep(25);
-      expect(existsSync(baselineStarted), output.peek()).toBe(true);
-      expect(existsSync(manifest)).toBe(true);
-      snapshotDir = dirname(readFileSync(manifest, 'utf8').split('\0')[2]!);
-
-      writeFileSync(releaseBaseline, '');
-      expect(await Promise.race([closed, sleep(10_000).then(() => -2)])).toBe(2);
-      expect(output.text()).toMatch(/changed NOTHING/i);
-      expect(read()).toBe(ORIGINAL);
-      expect(existsSync(manifest)).toBe(false);
-      expect(existsSync(snapshotDir)).toBe(false);
-      expect(restoredRecord()).toEqual(verifiedOriginal());
-    } finally {
-      writeFileSync(releaseBaseline, '');
-      if (child.exitCode === null && child.signalCode === null) {
-        await Promise.race([closed, sleep(10_000)]);
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-      }
-      if (snapshotDir && existsSync(snapshotDir)) rmSync(snapshotDir, { recursive: true, force: true });
-    }
-  }, 25_000);
+    const { code, out } = runProbeIO(['--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/nosuchtext/x/', '--test', `touch ${JSON.stringify(baselineStarted)}; grep -q '^beta$' {}`]);
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/changed NOTHING/i);
+    expect(existsSync(baselineStarted)).toBe(false);
+    expect(read()).toBe(ORIGINAL);
+    expect(existsSync(manifest)).toBe(false);
+    expect(restoredRecord()).toEqual(verifiedOriginal());
+  });
 
   it('preserves a concurrent edit instead of restoring the probe baseline over it', async () => {
     const mutantStarted = join(dir, 'in-tree-mutant-started');

@@ -9,9 +9,13 @@
  * (D-250 holds). So the chain is: initialize (local-inference agent only) -> desktop pack ->
  * mark the customer workspace `active`.
  *
- * WHO MAY ASK FOR IT. Only the Papercusp-hosted first-workspace door sets a bring-up. It is an
- * explicit field on the provisioning input, never inferred from the spec, so an ordinary
- * provision (BYOC, the loopback route, the canary) still ends at the machine exactly as before.
+ * WHO MAY ASK FOR IT. Only the hosted (app.papercusp.com) doors set a bring-up: first-workspace,
+ * for every GCP host whether it runs in Papercusp's project or the customer's own, and the hosted
+ * provision route, for the bound host of a customer workspace still 'provisioning' (a retry of a
+ * failed first build). A portal customer has no controller and no initialize route of their own,
+ * so without it their workspace never leaves 'provisioning' (aws-byoc-gcp-parity D-015). It is an
+ * explicit field on the provisioning input, never inferred from the spec, so a desktop/local
+ * provision (the loopback route, the canary) still ends at the machine exactly as before.
  *
  * EVERY FIELD IS DERIVED ON THE SERVER. The initialization request below is built from the
  * host's own desired spec; nothing a browser sent reaches it.

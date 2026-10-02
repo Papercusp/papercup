@@ -13,6 +13,7 @@ import {
   HOSTED_BROWSER_SELECT_WORKSPACE_PATH,
   HOSTED_BROWSER_SSE_PATH,
   createHostedBrowserRoutes,
+  hostedProvisionBringUp,
 } from './hosted-browser';
 
 const ORIGIN = 'https://app.papercusp.com';
@@ -317,6 +318,37 @@ describe('hosted browser route boundary', () => {
     // No live binding at all (deleted workspace) authorizes nothing.
     readBoundHostId.mockResolvedValueOnce(null);
     expect((await provision(true, 'host-bound')).status).toBe(403);
+  });
+
+  // aws-byoc-gcp-parity D-015: a hosted provision RETRY of a failed first build must still bring
+  // the workspace up, or it stays 'provisioning' forever (measured on canary host
+  // host-0f9b1ba8db30d143becc130a, 2026-10-02). Derived server-side, and never for a workspace
+  // that already left 'provisioning'.
+  describe('hosted provision bring-up (D-015)', () => {
+    const gcpInput = { desired: { hostId: 'host-bound', target: 'gcp', scope: { kind: 'project', id: 'p' } } } as never;
+
+    it('owes a still-provisioning workspace its bring-up, with only the local-inference agent', async () => {
+      const readState = vi.fn(async () => 'provisioning');
+      await expect(hostedProvisionBringUp(gcpInput, SELECTED_WORKSPACE, readState)).resolves.toEqual({
+        customerWorkspaceId: SELECTED_WORKSPACE,
+        requestedAgents: ['omp'],
+      });
+      expect(readState).toHaveBeenCalledWith(SELECTED_WORKSPACE);
+    });
+
+    it('never re-runs it for a workspace that is active, suspended or gone', async () => {
+      for (const state of ['active', 'suspended', 'deleted', null]) {
+        await expect(hostedProvisionBringUp(gcpInput, SELECTED_WORKSPACE, async () => state)).resolves.toBeUndefined();
+      }
+    });
+
+    it('requests none for an AWS host or without a selected workspace, reading nothing', async () => {
+      const readState = vi.fn(async () => 'provisioning');
+      const awsInput = { desired: { hostId: 'host-bound', target: 'aws', scope: { kind: 'account', id: '1' } } } as never;
+      await expect(hostedProvisionBringUp(awsInput, SELECTED_WORKSPACE, readState)).resolves.toBeUndefined();
+      await expect(hostedProvisionBringUp(gcpInput, undefined, readState)).resolves.toBeUndefined();
+      expect(readState).not.toHaveBeenCalled();
+    });
   });
 
   it('forwards only tenant-safe invalidations over SSE and strips row payloads', async () => {

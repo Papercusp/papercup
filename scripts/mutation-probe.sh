@@ -1820,6 +1820,49 @@ else
 fi
 readonly GUARD_SUBJECT
 
+# Validate the expression and its exact output before either baseline guard.
+# Recheck the applied mutant below: stateful Perl expressions must not turn a
+# valid preflight into an ineffective mutation after the baseline has run.
+verify_mutation_bytes() {
+  local candidate="$1"
+  if cmp -s "$candidate" "$BASE"; then
+    die "the --mutate expression changed NOTHING (mutant is byte-identical to the original).
+      A no-op mutation makes any guard look weak. Fix the expression and re-run.
+
+      MOST COMMON CAUSE: --mutate is a PERL expression (applied as perl -pi -e), so
+      ( ) { } + ? . * are REGEX METACHARACTERS on the PATTERN side, not literal text.
+      This bites hardest on the normal use of this script — mutating source code —
+      because a natural-looking mutation of a conditional or a call matches nothing:
+
+          WRONG:  's|if (x > 0) {|if (false) {|'
+                        ^      ^ ^   ( ) capture a group, { starts a quantifier,
+                                     so this searches for 'if x > 0 ' and misses.
+          RIGHT:  's|if \(x > 0\) \{|if (false) {|'
+
+      Only the PATTERN (left) side needs escaping — the replacement is literal."
+  fi
+  tr -d '[:space:]' < "$candidate" > "$SCRATCH/mutant.non-whitespace" || die "could not normalize the mutant"
+  if cmp -s "$SCRATCH/mutant.non-whitespace" "$BASE_NON_WHITESPACE"; then
+    die "the --mutate expression changed ONLY WHITESPACE (non-whitespace content is unchanged).
+      A whitespace-only mutation can leave behavior unchanged and make any guard
+      look weak. Inspect the mutation diff above, then fix the expression so it
+      changes the intended non-whitespace token and re-run."
+  fi
+}
+
+if ! perl -Mstrict -pe "$MUTATE" "$BASE" > "$SCRATCH/preflight-mutant" 2>"$SCRATCH/strict-err"; then
+  die "the --mutate expression does not compile under 'use strict' — refusing before mutating anything.
+      perl said: $(head -3 "$SCRATCH/strict-err" 2>/dev/null)
+
+      MOST COMMON CAUSE: a bare \$name in the REPLACEMENT half. perl INTERPOLATES
+      the replacement, so \$name there is a PERL VARIABLE — and if it is undefined
+      it becomes silently EMPTY (that exact silent-empty widened a delete loop to
+      'for d in /*' on 2026-08-15). If you meant the literal text \$name — e.g. the
+      subject is a SHELL script and \$name is one of ITS variables — escape it on
+      the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
+fi
+verify_mutation_bytes "$SCRATCH/preflight-mutant"
+
 # A nonzero baseline means the command did not establish a runnable, healthy
 # guard before the mutation. Scoring the mutant's later nonzero exit as
 # "caught" would turn a broken harness into falsifiability evidence.
@@ -1945,27 +1988,6 @@ if [ "$TARGET_MODE" = "copy-out" ]; then
   fi
 fi
 
-# --- pre-flight the mutation under perl strict -------------------------------
-# On a THROWAWAY copy, deliberately BEFORE the dirty window below (this block
-# may use command substitution; the dirty window must not). perl s///
-# INTERPOLATES the REPLACEMENT half, and an UNDEFINED perl variable there is
-# silently empty — that silent-empty is how an escaped-match-side probe's
-# replacement became 'for d in ""/*' == 'for d in /*' and destroyed ~370GB on
-# 2026-08-15 (EI-20566003853444873). Under -Mstrict an undeclared $name is a
-# COMPILE error instead, so the trap fires loudly before anything is mutated.
-cp "$BASE" "$SCRATCH/strict-check" || die "could not stage the strict-check copy"
-if ! perl -Mstrict -pe "$MUTATE" "$SCRATCH/strict-check" >/dev/null 2>"$SCRATCH/strict-err"; then
-  die "the --mutate expression does not compile under 'use strict' — refusing before mutating anything.
-      perl said: $(head -3 "$SCRATCH/strict-err" 2>/dev/null)
-
-      MOST COMMON CAUSE: a bare \$name in the REPLACEMENT half. perl INTERPOLATES
-      the replacement, so \$name there is a PERL VARIABLE — and if it is undefined
-      it becomes silently EMPTY (that exact silent-empty widened a delete loop to
-      'for d in /*' on 2026-08-15). If you meant the literal text \$name — e.g. the
-      subject is a SHELL script and \$name is one of ITS variables — escape it on
-      the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
-fi
-
 # Keep an exact in-tree mutant snapshot outside the dirty window. Cleanup may
 # restore the tracked file only if it still matches this byte-for-byte result.
 if [ "$IN_TREE" -eq 1 ]; then
@@ -1974,9 +1996,6 @@ if [ "$IN_TREE" -eq 1 ]; then
   PROBE_MUTANT_SUM="$(git hash-object "$PROBE_MUTANT_FILE")" ||
     die "could not hash the expected in-tree mutant snapshot"
 fi
-
-MUTANT_NON_WHITESPACE="$SCRATCH/$(basename "$FILE").mutant.non-whitespace"
-readonly MUTANT_NON_WHITESPACE
 
 # --- apply the mutation -----------------------------------------------------
 if [ "$IN_TREE" -eq 1 ] && [ "$SWEEP_ACK" = "lock-held" ]; then
@@ -2008,35 +2027,7 @@ diff -u -- "$BASE" "$TARGET" | sed -n '1,40p' || true
 # the "mutant" is identical to the original, so the guard passes, and the
 # probe reports "the guard did not catch it" — a FALSE weakness verdict from a
 # probe that never actually mutated anything. Refuse rather than report it.
-if cmp -s "$TARGET" "$BASE"; then
-  die "the --mutate expression changed NOTHING (mutant is byte-identical to the original).
-      A no-op mutation makes any guard look weak. Fix the expression and re-run.
-
-      MOST COMMON CAUSE: --mutate is a PERL expression (applied as perl -pi -e), so
-      ( ) { } + ? . * are REGEX METACHARACTERS on the PATTERN side, not literal text.
-      This bites hardest on the normal use of this script — mutating source code —
-      because a natural-looking mutation of a conditional or a call matches nothing:
-
-          WRONG:  's|if (x > 0) {|if (false) {|'
-                        ^      ^ ^   ( ) capture a group, { starts a quantifier,
-                                     so this searches for 'if x > 0 ' and misses.
-          RIGHT:  's|if \(x > 0\) \{|if (false) {|'
-
-      Only the PATTERN (left) side needs escaping — the replacement is literal."
-fi
-
-# A mutation that changes only whitespace is just as unsound as a byte-identical
-# mutation for falsifiability: it can leave the subject's behavior unchanged
-# while making a guard appear weak. Keep this check language-agnostic and
-# conservative; callers must choose a mutation that changes a non-whitespace
-# token before the guard is scored.
-tr -d '[:space:]' < "$TARGET" > "$MUTANT_NON_WHITESPACE" || die "could not normalize the mutant"
-if cmp -s "$MUTANT_NON_WHITESPACE" "$BASE_NON_WHITESPACE"; then
-  die "the --mutate expression changed ONLY WHITESPACE (non-whitespace content is unchanged).
-      A whitespace-only mutation can leave behavior unchanged and make any guard
-      look weak. Inspect the mutation diff above, then fix the expression so it
-      changes the intended non-whitespace token and re-run."
-fi
+verify_mutation_bytes "$TARGET"
 # A mutant that no longer PARSES is the same false-verdict class as the two
 # checks above, wearing a far more convincing costume. The guard does fail --
 # but it fails because the subject stopped being a loadable program, not
