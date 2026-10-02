@@ -41,6 +41,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
+import type { RefusalContract } from '../../../capability-envelope/refusal-contract-types';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { requireAllowedOriginOr403 } from '../../cors';
@@ -626,8 +627,14 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
         itemId,
       });
       if (!outcome.reverted) {
+        const refusal: RefusalContract = {
+          observed: { runId, itemId },
+          liftsWhen:
+            'the run item is revertable: it has not already been reverted or expired, and its source mutation has a registered compensation that can still apply (see message for the specific reversal refusal)',
+          whoCanMakeItTrue: ['owner', 'host'],
+        };
         return Response.json(
-          { error: { code: 'undo_refused', message: outcome.note, runId, itemId } },
+          { error: { code: 'undo_refused', message: outcome.note, runId, itemId, refusal } },
           { status: 409 },
         );
       }

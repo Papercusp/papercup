@@ -44,7 +44,22 @@
  * key may never appear. Seed and re-measure it from `--list`, never from a hand grep.
  * `--write-baseline` rewrites it from the live scan and REFUSES to grow it.
  *
- * Exit 0 clean / 1 on a new uncontracted refusal site or a stale (now-smaller) baseline.
+ * ## Exemptions — a reasoned, counted, shrink-only escape for DETECTOR false positives
+ *
+ * The detector keys on a code-name regex, so code that merely NAMES a refusal-shaped state
+ * (a lint finding, an invariant-catalogue row, a classifier over free text, a shape-validation
+ * error) matches it without constructing a fail-closed gate anyone must lift. Those cannot
+ * be given a meaningful RefusalContract, and leaving them in the baseline would keep it
+ * above zero forever — hiding the real remaining gaps. `EXEMPT` records each one as
+ * `{ "<file>::<code>": { sites, reason } }`. It is deliberately NOT a bypass:
+ *  - `reason` is mandatory and non-trivial (enforced by the guard's test);
+ *  - `sites` is a COUNT, so a second uncontracted literal under an exempt key is a violation;
+ *  - an exemption with more `sites` than the tree now has is STALE and fails the guard, so a
+ *    deleted/contracted site cannot leave behind headroom;
+ *  - a real refusal must be CONTRACTED, never exempted — exempting one is the failure.
+ *
+ * Exit 0 clean / 1 on a new uncontracted refusal site, a stale (now-smaller) baseline, or a
+ * stale exemption.
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -59,6 +74,49 @@ const SKIP_DIR = new Set(['node_modules', 'dist', 'dist-sidecar', 'build', '.nex
 const REFUSAL_CODE = /(refus|denied|unsatisfied|violation|blocked|forbidden|not_allowed)/;
 /** A literal carrying either key states its lift condition (the RefusalContract). */
 const CONTRACT_KEYS = new Set(['refusal', 'liftsWhen']);
+
+/**
+ * Detector false positives: `{ "<file>::<code>": { sites, reason } }`. See "Exemptions" above —
+ * a REAL fail-closed refusal is contracted, never listed here.
+ */
+export const EXEMPT = {
+  'packages/operator-core/lib/acceptance-grader.ts::grading_audit_refused': {
+    sites: 1,
+    reason: 'classifier over auditor free text: names an audit-refusal state it detected; it constructs no refusal a caller must lift',
+  },
+  'packages/operator-core/lib/agent-obligation-providers.ts::unsupported-goal-launch-refusal': {
+    sites: 1,
+    reason: 'measurement-failure diagnostic (status:unknown) for an UNRECOGNISED upstream launch refusal; it already carries its own `retry` lift hint, and the upstream GoalLaunchRefusal is the gate that states the contract',
+  },
+  'packages/operator-core/lib/agent-tools/plans/lint.ts::stored_blocked_with_blocked_by': {
+    sites: 1,
+    reason: 'plan-lint warning finding about an authoring state; a report row, not a refusal of any request',
+  },
+  'packages/operator-core/lib/agent-tools/plans/lint.ts::unknown_blocked_by': {
+    sites: 1,
+    reason: 'plan-lint error finding (a dangling blocked-by reference); input validation reported in a lint report, not an authority refusal',
+  },
+  'packages/operator-core/lib/p2p/receipts.ts::refusal_on_success_receipt': {
+    sites: 1,
+    reason: 'receipt-constructor shape validation: the detail names the exact field to fix; not an authority gate',
+  },
+  'packages/operator-core/lib/p2p/receipts.ts::refusal_required': {
+    sites: 1,
+    reason: 'receipt-constructor shape validation: the detail names the exact field to supply; not an authority gate',
+  },
+  'packages/operator-core/lib/scheduler/dependency-graph-analysis.ts::blocked-without-resolver': {
+    sites: 1,
+    reason: 'dependency-graph analysis finding naming a stored-blocked state with no resolver; a diagnostic row, not a refusal',
+  },
+  'packages/operator-core/lib/scheduler/dependency-invariants.ts::legacy-blocked-without-resolver': {
+    sites: 1,
+    reason: 'invariant-catalogue row (classification/action/suppression policy) naming a stored-blocked state; policy data, not a constructed refusal',
+  },
+  'packages/operator-core/lib/scheduler/dependency-invariants.ts::typed-blocked-without-resolver': {
+    sites: 1,
+    reason: 'invariant-catalogue row (classification/action/suppression policy) naming a stored-blocked state; policy data, not a constructed refusal',
+  },
+};
 
 function* walk(dir) {
   let entries;
@@ -119,7 +177,7 @@ function readBaseline() {
  * Scan the tree. Exported so the guard's unit test can run it over the REAL tree
  * (that run is what makes this guard reachable from a blocking path).
  */
-export function scanTree({ baseline = readBaseline() } = {}) {
+export function scanTree({ baseline = readBaseline(), exempt = EXEMPT } = {}) {
   const sites = [];
   for (const root of ROOTS) {
     for (const file of walk(join(ROOT, root))) {
@@ -129,12 +187,26 @@ export function scanTree({ baseline = readBaseline() } = {}) {
       for (const s of findRefusalSites(src, rel)) sites.push({ rel, ...s });
     }
   }
-  const uncontracted = new Map();
+  const raw = new Map();
   for (const s of sites) {
     if (s.hasContract) continue;
     const key = `${s.rel}::${s.code}`;
-    uncontracted.set(key, (uncontracted.get(key) ?? 0) + 1);
+    raw.set(key, (raw.get(key) ?? 0) + 1);
   }
+  // Exemptions are subtracted COUNT-WISE before the baseline comparison, so an exempt
+  // key never occupies baseline headroom and a surplus site under it is still counted.
+  const uncontracted = new Map();
+  const exempted = [];
+  for (const [key, n] of raw) {
+    const e = exempt[key]?.sites ?? 0;
+    const used = Math.min(n, e);
+    if (used > 0) exempted.push({ key, sites: used, reason: exempt[key].reason });
+    if (n - used > 0) uncontracted.set(key, n - used);
+  }
+  const staleExemptions = Object.entries(exempt)
+    .filter(([key, e]) => (raw.get(key) ?? 0) < e.sites)
+    .map(([key, e]) => ({ key, exempt: e.sites, actual: raw.get(key) ?? 0 }))
+    .sort((a, b) => a.key.localeCompare(b.key));
   const base = baseline ?? {};
   const violations = [];
   for (const [key, n] of uncontracted) {
@@ -145,7 +217,7 @@ export function scanTree({ baseline = readBaseline() } = {}) {
     .filter(([key, n]) => (uncontracted.get(key) ?? 0) < n)
     .map(([key, n]) => ({ key, baseline: n, actual: uncontracted.get(key) ?? 0 }))
     .sort((a, b) => a.key.localeCompare(b.key));
-  return { sites, uncontracted, violations, stale, baselineLoaded: baseline !== null };
+  return { sites, uncontracted, exempted, staleExemptions, violations, stale, baselineLoaded: baseline !== null };
 }
 
 if (isCliEntry(import.meta.url)) {
@@ -153,7 +225,7 @@ if (isCliEntry(import.meta.url)) {
   const scan = scanTree();
   const contracted = scan.sites.filter((s) => s.hasContract).length;
   if (argv.includes('--list')) {
-    console.log(`SITES total=${scan.sites.length} withContract=${contracted} uncontracted=${scan.sites.length - contracted} keys=${scan.uncontracted.size}`);
+    console.log(`SITES total=${scan.sites.length} withContract=${contracted} uncontracted=${scan.sites.length - contracted} exempt=${scan.exempted.reduce((n, e) => n + e.sites, 0)} baselinedKeys=${scan.uncontracted.size}`);
     for (const s of scan.sites) console.log(`${s.hasContract ? 'CONTRACT ' : 'NO-CONTRACT'} ${s.rel}:${s.line} ${s.code}`);
     process.exit(0);
   }
@@ -166,7 +238,7 @@ if (isCliEntry(import.meta.url)) {
     }
     const sites = Object.fromEntries([...scan.uncontracted].sort(([a], [b]) => a.localeCompare(b)));
     writeFileSync(BASELINE_PATH, `${JSON.stringify({ version: 1, sites }, null, 2)}\n`);
-    console.log(`refusal-contracts: wrote baseline (${Object.keys(sites).length} keys, ${scan.sites.length - contracted} uncontracted sites)`);
+    console.log(`refusal-contracts: wrote baseline (${Object.keys(sites).length} keys, ${Object.values(sites).reduce((n, c) => n + c, 0)} uncontracted non-exempt sites)`);
     process.exit(0);
   }
   if (!scan.baselineLoaded) {
@@ -185,6 +257,15 @@ if (isCliEntry(import.meta.url)) {
     console.error('refusal-contracts: baseline is STALE (a site gained a contract or was removed) — shrink it: npm run lint:refusal-contracts -- --write-baseline');
     for (const s of scan.stale) console.error(`  ${s.key}  baseline ${s.baseline}, now ${s.actual}`);
   }
-  if (!failed) console.log(`✔ refusal-contracts: ${scan.sites.length} sites, ${contracted} with a contract, ${scan.sites.length - contracted} baselined`);
+  if (scan.staleExemptions.length) {
+    failed = true;
+    console.error('refusal-contracts: EXEMPT entry is STALE (the site it excuses no longer exists in that count) — delete or shrink it in scripts/check-refusal-contracts.mjs:');
+    for (const s of scan.staleExemptions) console.error(`  ${s.key}  exempt ${s.exempt}, now ${s.actual}`);
+  }
+  if (!failed) {
+    const exemptedSites = scan.exempted.reduce((n, e) => n + e.sites, 0);
+    const baselined = [...scan.uncontracted.values()].reduce((n, c) => n + c, 0);
+    console.log(`✔ refusal-contracts: ${scan.sites.length} sites, ${contracted} with a contract, ${exemptedSites} exempt (detector false positives), ${baselined} baselined`);
+  }
   process.exit(failed ? 1 : 0);
 }
