@@ -2662,11 +2662,9 @@ describe('P-006: the budget launch gate', () => {
   // ── WI-10002052 / D-011 clause 3: an unmeasurable ceiling must not fail OPEN ──
   //
   // `spentCents: null` carries TWO populations, and the rollup names which one in
-  // `spentCentsUnmeasuredReason`: nothing attributed in the window (harmless —
-  // nothing is being let past a ceiling), and attributed samples the ledger
-  // could not price, so the true total is unknown. For the second, failing open
-  // means the ceiling never binds while those samples stay in the window. These
-  // tests pin the split.
+  // `spentCentsUnmeasuredReason`: no attributed samples, or attributed samples
+  // the ledger could not price. Neither supplies a priced spend figure, so
+  // launch admission must refuse until the ceiling can be measured.
   it('REFUSES a goal whose window holds attributed samples that carry no price', async () => {
     const r = await launchWithBudget({
       budget_cents: 50000,
@@ -2751,12 +2749,13 @@ describe('P-006: the budget launch gate', () => {
     expect(under.degradedReasons.filter((s) => s.includes('budget'))).toEqual([]);
   });
 
-  it('BOOTSTRAP (D-014): admits, reported degraded, ONLY when every leg is empty', async () => {
+  it('REFUSES the all-empty bootstrap because no priced spend was measured (D-011)', async () => {
     for (const spent_cents_unmeasured_reason of NULL_SNAPSHOTS) {
       const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null, spent_cents_unmeasured_reason });
-      expect(r.refusal).toBeNull();
-      expect(r.degraded).toBe(true);
-      expect(r.degradedReasons.some((s) => s.includes('zero-usage bootstrap'))).toBe(true);
+      expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+      expect(r.refusal?.current).toBeNull();
+      expect(r.refusal?.currentScope).toBe(REFUSAL_SCOPES.BUDGET_NO_SAMPLES);
+      expect(r.degraded).toBe(false);
     }
   });
 
@@ -2834,13 +2833,11 @@ describe('P-006: the budget launch gate', () => {
   });
 
   it('D-003: a declared budget with NO snapshot is measured at launch — never guessed', async () => {
-    // With every leg empty that is the bootstrap: admitted, but reported.
     const r = await launchWithBudget({ budget_cents: 5000, spent_cents: null });
     expect(liveSpend.calls).toBe(1);
-    expect(r.refusal).toBeNull();
-    expect(r.degraded).toBe(true);
-    expect(r.degradedReasons.some((s) => s.includes('budget ceiling not enforced'))).toBe(true);
-    expect(r.degradedReasons.some((s) => s.includes('no usage on any leg in its budget window'))).toBe(true);
+    expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+    expect(r.refusal?.currentScope).toBe(REFUSAL_SCOPES.BUDGET_NO_SAMPLES);
+    expect(r.refusal?.current).toBeNull();
   });
 
   it('fails OPEN when spentCents has no recognized provenance — legacy values cannot enforce the ceiling', async () => {
@@ -2860,11 +2857,12 @@ describe('P-006: the budget launch gate', () => {
     }
   });
 
-  it('garbage spentCents reads as UNKNOWN (degraded), never as 0-spent (admit-on-garbage)', async () => {
+  it('garbage spentCents stays UNKNOWN and cannot admit a launch on an empty live measurement', async () => {
     const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 'not-a-number' });
-    expect(r.refusal).toBeNull();
+    expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+    expect(r.refusal?.currentScope).toBe(REFUSAL_SCOPES.BUDGET_NO_SAMPLES);
     expect(r.budget?.spentCents).toBeNull();
-    expect(r.degradedReasons.some((s) => s.includes('budget ceiling not enforced'))).toBe(true);
+    expect(r.degraded).toBe(false);
   });
 
   it('no budget declared → the gate is silent (no refusal, no degradation)', async () => {
@@ -2937,10 +2935,12 @@ describe('per-turn goal inference budget admission (WI-10003507)', () => {
       ...override,
     }) as unknown as GoalSpendRollup;
 
-  it('allows bootstrap only while every usage leg is empty, and refuses a reached ceiling', () => {
+  it('refuses unmeasured spend even when every usage leg is empty, and refuses a reached ceiling', () => {
     expect(evaluateGoalInferenceBudget({ ...base, rollup: rollup() })).toMatchObject({
-      allowed: true,
-      reason: 'zero-usage-bootstrap',
+      allowed: false,
+      status: 403,
+      code: 'goal_budget_unmeasurable',
+      spentCents: null,
     });
     expect(
       evaluateGoalInferenceBudget({

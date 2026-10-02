@@ -655,6 +655,8 @@ export const REFUSAL_SCOPES = {
    * read as "nothing spent".
    */
   BUDGET_UNATTRIBUTED: 'unmeasurable:unattributed-goal-samples',
+  /** No priced goal spend can be inferred from an empty measurement (D-011). */
+  BUDGET_NO_SAMPLES: 'unmeasurable:no-lineage-samples',
   /** The launch-time measurement itself failed, so there is no figure to judge. */
   BUDGET_MEASUREMENT_FAILED: 'unmeasurable:measurement-failed',
   LIVE_AGENTS_IN_GOAL: 'live-agents-in-goal',
@@ -671,8 +673,8 @@ export const REFUSAL_SCOPES = {
  * unknown and failing open would let a launch past a ceiling nobody can check.
  * `no-lineage-samples` only says the write-time-attributed stream is empty. That
  * is not proof nothing was spent (attribution can miss a goal's sessions), so the
- * launch gate does not admit on it: it measures every leg at launch and admits
- * only when all of them are empty (stewardship-remediation D-014).
+ * launch gate does not admit on it: it measures every leg at launch and refuses
+ * while the authoritative spend remains unmeasured (D-011 clause 3).
  *
  * Returns false whenever `spentCents` is non-null, so a stale reason can never
  * contradict a live measurement.
@@ -3053,11 +3055,16 @@ async function budgetLaunchGateEnabled(): Promise<{ enabled: boolean; infraError
  * Why a declared ceiling has no figure to judge. Each cause names its own
  * repair, which is why they are not one message.
  */
-type BudgetUnmeasurableCause = 'unpriced-lineage-samples' | 'unattributed-goal-samples' | 'measurement-failed';
+type BudgetUnmeasurableCause =
+  | 'unpriced-lineage-samples'
+  | 'unattributed-goal-samples'
+  | 'no-lineage-samples'
+  | 'measurement-failed';
 
 const UNMEASURABLE_SCOPE: Record<BudgetUnmeasurableCause, string> = {
   'unpriced-lineage-samples': REFUSAL_SCOPES.BUDGET_UNMEASURABLE,
   'unattributed-goal-samples': REFUSAL_SCOPES.BUDGET_UNATTRIBUTED,
+  'no-lineage-samples': REFUSAL_SCOPES.BUDGET_NO_SAMPLES,
   'measurement-failed': REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
 };
 
@@ -3090,6 +3097,10 @@ function budgetUnmeasurableRefusal(args: {
           `stream never recorded, so any figure would be a floor. Refusing rather than admitting: an empty ` +
           `authoritative stream beside non-empty goal usage is not "nothing spent". Repair write-time goal ` +
           `attribution for those sessions, or wait for the samples to leave the window; `
+        : args.cause === 'no-lineage-samples'
+          ? `the launch-time measurement found no goal-attributed, pot, or session usage samples in its budget ` +
+            `window. An empty stream is unmeasured, not a priced zero; refusing rather than admitting without ` +
+            `a figure that can be checked against the ceiling; `
         : `the platform snapshot carries no spend figure, so the gate measured at launch, and that measurement ` +
           `failed (${args.detail ?? 'unknown error'}). With no figure there is no headroom to judge. Refusing ` +
           `rather than admitting: a ceiling that fails open whenever its read fails never binds. Retry once the ` +
@@ -3169,7 +3180,7 @@ export type GoalInferenceAdmissionDecision =
       allowed: true;
       goalId: string | null;
       reason:
-        | 'no-goal' | 'no-budget' | 'budget-gate-disabled' | 'under-budget' | 'zero-usage-bootstrap'
+        | 'no-goal' | 'no-budget' | 'budget-gate-disabled' | 'under-budget'
         | 'interactive-usage-stale' | 'interactive-usage-unavailable';
     }
   | {
@@ -3269,9 +3280,8 @@ export function evaluateGoalInferenceBudget(args: {
         `(${rollup.pot.samples} pot, ${rollup.session.samples} session)`,
     );
   }
-  // D-014: only a genuinely empty authoritative + diagnostic ledger may admit
-  // the first turn (or a goal whose entire budget window is quiet).
-  return { allowed: true, goalId: args.goalId, reason: 'zero-usage-bootstrap' };
+  // D-011 clause 3: empty measurement is still unmeasured, never priced zero.
+  return refuseUnmeasured('no-lineage-samples');
 }
 
 /**
@@ -3657,16 +3667,14 @@ export async function resolveGoalLaunchForGoal(args: {
               `(${live.rollup.pot.samples} pot, ${live.rollup.session.samples} session)`,
           });
         } else {
-          // The zero-usage bootstrap (work-on-everything-stewardship-remediation
-          // D-014): no usage on ANY leg, so nothing can be past the ceiling. A
-          // goal's first holder, or a goal idle longer than its window, would
-          // otherwise be refused forever, because no holder means no samples.
-          degradedReasons.push(
-            `budget ceiling not enforced — goal ${goalId} declares budget_cents=${budget.budgetCents} but has no ` +
-              `usage on any leg in its budget window (measured at launch: 0 goal-attributed, 0 goal-session and ` +
-              `0 goal-pot samples), so nothing can be past the ceiling; admitted as the zero-usage bootstrap ` +
-              `(work-on-everything-stewardship-remediation D-014)`,
-          );
+          // D-011 clause 3 and accepted R-3: no samples is an unmeasured
+          // figure, not proof of a priced zero or available budget headroom.
+          refusal = budgetUnmeasurableRefusal({
+            goalId,
+            budgetCents: budget.budgetCents,
+            count,
+            cause: 'no-lineage-samples',
+          });
         }
         if (refusal) {
           escalateBudgetRefusal({
