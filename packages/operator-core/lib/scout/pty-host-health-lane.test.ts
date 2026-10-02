@@ -114,6 +114,20 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('launch-kickoff-backend-frame-timeout')).toBe('failure');
   });
 
+  it('keeps startup hold diagnostics distinct from the terminal stuck drop', () => {
+    expect(classifyPtyHostEvent('kickoff-held-for-codex-frame')).toBe('routine');
+    expect(classifyPtyHostEvent('kickoff-codex-frame-hold-ended')).toBe('routine');
+    expect(classifyPtyHostEvent('codex-starting-stuck-snapshot')).toBe('routine');
+    expect(classifyPtyHostEvent('codex-starting-stuck-early-drop')).toBe('failure');
+    const patterns = buildPtyHostHealthPatterns([
+      row('kickoff-held-for-codex-frame', 1),
+      row('kickoff-codex-frame-hold-ended', 1),
+      row('codex-starting-stuck-snapshot', 1),
+      row('codex-starting-stuck-early-drop', 1),
+    ]);
+    expect(patterns.map(pattern => pattern.ref)).toEqual(['pty-host:kind:codex-starting-stuck-early-drop']);
+  });
+
   it('keeps failed role MCP readiness while omitting a ready connection', () => {
     const patterns = buildPtyHostHealthPatterns([
       row('launch-role-mcp-ready', 20),

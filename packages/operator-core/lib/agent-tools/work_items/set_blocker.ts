@@ -228,9 +228,21 @@ async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: W
   let lifecycle: unknown = null;
   if (active.length === 0 && !dependentTerminal) {
     if (updated.state === 'blocked') {
-      const restored = await setWorkItemStateWithAliasInfo(input.id, 'open', { harness: input.harness, by });
-      if (restored.workItem) finalWorkItem = restored.workItem;
-      lifecycle = restored;
+      // The payload write and the edges above are already committed, so a refused
+      // restore (e.g. the plan gate while the linked plan item is still blocked)
+      // must not report the whole migration as failed. The item stays blocked,
+      // which is correct while that gate holds; report the refusal as lifecycle.
+      try {
+        const restored = await setWorkItemStateWithAliasInfo(input.id, 'open', { harness: input.harness, by });
+        if (restored.workItem) finalWorkItem = restored.workItem;
+        lifecycle = restored;
+      } catch (err) {
+        lifecycle = {
+          restored: false,
+          state: updated.state,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
     } else if (updated.family === 'issue') {
       lifecycle = await setWorkItemClaimHold(input.id, false, {
         harness: input.harness,

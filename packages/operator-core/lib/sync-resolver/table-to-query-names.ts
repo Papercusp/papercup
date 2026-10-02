@@ -70,6 +70,9 @@ export type QueryNameTarget = string | { name: string; scope: ScopeKeyBuilder };
  * a bare string full-busts; `{ name, scope }` opts into per-row scoping.
  */
 export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTarget[]>> = {
+  // Occurrence watermarks alter the observation page and its exact summary even
+  // when the canonical work-item row is unchanged.
+  'harness_shared.work_item_occurrences': ['learning.observations', 'learning.observations.summary'],
   // Cloud Workspaces (WI-40483 / P-023): all low-volume durable control
   // tables push the single provider-neutral projection. workspace_host_logs
   // is intentionally absent because appendWorkspaceHostLogs emits one scoped

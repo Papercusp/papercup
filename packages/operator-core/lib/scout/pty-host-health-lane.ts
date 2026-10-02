@@ -63,6 +63,12 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // Its terminal outcome is recorded separately as `-confirmed` (routine) or
     // `-unconfirmed` (failure), so counting this as a failure double-counts.
     kind === 'launch-kickoff-marker-echo-pending' ||
+    // The hold and its diagnostic snapshot have separate terminal drop events.
+    // Hold-ended includes successful and interrupted outcomes, so it is not a
+    // failure verdict by itself.
+    kind === 'kickoff-held-for-codex-frame' ||
+    kind === 'kickoff-codex-frame-hold-ended' ||
+    kind === 'codex-starting-stuck-snapshot' ||
     // An explicitly Starting Codex footer extends the early frame wait only
     // within the kickoff deadline; the terminal timeout is recorded separately.
     kind === 'launch-kickoff-backend-frame-wait-extended'
@@ -82,6 +88,7 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'launch-kickoff-model-turn-absent' ||
     kind === 'launch-role-mcp-unavailable' ||
     kind === 'busy-gate-expired' ||
+    kind === 'codex-starting-stuck-early-drop' ||
     // A respawn whose compaction was never reported to the operator.
     kind === 'respawn-compaction-unannounced' ||
     /(?:^|-)(?:failed|error|expired|timeout|timed-out|unconfirmed|unverified|exhausted|truncated|dropped|refused|stuck|starvation|suspected|partial)$/.test(kind)

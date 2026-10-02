@@ -1,4 +1,6 @@
-import { readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   callToolWithPressureRetry,
@@ -2217,116 +2219,165 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
   const moduleNotFound = (specifier: string) =>
     Object.assign(new Error(`Cannot find module '${specifier}'`), { code: 'ERR_MODULE_NOT_FOUND' });
 
-  it('returns the imported module on a clean first attempt without consulting the mutex', async () => {
+  async function withoutOuterInstallReader<T>(run: () => Promise<T>): Promise<T> {
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    try {
+      return await run();
+    } finally {
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+    }
+  }
+
+  it('imports SDK modules under the repo install reader lease', async () => {
     const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
-    const loadInstallMutex = vi.fn();
-    const result = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
-      doImport,
-      loadInstallMutex,
-      sleep: vi.fn(),
-    });
-    expect(result).toEqual({ Client: 'ok' });
-    expect(doImport).toHaveBeenCalledTimes(1);
-    expect(loadInstallMutex).not.toHaveBeenCalled();
-  });
-
-  it('rethrows a non-MODULE_NOT_FOUND failure immediately, without consulting the mutex', async () => {
-    const otherError = new TypeError('boom');
-    const doImport = vi.fn().mockRejectedValue(otherError);
-    const loadInstallMutex = vi.fn();
-    await expect(
-      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex }),
-    ).rejects.toBe(otherError);
-    expect(doImport).toHaveBeenCalledTimes(1);
-    expect(loadInstallMutex).not.toHaveBeenCalled();
-  });
-
-  it('rethrows MODULE_NOT_FOUND immediately when no install:safe write is in flight (genuine missing dep)', async () => {
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/types.js');
-    const doImport = vi.fn().mockRejectedValue(notFound);
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      _options: { timeoutMs: number; onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => run());
     const loadInstallMutex = vi.fn().mockResolvedValue([
-      { peekFsMutexSync: () => ({ held: false }) },
+      { withFsMutexRead },
       { repoLockName: () => 'npm-install-abc123' },
     ]);
-    const sleep = vi.fn();
-    await expect(
-      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex, sleep }),
-    ).rejects.toBe(notFound);
-    expect(doImport).toHaveBeenCalledTimes(1);
-    expect(sleep).not.toHaveBeenCalled();
-  });
-
-  it('rethrows MODULE_NOT_FOUND immediately when the mutex helper itself cannot be loaded', async () => {
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
-    const doImport = vi.fn().mockRejectedValue(notFound);
-    const loadInstallMutex = vi.fn().mockRejectedValue(new Error('cannot resolve helper'));
-    await expect(
-      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', { doImport, loadInstallMutex }),
-    ).rejects.toBe(notFound);
-    expect(doImport).toHaveBeenCalledTimes(1);
-  });
-
-  it('waits out a live install:safe write and returns the module once the retry succeeds', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/streamableHttp.js');
-    const doImport = vi.fn()
-      .mockRejectedValueOnce(notFound)
-      .mockRejectedValueOnce(notFound)
-      .mockResolvedValueOnce({ StreamableHTTPClientTransport: 'ok' });
-    const loadInstallMutex = vi.fn().mockResolvedValue([
-      { peekFsMutexSync: () => ({ held: true, owner: { pid: 4242, host: 'devbox' } }) },
-      { repoLockName: () => 'npm-install-abc123' },
-    ]);
-    const sleeps: number[] = [];
-    const result = await importSdkModuleWithInstallAwareness(
-      '@modelcontextprotocol/sdk/client/streamableHttp.js',
-      {
+    const result = await withoutOuterInstallReader(() =>
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
         doImport,
         loadInstallMutex,
-        sleep: async (ms: number) => {
-          sleeps.push(ms);
-        },
-        totalMs: 10_000,
-        intervalMs: 1_500,
-      },
+      }),
     );
-    expect(result).toEqual({ StreamableHTTPClientTransport: 'ok' });
-    expect(doImport).toHaveBeenCalledTimes(3);
-    expect(sleeps).toEqual([1_500, 1_500]);
-    expect(consoleError).toHaveBeenCalledTimes(1);
-    consoleError.mockRestore();
+    expect(result).toEqual({ Client: 'ok' });
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(loadInstallMutex).toHaveBeenCalledTimes(1);
+    expect(withFsMutexRead).toHaveBeenCalledWith(
+      'npm-install-abc123',
+      expect.any(Function),
+      expect.objectContaining({ timeoutMs: expect.any(Number), onWaiting: expect.any(Function) }),
+    );
+    expect(withFsMutexRead.mock.calls[0]?.[2]?.timeoutMs).toBeGreaterThan(330_000);
   });
 
-  it('gives up and rethrows the original MODULE_NOT_FOUND once the retry budget is exhausted', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const notFound = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
-    const doImport = vi.fn().mockRejectedValue(notFound);
+  it('preserves a non-module import error from inside the reader lease', async () => {
+    const otherError = new TypeError('boom');
+    const doImport = vi.fn().mockRejectedValue(otherError);
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      _options: { timeoutMs: number; onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => run());
     const loadInstallMutex = vi.fn().mockResolvedValue([
-      { peekFsMutexSync: () => ({ held: true, owner: { pid: 4242 } }) },
+      { withFsMutexRead },
       { repoLockName: () => 'npm-install-abc123' },
     ]);
-    let now = 0;
-    const sleep = vi.fn(async (ms: number) => {
-      now += ms;
-    });
-    const originalNow = Date.now;
-    Date.now = () => now;
+    await expect(withoutOuterInstallReader(() =>
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex }),
+    )).rejects.toBe(otherError);
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(withFsMutexRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a genuine missing dependency without retrying', async () => {
+    const notFound = moduleNotFound('@modelcontextprotocol/sdk/types.js');
+    const doImport = vi.fn().mockRejectedValue(notFound);
+    const withFsMutexRead = vi.fn(async (
+      _name: string,
+      run: () => Promise<unknown>,
+      _options: { timeoutMs: number; onWaiting: (info: { owner: string; elapsedMs: number }) => void },
+    ) => run());
+    const loadInstallMutex = vi.fn().mockResolvedValue([
+      { withFsMutexRead },
+      { repoLockName: () => 'npm-install-abc123' },
+    ]);
+    await expect(withoutOuterInstallReader(() =>
+      importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js', { doImport, loadInstallMutex }),
+    )).rejects.toBe(notFound);
+    expect(doImport).toHaveBeenCalledTimes(1);
+    expect(withFsMutexRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to a direct import when the optional mutex helper cannot load', async () => {
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const loadInstallMutex = vi.fn().mockRejectedValue(new Error('cannot resolve helper'));
+    await expect(importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
+      doImport,
+      loadInstallMutex,
+    })).resolves.toEqual({ Client: 'ok' });
+    expect(doImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for install:safe before attempting the SDK import', async () => {
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    const previousMutexDisabled = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    const lockDir = mkdtempSync(join(tmpdir(), 'ptool-sdk-install-lock-'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let signalWriterEntered!: () => void;
+    const writerEntered = new Promise<void>((resolve) => { signalWriterEntered = resolve; });
+    let releaseWriter!: () => void;
+    const writerRelease = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    let install: Promise<number> | undefined;
+
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockDir;
+    delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
     try {
-      await expect(
-        importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js', {
-          doImport,
-          loadInstallMutex,
-          sleep,
-          totalMs: 5_000,
-          intervalMs: 2_000,
-        }),
-      ).rejects.toBe(notFound);
+      const [{ withFsMutex, peekFsMutexSync }, { repoLockName }] = await Promise.all([
+        import('../../../scripts/lib/fs-mutex.mjs'),
+        import('../../../scripts/npm-install-safe.mjs'),
+      ]);
+      const lockName = repoLockName();
+      install = withFsMutex(lockName, async () => {
+        signalWriterEntered();
+        await writerRelease;
+        return 0;
+      });
+      await writerEntered;
+
+      const missingWhileWriterRuns = moduleNotFound('@modelcontextprotocol/sdk/client/index.js');
+      const doImport = vi.fn(async () => {
+        if (peekFsMutexSync(lockName).held) throw missingWhileWriterRuns;
+        return { Client: 'ok' };
+      });
+      const importing = importSdkModuleWithInstallAwareness(
+        '@modelcontextprotocol/sdk/client/index.js',
+        { doImport },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(doImport).not.toHaveBeenCalled();
+
+      releaseWriter();
+      await expect(importing).resolves.toEqual({ Client: 'ok' });
+      await install;
     } finally {
-      Date.now = originalNow;
+      releaseWriter();
+      await install?.catch(() => {});
       consoleError.mockRestore();
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+      if (previousMutexDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+      else process.env.PAPERCUSP_DISABLE_FS_MUTEX = previousMutexDisabled;
+      rmSync(lockDir, { recursive: true, force: true });
     }
-    // Bounded: stops retrying once elapsed time reaches the budget rather than looping forever.
-    expect(doImport.mock.calls.length).toBeGreaterThan(1);
-    expect(doImport.mock.calls.length).toBeLessThan(10);
+  });
+
+  it('does not acquire a nested reader lease when install:safe already holds one', async () => {
+    const previousMutexHeld = process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+    process.env.PAPERCUSP_INSTALL_MUTEX_HELD = '1';
+    const doImport = vi.fn().mockResolvedValue({ Client: 'ok' });
+    const loadInstallMutex = vi.fn();
+    try {
+      await expect(importSdkModuleWithInstallAwareness(
+        '@modelcontextprotocol/sdk/client/index.js',
+        { doImport, loadInstallMutex },
+      )).resolves.toEqual({ Client: 'ok' });
+      expect(doImport).toHaveBeenCalledTimes(1);
+      expect(loadInstallMutex).not.toHaveBeenCalled();
+    } finally {
+      if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
+    }
   });
 });

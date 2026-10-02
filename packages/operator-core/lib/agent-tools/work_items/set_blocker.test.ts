@@ -1438,6 +1438,33 @@ describe('work_items:set_blocker', () => {
     const activeRefs = (blockers: Array<{ ref: string; status: string }>) =>
       blockers.filter((b) => b.status === 'active').map((b) => b.ref);
 
+    it('reports a committed migration as ok when the blocked->open restore is refused (plan gate)', async () => {
+      // Live 2026-10-02: WI-10002828's plan item was still blocked, so the restore threw
+      // after the row was cleared and the edge written; the call used to say ok:false.
+      const item = blockedWith([row('event', 'work-item:done:WI-10004474')]);
+      getWorkItem.mockResolvedValue(item);
+      persistMerge(item);
+      linkWorkItemRefDependencies.mockResolvedValue({
+        ok: true,
+        edges: [{ blocker: 'WI-10004474', blocked: { kind: 'issue', ref: 'WI-10002828' } }],
+      });
+      setWorkItemStateWithAliasInfo.mockRejectedValueOnce(
+        new Error("work_item 'WI-10002828' is blocked, and its linked plan-item p#P-006 is STILL effectively 'blocked'"),
+      );
+
+      const out = await one({ id: 'WI-10002828', migrateWorkItemRefs: true });
+
+      expect(out.ok).toBe(true);
+      expect(out.changed).toBe(true);
+      expect(out.migration.converted).toEqual([
+        { kind: 'event', ref: 'work-item:done:WI-10004474', blockers: ['WI-10004474'] },
+      ]);
+      expect(out.workItem.state).toBe('blocked');
+      expect(out.lifecycle).toMatchObject({ restored: false, state: 'blocked' });
+      expect(out.lifecycle.error).toContain('STILL effectively');
+      expect(activeRefs(out.blockerHistory)).toEqual([]);
+    });
+
     it('replaces a work-item:done row with a blocks edge, clears the row and restores open', async () => {
       const item = blockedWith([row('event', 'work-item:done:WI-10004474')]);
       getWorkItem.mockResolvedValue(item);

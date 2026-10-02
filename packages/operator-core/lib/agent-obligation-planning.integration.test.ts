@@ -64,7 +64,7 @@ async function record(disposition: 'plan-needed' | 'existing-plans-sufficient') 
 async function readAgenda() {
   return readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Only unrelated sources are stubbed. Goal mode, portfolio, review and ownership use production reads.
-    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
+    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [],
       ownerReport: async () => null,
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },

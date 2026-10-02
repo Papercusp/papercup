@@ -13,7 +13,9 @@
  * copy-out/fixture tier from CLAUDE.md's falsifiability table).
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // Enrolled in tsconfig.declarations.json, so this import is TYPED (generated sibling
 // scripts/check-reachable-advisories.d.mts). That is deliberate: it pins `analyze()`'s
@@ -122,6 +124,45 @@ describe('reachable-advisory gate: fails closed on a measurement gap', () => {
     const r = analyze(AUDIT_FIXTURE, {}, { accepted: [] });
     expect(r.offenders.length).toBeGreaterThan(0);
     expect(r.unattributed.length).toBe(Object.keys(AUDIT_FIXTURE.vulnerabilities).length);
+  });
+
+  it('rejects parseable npm ls problem JSON before reading or running either audit lens', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reachable-advisories-guard-'));
+    try {
+      const lsPath = join(dir, 'ls.json');
+      const missingAuditPath = join(dir, 'audit.json');
+      const missingFullAuditPath = join(dir, 'full-audit.json');
+      writeFileSync(
+        lsPath,
+        JSON.stringify({
+          dependencies: LS_FIXTURE.dependencies,
+          problems: ['invalid: style-dictionary@4.4.0'],
+        }),
+      );
+
+      // Missing audit files prove tree validation runs first. If the CLI reads either audit
+      // input before checking npm ls problems, it reports ENOENT instead of the integrity gap.
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(REPO_ROOT, 'scripts', 'check-reachable-advisories.mjs'),
+          '--ls-json',
+          lsPath,
+          '--audit-json',
+          missingAuditPath,
+          '--full-audit-json',
+          missingFullAuditPath,
+        ],
+        { cwd: REPO_ROOT, encoding: 'utf8', timeout: 5000 },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('ADVISORY_GATE_UNDETERMINED: npm ls reported 1 dependency-tree problem');
+      expect(result.stderr).not.toContain('ENOENT');
+      expect(result.stdout).not.toContain('STALE baseline entries');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -453,6 +453,12 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     );
   });
 
+  it('invalidates the observation page and summary when occurrence watermarks change', () => {
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.work_item_occurrences']).toEqual(
+      ['learning.observations', 'learning.observations.summary'],
+    );
+  });
+
   it('refreshes both global and focused work-item conversation identities', () => {
     expect(TABLE_TO_QUERY_NAMES['harness_shared.operator_conversations']).toEqual(
       expect.arrayContaining([

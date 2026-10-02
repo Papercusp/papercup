@@ -38,7 +38,7 @@ vi.mock('../workspace-registry', async () => {
 });
 
 const wi = await import('../work-items');
-const { sweepWorkItemBlockerDefaults, BLOCKER_DEFAULT_REAPER_ACTOR } = await import('./work-item-blocker-reaper');
+const { sweepWorkItemBlockerDefaults, BLOCKER_DEFAULT_REAPER_ACTOR, defaultBlockerReapDeps } = await import('./work-item-blocker-reaper');
 
 const H = 'papercup';
 const WS = 'default';
@@ -114,6 +114,21 @@ beforeEach(async () => {
 afterEach(() => setFlagOverridesForTest({}));
 
 describe('sweepWorkItemBlockerDefaults against the real work-items store', () => {
+  it('does not select settled legacy features even when they retain a due owner blocker', async () => {
+    const payload = db.sql.json({ externalBlockers: [ask()] });
+    for (const status of ['open', 'passed', 'deprecated']) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (harness_slug, feature_id, item_kind, title, status, workspace_id, created_ts, updated_ts, payload)
+        VALUES (${H}, ${`F-${status}`}, 'feature', ${status}, ${status}, ${WS}, 100, 0, ${payload}::jsonb)`;
+    }
+    expect((await rowOf('F-open')).blockers).toMatchObject([{ status: 'active', decideBy: PAST }]);
+    const candidates = await defaultBlockerReapDeps.listCandidates(20);
+    expect(candidates.map(candidate => candidate.id)).toEqual(['F-open']);
+    expect((await rowOf('F-passed')).blockers[0]?.defaultAppliedAt).toBeUndefined();
+    expect((await rowOf('F-deprecated')).blockers[0]?.defaultAppliedAt).toBeUndefined();
+  });
+
   it('release_to_agents: a past-decideBy needs-human issue is reopened, claimable, and fenced exactly once', async () => {
     await seedParkedIssue('EI-reap-release', [ask()]);
     // Precondition: the fixture really parks it out of the claimable pool.

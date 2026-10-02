@@ -2844,80 +2844,65 @@ export function buildMcpUrl(operatorUrl, {
   return url;
 }
 
-const SDK_IMPORT_RETRY_TOTAL_MS = 150_000;
-const SDK_IMPORT_RETRY_INTERVAL_MS = 1_500;
-
-function isModuleNotFoundError(error) {
-  const code = error && typeof error === 'object' ? error.code : undefined;
-  return code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND';
-}
+const SDK_IMPORT_MUTEX_TIMEOUT_MS = 10 * 60_000;
 
 /**
- * EI-21860372620642128 — `npm run install:safe` rewrites shared node_modules
- * IN PLACE while holding a repo-keyed fs mutex (scripts/lib/fs-mutex.mjs), so
- * a ptool invocation launched during that window can hit a transiently
- * missing `@modelcontextprotocol/sdk` deep import and fail outright, even
- * though the identical import succeeds moments later once the install
- * finishes (reproduced 2026-08-30: five ptool calls retried ~78-81 times over
- * ~120s, then failed `Cannot find module`).
+ * EI-21860372620642128 — install:safe reifies shared node_modules in place
+ * while holding a repo-keyed fs mutex. A ptool import can race that rewrite;
+ * the 2026-10-01 reproduction kept the SDK entrypoint unavailable across a
+ * 330-second ptool wait.
  *
- * ptool itself must never be wrapped in install:safe's own reader guard
- * (EI-21267836337650976 / EI-21250765620092599 — that swallowed a completed
- * write into a near-silent no-op), so this coordinates IN-PROCESS instead:
- * on a MODULE_NOT_FOUND for one of these deep SDK imports, confirm — via the
- * mutex's own non-blocking `peekFsMutexSync` diagnostic peek, never a
- * blocking reader marker, which would reintroduce that exact class of hang —
- * that an install:safe write is ACTUALLY in flight for this repo before
- * retrying. A MODULE_NOT_FOUND with no install in flight is a genuine
- * missing dependency and is rethrown immediately, unretried.
+ * Hold the same mutex's reader lease only while loading the SDK module graph.
+ * This makes an import wait for an active install and makes a later install
+ * wait until Node has cached the loaded modules. Release the lease before
+ * tools/call: wrapping all of ptool would deadlock a tool handler that starts
+ * install:safe (EI-21267836337650976 / EI-21250765620092599).
+ *
+ * A child launched by install:safe --exec-under-lock already holds that
+ * reader lease and inherits PAPERCUSP_INSTALL_MUTEX_HELD; do not nest another
+ * lease, since a queued installer could otherwise wait on the outer reader.
+ * The finite 10-minute wait covers the observed rewrite duration while still
+ * surfacing a stuck installer as an error.
  */
 export async function importSdkModuleWithInstallAwareness(
   specifier,
   {
     doImport = (spec) => import(spec),
-    sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
     loadInstallMutex = () =>
       Promise.all([
         import('../../../scripts/lib/fs-mutex.mjs'),
         import('../../../scripts/npm-install-safe.mjs'),
       ]),
-    totalMs = SDK_IMPORT_RETRY_TOTAL_MS,
-    intervalMs = SDK_IMPORT_RETRY_INTERVAL_MS,
   } = {},
 ) {
-  const startedAt = Date.now();
-  let warned = false;
-  for (;;) {
-    try {
-      return await doImport(specifier);
-    } catch (error) {
-      if (!isModuleNotFoundError(error)) throw error;
-
-      let peek;
-      try {
-        const [{ peekFsMutexSync }, { repoLockName }] = await loadInstallMutex();
-        peek = peekFsMutexSync(repoLockName());
-      } catch {
-        // Best-effort diagnostic only — an unloadable helper (or a repo that
-        // predates this mutex) must never mask the real missing-module error.
-        throw error;
-      }
-      if (!peek.held) throw error;
-
-      const elapsed = Date.now() - startedAt;
-      if (elapsed >= totalMs) throw error;
-      if (!warned) {
-        warned = true;
-        const owner = peek.owner ?? {};
-        const ownerDetail = owner.pid ? ` (pid ${owner.pid}${owner.host ? `@${owner.host}` : ''})` : '';
-        console.error(
-          `ptool: ${specifier} is transiently missing while npm run install:safe rewrites shared ` +
-            `node_modules${ownerDetail} — waiting for it to finish instead of failing (EI-21860372620642128).`,
-        );
-      }
-      await sleep(Math.min(intervalMs, Math.max(0, totalMs - elapsed)));
-    }
+  if (process.env.PAPERCUSP_INSTALL_MUTEX_HELD === '1') {
+    return doImport(specifier);
   }
+
+  let modules;
+  try {
+    modules = await loadInstallMutex();
+  } catch {
+    // Keep ptool usable when the optional coordination helper cannot load.
+    // If the SDK import also fails, preserve that more useful import error.
+    return doImport(specifier);
+  }
+
+  const [{ withFsMutexRead }, { repoLockName }] = modules;
+  const lockName = repoLockName();
+  return withFsMutexRead(lockName, () => doImport(specifier), {
+    timeoutMs: SDK_IMPORT_MUTEX_TIMEOUT_MS,
+    onWaiting: ({ owner, elapsedMs }) => {
+      console.error(
+        'ptool: waiting for install:safe to finish before importing ' +
+          specifier +
+          ' (' +
+          Math.round(elapsedMs / 1000) +
+          's so far); holder: ' +
+          owner.trim(),
+      );
+    },
+  });
 }
 
 /** Connect an MCP client to the operator's superuser endpoint. Returns the

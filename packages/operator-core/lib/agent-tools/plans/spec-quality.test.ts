@@ -150,7 +150,7 @@ describe('evaluatePlanSpecQuality', () => {
           ...shared[1],
           sourceBar: {
             ...sourceBar,
-            [field]: field === 'rubricRevision' ? 5 : field === 'evidencePlane' ? 'live' : 'different',
+            [field]: field === 'evidencePlane' ? 'live' : 'different',
           },
         };
         expect(evaluate([...shared, ...contracts()]).ratings['item-contract-coverage'].rating).toBe('unknown');

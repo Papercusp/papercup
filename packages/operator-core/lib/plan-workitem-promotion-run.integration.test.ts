@@ -1048,19 +1048,25 @@ created: 2026-08-21
   it('WI-10003685: reports an unexpected inline sync rejection while keeping mint best-effort', async () => {
     h.plans.set(PLAN, { items: [{ id: 'P-REJECT', status: 'blocked', text: 'Blocked lane' }] });
     h.laneSyncRejections.set('P-REJECT', 'injected: lane sync rejected');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    const res = await run.promotePlanItems(base);
+    try {
+      const res = await run.promotePlanItems(base);
 
-    expect(res.promoted).toBe(1);
-    expect(res.laneGateFailures).toEqual([
-      {
-        itemId: 'P-REJECT',
-        workItemId: expect.any(String),
-        stage: 'sync-rejection',
-        message: 'injected: lane sync rejected',
-      },
-    ]);
-    expect((await features())[0]?.status).toBe('open');
+      expect(res.promoted).toBe(1);
+      expect(res.laneGateFailures).toEqual([
+        {
+          itemId: 'P-REJECT',
+          workItemId: expect.any(String),
+          stage: 'sync-rejection',
+          message: 'injected: lane sync rejected',
+        },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('mint-time lane sync failure'));
+      expect((await features())[0]?.status).toBe('open');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('P-006: an item blocked by a LATER-declared item still gets its edge (the forward reference a single pass drops)', async () => {

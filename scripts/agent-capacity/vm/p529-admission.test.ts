@@ -90,6 +90,41 @@ describe('vm/p529-admission.sh (faked p005-ramp.sh, real shim installer)', () =>
     expect(readFileSync(path.join(home, 'capacity', 'fp', 'p529-shim-k3.jsonl'), 'utf8').trim().split('\n')).toHaveLength(5);
   });
 
+  it('P529_ARMS=b with P529_MEM_PER_SLOT_GIB skips arm A and runs a memory-clamped arm under its own label', () => {
+    const out = execFileSync('bash', [path.join(vmDir(), 'p529-admission.sh'), '16', '24 32', '600'], {
+      encoding: 'utf8',
+      cwd: home,
+      env: { ...process.env, PATH: `${home}/bin:${process.env.PATH}`, HOME: home, P529_TMP: tmp(), P529_ARMS: 'b', P529_MEM_PER_SLOT_GIB: '6' },
+    });
+    expect(out).toMatch(/^P529_START k=16 mem_per_slot_gib=6 arms=b /m);
+    expect(out).not.toMatch(/arm=a/);
+    expect(out).toMatch(/^P529_PREFLIGHT_OK pool=\S+\/slots-k16m6$/m);
+    const arms = readFileSync(path.join(home, 'ramp.log'), 'utf8').trim().split('\n');
+    expect(arms).toHaveLength(1);
+    expect(arms[0]).toMatch(/^ARM p529-k16m6 sel=all steps=24 32 dur=600 shim=1 /);
+    for (const kv of ['PC_HEAVY_SLOTS=16 ', 'PC_HEAVY_MEM_CLAMP=1 ', 'PC_HEAVY_MEM_PER_SLOT_GIB=6 ', 'PC_HEAVY_PSI_ADMISSION=0 ', `PC_HEAVY_DIR=${tmp()}/slots-k16m6 `])
+      expect(`${arms[0]} `).toContain(kv);
+    expect(out).toMatch(/^P529_ARM_END arm=k16m6 rc=0 /m);
+    expect(readFileSync(path.join(home, 'capacity', 'fp', 'p529-shim-k16m6.jsonl'), 'utf8').trim().split('\n')).toHaveLength(5);
+    expect(readFileSync(path.join(bin(), 'vitest'), 'utf8')).not.toContain('PC_HEAVY_SHIM_V1');
+  });
+
+  it.each([
+    ['P529_ARMS', 'a'],
+    ['P529_MEM_PER_SLOT_GIB', '0'],
+    ['P529_MEM_PER_SLOT_GIB', 'x6'],
+  ])('refuses %s=%s before touching the prepared checkout', (k, v) => {
+    let err: { status?: number; stderr?: string } = {};
+    try {
+      execFileSync('bash', [path.join(vmDir(), 'p529-admission.sh'), '3', '12'], { encoding: 'utf8', env: { ...process.env, HOME: home, P529_TMP: tmp(), [k]: v }, stdio: 'pipe' });
+    } catch (e) {
+      err = e as typeof err;
+    }
+    expect(err.status).toBe(2);
+    expect(err.stderr).toContain(`P529_ERROR ${k}`);
+    expect(() => readFileSync(path.join(home, 'ramp.log'), 'utf8')).toThrow();
+  });
+
   it('aborts before arm B, and removes the shim, when the Codex sandbox cannot reach the shared pool', () => {
     let code = 0;
     let stderr = '';

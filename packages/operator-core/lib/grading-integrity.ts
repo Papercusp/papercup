@@ -98,7 +98,12 @@ export const GRADING_AUDIT_DISPATCH_LIMIT = 50;
  * process-kill fan-out and leaves headroom for the caller's own work.
  */
 export const GRADING_AUDIT_DISPATCH_CONCURRENCY = 4;
-/** Maximum scorecard history scanned when selecting an oldest-first backlog batch. */
+/**
+ * How many of the NEWEST scorecards a no-target sweep reads before picking an
+ * oldest-first batch from the pending ones among them. "Oldest-first" is within
+ * this window only: a pending card older than the newest N is never selected by
+ * a no-target sweep and is reachable only via explicit `targetIds` (WI-10005150).
+ */
 export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
 /**
  * A dispatch reservation survives a launcher response failure long enough for

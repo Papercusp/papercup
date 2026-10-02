@@ -671,30 +671,26 @@ export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, c
     contextTier?: string;
 }): URL;
 /**
- * EI-21860372620642128 — `npm run install:safe` rewrites shared node_modules
- * IN PLACE while holding a repo-keyed fs mutex (scripts/lib/fs-mutex.mjs), so
- * a ptool invocation launched during that window can hit a transiently
- * missing `@modelcontextprotocol/sdk` deep import and fail outright, even
- * though the identical import succeeds moments later once the install
- * finishes (reproduced 2026-08-30: five ptool calls retried ~78-81 times over
- * ~120s, then failed `Cannot find module`).
+ * EI-21860372620642128 — install:safe reifies shared node_modules in place
+ * while holding a repo-keyed fs mutex. A ptool import can race that rewrite;
+ * the 2026-10-01 reproduction kept the SDK entrypoint unavailable across a
+ * 330-second ptool wait.
  *
- * ptool itself must never be wrapped in install:safe's own reader guard
- * (EI-21267836337650976 / EI-21250765620092599 — that swallowed a completed
- * write into a near-silent no-op), so this coordinates IN-PROCESS instead:
- * on a MODULE_NOT_FOUND for one of these deep SDK imports, confirm — via the
- * mutex's own non-blocking `peekFsMutexSync` diagnostic peek, never a
- * blocking reader marker, which would reintroduce that exact class of hang —
- * that an install:safe write is ACTUALLY in flight for this repo before
- * retrying. A MODULE_NOT_FOUND with no install in flight is a genuine
- * missing dependency and is rethrown immediately, unretried.
+ * Hold the same mutex's reader lease only while loading the SDK module graph.
+ * This makes an import wait for an active install and makes a later install
+ * wait until Node has cached the loaded modules. Release the lease before
+ * tools/call: wrapping all of ptool would deadlock a tool handler that starts
+ * install:safe (EI-21267836337650976 / EI-21250765620092599).
+ *
+ * A child launched by install:safe --exec-under-lock already holds that
+ * reader lease and inherits PAPERCUSP_INSTALL_MUTEX_HELD; do not nest another
+ * lease, since a queued installer could otherwise wait on the outer reader.
+ * The finite 10-minute wait covers the observed rewrite duration while still
+ * surfacing a stuck installer as an error.
  */
-export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, sleep, loadInstallMutex, totalMs, intervalMs, }?: {
+export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, loadInstallMutex, }?: {
     doImport?: ((spec: any) => Promise<any>) | undefined;
-    sleep?: ((ms: any) => Promise<any>) | undefined;
     loadInstallMutex?: (() => Promise<[typeof import("../../../scripts/lib/fs-mutex.mjs"), typeof import("../../../scripts/npm-install-safe.mjs")]>) | undefined;
-    totalMs?: number | undefined;
-    intervalMs?: number | undefined;
 }): Promise<any>;
 /**
  * List every tool, following pagination if the server returns a cursor.

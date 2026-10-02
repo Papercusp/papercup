@@ -469,7 +469,12 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // paths invoke this function directly), so plans:start cannot be its sole
   // authority. The shared snapshot is a no-op for legacy plans and fail-closed
   // for post-epoch contracts before any work-item is minted.
-  const acceptanceBarLifecycle = await readAndEvaluateAcceptanceBarLifecycle(opts.planSlug, 'pre-start');
+  // Scope to the harness the plan was just read from: a plan slug is unique only per harness
+  // (a template is installed once per harness), so an unscoped read spans every copy and
+  // refuses `bar_snapshot_plan_ambiguous` (WI-10005140).
+  const acceptanceBarLifecycle = await readAndEvaluateAcceptanceBarLifecycle(opts.planSlug, 'pre-start', {
+    harnessSlug: opts.harnessSlug,
+  });
   if (!acceptanceBarLifecycle.satisfied) {
     return {
       promoted: 0,

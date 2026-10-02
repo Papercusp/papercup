@@ -19,6 +19,12 @@
 # The lever is the capacity difference (largest OK step) and the per-step memory peak; the shim
 # log gives the added wait (admit - request) per heavy job. The shim is removed at the end.
 # Lines to grep: P529_* (plus p005-ramp.sh's RAMP_* lines).
+#
+# Variants (D-023: a fixed K=3 halved capacity, because the status quo's limit at N=32 was memory,
+# not CPU, and K=3 left half the cores idle while agents queued):
+#   P529_ARMS=b                skip arm A (its baseline is already measured) and run arm B only.
+#   P529_MEM_PER_SLOT_GIB=<n>  arm B keeps pc-heavy's memory clamp ON with <n> GiB per admitted
+#     job, so K becomes a ceiling and MemAvailable decides admission. Label p529-k<K>m<n>.
 set -uo pipefail
 cd "$HOME/capacity" || exit 1
 K=${1:?usage: p529-admission.sh <K> "<N steps>" [durationSec] [repo]}
@@ -29,6 +35,10 @@ S="scripts/agent-capacity"
 CACHE=${AGENT_CAPACITY_CACHE:-$HOME/.cache/agent-capacity}
 PREP="$CACHE/prepared/$REPO"
 TMPD=${P529_TMP:-/tmp/p529}
+ARMS=${P529_ARMS:-a,b}
+MEMGIB=${P529_MEM_PER_SLOT_GIB:-}
+case "$ARMS" in a,b|b) ;; *) echo "P529_ERROR P529_ARMS must be a,b or b (got $ARMS)" >&2; exit 2 ;; esac
+case "$MEMGIB" in ''|[1-9]|[1-9][0-9]) ;; *) echo "P529_ERROR P529_MEM_PER_SLOT_GIB must be 1-99 (got $MEMGIB)" >&2; exit 2 ;; esac
 ts() { date -u +%FT%TZ; }
 [ -d "$PREP/node_modules/.bin" ] || { echo "P529_ERROR no prepared checkout at $PREP" >&2; exit 2; }
 mkdir -p "$TMPD" || exit 1
@@ -40,21 +50,25 @@ for v in $(env | sed -n 's/^\(PC_HEAVY_[A-Z0-9_]*\)=.*/\1/p'); do unset "$v"; do
 export TASKS_FILE=${TASKS_FILE:-$CACHE/corpus/tasks.json}
 [ -f "$TASKS_FILE" ] || { echo "P529_ERROR no tasks file at $TASKS_FILE" >&2; exit 2; }
 
-echo "P529_START k=$K steps=\"$STEPS\" dur=$DUR repo=$REPO tasks=$TASKS_FILE $(ts)"
+B="k$K${MEMGIB:+m$MEMGIB}"
+echo "P529_START k=$K mem_per_slot_gib=${MEMGIB:-off} arms=$ARMS steps=\"$STEPS\" dur=$DUR repo=$REPO tasks=$TASKS_FILE $(ts)"
 
 bash "$S/vm/install-heavy-shim.sh" "$PREP" --uninstall
-echo "P529_ARM_START arm=a $(ts)"
-bash "$S/vm/p005-ramp.sh" p529-a all "$STEPS" "$DUR"
-rc=$?
-echo "P529_ARM_END arm=a rc=$rc $(ts)"
-# rc 3 = the driver could not run (preflight or an immediate crash): arm A measured nothing, so
-# arm B would have no baseline to compare against.
-[ "$rc" -ne 3 ] || { echo "P529_ERROR arm=a driver did not run, stopping before arm B" >&2; exit 5; }
+if [ "$ARMS" = a,b ]; then
+  echo "P529_ARM_START arm=a $(ts)"
+  bash "$S/vm/p005-ramp.sh" p529-a all "$STEPS" "$DUR"
+  rc=$?
+  echo "P529_ARM_END arm=a rc=$rc $(ts)"
+  # rc 3 = the driver could not run (preflight or an immediate crash): arm A measured nothing, so
+  # arm B would have no baseline to compare against.
+  [ "$rc" -ne 3 ] || { echo "P529_ERROR arm=a driver did not run, stopping before arm B" >&2; exit 5; }
+fi
 
 bash "$S/vm/install-heavy-shim.sh" "$PREP" || { echo "P529_ERROR shim install failed" >&2; exit 3; }
-rm -rf "$TMPD/slots-k$K"
-export PC_HEAVY_SLOTS="$K" PC_HEAVY_DIR="$TMPD/slots-k$K" PC_HEAVY_MEM_CLAMP=0 PC_HEAVY_PSI_ADMISSION=0 \
-  PC_HEAVY_COALESCE=0 PC_HEAVY_TIMEOUT_SEC=7200 PC_HEAVY_SHIM_LOG="$TMPD/shim-k$K.jsonl"
+rm -rf "$TMPD/slots-$B"
+export PC_HEAVY_SLOTS="$K" PC_HEAVY_DIR="$TMPD/slots-$B" PC_HEAVY_MEM_CLAMP=0 PC_HEAVY_PSI_ADMISSION=0 \
+  PC_HEAVY_COALESCE=0 PC_HEAVY_TIMEOUT_SEC=7200 PC_HEAVY_SHIM_LOG="$TMPD/shim-$B.jsonl"
+if [ -n "$MEMGIB" ]; then export PC_HEAVY_MEM_CLAMP=1 PC_HEAVY_MEM_PER_SLOT_GIB="$MEMGIB"; fi
 : >"$PC_HEAVY_SHIM_LOG"
 chmod 0666 "$PC_HEAVY_SHIM_LOG" 2>/dev/null || true
 # Preflight: a tool run inside Codex's workspace-write sandbox (bootstrap-agent-vm.sh's own probe
@@ -72,13 +86,13 @@ if [ "$pf" != pch-ok ] || ! grep -q preflight "$PC_HEAVY_SHIM_LOG.preflight" 2>/
 fi
 rm -f "$PC_HEAVY_SHIM_LOG.preflight"
 echo "P529_PREFLIGHT_OK pool=$PC_HEAVY_DIR"
-echo "P529_ARM_START arm=k$K $(ts)"
-bash "$S/vm/p005-ramp.sh" "p529-k$K" all "$STEPS" "$DUR"
-echo "P529_ARM_END arm=k$K rc=$? $(ts)"
+echo "P529_ARM_START arm=$B $(ts)"
+bash "$S/vm/p005-ramp.sh" "p529-$B" all "$STEPS" "$DUR"
+echo "P529_ARM_END arm=$B rc=$? $(ts)"
 for v in $(env | sed -n 's/^\(PC_HEAVY_[A-Z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 bash "$S/vm/install-heavy-shim.sh" "$PREP" --uninstall
 
-python3 - "$TMPD/shim-k$K.jsonl" <<'PY'
+python3 - "$TMPD/shim-$B.jsonl" <<'PY'
 import json, sys
 req, adm = {}, {}
 for line in open(sys.argv[1]):
@@ -92,5 +106,5 @@ q = lambda p: w[min(len(w) - 1, int(p * len(w)))] if w else None
 print(f"P529_SHIM requests={len(req)} admitted={len(adm)} unadmitted={len(set(req) - set(adm))} "
       f"wait_p50={q(0.5)} wait_p90={q(0.9)} wait_max={w[-1] if w else None}")
 PY
-cp "$TMPD/shim-k$K.jsonl" "$HOME/capacity/fp/p529-shim-k$K.jsonl" 2>/dev/null || true
+cp "$TMPD/shim-$B.jsonl" "$HOME/capacity/fp/p529-shim-$B.jsonl" 2>/dev/null || true
 echo "P529_DONE $(ts)"

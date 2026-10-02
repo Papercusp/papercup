@@ -4,9 +4,15 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const reconcilePendingGradingAudits = vi.hoisted(() => vi.fn());
 
-vi.mock('../../grading-integrity', () => ({ reconcilePendingGradingAudits }));
+// Deliberately NOT the real 500/50: distinctive values prove the description is
+// DERIVED from the dispatcher's constants rather than hardcoded beside them.
+vi.mock('../../grading-integrity', () => ({
+  reconcilePendingGradingAudits,
+  GRADING_AUDIT_BACKLOG_SCAN_LIMIT: 777,
+  GRADING_AUDIT_DISPATCH_LIMIT: 33,
+}));
 
-import repairTool, { SCORECARD_REPAIR_TIMEOUT_SEC } from './repair';
+import repairTool, { SCORECARD_REPAIR_TIMEOUT_SEC, scorecardRepairArgs } from './repair';
 
 const makeContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -61,6 +67,20 @@ describe('scorecards:repair', () => {
     await repairTool.handler({} as never, ctx);
 
     expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx });
+  });
+
+  it('describes the no-target sweep as the newest-window selection it really is (WI-10005150)', () => {
+    // The old text promised "the oldest bounded backlog". The dispatcher reads the
+    // NEWEST N scorecards and picks oldest-first only inside that window, so an
+    // older pending card is unreachable without targetIds. An agent trusting the
+    // old text would wait on a sweep that never reaches its card.
+    const targetIdsHelp = scorecardRepairArgs.shape.targetIds.description ?? '';
+    for (const text of [repairTool.description, targetIdsHelp]) {
+      expect(text).not.toMatch(/oldest bounded/);
+      expect(text).toContain('NEWEST 777 scorecards');
+      expect(text).toContain('up to 33');
+      expect(text).toContain('reachable only via targetIds');
+    }
   });
 
   it('declares a long-running transport budget for multi-target sweeps', () => {
