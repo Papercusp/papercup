@@ -363,10 +363,11 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
         eligibilitySnapshot: null,
       },
     });
+    if (result.status !== 'updated') throw new Error('expected repair-head rebind to update the transaction');
     const read = statements.find((statement) => statement.text.includes('SELECT metadata'))!;
     expect(read.text).toContain('FOR UPDATE');
     const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
-    expect(update.text).toContain('qualificationTransaction');
+    expect(update.values).toContain('qualificationTransaction');
     expect(update.values).toContain(JSON.stringify(result.transaction));
 
     for (const incumbentLiveness of ['live', 'unknown'] as const) {

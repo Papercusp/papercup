@@ -347,7 +347,7 @@ function isUnstartedDeadRepairRunner(
   current: CheckpointQualificationTransaction | null,
   incumbentLiveness: RunnerLiveness | undefined,
   nowMs: number,
-): current is CheckpointQualificationTransaction {
+): boolean {
   const runner = current?.currentPhysicalRunner;
   return Boolean(
     current &&
