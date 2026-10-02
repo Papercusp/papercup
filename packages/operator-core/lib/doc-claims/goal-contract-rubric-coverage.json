@@ -1,10 +1,10 @@
 {
   "contract": "libs/papercusp/packages/harness/blueprints/su.mode-goal/prompts/goal.md",
   "rubricRef": "goal-mode-e2e",
-  "rubricRevision": 58,
-  "attestedBy": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+  "rubricRevision": 59,
+  "attestedBy": "su-fc5749a7-6632-4f73-9c99-8b475641e7e2",
   "attestedAt": "2026-10-02",
-  "workItem": "WI-10005450",
+  "workItem": "WI-10005128",
   "rubricKeys": ["kickoff-portfolio-read","kickoff-criterion-and-ceiling","relationship-settled-before-creating","child-execution-proven","one-main-owner-per-pot","per-pot-kill-criterion-and-tripwires","spend-reported-and-goals-closed","owner-walls-queued-not-stalled","shipped-not-green","templates-mandate","dedup-before-creating","rubric-reuse-not-proliferation","durability-across-cold-wake","standing-owner-report","ladder-integrity-end-to-end","never-implements","delegates-plan-leadership","standing-drain-fleet-per-goal","grade-vs-test-split","right-container-for-the-work","parallelism-width-and-ceilings","settings-are-data","blender-kept-honest","mode-and-subject-integrity","reallocates-on-evidence","de-facto-activity-mix","portfolio-activity-floor","task-brief-effectiveness","long-horizon-context-effectiveness","scoped-continuation-not-new-kickoff","receipts-bound-the-report","already-achieved-checked-before-kickoff","standing-goal-posture","prerequisites-are-edges-not-phases","audit-before-feeding-stalled-lane","scope-aware-planning-adopt-before-clone","work-placed-into-started-plans","started-plans-staffed-and-claimed","goal-local-gap-review-recorded"],
   "clauses": [
     {"id":"goal-mode-binding-contract","sha256":"e88a5b0690afd542","criteria":["reallocates-on-evidence"]},
@@ -46,6 +46,7 @@
     {"id":"spend-accounting-has","sha256":"ed7e60aced8546ec","criteria":["spend-reported-and-goals-closed"]},
     {"id":"boundary","sha256":"8f650cc8b8ce7e6b","criteria":["spend-reported-and-goals-closed"]},
     {"id":"owner-walled-actions-named","sha256":"51549f134351f2f8","criteria":["owner-walls-queued-not-stalled"]},
+    {"id":"wall-a-plan-lane-in-plan-state","sha256":"0a67893d01dca135","criteria":["owner-walls-queued-not-stalled"]},
     {"id":"shipped-not-green","sha256":"863b4bf3847fe028","criteria":["shipped-not-green"]},
     {"id":"dedup-before-creating","sha256":"0c1835284804cdc1","criteria":["dedup-before-creating"]},
     {"id":"templates-mandate","sha256":"4c1fd216b649c80c","criteria":["templates-mandate"]},
