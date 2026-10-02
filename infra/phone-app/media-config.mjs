@@ -230,11 +230,28 @@ export async function localPhoneReadiness(env, probes = {}) {
       checks.push({ component, ready: (await httpReady(url)) === true });
     } catch { checks.push({ component, ready: false }); }
   }
+  // The local LAN install has no TLS material. Once any hosted coordinate is
+  // present, however, a partial/expired/mismatched TURN certificate is an
+  // operational failure even if all processes and HTTP endpoints are healthy.
+  // Reuse the render-time validator so status cannot silently drift from it.
+  const hosted = [
+    env.PHONE_LIVEKIT_PUBLIC_URL, env.PHONE_TURN_DOMAIN,
+    env.PHONE_TURN_CERT_FILE, env.PHONE_TURN_KEY_FILE, env.PHONE_TURN_TLS_PORT,
+  ].some(value => value !== undefined && value !== '');
+  if (hosted) {
+    let ready = false;
+    try {
+      mediaConfig(env, true);
+      ready = true;
+    } catch { /* Never echo certificate, key, paths or parser errors in status. */ }
+    checks.push({ component: 'turn-certificate', ready });
+  }
   return {
     ok: checks.every(check => check.ready),
     checks,
     scope: 'local-process-and-http-only',
     publicPhoneVerified: false,
+    turnCertificateVerified: hosted && checks.at(-1).ready,
     bidirectionalAudioVerified: false,
     recoveryVerified: false,
     costPolicyVerified: false,

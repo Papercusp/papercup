@@ -29,3 +29,12 @@ export function loadTestReceipt(output: string): {
   publicAudioVerified: false; bidirectionalAudioVerified: false;
 };
 export function localProbeHealthUrl(value: string): string;
+export function localPhoneReadiness(env: MediaEnvironment, probes?: {
+  unitState?: (unit: string) => Promise<boolean>;
+  httpReady?: (url: string) => Promise<boolean>;
+}): Promise<{
+  ok: boolean; checks: Array<{ component: string; ready: boolean }>;
+  scope: 'local-process-and-http-only';
+  publicPhoneVerified: false; turnCertificateVerified: boolean;
+  bidirectionalAudioVerified: false; recoveryVerified: false; costPolicyVerified: false;
+}>;
