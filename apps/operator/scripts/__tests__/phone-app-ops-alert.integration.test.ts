@@ -71,6 +71,65 @@ describe('Phone source operations alert delivery', () => {
     expect(verdict.status, verdict.stderr).toBe(0);
   });
 
+  it('installs and enables the alert timer only after a pinned isolated deployment attempt', () => {
+    const f = fixture();
+    const home = join(f.dir, 'home');
+    const phone = join(f.dir, 'source');
+    const worker = join(phone, 'worker');
+    const sidecar = join(phone, 'apps', 'sidecar');
+    const bins = join(f.dir, 'bin');
+    mkdirSync(home); mkdirSync(worker, { recursive: true });
+    mkdirSync(sidecar, { recursive: true }); mkdirSync(bins);
+    writeFileSync(join(worker, 'entry.js'), 'fixture');
+    writeFileSync(join(sidecar, 'entry.js'), 'fixture');
+    writeFileSync(join(f.dir, 'livekit.env'),
+      'PHONE_LIVEKIT_API_KEY=fixture-key\nPHONE_LIVEKIT_API_SECRET=fixture-secret\n', { mode: 0o600 });
+    const calls = join(f.dir, 'systemctl-calls');
+    writeFileSync(join(bins, 'git'), `#!/bin/sh
+case "$3:$4" in
+  rev-parse:--show-toplevel) printf '%s\\n' "$PHONE_TEST_ROOT" ;;
+  rev-parse:HEAD) printf '%s\\n' "$PHONE_TEST_REVISION" ;;
+  status:--porcelain) exit 0 ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o700 });
+    writeFileSync(join(bins, 'systemctl'), `#!/bin/sh
+printf '%s\\n' "$*" >> "$PHONE_TEST_SYSTEMCTL_CALLS"
+case "$2" in
+  is-active) exit 0 ;;
+  *) exit 0 ;;
+esac
+`, { mode: 0o700 });
+    for (const name of ['redis-cli', 'ss', 'curl']) {
+      writeFileSync(join(bins, name), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    }
+    const livekit = join(bins, 'livekit-server');
+    const sip = join(bins, 'livekit-sip');
+    writeFileSync(livekit, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    writeFileSync(sip, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PHONE_')));
+    const env = { ...baseEnv, HOME: home, PHONE_CONFIG_DIR: f.dir,
+      PHONE_WORKER_DIR: worker, PHONE_SIDECAR_DIR: sidecar,
+      PHONE_LIVEKIT_BIN: livekit, PHONE_SIP_BIN: sip, PHONE_NODE_BIN: process.execPath,
+      PHONE_LAN_IFACE: 'test0', PHONE_TEST_ROOT: phone,
+      PHONE_TEST_REVISION: 'a'.repeat(40), PHONE_TEST_SYSTEMCTL_CALLS: calls,
+      PATH: `${bins}:${process.env.PATH ?? ''}` };
+    const pin = spawnSync('bash', [join(repoRoot, 'infra/phone-app/deploy.sh'), '--pin-artifacts'],
+      { env, encoding: 'utf8', timeout: 15_000 });
+    expect(pin.status, pin.stderr).toBe(0);
+    expect(() => readFileSync(calls, 'utf8')).toThrow();
+    const deploy = spawnSync('bash', [join(repoRoot, 'infra/phone-app/deploy.sh')],
+      { env, encoding: 'utf8', timeout: 25_000 });
+    // Local readiness is deliberately not fixture-forced green; unit installation precedes that check.
+    expect(deploy.stdout).toContain('armed Phone operations alerts');
+    const units = join(home, '.config/systemd/user');
+    expect(readFileSync(join(units, 'papercusp-phone-ops-alert.timer'), 'utf8'))
+      .toContain('OnUnitActiveSec=15min');
+    expect(readFileSync(join(units, 'papercusp-phone-ops-alert.service'), 'utf8'))
+      .toContain(join(repoRoot, 'infra/phone-app/phone-ops-alert.mjs'));
+    expect(readFileSync(calls, 'utf8')).toContain('--user enable --now papercusp-phone-ops-alert.timer');
+  });
+
   it('delivers one actionable owner alert, dedupes repeats, reminds next day and stands down once', async () => {
     const f = fixture(); f.fail();
     const opts = { env: f.env, run: f.run, notify: f.notify, statePath: f.statePath };
