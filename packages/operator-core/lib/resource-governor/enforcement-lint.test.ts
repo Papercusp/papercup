@@ -276,6 +276,19 @@ describe('resource governor enforcement lint', () => {
     ).toEqual([]);
   });
 
+  it('reviews declaration suppression lookup as one synchronous build-time Git metadata read', () => {
+    const path = 'scripts/lib/stale-declaration-suppressions.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = `${path}::resource-start-outside-admission`;
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('bypass');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('importerSources');
+    // A second primitive start requires a new review of this exact-path disposition.
+    expect(source.match(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)).toEqual(['execFileSync(']);
+    expect(source).toMatch(/execFileSync\('git',\s*\['-C', repoRoot, 'grep', '-l', '-F'/);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
+  });
+
   it('can audit a pending migration and applies only centrally registered dispositions', () => {
     const files: Array<[string, string]> = [
       [
@@ -303,6 +316,20 @@ describe('resource governor enforcement lint', () => {
     expect(scanInventory(files, { migrations: ['P-014'], validateRegistry: true })).toContain(
       'stale-bypass-registry:packages/operator-core/lib/agent-tools/plans/audit.ts::resource-start-outside-admission:finding-absent',
     );
+  });
+
+  it('retires credential-store bypass after keychain starts moved to the authentication helpers', () => {
+    const path = 'packages/operator-core/lib/inference-gateway/credential-store.ts';
+    const key = `${path}::resource-start-outside-admission`;
+    const source = readFileSync(ROOT + path, 'utf8');
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(BYPASS_REGISTRY.has(key)).toBe(false);
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-015'], validateRegistry: true }),
+    ).not.toContain(`stale-bypass-registry:${key}:finding-absent`);
+    expect(
+      scanInventory([[path, source + "\nspawn('resident-worker', []);"]], { migrations: ['P-015'] }),
+    ).toContain(`${path}:resource-start-outside-admission`);
   });
 
   it('retires supervision reconcile disposition after resource starts moved behind the sidecar helper', () => {
