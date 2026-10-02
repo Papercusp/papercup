@@ -132,6 +132,8 @@ const {
   carryTurnProofRequiresNativeId,
   shouldRetryCarryOnFreshEpoch,
   shouldRetryLaunchKickoffOnFreshChild,
+  shouldRedeliverLaunchKickoffAfterRespawn,
+  LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX,
   launchKickoffCodexStartingOptions,
   codexLaunchStartingRetryMax,
   signalNameFromCode,
@@ -3509,6 +3511,40 @@ describe('launch kickoff fresh-child retry (WI-10004943)', () => {
     expect(codexLaunchStartingRetryMax('0')).toBe(0);
     expect(codexLaunchStartingRetryMax('2')).toBe(2);
     expect(codexLaunchStartingRetryMax(3)).toBe(3);
+  });
+});
+
+describe('launch kickoff superseded by a same-host respawn (EI-24818010361425604)', () => {
+  it('follows the owner into the successor once, never for a managed kickoff or a dying host', () => {
+    expect(LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX).toBe(1);
+    expect(shouldRedeliverLaunchKickoffAfterRespawn({ reason: 'superseded' })).toBe(true);
+    expect(shouldRedeliverLaunchKickoffAfterRespawn({ reason: 'superseded', redeliveries: 1 })).toBe(false);
+    expect(shouldRedeliverLaunchKickoffAfterRespawn({ reason: 'superseded', maxRedeliveries: 0 })).toBe(false);
+    expect(shouldRedeliverLaunchKickoffAfterRespawn({ reason: 'superseded', managedKickoff: true })).toBe(false);
+    expect(shouldRedeliverLaunchKickoffAfterRespawn({ reason: 'superseded', hostShuttingDown: true })).toBe(false);
+    // Every other drop reason keeps its existing terminal receipt.
+    for (const reason of ['codex-startup-still-starting', 'never-settled', 'role-mcp-unavailable', 'host-shutting-down', '']) {
+      expect(shouldRedeliverLaunchKickoffAfterRespawn({ reason })).toBe(false);
+    }
+    expect(shouldRedeliverLaunchKickoffAfterRespawn()).toBe(false);
+  });
+
+  it('is consulted before the terminal not-submitted receipt, behind the inject mutex', () => {
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const closureStart = src.indexOf('const injectLaunchKickoff = () => injectTurnAtPrompt({');
+    expect(closureStart).toBeGreaterThan(0);
+    const closure = src.slice(closureStart);
+    const redeliver = closure.indexOf('shouldRedeliverLaunchKickoffAfterRespawn({');
+    const acquire = closure.indexOf('await injectMutex.acquire()', redeliver);
+    const negative = closure.indexOf('reason: `kickoff-not-submitted:${r.reason');
+    expect(redeliver).toBeGreaterThan(0);
+    expect(negative).toBeGreaterThan(0);
+    // The superseded drop must reach the redelivery before it can become the
+    // terminal receipt that makes capability:launch-agent kill the task.
+    expect(redeliver).toBeLessThan(negative);
+    expect(acquire).toBeGreaterThan(redeliver);
+    expect(acquire).toBeLessThan(negative);
+    expect(closure.slice(redeliver, negative)).toContain("'launch-kickoff-respawn-redelivery'");
   });
 });
 
