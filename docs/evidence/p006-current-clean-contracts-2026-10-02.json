@@ -1728,5 +1728,185 @@
     }
   ]
 },
-  "next": "At fresh context verify held claims/source and continue IDEMPOTENCE@3 then ORDER@4 freshness with current clean pinned tests and maintained calibrated controls. EXCLUSIONS@3 governing PASS is verified in exclusionsCurrentProof; do not repeat unchanged positives/controls. Remaining accepted-clause census is dated here. Independent rubric ratification, D013 real-goal card reuse, closure audit and final shipment remain separate; preserve D003 baseline/D016 history and24WI/12loop checks."
+  "idempotenceCurrentProof": {
+    "verifiedAt": "2026-10-02T10:01:08.592Z",
+    "nativeSession": "01a0fc00-83c9-73e0-a058-bdd4297dea45",
+    "specId": "WOE-P001-IDEMPOTENCE",
+    "revision": 3,
+    "specFingerprint": "3e76f8a89f19b048e01a321193b1b8d62ae7f9a4226583aeedd43aeaafda56a0",
+    "scope": "Selected current clean proof followed by governing acceptance PASS. Broader P006 acceptance, independent rubric review and final shipment remain open.",
+    "sourceReadback": "Eleven canonical/retained-clone/pin file fingerprints match. Retained clone git status is empty. Compiler and launcher fault adapters leave production source and literal expected oracles unchanged.",
+    "sourceBindings": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts",
+        "sha256": "07acffc0201f3c26985c93cc5f70693dc0913a0f8c9be128a758e42e48488dda"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts",
+        "sha256": "8167b535549785f447dd5dd89408ab54c56db15c8924d79e8d641a2953f4c2ca"
+      }
+    ],
+    "positive": {
+      "testRunId": 20506803,
+      "pass": 3,
+      "filteredSkipped": 190,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "log": "/tmp/p006-idempotence-positive-20261002-current.log",
+      "logSha256": "9ddf540f87761caa99839f61bd8325dbdf910b453a0c47a374fead5c55a59b59",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts -t 'a lost claim opens 0 members|opens no member and releases its slot when a concurrent transaction wins the initial CAS|resumes exact unopened pre-pinned identities'"
+    },
+    "reusedUnchangedProof": {
+      "existingFleetUnitRun": 20506006,
+      "existingFleetIntegrationRun": 20500782,
+      "reason": "Exact current canonical/clone/pin source and test fingerprints match saved clean runs. No repeat of unchanged positive unit or real-PG execution."
+    },
+    "controls": [
+      {
+        "scenario": "existing-one-fleet",
+        "testRunId": 20506802,
+        "counterexampleBindingId": 21626,
+        "recurrenceBindingId": 21627,
+        "recurrenceTestRunId": 20506006,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "logSha256": "1dd500bf191c47cde4461ca45eba97180dceaab0b20ebd909a2d956736959009",
+        "log": "/tmp/p006-idempotence-existing-one-fleet-20261002-current.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "initial-cas-loss",
+        "testRunId": 20506806,
+        "counterexampleBindingId": 21628,
+        "recurrenceBindingId": 21629,
+        "recurrenceTestRunId": 20506803,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 191,
+        "exit": 1,
+        "logSha256": "1eb4d1e2019c6d2c687b579384fb5c9b8b92b7c734afb26ce73bd19893f239c7",
+        "log": "/tmp/p006-idempotence-initial-cas-loss-20261002-current.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "partial-exact-retry",
+        "testRunId": 20507307,
+        "counterexampleBindingId": 21630,
+        "recurrenceBindingId": 21631,
+        "recurrenceTestRunId": 20506803,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 191,
+        "exit": 1,
+        "logSha256": "18ba669f2cd6e5693911aea6b05d03604e45118bf2057b68aab63e4f47bdd09b",
+        "log": "/tmp/p006-idempotence-partial-exact-retry-20261002-current.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "controlCommand": "Existing-fleet: PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL=existing-one-fleet plus exclusion calibration/exact contract selector. Launcher: PAPERCUSP_FLEET_IDEMPOTENCE_CONTROL=<scenario> plus lost-claim calibration/exact named assertion selector. Both use PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 npm run test:file in retained clean pin; source/test bytes unchanged.",
+    "integrationBindingId": 21625,
+    "liveCurrentBindingIds": [
+      21625,
+      21626,
+      21627,
+      21628,
+      21629,
+      21630,
+      21631
+    ],
+    "selectedReplacement": {
+      "governing": false,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "receipt": "/tmp/p006-idempotence-selected-20261002-fire174.json"
+    },
+    "withdrawals": {
+      "bindingIds": [
+        19022,
+        19023,
+        19024,
+        19025,
+        19026,
+        19027,
+        19028
+      ],
+      "scope": "Binding-only, after exact work-item/spec/revision/currentness read and selected replacement PASS.",
+      "receipt": "/tmp/p006-idempotence-withdrawals-20261002-fire174.json",
+      "historicalTestRunIds": [
+        20405747,
+        20403692,
+        20405715,
+        20405724,
+        20405745,
+        20405738
+      ],
+      "historicalFieldsUnchanged": true,
+      "fieldsCompared": [
+        "id",
+        "filePath",
+        "status",
+        "source",
+        "worktreeDirty",
+        "isScratchConfig",
+        "commitSha",
+        "startedAt",
+        "finishedAt"
+      ]
+    },
+    "governingReplacement": {
+      "governing": true,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "evaluatorBuild": "a86a3b3fb2",
+      "receipt": "/tmp/p006-idempotence-governing-20261002-fire174.json",
+      "selection": "No workItemIds or evidenceRefs."
+    },
+    "wholeCensus": {
+      "governing": true,
+      "population": 28,
+      "counts": {
+        "pass": 5,
+        "fail": 22,
+        "unknown": 1
+      },
+      "receipt": "/tmp/p006-idempotence-whole-census-20261002-fire174.json",
+      "spillUri": "papercusp://scratch/papercusp-workspace/plans:evaluate-spec-test-adequacy/5b9a6102-65c7-41a6-a809-2330dd65f6d2/result-door-1790935099624-fe952167.spill",
+      "payloadSha256": "b54fc87cb5680d9307c0b5ea0eaa6332d5eaafd926c27fe9f760dc9f87dd0039",
+      "payloadHashVerified": true,
+      "order": {
+        "revision": 4,
+        "verdict": "fail",
+        "wouldBlock": [
+          "freshness"
+        ],
+        "draggingBindingIds": [
+          19050,
+          19051,
+          19052,
+          19053,
+          19054
+        ]
+      },
+      "note": "Latest dated census. Earlier censuses in this artifact remain historical."
+    },
+    "bindingsReceipt": "/tmp/p006-idempotence-bindings-20261002-fire174.json",
+    "limits": "Accepted clauses, BARs, source, tests, D-003 baseline and D-016 historical evidence unchanged. No native/P2P/sharedrestart/LIVE_GATE_OPS work or final shipment claim."
+  },
+  "next": "Continue ORDER@4 after fresh claims/source/readiness: blocked-head-next-eligible and eligible-ordered-head. IDEMPOTENCE@3 now governs PASS on seven current bindings; latest census is five PASS,22FAIL,oneUNKNOWN. Reuse unchanged saved proofs; do not repeat current idempotence/exclusion/claim/lifecycle tests or controls. Independent rubric ratification, D013 real-goal card, closure audit and final shipment remain separate. Preserve D003/D013/D016 and24WI/12loop checks; no unchangednative/P2P/sharedrestart/LIVE_GATE_OPS."
 }
