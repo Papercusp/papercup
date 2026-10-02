@@ -114,10 +114,7 @@ describe('acceptance-BAR lifecycle reads are harness-scoped (WI-10005140)', () =
 const ITEM_READ_CALLEE = 'getPlanItemStatuses';
 
 /** Lib-relative file → unscoped call count. Shrink-only; WI-10005174 drives it to {}. */
-const KNOWN_UNSCOPED_ITEM_READS: Readonly<Record<string, number>> = {
-  'agent-tools/plans/audit.ts': 2,
-  'agent-tools/plans/supersede-item-gate.ts': 1,
-};
+const KNOWN_UNSCOPED_ITEM_READS: Readonly<Record<string, number>> = {};
 
 describe('plan-item reads are harness-scoped (WI-10005167)', () => {
   it('the detector flags an unscoped item read and passes a scoped one (calibration)', () => {

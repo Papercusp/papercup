@@ -712,6 +712,8 @@ export default defineTool({
         if (shouldEvaluateSupersedeItemGate(status, args.expectedCurrent)) {
           const gate = await evaluateSupersedeItemGate(slug, {
             ...(args.force ? { force: args.force } : {}),
+            // A candidate only — the gate confirms the plan's home harness (WI-10005174).
+            harnessSlug,
           });
           if (gate.forcedPast) {
             const actor = resolveAgentIdentity(ctx);

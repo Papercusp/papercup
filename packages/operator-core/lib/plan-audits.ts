@@ -1967,6 +1967,40 @@ export async function getPlanItemStatuses(
   }
 }
 
+/**
+ * Resolve the harness that OWNS `planSlug`, for a caller that holds only a CANDIDATE
+ * harness — an explicit `harness` arg, a slug-recovered harness, or an ambient ctx
+ * harness — rather than a positively selected `harness_plans` row (WI-10005174).
+ *
+ * The answer comes from `harness_plans` itself, never from the candidate alone:
+ * - the candidate owns a plan with this slug → the candidate;
+ * - otherwise exactly ONE harness owns the slug → that harness;
+ * - otherwise (two owners and the candidate is neither, no owner, or a read failure)
+ *   → `null`, so `getPlanItemStatuses` keeps its pre-existing unscoped read.
+ *
+ * Returning `null` instead of guessing is what keeps a wrong candidate from turning
+ * into an `[]` item read, which every caller fails open on.
+ */
+export async function resolvePlanItemHomeHarness(
+  planSlug: string,
+  candidateHarness?: string | null,
+): Promise<string | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ harness_slug: string | null }[]>`
+      SELECT harness_slug
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND plan_slug = ${planSlug}`;
+    const homes = [...new Set(rows.map((r) => r.harness_slug?.trim()).filter((h): h is string => !!h))];
+    const candidate = candidateHarness?.trim() || null;
+    if (candidate && homes.includes(candidate)) return candidate;
+    return homes.length === 1 ? homes[0]! : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Item statuses that mean "this work is not finished and was not consciously
  *  abandoned". `dropped` is absent on purpose — it is a recorded decision (D-002),
  *  and `done` is the finished case. */

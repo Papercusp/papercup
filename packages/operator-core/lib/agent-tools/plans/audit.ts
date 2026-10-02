@@ -45,6 +45,7 @@ import {
   recordPlanAudit,
   repoCitationContextForHarness,
   resolveCitation,
+  resolvePlanItemHomeHarness,
   summarizeCoverage,
   validateActivationAuditPlanTargets,
   type AuditCitation,
@@ -886,7 +887,11 @@ export default defineTool({
               // Liveness: an empty read is UNKNOWN, and the deriver fails open on it
               // (D-040's rule) — `setSpecClause` is the backstop that refuses a target the
               // plan does not actually have.
-              planItems: await getPlanItemStatuses(args.slug),
+              // WI-10005174: `harnessSlug` is only a candidate here; read the items
+              // of the harness that actually owns the plan.
+              planItems: await getPlanItemStatuses(args.slug, {
+                harnessSlug: await resolvePlanItemHomeHarness(args.slug, harnessSlug),
+              }),
               actorId: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
             },
             setSpecClause,
@@ -1050,7 +1055,11 @@ export default defineTool({
     // The plan's real items. An empty read is ambiguous between "no such plan" and "the
     // index read failed", and BOTH must refuse: validating against an empty list would
     // accept every itemId, which is the opposite of this tool's job.
-    const planItems = await getPlanItemStatuses(args.slug);
+    // WI-10005174: scope to the plan's own harness; a same-slug plan in another harness
+    // would otherwise lend its item ids to this validation.
+    const planItems = await getPlanItemStatuses(args.slug, {
+      harnessSlug: await resolvePlanItemHomeHarness(args.slug, harnessSlug),
+    });
     if (planItems.length === 0) {
       return { data: {
         ok: false as const,
