@@ -998,14 +998,15 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lockPath)).toBe(true);
   });
 
-  it('WI-10001350: refuses an unreserved migration before staging or committing it', async () => {
+  it('WI-10001350: quarantines an unreserved migration while committing unrelated files', async () => {
     const migration = 'libs/db/sql/999-unreserved-migration.sql';
     mkdirSync(join(repo, 'libs/db/sql'), { recursive: true });
     writeFileSync(join(repo, migration), '-- intentionally unreserved\n');
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
-    const checker = vi.fn(async (_dirtyPaths: readonly string[]) => {
-      throw new Error('[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row');
-    });
+    const checker = vi.fn(async (_dirtyPaths: readonly string[]) => [{
+      path: migration,
+      reason: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+    }]);
     const logs: string[] = [];
 
     const out = await runGitSync('test', {
@@ -1017,13 +1018,47 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(checker).toHaveBeenCalledOnce();
     expect(checker.mock.calls[0]?.[0]).toEqual([migration]);
-    if (out.status !== 'error') throw new Error(`expected error outcome, got ${out.status}`);
-    expect(out.errors?.[0]?.message).toContain('migration reservation preflight failed');
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({
+      scope: 'superproject',
+      path: migration,
+      reason: 'migration-reservation',
+      detail: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+    });
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(migration);
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
-    expect(git(repo, 'status', '--porcelain', '--', migration, 'normal.txt')).toMatch(/normal\.txt/);
-    expect(git(repo, 'status', '--porcelain', '--', migration, 'normal.txt')).toMatch(/999-unreserved-migration\.sql/);
-    expect(logs.join('\n')).toContain('migration reservation preflight refused');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
+    expect(git(repo, 'status', '--porcelain', '--', migration)).toMatch(/999-unreserved-migration\.sql/);
+    expect(logs.join('\n')).toContain('deferring migration');
+  });
+
+  it('WI-10001350: reservation-check failure defers candidate migrations fail-closed and commits unrelated files', async () => {
+    const migration = 'libs/db/sql/999-unreadable-reservation.sql';
+    mkdirSync(join(repo, 'libs/db/sql'), { recursive: true });
+    writeFileSync(join(repo, migration), '-- reservation status is unavailable\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const checker = vi.fn(async (_dirtyPaths: readonly string[]) => {
+      throw new Error('reservation ledger unavailable');
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      migrationReservationChecker: checker,
+    });
+
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({
+      scope: 'superproject',
+      path: migration,
+      reason: 'migration-reservation',
+      detail: 'reservation check failed; deferring fail-closed: reservation ledger unavailable',
+    });
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(migration);
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'status', '--porcelain', '--', migration)).toMatch(/999-unreadable-reservation\.sql/);
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
   });
 
   it('WI-10001350: rechecks staged migrations and selectively unstages a reservation race', async () => {
@@ -1035,8 +1070,9 @@ describe('runGitSync (real git, no submodule)', () => {
     const checker = vi.fn(async (_dirtyPaths: readonly string[]) => {
       checks += 1;
       if (checks === 2) {
-        throw new Error('[migration-reservation-guard] 999-raced-migration.sql reservation disappeared');
+        return [{ path: migration, reason: '[migration-reservation-guard] 999-raced-migration.sql reservation disappeared' }];
       }
+      return [];
     });
     const logs: string[] = [];
 
@@ -1050,13 +1086,19 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(checker).toHaveBeenCalledTimes(2);
     expect(checker.mock.calls[0]?.[0]).toEqual([migration]);
     expect(checker.mock.calls[1]?.[0]).toEqual([migration]);
-    if (out.status !== 'error') throw new Error(`expected error outcome, got ${out.status}`);
-    expect(out.errors?.[0]?.message).toContain('migration reservation check after staging failed');
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({
+      scope: 'superproject',
+      path: migration,
+      reason: 'migration-reservation',
+      detail: '[migration-reservation-guard] 999-raced-migration.sql reservation disappeared',
+    });
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(migration);
-    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('normal.txt');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
     expect(git(repo, 'status', '--porcelain', '--', migration)).toMatch(/999-raced-migration\.sql/);
-    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toMatch(/normal\.txt/);
-    expect(logs.join('\n')).toContain('post-stage migration reservation check refused');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
+    expect(logs.join('\n')).toContain('deferring migration');
   });
 
   it('EI-22435583452728403: refreshes live locks at the commit seam before staging', async () => {
