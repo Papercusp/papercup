@@ -36,6 +36,131 @@ export function readMutationProbeWindow(checkoutRoot: string, options?: {
     manifestPath: string;
 } | null;
 /**
+ * Every checkout root a build of `root` reads: `root` plus each checked-out submodule,
+ * recursively, from `.gitmodules` (pure fs, no git spawn). A probe keys its admission directory
+ * by the toplevel of the file it mutates, so a submodule file's window never appears under the
+ * superproject's key; reading only `root` would miss it.
+ *
+ * @param {string} root
+ * @returns {string[]}
+ */
+export function checkoutRootsUnder(root: string): string[];
+/**
+ * May a build read `root` right now? `clear` is false while any window under it may hold a
+ * mutant: an ACTIVE one (worth waiting for, so `waitable`), an ORPHANED one whose subject still
+ * differs from its snapshot, or an UNREADABLE marker (subject unknown). An orphaned marker whose
+ * subject already equals its snapshot is not a mutant, so it is a note, not a block.
+ *
+ * @param {string} root
+ * @param {{ uid?: number, tmpDir?: string, now?: () => number }} [options]
+ */
+export function buildWindowVerdict(root: string, options?: {
+    uid?: number;
+    tmpDir?: string;
+    now?: () => number;
+}): {
+    clear: boolean;
+    waitable: boolean;
+    blocking: ({
+        state: "active" | "orphaned" | "unreadable";
+        subject: string | null;
+        ownerPid: number | null;
+        ageSec: number | null;
+        manifestPath: string;
+    } & {
+        checkout: string;
+    })[];
+    notes: string[];
+};
+/**
+ * The admission-directory mtimes under `root`. A probe creates and removes `original.manifest`
+ * inside that directory, so a window that opened at all (even one that closed again) between two
+ * stamps moves an mtime. `null` = no directory yet.
+ *
+ * @param {string} root
+ * @param {{ uid?: number, tmpDir?: string }} [options]
+ * @returns {Record<string, number | null>}
+ */
+export function buildWindowStamp(root: string, options?: {
+    uid?: number;
+    tmpDir?: string;
+}): Record<string, number | null>;
+/**
+ * Wait (bounded) until a build may read `root`. Only an all-ACTIVE block is waited on: an orphan
+ * or an unreadable marker will not clear by itself. The stamp is taken BEFORE the verdict, so a
+ * window opening after a clear verdict still moves it for `verifyBuildWindowUnchanged`.
+ *
+ * @param {string} root
+ * @param {{ uid?: number, tmpDir?: string, timeoutMs?: number, pollMs?: number,
+ *   sleep?: (ms: number) => Promise<void>, now?: () => number }} [options]
+ */
+export function waitForBuildWindowClear(root: string, options?: {
+    uid?: number;
+    tmpDir?: string;
+    timeoutMs?: number;
+    pollMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+}): Promise<{
+    ok: boolean;
+    verdict: {
+        clear: boolean;
+        waitable: boolean;
+        blocking: ({
+            state: "active" | "orphaned" | "unreadable";
+            subject: string | null;
+            ownerPid: number | null;
+            ageSec: number | null;
+            manifestPath: string;
+        } & {
+            checkout: string;
+        })[];
+        notes: string[];
+    };
+    stamp: Record<string, number | null>;
+    waitedMs: number;
+    polls: number;
+}>;
+/**
+ * After the build: was the tree probe-free for the whole build? Fails when a window is open now,
+ * or when an admission directory moved since `stamp` (a window opened, and perhaps closed,
+ * while the bundler was reading files).
+ *
+ * @param {string} root
+ * @param {Record<string, number | null>} stamp from `waitForBuildWindowClear`
+ * @param {{ uid?: number, tmpDir?: string }} [options]
+ */
+export function verifyBuildWindowUnchanged(root: string, stamp: Record<string, number | null>, options?: {
+    uid?: number;
+    tmpDir?: string;
+}): {
+    ok: boolean;
+    reason: string;
+    verdict: {
+        clear: boolean;
+        waitable: boolean;
+        blocking: ({
+            state: "active" | "orphaned" | "unreadable";
+            subject: string | null;
+            ownerPid: number | null;
+            ageSec: number | null;
+            manifestPath: string;
+        } & {
+            checkout: string;
+        })[];
+        notes: string[];
+    };
+    moved: string[];
+};
+/**
+ * One greppable line per blocking window, for the build log.
+ *
+ * @param {ReturnType<typeof buildWindowVerdict>} verdict
+ * @param {string} root
+ * @returns {string[]}
+ */
+export function formatBuildWindowBlock(verdict: ReturnType<typeof buildWindowVerdict>, root: string): string[];
+/**
  * One greppable line naming the window, or `''` when there is none.
  *
  * @param {ReturnType<typeof readMutationProbeWindow>} window

@@ -8,14 +8,20 @@
  * would read it as an orphaned snapshot and try to RESTORE the subject from it.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  buildWindowStamp,
+  buildWindowVerdict,
+  checkoutRootsUnder,
+  formatBuildWindowBlock,
   formatMutationProbeWindow,
   mutationProbeAdmissionDir,
   readMutationProbeWindow,
+  verifyBuildWindowUnchanged,
+  waitForBuildWindowClear,
 } from '../../../scripts/lib/mutation-probe-window.mjs';
 
 const REPO = resolve(__dirname, '../../..');
@@ -87,6 +93,188 @@ describe('mutation-probe window marker (EI-18750303030034478)', () => {
 
   it('never throws for a checkout that cannot be resolved', () => {
     expect(readMutationProbeWindow(join(scratch, 'does-not-exist'), opts())).toBeNull();
+  });
+});
+
+/**
+ * WI-10005321 — the BUILD gate. A bundler that reads the shared tree inside a probe window ships
+ * the mutant (2026-10-02: bg-host ran with its tool-ceiling denial disabled for ~8 min), so
+ * `bundle-host.sh` waits on, and re-verifies, every window under the tree it bundles.
+ */
+describe('build gate: never bundle a probe-mutated tree (WI-10005321)', () => {
+  let scratch: string;
+  let checkout: string;
+  let sub: string;
+
+  beforeEach(() => {
+    scratch = realpathSync(mkdtempSync(join(tmpdir(), 'mp-build-gate-')));
+    checkout = join(scratch, 'checkout');
+    sub = join(checkout, 'libs', 'sub');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(
+      join(checkout, '.gitmodules'),
+      '[submodule "libs/sub"]\n\tpath = libs/sub\n\turl = x\n[submodule "gone"]\n\tpath = libs/not-checked-out\n\turl = y\n',
+    );
+  });
+  afterEach(() => rmSync(scratch, { recursive: true, force: true }));
+
+  const opts = () => ({ uid: 4242, tmpDir: scratch });
+  const publishFor = (root: string, fields: string[]) => {
+    const dir = mutationProbeAdmissionDir(root, opts());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'original.manifest'), fields.map((f) => `${f}\0`).join(''), 'latin1');
+    return dir;
+  };
+  const deadPid = () => spawnSync(process.execPath, ['-e', '']).pid as number;
+
+  it('reads the superproject and every checked-out submodule as build roots', () => {
+    expect(checkoutRootsUnder(checkout)).toEqual([checkout, sub]);
+  });
+
+  it('is clear with no marker, and stamps every root', () => {
+    expect(buildWindowVerdict(checkout, opts())).toMatchObject({ clear: true, blocking: [] });
+    expect(Object.keys(buildWindowStamp(checkout, opts()))).toEqual([checkout, sub]);
+  });
+
+  it('BLOCKS on an active window in a SUBMODULE, which the superproject-keyed read cannot see', () => {
+    publishFor(sub, [sub, join(sub, 'a.ts'), join(scratch, 'a.orig'), String(process.pid)]);
+    // Calibration: the diagnostic read of the superproject alone sees nothing.
+    expect(readMutationProbeWindow(checkout, opts())).toBeNull();
+    const verdict = buildWindowVerdict(checkout, opts());
+    expect(verdict).toMatchObject({ clear: false, waitable: true });
+    expect(formatBuildWindowBlock(verdict, checkout)[0]).toMatch(
+      /^BUILD_MUTATION_PROBE_WINDOW state=active subject=libs\/sub\/a\.ts /,
+    );
+  });
+
+  it('clears an orphan whose subject already equals its snapshot; an orphan that differs blocks without waiting', () => {
+    const subject = join(checkout, 'b.ts');
+    const snapshot = join(scratch, 'b.orig');
+    writeFileSync(subject, 'original\n');
+    writeFileSync(snapshot, 'original\n');
+    publishFor(checkout, [checkout, subject, snapshot, String(deadPid())]);
+    const restored = buildWindowVerdict(checkout, opts());
+    expect(restored.clear).toBe(true);
+    expect(restored.notes.join('\n')).toContain('already equals its snapshot');
+    writeFileSync(subject, 'MUTANT\n');
+    expect(buildWindowVerdict(checkout, opts())).toMatchObject({ clear: false, waitable: false });
+  });
+
+  it('blocks without waiting on an unreadable marker (the mutated file is unknown)', () => {
+    publishFor(checkout, ['a', 'b', 'c']);
+    expect(buildWindowVerdict(checkout, opts())).toMatchObject({ clear: false, waitable: false });
+  });
+
+  it('waits for an active window to close, then returns the stamp', async () => {
+    const dir = publishFor(checkout, [checkout, join(checkout, 'c.ts'), join(scratch, 'c.orig'), String(process.pid)]);
+    let clock = 0;
+    const result = await waitForBuildWindowClear(checkout, {
+      ...opts(),
+      timeoutMs: 60_000,
+      pollMs: 1_000,
+      now: () => clock,
+      sleep: async (ms: number) => {
+        clock += ms;
+        rmSync(join(dir, 'original.manifest'));
+      },
+    });
+    expect(result).toMatchObject({ ok: true, polls: 1, waitedMs: 1_000 });
+    expect(result.stamp[checkout]).not.toBeNull();
+  });
+
+  it('gives up at the bound on a window that stays open, and never waits on an orphan', async () => {
+    publishFor(checkout, [checkout, join(checkout, 'd.ts'), join(scratch, 'd.orig'), String(process.pid)]);
+    let clock = 0;
+    let sleeps = 0;
+    const sleep = async (ms: number) => {
+      clock += ms;
+      sleeps += 1;
+    };
+    const stuck = await waitForBuildWindowClear(checkout, { ...opts(), timeoutMs: 5_000, pollMs: 1_000, now: () => clock, sleep });
+    expect(stuck).toMatchObject({ ok: false, waitedMs: 5_000 });
+    expect(sleeps).toBe(5);
+
+    publishFor(checkout, [checkout, join(checkout, 'd.ts'), join(scratch, 'missing.orig'), String(deadPid())]);
+    sleeps = 0;
+    const orphan = await waitForBuildWindowClear(checkout, { ...opts(), timeoutMs: 5_000, pollMs: 1_000, now: () => clock, sleep });
+    expect(orphan.ok).toBe(false);
+    expect(sleeps).toBe(0);
+  });
+
+  it('verify fails when a window opened AND closed during the build (an admission directory moved)', async () => {
+    const dir = mutationProbeAdmissionDir(sub, opts());
+    mkdirSync(dir, { recursive: true });
+    utimesSync(dir, 1_000, 1_000);
+    const { stamp } = await waitForBuildWindowClear(checkout, opts());
+    expect(verifyBuildWindowUnchanged(checkout, stamp, opts())).toMatchObject({ ok: true });
+    // A probe opens and restores inside the build: its manifest comes and goes.
+    writeFileSync(join(dir, 'original.manifest'), 'x');
+    rmSync(join(dir, 'original.manifest'));
+    // Pin the move: a same-millisecond create+remove could otherwise tie the mtime.
+    utimesSync(dir, 2_000, 2_000);
+    expect(verifyBuildWindowUnchanged(checkout, stamp, opts())).toMatchObject({
+      ok: false,
+      reason: 'window-opened-during-build',
+      moved: [sub],
+    });
+  });
+
+  it('verify fails when a window is still open after the build', async () => {
+    const { stamp } = await waitForBuildWindowClear(checkout, opts());
+    publishFor(checkout, [checkout, join(checkout, 'e.ts'), join(scratch, 'e.orig'), String(process.pid)]);
+    expect(verifyBuildWindowUnchanged(checkout, stamp, opts())).toMatchObject({ ok: false, reason: 'window-open' });
+  });
+
+  it('the CLI exits 1 on an open window, and 0 for wait and verify once it closes', () => {
+    publishFor(checkout, [checkout, join(checkout, 'f.ts'), join(scratch, 'f.orig'), String(process.pid)]);
+    const stampFile = join(scratch, 'stamp.json');
+    const run = (mode: string) =>
+      spawnSync(
+        process.execPath,
+        [
+          join(REPO, 'scripts/mutation-probe-window-gate.mjs'),
+          mode,
+          '--root',
+          checkout,
+          '--stamp-file',
+          stampFile,
+          '--tmp-dir',
+          scratch,
+          '--uid',
+          '4242',
+          '--timeout-sec',
+          '0',
+        ],
+        { encoding: 'utf8' },
+      );
+    const blocked = run('wait');
+    expect(blocked.status).toBe(1);
+    expect(blocked.stdout).toContain('BUILD_MUTATION_PROBE_WINDOW state=active subject=f.ts');
+    rmSync(join(mutationProbeAdmissionDir(checkout, opts()), 'original.manifest'));
+    expect(run('wait').status).toBe(0);
+    expect(run('verify').status).toBe(0);
+  });
+});
+
+/** wait < esbuild < verify < the atomic swap, in bundle-host.sh's text. */
+function buildGateWiring(text: string): boolean {
+  const wait = text.indexOf('mutation-probe-window-gate.mjs" wait');
+  const esbuild = text.indexOf('npx --yes esbuild@', wait);
+  const verify = text.indexOf('mutation-probe-window-gate.mjs" verify', esbuild);
+  const swap = text.indexOf('mv -f "$TMPFILE" "$OUTFILE"', verify);
+  return wait > -1 && esbuild > wait && verify > esbuild && swap > verify;
+}
+
+describe('bundle-host.sh runs the build gate around esbuild (WI-10005321)', () => {
+  const script = readFileSync(join(REPO, 'apps/operator/bin/bundle-host.sh'), 'utf8');
+
+  it('waits before esbuild and verifies before the atomic swap', () => {
+    expect(buildGateWiring(script)).toBe(true);
+  });
+
+  it('CONTROL: the predicate catches a dropped wait or verify', () => {
+    expect(buildGateWiring(script.replace('mutation-probe-window-gate.mjs" wait', 'gone'))).toBe(false);
+    expect(buildGateWiring(script.replace('mutation-probe-window-gate.mjs" verify', 'gone'))).toBe(false);
   });
 });
 

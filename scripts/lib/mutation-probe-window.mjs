@@ -83,9 +83,177 @@ export function readMutationProbeWindow(checkoutRoot, options = {}) {
   const subject = fields[1];
   const ownerPid = Number(fields[3]);
   if (trailing !== '' || fields.length !== 4 || !subject || !Number.isInteger(ownerPid) || ownerPid < 1) {
-    return { state: 'unreadable', subject: null, ownerPid: null, ageSec, manifestPath };
+    return { state: 'unreadable', subject: null, snapshot: null, ownerPid: null, ageSec, manifestPath };
   }
-  return { state: pidAlive(ownerPid) ? 'active' : 'orphaned', subject, ownerPid, ageSec, manifestPath };
+  const snapshot = fields[2] || null;
+  return { state: pidAlive(ownerPid) ? 'active' : 'orphaned', subject, snapshot, ownerPid, ageSec, manifestPath };
+}
+
+// ─── WI-10005321: the BUILD gate ────────────────────────────────────────────────────────────
+//
+// Everything above is a diagnostic that may only add a line to a failing run. A BUILD is
+// different: a bundler that reads the shared tree while a probe holds a file mutated ships the
+// mutant in a running service, and the probe's verified restore cannot reach it. Measured
+// 2026-10-02: bg-host bundled at 05:41:55Z inside a probe window (05:40:20-05:42:01Z) on
+// identity-grants-port.ts, so the tool-ceiling denial ran DISABLED until a rebuild ~8 min later.
+// The functions below are the gate `apps/operator/bin/bundle-host.sh` runs around esbuild.
+
+/**
+ * Every checkout root a build of `root` reads: `root` plus each checked-out submodule,
+ * recursively, from `.gitmodules` (pure fs, no git spawn). A probe keys its admission directory
+ * by the toplevel of the file it mutates, so a submodule file's window never appears under the
+ * superproject's key; reading only `root` would miss it.
+ *
+ * @param {string} root
+ * @returns {string[]}
+ */
+export function checkoutRootsUnder(root) {
+  /** @type {string[]} */
+  const roots = [];
+  /** @param {string} dir @param {number} depth */
+  const visit = (dir, depth) => {
+    roots.push(dir);
+    if (depth >= 8) return;
+    let text;
+    try {
+      text = readFileSync(join(dir, '.gitmodules'), 'utf8');
+    } catch {
+      return;
+    }
+    for (const match of text.matchAll(/^\s*path\s*=\s*(.+?)\s*$/gm)) {
+      const child = join(dir, match[1]);
+      try {
+        if (statSync(child).isDirectory()) visit(child, depth + 1);
+      } catch {
+        // not checked out: nothing there to bundle
+      }
+    }
+  };
+  visit(root, 0);
+  return roots;
+}
+
+/** @param {string | null} a @param {string | null} b */
+function sameBytes(a, b) {
+  if (!a || !b) return false;
+  try {
+    return readFileSync(a).equals(readFileSync(b));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * May a build read `root` right now? `clear` is false while any window under it may hold a
+ * mutant: an ACTIVE one (worth waiting for, so `waitable`), an ORPHANED one whose subject still
+ * differs from its snapshot, or an UNREADABLE marker (subject unknown). An orphaned marker whose
+ * subject already equals its snapshot is not a mutant, so it is a note, not a block.
+ *
+ * @param {string} root
+ * @param {{ uid?: number, tmpDir?: string, now?: () => number }} [options]
+ */
+export function buildWindowVerdict(root, options = {}) {
+  /** @type {Array<NonNullable<ReturnType<typeof readMutationProbeWindow>> & { checkout: string }>} */
+  const blocking = [];
+  /** @type {string[]} */
+  const notes = [];
+  for (const checkout of checkoutRootsUnder(root)) {
+    const window = readMutationProbeWindow(checkout, options);
+    if (!window) continue;
+    if (window.state === 'orphaned' && sameBytes(window.subject, window.snapshot)) {
+      notes.push(`orphaned mutation-probe marker for ${window.subject}, but it already equals its snapshot (not mutated)`);
+      continue;
+    }
+    blocking.push({ checkout, ...window });
+  }
+  return {
+    clear: blocking.length === 0,
+    waitable: blocking.length > 0 && blocking.every((w) => w.state === 'active'),
+    blocking,
+    notes,
+  };
+}
+
+/**
+ * The admission-directory mtimes under `root`. A probe creates and removes `original.manifest`
+ * inside that directory, so a window that opened at all (even one that closed again) between two
+ * stamps moves an mtime. `null` = no directory yet.
+ *
+ * @param {string} root
+ * @param {{ uid?: number, tmpDir?: string }} [options]
+ * @returns {Record<string, number | null>}
+ */
+export function buildWindowStamp(root, options = {}) {
+  /** @type {Record<string, number | null>} */
+  const stamp = {};
+  for (const checkout of checkoutRootsUnder(root)) {
+    try {
+      stamp[checkout] = statSync(mutationProbeAdmissionDir(checkout, options)).mtimeMs;
+    } catch {
+      stamp[checkout] = null;
+    }
+  }
+  return stamp;
+}
+
+/**
+ * Wait (bounded) until a build may read `root`. Only an all-ACTIVE block is waited on: an orphan
+ * or an unreadable marker will not clear by itself. The stamp is taken BEFORE the verdict, so a
+ * window opening after a clear verdict still moves it for `verifyBuildWindowUnchanged`.
+ *
+ * @param {string} root
+ * @param {{ uid?: number, tmpDir?: string, timeoutMs?: number, pollMs?: number,
+ *   sleep?: (ms: number) => Promise<void>, now?: () => number }} [options]
+ */
+export async function waitForBuildWindowClear(root, options = {}) {
+  const { timeoutMs = 90_000, pollMs = 2_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = options;
+  const now = options.now ?? Date.now;
+  const started = now();
+  for (let polls = 0; ; polls += 1) {
+    const stamp = buildWindowStamp(root, options);
+    const verdict = buildWindowVerdict(root, options);
+    const waitedMs = now() - started;
+    if (verdict.clear) return { ok: true, verdict, stamp, waitedMs, polls };
+    if (!verdict.waitable || waitedMs >= timeoutMs) return { ok: false, verdict, stamp, waitedMs, polls };
+    await sleep(pollMs);
+  }
+}
+
+/**
+ * After the build: was the tree probe-free for the whole build? Fails when a window is open now,
+ * or when an admission directory moved since `stamp` (a window opened, and perhaps closed,
+ * while the bundler was reading files).
+ *
+ * @param {string} root
+ * @param {Record<string, number | null>} stamp from `waitForBuildWindowClear`
+ * @param {{ uid?: number, tmpDir?: string }} [options]
+ */
+export function verifyBuildWindowUnchanged(root, stamp, options = {}) {
+  const verdict = buildWindowVerdict(root, options);
+  if (!verdict.clear) return { ok: false, reason: 'window-open', verdict, moved: [] };
+  const after = buildWindowStamp(root, options);
+  const moved = [...new Set([...Object.keys(stamp), ...Object.keys(after)])].filter(
+    (checkout) => (stamp[checkout] ?? null) !== (after[checkout] ?? null),
+  );
+  if (moved.length) return { ok: false, reason: 'window-opened-during-build', verdict, moved };
+  return { ok: true, reason: 'unchanged', verdict, moved };
+}
+
+/**
+ * One greppable line per blocking window, for the build log.
+ *
+ * @param {ReturnType<typeof buildWindowVerdict>} verdict
+ * @param {string} root
+ * @returns {string[]}
+ */
+export function formatBuildWindowBlock(verdict, root) {
+  return verdict.blocking.map((w) => {
+    const subject = w.subject ? relative(root, w.subject) || w.subject : 'unknown';
+    return (
+      `BUILD_MUTATION_PROBE_WINDOW state=${w.state} subject=${subject} ownerPid=${w.ownerPid ?? 'unknown'} ` +
+      `ageSec=${w.ageSec ?? 'unknown'} manifest=${w.manifestPath}`
+    );
+  });
 }
 
 /**
