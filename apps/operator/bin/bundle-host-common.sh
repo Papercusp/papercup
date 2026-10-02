@@ -107,6 +107,38 @@ bundle_host_runtime_siblings() { # <repo root> <out dir>
 # tmp-then-rename, so a failed worker leaves its previous output byte-intact —
 # bundle-host.sh relies on that to boot a supervisor on last-known-good
 # (WI-10005087). Packaging callers ignore both and stay strict.
+
+# P-011: maintained spawner entry, sharing the caller's exact external/define
+# boundary. It is a sibling artifact, never a second source launcher.
+bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
+  local repo_root="$1" out_dir="$2"
+  shift 2
+  local output="$out_dir/spawner-sidecar.mjs" tmp meta stamp
+  mkdir -p "$out_dir" || return 1
+  tmp="$output.new.$$"
+  meta="$tmp.meta.json"
+  stamp="$tmp.probe.json"
+  if ! node "$repo_root/scripts/mutation-probe-window-gate.mjs" wait --root "$repo_root" \
+      --stamp-file "$stamp" --timeout-sec "${PAPERCUSP_BUNDLE_PROBE_WAIT_SEC:-90}" ||
+     ! npx --yes esbuild@0.25.0 "$repo_root/apps/operator/bin/spawner-sidecar.ts" \
+      --bundle --platform=node --format=esm --target=node22 \
+      --outfile="$tmp" --metafile="$meta" --banner:js="$HOST_BANNER" \
+      "${HOST_BANNER_DEFINES[@]}" --define:__PAPERCUSP_BUNDLED_SIDECAR__=true "$@" ||
+     ! node "$repo_root/scripts/mutation-probe-window-gate.mjs" verify --root "$repo_root" --stamp-file "$stamp" ||
+     ! node "$repo_root/scripts/check-bundled-cli-entry-guards.mjs" --metafile "$meta" --base-dir "$repo_root/apps/operator"; then
+    rm -f "$tmp" "$meta" "$stamp"
+    return 1
+  fi
+  node "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp"
+  if ! node --input-type=module --check < "$tmp"; then
+    rm -f "$tmp" "$meta" "$stamp"
+    return 1
+  fi
+  mv -f "$tmp" "$output" || return 1
+  mv -f "$meta" "$output.meta.json" || return 1
+  rm -f "$stamp"
+}
+
 bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
   local -a sources=(
