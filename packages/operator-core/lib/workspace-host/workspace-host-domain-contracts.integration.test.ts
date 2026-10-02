@@ -32,6 +32,7 @@ const {
   WORKSPACE_HOST_FENCE_REFUSED_CODE,
   readWorkspaceHostDestroyTarget,
   recordWorkspaceHostObservation,
+  recordWorkspaceHostHealth,
   updateWorkspaceHostLifecycleState,
   updateWorkspaceHostOperation,
   upsertWorkspaceHost,
@@ -422,6 +423,91 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
     `;
     expect(host).toEqual({ desired_revision: 2, observed_revision: 2 });
+  });
+
+  it.each(['start', 'stop', 'restart'] as const)(
+    'clears the previous health attestation when a %s operation begins',
+    async (action) => {
+      const workspaceId = freshWorkspace();
+      const connectionId = await seedConnection(workspaceId);
+      const hostId = `host-health-${action}`;
+      const authority = { controllerId: 'controller-health', fence: 1 } as const;
+      const observedAt = '2026-10-02T00:00:00.000Z';
+      await upsertWorkspaceHost({
+        ...hostInput(workspaceId, connectionId, hostId),
+        desiredRevision: 1,
+        observedRevision: 1,
+        controllerAuthority: authority,
+      });
+      await recordWorkspaceHostHealth(workspaceId, {
+        hostId,
+        observedAt,
+        status: 'healthy',
+        checks: [{ name: 'compute-running', ok: true, detail: 'RUNNING' }],
+      });
+
+      await beginWorkspaceHostOperation({
+        workspaceId,
+        operationId: `operation-health-${action}`,
+        hostId,
+        action,
+        controllerAuthority: authority,
+      });
+
+      const [host] = await db.adminSql<{
+        health_status: string | null;
+        health_attested_at: Date | string | null;
+        health_checks: unknown[];
+      }[]> `
+        SELECT health_status, health_attested_at, health_checks
+        FROM harness_shared.workspace_hosts
+        WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+      `;
+      expect(host).toEqual({ health_status: null, health_attested_at: null, health_checks: [] });
+    },
+  );
+
+  it('preserves health while a snapshot operation leaves provider liveness unchanged', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-health-snapshot';
+    const authority = { controllerId: 'controller-health', fence: 1 } as const;
+    const observedAt = '2026-10-02T00:00:00.000Z';
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      desiredRevision: 1,
+      observedRevision: 1,
+      controllerAuthority: authority,
+    });
+    await recordWorkspaceHostHealth(workspaceId, {
+      hostId,
+      observedAt,
+      status: 'healthy',
+      checks: [{ name: 'compute-running', ok: true, detail: 'RUNNING' }],
+    });
+
+    await beginWorkspaceHostOperation({
+      workspaceId,
+      operationId: 'operation-health-snapshot',
+      hostId,
+      action: 'snapshot',
+      controllerAuthority: authority,
+    });
+
+    const [host] = await db.adminSql<{
+      health_status: string | null;
+      health_attested_at: Date | string | null;
+      health_checks: unknown[];
+    }[]> `
+      SELECT health_status, health_attested_at, health_checks
+      FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    expect(host).toMatchObject({
+      health_status: 'healthy',
+      health_attested_at: expect.anything(),
+      health_checks: [{ name: 'compute-running', ok: true, detail: 'RUNNING' }],
+    });
   });
 
   it.each([

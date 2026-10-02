@@ -25,6 +25,10 @@ type OperationStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 type TimelineLevel = 'info' | 'warn' | 'error';
 type LogStream = 'cloud-init' | 'systemd' | 'controller';
 
+function lifecycleActionInvalidatesHealth(action: WorkspaceHostLifecycleAction): boolean {
+  return action === 'start' || action === 'stop' || action === 'restart';
+}
+
 export class WorkspaceHostControllerFenceError extends Error {
   constructor(readonly hostId: string) {
     super(`workspace-host controller authority or host generation is stale for '${hostId}'`);
@@ -786,6 +790,7 @@ export interface WorkspaceHostOperationInput {
 
 async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationInput): Promise<void> {
   const percent = Math.max(0, Math.min(100, Math.round(input.percent ?? 0)));
+  const invalidatesHealth = lifecycleActionInvalidatesHealth(input.action);
   await withWorkspace(input.workspaceId, async (tx) => {
     let desiredRevision = input.desiredRevision ?? null;
     if (input.controllerAuthority) {
@@ -880,6 +885,19 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
       if (!controlled[0]) throw new WorkspaceHostControllerFenceError(input.hostId);
       desiredRevision = controlled[0].desired_revision;
     }
+    if (invalidatesHealth) {
+      // WI-10005373: a liveness-changing operation makes the previous health sample stale at
+      // admission. Clear it before provider mutation so a partial stop cannot remain displayed
+      // as healthy, and a quick start cannot inherit a timestamp the standing pass treats as fresh.
+      await tx`
+        UPDATE harness_shared.workspace_hosts
+        SET health_status = NULL,
+            health_attested_at = NULL,
+            health_checks = '[]'::jsonb,
+            updated_at = now()
+        WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
+      `;
+    }
     await tx`
       INSERT INTO harness_shared.workspace_host_operations (
         workspace_id, id, host_id, action, status, percent, message, request,
@@ -913,6 +931,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
 export async function beginWorkspaceHostOperation(input: WorkspaceHostOperationInput): Promise<void> {
   try {
     await beginFencedWorkspaceHostOperation(input);
+    if (lifecycleActionInvalidatesHealth(input.action)) await pushControl();
   } catch (error) {
     if (error instanceof WorkspaceHostControllerFenceError) {
       try {
