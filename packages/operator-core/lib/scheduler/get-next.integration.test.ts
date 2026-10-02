@@ -254,7 +254,17 @@ describe('get_next — an unaffordable claim ladder fails LOUDLY, never as a dra
     // Teeth: the SAME spec, same rows, with a real budget DOES claim. So the rejection above was
     // about the budget and not about there being nothing to find — without this second half the
     // test would still pass if the filter simply matched no rows.
-    expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-affordable');
+    const phases: string[] = [];
+    expect((await getNextWorkItem(s, BEE, {
+      harness: H,
+      onResolutionStep: (step) => phases.push(step),
+    }))?.workItem.id).toBe('F-affordable');
+    expect(phases).toEqual([
+      'candidate-ready-flag-read',
+      'candidate-worker-binding-read',
+      'candidate-feature-tier-1',
+      'candidate-holder-interests',
+    ]);
   });
 
   // COVERAGE NOTE — why this second, source-level test exists.

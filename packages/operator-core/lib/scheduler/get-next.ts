@@ -174,6 +174,8 @@ export interface GetNextOpts {
   rigAvailable?: boolean;
   /** Abort the active claim transaction when the scheduler caller's bounded deadline fires. */
   signal?: AbortSignal;
+  /** Diagnostic only: the last entered candidate subphase survives a caller timeout. */
+  onResolutionStep?: (step: string) => void;
 }
 
 export interface GetNextResult {
@@ -2820,7 +2822,16 @@ export async function getNextWorkItem(
   // getNextForBee -> here -> tier 3's claimNextIssueWorkItem), several awaits deep. Falls back
   // to the legacy activeWorkspaceId() when omitted (unchanged behavior for other callers).
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  const resolutionStep = (step: string): void => {
+    try {
+      opts.onResolutionStep?.(step);
+    } catch {
+      // Observability must not change claim admission or strand a committed row.
+    }
+  };
+  resolutionStep('candidate-ready-flag-read');
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
+  resolutionStep('candidate-worker-binding-read');
   const operationClaims = await import('../blueprint/operation-worker-binding');
   const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(ws, bee.assignee);
   if (operationClaimRead.status === 'unavailable') {
@@ -2998,11 +3009,15 @@ export async function getNextWorkItem(
   // feature tiers. Equal/worse priorities return null here and preserve feature-first.
   let claimed: WorkItem | null = null;
   if (hasPriorityRank && (await issueClaimsEnabled())) {
+    resolutionStep('candidate-priority-issue-preclaim');
     claimed = await claimIssue(true);
   }
 
   // Tier 1: the spec's view exactly as authored.
-  if (!claimed) claimed = await attempt(spec.view.filter);
+  if (!claimed) {
+    resolutionStep('candidate-feature-tier-1');
+    claimed = await attempt(spec.view.filter);
+  }
 
   // Tier 2 (fallback-ladder P-005, fleet-backlog-lessons-2026-07-01, WI-1407): a spec that
   // narrowed to one feature-family `kind` and drained it must not exit — widen to the REST
@@ -3011,6 +3026,7 @@ export async function getNextWorkItem(
   // shapes it can simplify safely (a bare leaf or one inside a top-level `all`); when it can't
   // (kind nested in an `any`/`not`), it hands back the SAME node and this tier is a no-op.
   if (!claimed && widened !== spec.view.filter) {
+    resolutionStep('candidate-feature-tier-2');
     claimed = await attempt(widened);
   }
 
@@ -3066,6 +3082,7 @@ export async function getNextWorkItem(
   // spec-violating item (the post-claim check releases and retries) — it only stops the
   // ENTIRE-lane starvation that a merely-inconvenient-to-extract id leaf used to cause.
   if (!claimed && (await schedulerIssuesClaimableEnabled())) {
+    resolutionStep('candidate-issue-tier-3');
     const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
     const issueKinds = issueKindsForFallback(spec.view.filter);
     // WI-5258: a positive allowlist (idValues) and a negative exclusion are mutually
@@ -3142,6 +3159,7 @@ export async function getNextWorkItem(
   }
 
   if (!claimed) return null;
+  resolutionStep('candidate-holder-interests');
   claimed.interestWatch = await armWorkItemHolderInterests(claimed, bee.assignee);
   // Same claimed-event as the legacy claim path (best-effort fanout).
   void trackDetached(import('../work-items-events'))

@@ -170,6 +170,25 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     ]);
   });
 
+  it('passes candidate subphases to the public timeout observer', async () => {
+    const steps: string[] = [];
+    getNextWorkItemMock.mockImplementation(async (
+      _spec: unknown, _bee: unknown, opts: { onResolutionStep?: (step: string) => void },
+    ) => {
+      opts.onResolutionStep?.('candidate-ready-flag-read');
+      opts.onResolutionStep?.('candidate-worker-binding-read');
+      return null;
+    });
+    await getNextForBee({
+      cupId: 'me',
+      harness: 'papercusp',
+      ignoreStoredSpec: true,
+      onClaimStep: (step) => steps.push(step),
+    });
+    expect(steps).toContain('candidate-ready-flag-read');
+    expect(steps).toContain('candidate-worker-binding-read');
+  });
+
   it('a throwing phase observer cannot break the claim path', async () => {
     getNextWorkItemMock.mockResolvedValue(claimResult('F-observer'));
     planItemLaneBlockReasonMock.mockResolvedValue(null);

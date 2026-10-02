@@ -769,6 +769,7 @@ export async function getNextForBee(args: {
         ...(args.rigAvailable ? { rigAvailable: true } : {}),
         ...('fleetSlug' in record && record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
         signal: args.signal,
+        onResolutionStep: claimStep,
       },
     );
     if (!result) {
