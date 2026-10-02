@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --import tsx
 /**
  * AWS desktop UI acceptance. Run with verify-tauri-headless.sh and isolated DB +
  * ready seed. Uses the real frozen SPA, native pointer input, and existing REST
@@ -10,20 +10,21 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { Script } from "node:vm";
+import { defaultEvidenceRoot, runHarness } from "@papercusp/verification-harness";
 
 // Fail before an expensive native boot if the public lifecycle labels drift.
 const lifecycleLabels = { start: "Start machine", stop: "Stop machine" };
-const modelSource = readFileSync("apps/operator/app/cloud-workspaces/workspace-view-model.ts", "utf8");
-for (const [action, label] of Object.entries(lifecycleLabels)) {
-  if (!modelSource.includes(`${action}: ${JSON.stringify(label)}`)) {
-    throw new Error(`Native selector contract changed: ${action} must use ${label}`);
+function checkLifecycleLabels() {
+  const modelSource = readFileSync("apps/operator/app/cloud-workspaces/workspace-view-model.ts", "utf8");
+  for (const [action, label] of Object.entries(lifecycleLabels)) {
+    if (!modelSource.includes(`${action}: ${JSON.stringify(label)}`)) {
+      throw new Error(`Native selector contract changed: ${action} must use ${label}`);
+    }
   }
-}
-if (process.argv.includes("--preflight")) {
   console.log("CW_AWS_NATIVE_PREFLIGHT passed: lifecycle label contract");
-  process.exit(0);
 }
 
+async function runNativeAssertions(ctx) {
 const required = (name) => {
   if (!process.env[name]) throw new Error(`Missing ${name}; use verify-tauri-headless.sh`);
   return process.env[name];
@@ -33,7 +34,7 @@ const display = required("VERIFY_TAURI_DISPLAY");
 if (required("PAPERCUSP_VERIFY_TAURI_ISOLATED") !== "1" || !/^:\d+$/.test(display) || Number(display.slice(1)) < 90) {
   throw new Error("Refusing a shared database or desktop display");
 }
-const out = resolve(process.env.CW_AWS_EVIDENCE_DIR || `/tmp/cw-aws-native-${Date.now()}`);
+const out = resolve(process.env.CW_AWS_EVIDENCE_DIR || ctx.evidenceDir);
 mkdirSync(out, { recursive: true });
 const tool = required("VERIFY_TAURI_AGENT_TOOLS_BIN");
 const evidence = {
@@ -51,11 +52,13 @@ const ev = (js) => {
   return command(tool, ["eval", "--pid", pid, js]).trim();
 };
 const poll = (selector, js, label) => {
+  ctx.markStep(label);
   const result = command("bash", [required("VERIFY_TAURI_POLL"), "--require", selector, "--eval", js]);
   evidence.steps.push({ label, result });
   console.log(`PASS ${label}`);
 };
 const click = (selector) => {
+  ctx.markStep(`click:${selector}`);
   command("bash", [required("VERIFY_TAURI_LIVENESS_CHECK")]);
   ev(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e || e.disabled)throw new Error('Missing/disabled target'); e.scrollIntoView({block:'center',behavior:'instant'}); return true; })()`);
   evidence.pointerTargets ??= [];
@@ -158,7 +161,6 @@ try {
 } catch (error) {
   evidence.status = "failed";
   evidence.error = String(error.stderr || error.message || error);
-  process.exitCode = 1;
 } finally {
   try { evidence.finalDom = ev("JSON.stringify({href:location.href,text:document.body.innerText.slice(-16000),calls:window.__cwNative?.calls,focus:document.activeElement?.outerHTML,inputs:[...document.querySelectorAll('input')].map(e=>({label:e.getAttribute('aria-label'),value:e.value}))})"); } catch {}
   try { command(tool, ["screenshot","--pid",pid,"--output",resolve(out,"final.png")]); } catch {}
@@ -166,3 +168,30 @@ try {
   writeFileSync(resolve(out,"result.json"), JSON.stringify(evidence,null,2));
   console.log(`CW_AWS_NATIVE_RESULT status=${evidence.status} syntheticCloudResponses=true realAwsLifecycleProven=false evidence=${out}`);
 }
+return evidence.status === "passed"
+  ? { ok: true }
+  : { ok: false, reasonCode: "native-ui-assertion-failed", detail: evidence.error };
+}
+
+const preflightOnly = process.argv.includes("--preflight");
+const result = await runHarness({
+  contract: {
+    name: "cloud-workspaces-aws",
+    phases: [
+      { id: "selectors" },
+      { id: "native", dependsOn: ["selectors"] },
+    ],
+  },
+  evidenceRoot: defaultEvidenceRoot("cloud-workspaces-aws"),
+  selection: { only: preflightOnly ? ["selectors"] : null, from: null },
+  async runPhase(ctx) {
+    if (ctx.phase === "selectors") {
+      ctx.markStep("lifecycle-label-contract");
+      checkLifecycleLabels();
+      return { ok: true };
+    }
+    ctx.markStep("isolated-runtime-preconditions");
+    return runNativeAssertions(ctx);
+  },
+});
+process.exitCode = result.verdict === "pass" ? 0 : 1;
