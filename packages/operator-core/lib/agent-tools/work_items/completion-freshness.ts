@@ -16,6 +16,7 @@ import type {
   CompletionSettlementManifest,
   CompletionTreeStamp,
   CompletionTreeContentIdentity,
+  CompletionGitIgnoreStatus,
   CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 
@@ -101,6 +102,14 @@ export interface CompletionTreeStampProbe {
     | ReadonlyMap<string, HeadBlobResolution>
     | undefined
     | Promise<ReadonlyMap<string, HeadBlobResolution> | undefined>;
+  /** Injectable best-effort ignore probe; production uses one bounded Git status read. */
+  gitIgnoreStatusProbe?: (
+    repoRoot: string,
+    paths: readonly string[],
+  ) =>
+    | ReadonlyMap<string, CompletionGitIgnoreStatus>
+    | undefined
+    | Promise<ReadonlyMap<string, CompletionGitIgnoreStatus> | undefined>;
 }
 
 /**
@@ -455,7 +464,7 @@ async function contentIdentity(
         return undefined;
       }
     });
-  return paths.map((path) => {
+  const identity = paths.map((path) => {
     const bytes = readBytes(nodePath.join(repositoryRoot, path));
     const resolution = head.get(path);
     const deletion = deletedSet.has(path);
@@ -468,6 +477,67 @@ async function contentIdentity(
       ...(resolution?.status === 'unresolvable' ? { headBlobUnresolvable: resolution.reason } : {}),
     };
   });
+  const ignoreCandidates = identity
+    .filter(
+      (entry) =>
+        entry.workingTreeBlobSha !== null &&
+        entry.headBlobSha === null &&
+        !entry.headBlobUnresolvable &&
+        (entry as CompletionTreeContentIdentityWithDeletion).deletion !== true,
+    )
+    .map((entry) => entry.path);
+  if (ignoreCandidates.length === 0) return identity;
+
+  // One bounded read for all present paths absent from HEAD. Any timeout, failure,
+  // omitted status, or path beyond the cap stays explicitly unknown.
+  const statuses = await (probe.gitIgnoreStatusProbe ?? completionGitIgnoreStatusMap)(
+    repositoryRoot,
+    ignoreCandidates.slice(0, MAX_PATHS_PROBED),
+  );
+  const candidateSet = new Set(ignoreCandidates);
+  return identity.map((entry) =>
+    candidateSet.has(entry.path)
+      ? { ...entry, gitIgnoreStatus: statuses?.get(entry.path) ?? 'unknown' }
+      : entry,
+  );
+}
+
+/**
+ * Resolve ignore state for a bounded set of working-tree files absent from HEAD.
+ * --ignored=matching reports ignored (!!) and ordinary untracked paths for
+ * explicit literal pathspecs. Missing output is not evidence of being unignored.
+ */
+async function completionGitIgnoreStatusMap(
+  repoRoot: string,
+  paths: readonly string[],
+): Promise<ReadonlyMap<string, CompletionGitIgnoreStatus> | undefined> {
+  const boundedPaths = paths.slice(0, MAX_PATHS_PROBED);
+  if (boundedPaths.length === 0) return new Map();
+  const requested = new Set(boundedPaths);
+  const statuses = new Map<string, CompletionGitIgnoreStatus>();
+  const outcome = await streamGitFields(
+    [
+      '-C',
+      repoRoot,
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--ignored=matching',
+      '--untracked-files=all',
+      '--',
+      ...boundedPaths.map((path) => ':(literal)' + path),
+    ],
+    (field) => {
+      if (field.length < 4 || field[2] !== ' ') return;
+      const path = field.slice(3);
+      if (!requested.has(path)) return;
+      const status: CompletionGitIgnoreStatus = field.slice(0, 2) === '!!' ? 'ignored' : 'not-ignored';
+      const previous = statuses.get(path);
+      statuses.set(path, previous && previous !== status ? 'unknown' : status);
+    },
+    { timeoutMs: 5000, preferSidecar: true },
+  );
+  return outcome === 'complete' ? statuses : undefined;
 }
 
 /**
@@ -516,6 +586,8 @@ export type UnprovenContentIdentityReason =
   | 'content-mismatch'
   | 'absent-from-both'
   | 'absent-from-working-tree'
+  | 'gitignored-path'
+  | 'gitignore-status-unknown'
   | 'gitignored-scratch-path'
   | 'gitignored-tmp-path'
   | 'deletion-present-in-working-tree'
@@ -524,7 +596,7 @@ export type UnprovenContentIdentityReason =
 export type UnprovenContentIdentityRow = {
   path: string;
   reason: UnprovenContentIdentityReason;
-  settles: 'sweep' | 'never';
+  settles: 'sweep' | 'never' | 'unknown';
 };
 
 /**
@@ -547,10 +619,17 @@ export function describeUnprovenContentIdentity(
     subset.map((row) => `\`${row.path}\` (${row.reason})`).join('; ');
   const willSettle = rows.filter((row) => row.settles === 'sweep');
   const neverSettles = rows.filter((row) => row.settles === 'never');
+  const unknown = rows.filter((row) => row.settles === 'unknown');
   const total = declaredPathCount > 0 ? declaredPathCount : rows.length;
   const head = `Content identity was not proven for ${rows.length} of ${total} declared \`filesChanged\` path(s): ${render(rows)}. `;
   const neverRemedy = neverSettles
     .map((row) => {
+      if (row.reason === 'gitignored-path') {
+        return (
+          "'" + row.path + "' is ignored by Git, so the ordinary git add -A sweep will omit it. " +
+          "Remove it from filesChanged or cite durable storage instead."
+        );
+      }
       const rendered = `\`${row.path}\` (${row.reason})`;
       if (row.reason === 'gitignored-scratch-path' || row.reason === 'gitignored-tmp-path') {
         const prefix = row.reason === 'gitignored-scratch-path' ? '.papercusp/scratch/' : '.papercusp/tmp/ or .papercusp/tmp-*';
@@ -566,6 +645,30 @@ export function describeUnprovenContentIdentity(
       );
     })
     .join(' ');
+  if (unknown.length > 0) {
+    const unknownRemedy = unknown
+      .map(
+        (row) =>
+          "'" +
+          row.path +
+          "' has unknown Git ignore status because the bounded git status probe did not produce a complete result. " +
+          "If Git ignores it, ordinary git add -A will omit it; otherwise a later sweep may settle it. " +
+          "Verify the ignore rules before relying on automatic settlement.",
+      )
+      .join(' ');
+    const knownSweep =
+      willSettle.length > 0
+        ? render(willSettle) +
+          ' will be checked automatically by the git-sync completion-settlement reconciler on the next sweep.'
+        : '';
+    return (
+      head +
+      'WAITING IS UNVERIFIED — ' +
+      unknownRemedy +
+      (knownSweep ? ' ' + knownSweep : '') +
+      (neverRemedy ? ' ' + neverRemedy : '')
+    );
+  }
   if (neverSettles.length === 0) {
     return (
       head +
@@ -601,6 +704,29 @@ const SUPERSEDED_BEFORE_COMMIT_EXCEPTION =
   `closed with never lands. The settlement reconciler then records \`superseded-before-commit\` and sends ` +
   `you a coord message; only then, re-check the path and re-send \`work_items:complete\` for this id.`;
 
+type GitignoredContentIdentityReason = Extract<
+  UnprovenContentIdentityReason,
+  'gitignored-path' | 'gitignored-scratch-path' | 'gitignored-tmp-path'
+>;
+
+function legacyGitignoredContentIdentityReason(
+  path: string,
+): Exclude<GitignoredContentIdentityReason, 'gitignored-path'> | undefined {
+  const normalizedPath = path.replaceAll('\\', '/').replace(/^\.\/+/, '');
+  if (normalizedPath.startsWith(DOCUMENTED_GITIGNORED_SCRATCH_PREFIX)) return 'gitignored-scratch-path';
+  if (
+    normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_PREFIX) ||
+    normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_ROOT_PREFIX)
+  ) {
+    return 'gitignored-tmp-path';
+  }
+  return undefined;
+}
+
+function gitignoredContentIdentityReason(path: string): GitignoredContentIdentityReason {
+  return legacyGitignoredContentIdentityReason(path) ?? 'gitignored-path';
+}
+
 export function unprovenContentIdentityPaths(
   stamp: { contentIdentity?: readonly CompletionTreeContentIdentity[] } | undefined | null,
 ): UnprovenContentIdentityRow[] {
@@ -628,30 +754,29 @@ export function unprovenContentIdentityPaths(
         : [{ path: entry.path, reason: 'content-mismatch' as const, settles: 'sweep' as const }];
     }
     if (inTree && !inHead) {
-      const normalizedPath = entry.path.replaceAll('\\', '/').replace(/^\.\/+/, '');
-      if (normalizedPath.startsWith(DOCUMENTED_GITIGNORED_SCRATCH_PREFIX)) {
-        return [{ path: entry.path, reason: 'gitignored-scratch-path', settles: 'never' as const }];
+      if (entry.gitIgnoreStatus === 'ignored') {
+        return [{ path: entry.path, reason: gitignoredContentIdentityReason(entry.path), settles: 'never' as const }];
       }
-      if (
-        normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_PREFIX) ||
-        normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_ROOT_PREFIX)
-      ) {
-        return [{ path: entry.path, reason: 'gitignored-tmp-path', settles: 'never' as const }];
+      if (entry.gitIgnoreStatus === 'unknown') {
+        return [{ path: entry.path, reason: 'gitignore-status-unknown', settles: 'unknown' as const }];
+      }
+      if (entry.gitIgnoreStatus === 'not-ignored') {
+        return [{ path: entry.path, reason: 'missing-from-commit' as const, settles: 'sweep' as const }];
+      }
+      const legacyIgnoredReason = legacyGitignoredContentIdentityReason(entry.path);
+      if (legacyIgnoredReason) {
+        return [{ path: entry.path, reason: legacyIgnoredReason, settles: 'never' as const }];
       }
       return [{ path: entry.path, reason: 'missing-from-commit' as const, settles: 'sweep' as const }];
     }
     if (!inTree && inHead) {
       return [{ path: entry.path, reason: 'absent-from-working-tree' as const, settles: 'never' as const }];
     }
-    const normalizedPath = entry.path.replaceAll('\\', '/').replace(/^\.\/+/, '');
-    if (normalizedPath.startsWith(DOCUMENTED_GITIGNORED_SCRATCH_PREFIX)) {
-      return [{ path: entry.path, reason: 'gitignored-scratch-path', settles: 'never' as const }];
-    }
-    if (
-      normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_PREFIX) ||
-      normalizedPath.startsWith(DOCUMENTED_GITIGNORED_TMP_ROOT_PREFIX)
-    ) {
-      return [{ path: entry.path, reason: 'gitignored-tmp-path', settles: 'never' as const }];
+    if (entry.gitIgnoreStatus === undefined) {
+      const legacyIgnoredReason = legacyGitignoredContentIdentityReason(entry.path);
+      if (legacyIgnoredReason) {
+        return [{ path: entry.path, reason: legacyIgnoredReason, settles: 'never' as const }];
+      }
     }
     return [{ path: entry.path, reason: 'absent-from-both' as const, settles: 'never' as const }];
   });
