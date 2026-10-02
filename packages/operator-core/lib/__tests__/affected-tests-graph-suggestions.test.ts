@@ -41,9 +41,14 @@ const SELECTOR = process.env.PROBE_SCRIPT
   : resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 
 const IMPORTED = 'apps/operator-docs/src/graph-fixture.ts';
-const IMPORTER = 'packages/search/__graph_fixture__/importer.ts';
+// The importer fixture must live inside a REAL workspace dir (the selector maps a suggested file
+// to its owner via the root `workspaces` globs) that is OUTSIDE the baseline reverse-dep closure
+// of IMPORTED. `packages/search` is not a workspace here — it silently mapped to no owner.
+const IMPORTER_DIR = 'packages/backup/__graph_fixture__';
+const IMPORTER = `${IMPORTER_DIR}/importer.ts`;
+const MID = `${IMPORTER_DIR}/mid.ts`;
 const IMPORTER_SRC = `import { fixture } from '../../../apps/operator-docs/src/graph-fixture';\nexport const x = fixture;\n`;
-const SEARCH_WS = '@papercusp/search';
+const IMPORTER_WS = '@papercusp/backup';
 const NOW = Date.parse('2026-10-02T00:00:00.000Z');
 const INDEX = { lastCommit: '0ce3904e0d4f04f4d383e39d146d1321e73bd95f', indexedAt: '2026-10-01T22:53:00.475Z', backend: 'gitnexus', backendVersion: '1.6.9' };
 
@@ -111,18 +116,18 @@ describe('graph-dependency-suggestions — pure module', () => {
     const top = `import { m } from '../__graph_fixture__/mid';\n`;
     const sources: Record<string, string> = {
       [IMPORTER]: IMPORTER_SRC,
-      'packages/search/__graph_fixture__/mid.ts': mid,
+      [MID]: mid,
       'packages/other/top.ts': top, // wrong relative path => uncorroborated
     };
     const snap = snapshotOf([
       goodEdge,
-      { importer: 'packages/search/__graph_fixture__/mid.ts', imported: IMPORTER, importerSha256: sha256Hex(mid) },
-      { importer: 'packages/other/top.ts', imported: 'packages/search/__graph_fixture__/mid.ts', importerSha256: sha256Hex(top) },
+      { importer: MID, imported: IMPORTER, importerSha256: sha256Hex(mid) },
+      { importer: 'packages/other/top.ts', imported: MID, importerSha256: sha256Hex(top) },
     ]);
     const res = suggestFromSnapshot({ changed: [IMPORTED], snapshot: snap as never, now: NOW, readSource: (p: string) => sources[p] ?? null });
     expect(res.status).toBe('applied');
-    expect(res.suggestedFiles.sort()).toEqual([IMPORTER, 'packages/search/__graph_fixture__/mid.ts'].sort());
-    expect(res.rejected).toEqual([{ importer: 'packages/other/top.ts', imported: 'packages/search/__graph_fixture__/mid.ts', reason: 'uncorroborated' }]);
+    expect(res.suggestedFiles.sort()).toEqual([IMPORTER, MID].sort());
+    expect(res.rejected).toEqual([{ importer: 'packages/other/top.ts', imported: MID, reason: 'uncorroborated' }]);
   });
 
   it('status is unavailable / stale / invalid — each suggests nothing', () => {
@@ -173,7 +178,7 @@ describe('graph-dependency-suggestions — pure module', () => {
 let tmp: string;
 beforeAll(() => {
   tmp = mkdtempSync(join(tmpdir(), 'graph-suggestions-'));
-  mkdirSync(join(tmp, 'src', 'packages', 'search', '__graph_fixture__'), { recursive: true });
+  mkdirSync(join(tmp, 'src', IMPORTER_DIR), { recursive: true });
   writeFileSync(join(tmp, 'src', IMPORTER), IMPORTER_SRC);
 });
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -206,7 +211,7 @@ describe('affected-tests selector — graph suggestions are SUPERSET-ONLY', () =
     const base = runSelector(IMPORTED, { PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS: '0' });
     expect(base.status, base.stderr.slice(0, 400)).toBe(0);
     expect(base.names.size).toBeGreaterThan(0);
-    expect(base.names.has(SEARCH_WS), 'precondition: the fixture importer workspace must be outside the baseline closure').toBe(false);
+    expect(base.names.has(IMPORTER_WS), 'precondition: the fixture importer workspace must be outside the baseline closure').toBe(false);
     expect(base.line).toBeNull();
   });
 
@@ -215,8 +220,8 @@ describe('affected-tests selector — graph suggestions are SUPERSET-ONLY', () =
     const base = runSelector(IMPORTED, { PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS: '0' });
     const withGraph = runSelector(IMPORTED, { PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: snap, PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS: String(10 * 365 * 86400 * 1000) });
     for (const n of base.names) expect(withGraph.names.has(n), `baseline workspace ${n} lost`).toBe(true);
-    expect(withGraph.names.has(SEARCH_WS)).toBe(true);
-    expect(withGraph.line).toMatch(/status=applied accepted=1 rejected=0 added=.*@papercusp\/search/);
+    expect(withGraph.names.has(IMPORTER_WS)).toBe(true);
+    expect(withGraph.line).toMatch(/status=applied accepted=1 rejected=0 added=.*@papercusp\/backup/);
   });
 
   const degraded: Array<[string, () => string | null, RegExp]> = [
@@ -224,7 +229,7 @@ describe('affected-tests selector — graph suggestions are SUPERSET-ONLY', () =
     ['invalid snapshot', () => writeSnapshot('invalid.json', '{"schema":"wrong"}'), /status=invalid reason=schema-mismatch accepted=0 rejected=0 added=none/],
     ['unparseable snapshot', () => writeSnapshot('garbage.json', 'not json at all'), /status=invalid reason=unparseable/],
     ['graph unavailable (no snapshot file)', () => join(tmp, 'does-not-exist.json'), /^$/],
-    ['uncorroborated edge', () => writeSnapshot('uncorr.json', snapshotOf([{ importer: IMPORTER, imported: 'apps/operator-docs/src/never-imported.ts', importerSha256: sha256Hex(IMPORTER_SRC) }])), /^$/],
+    ['uncorroborated edge', () => writeSnapshot('uncorr.json', snapshotOf([{ importer: IMPORTER, imported: 'apps/operator-docs/src/never-imported.ts', importerSha256: sha256Hex(IMPORTER_SRC) }])), /status=applied accepted=0 rejected=1 added=none/],
   ];
   for (const [label, makeSnap, lineRe] of degraded) {
     it(`${label}: final selection === baseline (adds nothing, loses nothing)`, () => {
