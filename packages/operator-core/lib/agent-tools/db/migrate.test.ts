@@ -31,7 +31,11 @@ type EscalationInputLike = {
   body: string;
   meta?: { subjectSignature?: string };
 };
-type ExecFileCallback = (error: (Error & { code?: number | string }) | null, stdout: string, stderr: string) => void;
+type ExecFileCallback = (
+  error: (Error & { code?: number | string; signal?: string | null }) | null,
+  stdout: string,
+  stderr: string,
+) => void;
 
 const h = vi.hoisted(() => ({
   execFile: vi.fn(),
@@ -133,6 +137,7 @@ const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
 // set — delete it per-test so every existing test exercises the deterministic
 // legacy fallback, and the canonical-resolution describe sets it explicitly.
 const ORIGINAL_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
+const ORIGINAL_CANONICAL_TREE = process.env.PAPERCUSP_CANONICAL_TREE;
 
 beforeEach(() => {
   h.spawnSync.mockReset().mockReturnValue({ status: 0, stdout: '', stderr: '' });
@@ -168,6 +173,7 @@ beforeEach(() => {
   }));
   delete process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
   delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+  delete process.env.PAPERCUSP_CANONICAL_TREE;
 });
 
 /** A postgres-js-shaped transient connection error (see node_modules/postgres/src/errors.js's
@@ -179,6 +185,8 @@ afterAll(() => {
   else process.env.PAPERCUSP_ALLOW_DB_MIGRATE = ORIGINAL_ENV;
   if (ORIGINAL_INTEGRATION_ROOT === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
   else process.env.PAPERCUSP_INTEGRATION_ROOT = ORIGINAL_INTEGRATION_ROOT;
+  if (ORIGINAL_CANONICAL_TREE === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+  else process.env.PAPERCUSP_CANONICAL_TREE = ORIGINAL_CANONICAL_TREE;
 });
 
 describe('db:migrate — dry run', () => {
@@ -564,6 +572,60 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(out.ok).toBe(false);
     expect(out.applied).toBe(false);
     expect(out.exit_code).toBe(1);
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
+  it('preserves the child error and terminating signal when psql is killed with empty stderr', async () => {
+    const error = Object.assign(new Error('psql process failed'), { signal: 'SIGTERM' });
+    h.execFile.mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+        stdin: { end: () => queueMicrotask(() => callback(error, '', '')) },
+      }),
+    );
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({
+      ok: false,
+      applied: false,
+      exit_code: 1,
+      stderr: 'psql process failed (killed by SIGTERM)',
+      signal: 'SIGTERM',
+    });
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
+  it('preserves the spawn error when psql cannot be started and stderr is empty', async () => {
+    const error = Object.assign(new Error('spawn psql ENOENT'), { code: 'ENOENT' });
+    h.execFile.mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+        stdin: { end: () => queueMicrotask(() => callback(error, '', '')) },
+      }),
+    );
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({ ok: false, applied: false, exit_code: 1, stderr: 'spawn psql ENOENT', signal: null });
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps psql stderr when the child error also has a message', async () => {
+    const error = Object.assign(new Error('generic execFile failure'), { code: 1 });
+    h.execFile.mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+        stdin: { end: () => queueMicrotask(() => callback(error, '', 'ERROR: syntax error')) },
+      }),
+    );
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({ ok: false, applied: false, exit_code: 1, stderr: 'ERROR: syntax error', signal: null });
     expect(h.recordResourceAction).not.toHaveBeenCalled();
   });
 

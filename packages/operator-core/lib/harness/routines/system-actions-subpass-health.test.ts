@@ -7,6 +7,7 @@
  * lifecycle sweep runs hourly. A failure reported only on the sweep's own tick
  * would be cleared by the next tick's clean return 30 s later.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createSubPassHealth } from './system-actions';
 
@@ -64,5 +65,45 @@ describe('createSubPassHealth', () => {
     const health = createSubPassHealth();
     health.record('task-lifecycle', new Error('x'.repeat(2_000)), T0);
     expect(health.result()?.softError?.length).toBe(600);
+  });
+});
+
+/**
+ * Wiring guard for task-reconcile. The behaviour above (and in the two executors'
+ * tests) only matters if each fail-soft catch in the action feeds the tracker. A
+ * new `catch { console.warn(...) }` that only logs reintroduces WI-10005157's
+ * silent day of failures, so every "sweep failed" warn must sit beside a
+ * subPassHealth.record(..., err), and the handler must return the tracker's result.
+ */
+const SWEEP_FAILED_WARN = /console\.warn\('\[([a-z0-9-]+)\] sweep failed', err\);/g;
+
+function unrecordedSweepFailures(source: string): string[] {
+  const missing: string[] = [];
+  for (const m of source.matchAll(SWEEP_FAILED_WARN)) {
+    const after = source.slice(m.index! + m[0].length, m.index! + m[0].length + 200);
+    if (!/^\s*subPassHealth\.record\('[a-z0-9-]+', err\);/.test(after)) missing.push(m[1]!);
+  }
+  return missing;
+}
+
+describe('task-reconcile feeds every fail-soft sub-pass into subPassHealth', () => {
+  const source = readFileSync(new URL('./task-reconcile-action.ts', import.meta.url), 'utf8');
+
+  it('reads the real action and finds its three fail-soft sub-passes (positive control)', () => {
+    expect([...source.matchAll(SWEEP_FAILED_WARN)].map((m) => m[1]).sort()).toEqual([
+      'a11y-bus-sweep',
+      'failed-task-unit-collector',
+      'task-lifecycle',
+    ]);
+  });
+
+  it('records each one and returns the tracker result', () => {
+    expect(unrecordedSweepFailures(source)).toEqual([]);
+    expect(source).toContain('return subPassHealth.result();');
+  });
+
+  it('control: the detector flags a catch that only logs', () => {
+    const swallowOnly = `    } catch (err) {\n      console.warn('[new-pass] sweep failed', err);\n    }`;
+    expect(unrecordedSweepFailures(swallowOnly)).toEqual(['new-pass']);
   });
 });

@@ -1156,6 +1156,7 @@ describe('session-port managed seed + native persistence helpers', () => {
   }, 35_000);
 
   it('drops a held Codex kickoff at the hold ceiling, without typing into the Starting composer', async () => {
+    const stderrWrite = vi.spyOn(process.stderr, 'write');
     const run = runCodexStartingKickoff('starting-ceiling', codexStartingChild(null, 9000), {
       PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
       PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '3000',
@@ -1173,7 +1174,12 @@ describe('session-port managed seed + native persistence helpers', () => {
       expect(ended?.heldMs as number).toBeGreaterThanOrEqual(1500);
       expect(run.captured()).not.toContain('SWALLOWED:');
       expect(run.captured()).not.toContain('ECHO:KICKOFF-HELD');
+      // Positive control for the fresh-child case below, which asserts this
+      // line's ABSENCE through the same spy: a terminal drop must print it.
+      const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
+      expect(printed.some((line) => line.includes('launch kickoff DROPPED'))).toBe(true);
     } finally {
+      stderrWrite.mockRestore();
       if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
       await run.done;
     }

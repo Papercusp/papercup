@@ -5,6 +5,11 @@
  * receipt file and the RPC URL.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { http } from 'viem';
 import { generatePrivateKey } from 'viem/accounts';
 import { baseSepolia } from 'viem/chains';
@@ -96,6 +101,49 @@ describe('verify-payment-receipt CLI', () => {
     const t = io({ '-': JSON.stringify(receipt) });
     await expect(runPaymentReceiptVerifier(['-', '--rpc', url], t.io)).resolves.toBe(0);
   });
+
+  it('the actual script retains CLI output and exit codes while recording verification evidence', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'payment-receipt-cli-'));
+    const script = fileURLToPath(new URL('../../../../scripts/verify-payment-receipt.mts', import.meta.url));
+    const run = (args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+      execFile(process.execPath, ['--import', 'tsx', script, ...args], {
+        env: { ...process.env, VH_EVIDENCE_ROOT_BASE: root, VH_GUARD_RAIL_SOURCE: '' },
+        timeout: 30_000,
+      }, (error, stdout, stderr) => {
+        if (error && typeof error.code !== 'number') return reject(error);
+        resolve({ code: error?.code ?? 0, stdout, stderr });
+      });
+    });
+    const evidence = async () => JSON.parse(await readFile(path.join(root, 'payment-receipt/latest/result.json'), 'utf8'));
+    try {
+      const file = path.join(root, 'receipt.json');
+      await writeFile(file, JSON.stringify(receipt));
+      const positive = await run([file, '--rpc', url]);
+      expect(positive.code).toBe(0);
+      expect(positive.stderr).toBe('');
+      expect(JSON.parse(positive.stdout)).toMatchObject({ ok: true, transaction: { id: 'txn_b' } });
+      expect((await evidence()).phases).toEqual([expect.objectContaining({ phase: 'verify', status: 'passed' })]);
+
+      await writeFile(file, JSON.stringify({ ...receipt, transaction: { ...receipt.transaction, amount: 25 } }));
+      const negative = await run([file, '--rpc', url]);
+      expect(negative.code).toBe(1);
+      expect(JSON.parse(negative.stdout)).toMatchObject({ ok: false, reason: 'commitment-mismatch' });
+      expect((await evidence()).firstFailure).toMatchObject({ phase: 'verify', reasonCode: 'receipt-not-verified' });
+
+      const unreadable = await run([path.join(root, 'missing.json')]);
+      expect(unreadable.code).toBe(2);
+      expect(unreadable.stdout).toBe('');
+      expect(unreadable.stderr).toContain('ENOENT');
+      expect((await evidence()).firstFailure).toMatchObject({ phase: 'verify', reasonCode: 'usage-or-input-error' });
+
+      const help = await run(['--help']);
+      expect(help.code).toBe(0);
+      expect(help.stdout).toContain(PAYMENT_RECEIPT_VERIFIER_USAGE);
+      expect(help.stderr).toBe('');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('exits 1 with the reason for an altered amount, and for a receipt anchored by someone else', async () => {
     const altered = { ...receipt, transaction: { ...receipt.transaction, amount: 25 } };

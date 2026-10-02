@@ -10537,6 +10537,29 @@ export function parseTargetedReVerdictSelection(
   };
 }
 
+async function broadcastHeldGateAlert(
+  deps: Pick<CheckpointDeps, "broadcast" | "heldGateMs">,
+  input: {
+    releaseRef: string;
+    lastReady: string | null;
+    candidate: string;
+    detail: string;
+  },
+): Promise<void> {
+  // docs-audit #2: a held gate must get LOUDER, not go silent. Re-broadcast at each
+  // rising-urgency tier so a long hold keeps surfacing top-of-inbox.
+  const heldMs = await deps.heldGateMs?.().catch(() => null);
+  if (heldMs == null) return;
+  const alert = heldGateAlert(heldMs);
+  if (!alert) return;
+  await deps
+    .broadcast(
+      `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${input.releaseRef}\` stuck at ${input.lastReady?.slice(0, 8) ?? "unset"}, ${input.candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
+      input.detail,
+    )
+    .catch(() => {});
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -11824,6 +11847,12 @@ async function runGreenCheckpointInner(
           `frozen repair head ${candidate.slice(0, 8)} could not be verified this tick (${verification.summary}); ` +
           `holding the ready-to-verify queue without spending a suite`;
         deps.log(summary);
+        await broadcastHeldGateAlert(deps, {
+          releaseRef: cfg.releaseRef,
+          lastReady,
+          candidate,
+          detail: verification.summary,
+        });
         return withRepairIdentity({
           advanced: false,
           candidate,
@@ -13628,21 +13657,12 @@ async function runGreenCheckpointInner(
         `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${verdictSummary}${lineageNote}${failingSetNote}${alreadyFixedNote}${residueNote}${historicalFlakeNote}`,
       )
       .catch(() => {});
-    // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
-    // re-broadcast a rising-urgency alert (the gate blocks EVERY fleet deploy), so a
-    // long-held gate keeps surfacing top-of-inbox instead of one stale escalation.
-    const heldMs = await deps.heldGateMs?.().catch(() => null);
-    if (heldMs != null) {
-      const alert = heldGateAlert(heldMs);
-      if (alert) {
-        await deps
-          .broadcast(
-            `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${cfg.releaseRef}\` stuck at ${lastReady?.slice(0, 8) ?? "unset"}, ${candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
-            verdictSummary,
-          )
-          .catch(() => {});
-      }
-    }
+    await broadcastHeldGateAlert(deps, {
+      releaseRef: cfg.releaseRef,
+      lastReady,
+      candidate,
+      detail: verdictSummary,
+    });
     // Stale-candidate re-triage: is this red still broken at TIP? The quiet-cut judges a
     // commit that is minutes-to-hours old, so a peer fix (or the far side of a half-landed
     // rename) lands between the cut and the verdict. Re-run exactly the named failing files

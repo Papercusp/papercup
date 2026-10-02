@@ -8067,6 +8067,59 @@ describe("runGreenCheckpoint", () => {
     ).toBe(true);
   });
 
+  it("EI-22752586902645795: re-broadcasts the held-gate alert when frozen repair verification is unavailable", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 1,
+      openedAtMs: now - 4 * 60 * 60 * 1000,
+      updatedAtMs: now - 1_000,
+      fixerSpawnId: null,
+      failingTests: ["lint:identity-leak"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(false);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    const targetedRuns: string[] = [];
+    deps.runGateAtRef = async (_ref, gateIds) => {
+      targetedRuns.push(...gateIds);
+      throw new Error("dependency-prewarm-missing (exit 74)");
+    };
+    deps.heldGateMs = async () => 4 * 60 * 60 * 1000;
+    const broadcasts: Array<{ summary: string; body?: string }> = [];
+    deps.broadcast = async (summary, body) => {
+      broadcasts.push({ summary, body });
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(targetedRuns).toEqual(["lint:identity-leak"]);
+    expect(result).toMatchObject({
+      green: null,
+      reason: "repair-in-progress",
+      repairQueue: { phase: "ready-to-verify", candidate: frozen },
+    });
+    expect(calls).not.toContain("runGreen");
+    expect(
+      broadcasts.some(
+        ({ summary }) => summary.includes("URGENT") && summary.includes("held 4h"),
+      ),
+    ).toBe(true);
+    expect(
+      broadcasts.find(({ summary }) => summary.includes("URGENT"))?.body,
+    ).toContain("dependency-prewarm-missing");
+  });
+
   it("docs-audit #2: no louder alert within the first 2h (fresh hold ⇒ heldGateMs null/small)", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);

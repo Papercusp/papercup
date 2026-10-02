@@ -1279,3 +1279,59 @@ export async function consultReconcileCore(
         : `Recorded (${req.disposition}); the proceed-reconciliation obligation for this consult is cleared.`,
   };
 }
+
+// ── plans:start override linkage ─────────────────────────────────────────────
+// EI-23764501791910357 slice 3b (WI-10005177). `plans:start`'s consult override
+// (`consulted` + `consult_reason`) is free text; `consult_id` makes the consult the
+// caller proceeded on a STRUCTURED reference. This resolves + validates it — never
+// writes — so the result/ledger can name the consult and say whether a
+// proceed-reconciliation is still owed (the obligation reader surfaces it either way).
+
+export interface ConsultRequestedRefRequest {
+  workspaceId: string;
+  requesterId: string;
+  /** Full conversation id or a unique prefix (same resolution as the consult verbs). */
+  conversationRef: string;
+}
+
+export interface ConsultRequestedRefResult {
+  ok: true;
+  conversation_id: string;
+  consult_state: string;
+  latency_contract: string;
+  /** True when this is a proceed consult with no recorded reconciliation — the debt
+   * `consult:reconcile` clears. */
+  reconciliation_owed: boolean;
+}
+
+export async function consultResolveRequestedConsult(
+  req: ConsultRequestedRefRequest,
+  deps: Pick<ConsultVerbDeps, 'getSql'>,
+): Promise<ConsultRequestedRefResult | ConsultVerbError> {
+  const sql = deps.getSql();
+  const normalized = await normalizeConversationRef(sql, {
+    workspaceId: req.workspaceId,
+    conversationId: req.conversationRef,
+  });
+  if ('error' in normalized) return normalized;
+  const row = await readState(sql, req.workspaceId, normalized.req.conversationId);
+  if (!row) return { error: 'not_a_consult' };
+  if (row.requester_id !== req.requesterId) {
+    return {
+      error: 'not_the_requester',
+      hint: `consult_id must name a consult YOU requested; ${row.conversation_id} was requested by ${row.requester_id}.`,
+    };
+  }
+  const reconciled =
+    row.outcome != null &&
+    typeof row.outcome === 'object' &&
+    !Array.isArray(row.outcome) &&
+    (row.outcome as Record<string, unknown>).reconciliation != null;
+  return {
+    ok: true,
+    conversation_id: row.conversation_id,
+    consult_state: row.state,
+    latency_contract: row.latency_contract,
+    reconciliation_owed: row.latency_contract === 'proceed' && !reconciled,
+  };
+}

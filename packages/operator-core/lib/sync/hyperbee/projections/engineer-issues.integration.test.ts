@@ -165,6 +165,11 @@ beforeAll(async () => {
       )
       WHERE ((payload -> 'resource_governor') ->> 'schemaVersion') = '1';
 
+    -- Migration 1298: the promotion key is unique even after the winner settles.
+    CREATE UNIQUE INDEX IF NOT EXISTS work_items_intake_promotion_key_uniq
+      ON harness_shared.work_items ((payload -> 'intakePromotion' ->> 'key'))
+      WHERE payload ? 'intakePromotion';
+
     -- A second partial index gives the negative control teeth: its 23505 must
     -- still escape the projection rather than being mistaken for migration 865.
     CREATE UNIQUE INDEX IF NOT EXISTS engineer_issues_projection_unrelated_uq
@@ -627,6 +632,40 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     }
   });
 
+  it('coalesces a repeated intake promotion replay onto its settled winner', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      const payload = { intakePromotion: { key: 'intake-exec:EI-source:revision-a', schemaVersion: 'intake-execution-v1' } };
+      await p.writeToPg(issueRow({ issue_id: 'WI-intake-winner', state: 'done', payload }), {
+        ts: 100, origin: 'remote', authorPubkey: 'peer-a',
+      });
+      const incoming = issueRow({ issue_id: 'WI-intake-duplicate', payload });
+      const provenance = { ts: 200, origin: 'remote' as const, authorPubkey: 'peer-b' };
+      await p.writeToPg(incoming, provenance);
+      await p.writeToPg(incoming, provenance);
+      expect(await getIssue('WI-intake-winner')).not.toBeNull();
+      expect(await getIssue('WI-intake-duplicate')).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('winner=WI-intake-winner'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('the intake index permits missing keys, but malformed-key conflicts still escape', async () => {
+    const p = proj();
+    const provenance = { ts: 100, origin: 'remote' as const, authorPubkey: 'peer' };
+    for (const id of ['WI-intake-no-key-a', 'WI-intake-no-key-b']) {
+      await p.writeToPg(issueRow({ issue_id: id, payload: { intakePromotion: {} } }), provenance);
+      expect(await getIssue(id)).not.toBeNull();
+    }
+    const payload = { intakePromotion: { key: '' } };
+    await p.writeToPg(issueRow({ issue_id: 'WI-intake-invalid-a', payload }), provenance);
+    await expect(p.writeToPg(issueRow({ issue_id: 'WI-intake-invalid-b', payload }), provenance))
+      .rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_intake_promotion_key_uniq' });
+  });
+
   it('a governor receipt outside the migration-986 predicate lands untouched (calibration)', async () => {
     const p = proj();
     const resource_governor = { schemaVersion: 1, namespace: 'testing-run-process', idempotencyKey: 'same-key' };
@@ -980,12 +1019,20 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     const first = await getIssue('EI-183');
     expect(first?.origin).toBe('remote');
     expect(first?.fed_ts).toBe(500);
+    const [before] = await db.sql<{ row: Record<string, unknown> }[]>`
+      SELECT to_jsonb(w) AS row FROM harness_shared.work_items w WHERE feature_id = 'EI-183'`;
 
     // Re-fold the IDENTICAL op a second time (a retry/backfill re-applying the same
     // wire op) — must be a no-op on origin/fed_ts, never flip to 'local' nor advance
     // the LWW clock, even though the write touches bookkeeping columns (updated_ts).
     await p.writeToPg(op, provenance);
     const second = await getIssue('EI-183');
+    const [after] = await db.sql<{ row: Record<string, unknown> }[]>`
+      SELECT to_jsonb(w) AS row FROM harness_shared.work_items w WHERE feature_id = 'EI-183'`;
+    const bookkeeping = new Set(['updated_ts', 'ts', 'fed_ts', 'fed_hlc', 'origin', 'author_pubkey']);
+    const contentDeltas = Object.keys(before!.row).filter((key) => !bookkeeping.has(key) &&
+      JSON.stringify(before!.row[key]) !== JSON.stringify(after!.row[key]));
+    expect(contentDeltas, 'same-op content deltas before federation assertions').toEqual([]);
     expect(second?.origin).toBe('remote'); // must NOT flip to 'local'
     expect(second?.fed_ts).toBe(500); // must NOT advance
     expect(second?.title).toBe('stable content');

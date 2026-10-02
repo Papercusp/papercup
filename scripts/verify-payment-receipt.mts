@@ -11,11 +11,23 @@
  * The logic (and its tests) live in packages/operator-core/lib/cupboard/payment-receipt-cli.ts.
  */
 import { readFileSync } from 'node:fs';
+import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { runPaymentReceiptVerifier } from '../packages/operator-core/lib/cupboard/payment-receipt-cli.ts';
 
-const code = await runPaymentReceiptVerifier(process.argv.slice(2), {
-  readFile: (file) => readFileSync(file === '-' ? 0 : file, 'utf8'),
-  stdout: (text) => process.stdout.write(text),
-  stderr: (text) => process.stderr.write(text),
+let code = 2;
+await runHarness({
+  contract: { name: 'payment-receipt', phases: [{ id: 'verify' }] },
+  evidenceRoot: defaultEvidenceRoot('payment-receipt'),
+  async runPhase(ctx) {
+    ctx.markStep('verify-receipt');
+    code = await runPaymentReceiptVerifier(process.argv.slice(2), {
+      readFile: (file) => readFileSync(file === '-' ? 0 : file, 'utf8'),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    });
+    return code === 0
+      ? { ok: true }
+      : { ok: false, reasonCode: code === 1 ? 'receipt-not-verified' : 'usage-or-input-error' };
+  },
 });
 process.exit(code);

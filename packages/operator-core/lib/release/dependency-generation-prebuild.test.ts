@@ -1,6 +1,10 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   awaitDependencyPrebuildState,
+  dependencyGenerationRootRecord,
   dependencyPrebuildKey,
   dependencyPrebuildRequestFromQueuedState,
   enqueueDependencyPrebuild,
@@ -215,6 +219,32 @@ describe('dependency generation background prebuild', () => {
     expect(roundTripped && 'generationRoot' in roundTripped && roundTripped.generationRoot).toBe(
       persisted.generationRoot,
     );
+  });
+
+  it('WI-10005159: an env-less resolve follows the root recorded for the integration root, and env still wins', () => {
+    const integration = mkdtempSync(join(tmpdir(), 'dep-gen-root-record-'));
+    try {
+      const record = dependencyGenerationRootRecord(integration);
+      expect(record).toBe(join(integration, '.papercusp/dependency-generation-root'));
+      mkdirSync(dirname(record), { recursive: true });
+
+      writeFileSync(record, '/mnt/data/recorded-gens\n');
+      expect(resolveDependencyGenerationRoot(integration, {})).toBe('/mnt/data/recorded-gens');
+      expect(resolveDependencyGenerationRoot(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' })).toBe(
+        '/mnt/data/recorded-gens',
+      );
+      expect(
+        resolveDependencyGenerationRoot(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '/mnt/data/env-gens' }),
+      ).toBe('/mnt/data/env-gens');
+
+      // bash only honors an absolute first line; anything else falls through to the tree store.
+      writeFileSync(record, 'relative/gens\n');
+      expect(resolveDependencyGenerationRoot(integration, {})).toBe(
+        join(integration, '.papercusp/dependency-generations'),
+      );
+    } finally {
+      rmSync(integration, { recursive: true, force: true });
+    }
   });
 
   it('WI-10004797: resolves the generation root exactly like dependency-generation.sh and rejects a malformed recorded root', () => {

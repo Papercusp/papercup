@@ -813,6 +813,8 @@ describe('immutable dependency generation', () => {
     const miss = selectPrewarmed(generationRoot, integration);
     expect(miss.status).toBe(74);
     expect(miss.stderr).toContain('no prewarmed dependency generation');
+    // WI-10005159: the miss names the store it searched, so a wrong-store miss explains itself.
+    expect(miss.stderr).toContain(`(generation_root=${generationRoot})`);
 
     const rewarmed = publish(integration);
     expect(rewarmed.status, rewarmed.stderr).toBe(0);
@@ -858,6 +860,34 @@ describe('immutable dependency generation', () => {
     const explicit = ensureRef(integration, candidate, env, explicitRoot);
     expect(explicit.status, explicit.stderr).toBe(0);
     expect(publishedPath(explicit.stdout).startsWith(`${explicitRoot}/`)).toBe(true);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10005159: an env-less caller follows the generation root a configured run recorded for the integration root', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate');
+    const configuredRoot = join(dirname(integration), 'recorded-generations');
+    const record = join(integration, '.papercusp/dependency-generation-root');
+
+    const configured = ensureRef(integration, candidate, {
+      PAPERCUSP_DEPENDENCY_GENERATION_ROOT: configuredRoot,
+    });
+    expect(configured.status, configured.stderr).toBe(0);
+    expect(readFileSync(record, 'utf8')).toBe(`${configuredRoot}\n`);
+
+    // bg-host's env is absent from a manual systemd-run unit, install:safe and an
+    // agent shell; an empty value is unset to bash `:-`.
+    const envLess = ensureRef(integration, candidate, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' });
+    expect(envLess.status, envLess.stderr).toBe(0);
+    expect(publishedPath(envLess.stdout).startsWith(`${configuredRoot}/`)).toBe(true);
+    expect(publishedIdentity(envLess.stdout)).toBe(publishedIdentity(configured.stdout));
+    expect(existsSync(join(integration, '.papercusp/dependency-generations'))).toBe(false);
+
+    const explicitRoot = join(dirname(integration), 'explicit-generations');
+    const explicit = ensureRef(integration, candidate, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' }, explicitRoot);
+    expect(explicit.status, explicit.stderr).toBe(0);
+    expect(publishedPath(explicit.stdout).startsWith(`${explicitRoot}/`)).toBe(true);
+    // An explicit root is a one-off; it never rewrites the record.
+    expect(readFileSync(record, 'utf8')).toBe(`${configuredRoot}\n`);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('P-004: exposes the cheap immutable candidate/input key without reading mutable live lockfiles', () => {
