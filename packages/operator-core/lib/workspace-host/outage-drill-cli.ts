@@ -1,10 +1,18 @@
 /**
  * Live runner for the J5 outage drill (outage-drill.ts; plan aws-byoc-gcp-parity-2026-10-01
- * P-017). Runs the drill against a real GCP workspace host and prints the evidence + verdict.
+ * P-017; AWS per WI-10005447). Runs the drill against a real GCP or AWS workspace host and prints
+ * the evidence + verdict.
  *
  *   tsx packages/operator-core/lib/workspace-host/outage-drill-cli.ts \
  *     --project <p> --zone <z> --instance <name> --instance-id <id> --network <net> \
  *     --host-id <host-…> --workspace-dir <dir> [--agent <cli>] [--nonce <n>] [--out <evidence.json>]
+ *
+ *   tsx packages/operator-core/lib/workspace-host/outage-drill-cli.ts --cloud aws \
+ *     --region <r> --instance-id <i-…> [--aws-profile <p>] \
+ *     --host-id <host-…> --workspace-dir <dir> [--agent <cli>] [--nonce <n>] [--out <evidence.json>]
+ *
+ * On AWS the drill reaches the host by SSH over SSM and blocks egress with deny entries on the
+ * network ACL of the instance's subnet, which it looks up from the instance.
  *
  * --agent is the agent CLI on the host, invoked as `<cli> -p <prompt> --allowedTools Bash,Write`. A
  * hosted host ships only the local-inference agent (D-250); the customer connects their own model
@@ -24,10 +32,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { isCliEntry } from '../util/cli-entry';
-import { gcpIapHostKeyAlias } from './gcp-iap-initialization-operations';
+import { awsSsmHostKeyAlias, gcpIapHostKeyAlias } from './gcp-iap-initialization-operations';
+import { buildAwsSsmProxyCommand } from './local-connection-manager';
 import {
+  awsSubnetNetworkAcl,
   evaluateOutageDrill,
   runOutageDrill,
+  type AwsEgressBlockTarget,
   type HostCommandResult,
   type OutageDrillConfig,
 } from './outage-drill';

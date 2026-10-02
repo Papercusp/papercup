@@ -205,6 +205,36 @@ export function buildAwsNetworkAclEgressDeny(target: AwsEgressBlockTarget, addre
   };
 }
 
+/**
+ * The network ACL governing `subnetId` and its egress entries, read from the JSON of
+ * `aws ec2 describe-network-acls --filters Name=association.subnet-id,Values=<subnetId>`.
+ * A subnet has exactly one ACL; anything else means the lookup went wrong, so it refuses.
+ */
+export function awsSubnetNetworkAcl(
+  describeJson: string,
+  subnetId: string,
+): { networkAclId: string; egressEntries: AwsNetworkAclEntry[] } {
+  const parsed = JSON.parse(describeJson) as {
+    NetworkAcls?: Array<{
+      NetworkAclId?: string;
+      Associations?: Array<{ SubnetId?: string }>;
+      Entries?: Array<{ RuleNumber?: number; RuleAction?: string; Egress?: boolean }>;
+    }>;
+  };
+  const matches = (parsed.NetworkAcls ?? []).filter((acl) =>
+    (acl.Associations ?? []).some((association) => association.SubnetId === subnetId));
+  if (matches.length !== 1 || typeof matches[0]?.NetworkAclId !== 'string') {
+    throw new Error(`outage drill: expected one network ACL for ${subnetId}, found ${matches.length}`);
+  }
+  const egressEntries = (matches[0].Entries ?? [])
+    .filter((entry) => entry.Egress === true && typeof entry.RuleNumber === 'number')
+    .map((entry) => ({
+      ruleNumber: entry.RuleNumber as number,
+      ruleAction: entry.RuleAction === 'allow' ? 'allow' as const : 'deny' as const,
+    }));
+  return { networkAclId: matches[0].NetworkAclId, egressEntries };
+}
+
 /** The block for the target's cloud: argv for gcloud (GCP) or the aws CLI (AWS). */
 export function buildEgressBlock(target: EgressBlockTarget, addresses: readonly string[]): EgressBlock {
   if (target.cloud === 'aws') return buildAwsNetworkAclEgressDeny(target, addresses);
