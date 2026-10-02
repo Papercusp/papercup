@@ -23,6 +23,16 @@ import {
   type TriagedCheckoutScopeOut,
 } from './worktree-coverage-watchdog';
 
+// WI-10005446 wiring guard. The sidecar reports itself enabled for this whole file. Its
+// default answer (undefined) falls through to the local spawn, so tests that never
+// configure it behave as before.
+const sidecarGit = vi.hoisted(() => vi.fn());
+vi.mock('../fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fleet/git-via-sidecar')>()),
+  gitSidecarEnabled: () => true,
+  runGitViaSpawnerSidecar: sidecarGit,
+}));
+
 const CANONICAL = '/home/dev/papercupai-workspace/papercusp';
 
 function wt(path: string, dirty: boolean, dirtyFileCount = dirty ? 1 : 0): WorktreeInfo {
@@ -559,5 +569,26 @@ describe('runWatchdogGit (sidecar routing)', () => {
     const s = seams({ viaSidecar, sidecarEnabled: () => false });
     await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
     expect(viaSidecar).not.toHaveBeenCalled();
+  });
+
+  it('WIRING: the sibling-checkout pass sends its git calls to the sidecar when no runner is injected', async () => {
+    // If defaultRunGit regressed to a raw local spawn, real git would run in the non-existent
+    // /ws/a, the checkout would be skipped, and `out` would be [].
+    sidecarGit.mockReset();
+    sidecarGit.mockImplementation(async (args: string[], cwd: string) => {
+      if (args[0] === 'rev-parse') return { code: 0, stdout: `${cwd}\n`, stderr: '' };
+      if (args[0] === 'status') return { code: 0, stdout: ' M x.ts\n', stderr: '' };
+      return { code: 0, stdout: '1790000000\n', stderr: '' };
+    });
+    try {
+      const out = await listSiblingCheckoutsWithDirtyState('/ws', {
+        listChildDirs: async () => ['/ws/a'],
+        realpath: async (p: string) => p,
+      });
+      expect(out).toEqual([{ path: '/ws/a', dirty: true, dirtyFileCount: 1, lastCommitEpochSec: 1790000000 }]);
+      expect(sidecarGit.mock.calls.map((c) => (c[0] as string[])[0])).toEqual(['rev-parse', 'status', 'log']);
+    } finally {
+      sidecarGit.mockReset();
+    }
   });
 });
