@@ -238,10 +238,22 @@ describe('script wiring', () => {
     });
   }
 
-  it('prints nothing for an ordinary command', () => {
-    const res = run({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }, ENV);
+  it('prints nothing outside a psu session', () => {
+    const res = run({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }, {});
     expect(res.status).toBe(0);
     expect(res.stdout).toBe('');
+  });
+
+  it('prints an updatedInput running the command offline when the operator cannot clear the session', () => {
+    const res = run({ tool_name: 'Bash', tool_input: { command: 'ls -la' }, cwd: process.cwd() }, ENV);
+    expect(res.status).toBe(0);
+    const out = JSON.parse(res.stdout) as { hookSpecificOutput: Record<string, unknown> };
+    if (sandboxedBashCommand('ls -la') === null) {
+      expect(out.hookSpecificOutput).toMatchObject({ permissionDecision: 'deny' });
+    } else {
+      expect(out.hookSpecificOutput).toMatchObject({ hookEventName: 'PreToolUse' });
+      expect(String((out.hookSpecificOutput.updatedInput as { command: string }).command)).toMatch(/--unshare-net|--net/);
+    }
   });
 
   it('prints a PreToolUse deny when a provider command cannot be cleared', () => {
