@@ -59,8 +59,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 /**
  * Names that identify NOBODY: the stand-ins a test fixture or doc example uses on purpose,
@@ -816,7 +815,7 @@ export function serializeIdentitySafeJson(value, entries) {
 // guard. Read private JSON on stdin and emit only the sanitized copy on stdout;
 // the original receipt and its measured hashes remain untouched.
 // Usage: node scripts/lib/identity-leak-patterns.mjs --serialize-json < private.json
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   if (process.argv.length !== 3 || process.argv[2] !== '--serialize-json') {
     console.error('Usage: node scripts/lib/identity-leak-patterns.mjs --serialize-json < private.json');
     process.exitCode = 1;

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -70,6 +70,7 @@ function runGate(matches: unknown[]) {
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
+      'printf "%s\\n" "$*" >> "$PODMAN_CALL_LOG"',
       'if [[ " $* " == *" skopeo "* ]]; then',
       "  printf '%s\\n' '__DIGEST__'",
       '  exit 0',
@@ -79,6 +80,8 @@ function runGate(matches: unknown[]) {
     ].join('\n').replace('__DIGEST__', DIGEST),
     { mode: 0o755 },
   );
+  const podmanCallLog = join(dir, 'podman-calls.log');
+  writeFileSync(podmanCallLog, '');
   writeFileSync(
     join(bin, 'syft'),
     [
@@ -134,6 +137,7 @@ function runGate(matches: unknown[]) {
       env: {
         ...process.env,
         PATH: bin + ':' + (process.env.PATH ?? ''),
+        PODMAN_CALL_LOG: podmanCallLog,
         GRYPE_FIXTURE: fixture,
         SYFT_BIN: join(bin, 'syft'),
         GRYPE_BIN: join(bin, 'grype'),
@@ -142,11 +146,33 @@ function runGate(matches: unknown[]) {
       timeout: 30_000,
     },
   );
-  return { status: result.status ?? -1, output: (result.stdout ?? '') + (result.stderr ?? '') };
+  return {
+    status: result.status ?? -1,
+    output: (result.stdout ?? '') + (result.stderr ?? ''),
+    podmanCalls: readFileSync(podmanCallLog, 'utf8').split('\n').filter(Boolean),
+  };
 }
 
 afterEach(() => {
   while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true });
+});
+
+describe('release supply-chain cosign container identity (WI-10005606)', () => {
+  it('runs every cosign container as the caller uid:gid, so a 0600 release key stays readable', () => {
+    // The cosign image defaults to uid 65532, which cannot open a 0600 key owned by the
+    // caller. Measured 2026-10-02: signing died with "open /keys/cosign.key: permission
+    // denied" after a full image build.
+    const result = runGate([]);
+    expect(result.status, result.output).toBe(0);
+    const cosignCalls = result.podmanCalls.filter((call) => call.includes('/keys:') || call.includes('/keys '));
+    const signAndVerify = result.podmanCalls.filter((call) => / (sign|attest|verify|verify-attestation) /.test(call));
+    expect(signAndVerify.length).toBeGreaterThanOrEqual(4);
+    const expectedUser = `--user ${process.getuid!()}:${process.getgid!()}`;
+    for (const call of [...cosignCalls, ...signAndVerify]) {
+      expect(call).toContain(expectedUser);
+      expect(call).toContain('-e HOME=/tmp');
+    }
+  });
 });
 
 describe('release supply-chain vulnerability gate', () => {

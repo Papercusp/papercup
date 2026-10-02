@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import { isSessionShapedOwnerId } from '../coordination/dead-session-recipient-guidance';
 import {
   knownOwnerIdSet,
@@ -765,6 +766,8 @@ export default defineTool({
            AND COALESCE(ts, ingested_at) >= ${since}::timestamptz
            AND COALESCE(ts, ingested_at) < ${until}::timestamptz
            AND (${kinds}::text[] IS NULL OR 'turn' = ANY(${kinds}::text[]))
+           -- D-006 reader rule (WI-10005570): another agent's disclosure-window turns never reach a timeline.
+           AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', [identity.ownerId]) as never}
            AND ${args.tool ?? null}::text IS NULL
            AND ${args.status ?? null}::text IS NULL
            AND ${args.goalRef ?? null}::text IS NULL

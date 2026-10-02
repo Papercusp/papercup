@@ -28,6 +28,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import {
   parseSessionSelector,
   sessionSearchEnabled,
@@ -198,6 +199,8 @@ export default defineTool({
            AND (${sourceKind ?? null}::text IS NULL OR source_kind = ${sourceKind ?? null})
            AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
            AND (${args.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${args.since ?? null}::timestamptz)
+           -- D-006 reader rule (WI-10005570): another agent's disclosure-window turns never reach a digest.
+           AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', [resolveAgentIdentity(ctx).ownerId]) as never}
       ),
       agg AS (
         SELECT source_kind, session_id, count(*)::int AS turns,
