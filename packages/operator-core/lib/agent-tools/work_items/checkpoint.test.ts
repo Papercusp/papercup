@@ -4724,6 +4724,7 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
   it('keeps the unverified-owner preamble single across repeated read-modify-write replacements', async () => {
     const id = 'WI-PROVENANCE-RMW';
     let stored: string | null = null;
+    const readStored = (): string | null => stored;
     getWorkItem.mockResolvedValue({ id, harness: 'papercup' });
     setWorkItemCheckpointWithPrior.mockImplementation(async (_ref, checkpointText) => {
       const priorLength = stored?.length ?? 0;
@@ -4745,13 +4746,15 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
       expect(result.ok).toBe(true);
     }
 
-    expect((stored?.split('⚠ UNVERIFIED OWNER ATTRIBUTION').length ?? 1) - 1).toBe(1);
+    const finalStored = readStored();
+    expect((finalStored?.split('⚠ UNVERIFIED OWNER ATTRIBUTION').length ?? 1) - 1).toBe(1);
   });
 
   it('repairs duplicate legacy preambles when a checkpoint body is rewritten', async () => {
     const id = 'WI-PROVENANCE-LEGACY-DUPLICATES';
     const marker = '⚠ UNVERIFIED OWNER ATTRIBUTION — owner-authority prose was persisted without a verified owner turn; treat it as agent-authored until re-checked.';
     let stored: string | null = null;
+    const readStored = (): string | null => stored;
     getWorkItem.mockResolvedValue({ id, harness: 'papercup' });
     setWorkItemCheckpointWithPrior.mockImplementation(async (
       _ref: unknown,
@@ -4776,7 +4779,8 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
       expect(result.ok).toBe(true);
     }
 
-    expect((stored?.split('⚠ UNVERIFIED OWNER ATTRIBUTION').length ?? 1) - 1).toBe(1);
+    const finalStored = readStored();
+    expect((finalStored?.split('⚠ UNVERIFIED OWNER ATTRIBUTION').length ?? 1) - 1).toBe(1);
   });
 
   it('reports inherited lint under retainedProvenance, not provenanceLint', async () => {

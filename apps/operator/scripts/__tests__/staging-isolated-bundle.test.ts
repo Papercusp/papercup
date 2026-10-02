@@ -183,6 +183,48 @@ describe("bundle-host-freshness proof", () => {
     writeFileSync(join(repo, "dist-host", "sql", "001.sql"), "select 2;\n");
     expect(run("check").status).not.toBe(0);
   });
+
+  // EI-24867768475421999: a 2026-10-02 stamp failure logged only
+  // "[bundle-freshness] spawnSync git ETIMEDOUT", which named neither the git
+  // call nor how long it ran, and the missing proof then made staging-sync
+  // discard the whole generation.
+  it("names the failing git command, its elapsed time and its bound", () => {
+    const notRepo = mkdtempSync(join(tmpdir(), "bundle-freshness-norepo-"));
+    try {
+      repo = notRepo;
+      const r = run("stamp");
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(
+        /\[bundle-freshness\] git rev-parse --show-toplevel failed after \d+ms \(timeout 30000ms\): exit 128/,
+      );
+    } finally {
+      rmSync(notRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds the cold-index status call separately from the plumbing hang guard", () => {
+    const bin = mkdtempSync(join(tmpdir(), "bundle-freshness-fakegit-"));
+    try {
+      // Fake git: rev-parse reports the requested root; status fails fast.
+      writeFileSync(
+        join(bin, "git"),
+        '#!/bin/sh\ncase "$3" in\n  rev-parse) printf \'%s\\n\' "$2" ;;\n  status) echo boom >&2; exit 2 ;;\n  *) exit 3 ;;\nesac\n',
+        { mode: 0o755 },
+      );
+      const r = spawnSync(
+        process.execPath,
+        [HELPER, "stamp", "--repo-root", repo, "--entry", entry, "--outfile", outfile, "--manifest", manifest],
+        { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` } },
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(
+        "git status --porcelain=v1 --untracked-files=no --ignore-submodules=none failed after",
+      );
+      expect(r.stderr).toMatch(/\(timeout 300000ms\): exit 2 — boom/);
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("bundle-host freshness helper paths", () => {
