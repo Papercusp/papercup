@@ -44,6 +44,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { mapWithConcurrency } from './gym/concurrency';
+import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
+
+export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
 export const RETENTION_SCHEMA = 'papercusp-release-retention/v1';
 export const RECLAIM_DELETER = 'release:cut-reclaim';
@@ -443,7 +446,7 @@ async function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promi
  * On a timeout execFile destroys the pipes before killing the shell, so a git still
  * writing dies of SIGPIPE.
  */
-const HELPER_FRAME_FN = "f() { printf '\\000%s %s %d\\000' \"$n\" \"$1\" \"$2\"; }";
+// HELPER_FRAME_FN / parseHelperFrames / nextForkSlot live in ./git-batch (shared fork gate).
 
 /** args: nonce tree canonicalRoot. Tags: status, head, contains, submodules. */
 export const AUTHORED_HEAD_SCRIPT = [
@@ -466,26 +469,6 @@ export const AUTHORED_SUBMODULES_SCRIPT = [
   '  i=$((i+1)); shift 2',
   'done',
 ].join('\n');
-
-export interface HelperSection {
-  tag: string;
-  exit: number;
-  out: string;
-}
-
-/** Split a helper's stdout into its framed sections, in emission order. Bytes after the
- * last frame (a helper killed mid-command) belong to no section and are dropped. */
-export function parseHelperFrames(stdout: string, nonce: string): HelperSection[] {
-  if (!/^[0-9a-f]{16,}$/.test(nonce)) throw new Error('helper nonce must be hex');
-  const sections: HelperSection[] = [];
-  let start = 0;
-  // \x00, never \0: followed by the nonce's leading digit, \0 is a legacy octal escape (\01).
-  for (const m of stdout.matchAll(new RegExp(`\\x00${nonce} (\\S+) (\\d+)\\x00`, 'g'))) {
-    sections.push({ tag: m[1]!, exit: Number(m[2]), out: stdout.slice(start, m.index) });
-    start = m.index! + m[0].length;
-  }
-  return sections;
-}
 
 export interface HelperResult {
   /** the section's output; throws if the section is missing or its command failed */
@@ -512,19 +495,6 @@ export function helperResult(sections: HelperSection[], stderr = ''): HelperResu
     },
     exitOf: (tag) => get(tag).exit,
   };
-}
-
-/**
- * One host fork per event-loop turn. Concurrent tree workers otherwise fork back-to-back in
- * a single tick: 4 x ~160ms at 2GB RSS held the loop 565ms (measured 07:53Z). Each slot opens
- * one setImmediate after the previous one, and an immediate queued while the check phase runs
- * waits for the NEXT turn, so timers and I/O run between consecutive forks.
- */
-let forkGate: Promise<void> = Promise.resolve();
-export function nextForkSlot(): Promise<void> {
-  const slot = forkGate.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
-  forkGate = slot;
-  return slot;
 }
 
 async function runGitHelper(script: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<HelperResult> {
