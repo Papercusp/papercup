@@ -17,9 +17,11 @@
  * Both arms get the same precomputed query vector, run back to back for every
  * (round, query) with alternating order, and the reading is what B ADDS:
  * `B p95 - A p95`. A site passes when that is at most
- * `max(0.25 x its D-024 baseline p95, 10 ms)` — D-024's 1.25x budget, charged only
- * with what the change adds. The 10 ms floor is D-040's one loosening and exists
- * for consult, whose 0.25 x 14 ms = 3.5 ms would be under one scheduler hiccup.
+ * `max(0.25 x its D-024 baseline p95, N_s)` — D-024's 1.25x budget, charged only
+ * with what the change adds. N_s is the site's NOISE FLOOR (D-042): the largest
+ * |p95(A') - p95(A)| over R33_AB_NULL_RUNS A-vs-A null runs (`--null`), i.e. the
+ * smallest added cost this instrument can tell from zero at that site. D-040's
+ * fixed 10 ms floor was withdrawn by D-042: it was chosen after consult's result.
  *
  * work_items:search has no fair pre-change arm (its pre-change feature leg was
  * broken; D-033), so its A arm is the same search with the semantic legs off and
@@ -32,12 +34,34 @@ import { D024_BASELINE_P95_MS, R33_RATIO, percentile } from './chunk-search-late
 /** The commit whose search SQL the A arms reproduce (before any chunk-aware leg). */
 export const R33_AB_PRE_CHANGE_REF = '9a9473af95';
 
-/** D-040's floor under each site's added-latency budget, in milliseconds. */
-export const R33_AB_FLOOR_MS = 10;
-
 /** The sites R-33 covers, in report order. Keys match D024_BASELINE_P95_MS. */
 export const R33_AB_SITES = ['plans', 'turns', 'work_item', 'work_items_search', 'consult'] as const;
 export type R33AbSite = (typeof R33_AB_SITES)[number];
+
+/** D-042: how many valid A-vs-A null runs a site's noise floor is taken over. */
+export const R33_AB_NULL_RUNS = 5;
+
+/**
+ * D-042: each site's noise floor N_s in ms, from R33_AB_NULL_RUNS valid null runs.
+ * Empty until the null runs are measured and a Decision records the values; a site
+ * absent here has no floor, so its budget is exactly 0.25 x its D-024 baseline.
+ */
+export const R33_AB_NOISE_FLOOR_MS: Readonly<Partial<Record<R33AbSite, number>>> = Object.freeze({});
+
+/**
+ * D-042: a site's noise floor from its null-run spreads — the largest
+ * |p95(A') - p95(A)| over exactly R33_AB_NULL_RUNS valid runs, rounded UP to 0.1 ms.
+ * The maximum is fixed in advance: the null runs and a later zero-cost reading are
+ * exchangeable, so a change that adds nothing exceeds the floor with chance 1/(K+1).
+ */
+export function r33AbNoiseFloorMs(spreads: readonly number[]): number {
+  if (spreads.length !== R33_AB_NULL_RUNS) {
+    throw new Error(`a noise floor needs exactly ${R33_AB_NULL_RUNS} null runs, got ${spreads.length}`);
+  }
+  if (spreads.some((x) => !Number.isFinite(x))) throw new Error('a null-run spread is not a finite number');
+  // Round the scaled value first so float noise (0.1 * 3 = 0.30000000000000004) cannot ceil up a step.
+  return Math.ceil(Math.round(Math.max(...spreads.map(Math.abs)) * 1e6) / 1e5) / 10;
+}
 
 /** What each site's A and B arm are, written into the evidence file. */
 export const R33_AB_ARMS: Readonly<Record<R33AbSite, { a: string; b: string; limit: number }>> = {
@@ -70,11 +94,11 @@ export const R33_AB_ARMS: Readonly<Record<R33AbSite, { a: string; b: string; lim
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
 
-/** A site's added-latency budget: max(0.25 x D-024 baseline p95, 10 ms). */
+/** A site's added-latency budget: max(0.25 x D-024 baseline p95, its D-042 noise floor). */
 export function r33AbBudgetMs(site: R33AbSite): number {
   const baseline = D024_BASELINE_P95_MS[site];
   if (typeof baseline !== 'number') throw new Error(`no D-024 baseline for site ${site}`);
-  return round1(Math.max((R33_RATIO - 1) * baseline, R33_AB_FLOOR_MS));
+  return round1(Math.max((R33_RATIO - 1) * baseline, R33_AB_NOISE_FLOOR_MS[site] ?? 0));
 }
 
 /**
@@ -219,6 +243,27 @@ export function r33AbVerdicts(summaries: Readonly<Partial<Record<R33AbSite, Pair
 /** True only when every site has a valid reading within its budget. */
 export function r33AbPasses(verdicts: readonly R33AbVerdict[]): boolean {
   return verdicts.length === R33_AB_SITES.length && verdicts.every((v) => v.withinBudget === true);
+}
+
+/** D-042: one null run's spread at a site, or null with the reason the run is invalid there. */
+export interface R33AbNullSpread {
+  site: R33AbSite;
+  /** |p95(A') - p95(A)| in ms for an A-vs-A run; null when the run is invalid at this site. */
+  spread: number | null;
+  invalidReason?: string;
+}
+
+/**
+ * Read an A-vs-A null run (`--null`, where the B slot runs arm A again). It applies
+ * the reading's own validity rules — an errored call, or the second A empty where the
+ * first had rows, voids the site — and reports the absolute p95 difference.
+ */
+export function r33AbNullSpreads(summaries: Readonly<Partial<Record<R33AbSite, PairedSummary>>>): R33AbNullSpread[] {
+  return r33AbVerdicts(summaries).map((v) =>
+    v.withinBudget === null || v.addedP95 === null
+      ? { site: v.site, spread: null, invalidReason: v.invalidReason ?? 'no completed pair' }
+      : { site: v.site, spread: round1(Math.abs(v.addedP95)) },
+  );
 }
 
 /**

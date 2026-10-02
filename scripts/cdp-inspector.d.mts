@@ -20,12 +20,16 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
  * Enumeration time is included; these counts are not retained heap/native bytes.
  * Exact owner selection bypasses registry order. Remaining global work/time
  * budgets are divided among remaining roots; enumeration can overrun time.
+ * Opt-in operator-cache attribution visits each L1 value at depth zero with
+ * fair per-value quotas. Keys leave the target only as bounded SHA-256 digests
+ * and validated tool namespaces; shared values count at their first entry.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
  * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
  *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
- *   owners?: string[] }} options
+ *   owners?: string[], operatorCacheEntries?: boolean, maxCacheEntries?: number,
+ *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number }} options
  */
-export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs, owners, }: {
+export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs, owners, operatorCacheEntries, maxCacheEntries, maxEntryEntries, maxEntryObjects, maxKeyCodeUnits, }: {
     expectedPid: number;
     maxSlots?: number;
     maxObjects?: number;
@@ -34,6 +38,11 @@ export function readPinnedState(client: Pick<ReturnType<typeof createCdpClient>,
     maxDepth?: number;
     budgetMs?: number;
     owners?: string[];
+    operatorCacheEntries?: boolean;
+    maxCacheEntries?: number;
+    maxEntryEntries?: number;
+    maxEntryObjects?: number;
+    maxKeyCodeUnits?: number;
 }): Promise<any>;
 /** @typedef {{ pid: number, startedAt: number, until: number, endedAt: number,
  *   total: number, observerMs: number, limited: boolean,

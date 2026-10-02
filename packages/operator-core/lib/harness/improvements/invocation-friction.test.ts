@@ -159,7 +159,7 @@ describe('R7 durable invocation capture', () => {
   it('reports only an allowlisted error class and code, never the exception message', async () => {
     const f = fixture();
     f.capture.mockRejectedValueOnce(Object.assign(new Error('sensitive invocation detail'), {code:'23505'}));
-    const error = await recoverInvocationFriction('ws-a', f).catch(value => value as Error);
+    const error = (await recoverInvocationFriction('ws-a', f).catch((value: unknown) => value)) as Error;
     expect(error.message).toContain('failure classes: Error/23505=1');
     expect(error.message).not.toContain('sensitive invocation detail');
     expect(f.rows[0].metadata_json).toMatchObject({

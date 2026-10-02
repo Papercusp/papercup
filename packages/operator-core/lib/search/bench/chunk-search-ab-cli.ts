@@ -22,6 +22,13 @@
  * for the load to enter the band before timing; without it an out-of-band start
  * exits 2 without timing anything.
  *
+ * NULL MODE (D-042): `--null` makes the B slot run arm A again, so each site's
+ * "added p95" is pure instrument noise. The JSON carries `nullSpreads` (the
+ * absolute A-vs-A p95 difference per site) instead of budget verdicts. Exit 0: in
+ * band and every site valid. Exit 1: in band but a site invalid. Exit 2: no reading.
+ * A site's noise floor is the largest spread over R33_AB_NULL_RUNS valid null runs
+ * (r33AbNoiseFloorMs).
+ *
  * WHAT RUNS
  * Everything runs in this process against the operator database, with THIS tree's
  * code: arm B is the shipped function, so the reading is of the checkout the CLI
@@ -72,6 +79,7 @@ import {
   inR33AbLoadBand,
   r33AbBudgetMs,
   r33AbLoadCheck,
+  r33AbNullSpreads,
   r33AbPasses,
   r33AbVerdicts,
   summarisePaired,
@@ -326,6 +334,10 @@ async function main(): Promise<number> {
     },
   };
 
+  // D-042 null mode: the B slot runs arm A again, so B - A is the instrument's noise.
+  const nullMode = process.argv.includes('--null');
+  if (nullMode) for (const site of sites) arms[site].B = arms[site].A;
+
   // Warmup, untimed: every arm once per query (pools, plans, caches). The
   // work-items query embedder warms in the background on first use, so B is
   // retried until its semantic leg runs or 60 s pass.
@@ -397,10 +409,14 @@ async function main(): Promise<number> {
   );
   const verdicts = r33AbVerdicts(summaries);
   const loadCheck = r33AbLoadCheck(loadavgStart, loadavgEnd);
-  const budgetsPass = r33AbPasses(verdicts);
-  const passes = loadCheck.matched && budgetsPass;
+  const nullSpreads = nullMode ? r33AbNullSpreads(summaries) : null;
+  const nullValid = nullSpreads ? nullSpreads.every((s) => s.spread !== null) : null;
+  const budgetsPass = nullMode ? null : r33AbPasses(verdicts);
+  const passes = nullMode ? null : loadCheck.matched && budgetsPass === true;
   const result = {
     bench: 'chunk-search-ab',
+    mode: nullMode ? 'null' : 'ab',
+    ...(nullMode ? { nullDecision: 'D-042', nullSpreads, nullValid } : {}),
     plan: 'generic-rag-chunking-2026-09-29',
     bar: 'R-33',
     methodDecision: 'D-040',
@@ -425,7 +441,7 @@ async function main(): Promise<number> {
     precomputedMisses,
     warmupErrors: warmupErrors.slice(0, 10),
     summaries,
-    verdicts,
+    verdicts: nullMode ? [] : verdicts,
     passes,
     samples,
   };
@@ -433,13 +449,15 @@ async function main(): Promise<number> {
   console.log(
     'R33_AB_SUMMARY ' +
       JSON.stringify({
+        mode: result.mode,
         passes,
         reading: result.reading,
         loadCheck,
         budgetsPass,
+        ...(nullMode ? { nullSpreads, nullValid } : {}),
         commit: result.measuredCode.commits['.'],
         dirty: result.measuredCode.files.filter((f) => f.dirty).map((f) => f.path),
-        verdicts: verdicts.map((v) => ({
+        verdicts: (nullMode ? [] : verdicts).map((v) => ({
           site: v.site,
           addedP95: v.addedP95,
           budget: v.budget,
@@ -453,6 +471,7 @@ async function main(): Promise<number> {
       }),
   );
   if (!loadCheck.matched) return 2;
+  if (nullMode) return nullValid ? 0 : 1;
   return passes ? 0 : 1;
 }
 

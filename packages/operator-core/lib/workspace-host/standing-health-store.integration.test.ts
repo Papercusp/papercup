@@ -78,13 +78,14 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
     desiredState: string;
     withSpec?: boolean;
     provisioningModel?: 'spot' | 'standard';
+    target?: 'gcp' | 'aws';
   }): Promise<void> {
     await upsertWorkspaceHost({
       workspaceId: input.workspaceId,
       id: input.id,
       name: input.id,
       connectionId: input.connectionId,
-      target: 'gcp',
+      target: input.target ?? 'gcp',
       scopeLabel: 'test-project',
       region: 'us-central1',
       size: 'e2-standard-4',
@@ -131,6 +132,8 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
       provisioningModel: 'standard',
     });
     await seedHost({ workspaceId: WS_B, connectionId: connB, id: 'b-spot-degraded', controllerId: MINE, desiredState: 'degraded', ...spot });
+    // WI-10005389: an AWS spot host is in the sweep's population too (its restart is EC2's, not ours).
+    await seedHost({ workspaceId: WS_A, connectionId: connA, id: 'a-aws-spot', controllerId: MINE, desiredState: 'running', target: 'aws', ...spot });
   }, 180_000);
 
   afterAll(async () => {
@@ -140,6 +143,7 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
   it('lists exactly the live, spec-bearing hosts this controller owns, across workspaces', async () => {
     const targets = await listWorkspaceHostStandingHealthTargets(MINE, db.adminSql);
     expect(targets).toEqual([
+      { workspaceId: WS_A, hostId: 'a-aws-spot', healthAttestedAt: null },
       { workspaceId: WS_A, hostId: 'a-running', healthAttestedAt: null },
       { workspaceId: WS_A, hostId: 'a-spot', healthAttestedAt: null },
       { workspaceId: WS_A, hostId: 'a-standard', healthAttestedAt: null },
@@ -150,6 +154,7 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
 
   it('the spot-reclaim sweep lists only the live SPOT hosts this controller owns (absent or standard model excluded)', async () => {
     expect(await listWorkspaceHostSpotReclaimTargets(MINE, db.adminSql)).toEqual([
+      { workspaceId: WS_A, hostId: 'a-aws-spot' },
       { workspaceId: WS_A, hostId: 'a-spot' },
       { workspaceId: WS_B, hostId: 'b-spot-degraded' },
     ]);

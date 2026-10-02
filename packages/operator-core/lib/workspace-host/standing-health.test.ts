@@ -342,7 +342,8 @@ describe('spot reclaim recovery (WI-10005210)', () => {
 
   it('flags only a STOPPED SPOT instance as reclaimed', () => {
     expect(workspaceHostSpotReclaimed(spot('TERMINATED'))).toBe(true);
-    expect(workspaceHostSpotReclaimed(spot('stopped'))).toBe(true);
+    // EC2's stopped, as the AWS soak reading reports it (upper-cased; WI-10005389).
+    expect(workspaceHostSpotReclaimed(spot('STOPPED'))).toBe(true);
     expect(workspaceHostSpotReclaimed(spot('RUNNING'))).toBe(false);
     expect(workspaceHostSpotReclaimed(spot('STOPPING'))).toBe(false);
     // An on-demand host the cloud reports stopped is NOT restarted: nothing reclaims on-demand VMs.

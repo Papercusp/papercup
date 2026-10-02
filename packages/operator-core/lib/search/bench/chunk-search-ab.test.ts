@@ -3,13 +3,16 @@ import { D024_BASELINE_P95_MS } from './chunk-search-latency';
 import {
   D024_LOAD_1MIN,
   R33_AB_ARMS,
-  R33_AB_FLOOR_MS,
   R33_AB_LOAD_BAND,
+  R33_AB_NOISE_FLOOR_MS,
+  R33_AB_NULL_RUNS,
   R33_AB_SITES,
   armOrder,
   inR33AbLoadBand,
   r33AbBudgetMs,
   r33AbLoadCheck,
+  r33AbNoiseFloorMs,
+  r33AbNullSpreads,
   r33AbPasses,
   r33AbVerdicts,
   summarisePaired,
@@ -24,17 +27,66 @@ function pairs(aMs: number, bMs: number, rows = 30, round = 0): PairedSample[] {
 }
 
 describe('chunk-search same-time A/B (R-33, D-040)', () => {
-  it('budgets are 0.25 x the D-024 baseline p95 with a 10 ms floor', () => {
-    expect(Object.fromEntries(R33_AB_SITES.map((s) => [s, r33AbBudgetMs(s)]))).toEqual({
+  it('budgets are max(0.25 x the D-024 baseline p95, the site D-042 noise floor)', () => {
+    for (const site of R33_AB_SITES) {
+      const quarter = Math.round(0.25 * D024_BASELINE_P95_MS[site] * 10) / 10;
+      expect(r33AbBudgetMs(site)).toBe(Math.max(quarter, R33_AB_NOISE_FLOOR_MS[site] ?? 0));
+    }
+    // The 0.25x part, which D-042 keeps unchanged from D-040.
+    expect(Object.fromEntries(R33_AB_SITES.map((s) => [s, Math.round(0.25 * D024_BASELINE_P95_MS[s] * 10) / 10]))).toEqual({
       plans: 413,
       turns: 348,
       work_item: 402.3,
       work_items_search: 100,
-      consult: 10,
+      consult: 3.5,
     });
-    // The floor applies only where 0.25 x baseline is below it (consult: 3.5 ms).
-    expect(0.25 * D024_BASELINE_P95_MS.consult).toBeLessThan(R33_AB_FLOOR_MS);
-    expect(0.25 * D024_BASELINE_P95_MS.work_items_search).toBeGreaterThanOrEqual(R33_AB_FLOOR_MS);
+  });
+
+  it('D-042 withdrew the fixed 10 ms floor: every floor is a measured, positive per-site value', () => {
+    for (const [site, floor] of Object.entries(R33_AB_NOISE_FLOOR_MS)) {
+      expect(R33_AB_SITES as readonly string[]).toContain(site);
+      expect(Number.isFinite(floor) && (floor as number) > 0).toBe(true);
+    }
+    // A pinned table covers every site or none: a partial table would mean a site skipped its null runs.
+    expect([0, R33_AB_SITES.length]).toContain(Object.keys(R33_AB_NOISE_FLOOR_MS).length);
+  });
+
+  describe('noise floor (D-042)', () => {
+    it('is the largest absolute spread over exactly R33_AB_NULL_RUNS runs, rounded up to 0.1 ms', () => {
+      expect(R33_AB_NULL_RUNS).toBe(5);
+      expect(r33AbNoiseFloorMs([1.2, -3.41, 0.3, 2, 3.4])).toBe(3.5);
+      expect(r33AbNoiseFloorMs([0.1, 0.2, 0.1 * 3, 0, 0])).toBe(0.3);
+      expect(r33AbNoiseFloorMs([6.3, 1, 1, 1, 1])).toBe(6.3);
+    });
+
+    it('refuses any other number of runs, or a non-finite spread', () => {
+      expect(() => r33AbNoiseFloorMs([1, 2, 3, 4])).toThrow(/exactly 5/);
+      expect(() => r33AbNoiseFloorMs([1, 2, 3, 4, 5, 6])).toThrow(/exactly 5/);
+      expect(() => r33AbNoiseFloorMs([1, 2, 3, 4, Number.NaN])).toThrow(/finite/);
+    });
+
+    it('a null run reports |p95(A2) - p95(A1)| per site and voids an invalid site', () => {
+      const ok = (aMs: number, a2Ms: number) => summarisePaired(pairs(aMs, a2Ms));
+      const errored = summarisePaired([
+        ...pairs(10, 11),
+        { round: 1, q: 0, aMs: 1, bMs: 1, aRows: 1, bRows: 1, bError: 'statement timeout' },
+      ]);
+      const spreads = r33AbNullSpreads({
+        plans: ok(100, 103),
+        turns: ok(100, 96.5),
+        work_item: ok(50, 50),
+        work_items_search: errored,
+        consult: ok(14, 14.4),
+      });
+      expect(spreads.map((s) => [s.site, s.spread])).toEqual([
+        ['plans', 3],
+        ['turns', 3.5],
+        ['work_item', 0],
+        ['work_items_search', null],
+        ['consult', 0.4],
+      ]);
+      expect(spreads[3].invalidReason).toContain('statement timeout');
+    });
   });
 
   it('every site has a baseline, a budget and a described A and B arm', () => {
@@ -111,14 +163,15 @@ describe('chunk-search same-time A/B (R-33, D-040)', () => {
       ...over,
     });
 
-    it('passes the D-040 measurements, which sit inside every budget', () => {
+    it('judges the D-040 measurements against the current budgets', () => {
       const v = r33AbVerdicts(valid({}));
-      expect(v.map((x) => x.withinBudget)).toEqual([true, true, true, true, true]);
-      expect(r33AbPasses(v)).toBe(true);
+      const consultBudget = r33AbBudgetMs('consult');
+      expect(v.map((x) => x.withinBudget)).toEqual([true, true, true, true, 6.3 <= consultBudget]);
+      expect(r33AbPasses(v)).toBe(6.3 <= consultBudget);
     });
 
     it('at the budget passes; one tenth of a millisecond over fails', () => {
-      const v = r33AbVerdicts(valid({ consult: at(10), plans: at(413.1) }));
+      const v = r33AbVerdicts(valid({ consult: at(r33AbBudgetMs('consult')), plans: at(413.1) }));
       const bySite = Object.fromEntries(v.map((x) => [x.site, x]));
       expect(bySite.consult.withinBudget).toBe(true);
       expect(bySite.plans.withinBudget).toBe(false);

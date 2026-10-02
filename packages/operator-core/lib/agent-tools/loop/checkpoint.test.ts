@@ -1771,7 +1771,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     });
   });
 
-  it('runtime wiring: passes active loop interval and goal to the warm-to-cold continuation remedy', async () => {
+  it('runtime wiring: preserves the warm loop when fresh-context delivery is unavailable', async () => {
     withBoundedTimeout.mockImplementation(async (work: unknown) => ({
       value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
       degraded: false,
@@ -1803,9 +1803,11 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       rewakeGuaranteed: true,
       nextWakeFresh: false,
     });
-    expect(b.continuation.guidance).toContain(
-      `loop:arm { intervalSec: 300, goal: "preserve the active goal", carry: 'cold' }`,
-    );
+    expect(b.continuation.guidance).toMatch(/fresh-context delivery is unavailable/i);
+    expect(b.continuation.guidance).toContain('Do not retune this warm loop to cold');
+    expect(b.continuation.guidance).toContain('keep the existing warm path');
+    expect(b.continuation.guidance).not.toContain("carry: 'cold'");
+    expect(b.continuation.guidance).not.toContain('cold wake starts from that durable carry-note');
   });
 
   it('runtime wiring: an active loop at its dead-man boundary does not promise another wake', async () => {

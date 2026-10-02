@@ -57,7 +57,7 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     data.rows = [{ ...connection,
       scopes: [{ id: "project", label: "Tutorial project" }],
       regions: [{ id: "us-central1", label: "Iowa", zones: ["us-central1-a"] }],
-      sizes: [{ id: "small", label: "Small", hourlyUsd: 0.02 }],
+      sizes: [{ id: "small", label: "Small", vcpu: 2, memoryGiB: 2, hourlyUsd: 0.02 }],
       images: [{ id: "ubuntu", label: "Ubuntu" }],
       networks: [{ id: "private", label: "Private" }],
     }];

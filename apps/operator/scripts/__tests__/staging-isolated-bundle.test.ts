@@ -191,8 +191,13 @@ describe("bundle-host-freshness proof", () => {
   it("names the failing git command, its elapsed time and its bound", () => {
     const notRepo = mkdtempSync(join(tmpdir(), "bundle-freshness-norepo-"));
     try {
-      repo = notRepo;
-      const r = run("stamp");
+      const r = spawnSync(
+        process.execPath,
+        [HELPER, "stamp", "--repo-root", notRepo, "--entry", entry, "--outfile", outfile, "--manifest", manifest],
+        // The ceiling keeps git from discovering an enclosing repository when
+        // TMPDIR happens to sit inside a checkout.
+        { encoding: "utf8", env: { ...process.env, GIT_CEILING_DIRECTORIES: tmpdir() } },
+      );
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(
         /\[bundle-freshness\] git rev-parse --show-toplevel failed after \d+ms \(timeout 30000ms\): exit 128/,

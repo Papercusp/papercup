@@ -185,6 +185,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
     'dev:dogfood_substrate_status',
     'backup:snapshot_list',
     'coord:whoami',
+    'facts:list',
     'coord:declare-intent',
     'coord:inbox',
     'locks:list',
@@ -234,11 +235,14 @@ const CRITICAL_LOOP_CHECKPOINT_MAX_ARGUMENT_CHARS = 16_000;
 const CRITICAL_LOOP_CHECKPOINT_MAX_FIELD_CHARS = 8_000;
 const CRITICAL_LOOP_CHECKPOINT_MAX_ARRAY_ITEMS = 12;
 const CRITICAL_EVENTS_STATUS_MAX_EVENT_CHARS = 200;
+const CRITICAL_FACTS_LIST_MAX_KEY_CHARS = 200;
+const CRITICAL_FACTS_LIST_MAX_SCOPE_REF_CHARS = 120;
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const COORD_SEND_NAME = normalizeMcpName('coord:send');
 const COORD_WHOAMI_NAME = normalizeMcpName('coord:whoami');
 const COORD_DECLARE_INTENT_NAME = normalizeMcpName('coord:declare-intent');
 const COORD_INBOX_NAME = normalizeMcpName('coord:inbox');
+const FACTS_LIST_NAME = normalizeMcpName('facts:list');
 const BACKUP_SNAPSHOT_LIST_NAME = normalizeMcpName('backup:snapshot_list');
 const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName('capability:bash_output');
 const WORK_ITEMS_COMMENT_NAME = normalizeMcpName('work_items:comment');
@@ -1465,6 +1469,37 @@ export function isBoundedSessionsSearchArgs(args: unknown): boolean {
   ) {
     return false;
   }
+  return true;
+}
+
+/**
+ * facts:list supports broad pages and version history, but recovery needs one
+ * exact live fact. Its no-versions key branch reads at most one live version
+ * plus bounded typed-slot aliases. Admit only a canonical scope/key selector
+ * and an optional bounded scopeRef/full-body flag.
+ */
+export function isBoundedFactsListArgs(args: unknown): boolean {
+  if (!isRecord(args)) return false;
+  const allowed = new Set(['scope', 'scopeRef', 'key', 'full']);
+  if (Object.keys(args).some((key) => !allowed.has(key))) return false;
+  if (!['workspace', 'role', 'owner', 'harness', 'work_item'].includes(args.scope as string)) return false;
+  if (
+    typeof args.key !== 'string' ||
+    args.key.trim().length === 0 ||
+    args.key.length > CRITICAL_FACTS_LIST_MAX_KEY_CHARS
+  ) {
+    return false;
+  }
+  if (
+    args.scopeRef !== undefined &&
+    (typeof args.scopeRef !== 'string' ||
+      args.scopeRef.trim().length === 0 ||
+      args.scopeRef.length > CRITICAL_FACTS_LIST_MAX_SCOPE_REF_CHARS)
+  ) {
+    return false;
+  }
+  if (args.scope === 'workspace' && args.scopeRef !== undefined) return false;
+  if (args.full !== undefined && typeof args.full !== 'boolean') return false;
   return true;
 }
 
@@ -2838,6 +2873,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown, request
   if (normalized === LOOP_STATUS_NAME) return isBoundedLoopStatusArgs(args);
   if (normalized === LOOP_ARM_NAME) return isBoundedLoopArmArgs(args);
   if (normalized === LOOP_CHECKPOINT_NAME) return isBoundedLoopCheckpointArgs(args);
+  if (normalized === FACTS_LIST_NAME) return isBoundedFactsListArgs(args);
   if (normalized === EVENTS_STATUS_NAME) return isBoundedEventsStatusArgs(args);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === WORK_ITEMS_LIST_NAME) return isBoundedWorkItemsListArgs(args);

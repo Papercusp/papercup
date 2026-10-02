@@ -74,10 +74,16 @@ export function verifyNpmCacheExclusive({ verify, env, waitMs, acquire, log, }?:
  * its bounded repair. Both the workspace and package segments are untrusted
  * manifest-derived strings, so validate the repo boundary and the narrower
  * <workspace>/node_modules boundary before returning a target.
+ *
+ * @param {{ repoRoot?: string, findings?: Array<{ workspace?: unknown, package?: unknown }> }} [options]
+ * @returns {string[]}
  */
 export function packageLocalRepairTargets({ repoRoot, findings, }?: {
-    repoRoot?: string | undefined;
-    findings?: never[] | undefined;
+    repoRoot?: string;
+    findings?: Array<{
+        workspace?: unknown;
+        package?: unknown;
+    }>;
 }): string[];
 /**
  * Remove a detector-confirmed stale package-local entry from package-lock.json
@@ -89,11 +95,26 @@ export function packageLocalRepairTargets({ repoRoot, findings, }?: {
  * installed version the detector observed. A newer/different lock entry may be
  * a concurrent repair and must not be removed. The write is atomic so an
  * interrupted repair cannot leave the shared lockfile half-written.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   findings?: Array<{ workspace?: unknown, package?: unknown, installed?: unknown, declared?: unknown }>,
+ *   deps?: { readLock?: () => any, writeLock?: (lock: any) => void },
+ * }} [options]
+ * @returns {string[]} the package-lock.json `packages` keys that were removed.
  */
 export function removePackageLocalRepairLockEntries({ repoRoot, findings, deps, }?: {
-    repoRoot?: string | undefined;
-    findings?: never[] | undefined;
-    deps?: {} | undefined;
+    repoRoot?: string;
+    findings?: Array<{
+        workspace?: unknown;
+        package?: unknown;
+        installed?: unknown;
+        declared?: unknown;
+    }>;
+    deps?: {
+        readLock?: () => any;
+        writeLock?: (lock: any) => void;
+    };
 }): string[];
 /**
  * Compare two parsed lockfiles. Returns the `packages` keys whose ONLY
@@ -136,13 +157,24 @@ export function restoreScopedFlagOnlyLockfileRewrite({ repoRoot, beforeText, dep
  * Verify (post-install, still holding the lock) that dependency directories and
  * critical runtime contents actually landed on disk; repair once if not.
  *
+ * @param {{
+ *   repoRoot?: string,
+ *   npmArgs?: string[],
+ *   runNpm?: (args: string[]) => number,
+ *   probeSpecifiers?: unknown,
+ *   env?: NodeJS.ProcessEnv,
+ *   deps?: Record<string, any>,
+ * }} [options] `probeSpecifiers` and `deps` are forwarded unchanged to the detectors in
+ *   scripts/check-declared-deps-extracted.mjs, which define their shapes.
  * @returns {Promise<0|1>} 0 = healthy (possibly after repair), 1 = still broken.
  */
 export function verifyDepsExtracted({ repoRoot, npmArgs, runNpm, probeSpecifiers, env, deps, }?: {
-    repoRoot?: string | undefined;
-    npmArgs?: never[] | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-    deps?: {} | undefined;
+    repoRoot?: string;
+    npmArgs?: string[];
+    runNpm?: (args: string[]) => number;
+    probeSpecifiers?: unknown;
+    env?: NodeJS.ProcessEnv;
+    deps?: Record<string, any>;
 }): Promise<0 | 1>;
 export function repoLockName(repoRoot?: string): string;
 /**
@@ -204,11 +236,25 @@ export function parseCliArgs(argv?: string[], { cwd }?: {
  * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
  * The marker environment prevents a wrapped script from recursively wrapping
  * itself while keeping the contract explicit and testable at the child seam.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   commandArgs?: string[],
+ *   runCommand?: (command: string, args: string[], options: { cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv }) => { status: number | null },
+ *   env?: NodeJS.ProcessEnv,
+ * }} [options]
  */
 export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand, env, }?: {
-    repoRoot?: string | undefined;
-    runCommand?: typeof spawnSync | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
+    repoRoot?: string;
+    commandArgs?: string[];
+    runCommand?: (command: string, args: string[], options: {
+        cwd: string;
+        stdio: "inherit";
+        env: NodeJS.ProcessEnv;
+    }) => {
+        status: number | null;
+    };
+    env?: NodeJS.ProcessEnv;
 }): Promise<number>;
 export function main(argv?: string[]): Promise<any>;
 /** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */

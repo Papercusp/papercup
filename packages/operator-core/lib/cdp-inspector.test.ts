@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
@@ -60,6 +61,80 @@ function makeClient(responses: Map<string, unknown>, options: Record<string, unk
 }
 
 describe('named pinned payload attribution on a real Node inspector', () => {
+  it('attributes individual cache values fairly with protected keys, stable digests and no application effects', async () => {
+    const key = 'private-workspace\u0000plans:get|private-payload';
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
+      let effects = 0;
+      const shared = Buffer.alloc(19), accessor = {};
+      Object.defineProperty(accessor, 'value', { get() { effects++; throw Error('accessor'); } });
+      const proxy = new Proxy({}, { getOwnPropertyDescriptor() { effects++; throw Error('proxy'); } });
+      const map = new Map([
+        [${JSON.stringify(key)}, { value: { rows: Array.from({length: 100}, () => 'heavy') }, hardExpiresAt: 0 }],
+        ['private-workspace\\0orders:list|private-payload', { value: { payload: 'later!', shared }, softExpiresAt: Infinity }],
+        ['private-workspace\\0coord:feed|private-payload', { value: shared }],
+        ['private-workspace\\0facts:list|private-payload', accessor],
+        ['private-workspace\\0plans:items|private-payload', proxy],
+        ['legacy/private-payload', { value: 'legacy' }],
+        ['private-payload'.repeat(20), { value: 'long' }],
+        [proxy, { value: 'non-string' }]
+      ]);
+      map[Symbol.iterator] = () => { effects++; throw Error('iterator'); };
+      const root = { cache: { l1: { map } } };
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+        ['@papercusp/operator-core.operatorCache', { value: root }]
+      ]);
+      globalThis.effectCount = () => effects;
+      globalThis.keyOrder = () => Array.from(Map.prototype.keys.call(map)).map(key => typeof key === 'string' ? key : null);
+      globalThis.hideMap = () => Object.defineProperty(root.cache.l1, 'map', { get() { effects++; throw Error('path getter'); } });
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      const options = { expectedPid: child.pid!, owners: ['@papercusp/operator-core.operatorCache'],
+        operatorCacheEntries: true, maxEntries: 128, maxEntryEntries: 10, maxEntryObjects: 12,
+        maxKeyCodeUnits: 60, budgetMs: 200 };
+      const before = (await client.evaluate('keyOrder()', { returnByValue: true })).result.value;
+      const report = await readPinnedState(client, options), cache = report.roots[0].cacheEntries;
+      expect(cache).toMatchObject({ status: 'map', population: 8, checked: 8, notChecked: 0 });
+      expect(cache.values[0]).toMatchObject({ toolNamespace: 'plans:get', keyFormat: 'workspace-nul-tool-pipe',
+        keyDigest: createHash('sha256').update(key).digest('hex'), hardExpiry: 'expired', traversalLimited: true });
+      expect(cache.values[1]).toMatchObject({ toolNamespace: 'orders:list', softExpiry: 'infinite',
+        stringCodeUnits: 6, byteViewExtents: 19, traversalLimited: false });
+      expect(cache.values[2]).toMatchObject({ sharedEdges: 1, byteViewExtents: 0 });
+      expect(cache.values[3].valueStatus).toBe('accessor-skipped');
+      expect(cache.values[4].valueStatus).toBe('proxy-skipped');
+      expect(cache.values[5]).toMatchObject({ keyFormat: 'unknown', toolNamespace: null });
+      expect(cache.values[6]).toMatchObject({ keyDigest: null, keyDigestUnavailable: 'key-length-limit' });
+      expect(cache.values[7]).toMatchObject({ keyDigest: null, keyDigestUnavailable: 'non-string-key' });
+      expect(report.entries).toBeLessThanOrEqual(options.maxEntries);
+      expect(cache.values.every((value: any) => value.entries <= 10 && value.objects <= 12)).toBe(true);
+      expect(JSON.stringify(report)).not.toMatch(/private-workspace|private-payload/);
+      const again = await readPinnedState(client, options);
+      expect(again.roots[0].cacheEntries.values.map((value: any) => value.keyDigest))
+        .toEqual(cache.values.map((value: any) => value.keyDigest));
+      expect((await client.evaluate('keyOrder()', { returnByValue: true })).result.value).toEqual(before);
+      const capped = await readPinnedState(client, { ...options, maxCacheEntries: 2 });
+      expect(capped.roots[0].cacheEntries).toMatchObject({ population: 8, checked: 2, notChecked: 6 });
+      expect(capped.limited).toBe(true);
+      await expect(readPinnedState(client, { ...options, maxEntryEntries: 0 })).rejects.toThrow('limits');
+      await expect(readPinnedState(client, { ...options, expectedPid: child.pid! + 1 })).rejects.toThrow('PID mismatch');
+      await client.evaluate('hideMap()');
+      expect((await readPinnedState(client, options)).roots[0].cacheEntries.status).toBe('accessor-skipped');
+      expect((await client.evaluate('effectCount()', { returnByValue: true })).result.value).toBe(0);
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+  }, 20_000);
+
   it('reserves work for a light later root and selects exact owners independently of registry order', async () => {
     const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
       globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([

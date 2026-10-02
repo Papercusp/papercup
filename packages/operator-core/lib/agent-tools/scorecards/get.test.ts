@@ -27,6 +27,10 @@ import { applyResultDoor, resetResultDoorAggregatesForTests } from '../../result
 
 const readScorecardEvidenceM = vi.mocked(readScorecardEvidence);
 const getTool = (await import('./get')).default;
+/** The registered output contract, narrowed to the parse surface these cases exercise. */
+const resultContract = getTool.result as unknown as {
+  safeParse: (value: unknown) => { success: boolean };
+};
 
 const makeDispatchContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -75,13 +79,13 @@ describe('scorecards:get evidence-first projection', () => {
   });
 
   it('declares optional result roots with concrete scorecard and paging fields', () => {
-    const missingCard = getTool.result.safeParse({
+    const missingCard = resultContract.safeParse({
       ok: false,
       error: "scorecard 'EI-missing' not found",
     });
     expect(missingCard.success).toBe(true);
 
-    const index = getTool.result.safeParse({
+    const index = resultContract.safeParse({
       ok: true,
       scorecard: { ...scorecard, criteria: [] },
       evidenceRead: {
@@ -100,7 +104,7 @@ describe('scorecards:get evidence-first projection', () => {
     });
     expect(index.success).toBe(true);
 
-    const page = getTool.result.safeParse({
+    const page = resultContract.safeParse({
       ok: true,
       scorecard: { ...scorecard, criteria: [{ ...scorecard.criteria[0], evidence: 'evidence page' }] },
       evidenceRead: {
@@ -115,7 +119,7 @@ describe('scorecards:get evidence-first projection', () => {
       },
     });
     expect(page.success).toBe(true);
-    expect(getTool.result.safeParse({ ok: true, scorecard: {} }).success).toBe(false);
+    expect(resultContract.safeParse({ ok: true, scorecard: {} }).success).toBe(false);
   });
 
   it('keeps a complete criterion page inside the outer model-facing result door', async () => {

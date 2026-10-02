@@ -71,7 +71,7 @@ describe("EI-21590235587564636 — verifier source is immutable for the run", ()
         'declare -F spa_require_built_gate >/dev/null',
         'printf "HELPER_LOADED_FROM_ORIGINAL_REPO\\n"',
       ].join('\n'));
-      const env = { ...process.env, TMPDIR: temp };
+      const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: temp };
       delete env.PAPERCUSP_REPO_DIR;
       delete env.VERIFY_TAURI_SOURCE_SNAPSHOT_PATH;
       delete env.VERIFY_TAURI_ORIGINAL_REPO_DIR;

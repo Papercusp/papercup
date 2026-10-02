@@ -78,4 +78,19 @@ describe('prepareWorkspaceHostReclaimRestart (WI-10005210)', () => {
       reason: "workspace-host connection 'conn-1' was not found",
     });
   });
+
+  it('never restarts an AWS spot host: EC2 restarts an interrupted persistent spot instance itself (WI-10005389)', async () => {
+    const d = deps({
+      readTarget: vi.fn(async () => ({
+        id: 'host-1',
+        connectionId: 'conn-1',
+        desired: { target: 'aws', scope: { kind: 'account', id: '413781344298' } },
+      })) as never,
+    });
+    expect(await prepareWorkspaceHostReclaimRestart(target, OP, d)).toEqual({
+      kind: 'skip',
+      reason: 'EC2 restarts an interrupted persistent spot instance itself; a controller start is refused',
+    });
+    expect(d.readConnection).not.toHaveBeenCalled();
+  });
 });

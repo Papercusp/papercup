@@ -2493,5 +2493,28 @@
     },
     "limits": "This completes the five renewed P002 governing checks, not all P002 or P006 acceptance. Authority proof renewal, P003-P006 proof, independent rubric ratification, D013 real-goal card, closure audit and shipment remain open. No source/test, accepted-clause, BAR, baseline or historical-ledger change."
   },
-  "next": "Renew P002 AUTHORITY clean unit/integration proof and three calibrated causal controls against the unchanged retained clone, then evaluate replacement-only evidence before any superseded binding withdrawal. Do not rerun the five passing P002 clauses or unchanged native diagnostics. Continue P003-P006 proof, independent rubric review/ratification, D013 real-goal card reuse, closure audit and final shipment; preserve separate P007/P008 checks and acceptance gaps."
+  "p002AuthorityRenewalFire180": {
+    "nativeSession": "01a0fc67-3b04-76d2-95a9-07b7918c89c3",
+    "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+    "unitPositiveRun": 20525737,
+    "unitPositiveResult": "4 PASS, 5 filtered skips, exit 0",
+    "integrationPositiveRun": 20525831,
+    "integrationPositiveResult": "3 PASS, 0 skips, exit 0",
+    "counterexampleRuns": {"elected-write": 20525832, "superseded-set-schedule": 20525873, "superseded-arm-schedule": 20525916},
+    "counterexampleResult": "Each control: one intended assertion FAIL and one independent calibration PASS, 7 filtered skips, exit 1. Exact ledger rows are clean, non-scratch mutation-probe at the retained pin.",
+    "privatePgCleanup": {"dataDir": "/tmp/papercusp-native-pg-6en8XQ", "port": 43563, "dataDirRemoved": true, "portCheck": "ECONNREFUSED"},
+    "unitManifest": "/tmp/p006-fire180-authority-unit-matrix.json",
+    "integrationManifest": "/tmp/p006-fire180-authority-pg-summary.json",
+    "currentBindingIds": [21717, 21718, 21719, 21720, 21721, 21722, 21723],
+    "selectedProof": {
+      "route": "Attributed staging :3170",
+      "governing": false,
+      "verdicts": {"pass": 1, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire180-authority-selected-corrected.json"
+    },
+    "pairingCorrection": "Aggregate unit binding21716 stored three causalPairIds. The canonical one-to-one contract requires one recurrence binding per pair. Exact server-derived testRun metadata was reused to bind distinct scenario references21721-23; no test or ledger rewrite.",
+    "bindingsAwaitingConditionalWithdrawal": [21716, 17942, 17943, 17944, 17948, 17959, 17960, 17961],
+    "limits": "Selected replacement proof passes, but no authority governing verdict is claimed. All eight superseded binding references remain active pending exact identity readback and conditional withdrawal. Historical runs and D003/D013/D016 are preserved. P006, P007 and P008 remain open."
+  },
+  "next": "Read the current seven AUTHORITY replacement bindings and selected PASS receipt; verify source/test hashes and eight obsolete identities before binding-only withdrawal, preserving all historical runs. Then run AUTHORITY and the whole accepted-clause governing evaluator without bindingIds/workItemIds/evidenceRefs on staging. Do not repeat unchanged tests or native diagnostics. Continue P003-P006 proof, independent rubric ratification, D013 real-goal card reuse, closure audit and final shipment; preserve separate P007/P008 checks."
 }

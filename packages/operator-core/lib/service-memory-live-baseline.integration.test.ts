@@ -13,11 +13,12 @@ import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-pa
 const root = resolve(__dirname, '../../..');
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const executableHashes = new Map<string, string>();
-type PinnedLimits = Omit<Parameters<typeof readPinnedState>[1], 'expectedPid' | 'owners'>;
+type PinnedLimits = Omit<Parameters<typeof readPinnedState>[1], 'expectedPid' | 'owners' | 'operatorCacheEntries'>;
 function parsePinnedLimits(raw?: string): PinnedLimits | undefined {
   if (!raw) return undefined;
   const value = JSON.parse(raw);
-  const allowed = ['maxSlots', 'maxObjects', 'maxEntries', 'maxFields', 'maxDepth', 'budgetMs'];
+  const allowed = ['maxSlots', 'maxObjects', 'maxEntries', 'maxFields', 'maxDepth', 'budgetMs',
+    'maxCacheEntries', 'maxEntryEntries', 'maxEntryObjects', 'maxKeyCodeUnits'];
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).some(key => !allowed.includes(key) ||
         !Number.isInteger(value[key]) || value[key] < 1)) {
@@ -66,7 +67,7 @@ describe('actual current-build operator memory baseline', () => {
     expect(parsePinnedLimits('{"maxDepth":8,"maxEntries":32768,"budgetMs":200}'))
       .toEqual({ maxDepth: 8, maxEntries: 32768, budgetMs: 200 });
     for (const raw of ['{"expectedPid":7}', '{"owners":["other"]}', '[]', 'null',
-      '{"maxDepth":0}', '{"budgetMs":"200"}']) {
+      '{"operatorCacheEntries":true}', '{"maxDepth":0}', '{"budgetMs":"200"}']) {
       expect(() => parsePinnedLimits(raw)).toThrow('only positive integer reader limits');
     }
   });
@@ -85,6 +86,11 @@ describe('actual current-build operator memory baseline', () => {
     const pinnedOwners = process.env.PAPERCUSP_P011_PINNED_OWNERS
       ? JSON.parse(process.env.PAPERCUSP_P011_PINNED_OWNERS) : undefined;
     const pinnedLimits = parsePinnedLimits(process.env.PAPERCUSP_P011_PINNED_LIMITS);
+    const operatorCacheEntries = process.env.PAPERCUSP_P011_CACHE_ENTRIES === '1';
+    if (operatorCacheEntries && (!process.env.PAPERCUSP_P011_PINNED_STATE ||
+        pinnedOwners?.length !== 1 || pinnedOwners[0] !== '@papercusp/operator-core.operatorCache')) {
+      throw Error('Cache-entry attribution requires the exact operator-cache owner');
+    }
     if (pinnedOwners !== undefined && (!Array.isArray(pinnedOwners) || pinnedOwners.length < 1 ||
         pinnedOwners.some(owner => typeof owner !== 'string'))) throw Error('Exact pinned owners must be a nonempty string array');
     expect(Number.isInteger(pid) && pid > 0).toBe(true);
@@ -101,7 +107,7 @@ describe('actual current-build operator memory baseline', () => {
         pinnedState: 'Reachable logical payloads under named roots; not total retained heap/native bytes',
         observerMs: 'wall time for inspector counter read and proc descendant census' },
       limits: { windows: 3, idleMs: 2000, requestsPerWindow: 8, concurrency: 2, descendantsPerSample: 64 },
-      pinnedOwners, pinnedLimits,
+      pinnedOwners, pinnedLimits, operatorCacheEntries,
       limitations: ['Main service PID only; HTTP requests may be served by sibling workers.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
@@ -166,7 +172,7 @@ describe('actual current-build operator memory baseline', () => {
         const memory = await readProcessMemory(client!, { expectedPid: pid });
         const pinnedState = process.env.PAPERCUSP_P011_PINNED_STATE ? await readPinnedState(client!, {
           ...pinnedLimits,
-          expectedPid: pid, owners: pinnedOwners,
+          expectedPid: pid, owners: pinnedOwners, operatorCacheEntries,
         }) : undefined;
         const os = processSample(pid); assertIdentity(before, os);
         remainingDescendants = 64;
@@ -205,6 +211,13 @@ describe('actual current-build operator memory baseline', () => {
         row.pinnedState.selection?.missingOwners.length === 0 &&
         row.pinnedState.selection?.selectedNotChecked === 0 &&
         row.pinnedState.checked === pinnedOwners.length)).toBe(true);
+      if (operatorCacheEntries) expect(report.samples.every((row: any) => {
+        const cache = row.pinnedState.roots[0].cacheEntries;
+        return cache?.status === 'map' && cache.population === cache.checked + cache.notChecked &&
+          cache.values.every((value: any) => (value.keyDigest === null || /^[a-f0-9]{64}$/.test(value.keyDigest)) &&
+            value.entries <= row.pinnedState.limits.maxEntryEntries &&
+            value.objects <= row.pinnedState.limits.maxEntryObjects);
+      })).toBe(true);
       report.incomplete = false;
     } catch (error) { report.error = error instanceof Error ? error.message : String(error); throw error; }
     finally {

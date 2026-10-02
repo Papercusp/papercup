@@ -204,6 +204,29 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
           }
         });
         shifts.observe({ type: 'layout-shift', buffered: true });
+        const intersections = new IntersectionObserver(entries => {
+          for (const entry of entries) recordOrder('input-intersection', entry.target, {
+            rect: entry.boundingClientRect.toJSON(), intersection: entry.intersectionRect.toJSON(),
+            ratio: entry.intersectionRatio, scrollY: window.scrollY,
+          });
+        }, { threshold: [0, 1] });
+        const sizes = new ResizeObserver(entries => {
+          for (const entry of entries) recordOrder('container-resize', entry.target, {
+            rect: entry.contentRect.toJSON(), scrollY: window.scrollY,
+          });
+        });
+        let observedInput: Element | null = null;
+        const observeInput = () => {
+          const input = document.querySelector('input[aria-label="Connection label"]');
+          if (!input || input === observedInput) return;
+          observedInput = input;
+          intersections.observe(input);
+          if (input.closest('form')) sizes.observe(input.closest('form')!);
+          if (input.closest('section')) sizes.observe(input.closest('section')!);
+          recordOrder('input-mounted', input);
+        };
+        new MutationObserver(observeInput).observe(document, { childList: true, subtree: true });
+        observeInput();
       }
       HTMLElement.prototype.focus = function (options) {
         recordOrder('focus:before', this, options);

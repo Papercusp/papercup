@@ -271,6 +271,9 @@ function isStrictlyWithin(parent, candidate) {
  * its bounded repair. Both the workspace and package segments are untrusted
  * manifest-derived strings, so validate the repo boundary and the narrower
  * <workspace>/node_modules boundary before returning a target.
+ *
+ * @param {{ repoRoot?: string, findings?: Array<{ workspace?: unknown, package?: unknown }> }} [options]
+ * @returns {string[]}
  */
 export function packageLocalRepairTargets({
   repoRoot = DEFAULT_REPO_ROOT,
@@ -324,6 +327,13 @@ function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
  * installed version the detector observed. A newer/different lock entry may be
  * a concurrent repair and must not be removed. The write is atomic so an
  * interrupted repair cannot leave the shared lockfile half-written.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   findings?: Array<{ workspace?: unknown, package?: unknown, installed?: unknown, declared?: unknown }>,
+ *   deps?: { readLock?: () => any, writeLock?: (lock: any) => void },
+ * }} [options]
+ * @returns {string[]} the package-lock.json `packages` keys that were removed.
  */
 export function removePackageLocalRepairLockEntries({
   repoRoot = DEFAULT_REPO_ROOT,
@@ -530,6 +540,15 @@ export function restoreScopedFlagOnlyLockfileRewrite({
  * Verify (post-install, still holding the lock) that dependency directories and
  * critical runtime contents actually landed on disk; repair once if not.
  *
+ * @param {{
+ *   repoRoot?: string,
+ *   npmArgs?: string[],
+ *   runNpm?: (args: string[]) => number,
+ *   probeSpecifiers?: unknown,
+ *   env?: NodeJS.ProcessEnv,
+ *   deps?: Record<string, any>,
+ * }} [options] `probeSpecifiers` and `deps` are forwarded unchanged to the detectors in
+ *   scripts/check-declared-deps-extracted.mjs, which define their shapes.
  * @returns {Promise<0|1>} 0 = healthy (possibly after repair), 1 = still broken.
  */
 export async function verifyDepsExtracted({
@@ -832,6 +851,13 @@ export function parseCliArgs(
  * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
  * The marker environment prevents a wrapped script from recursively wrapping
  * itself while keeping the contract explicit and testable at the child seam.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   commandArgs?: string[],
+ *   runCommand?: (command: string, args: string[], options: { cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv }) => { status: number | null },
+ *   env?: NodeJS.ProcessEnv,
+ * }} [options]
  */
 export function runCommandUnderInstallMutex({
   repoRoot = DEFAULT_REPO_ROOT,

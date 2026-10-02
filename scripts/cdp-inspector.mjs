@@ -90,26 +90,35 @@ export async function readProcessMemory(client, { expectedPid } = {}) {
  * Enumeration time is included; these counts are not retained heap/native bytes.
  * Exact owner selection bypasses registry order. Remaining global work/time
  * budgets are divided among remaining roots; enumeration can overrun time.
+ * Opt-in operator-cache attribution visits each L1 value at depth zero with
+ * fair per-value quotas. Keys leave the target only as bounded SHA-256 digests
+ * and validated tool namespaces; shared values count at their first entry.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
  * @param {{ expectedPid: number, maxSlots?: number, maxObjects?: number,
  *   maxEntries?: number, maxFields?: number, maxDepth?: number, budgetMs?: number,
- *   owners?: string[] }} options
+ *   owners?: string[], operatorCacheEntries?: boolean, maxCacheEntries?: number,
+ *   maxEntryEntries?: number, maxEntryObjects?: number, maxKeyCodeUnits?: number }} options
  */
 export async function readPinnedState(client, {
   expectedPid, maxSlots = 256, maxObjects = 4096, maxEntries = 8192,
-  maxFields = 32, maxDepth = 5, budgetMs = 50, owners,
+  maxFields = 32, maxDepth = 5, budgetMs = 50, owners, operatorCacheEntries = false,
+  maxCacheEntries = 64, maxEntryEntries = 2048, maxEntryObjects = 1024, maxKeyCodeUnits = 16384,
 }) {
-  const limits = { maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs };
+  const limits = { maxSlots, maxObjects, maxEntries, maxFields, maxDepth, budgetMs,
+    maxCacheEntries, maxEntryEntries, maxEntryObjects, maxKeyCodeUnits };
   if (!Number.isInteger(expectedPid) || expectedPid < 1 ||
       Object.values(limits).some(value => !Number.isInteger(value) || value < 1) ||
       maxSlots > 512 || maxObjects > 16384 || maxEntries > 32768 ||
       maxFields > 64 || maxDepth > 8 || budgetMs > 200 ||
+      typeof operatorCacheEntries !== 'boolean' || maxCacheEntries > 256 ||
+      maxEntryEntries > 32768 || maxEntryObjects > 16384 || maxKeyCodeUnits > 65536 ||
       (owners !== undefined && (!Array.isArray(owners) || owners.length < 1 || owners.length > 64 ||
         new Set(owners).size !== owners.length || owners.some(name => typeof name !== 'string' ||
           name.length < 1 || name.length > 512)))) throw new TypeError('invalid pinned-state limits/PID/owners');
   const result = await client.evaluate(`(() => {
     if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
     const limits = ${JSON.stringify(limits)}, owners = ${JSON.stringify(owners ?? null)}, start = performance.now();
+    const operatorCacheEntries = ${JSON.stringify(operatorCacheEntries)};
     const types = process.getBuiltinModule('util').types;
     const mapSize = Object.getOwnPropertyDescriptor(Map.prototype, 'size').get;
     const setSize = Object.getOwnPropertyDescriptor(Set.prototype, 'size').get;
@@ -136,15 +145,17 @@ export async function readPinnedState(client, {
       const quota = { entries: Math.max(1, Math.floor((limits.maxEntries - entries) / remainingRoots)),
         objects: Math.max(1, Math.floor((limits.maxObjects - objects) / remainingRoots)),
         budgetMs: Math.max(0, (limits.budgetMs - (rootStart - start)) / remainingRoots) };
-      const entryEnd = Math.min(limits.maxEntries, entries + quota.entries);
-      const objectEnd = Math.min(limits.maxObjects, objects + quota.objects);
+      let entryEnd = Math.min(limits.maxEntries, entries + quota.entries);
+      let objectEnd = Math.min(limits.maxObjects, objects + quota.objects);
       const rootExpired = () => expired() || performance.now() - rootStart >= quota.budgetMs;
-      const exhausted = () => entries >= entryEnd || objects >= objectEnd || rootExpired();
-      const row = { owner: name.slice(0, 160), ownerTruncated: name.length > 160,
-        quota, entries: 0,
+      let valueDeadline = Infinity;
+      const exhausted = () => entries >= entryEnd || objects >= objectEnd || rootExpired() ||
+        performance.now() >= valueDeadline;
+      const counters = () => ({ entries: 0,
         objects: 0, maps: 0, mapEntries: 0, arrays: 0, arrayEntries: 0, sets: 0, setEntries: 0,
         stringCodeUnits: 0, byteViewExtents: 0, arrayBufferExtents: 0, sharedEdges: 0,
-        accessorsSkipped: 0, proxiesSkipped: 0, fieldsLimited: 0, depthLimited: 0, traversalLimited: false };
+        accessorsSkipped: 0, proxiesSkipped: 0, fieldsLimited: 0, depthLimited: 0, traversalLimited: false });
+      let row = { owner: name.slice(0, 160), ownerTruncated: name.length > 160, quota, ...counters() };
       const visit = (value, depth) => {
         if (exhausted()) {
           row.traversalLimited = limited = true; return;
@@ -202,7 +213,79 @@ export async function readPinnedState(client, {
           if (field && 'value' in field) visit(field.value, depth + 1); else row.accessorsSkipped++;
         }
       };
-      if (!slot || typeof slot !== 'object' || types.isProxy(slot)) row.proxiesSkipped++;
+      if (operatorCacheEntries && name === '@papercusp/operator-core.operatorCache') {
+        const rootRow = row, rootEntryEnd = entryEnd, rootObjectEnd = objectEnd;
+        // Fixed own-data path, never cache.get(), freshness(), getters or LRU touches.
+        const data = (object, key) => {
+          if (!object || typeof object !== 'object') return { status: 'missing' };
+          if (types.isProxy(object)) { rootRow.proxiesSkipped++; return { status: 'proxy-skipped' }; }
+          const field = Object.getOwnPropertyDescriptor(object, key);
+          if (!field) return { status: 'missing' };
+          if (!('value' in field)) { rootRow.accessorsSkipped++; return { status: 'accessor-skipped' }; }
+          return { status: 'data', value: field.value };
+        };
+        let found = { status: 'data', value: slot };
+        for (const field of ['value', 'cache', 'l1', 'map']) {
+          if (found.status !== 'data') break;
+          found = data(found.value, field);
+        }
+        const cache = { path: 'cache.l1.map', status: found.status, population: null,
+          checked: 0, notChecked: null, values: [],
+          definition: 'Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes.' };
+        rootRow.cacheEntries = cache;
+        if (found.status === 'data' && found.value && !types.isProxy(found.value) && types.isMap(found.value)) {
+          const map = found.value, count = mapSize.call(map);
+          cache.status = 'map'; cache.population = count;
+          rootRow.maps = 1; rootRow.mapEntries = count;
+          const selectedCount = Math.min(count, limits.maxCacheEntries);
+          const crypto = process.getBuiltinModule('crypto');
+          for (const [key, wrapper] of Map.prototype.entries.call(map)) {
+            if (cache.checked >= selectedCount || entries >= rootEntryEnd || objects >= rootObjectEnd || rootExpired()) break;
+            entries++; rootRow.entries++; // The examined L1 map edge consumes global work too.
+            const valueStart = performance.now(), remaining = Math.max(1, selectedCount - cache.checked);
+            const valueQuota = {
+              entries: Math.min(limits.maxEntryEntries, Math.floor((rootEntryEnd - entries) / remaining)),
+              objects: Math.min(limits.maxEntryObjects, Math.floor((rootObjectEnd - objects) / remaining)),
+              budgetMs: Math.max(0, (quota.budgetMs - (valueStart - rootStart)) / remaining) };
+            entryEnd = entries + valueQuota.entries; objectEnd = objects + valueQuota.objects;
+            valueDeadline = valueStart + valueQuota.budgetMs;
+            const keyString = typeof key === 'string';
+            const boundedKey = keyString && key.length <= limits.maxKeyCodeUnits;
+            const nul = boundedKey ? key.indexOf('\u0000') : -1;
+            const pipe = nul > 0 ? key.indexOf('|', nul + 1) : -1;
+            const namespace = pipe > nul + 1 && pipe - nul <= 121 ? key.slice(nul + 1, pipe) : null;
+            const validNamespace = namespace !== null && /^[a-z][a-z0-9_.-]*:[a-z][a-z0-9_.-]*$/.test(namespace);
+            const metadata = { keyDigest: boundedKey ? crypto.createHash('sha256').update(key).digest('hex') : null,
+              keyDigestUnavailable: boundedKey ? null : keyString ? 'key-length-limit' : 'non-string-key',
+              keyCodeUnits: keyString ? key.length : null,
+              keyFormat: validNamespace ? 'workspace-nul-tool-pipe' : 'unknown',
+              toolNamespace: validNamespace ? namespace : null, quota: valueQuota,
+              softExpiry: 'unknown', hardExpiry: 'unknown', valueStatus: 'missing' };
+            if (wrapper && typeof wrapper === 'object' && !types.isProxy(wrapper)) {
+              for (const [field, target] of [['softExpiresAt', 'softExpiry'], ['hardExpiresAt', 'hardExpiry']]) {
+                const descriptor = Object.getOwnPropertyDescriptor(wrapper, field);
+                const expiry = descriptor && 'value' in descriptor ? descriptor.value : undefined;
+                metadata[target] = expiry === Infinity ? 'infinite' : typeof expiry === 'number' && Number.isFinite(expiry)
+                  ? Date.now() >= expiry ? 'expired' : 'pending' : 'unknown';
+              }
+            }
+            const value = data(wrapper, 'value'); metadata.valueStatus = value.status;
+            row = { ...metadata, ...counters() };
+            if (value.status === 'data') visit(value.value, 0);
+            cache.values.push(row); cache.checked++;
+            for (const field of Object.keys(counters())) {
+              if (field === 'traversalLimited') rootRow[field] ||= row[field];
+              else rootRow[field] += row[field];
+            }
+          }
+          cache.notChecked = count - cache.checked;
+          if (cache.notChecked > 0) rootRow.traversalLimited = limited = true;
+        } else if (found.status === 'data') {
+          cache.status = found.value && types.isProxy(found.value) ? 'proxy-skipped' : 'not-map';
+          if (cache.status === 'proxy-skipped') rootRow.proxiesSkipped++;
+        }
+        row = rootRow;
+      } else if (!slot || typeof slot !== 'object' || types.isProxy(slot)) row.proxiesSkipped++;
       else {
         const field = Object.getOwnPropertyDescriptor(slot, 'value');
         if (field && 'value' in field) visit(field.value, 0); else row.accessorsSkipped++;
