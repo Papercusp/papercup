@@ -334,6 +334,24 @@ export interface GradingAuditReservationResult {
   };
   /** Present on a live quota or general dispatch backoff that refused the claim. */
   backoff?: GradingAuditDispatchBackoff;
+  /**
+   * WI-10005273: the expired pending lease this claim REPLACED, when there was one. A dispatcher
+   * that then dedupes to the live auditor still holding that lease must hand it back with
+   * `releasePendingGradingAudit({ restore })` instead of deleting it: the auditor's brief cites
+   * exactly this key + reservedAt, and scorecards:emit refuses an audit whose lease is gone.
+   */
+  prior?: {
+    key: string;
+    reservedAt: string;
+  };
+}
+
+function parsePriorGradingAuditReservation(value: unknown): GradingAuditReservationResult['prior'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { key, reservedAt } = value as { key?: unknown; reservedAt?: unknown };
+  return typeof key === 'string' && key && typeof reservedAt === 'string' && reservedAt
+    ? { key, reservedAt }
+    : undefined;
 }
 
 /**
@@ -605,6 +623,21 @@ export async function reservePendingGradingAudit(
     : null;
 
   return boundedOrgTxn(async (tx: OrgSql) => {
+    // WI-10005273: lock the row and capture the lease this claim may replace, so a dispatcher
+    // that dedupes to the live holder of an expired lease can restore it rather than delete it.
+    const priorRows = await tx<{ feature_id: string; prior_state: string | null; prior_reservation: unknown }[]>`
+      SELECT feature_id,
+             payload->'observation'->'gradingAudit'->>'state' AS prior_state,
+             payload->'observation'->'gradingAudit'->'dispatchReservation' AS prior_reservation
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ${issueId}
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       FOR UPDATE`;
+    const prior =
+      priorRows[0]?.prior_state === 'pending'
+        ? parsePriorGradingAuditReservation(priorRows[0]?.prior_reservation)
+        : undefined;
     const claimed = await tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
@@ -684,7 +717,11 @@ export async function reservePendingGradingAudit(
              AND feature_id = ${issueId}
              AND item_kind = ANY (ARRAY['bug', 'change', 'task'])`;
       }
-      return { status: 'claimed' as const, reservation: { key: reservationKey, reservedAt } };
+      return {
+        status: 'claimed' as const,
+        reservation: { key: reservationKey, reservedAt },
+        ...(prior ? { prior } : {}),
+      };
     }
 
     const current = await tx<
@@ -728,6 +765,13 @@ export async function reservePendingGradingAudit(
  * in the SAME statement that drops the reservation. Atomicity is the point — a
  * separate write could lose the race to the next sweep tick and re-launch the
  * judge the suppression exists to stop.
+ *
+ * WI-10005273: pass `restore` to hand the row back to the lease this dispatcher
+ * REPLACED instead of deleting the reservation. A dispatcher that re-claimed an
+ * expired lease and then deduped to the still-live auditor holding it must
+ * restore that lease: the auditor cites exactly its key + reservedAt at
+ * scorecards:emit, so deleting it left every audit longer than the TTL unable
+ * to emit (refused grading_audit_reservation_unavailable) and the card pending.
  */
 export async function releasePendingGradingAudit(
   issueId: string,
@@ -735,24 +779,37 @@ export async function releasePendingGradingAudit(
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
     backoff?: GradingAuditDispatchBackoff;
     reservedAt?: string;
+    restore?: { key: string; reservedAt: string };
   } = {},
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
   const backoffJson = options.backoff ? JSON.stringify(options.backoff) : null;
+  const restoreJson = options.restore
+    ? JSON.stringify({ key: options.restore.key, reservedAt: options.restore.reservedAt })
+    : null;
   const reservedAt = options.reservedAt ?? null;
   const released = await boundedOrgTxn(
     async (tx: OrgSql) =>
       tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = ${
-           backoffJson
+           restoreJson && backoffJson
              ? tx`jsonb_set(
+                 jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true),
+                 '{observation,gradingAudit,dispatchBackoff}',
+                 ${backoffJson}::jsonb,
+                 true
+               )`
+             : restoreJson
+               ? tx`jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}', ${restoreJson}::jsonb, true)`
+               : backoffJson
+                 ? tx`jsonb_set(
                  payload #- '{observation,gradingAudit,dispatchReservation}',
                  '{observation,gradingAudit,dispatchBackoff}',
                  ${backoffJson}::jsonb,
                  true
                )`
-             : tx`payload #- '{observation,gradingAudit,dispatchReservation}'`
+                 : tx`payload #- '{observation,gradingAudit,dispatchReservation}'`
          },
              origin = 'local',
              updated_ts = ${Date.now()}
@@ -973,10 +1030,14 @@ export async function dispatchPendingGradingAudits(
     let attempts = 0;
     let reservationHeld = false;
     let reservationReservedAt = 'reservation-unknown';
+    let priorReservation: GradingAuditReservationResult['prior'];
     let launchBackend: 'claude' | 'codex' = 'claude';
     let routingFallback: string | undefined;
     let receipt: PendingGradingAuditDispatchReceipt | null = null;
-    const releaseReservation = async (backoff?: GradingAuditDispatchBackoff) => {
+    const releaseReservation = async (
+      backoff?: GradingAuditDispatchBackoff,
+      restore?: GradingAuditReservationResult['prior'],
+    ) => {
       if (!reservationHeld) return;
       reservationHeld = false;
       try {
@@ -984,6 +1045,7 @@ export async function dispatchPendingGradingAudits(
           workspaceId: input.ctx.workspaceId,
           reservedAt: reservationReservedAt,
           ...(backoff ? { backoff } : {}),
+          ...(restore ? { restore } : {}),
         });
       } catch {
         // The reservation TTL is the durable cleanup fallback if this release
@@ -1128,6 +1190,7 @@ export async function dispatchPendingGradingAudits(
         };
       }
       reservationReservedAt = reservation.reservation?.reservedAt ?? reservationReservedAt;
+      priorReservation = reservation.prior;
       reservationHeld = true;
       if (!(await confirmOwnedPendingReservation())) {
         return receipt!;
@@ -1253,7 +1316,9 @@ export async function dispatchPendingGradingAudits(
         return receipt;
       }
       if (viableLiveTasks.length > 0) {
-        await releaseReservation();
+        // WI-10005273: hand the row back to the live auditor's own lease. Deleting it (the old
+        // behaviour) is what made every audit longer than one TTL unable to emit.
+        await releaseReservation(undefined, priorReservation);
         receipt = {
           issueId,
           rubricRef: card.rubricRef,

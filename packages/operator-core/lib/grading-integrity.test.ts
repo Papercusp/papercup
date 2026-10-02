@@ -650,6 +650,58 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('hands the live auditor its own expired lease back instead of deleting it (WI-10005273)', async () => {
+    // The reproduced deadlock: a sweep after the 15-minute TTL re-claims the auditor's lease,
+    // finds the auditor still live, and used to DELETE the reservation. The auditor's
+    // scorecards:emit then had no lease to cite and was refused, so the card stayed pending.
+    const d = deps();
+    const auditorLease = { key: 'grading-audit:EI-long-audit', reservedAt: '2026-09-07T23:40:00.000Z' };
+    d.reserve.mockResolvedValue({
+      status: 'claimed',
+      reservation: { key: 'grading-audit:EI-long-audit', reservedAt: '2026-09-08T00:00:00.000Z' },
+      prior: auditorLease,
+    });
+    d.listScorecards.mockResolvedValue([card('EI-long-audit')]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-long-auditor',
+        state: 'running',
+        detail: { label: 'grading-audit:EI-long-audit' },
+        logPath: '/tmp/long-auditor.log',
+      } as unknown as TaskRow,
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-long-audit'], ctx }, d);
+
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', idempotencyKey: 'grading-audit:EI-long-audit' });
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(d.release).toHaveBeenCalledTimes(1);
+    expect(d.release).toHaveBeenCalledWith('EI-long-audit', 'grading-audit:EI-long-audit', {
+      workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
+      restore: auditorLease,
+    });
+  });
+
+  it('restores nothing on a non-dedupe release, even when the claim replaced an expired lease', async () => {
+    // A lease is restored only to a LIVE holder; with no live task the dispatcher owns the row.
+    const d = deps();
+    d.reserve.mockResolvedValue({
+      status: 'claimed',
+      reservation: { key: 'grading-audit:EI-gone', reservedAt: '2026-09-08T00:00:00.000Z' },
+      prior: { key: 'grading-audit:EI-gone', reservedAt: '2026-09-07T23:40:00.000Z' },
+    });
+    d.listScorecards.mockResolvedValue([card('EI-gone')]);
+    d.confirmReservation.mockResolvedValue(false);
+
+    await dispatchPendingGradingAudits({ targetIds: ['EI-gone'], ctx }, d);
+
+    expect(d.release).toHaveBeenCalledWith('EI-gone', 'grading-audit:EI-gone', {
+      workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
+    });
+  });
+
   it('retires a live auditor only when its task and no-first-turn log both exceed the reservation TTL', async () => {
     const d = deps();
     const nowMs = Date.parse('2026-09-30T12:00:00.000Z');
