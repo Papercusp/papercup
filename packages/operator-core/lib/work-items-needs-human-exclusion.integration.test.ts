@@ -17,7 +17,7 @@ import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb }
 import {
   ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
@@ -56,7 +56,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-needs-human');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
   // The by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).

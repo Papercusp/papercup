@@ -26,7 +26,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 
@@ -88,7 +88,7 @@ beforeAll(async () => {
     label: 'work-item-settled-completion-evidence.integration.test.ts',
   });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
 }, 90_000);
 
 afterAll(async () => {

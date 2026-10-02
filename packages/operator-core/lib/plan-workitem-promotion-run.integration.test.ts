@@ -22,7 +22,7 @@ import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb }
 import {
   ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
@@ -295,7 +295,7 @@ beforeAll(async () => {
       PRIMARY KEY (harness_slug, id)
     )
   `);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   // The real issue-family claim path consults watchdog recovery continuity before it
   // serves a row. This fresh-DB fixture must therefore carry the same canonical table
   // dependency as every other claim-path integration fixture.

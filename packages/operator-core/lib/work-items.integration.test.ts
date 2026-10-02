@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
@@ -145,7 +145,7 @@ beforeAll(async () => {
   // `errored` with no items, so install the production schema rather than a copy.
   await db.sql.unsafe(readMigration('1242-text-chunks.sql')).simple();
   await db.sql.unsafe(readMigration('1266-text-chunks-parent-key-stats.sql')).simple();
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple(); // claim path's watchdog recovery-window floor reads watchdog_ticks
   // P-010 unification: HFC_DDL already builds work_items + the hfc/engineer_issues
