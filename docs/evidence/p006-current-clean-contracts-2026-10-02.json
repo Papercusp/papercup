@@ -2983,5 +2983,29 @@
     },
     "recoveryReceipts": ["/tmp/p006-fire183-p003-specs-decoded.json", "/tmp/p006-fire183-p003-evidence-decoded.json", "/tmp/p006-fire183-grader-full-decoded.json", "/tmp/p006-fire183-real-goal-card.json"]
   },
-  "next": "MEASURED-ADMISSION@3 and NUMERATOR@3 govern PASS. Do not repeat either binding repair or17377/17379 withdrawal. Continue WINDOW@3 preparation from its four exact scenarios, maintained writer/consumer tests and unchanged clean integration20527628 before adding missing behavioral unit or parity proof. Remaining14 accepted clauses FAIL. Reconcile D014 versus UNMEASURED-ADMISSION explicitly; preserve D003 baseline, D013 completed FAIL real-goal card, D016 history, independent rubric ratification, closure audit and final shipment. Preserve separate P007/P008 checks and historical evidence; no unchanged native/P002 rerun."
+  "p003WindowGoverningFire195": {
+    "recordedAt": "2026-10-02T14:25:00Z",
+    "scope": "WINDOW@3 governing PASS on staging a27db452a1. P006 acceptance, independent rubric ratification, successful real-goal card, closure audit and shipment remain open.",
+    "recovery": "Live Fire192 checkpoint superseded supplied Fire191 carry. Eight calibrated bindings and clean 23/44 runs already existed; no test or mutation replay to reconstruct proof.",
+    "replacementBindings": [21851, 21852, 21853, 21854, 21855, 21856, 21857, 21858],
+    "replacementReadback": "Fresh staging server-measured CURRENT for all eight, exact WINDOW revision3/fingerprint6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281, four one-to-one scenario pairs; bounded.truncatedByLimit=false.",
+    "withdrawal": {
+      "bindingId": 17381,
+      "status": "retracted",
+      "reason": "Exact obsolete binding remained source/test-stale and test-run-worktree-not-clean. Selected replacement PASS already recorded and fresh CURRENT identities verified before withdrawal.",
+      "preserved": "Historical run20323411, D003 baseline, D013 completed FAIL card, D014 boundary and D016 history remain intact. Binding-only retraction."
+    },
+    "governing": {
+      "verdict": "PASS",
+      "governing": true,
+      "requiredProofFloor": "l3",
+      "wouldBlock": [],
+      "evaluatorBuild": {"sha": "a27db452a1", "version": "0.0.0"},
+      "cohortFilters": "workItemIds/evidenceRefs/bindingIds omitted"
+    },
+    "priorClauseFreshness": "NUMERATOR bindings21845-21850 and MEASURED-ADMISSION21754 are test-stale after the WINDOW test additions. MEASURED21756/21749/21750 remain CURRENT. Prior governing snapshots are dated; no new whole-plan census claimed.",
+    "receipts": ["/tmp/p006-fire195-window-measured.json", "/tmp/p006-fire195-window-withdraw.json", "/tmp/p006-fire195-window-governing.json", "/tmp/p006-fire195-prior-p003-current.json"],
+    "toolLimits": "Large current reads were door-projected; complete spill recovered using manifest bodyOffsetInPayload before relying on identities. No incidental DRAIN issue filed."
+  },
+  "next": "WINDOW@3 now governs PASS. Renew test-stale NUMERATOR21845-21850 with current clean positives20534705/20534918 and calibrated controls on changed tests; renew MEASURED21754 using current clean integration20534918 while preserving its three CURRENT unit bindings. Read exact identities and selected adequacy before binding-only withdrawals, then unfiltered governing/census. Preserve D003/D013FAIL/D014/D016, independent rubric review/ratification, successful real-goal card, closure audit and shipment; P007/P008 remain separate. No unchanged native/P001/P002 replay."
 }
