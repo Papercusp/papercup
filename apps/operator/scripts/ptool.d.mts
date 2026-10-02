@@ -42,15 +42,21 @@ export function resolvePtoolInvocationCandidates(args?: {}, env?: NodeJS.Process
 export function shouldRediscoverOperatorUrl(args?: {}, env?: NodeJS.ProcessEnv): boolean;
 /**
  * Pinned operator URLs are caller-selected endpoints, not managed launcher
- * routes. A dead pin must report its connection failure promptly instead of
- * spending the managed route's 120s recovery budget retrying an endpoint that
- * cannot be rediscovered or rebased. Managed/discoverable routes retain their
- * bounded retry loop for operator restarts.
+ * routes. Keep the selected host authoritative: a retry may reconnect to that
+ * same local direct operator, but must never rediscover or move to a fallback.
+ * Remote pins and local proxy pins keep one initialize attempt; a direct local
+ * operator gets a short retry window for brief listener restarts, separate
+ * from the managed route's 120s recovery budget.
  */
 export function ptoolConnectionRetryOptions(args?: {}, env?: NodeJS.ProcessEnv): {
     maxAttempts?: undefined;
+    totalTimeoutMs?: undefined;
 } | {
     maxAttempts: number;
+    totalTimeoutMs: number;
+} | {
+    maxAttempts: number;
+    totalTimeoutMs?: undefined;
 };
 /**
  * Parse argv into the ptool invocation shape. The first non-flag positional
@@ -767,6 +773,8 @@ export const PTOOL_CONNECT_TIMEOUT_MS: number;
 export const PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS: 15000;
 export const PTOOL_CONNECT_RETRY_DELAY_MS: 1000;
 export const PTOOL_CONNECT_MAX_ATTEMPTS: number;
+export const PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS: number;
+export const PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS: number;
 export const PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS: 2;
 export const PTOOL_RETRY_JITTER_MS: 1000;
 export const PTOOL_LIST_TOOLS_RETRY_DELAY_MS: 1000;

@@ -34170,7 +34170,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title and body/summary. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so a steerer can read the whole backlog's order in one call before steering it with work_items:set_priority.",
-        "notWhen": "Do not treat `assignee:null` on an item carrying `plan_ref`/`payload.plan_item` as unclaimed: `plans:items { slug }` may show live coverage. `sourcePlanSlug` filters persisted item provenance only; it does not include ad-hoc work merely performed while a session/fleet declared that plan. Scheduler `plan` predicates use item provenance too; for current lane status use scheduler:get_next or work_items:claimable. Never a drain backlog: non-work natures are data; drains read the work predicate via work_items:claimable.",
+        "notWhen": "Do not treat `assignee:null` on an item carrying `plan_ref`/`payload.plan_item` as unclaimed: `plans:items { slug }` may show live coverage. `sourcePlanSlug` filters persisted item provenance only; it does not include ad-hoc work merely performed while a session/fleet declared that plan. Scheduler `plan` predicates use item provenance too; for current lane status use scheduler:get_next or work_items:claimable.",
         "chaining": "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog."
       }
     },
