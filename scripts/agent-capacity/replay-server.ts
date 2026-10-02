@@ -40,6 +40,7 @@ import {
   fingerprintRequest,
   reportedExecSessions,
   type ExecSessionReport,
+  type InputToolOutputSummary,
   type RecordedChunk,
   type RecordedExchange,
   type RequestFingerprint,
@@ -693,6 +694,10 @@ export interface ServedRecord {
   recordedReqBytes: number | null;
   messages: number | null;
   recordedMessages: number | null;
+  /** Redacted tool outputs in the replay request; contents are never logged. */
+  inputToolOutputs?: InputToolOutputSummary | null;
+  /** Redacted tool outputs in the recording, or null for a pre-instrumentation recording. */
+  recordedInputToolOutputs?: InputToolOutputSummary | null;
   /** ms from request-body-complete to the last byte written. */
   servedMs: number;
   recordedMs: number | null;
@@ -847,6 +852,8 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
             reqBytes: body.length,
             messages: fp.messages,
             servedMs: Math.round(performance.now() - t0),
+            ...(fp.inputToolOutputs ? { inputToolOutputs: fp.inputToolOutputs } : {}),
+            ...(picked ? { recordedInputToolOutputs: picked.exchange.req.inputToolOutputs ?? null } : {}),
             ...r,
           };
           log?.write(JSON.stringify(rec) + '\n');

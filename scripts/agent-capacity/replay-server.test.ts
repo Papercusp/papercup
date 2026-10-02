@@ -397,6 +397,32 @@ describe('startReplayServer', () => {
     expect(served[0].reqBytes).toBe(fingerprintRequest(Buffer.from(JSON.stringify(body))).bytes);
   });
 
+  it('logs redacted current and recorded tool-output metadata for Codex replay requests', async () => {
+    const RESP = '/v1/responses';
+    const recordedBody = {
+      model: 'm', tools: [],
+      input: [{ type: 'custom_tool_call_output', call_id: 'nested-call', output: 'recorded private output' }],
+    };
+    const replayBody = {
+      model: 'm', tools: [],
+      input: [{ type: 'custom_tool_call_output', call_id: 'nested-call', output: 'replayed private output is longer' }],
+    };
+    const recorded = ex(0, { path: RESP, messages: 1, tools: 0 });
+    recorded.req = { ...recorded.req, ...fingerprintRequest(Buffer.from(JSON.stringify(recordedBody))) };
+    writeSession('s1', [recorded]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+
+    const response = await post(`${srv.baseUrl('s1', 'a')}${RESP}`, replayBody);
+    expect(response.status).toBe(200);
+    await srv.close();
+
+    const [served] = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
+    expect(served.inputToolOutputs).toEqual(fingerprintRequest(Buffer.from(JSON.stringify(replayBody))).inputToolOutputs);
+    expect(served.recordedInputToolOutputs).toEqual(recorded.req.inputToolOutputs);
+    expect(JSON.stringify(served)).not.toContain('recorded private output');
+    expect(JSON.stringify(served)).not.toContain('replayed private output');
+  });
+
   it('keeps separate consumption state per instance of the same recording', async () => {
     writeSession('s1', [ex(0, { messages: 1, tools: 0 })]);
     srv = await startReplayServer({ corpusDir: corpus, speed: 0 });
