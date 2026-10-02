@@ -531,6 +531,9 @@ const specTestAdequacyRerunRecipeSchema = z
               .strict(),
           )
           .max(500),
+        // The evaluator pins immutable binding rows as well as their references.
+        // Reuse its selector schema so a generated replay keeps the same cohort.
+        bindingIds: evaluatorArgsSchema.shape.bindingIds,
       })
       .strict(),
     current: z

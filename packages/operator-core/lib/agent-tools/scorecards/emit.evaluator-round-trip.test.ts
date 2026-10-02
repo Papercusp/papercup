@@ -117,7 +117,7 @@ import { listSpecClauses } from '../plans/spec-clauses-store';
 import { measureRepoFilesEvidenceAtRoot } from '../plans/spec-evidence-store';
 import { ADEQUACY_CRITERIA } from '../plans/spec-test-adequacy';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
-import { emitScorecard } from './emit';
+import { emitScorecard, scorecardEmitArgs } from './emit';
 
 const listClauses = vi.mocked(listSpecClauses);
 
@@ -294,12 +294,7 @@ const dispatchTool = vi.fn(async (name: string, args: Record<string, unknown>) =
  *  evaluator returned, unedited". */
 const emitDraft = (draft: EvaluatorPayload['rows'][number]['scorecardDraft']) =>
   emitScorecard(
-    {
-      rubricRef: draft.rubricRef,
-      subject: draft.subject,
-      ratings: draft.ratings,
-      rerunRecipe: draft.rerunRecipe,
-    } as never,
+    scorecardEmitArgs.parse(draft),
     { createdBy: 'su-grader' },
     { dispatchTool },
   );
@@ -344,7 +339,8 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     // The recipe carries the SERVER-measured tuple, so emit's supplied:false refusal
     // cannot be what lets freshness through.
     expect(row!.scorecardDraft.rerunRecipe.current.supplied).toBe(true);
-    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true });
+    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2] });
+    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2]);
 
     const result = await emitDraft(row!.scorecardDraft);
 
