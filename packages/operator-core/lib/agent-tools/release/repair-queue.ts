@@ -27,6 +27,7 @@ import { isPidAlive } from '../../release/in-flight-candidate';
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
+  frozenRepairHeadAwaitsVerification,
   markFrozenRepairAdmitted,
   normalizeRepoPath,
   type FrozenCandidateRepairQueue,
@@ -120,6 +121,71 @@ function readQueueIdentity(args: QueueIdentityArgs): QueueIdentity | null {
     expectedUpdatedAtMs: args.expectedUpdatedAtMs!,
   };
 }
+
+async function emitRetiredUnjudgedRepairHeadTerminal(
+  queue: FrozenCandidateRepairQueue,
+  pipeline: string,
+): Promise<{
+  status: 'emitted' | 'partial' | 'failed';
+  sha: string;
+  emittedKeys: string[];
+  failedKeys: string[];
+}> {
+  const summary = `${pipeline} frozen repair head ${queue.repairHead.slice(0, 8)} was retired before verification; no verdict rendered`;
+  const payload = {
+    sha: queue.repairHead,
+    from: queue.candidate,
+    pipeline,
+    reason: 'repair-queue-retired-before-verification',
+    summary,
+    runId: null,
+  };
+  const cancelSiblingKeysFor = [
+    'release:green',
+    `release:green:${pipeline}`,
+    'green-checkpoint:red',
+    `green-checkpoint:red:${pipeline}`,
+    'green-checkpoint:held',
+    `green-checkpoint:held:${pipeline}`,
+  ];
+  const keys = ['green-checkpoint:inconclusive', `green-checkpoint:inconclusive:${pipeline}`];
+  const emittedKeys: string[] = [];
+  const failedKeys: string[] = [];
+
+  try {
+    const { emitAwaitedEvent } = await import('../../events/await/engine');
+    for (const key of keys) {
+      try {
+        await emitAwaitedEvent({
+          key,
+          summary,
+          payload,
+          source: 'release:repair-queue-retire',
+          cancelSiblingKeysFor,
+        });
+        emittedKeys.push(key);
+      } catch (error) {
+        failedKeys.push(key);
+        console.warn(
+          `[release:repair-queue] inconclusive retire wake failed for ${queue.repairHead} on ${key}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  } catch (error) {
+    failedKeys.push(...keys);
+    console.warn(
+      `[release:repair-queue] inconclusive retire wake setup failed for ${queue.repairHead}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  return {
+    status: failedKeys.length === 0 ? 'emitted' : emittedKeys.length > 0 ? 'partial' : 'failed',
+    sha: queue.repairHead,
+    emittedKeys,
+    failedKeys,
+  };
+}
+
 const argsSchema = z.preprocess(
   (value) => {
     // The read branch has no arguments. Treat an omitted op on an otherwise
@@ -627,7 +693,7 @@ export default defineTool({
     chaining:
       '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
     returns:
-      '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof? }. Read `nextAction`; mutations report verdict plus proof/containment and retire uses CAS.',
+      '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
@@ -667,6 +733,12 @@ export default defineTool({
       refused: z.boolean().optional(),
       casMiss: z.boolean().optional(),
       current: z.unknown().nullable().optional(),
+      inconclusiveTerminal: z.object({
+        status: z.enum(['emitted', 'partial', 'failed']),
+        sha: z.string(),
+        emittedKeys: z.array(z.string()),
+        failedKeys: z.array(z.string()),
+      }).optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
@@ -1999,6 +2071,10 @@ export default defineTool({
       retired: result.retired,
       casMiss,
     });
+    const inconclusiveTerminal =
+      result.retired && frozenRepairHeadAwaitsVerification(inspected.queue)
+        ? await emitRetiredUnjudgedRepairHeadTerminal(inspected.queue, inspected.target.installSlug)
+        : undefined;
     stampActionEffect({ status: result.retired ? 'queue-retired' : 'cas-miss',
       retired: result.retired, casMiss, auditRecorded });
     // A CAS miss is a storage outcome, not a liveness refusal. The nested `current`
@@ -2013,6 +2089,7 @@ export default defineTool({
       target: inspected.target,
       auditRecorded,
       current: currentDiagnostic,
+      ...(inconclusiveTerminal ? { inconclusiveTerminal } : {}),
       // WI-1105109 [owner 2026-08-30, OWNER-interactive]: "make sure another agent
       // uses the frozen candidate system next and doesn't retire it like you did".
       //
