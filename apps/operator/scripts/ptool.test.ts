@@ -2095,7 +2095,7 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     await expect(connectWithOperatorCandidates(connectOnce, candidates, {}, {
       ...retryOptions,
       retryJitterMs: 0,
-      sleep: async (ms) => { sleeps.push(ms); },
+      sleep: async (ms: number) => { sleeps.push(ms); },
     })).resolves.toEqual({ client, operatorUrl: pinned });
     expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([pinned, pinned]);
     expect(sleeps).toEqual([1_000]);
