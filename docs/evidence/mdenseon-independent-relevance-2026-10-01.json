@@ -3055,6 +3055,82 @@
       "modelAdoptionAuthorized": false
     }
   },
+  "incrementalExecutionPreparation": {
+    "status": "source-first-preparation-only",
+    "workItem": "WI-10004537",
+    "retainedQualification": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-vector-qualification-v1/assessment.json",
+      "sha256": "71353b971293fa8cd9e36226d92a527f3952c4312c8c1a192eef59a1cfdafa16",
+      "bytes": 34581,
+      "readOnlyReproduction": "PASS: six exact completed cells, 3081 retained document vectors and 324 retained query vectors, zero model execution"
+    },
+    "sourcePins": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "b23d471736c4e739971a353563054503587c3b85024719ef771cc262750bfa8e",
+        "bytes": 64216
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "sha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+        "bytes": 50956
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "sha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39",
+        "bytes": 31426
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+        "sha256": "86288f53331a6bfec3d0d9ad41b4cc93ffe23d519348f4d66df9e382a3b5f3b4",
+        "bytes": 27552
+      },
+      {
+        "path": "libs/generic/memory/src/mem0-backend.ts",
+        "sha256": "c5b28f74334a2f66a868d094886a279d5ed62de4978c1c1f5161f85238ed4387",
+        "bytes": 34716
+      }
+    ],
+    "executionIdentityBoundary": {
+      "donorManifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+      "donorWorkerSha256": "754f42bb37e7bc41ff4692b3239d5a454f6fc0b324afc050d1ac5a79b86bd95b",
+      "currentWorkerSha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39",
+      "currentWorkerEqualsDonor": false,
+      "writer": "measurement-manifest.ts: assertCandidateArm and loadRetainedRelevanceVectors",
+      "observation": "The current worker, worker host and mDenseOn builder differ from the measured V5 source. The original immutable evaluator and loader predate incremental reuse. An unchanged donor arm cannot truthfully be executed through today's worker merely by retaining its old manifest metadata.",
+      "nextPreparation": "Qualify a new immutable evaluator/loader overlay on the retained executable runtime without changing its measured worker/builders/dependencies; pin the actual loaded source and keep the original runtime untouched. Do not weaken arm identity or repeat the completed document matrix to reconstruct history.",
+      "overlayQualified": false,
+      "newQueryExecutionAuthorizedByThisEvidence": false,
+      "fullInferenceTimingReusable": false
+    },
+    "productionRoutePreparation": {
+      "workItem": "WI-10004538",
+      "readOnly": true,
+      "existingMechanisms": [
+        "candidate-hybrid-bench.ts: runCandidateHybrid, canonicalCandidateBackend",
+        "mem0-backend.ts: Mem0BackendDeps and Mem0Backend.search",
+        "canonical-store.ts: CanonicalVectorStore",
+        "hybrid-backend.ts: HybridBackend"
+      ],
+      "observations": [
+        "runCandidateHybrid explicitly admits canonical-lexical-hybrid, not the entity/decay complete route.",
+        "canonicalCandidateBackend supplies isolated user_id retrieval and score floors but not the production mem0 entity/decay path.",
+        "Mem0Backend.search uses precomputed vector or multiple scopes to enter canonical vectorSearch; this deliberately bypasses client.search entity boost even for one scope.",
+        "The single-scope client.search branch preserves mem0 entity processing; Mem0Backend subsequently floors, applies decay ranking and optional diversity. A fake client or precomputed-vector branch is not proof of the complete entity route."
+      ],
+      "nextPreparation": "Extend the existing owned benchmark and maintained client/store injection seams with a real isolated model-profile-separated mem0 client; prove actual branch, filter, entity and decay behavior in conventional tests before collecting P-004 results.",
+      "completeRouteMeasured": false,
+      "p004ClaimedOrEdited": false
+    },
+    "acceptance": {
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "p003Complete": false,
+      "p004Complete": false,
+      "fullAccessibleCensusExhausted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
