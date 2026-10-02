@@ -100,6 +100,22 @@ MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
 
+# Lock diagnostics are fail-open. The helper writes bounded records to stderr
+# (captured by journald); a missing helper must not change sync admission.
+STAGING_LOCK_ATTRIBUTION_HELPER="$INTEGRATION_ROOT/apps/operator/scripts/systemd/staging-lock-attribution.sh"
+if [[ -r "$STAGING_LOCK_ATTRIBUTION_HELPER" ]]; then
+  . "$STAGING_LOCK_ATTRIBUTION_HELPER" || log "lock-attribution helper could not be loaded; recording unknown holder evidence"
+else
+  log "lock-attribution helper is unavailable; recording unknown holder evidence"
+fi
+if ! declare -F staging_lock_log >/dev/null 2>&1; then
+  staging_lock_log() { log "lock-attribution-unavailable $*"; }
+  staging_lock_attempt_id() { printf '%s' "${INVOCATION_ID:-unavailable}"; }
+  staging_lock_now_ms() { printf '%s' unknown; }
+  staging_lock_elapsed_ms() { printf '%s' unknown; }
+  staging_lock_holder_fields() { printf '%s' 'holder_pid=unknown holder_comm=unknown'; }
+fi
+
 staging_alias_bootstrap() {
   local tmp
   mkdir -p "$(dirname "$STAGING_ROOT")" "$STAGING_GENERATIONS_ROOT" || return 1
@@ -727,8 +743,15 @@ current_commit_age_sec() {
 # checkout also holds the lock SHARED for its whole run (WI-10003515,
 # release-cut-launch.ts wrapWithStagingSyncLock), so re-cloning submodules in place
 # cannot delete scripts out from under an in-flight cut.
-exec 9>"/tmp/papercup-staging-sync.lock"
+STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"
+STAGING_SYNC_ATTEMPT_ID="$(staging_lock_attempt_id)"
+STAGING_SYNC_WAIT_START_MS="$(staging_lock_now_ms)"
+staging_lock_log "event=start surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=wait_start lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=exclusive wait_start_ms=$STAGING_SYNC_WAIT_START_MS" || true
+exec 9>"$STAGING_SYNC_LOCK_PATH"
 if ! flock -n 9; then
+  STAGING_SYNC_END_MS="$(staging_lock_now_ms)"
+  STAGING_SYNC_HOLDER="$(staging_lock_holder_fields "$STAGING_SYNC_LOCK_PATH" exclusive)"
+  staging_lock_log "event=end surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=complete lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=exclusive wait_start_ms=$STAGING_SYNC_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_WAIT_START_MS" "$STAGING_SYNC_END_MS") acquisition_outcome=not_acquired $STAGING_SYNC_HOLDER" || true
   cut_note=""
   active_cuts="$(systemctl --user list-units --state=active --no-legend --plain 'papercup-release-cut*' 2>/dev/null | awk '{print $1}' | paste -sd, -)"
   if [[ -n "$active_cuts" ]]; then
@@ -860,7 +883,18 @@ fi
 
 # The candidate is complete and published. Downgrade the single-flight lock
 # before systemd ExecStartPre takes the shared lock to verify/reuse the bundle.
-flock -s 9
+STAGING_SYNC_SHARED_WAIT_START_MS="$(staging_lock_now_ms)"
+staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_wait_start phase=preflight-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS" || true
+if flock -s 9; then
+  STAGING_SYNC_SHARED_END_MS="$(staging_lock_now_ms)"
+  staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_acquired phase=preflight-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_SHARED_WAIT_START_MS" "$STAGING_SYNC_SHARED_END_MS") acquisition_outcome=acquired" || true
+else
+  STAGING_SYNC_SHARED_RC=$?
+  STAGING_SYNC_SHARED_END_MS="$(staging_lock_now_ms)"
+  STAGING_SYNC_HOLDER="$(staging_lock_holder_fields "$STAGING_SYNC_LOCK_PATH" shared)"
+  staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_failed phase=preflight-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_SHARED_WAIT_START_MS" "$STAGING_SYNC_SHARED_END_MS") acquisition_outcome=failed command_exit_status=$STAGING_SYNC_SHARED_RC $STAGING_SYNC_HOLDER" || true
+  exit "$STAGING_SYNC_SHARED_RC"
+fi
 
 # EI-13221: skip a REDUNDANT restart when $UNIT's current MainPID already came
 # up within the last RECENT_RESTART_GRACE_SEC — most likely a peer's `dev:restart`
@@ -937,9 +971,18 @@ PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
 # exclusive lock to shared before the final dev:restart: restart's nonblocking
 # shared-lock probe now admits this sync-owned cutover, while this process keeps
 # excluding a new staging-sync until exact-source readiness is verified.
-if ! flock -s 9; then
+STAGING_SYNC_SHARED_WAIT_START_MS="$(staging_lock_now_ms)"
+staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_wait_start phase=final-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS" || true
+if flock -s 9; then
+  STAGING_SYNC_SHARED_END_MS="$(staging_lock_now_ms)"
+  staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_acquired phase=final-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_SHARED_WAIT_START_MS" "$STAGING_SYNC_SHARED_END_MS") acquisition_outcome=acquired" || true
+else
+  STAGING_SYNC_SHARED_RC=$?
+  STAGING_SYNC_SHARED_END_MS="$(staging_lock_now_ms)"
+  STAGING_SYNC_HOLDER="$(staging_lock_holder_fields "$STAGING_SYNC_LOCK_PATH" shared)"
+  staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_failed phase=final-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_SHARED_WAIT_START_MS" "$STAGING_SYNC_SHARED_END_MS") acquisition_outcome=failed command_exit_status=$STAGING_SYNC_SHARED_RC $STAGING_SYNC_HOLDER" || true
   log "FATAL: could not downgrade the staging-sync checkout lock for final restart"
-  exit 1
+  exit "$STAGING_SYNC_SHARED_RC"
 fi
 
 # The ptool result may be lost when this request restarts its own :3170 server.
