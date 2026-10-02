@@ -285,6 +285,20 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('retires supervision reconcile disposition after resource starts moved behind the sidecar helper', () => {
+    const path = 'packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts';
+    const key = `${path}::resource-start-outside-admission`;
+    const source = readFileSync(ROOT + path, 'utf8');
+    expect(P016_DISPOSITION_REGISTRY.has(key)).toBe(false);
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true }),
+    ).not.toContain(`stale-bypass-registry:${key}:finding-absent`);
+    expect(
+      scanInventory([[path, source + "\nspawn('worker', []);"]], { migrations: ['P-016'] }),
+    ).toContain(`${path}:resource-start-outside-admission`);
+  });
+
   it('keeps completion free of resource starts now that its Git probe lives in git-trackedness.ts', () => {
     // The bounded `git ls-files` trackedness probe moved out of complete.ts into
     // packages/operator-core/lib/git-trackedness.ts (2026-10-01), so its exact-call
