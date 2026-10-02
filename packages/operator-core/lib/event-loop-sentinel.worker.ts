@@ -392,10 +392,10 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
  * thread through V8 interrupts. Measured 2026-10-01 (node 25.9): `Profiler.start`
  * answered 95-183 ms after asking, mid-block, for a named JS spin, an 18 s
  * catastrophic regex, and a JSON.stringify loop, and the hot frame was named in
- * all three. A native wait may not service the inspector until it returns;
- * low CPU alone also describes an idle loop with a missing heartbeat. Probe
- * both with the SAME bounded capture path and record inspector response
- * separately from heartbeat progress. Neither result changes the kill policy.
+ * all three. Inspector interrupts can also answer during a native futex wait
+ * (WI-10005529), so an inspector reply is not proof the loop turns. For parked
+ * threads, evaluate a Promise resolved by a main-loop setImmediate and bound
+ * its reply too. Neither result changes the kill policy.
  *
  * Fire-and-forget from the observe tick: the capture's awaits run on this
  * worker's own loop and never delay an observation, and a failure only logs.
@@ -410,22 +410,31 @@ let lastStallProfileAtMs: number | null = null;
 let stallProfileState: 'capturing' | 'captured' | 'failed' | 'discarded' | null = null;
 let mainThreadInspectorResponse: 'pending' | 'responsive' | 'not-answered' | 'error' | null = null;
 let mainThreadInspectorResponseMs: number | null = null;
+let mainThreadEventLoopResponse: 'pending' | 'responsive' | 'not-answered' | 'error' | null = null;
+let mainThreadEventLoopResponseMs: number | null = null;
 
 function stallProfileField(): Record<string, string | number> {
   return {
     ...(stallProfileState ? { stallProfile: stallProfileState } : {}),
     ...(mainThreadInspectorResponse ? { mainThreadInspectorResponse } : {}),
     ...(mainThreadInspectorResponseMs != null ? { mainThreadInspectorResponseMs } : {}),
+    ...(mainThreadEventLoopResponse ? { mainThreadEventLoopResponse } : {}),
+    ...(mainThreadEventLoopResponseMs != null ? { mainThreadEventLoopResponseMs } : {}),
   };
 }
 
-function inspectorPost(session: Session, method: string, timeoutMs: number): Promise<unknown> {
+function inspectorPost(
+  session: Session,
+  method: string,
+  timeoutMs: number,
+  params: Record<string, unknown> = {},
+): Promise<unknown> {
   return new Promise((resolvePost, rejectPost) => {
     const timer = setTimeout(
       () => rejectPost(new Error(`${method} not answered within ${timeoutMs}ms`)),
       timeoutMs,
     );
-    session.post(method, (err, result) => {
+    session.post(method, params, (err, result) => {
       clearTimeout(timer);
       if (err) rejectPost(err);
       else resolvePost(result);
@@ -455,6 +464,7 @@ async function captureStallProfile(
   const startedAtMs = Date.now();
   const beatAtStart = Atomics.load(view, 0);
   let session: Session | null = null;
+  let profilerStarted = false;
   try {
     session = new Session();
     session.connectToMainThread();
@@ -473,6 +483,21 @@ async function captureStallProfile(
       return true;
     };
     if (discardRecoveredCapture()) return;
+    if (cpuKind === 'parked') {
+      mainThreadEventLoopResponse = 'pending';
+      const probeStartedAtMs = Date.now();
+      const response = await inspectorPost(session, 'Runtime.evaluate', 3_000, {
+        expression: "new Promise(resolve => setImmediate(() => resolve('event-loop-responsive')))",
+        awaitPromise: true,
+        returnByValue: true,
+      }) as { result?: { value?: unknown } };
+      if (response.result?.value !== 'event-loop-responsive') {
+        throw new Error('main event-loop callback probe returned no responsiveness proof');
+      }
+      mainThreadEventLoopResponse = 'responsive';
+      mainThreadEventLoopResponseMs = Date.now() - probeStartedAtMs;
+      if (discardRecoveredCapture()) return;
+    }
     emit('main thread inspector answered during stale heartbeat', {
       pid,
       stalenessAtStartMs,
@@ -480,11 +505,13 @@ async function captureStallProfile(
       ...stallProfileField(),
     });
     await inspectorPost(session, 'Profiler.start', 3_000);
+    profilerStarted = true;
     if (discardRecoveredCapture()) return;
     await new Promise((r) => setTimeout(r, cfg.captureMs));
     const stopped = (await inspectorPost(session, 'Profiler.stop', 5_000)) as {
       profile: CpuProfileLike;
     };
+    profilerStarted = false;
     // The heartbeat moving means the loop turned again mid-capture, so the
     // tail of the profile is post-stall activity rather than the stall.
     const stallEndedDuringCapture = Atomics.load(view, 0) !== beatAtStart;
@@ -525,6 +552,9 @@ async function captureStallProfile(
     if (mainThreadInspectorResponse === 'pending') {
       mainThreadInspectorResponse = String(err).includes('not answered within') ? 'not-answered' : 'error';
     }
+    if (mainThreadEventLoopResponse === 'pending') {
+      mainThreadEventLoopResponse = String(err).includes('not answered within') ? 'not-answered' : 'error';
+    }
     emit('STALL profile capture failed — sentinel unaffected', {
       pid,
       stalenessAtStartMs,
@@ -533,6 +563,10 @@ async function captureStallProfile(
       error: String(err).slice(0, 200),
     });
   } finally {
+    if (session && profilerStarted) {
+      // Recovery after Profiler.start must not leave V8 sampling this host.
+      try { await inspectorPost(session, 'Profiler.stop', 1_000); } catch { /* best effort */ }
+    }
     try {
       // Also discards a profile whose start was queued behind a syscall and
       // answered only after the timeout: the session's profiler dies with it.
@@ -559,6 +593,8 @@ function maybeStartStallProfile(stalenessMs: number): void {
       stallProfileState = null;
       mainThreadInspectorResponse = null;
       mainThreadInspectorResponseMs = null;
+      mainThreadEventLoopResponse = null;
+      mainThreadEventLoopResponseMs = null;
     }
     return;
   }
@@ -592,6 +628,8 @@ function maybeStartStallProfile(stalenessMs: number): void {
     stallProfileState = 'capturing';
     mainThreadInspectorResponse = 'pending';
     mainThreadInspectorResponseMs = null;
+    mainThreadEventLoopResponse = null;
+    mainThreadEventLoopResponseMs = null;
     void captureStallProfile(stallProfile, stalenessMs, cpuKind);
   } catch (err) {
     // A diagnostic must never take down the sentinel.

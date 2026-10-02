@@ -3,8 +3,8 @@
  * profile (WI-10004766, WI-10003454).
  *
  * The event-loop sentinel already says WHAT KIND of stall it saw: `spinning`
- * (the main thread burns CPU), `parked` (blocked in a syscall, with `wchan`,
- * the blocked directory and live children naming the wait). For a spinning
+ * (the main thread burns CPU), `parked` (low CPU, with `wchan`, the blocked
+ * directory and live children providing wait evidence). For a spinning
  * stall it could not say WHICH CODE was spinning. Every R-state stall on :3170
  * and the bg-host therefore ended as "cause unknown": the lag monitor's own
  * profiler runs on the main thread and cannot start during the stall it would
@@ -76,9 +76,10 @@ export interface StallCaptureInput {
 /**
  * Capture a stale heartbeat with a measured CPU verdict. `parked` alone cannot
  * distinguish an idle main loop whose heartbeat stopped from a native wait.
- * The worker bounds inspector requests, records whether they answer, and drops
- * captures whose heartbeat recovers before profiling starts. `unknown` means
- * no trustworthy CPU baseline.
+ * The worker bounds inspector requests and, for parked threads, checks a
+ * scheduled main-loop callback: inspector interrupts alone also answer during
+ * some native waits. It drops captures whose heartbeat recovers before
+ * profiling starts. `unknown` means no trustworthy CPU baseline.
  */
 export function shouldCaptureStallProfile(
   input: StallCaptureInput,
