@@ -1,4 +1,18 @@
 {
+  "r169PreparationFire144": {
+    "scope": "Fresh r169 artifact preparation with current frame-first companion timer and attempt timeout driver; native run and product/R7 remain unverified at this boundary.",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r169-instrument-manifest.json",
+    "manifestSha256": "067d34372fffb74c823e1d839bfdf0639b3c15bf7fddc9b14ad28c716fc25196",
+    "assertionSha256": "8f462606c6bab34b1750bff838985bfe7197c197f82323d8f5b2964a9670d5dd",
+    "startupPayloadSha256": "4579b65ee114b895478b9daa05e8be8fb15e75c8de2331e48970fa4cc3be465a",
+    "spaIndexSha256": "26f8d3a28bfadcbc5b94374697843292aceb5cdcb4fb0b95e916697eadb918b0",
+    "verification": "All five Fire142 source and five log hashes match; independent copied app and raw baseline; exact single-script index reconstruction and sixteen current source bindings pass. Assertion bash syntax passes. Existing canonical43 plus Node71 test proof and typecheck retained without unchanged replay.",
+    "reused": "Maintained buildStartupStorageProbeScript/buildWebVitalsBundle/writeStartupStorageDiagnosticIndex, frozen r168 app and exact raw baseline, prior maintained assertion and scripts/verify-tauri-headless.sh desktop-native route.",
+    "preparationFriction": "tsx ESM named import refused before payload writes; this CJS package's maintained require route compiled the payload successfully. No native attempt was launched by that refusal.",
+    "requiredObservation": "Actual LCP candidate join and paired queued/timer/frame/read intervals; postwait captured start, phase startTime and total. Missing or cancelled timer stays null; ambiguous timeout stays inconclusive.",
+    "limits": "Saved SPA complete original graph unknown; new API, separate clocks, media restriction and observer work remain confounds. Source guards alone do not establish native cause or acceptance.",
+    "next": "One changed native verifier run with this manifest and identity-checked cleanup of only its new owned processes and roots; never unchanged r168 or earlier replay."
+  },
   "attemptTimeoutGuardFire142": {
     "scope": "Fire142 current-source timeout detector and attempt provenance guard; no new native run or product/R7 acceptance",
     "rootCause": "The wait may expire before endInteraction emits a measure and consumes its start. The follow-up driver snapshot omitted completed measures and phase startTime, and the classifier interpreted absent start as never began. Previous phases survived driver reset if the next handler never began.",
