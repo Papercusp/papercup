@@ -40,6 +40,22 @@ export interface SharedSealParams {
   ref?: string;
   /** Non-authored locators saved beside the text (work-item id, fact key, …). */
   context?: Record<string, unknown>;
+  /**
+   * Other AUTHORED values of the same row (a fact's settledBy, recheck, claim,
+   * sourceRef). They are sealed with the text in one sealed row, and the caller
+   * drops them from the shared row when the result is sealed (WI-10005549, R-8).
+   * Null/undefined entries are omitted.
+   */
+  fields?: Record<string, unknown>;
+}
+
+/** Placeholder a shared row keeps for an authored field whose value was sealed with the text. */
+export const SEALED_FIELD_STUB = '🔒 sealed with this row’s text';
+
+function presentFields(fields: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!fields) return null;
+  const present = Object.entries(fields).filter(([, value]) => value !== null && value !== undefined);
+  return present.length ? Object.fromEntries(present) : null;
 }
 
 export type SharedSealResult =
@@ -77,7 +93,11 @@ function concreteWorkspace(workspaceId: string | null | undefined): string | nul
 
 /** True when this write can never need a seal, so no ledger read is spent on it. */
 function nothingToSeal(params: SharedSealParams): boolean {
-  return !params.writerOwnerId?.trim() || !concreteWorkspace(params.workspaceId) || !params.text.trim();
+  return (
+    !params.writerOwnerId?.trim() ||
+    !concreteWorkspace(params.workspaceId) ||
+    (!params.text.trim() && !presentFields(params.fields))
+  );
 }
 
 /**
@@ -92,12 +112,17 @@ export async function sealSharedTextInTx(tx: Db, params: SharedSealParams): Prom
   const labels = await snapshotActiveLabels(tx, { workspaceId, agentOwnerId: writerOwnerId });
   if (!labels.length) return { sealed: false, text: params.text };
   const ref = params.ref?.trim() || randomUUID();
+  const fields = presentFields(params.fields);
   await storeSealedContent(tx, {
     workspaceId,
     store: params.store,
     ref,
     writerOwnerId,
-    content: { text: params.text, ...(params.context ? { context: params.context } : {}) },
+    content: {
+      text: params.text,
+      ...(params.context ? { context: params.context } : {}),
+      ...(fields ? { fields } : {}),
+    },
     labels,
   });
   return {
