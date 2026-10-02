@@ -484,7 +484,10 @@ describe('tests.ts model tracks the real testing:run (D-015)', () => {
       // through the ordinary evidence path keeps the reporter fixed at json and the
       // config derived per owning workspace, so the reporter/config/root exclusions
       // below stay accurate. Nothing else here executes a derived selection.
-      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'testNamePattern', 'timeoutMs'],
+      // `work_item_id` only attributes the run (task ledger + slow-attempt gate) to a
+      // held work-item; it selects nothing and fixes neither reporter nor config, so
+      // it disturbs neither verdict either.
+      ['changedPaths', 'evidence', 'files', 'harness', 'maxFailures', 'recheckReason', 'recoverEvidence', 'remeasureEvidence', 'testNamePattern', 'timeoutMs', 'work_item_id'],
       'two verdicts rest on this surface. (1) `tests.affected` is recorded `not-a-substitute` because no arg makes ' +
         'the tool RUN a list it derived — `changedPaths` returns the plan and executes nothing. An arg that ' +
         'EXECUTED a derived selection would make 206 corpus atoms across 48 sessions suddenly expressible, and ' +
