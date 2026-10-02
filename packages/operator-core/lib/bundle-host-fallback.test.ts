@@ -96,6 +96,50 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+describe('bundle-host.sh standalone spawner fallback', () => {
+  it.each([
+    { caller: 'release', allowStale: '0', previousSibling: true, expectedCode: 1 },
+    { caller: 'supervisor with prior sibling', allowStale: '1', previousSibling: true, expectedCode: 0 },
+    { caller: 'supervisor using the full-host route', allowStale: '1', previousSibling: false, expectedCode: 0 },
+  ])('$caller reports a refused standalone build without publishing it', ({ allowStale, previousSibling, expectedCode }) => {
+    mkdirSync(join(dir, 'dist-host'), { recursive: true });
+    const sibling = join(dir, 'dist-host', 'spawner-sidecar.mjs');
+    if (previousSibling) writeFileSync(sibling, GOOD_BUNDLE);
+    // A valid custom entry with a maintained entry's basename reaches the REAL
+    // worker + spawner wrapper without compiling the full HTTP host graph.
+    const entry = join(dir, 'hono-host.ts');
+    writeFileSync(entry, 'export const freshHost = true;\n');
+    const shimDir = join(dir, 'shim');
+    mkdirSync(shimDir);
+    writeFileSync(join(shimDir, 'npx'), [
+      '#!/usr/bin/env bash',
+      'for a in "$@"; do',
+      '  if [[ "$a" == */apps/operator/bin/spawner-sidecar.ts ]]; then',
+      '    echo "ERROR: injected standalone compiler refusal" >&2; exit 1',
+      '  fi',
+      'done',
+      'PATH="${PATH#*:}" exec npx "$@"',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const { code, output } = runBundler(entry, {
+      PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+      PAPERCUSP_BUNDLE_ALLOW_STALE_START: allowStale,
+    });
+    expect(code, output).toBe(expectedCode);
+    expect(output).toContain('standalone spawner build failed');
+    expect(readFileSync(outfile, 'utf8')).toContain('freshHost');
+    expect(existsSync(sibling)).toBe(previousSibling);
+    if (previousSibling) expect(readFileSync(sibling, 'utf8')).toBe(GOOD_BUNDLE);
+    const stale = JSON.parse(readFileSync(marker, 'utf8'));
+    expect(stale.entry).toBe('bin/spawner-sidecar.ts');
+    expect(stale.outfile).toBe(sibling);
+    // The failure must remain diagnosable after the calling terminal exits.
+    expect(stale.error).toContain('injected standalone compiler refusal');
+    expect(readFileSync(sibling + '.build-error.log', 'utf8')).toContain('injected standalone compiler refusal');
+    expect(existsSync(join(dir, 'dist-host', '.bundle-fresh.json'))).toBe(false);
+  }, 260_000);
+});
+
 describe('bundle-host.sh last-known-good fallback', () => {
   it('enters the install-safe mutex before resolving bundle dependencies', () => {
     const src = readFileSync(SCRIPT, 'utf8');
