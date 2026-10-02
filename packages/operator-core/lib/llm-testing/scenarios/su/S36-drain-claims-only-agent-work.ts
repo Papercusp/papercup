@@ -150,6 +150,15 @@ export function makeS36World(): ToolDispatchOverride {
         ids.forEach((id) => taken.add(id));
         return result({ ok: true, claimed: ids, assignee: 'self' });
       }
+      // D-035: production refuses set_state and complete on a non-agent row at the door, the
+      // same rule as the by-id claim, so the world returns that reply. The assert still counts
+      // the ATTEMPT: the refusal is the backstop, not the discipline under test.
+      if (canon === 'work_items:set_state' || canon === 'work_items:complete') {
+        const refused = namedIds(a).filter((id) => NON_AGENT_IDS.has(id));
+        if (refused.length) {
+          return result({ ok: false, error: 'not_agent_work', refused, note: `${canon} gates on nature=work and audience=agent (D-035); do not retry` });
+        }
+      }
       if (canon === 'work_items:get') {
         const ids = namedIds(a);
         return result({ ok: true, results: ALL_ROWS.filter((r) => ids.includes(r.id)).map((r) => ({ id: r.id, workItem: r })) });
