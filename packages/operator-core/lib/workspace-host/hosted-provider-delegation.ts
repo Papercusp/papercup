@@ -22,6 +22,7 @@ import {
   HOSTED_AWS_DEFAULT_REGION,
   HOSTED_AWS_REGION,
   HOSTED_AWS_WORKSPACE_HOST_ROLE_LOGICAL_ID,
+  awsSpotServiceLinkedRoleStatement,
   hostedAwsHostStackFragment,
 } from './hosted-aws-host-stack';
 
@@ -628,7 +629,11 @@ function awsTemplate(
                 PolicyName: 'PapercuspWorkspaceHostLifecycle',
                 PolicyDocument: {
                   Version: '2012-10-17',
-                  Statement: [{ Effect: 'Allow', Action: [...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS], Resource: '*' }],
+                  Statement: [
+                    { Effect: 'Allow', Action: [...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS], Resource: '*' },
+                    // A spot host's first launch creates EC2's Spot service-linked role (WI-10005389).
+                    awsSpotServiceLinkedRoleStatement('*'),
+                  ],
                 },
               },
             ],
