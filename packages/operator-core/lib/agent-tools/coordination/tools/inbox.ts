@@ -996,6 +996,7 @@ export default defineTool({
         known ? [...known] : [],
       ));
     }
+    const boundedInbox = !resolvedFrom && !unansweredOnly && !directedOnly;
     // Offline-member mailbox (shared-hive-collaboration P-016): before the read,
     // deliver any `@user:`-parked assignment waiting for THIS member into their
     // live inbox, so a returning member sees it in this very response. The drain
@@ -1033,14 +1034,16 @@ export default defineTool({
             owner: identity.ownerId,
             since_ts: deliveryFloorTs ?? null,
             kinds: args.kinds ?? null,
-            // WI-6939: the derive is now WINDOWED, so how much it reads depends on
-            // `limit` and on whether the narrowing filters force the full read.
-            // These MUST be in the key — without them a cached 15-entry window
-            // would be served to a caller asking for 500.
-            limit,
-            bounded: !resolvedFrom && !unansweredOnly && !directedOnly,
-            ambient: includeAmbient,
-            intents: !!args.include_intents,
+            bounded: boundedInbox,
+            // Windowed reads depend on the stopping rule. Full reads depend only
+            // on owner/floor/kinds: display limits and visibility filters run below.
+            // Share that raw graph across selective callers rather than retaining
+            // another decoded full inbox for each post-read option combination.
+            ...(boundedInbox ? {
+              limit,
+              ambient: includeAmbient,
+              intents: !!args.include_intents,
+            } : {}),
           },
           tags: ["coord_event_log"],
           softTtlMs: COORD_INBOX_SOFT_TTL_MS,
@@ -1088,7 +1091,7 @@ export default defineTool({
           readInbox(
             identity.ownerId,
             { since_ts: deliveryFloorTs, kinds: args.kinds },
-            !resolvedFrom && !unansweredOnly && !directedOnly
+            boundedInbox
               ? {
                   enough: (entries) => {
                     const afterAmbient = includeAmbient

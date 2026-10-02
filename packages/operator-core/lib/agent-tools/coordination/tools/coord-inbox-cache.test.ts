@@ -9,8 +9,13 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
-  readInbox: vi.fn(async () => [] as unknown[]),
+  readInbox: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
   heartbeatPresence: vi.fn(async () => {}),
+  drain: vi.fn(async () => {}),
+  readWatermark: vi.fn(async () => ({ messages_shown_ts: "9999-01-01T00:00:00Z" })),
+  unanswered: vi.fn(async () => new Map([
+    ["owner-a", { newest: [{ msgId: "ask" }] }],
+  ])),
 }));
 
 vi.mock("../identity", () => ({
@@ -26,7 +31,12 @@ vi.mock("../actor-identity", () => ({
 }));
 vi.mock("../messages", () => ({
   readInbox: M.readInbox,
-  drainAndDeliverUserMailbox: vi.fn(async () => {}),
+  drainAndDeliverUserMailbox: M.drain,
+}));
+vi.mock("../unanswered-directed", () => ({ fetchUnansweredDirected: M.unanswered }));
+vi.mock("../recipient-resolve", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../recipient-resolve")>()),
+  knownOwnerIdSet: async () => new Set(["peer-a", "peer-b"]),
 }));
 vi.mock("../presence", () => ({ heartbeatPresence: M.heartbeatPresence }));
 // This suite pins CACHE behavior — the heartbeat throttle (EI-6797) is a
@@ -54,7 +64,7 @@ vi.mock("../presence-beat-throttle", async (importOriginal) => ({
   }),
 }));
 vi.mock("../watermarks", () => ({
-  readWatermark: vi.fn(async () => ({ messages_shown_ts: "" })),
+  readWatermark: M.readWatermark,
   writeWatermark: vi.fn(async () => {}),
 }));
 vi.mock("@papercusp/coordination/core", async (importOriginal) => ({
@@ -95,8 +105,11 @@ beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
-  M.readInbox.mockClear();
+  M.readInbox.mockReset().mockResolvedValue([]);
   M.heartbeatPresence.mockClear();
+  M.drain.mockClear();
+  M.readWatermark.mockClear();
+  M.unanswered.mockClear();
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -146,6 +159,106 @@ describe("coord:inbox — cache the derive, keep side effects", () => {
     await inbox("owner-a");
     await inbox("owner-a");
     expect(M.readInbox).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Same owner/floor/kinds, different post-read filters. Each real DB read would
+// decode a separate object graph; the factory deliberately clones on every call.
+// Keep large authored content intact: sharing must not become payload trimming.
+const rawRows = () => [
+  { msg_id: "ask", kind: "message", from: "peer-a", to: ["owner-a"],
+    ts: "2026-10-01T00:00:00Z", summary: "question", body: "useful context ".repeat(8192) },
+  { msg_id: "reply", kind: "message", from: "peer-b", to: ["owner-a"],
+    ts: "2026-10-01T00:00:01Z", summary: "answer" },
+  { msg_id: "broadcast", kind: "message", from: "peer-a", to: ["*"],
+    ts: "2026-10-01T00:00:02Z", summary: "shared update" },
+];
+
+async function read(args: Record<string, unknown>, owner = "owner-a", workspace = "ws-inbox") {
+  const result = await tool.handler(args as never, ctx(owner, workspace)) as {
+    content: Array<{ text: string }>;
+  };
+  return JSON.parse(result.content[0].text) as {
+    entries: Array<{ msg_id: string; body?: string }>;
+    summary: { total: number; returned: number };
+  };
+}
+
+describe("coord:inbox — share only equivalent full derives (P-011)", () => {
+  it("shares a nonempty full derive across sender, directed and unanswered filters without losing content", async () => {
+    const decoded: unknown[][] = [];
+    M.readInbox.mockImplementation(async () => {
+      const rows = rawRows();
+      decoded.push(rows);
+      return rows;
+    });
+    const sender = await read({ from: "peer-a", limit: 1, max_body_chars: 0 });
+    const directed = await read({ directed: true, limit: 20, include_ambient: true,
+      include_intents: true, max_body_chars: 0 });
+    const unanswered = await read({ unanswered_only: true, limit: 500, max_body_chars: 0 });
+    expect(sender.entries.map(e => e.msg_id)).toEqual(["broadcast"]);
+    expect(sender.summary.total).toBe(2);
+    expect(directed.entries.map(e => e.msg_id)).toEqual(["reply", "ask"]);
+    expect(unanswered.entries.map(e => e.msg_id)).toEqual(["ask"]);
+    expect(unanswered.entries[0].body).toBe(rawRows()[0].body);
+    expect(decoded).toHaveLength(1);
+    expect(decoded[0]).toEqual(rawRows()); // annotations/limits never mutate the cached graph
+    expect(M.readInbox.mock.calls[0][2]).toBeUndefined(); // actual full-read branch
+    expect(M.heartbeatPresence).toHaveBeenCalledTimes(3);
+    expect(M.drain).toHaveBeenCalledTimes(3);
+    expect(M.readWatermark).toHaveBeenCalledTimes(3);
+    expect(M.unanswered).toHaveBeenCalledTimes(1);
+    getOperatorCache().invalidateByTags("ws-inbox", ["coord_event_log"]);
+    await read({ directed: true, limit: 2 });
+    expect(decoded).toHaveLength(2);
+  });
+
+  it("keeps owner, workspace, delivery floor and kinds isolated for full reads", async () => {
+    M.readInbox.mockImplementation(async () => rawRows());
+    const full = { directed: true };
+    await read(full);
+    await read(full, "owner-b");
+    await read(full, "owner-a", "other-workspace");
+    await read({ ...full, __deliveryFloorTs: "2026-10-01T00:00:00Z" });
+    await read({ ...full, kinds: ["message"] });
+    expect(M.readInbox).toHaveBeenCalledTimes(5);
+    await read({ ...full, limit: 499, include_intents: true });
+    expect(M.readInbox).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps bounded stopping rules distinct from each other and from full reads", async () => {
+    await read({ limit: 1 });
+    await read({ limit: 2 });
+    await read({ limit: 2, include_ambient: true });
+    await read({ limit: 2, include_intents: true });
+    await read({ limit: 2, directed: true });
+    expect(M.readInbox).toHaveBeenCalledTimes(5);
+    expect(M.readInbox.mock.calls.slice(0, 4).every(call =>
+      typeof (call[2] as { enough?: unknown })?.enough === "function")).toBe(true);
+    expect(M.readInbox.mock.calls[4][2]).toBeUndefined();
+  });
+
+  it("single-flights concurrent full reads while each caller keeps its own content and side effects", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    M.readInbox.mockImplementation(async () => { entered(); await waiting; return rawRows(); });
+    const reads = Array.from({ length: 8 }, (_, i) => read({
+      directed: true, limit: i + 2, include_ambient: i % 2 === 0,
+      include_intents: i % 3 === 0, max_body_chars: 0,
+    }));
+    await started;
+    release();
+    const results = await Promise.all(reads);
+    expect(M.readInbox).toHaveBeenCalledTimes(1);
+    for (const result of results) {
+      expect(result.entries.map(e => e.msg_id)).toEqual(["reply", "ask"]);
+      expect(result.entries.find(e => e.msg_id === "ask")?.body).toBe(rawRows()[0].body);
+    }
+    expect(M.heartbeatPresence).toHaveBeenCalledTimes(8);
+    expect(M.drain).toHaveBeenCalledTimes(8);
+    expect(M.readWatermark).toHaveBeenCalledTimes(8);
   });
 });
 
