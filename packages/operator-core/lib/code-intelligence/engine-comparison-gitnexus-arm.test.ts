@@ -30,6 +30,28 @@ import {
 /** GitNexus's own default ceiling (lbug-config.js `LBUG_MAX_DB_SIZE`): 16 GiB. */
 const VENDOR_DEFAULT_MAX_DB_BYTES = 17_179_869_184;
 
+/** Every way a spawn can differ from production's analyze invocation; empty = faithful. */
+function pinViolations(inv: { cmd: string; args: readonly string[]; env?: Readonly<Record<string, string>> }): string[] {
+  const out: string[] = [];
+  if (inv.cmd !== process.execPath) out.push('cmd is not node (bare shim: gitnexus re-exec rules apply, no --stack-size)');
+  if (inv.args[0] !== `--stack-size=${GITNEXUS_ANALYZE_STACK_KB}`) out.push('--stack-size argv missing');
+  if (!(Number(inv.env?.GITNEXUS_LBUG_MAX_DB_SIZE) > VENDOR_DEFAULT_MAX_DB_BYTES)) out.push('LadybugDB max_db_size not raised above the 16 GiB vendor default');
+  if (!/--max-old-space-size=\d+/.test(inv.env?.NODE_OPTIONS ?? '')) out.push('NODE_OPTIONS heap cap missing');
+  if (process.platform === 'linux' && inv.env?.GITNEXUS_WAL_MANUAL_CHECKPOINT !== GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX) {
+    out.push('manual WAL checkpoint not switched off');
+  }
+  return out;
+}
+
+describe('pinViolations is falsifiable (the control the guard below is measured against)', () => {
+  it('flags the PRE-FIX bare spawn on every axis, and passes a faithful one', () => {
+    const bare = { cmd: '/x/node_modules/.bin/gitnexus', args: ['analyze', '--skip-agents-md', '.'], env: { HOME: '/scratch/home' } };
+    expect(pinViolations(bare).length).toBeGreaterThanOrEqual(4);
+    const faithful = gitnexusAnalyzeInvocation({ bin: process.execPath, home: '/scratch/home' }, ['analyze'], { PATH: '/usr/bin' });
+    expect(pinViolations(faithful)).toEqual([]);
+  });
+});
+
 describe('gitnexus bench arm spawns analyze under the production analyze environment', () => {
   let root: string;
   let shim: string;
@@ -103,8 +125,7 @@ describe('gitnexus bench arm spawns analyze under the production analyze environ
       await arm.refresh();
       expect(calls).toHaveLength(2);
       for (const c of calls) {
-        expect(c.cmd).toBe(process.execPath);
-        expect(c.args[0]).toBe(`--stack-size=${GITNEXUS_ANALYZE_STACK_KB}`);
+        expect(pinViolations({ cmd: c.cmd, args: c.args, env: c.opts.env })).toEqual([]);
         expect(c.opts.cwd).toBe('/scratch/tree');
         expect(c.opts.env?.HOME).toBe(home);
         expect(Number(c.opts.env?.GITNEXUS_LBUG_MAX_DB_SIZE)).toBeGreaterThan(VENDOR_DEFAULT_MAX_DB_BYTES);
