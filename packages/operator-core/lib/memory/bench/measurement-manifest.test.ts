@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors, embedIncrementalRelevanceQueries, hashJson, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
 import type { WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
@@ -365,6 +365,163 @@ describe('independent relevance evaluator inputs', () => {
     expect(() => loadIndependentMeasurementInputs(p, 'prose')).toThrow('corpus/cell');
     p.manifest.datasets[0].queryIds.reverse();
     expect(() => loadIndependentMeasurementInputs(p, 'memory')).toThrow('order');
+  });
+});
+
+function retainedPreparedFixture() {
+  const p = prepared(), root = p.manifest.privateRoot;
+  const pin = (name: string, value: unknown) => {
+    const file = path.join(root, `${name}.json`), bytes = Buffer.from(JSON.stringify(value));
+    fs.writeFileSync(file, bytes);
+    return { path: file, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  };
+  const { entries, queries, proof } = independentCohortFixture();
+  entries.push({ key: 'c', text: 'second B source passage', kind: 'fact', metadata: { cluster: 'source-b' } });
+  p.arm.execution.transport = 'worker';
+  p.manifest.inputs.snapshot = pin('snapshot', { suites: { memory: { entries } } });
+  p.manifest.inputs.labels = pin('labels', { memory: queries });
+  p.manifest.inputs.census = pin('census', {});
+  p.manifest.inputs.judgments = pin('judgments', { memory: { ...proof,
+    snapshotSha256: p.manifest.inputs.snapshot.sha256, labelsSha256: p.manifest.inputs.labels.sha256 } });
+  p.manifest.datasets[0].keys = entries.map((e) => e.key);
+  const donor = structuredClone(p.manifest), donorCell = donor.cells.find((c) => c.bar === 'relevance')!;
+  const manifestRef = pin('donor-manifest', donor);
+  const oldInput = loadIndependentMeasurementInputs(p, 'memory');
+  const raw = { formatVersion: 1, manifestSha256: manifestRef.sha256, ownerId: donor.ownerId,
+    cellId: donorCell.id, armId: p.arm.id, measuredAt: '2026-01-03T00:00:00.000Z',
+    report: { corpus: 'memory', corpusVersion: oldInput.corpusVersion, goldSetVersion: oldInput.goldVersion,
+      results: { mdenseon: { dims: p.arm.profile.nativeDims } } } };
+  const unit = (index: number) => Array.from({ length: p.arm.profile.nativeDims }, (_, i) => i === index ? 1 : 0);
+  const vectors = { corpus: 'memory', corpusVersion: oldInput.corpusVersion, keys: entries.map((e) => e.key),
+    queryIds: queries.map((q) => q.id),
+    vectors: { mdenseon: { docVectors: entries.map((_, i) => unit(i)), queryVectors: queries.map((_, i) => unit(i)) } } };
+  const rawRef = pin('donor-raw', raw), vectorsRef = pin('donor-vectors', vectors);
+  const completion = { formatVersion: 1, status: 'completed', ownerId: donor.ownerId, manifestSha256: manifestRef.sha256,
+    completed: [{ cellId: donorCell.id, raw: rawRef, vectors: vectorsRef }] };
+  p.manifest.inputs.reuseManifest = manifestRef;
+  p.manifest.inputs.reuseCompletion = pin('donor-completion', completion);
+  p.manifest.inputs.reuseVectors = vectorsRef;
+  p.cell.inputIds.push('reuseManifest', 'reuseCompletion', 'reuseVectors');
+  p.cell.parameters.reuseCellId = donorCell.id;
+  p.manifest.frozenAt = '2026-01-04T00:00:00.000Z';
+  const added = queries.slice(0, 4).map((q) => ({ ...q, id: `new-${q.id}`, query: `new question ${q.query}` }));
+  const currentQueries = [...queries.slice(4).map((q) => ({ ...q,
+    expected: q.expected.length ? ['c'] : [] })), ...added, ...queries.slice(0, 4)];
+  const setCurrentQueries = (value = currentQueries) => {
+    p.manifest.inputs.labels = pin('new-labels', { memory: value });
+    p.manifest.datasets[0].queryIds = value.map((q) => q.id);
+    p.manifest.inputs.judgments = pin('new-judgments', { memory: { ...proof, queryIds: value.map((q) => q.id),
+      snapshotSha256: p.manifest.inputs.snapshot.sha256, labelsSha256: p.manifest.inputs.labels.sha256 } });
+  };
+  setCurrentQueries();
+  return { p, pin, donor, raw, vectors, completion, currentQueries, setCurrentQueries, unit };
+}
+
+describe('incremental relevance vector reuse', () => {
+  it('reuses exact completed document and query embeddings despite new labels/order, embedding only new queries', async () => {
+    const f = retainedPreparedFixture(), retained = (await loadRetainedRelevanceVectors(f.p, 'memory'))!;
+    expect(retained.docVectors).toEqual(f.vectors.vectors.mdenseon.docVectors);
+    expect(retained.missingIndexes).toEqual([4, 5, 6, 7]);
+    expect(retained.queryVectors[0]).toEqual(f.unit(4));
+    expect(retained.queryVectors[8]).toEqual(f.unit(0));
+    expect(retained.evidence).toMatchObject({ documentsReused: 3, timingComparableToFullInference: false });
+    const embed = vi.fn(async () => [f.unit(12), f.unit(13), f.unit(14), f.unit(15)]);
+    const complete = await embedIncrementalRelevanceQueries(retained, f.currentQueries.map((q) => q.query), embed);
+    expect(embed).toHaveBeenCalledOnce();
+    expect(embed).toHaveBeenCalledWith(f.currentQueries.slice(4, 8).map((q) => q.query));
+    expect(complete).toHaveLength(12);
+    expect(complete[0]).toEqual(f.unit(4));
+    expect(complete[4]).toEqual(f.unit(12));
+    expect(complete[11]).toEqual(f.unit(3));
+    expect(retained.queryVectors[4]).toBeUndefined();
+    await expect(embedIncrementalRelevanceQueries(retained, ['wrong'], embed)).rejects.toThrow('query population');
+    await expect(embedIncrementalRelevanceQueries(retained, f.currentQueries.map((q) => q.query),
+      async () => [f.unit(12)])).rejects.toThrow('new vector population');
+  });
+  it('requires an explicit frozen reuse opt-in and each of the three declared inputs', async () => {
+    const f = retainedPreparedFixture(); delete f.p.cell.parameters.reuseCellId;
+    expect(await loadRetainedRelevanceVectors(f.p, 'memory')).toBeUndefined();
+    f.p.cell.parameters.reuseCellId = 'relevance';
+    f.p.cell.inputIds = f.p.cell.inputIds.filter((id) => id !== 'reuseVectors');
+    await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('declared on the cell');
+  });
+  it.each(['failed', 'duplicate', 'manifest', 'owner', 'vectors'])('refuses %s completion linkage', async (failure) => {
+    const f = retainedPreparedFixture(), c: any = f.completion;
+    if (failure === 'failed') c.status = 'failed';
+    if (failure === 'duplicate') c.completed.push(c.completed[0]);
+    if (failure === 'manifest') c.manifestSha256 = 'b'.repeat(64);
+    if (failure === 'owner') c.ownerId = 'other-owner';
+    if (failure === 'vectors') c.completed[0].vectors = { ...c.completed[0].vectors, sha256: 'b'.repeat(64) };
+    f.p.manifest.inputs.reuseCompletion = f.pin('donor-completion', c);
+    await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('completed receipt');
+  });
+  it.each(['prompt', 'tokenizer', 'runtime', 'artifact', 'threads', 'dtype', 'corpus'])
+    ('refuses %s arm identity substitution', async (failure) => {
+      const f = retainedPreparedFixture();
+      if (failure === 'prompt') f.p.arm.prompts.query += 'changed';
+      if (failure === 'tokenizer') f.p.arm.tokenizer.version += 'changed';
+      if (failure === 'runtime') f.p.arm.runtime.source.sha256 = 'b'.repeat(64);
+      if (failure === 'artifact') f.p.arm.artifacts.graph.sha256 = 'b'.repeat(64);
+      if (failure === 'threads') f.p.arm.execution.intraOpThreads++;
+      if (failure === 'dtype') (f.p.arm.execution as any).dtype = 'fp16';
+      await expect(loadRetainedRelevanceVectors(f.p, failure === 'corpus' ? 'prose' : 'memory'))
+        .rejects.toThrow(/retained relevance.*(cell|mismatch)/);
+    });
+  it.each(['raw', 'vectors', 'donor-input'])('refuses unrepinned %s bytes', async (failure) => {
+    const f = retainedPreparedFixture();
+    const file = failure === 'raw' ? f.completion.completed[0].raw.path : failure === 'vectors'
+      ? f.p.manifest.inputs.reuseVectors.path : f.donor.inputs.labels.path;
+    fs.appendFileSync(file, ' ');
+    await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow(/fingerprint mismatch|donor input changed/);
+  });
+  it.each(['width', 'count', 'order', 'nonfinite', 'norm', 'second-arm'])
+    ('refuses repinned vector %s mismatch', async (failure) => {
+      const f = retainedPreparedFixture(), v = f.vectors.vectors.mdenseon;
+      if (failure === 'width') v.docVectors[0].pop();
+      if (failure === 'count') v.queryVectors.pop();
+      if (failure === 'order') f.vectors.queryIds.reverse();
+      if (failure === 'nonfinite') v.docVectors[0][0] = Infinity;
+      if (failure === 'norm') v.queryVectors[0][0] = 2;
+      if (failure === 'second-arm') (f.vectors.vectors as any).gemma = v;
+      const ref = f.pin('donor-vectors', f.vectors);
+      f.p.manifest.inputs.reuseVectors = ref; f.completion.completed[0].vectors = ref;
+      f.p.manifest.inputs.reuseCompletion = f.pin('donor-completion', f.completion);
+      await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('vector population/order/normalization');
+    });
+  it.each(['text', 'source', 'partition', 'class'])('refuses reused query %s changes before embedding', async (failure) => {
+    const f = retainedPreparedFixture();
+    if (failure === 'text') f.currentQueries[0].query += 'changed';
+    if (failure === 'source') f.currentQueries[0].group = 'foreign-source';
+    if (failure === 'partition') {
+      for (const q of f.currentQueries.slice(0, 4)) q.partition = 'calibration' as const;
+      // Keep two complete, non-leaking populations so the identity guard, not
+      // the independent-cohort guard, is the refusal being tested.
+      for (const q of f.currentQueries.slice(4)) q.partition = 'test' as const;
+    }
+    if (failure === 'class') [f.currentQueries[0].class, f.currentQueries[1].class] =
+      [f.currentQueries[1].class, f.currentQueries[0].class];
+    f.setCurrentQueries();
+    await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('query identity changed');
+  });
+  it('rejects changed snapshot bytes and raw model/version/time identities', async () => {
+    const f = retainedPreparedFixture();
+    f.p.manifest.inputs.snapshot = f.pin('changed-snapshot', { changed: true });
+    await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('snapshot changed');
+    for (const change of [{ armId: 'gemma' }, { measuredAt: '2026-01-01T00:00:00.000Z' },
+      { measuredAt: '2026-01-05T00:00:00.000Z' }, { report: { ...f.raw.report, goldSetVersion: 'changed' } }]) {
+      const g = retainedPreparedFixture();
+      g.completion.completed[0].raw = g.pin('donor-raw', { ...g.raw, ...change });
+      g.p.manifest.inputs.reuseCompletion = g.pin('donor-completion', g.completion);
+      await expect(loadRetainedRelevanceVectors(g.p, 'memory')).rejects.toThrow('raw identity');
+    }
+  });
+  it('does not call the embedder when exact query reuse is complete', async () => {
+    const f = retainedPreparedFixture(); f.setCurrentQueries(independentCohortFixture().queries);
+    const retained = (await loadRetainedRelevanceVectors(f.p, 'memory'))!, embed = vi.fn(async () => []);
+    const result = await embedIncrementalRelevanceQueries(retained, independentCohortFixture().queries.map((q) => q.query), embed);
+    expect(result).toEqual(f.vectors.vectors.mdenseon.queryVectors);
+    expect(embed).not.toHaveBeenCalled();
+    expect(hashJson(retained.evidence.vectors)).toBe(hashJson(f.p.manifest.inputs.reuseVectors));
   });
 });
 
