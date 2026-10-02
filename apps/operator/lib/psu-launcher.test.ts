@@ -11617,6 +11617,26 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       "--model",
       "anthropic.claude-3-5-sonnet-v2:0",
     ]);
+    expect(modelArgsFor("claude", "opus:xhigh")).toEqual([
+      "--model",
+      "opus",
+      "--effort",
+      "max",
+    ]);
+    expect(modelArgsFor("claude", "claude-opus-5-5:xhigh")).toEqual([
+      "--model",
+      "claude-opus-5-5",
+      "--effort",
+      "max",
+    ]);
+    expect(modelArgsFor("claude", "claude-opus-4-8:xhigh")).toEqual([
+      "--model",
+      "claude-opus-4-8",
+      "--effort",
+      "xhigh",
+    ]);
+    // OMP keeps its provider-native suffixed form unchanged.
+    expect(modelArgsFor("omp", "opus:xhigh")).toEqual(["--model", "opus:xhigh"]);
     // codex: bare -m + config-override effort, preserving max verbatim.
     expect(modelArgsFor("codex", "gpt-5.5:max")).toEqual([
       "-m",

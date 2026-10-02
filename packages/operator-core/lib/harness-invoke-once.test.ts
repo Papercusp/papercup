@@ -343,14 +343,14 @@ describe('applyRoleModel — per-role model override', () => {
 });
 
 describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => {
-  it('release-manager resolves to opus:xhigh with AGENT_MODELS UNSET (no silent downgrade)', () => {
+  it('release-manager resolves its Opus 5 xhigh default to max at the Claude boundary', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort max');
   });
 
   it('the committed default applies even when AGENT_MODELS is set for OTHER roles only', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p --model haiku', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p --model haiku', 'release-manager')).toBe('claude -p --model opus[1m] --effort max');
   });
 
   it('an explicit AGENT_MODELS entry OVERRIDES the committed default (env wins)', () => {
@@ -360,7 +360,21 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
 
   it('malformed AGENT_MODELS still yields the committed default (fail-safe to the floor, not the CLI default)', () => {
     vi.stubEnv('AGENT_MODELS', 'not json');
-    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'release-manager')).toBe('claude -p --model opus[1m] --effort max');
+  });
+
+  it('normalizes only Claude Code Opus 5 xhigh; other Claude families and backends keep xhigh', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(applyRoleModel('claude -p', 'worker', 'claude-opus-5-5:xhigh')).toBe(
+      'claude -p --model claude-opus-5-5[1m] --effort max',
+    );
+    expect(applyRoleModel('claude -p', 'worker', 'claude-opus-4-8:xhigh')).toBe(
+      'claude -p --model claude-opus-4-8[1m] --effort xhigh',
+    );
+    expect(applyRoleModel('omp -p', 'worker', 'opus:xhigh')).toBe('omp -p --model opus:xhigh');
+    expect(applyRoleModel('codex exec', 'worker', 'gpt-5.5:xhigh')).toBe(
+      'codex exec --model gpt-5.5 -c model_reasoning_effort="xhigh"',
+    );
   });
 
   it('a role with neither an entry nor a committed default is still left unchanged', () => {
@@ -382,7 +396,7 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     // `scanner` LEFT this tier on 2026-09-02 (owner directive, interactive): it is one of the
     // three roles here that also carry an operator_agent_config roleBackends entry, so it moved
     // to opus:xhigh with mug/kettle. It stays on the CLAUDE backend either way.
-    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'scanner')).toBe('claude -p --model opus[1m] --effort max');
     // Escalation stays explicit: an AGENT_MODELS entry overrides the tier.
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:high' }));
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model opus[1m] --effort high');
@@ -403,10 +417,10 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
   // `sonnet` is, so the spec still normalizes with the marker. Only the tier moved.
   it('doc-steward resolves to opus[1m] (1M window) without env — never the bare 200k CLI default', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
-    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort max');
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'doc-steward')).toBe('claude -p --model opus[1m] --effort max');
     // resolveSpawnBackendModel keys it to the opus[1m] bucket, not the empty (bare-default) one
     vi.stubEnv('AGENT_CMD', 'claude -p');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
@@ -444,12 +458,12 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     // a CLAUDE-shaped spec and never swap the spawn to the codex CLI — is unchanged and is
     // asserted below; only the tier moved.
     for (const role of ['mug', 'kettle']) {
-      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model opus[1m] --effort xhigh');
+      expect(applyRoleModel('claude -p', role)).toBe('claude -p --model opus[1m] --effort max');
     }
     expect(applyRoleModel('claude -p', 'operator')).toBe('claude -p');
     // the committed default still applies when AGENT_MODELS is set for OTHER roles only
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(applyRoleModel('claude -p', 'mug')).toBe('claude -p --model opus[1m] --effort max');
     // resolveSpawnBackendModel keys it to the opus[1m] bucket on the CLAUDE backend:
     // an opus committed default is NOT codex-shaped, so no backend swap fires —
     // the spawn stays on the claude CLI (the whole point of the WI-4623 revert).
@@ -473,7 +487,7 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
     // 2026-09-02 (owner directive, interactive): the committed default is now `opus:xhigh`.
     // The GUARD this test exists for is the two assertions below — a claude-SHAPED default
     // must not swap the spawn to codex. opus is claude-shaped, so the guard still holds.
-    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort max');
     expect(env.AGENT_BACKEND).not.toBe('codex');
     expect(env.PAPERCUSP_SPAWN_BACKEND).not.toBe('codex');
   });
@@ -518,8 +532,8 @@ describe('applyRoleModel — per-spawn override (PAPERCUSP_SPAWN_MODEL, queen-mo
     vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     const env = buildInvokeOnce(spec({ role: 'worker', extraEnv: { PAPERCUSP_SPAWN_MODEL: 'opus:xhigh' } })).env;
-    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort xhigh');
-    expect(env.CLAUDE).toBe('claude -p --model opus[1m] --effort xhigh');
+    expect(env.AGENT_CMD).toBe('claude -p --model opus[1m] --effort max');
+    expect(env.CLAUDE).toBe('claude -p --model opus[1m] --effort max');
     // and the env var itself rides to the child for invoke.ts resolveModel
     expect(env.PAPERCUSP_SPAWN_MODEL).toBe('opus:xhigh');
   });

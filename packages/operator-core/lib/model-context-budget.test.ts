@@ -13,11 +13,33 @@ const {
   isCodexModelDenied,
   listCodexInstalledModels,
   normalizeCodexCliModel,
+  normalizeClaudeModelEffortSpec,
   readLaunchContextText,
   resolveCodexModel,
   resolveCodexModelSelection,
   resolveModelContextWindow,
 } = modelContextBudget;
+
+describe('Claude Opus 5 effort compatibility', () => {
+  it('maps only Opus 5 xhigh specs to Claude Code max', () => {
+    expect(normalizeClaudeModelEffortSpec('opus:xhigh')).toBe('opus:max');
+    expect(normalizeClaudeModelEffortSpec('opus[1m]:XHIGH')).toBe('opus[1m]:max');
+    expect(normalizeClaudeModelEffortSpec('claude-opus-5-5:xhigh')).toBe('claude-opus-5-5:max');
+    expect(normalizeClaudeModelEffortSpec('claude-opus-5.5:xhigh')).toBe('claude-opus-5.5:max');
+  });
+
+  it('preserves other models and effort levels', () => {
+    for (const spec of [
+      'claude-opus-4-8:xhigh',
+      'claude-sonnet-5:xhigh',
+      'opus:high',
+      'opus:max',
+      'gpt-5.5:xhigh',
+    ]) {
+      expect(normalizeClaudeModelEffortSpec(spec)).toBe(spec);
+    }
+  });
+});
 
 describe('managed Codex model policy', () => {
   it('rejects unresolved model input with a stable missing_model code', () => {
