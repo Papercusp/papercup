@@ -7765,7 +7765,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       ]);
       const ownerPosts = await unsealRowsForOwner(safePosts, {
         workspaceId: activeWorkspaceId(),
-        textOf: (post) => post.body,
+        textOf: (post) => (post as { body?: unknown }).body,
         withText: (post, body) => ({ ...post, body }),
       });
       return [{ thread: thread[0], posts: ownerPosts }];
