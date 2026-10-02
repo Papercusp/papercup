@@ -21,6 +21,7 @@ import {
   buildToolProvenance,
   resolveToolEntries,
   schemaToText,
+  UNION_CONDITIONAL_HINT_MAX_CHARS,
   type ToolMetaIndex,
   unionConditionalHint,
 } from './tools-discovery';
@@ -315,10 +316,8 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(text).toContain('constraint:addressee (');
     expect(text).toContain('when from=contact => contactExternalId required');
     expect(text).toContain('when from!=contact => contactExternalId forbidden');
-    expect(text).toContain('when from=thread-participant => source required');
-    expect(text).toContain('when from!=thread-participant => source forbidden');
-    expect(text).toContain('when from=thread-participant => externalId required');
-    expect(text).toContain('when from!=thread-participant => externalId forbidden');
+    expect(text).toContain('when from=thread-participant => source,externalId required');
+    expect(text).toContain('when from!=thread-participant => source,externalId forbidden');
   });
 
   it('preserves explicit discriminator-dependent required and forbidden fields', () => {

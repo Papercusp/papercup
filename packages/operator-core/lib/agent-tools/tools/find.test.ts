@@ -24,6 +24,7 @@ import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
 import docsGet from '../docs/get';
 import eventsAwait from '../events/await';
+import loopArm from '../loop/arm';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import workItemsGet from '../work_items/get';
@@ -599,7 +600,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     });
 
     expect(compact).toContain(
-      'when op=retire => expectedCandidate required; when op!=retire => expectedCandidate forbidden',
+      'when op=retire => expectedCandidate,expectedRepairHead,expectedUpdatedAtMs required; when op!=retire => expectedCandidate,expectedRepairHead,expectedUpdatedAtMs forbidden',
     );
     expect(compact).toContain('expectedCandidate?:string~/^[0-9a-fA-F]{40,64}$/');
     expect(compact).toContain('expectedRepairHead?:string~/^[0-9a-fA-F]{40,64}$/');
@@ -883,8 +884,8 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('constraint:addressee (');
     expect(compact).toContain('when from=contact => contactExternalId required');
     expect(compact).toContain('when from!=contact => contactExternalId forbidden');
-    expect(compact).toContain('when from=thread-participant => source required');
-    expect(compact).toContain('when from!=thread-participant => source forbidden');
+    expect(compact).toContain('when from=thread-participant => source,externalId required');
+    expect(compact).toContain('when from!=thread-participant => source,externalId forbidden');
   });
 
   it('retains required shallow fields beside a wide nested field in the bounded fallback (EI-21985077629322871)', () => {
@@ -1159,6 +1160,7 @@ describe('handler — graceful degrade + result shape', () => {
   });
 
   it('publishes all loop:arm monitor-authority branch requirements in discovery', async () => {
+    expect(loopArm.name).toBe('loop:arm');
     const out = await callHandler({ query: 'loop:arm', limit: 1 });
     const schema = out.hits.find((hit) => hit.tool === 'loop:arm')?.argSchema ?? '';
 
