@@ -9,6 +9,17 @@ import { GIT_FETCH_HEADROOM_REFUSAL } from './git-fetch-headroom-refusal';
 
 type GitResult = { code: number; stdout: string; stderr: string };
 
+async function recoverCacheHeadroom(path: string): Promise<void> {
+  const { runPackageCacheRetention } = await import('../../storage/package-cache-retention');
+  const outcomes = await runPackageCacheRetention({ pressurePath: path });
+  for (const outcome of outcomes) {
+    if (outcome.status !== 'below-threshold') {
+      console.warn(`[git-fetch-headroom] ${outcome.manager} cache ${outcome.status}: ` +
+        `${outcome.beforeBytes} -> ${outcome.afterBytes} bytes${outcome.note ? ` (${outcome.note})` : ''}`);
+    }
+  }
+}
+
 /** Fetches can exceed their initial free-space sample. Keep the existing critical
  * write reserve on the actual object-store filesystem, including linked worktrees.
  * Cancellation is only a request: the runner must confirm process exit before this
@@ -18,6 +29,7 @@ export async function withGitFetchHeadroom(
   run: (args: string[], signal?: AbortSignal) => Promise<GitResult>,
   signal?: AbortSignal,
   sample: (paths: string[]) => Promise<DiskSnapshot[]> = sampleDiskSnapshots,
+  recover: (path: string) => Promise<void> = recoverCacheHeadroom,
 ): Promise<GitResult> {
   let command = 0;
   while (command < args.length && args[command]!.startsWith('-')) {
@@ -50,7 +62,20 @@ export async function withGitFetchHeadroom(
       return `git fetch disk headroom unmeasured at ${path}: ${String(error)}`;
     }
   }
-  const initial = await refusal();
+  let initial = await refusal();
+  if (initial?.startsWith(GIT_FETCH_HEADROOM_REFUSAL) && !signal?.aborted) {
+    // One bounded manager-native attempt, never a retry loop or a relaxed
+    // reserve. Only the fresh object-store sample may admit the transfer.
+    let recoveryError = '';
+    try {
+      await recover(path);
+    } catch (error) {
+      recoveryError = `; cache recovery failed: ${String(error)}`;
+    }
+    if (signal?.aborted) return refused('git aborted during disk headroom recovery');
+    initial = await refusal();
+    if (initial) return refused(initial + recoveryError);
+  }
   if (initial) return refused(initial);
   const controller = new AbortController();
   const abort = (): void => controller.abort(signal?.reason);

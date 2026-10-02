@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { DEFAULT_DISK_POLICY, type DiskSnapshot } from '../../storage/disk-space-alarm';
 
+const cacheRetention = vi.hoisted(() => vi.fn(async (_options?: unknown) => []));
+vi.mock('../../storage/package-cache-retention', () => ({ runPackageCacheRetention: cacheRetention }));
+
 const GIB = 1024 ** 3;
 const path = '/repository-metadata/objects';
 const snapshot = (freeBytes: number): DiskSnapshot => ({
@@ -9,7 +12,9 @@ const snapshot = (freeBytes: number): DiskSnapshot => ({
   totalInodes: 0, freeInodes: 0, freeInodesPct: 0,
 });
 const ok = { code: 0, stdout: '', stderr: '' };
-afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+afterEach(() => {
+  vi.useRealTimers(); vi.unstubAllEnvs(); cacheRetention.mockClear();
+});
 
 describe('Git fetch disk headroom', () => {
   it('refuses a bulk fetch below the reserve on the object-store filesystem', async () => {
@@ -23,6 +28,60 @@ describe('Git fetch disk headroom', () => {
     expect(run.mock.calls[0]).toEqual([
       ['-C', '/worktree', 'rev-parse', '--path-format=absolute', '--git-path', 'objects'], undefined,
     ]);
+    expect(cacheRetention).toHaveBeenCalledExactlyOnceWith({ pressurePath: path });
+    expect(sample).toHaveBeenCalledTimes(2);
+  });
+
+  it('admits a fetch only after one recovery and a fresh sample above the unchanged reserve', async () => {
+    const sample = vi.fn().mockResolvedValueOnce([snapshot(GIB)])
+      .mockResolvedValue([snapshot(3 * GIB)]);
+    const recover = vi.fn(async () => {});
+    const run = vi.fn(async (args: string[]) => args[0] === 'rev-parse'
+      ? { ...ok, stdout: path } : { ...ok, stdout: 'fetched' });
+    expect(await withGitFetchHeadroom(['fetch'], run, undefined, sample, recover))
+      .toEqual({ ...ok, stdout: 'fetched' });
+    expect(recover).toHaveBeenCalledExactlyOnceWith(path);
+    expect(sample).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains the refusal after one insufficient recovery, with no fetch or recovery loop', async () => {
+    const recover = vi.fn(async () => {});
+    const run = vi.fn(async () => ({ ...ok, stdout: path }));
+    const sample = vi.fn(async () => [snapshot(2 * GIB)]);
+    expect(await withGitFetchHeadroom(['pull'], run, undefined, sample, recover))
+      .toMatchObject({ code: -1, stderr: expect.stringContaining('critical reserve') });
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(sample).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not infer successful recovery when the post-cleanup sample is unmeasured', async () => {
+    const recover = vi.fn(async () => {});
+    const run = vi.fn(async () => ({ ...ok, stdout: path }));
+    const sample = vi.fn().mockResolvedValueOnce([snapshot(GIB)]).mockResolvedValue([]);
+    expect(await withGitFetchHeadroom(['fetch'], run, undefined, sample, recover))
+      .toMatchObject({ code: -1, stderr: expect.stringContaining('unmeasured') });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports recovery failure and continues to refuse persistent pressure', async () => {
+    const recover = vi.fn(async () => { throw new Error('cache writer unavailable'); });
+    const run = vi.fn(async () => ({ ...ok, stdout: path }));
+    expect(await withGitFetchHeadroom(['fetch'], run, undefined,
+      async () => [snapshot(GIB)], recover))
+      .toMatchObject({ code: -1, stderr: expect.stringContaining('cache writer unavailable') });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fetch after caller cancellation during recovery', async () => {
+    const controller = new AbortController();
+    const recover = vi.fn(async () => { controller.abort(); });
+    const run = vi.fn(async () => ({ ...ok, stdout: path }));
+    expect(await withGitFetchHeadroom(['fetch'], run, controller.signal,
+      async () => [snapshot(GIB)], recover))
+      .toMatchObject({ code: -1, stderr: expect.stringContaining('aborted during') });
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it('does not mistake an unreadable filesystem for available capacity', async () => {
@@ -30,6 +89,7 @@ describe('Git fetch disk headroom', () => {
     const result = await withGitFetchHeadroom(['fetch'], run, undefined, async () => []);
     expect(result).toMatchObject({ code: -1, stderr: expect.stringContaining('unmeasured') });
     expect(run).toHaveBeenCalledTimes(1);
+    expect(cacheRetention).not.toHaveBeenCalled();
   });
 
   it('requires a resolved absolute object store before admitting the transfer', async () => {

@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   PACKAGE_CACHE_MUTEX_NAME,
+  PRESSURE_PACKAGE_CACHE_MAX_BYTES,
   resolvePackageCacheTargets,
   runPackageCacheRetention,
   type PackageCacheMeasurement,
   type PackageCacheTarget,
 } from './package-cache-retention';
+import { type DiskSnapshot } from './disk-space-alarm';
 
+const GIB = 1024 ** 3;
+const diskSnapshot = (freeBytes: number): DiskSnapshot => ({
+  path: '/objects', totalBytes: 20 * GIB, freeBytes, freePct: freeBytes / (20 * GIB),
+  totalInodes: 0, freeInodes: 0, freeInodesPct: 0,
+});
 const measurement = (bytes: number, truncated = false): PackageCacheMeasurement => ({ bytes, truncated });
 
 const targets: PackageCacheTarget[] = [
@@ -54,6 +61,101 @@ describe('resolvePackageCacheTargets', () => {
 });
 
 describe('runPackageCacheRetention', () => {
+  it('previews a sub-high-water cache only on the critically pressured filesystem', async () => {
+    const withMutex = vi.fn();
+    const runCommand = vi.fn();
+    const sampleDisk = vi.fn(async () => [diskSnapshot(2 * GIB)]);
+    const out = await runPackageCacheRetention({
+      targets, pressurePath: '/objects', dryRun: true,
+      sameFilesystem: async (_path, cache) => cache !== '/cache/bun',
+      sampleDisk,
+      measure: async (cache) => measurement(cache === '/cache/pnpm' ? GIB / 2 : cache === '/cache/bun' ? 9 * GIB : 3 * GIB),
+      withMutex, runCommand,
+    });
+    expect(out.map((row) => row.status)).toEqual(['would-prune', 'pressure-ineligible', 'below-threshold']);
+    expect(out[0]?.maxBytes).toBe(PRESSURE_PACKAGE_CACHE_MAX_BYTES);
+    expect(out[1]?.maxBytes).toBe(8 * GIB);
+    expect(sampleDisk).toHaveBeenCalledWith(['/objects']);
+    expect(withMutex).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('rechecks pressure under the writer lease and skips cleanup after peer recovery', async () => {
+    const sampleDisk = vi.fn().mockResolvedValueOnce([diskSnapshot(GIB)])
+      .mockResolvedValue([diskSnapshot(3 * GIB)]);
+    const runCommand = vi.fn();
+    const out = await runPackageCacheRetention({
+      targets: [targets[0]!], pressurePath: '/objects', sampleDisk,
+      sameFilesystem: async () => true,
+      measure: async () => measurement(3 * GIB), runCommand,
+      withMutex: async (name, run) => {
+        expect(name).toBe(PACKAGE_CACHE_MUTEX_NAME);
+        return run();
+      },
+    });
+    expect(out[0]).toMatchObject({ status: 'below-threshold', maxBytes: 8 * GIB });
+    expect(sampleDisk).toHaveBeenCalledTimes(2);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('stops pressure cleanup when the first native manager restores the reserve', async () => {
+    const sampleDisk = vi.fn().mockResolvedValueOnce([diskSnapshot(GIB)])
+      .mockResolvedValueOnce([diskSnapshot(GIB)])
+      .mockResolvedValueOnce([diskSnapshot(GIB)])
+      .mockResolvedValue([diskSnapshot(3 * GIB)]);
+    const sizes = new Map([
+      ['/cache/npm', [measurement(3 * GIB), measurement(3 * GIB), measurement(GIB / 2)]],
+      ['/cache/bun', [measurement(3 * GIB), measurement(3 * GIB)]],
+    ]);
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const out = await runPackageCacheRetention({
+      targets: targets.slice(0, 2), pressurePath: '/objects', sampleDisk,
+      sameFilesystem: async () => true,
+      measure: async (cache) => sizes.get(cache)!.shift()!, runCommand,
+      withMutex: async (_name, run) => run(),
+    });
+    expect(out.map((row) => row.status)).toEqual(['pruned', 'below-threshold']);
+    expect(out[0]?.reclaimedBytes).toBe(2.5 * GIB);
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(runCommand).toHaveBeenCalledWith(targets[0], expect.any(String));
+  });
+
+  it.each([
+    { snapshots: [] },
+    { snapshots: [diskSnapshot(3 * GIB)] },
+    { snapshots: [{ ...diskSnapshot(GIB), totalBytes: 0 }] },
+    { snapshots: [{ ...diskSnapshot(GIB), freeBytes: Number.NaN }] },
+    { snapshots: [{ ...diskSnapshot(GIB), freeBytes: -1 }] },
+  ])('does not lower the cache floor for healthy or unmeasured pressure: $snapshots', async ({ snapshots }) => {
+    const runCommand = vi.fn();
+    const withMutex = vi.fn();
+    const out = await runPackageCacheRetention({
+      targets: [targets[0]!], pressurePath: '/objects',
+      sampleDisk: async () => snapshots, sameFilesystem: async () => true,
+      measure: async () => measurement(3 * GIB), runCommand, withMutex,
+    });
+    expect(out[0]).toMatchObject({ status: 'below-threshold', maxBytes: 8 * GIB });
+    expect(withMutex).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not lower the floor when filesystem identity cannot be measured', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const runCommand = vi.fn();
+      const out = await runPackageCacheRetention({
+        targets: [targets[0]!], pressurePath: '/objects',
+        sameFilesystem: async () => { throw new Error('stat denied'); },
+        measure: async () => measurement(3 * GIB), runCommand,
+      });
+      expect(out[0]).toMatchObject({ status: 'pressure-ineligible', maxBytes: 8 * GIB });
+      expect(runCommand).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('stat denied'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('does not acquire the cleanup writer when every cache is below the high-water mark', async () => {
     const withMutex = vi.fn();
     const runCommand = vi.fn();
