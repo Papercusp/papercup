@@ -3,9 +3,6 @@
   "sites": {
     "packages/operator-core/lib/acceptance-grader.ts::grading_audit_refused": 1,
     "packages/operator-core/lib/agent-obligation-providers.ts::unsupported-goal-launch-refusal": 1,
-    "packages/operator-core/lib/agent-tools/coordination/actionable-work-item-dispatch.ts::authority_denied": 1,
-    "packages/operator-core/lib/agent-tools/coordination/actionable-work-item-dispatch.ts::dependency_blocked": 1,
-    "packages/operator-core/lib/agent-tools/coordination/actionable-work-item-dispatch.ts::plan_lane_blocked": 1,
     "packages/operator-core/lib/agent-tools/fleet/kill.ts::self_kill_refused": 1,
     "packages/operator-core/lib/agent-tools/orchestration/inspect.ts::capability_denied": 1,
     "packages/operator-core/lib/agent-tools/plans/governance-round.ts::vote-reduction-refused": 1,
