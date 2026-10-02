@@ -274,7 +274,7 @@ describe('native mDenseOn boundary evidence', () => {
         nativeRunTraceVerified: failure === 'valid', diagnosticCompatible: failure === 'valid',
       });
     });
-  it.each(['valid', 'missing', 'wrong-clock', 'invalid', 'outside', 'reverse', 'changed-executable', 'probe-error'])
+  it.each(['valid', 'missing', 'wrong-clock', 'invalid', 'outside', 'reverse', 'changed-executable', 'probe-error', 'phase', 'version'])
     ('checks %s RAW clock anchors without assuming a Node-to-profiler offset', (failure) => {
       const executable = { path: '/usr/bin/python3', bytes: 123, sha256: 'a'.repeat(64) };
       const events: any[] = [
@@ -290,6 +290,8 @@ describe('native mDenseOn boundary evidence', () => {
       if (failure === 'reverse') events[1].rawClock.rawNs = '39';
       if (failure === 'changed-executable') events[1].rawClock.executable = { ...executable, sha256: 'b'.repeat(64) };
       if (failure === 'probe-error') events[1].clockProbeError = 'clock sampler failed';
+      if (failure === 'phase') events[1].phase = 'start';
+      if (failure === 'version') events[0].rawClock.pythonVersion = 123;
       expect(nativeRawClockTraceVerified(events)).toBe(failure === 'valid');
     });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {

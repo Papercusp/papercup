@@ -149,13 +149,15 @@ export function nativeRunTraceVerified(inputs: WorkerInputTrace[] | undefined, g
 export function nativeRawClockTraceVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
   if (!events?.length || events.length % 2) return false;
   let previousRaw = 0n, executable = '';
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
     const clock = event.rawClock;
-    if (!clock || event.clockProbeError !== undefined || clock.clock !== 'linux-clock-monotonic-raw'
+    if (!clock || event.phase !== (index % 2 ? 'end' : 'start')
+      || event.clockProbeError !== undefined || clock.clock !== 'linux-clock-monotonic-raw'
       || [event.monotonicNs, clock.rawNs, clock.monotonicBeforeNs, clock.monotonicAfterNs, clock.nodeBeforeNs, clock.nodeAfterNs]
         .some((n) => typeof n !== 'string' || !/^[1-9]\d*$/.test(n))
       || !clock.executable || typeof clock.executable.path !== 'string' || !Number.isSafeInteger(clock.executable.bytes)
-      || clock.executable.bytes < 1 || !/^[a-f0-9]{64}$/.test(clock.executable.sha256) || !clock.pythonVersion
+      || clock.executable.bytes < 1 || !/^[a-f0-9]{64}$/.test(clock.executable.sha256)
+      || typeof clock.pythonVersion !== 'string' || !clock.pythonVersion
       || BigInt(clock.nodeBeforeNs) > BigInt(clock.monotonicBeforeNs)
       || BigInt(clock.monotonicBeforeNs) > BigInt(clock.monotonicAfterNs)
       || BigInt(clock.monotonicAfterNs) > BigInt(clock.nodeAfterNs)
