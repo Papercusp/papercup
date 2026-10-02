@@ -1101,7 +1101,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 500_000);
 
-  it.each(['diagnostic', 'ordinary'] as const)('binds %s PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async mode => {
+  it.each(['diagnostic', 'ordinary', ...(process.env.PAPERCUSP_P011_HEAP_CENSUS === '1' ? ['snapshot'] : [])] as const)('binds %s PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async mode => {
     const destination = evidenceDestination(process.env.PAPERCUSP_P011_REPORT);
     // Read the maintained desktop transport contract before bundle/DB work.
     // The separate device route supports only its curated mobile query names.
@@ -1132,7 +1132,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           'One owned request-only process; background, production workers and fleet workloads are not measured.',
           'Sampling selfSize is live sampled allocation, not total heap or a retained-state owner.',
           'Completed-result diagnostic bytes are PostgreSQL wire bytes, not HTTP, payload storage or retained heap.',
-          'Diagnostic mode labels profiler/GC interventions; ordinary mode performs neither profiler mutation nor forced GC.',
+          'Diagnostic/snapshot modes label profiler/GC interventions; ordinary mode performs neither profiler mutation nor forced GC.',
+          'Snapshot census reports post-GC V8 node self sizes, not exclusive retained ownership or production savings.',
           'Idle windows are bounded private HTTP baseline windows, not ambient production idle or leak evidence.'
         ] };
       let host, cdp, sql, inspectorUrl, sampling = false;
@@ -1302,7 +1303,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         for (let window = 0; window < 3; window++) {
           phase('matched-window-' + window);
           if (report.mode === 'diagnostic') { await profiler('HeapProfiler.startSampling', { samplingInterval: 32768 }); sampling = true; }
-          const idleMs = report.mode === 'ordinary' ? 2000 : 750;
+          const idleMs = report.mode === 'diagnostic' ? 750 : 2000;
           await sample('idle-' + window + '-start'); await wait(idleMs); await sample('idle-' + window + '-end');
           const idle = sampling ? await profiler('HeapProfiler.stopSampling') : null; sampling = false;
           if (report.mode === 'diagnostic') { await profiler('HeapProfiler.startSampling', { samplingInterval: 32768 }); sampling = true; }
@@ -1328,6 +1329,29 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             report.retainedContainers.push({ window, maps: await retainedContainerCensus(cdp, 'map'),
               arrays: await retainedContainerCensus(cdp, 'array') }); publish();
           }
+        }
+        if (report.mode === 'snapshot') {
+          phase('private-heap-snapshot');
+          const snapshotPath = e.TEST_REPORT_PATH + '.heapsnapshot';
+          const started = Date.now();
+          report.profilerOperations.push('v8.writeHeapSnapshot (forced GC/synchronous pause)');
+          try {
+            const captured = (await cdp.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
+              JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
+            if (captured !== snapshotPath) throw Error('Private snapshot destination mismatch');
+            const { summarizeHeapSnapshot } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
+            const bytes = readFileSync(snapshotPath);
+            report.heapSnapshot = { sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length,
+              durationMs: Date.now() - started, pid: host.pid,
+              census: summarizeHeapSnapshot(JSON.parse(bytes.toString('utf8'))) };
+          } finally {
+            require('node:fs').rmSync(snapshotPath, { force: true });
+            report.snapshotRemoved = !require('node:fs').existsSync(snapshotPath); publish();
+          }
+          await sample('post-snapshot');
+          const response = await call(route);
+          report.postSnapshotRowsPreserved = JSON.stringify(response.body.rows) === warmRows;
+          if (!report.postSnapshotRowsPreserved) throw Error('Useful rows changed after snapshot');
         }
         report.incomplete = false; phase('samples-complete');
       })().catch(error => { report.error = String(error); report.hostErrorTail = errors;
@@ -1368,7 +1392,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         cwd: root, encoding: 'utf8', timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, TEST_BUNDLE_PATH: bundle, TEST_BUNDLE_HASH: bundleHash, TEST_BUILD_SHA: buildSha,
           TEST_COHORT_MODE: mode, TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_TEST_BUILD_SHA: testBuildSha,
-          TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX, TEST_QUERY_ROUTE: queryPath, TEST_REPORT_PATH: reportPath },
+          TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX, TEST_QUERY_ROUTE: queryPath, TEST_REPORT_PATH: reportPath,
+          TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs') },
       });
       const report = readCohortReport(reportPath, result);
       if (destination) writeFileSync(destination, serializeIdentitySafeJson(report));
@@ -1379,14 +1404,22 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(report.hostReaped).toBe(true);
       expect(existsSync(report.home)).toBe(false);
       expect(report.windows).toHaveLength(3);
-      expect(report.samples).toHaveLength(mode === 'ordinary' ? 13 : 16);
-      expect(report.retainedContainers).toHaveLength(mode === 'ordinary' ? 0 : 3);
-      expect(report.profilerOperations).toHaveLength(mode === 'ordinary' ? 0 : 15);
+      expect(report.samples).toHaveLength(mode === 'ordinary' ? 13 : mode === 'snapshot' ? 14 : 16);
+      expect(report.retainedContainers).toHaveLength(mode === 'diagnostic' ? 3 : 0);
+      expect(report.profilerOperations).toHaveLength(mode === 'ordinary' ? 0 : mode === 'snapshot' ? 1 : 15);
+      if (mode === 'snapshot') {
+        expect(report.snapshotRemoved).toBe(true); expect(report.postSnapshotRowsPreserved).toBe(true);
+        expect(report.heapSnapshot.pid).toBe(report.pid);
+        expect(report.heapSnapshot.census.nodeCount).toBeGreaterThan(0);
+        expect(report.heapSnapshot.census.totalSelfSizeBytes).toBeGreaterThan(0);
+        expect(report.heapSnapshot.census.types.reduce((sum: number, row: any) => sum + row.count, 0))
+          .toBe(report.heapSnapshot.census.nodeCount);
+      }
       for (const window of report.windows) {
         expect(window.responses).toHaveLength(8);
         expect(window.responses.every((response: any) => response.rows === 128 &&
           response.rowFingerprint === report.rowFingerprint)).toBe(true);
-        if (mode === 'ordinary') {
+        if (mode !== 'diagnostic') {
           expect(window.idleMs).toBe(2000);
           expect(window.idleAllocation).toBeNull(); expect(window.ordinaryAllocation).toBeNull();
         }
