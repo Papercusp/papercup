@@ -255,10 +255,17 @@ else
   # vendor-namespace matches actionable, but exclude only this unsupported generic-CPE shape.
   # The package/type/EL9 guard prevents an unrelated artifact whose name happens to contain
   # "kernel" from silently leaving the gate population.
+  # The vendor kernel reaches grype as TWO artifact types: `rpm` (kernel, kernel-core, ...) and
+  # `linux-kernel` — syft's binary cataloger reading usr/lib/modules/<release>/vmlinuz
+  # (pkg:generic/linux-kernel@5.14.0-730.el9.x86_64). The latter is the same vendor kernel, carries
+  # the same .el9 release and is matched ONLY by upstream NVD CPE; the RPMs stay matched in the
+  # vendor namespace. Measured on the P-012 AWS bake: 2,226 of 2,328 "actionable" were the
+  # linux-kernel artifact while this filter accepted rpm only (WI-10005674). Mirrored exactly by
+  # isGenericEl9KernelCpe in apps/operator/lib/release/bootc-image-release-request-cli.ts.
   GENERIC_KERNEL_CPE_EXCLUDED=$(jq '
     def generic_kernel_cpe:
       ((.artifact.name // "") | ascii_downcase | test("(^|-)kernel($|-)"))
-      and ((.artifact.type // "") | ascii_downcase) == "rpm"
+      and (((.artifact.type // "") | ascii_downcase) as $t | $t == "rpm" or $t == "linux-kernel")
       and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el9([._-]|$)"))
       and ((.vulnerability.namespace // "") | ascii_downcase) == "nvd:cpe";
     [.matches[]
