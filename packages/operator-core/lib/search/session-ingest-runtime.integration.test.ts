@@ -550,11 +550,16 @@ describe('current-build ingestion on a private background runtime', () => {
         // 4099-turn fixture. Drain one continuation, rather than raising that
         // budget or mistaking a valid partial sweep for missing indexed turns.
         assert.ok(claudeUseful.turnsInserted > 0 && claudeUseful.turnsInserted < claudeTurns);
+        assert.equal(claudeUseful.metadataBackfills.find(r => r.sourceKind === 'claude' && r.operation === 'sessionOwners').requested,
+          claudeCount, 'a partial transcript budget must not truncate the Claude owner repair map');
         const claudeContinuation = await runSessionIngestOnce();
         assert.equal(claudeContinuation.errors, 0, JSON.stringify(claudeContinuation));
         assert.ok(claudeContinuation.turnsInserted > 0);
         assert.equal(claudeUseful.turnsInserted + claudeContinuation.turnsInserted, claudeTurns);
         assert.equal(claudeContinuation.metadataBackfills.find(r => r.sourceKind === 'claude').requested, claudeCount);
+        assert.equal(claudeUseful.metadataBackfills.find(r => r.sourceKind === 'claude' && r.operation === 'sessionOwners').inputSha256,
+          claudeContinuation.metadataBackfills.find(r => r.sourceKind === 'claude' && r.operation === 'sessionOwners').inputSha256,
+          'partial and full sweeps must bind the same complete Claude owner map');
         const damagedClaude = await sql.unsafe(
           "UPDATE harness_shared.session_turns SET owner = 'stale-private-owner' WHERE source_kind = 'claude'");
         assert.equal(damagedClaude.count, claudeTurns);
