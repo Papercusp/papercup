@@ -5,6 +5,10 @@ import type { RouteContext } from '../../define-route';
 import { createWorkspaceHostProvisionRoute, type WorkspaceHostProvisionRouteDependencies } from './provision';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
 import {
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
+  WorkspaceHostControllerFenceError,
+} from '../../../workspace-host/observability-store';
+import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
 } from '../../../workspace-host/provisioning-runner';
@@ -444,6 +448,26 @@ describe('POST /workspace-hosts/provision', () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       error: 'workspace host already has a provisioning operation in progress',
+    });
+  });
+
+  // WI-10005474: the replayed refusal of a reused operationId is a conflict naming the refusal.
+  it('maps a controller-fence refusal to a typed 409 that names the refusal', async () => {
+    const fenced = harness();
+    fenced.startProvisioning.mockRejectedValueOnce(new WorkspaceHostControllerFenceError('host-1'));
+
+    const response = await post(fenced.dependencies, {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+      operationId: 'op-fenced-1',
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host provision refused: a newer operation or controller holds this host',
+      reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      hostId: 'host-1',
     });
   });
 });
