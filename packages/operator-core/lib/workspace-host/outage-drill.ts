@@ -371,12 +371,14 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
     const launch =
       `cd ${shellQuote(config.workspaceDir)} && rm -f ${shellQuote(exitFile)} ${shellQuote(gatePath)} && ` +
       `mkfifo -m 600 ${shellQuote(gatePath)} && ` +
-      `nohup sh -c ${shellQuote(
+      `{ nohup sh -c ${shellQuote(
         `${shellQuote(config.agentCommand)} -p ${shellQuote(prompt)} --allowedTools Bash,Write ` +
           `> ${shellQuote(FLAG_FILE(config.workspaceDir, config.nonce, 'log'))} 2>&1; echo $? > ${shellQuote(exitFile)}`,
-      )} < /dev/null > /dev/null 2>&1 &`;
-    // stdin MUST be detached: a background agent that inherits the SSH channel's stdin holds the session
-    // open, so this call never returns (measured 2026-10-02: launch hit the 90s SSH timeout, block never ran).
+      )} < /dev/null > /dev/null 2>&1 & }`;
+    // The `&` MUST be scoped to the agent alone. A bare trailing `&` backgrounds the WHOLE `&&` list as a
+    // subshell that keeps the SSH channel's stdout/stderr and waits for the agent, so this call returns only
+    // when the agent exits (measured 2026-10-02: run #1 returned at the agent's exit, run #2 hit the SSH
+    // timeout and the block never ran).
     const started = await deps.hostExec(launch);
     if (started.code !== 0) throw new Error(`agent launch failed (exit ${started.code}): ${started.stderr.trim()}`);
     log('agent task started');

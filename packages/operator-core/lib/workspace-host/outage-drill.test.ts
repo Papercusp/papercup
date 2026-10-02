@@ -216,8 +216,9 @@ describe('runOutageDrill + evaluateOutageDrill', () => {
     const launch = host.commands.find((command) => command.includes('nohup'))!;
     expect(launch).toContain('mkfifo');
     expect(launch).not.toContain(config.secret);
-    // A detached agent holding the SSH channel's stdin keeps the launch call from ever returning.
-    expect(launch).toMatch(/ < \/dev\/null > \/dev\/null 2>&1 &$/);
+    // Only the agent is backgrounded, with every stream detached; a trailing bare `&` would background the
+    // whole `&&` list holding the SSH channel open, so the launch call would return only when the agent exits.
+    expect(launch).toMatch(/ && \{ nohup sh -c .* < \/dev\/null > \/dev\/null 2>&1 & \}$/);
     expect(evidence.agent.expected).toBe(sha256Hex(config.secret));
   });
 
