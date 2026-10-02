@@ -121,6 +121,9 @@ const attention = defineTool({
         for (const group of parsed.groups) {
           if (!Array.isArray(group.items)) return unavailableAttention('canonical_group_invalid', { offset });
           pageItems += group.items.length;
+          // Empty groups carry no actionable content. Keep their page metadata
+          // for the completeness checks below, but do not add an Inbox entry.
+          if (group.items.length === 0) continue;
           const { _meta: _pageMeta, ...completeGroup } = group;
           const key = group.key ?? `${group.harnessSlug ?? ''}#${group.planSlug ?? 'alerts'}`;
           const prior = byKey.get(key);
