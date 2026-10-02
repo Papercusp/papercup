@@ -43,10 +43,18 @@ export const R33_AB_NULL_RUNS = 5;
 
 /**
  * D-042: each site's noise floor N_s in ms, from R33_AB_NULL_RUNS valid null runs.
- * Empty until the null runs are measured and a Decision records the values; a site
- * absent here has no floor, so its budget is exactly 0.25 x its D-024 baseline.
+ * Pinned by D-043 from the 5 band-matched null runs of 2026-10-02 12:15-13:02Z
+ * (docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-null-runs.json; the
+ * bench code as committed in 94d75a58ff). Every floor is below its site's 0.25 x D-024 budget, so no
+ * budget changes: the instrument resolves the 1.25x proportion at every site.
  */
-export const R33_AB_NOISE_FLOOR_MS: Readonly<Partial<Record<R33AbSite, number>>> = Object.freeze({});
+export const R33_AB_NOISE_FLOOR_MS: Readonly<Partial<Record<R33AbSite, number>>> = Object.freeze({
+  plans: 1.7,
+  turns: 15.9,
+  work_item: 4.6,
+  work_items_search: 1.5,
+  consult: 1.9,
+});
 
 /**
  * D-042: a site's noise floor from its null-run spreads — the largest

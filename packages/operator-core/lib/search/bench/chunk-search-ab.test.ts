@@ -51,6 +51,26 @@ describe('chunk-search same-time A/B (R-33, D-040)', () => {
     expect([0, R33_AB_SITES.length]).toContain(Object.keys(R33_AB_NOISE_FLOOR_MS).length);
   });
 
+  it('D-043 pins the floors measured by the 5 null runs, and they leave every budget at 0.25x', () => {
+    // The per-run spreads recorded in p016-r33-null-runs.json, reduced by D-042's rule.
+    const spreads: Record<string, number[]> = {
+      plans: [1.7, 0.7, 0.4, 0.4, 1.3],
+      turns: [4.5, 4, 14.5, 4.3, 15.9],
+      work_item: [1, 1.1, 0.8, 2.5, 4.6],
+      work_items_search: [1, 1.5, 1.2, 0.4, 0.9],
+      consult: [0.2, 0.3, 0.2, 0.1, 1.9],
+    };
+    expect(Object.fromEntries(R33_AB_SITES.map((s) => [s, r33AbNoiseFloorMs(spreads[s])]))).toEqual(R33_AB_NOISE_FLOOR_MS);
+    expect(R33_AB_NOISE_FLOOR_MS).toEqual({ plans: 1.7, turns: 15.9, work_item: 4.6, work_items_search: 1.5, consult: 1.9 });
+    expect(Object.fromEntries(R33_AB_SITES.map((s) => [s, r33AbBudgetMs(s)]))).toEqual({
+      plans: 413,
+      turns: 348,
+      work_item: 402.3,
+      work_items_search: 100,
+      consult: 3.5,
+    });
+  });
+
   describe('noise floor (D-042)', () => {
     it('is the largest absolute spread over exactly R33_AB_NULL_RUNS runs, rounded up to 0.1 ms', () => {
       expect(R33_AB_NULL_RUNS).toBe(5);
