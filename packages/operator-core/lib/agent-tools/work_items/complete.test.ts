@@ -705,7 +705,7 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(realClose.countsTowardBurnDown).toBe(validation.countsTowardBurnDown);
     expect(realClose.authorityWarning).toMatch(/authority:'proposed'/);
     expect(realClose.requirementShortfallWarning).toContain(
-      'implemented entries pass `citations: ["repo/relative/path.ts"]`',
+      'each `implemented` entry passes `citations: ["repo/relative/path.ts"]`',
     );
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
   });
