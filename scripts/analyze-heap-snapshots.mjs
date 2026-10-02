@@ -29,10 +29,16 @@
 //   nodes[]                    — flat array: node_count × node_fields.length
 //   strings[]                  — string table indexed by the 'name' field value
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
+import { parser } from 'stream-json';
+
+const classLabel = (type, raw) => !type.includes('string') && typeof raw === 'string' && raw.length <= 80 &&
+  (/^[A-Za-z_$][A-Za-z0-9_.$]*$/.test(raw) || /^\(object (?:elements|properties)\)$/.test(raw))
+  ? raw : '(' + type + ')';
 
 /** A complete node census, not a dominator graph or exclusive retained bytes.
  * Snapshot string names contain actual payloads. Only fixed V8 types and
@@ -61,9 +67,7 @@ export function summarizeHeapSnapshot(snap, { top = 30 } = {}) {
     const raw = snap.strings[nameId];
     // Never inspect STRING-family names as labels: they are the string content.
     // Native/code names can contain filesystem paths or source text too.
-    const label = !type.includes('string') && typeof raw === 'string' && raw.length <= 80 &&
-      (/^[A-Za-z_$][A-Za-z0-9_.$]*$/.test(raw) || /^\(object (?:elements|properties)\)$/.test(raw))
-      ? raw : '(' + type + ')';
+    const label = classLabel(type, raw);
     const key = type + '\0' + label;
     const add = (map, key, initial) => {
       const row = map.get(key) ?? { ...initial, count: 0, selfSizeBytes: 0 };
@@ -78,7 +82,93 @@ export function summarizeHeapSnapshot(snap, { top = 30 } = {}) {
     definition: 'V8 snapshot node self_size, after snapshot GC; not retained/exclusive bytes or total native memory.' };
 }
 
-function main() {
+/** Stream even multi-GB snapshots. Never pack a payload string or node array.
+ * @param {import('node:stream').Readable} input
+ * @param {{ top?: number }} [options]
+ */
+export async function summarizeHeapSnapshotStream(input, { top = 30 } = {}) {
+  if (!Number.isInteger(top) || top < 1 || top > 100) throw new TypeError('Invalid heap census top limit');
+  const hash = createHash('sha256'); let bytes = 0;
+  input.on('data', chunk => { hash.update(chunk); bytes += Buffer.byteLength(chunk); });
+  const stream = input.pipe(parser.asStream({ packStrings: false, streamStrings: true,
+    packNumbers: true, streamNumbers: false, packKeys: true, streamKeys: false }));
+  const fields = [], types = [], frames = [], byType = new Map(), byClass = new Map(), names = new Map();
+  let nodeCount, values = 0, examined = 0, strings = 0, maxNameId = -1, totalSelfSizeBytes = 0;
+  let valueText = '', longString = false, row = [], nodesSeen = false, stringsSeen = false;
+  const path = () => {
+    const frame = frames[frames.length - 1];
+    return frame ? frame.path.concat(frame.array ? frame.index : frame.key) : [];
+  };
+  const finish = () => { const frame = frames[frames.length - 1]; if (frame?.array) frame.index++; };
+  const add = (map, key, initial, count, size) => {
+    const entry = map.get(key) ?? { ...initial, count: 0, selfSizeBytes: 0 };
+    entry.count += count; entry.selfSizeBytes += size; map.set(key, entry);
+  };
+  const classify = (typeId, raw, count, size) => {
+    const type = types[typeId], label = classLabel(type, raw);
+    add(byClass, type + '\0' + label, { type, class: label }, count, size);
+  };
+  const scalar = value => {
+    const p = path();
+    if (p.join('.') === 'snapshot.node_count') nodeCount = value;
+    else if (p.length === 4 && p.slice(0, 3).join('.') === 'snapshot.meta.node_fields') fields.push(value);
+    else if (p.length === 5 && p.slice(0, 4).join('.') === 'snapshot.meta.node_types.0') types.push(value);
+    else if (p.length === 2 && p[0] === 'nodes') {
+      if (!fields.length || !types.length) throw TypeError('Heap metadata must precede nodes');
+      const nf = fields.length;
+      row.push(value); values++;
+      if (row.length === nf) {
+        const typeId = row[fields.indexOf('type')], nameId = row[fields.indexOf('name')], size = row[fields.indexOf('self_size')];
+        if (!Number.isSafeInteger(typeId) || typeId < 0 || typeId >= types.length ||
+            !Number.isSafeInteger(nameId) || nameId < 0 || !Number.isSafeInteger(size) || size < 0)
+          throw TypeError('Invalid heap snapshot node values');
+        maxNameId = Math.max(maxNameId, nameId); examined++; totalSelfSizeBytes += size;
+        add(byType, types[typeId], { type: types[typeId] }, 1, size);
+        if (types[typeId].includes('string')) classify(typeId, '', 1, size);
+        else {
+          const name = names.get(nameId) ?? new Map();
+          add(name, typeId, {}, 1, size); names.set(nameId, name);
+        }
+        row = [];
+      }
+    } else if (p.length === 2 && p[0] === 'strings') {
+      if (typeof value !== 'string') throw TypeError('Invalid heap string table');
+      for (const [typeId, entry] of names.get(strings) ?? []) classify(typeId, value, entry.count, entry.selfSizeBytes);
+      names.delete(strings); strings++;
+    }
+    finish();
+  };
+  await new Promise((resolve, reject) => {
+    input.once('error', reject); stream.once('error', reject); stream.once('end', resolve);
+    stream.on('data', token => {
+      try {
+        if (token.name === 'keyValue') frames[frames.length - 1].key = token.value;
+        else if (token.name === 'startObject' || token.name === 'startArray') {
+          const p = path();
+          if (p.length === 1 && p[0] === 'nodes') nodesSeen = true;
+          if (p.length === 1 && p[0] === 'strings') stringsSeen = true;
+          frames.push({ path: p, array: token.name === 'startArray', index: 0 });
+        } else if (token.name === 'endObject' || token.name === 'endArray') { frames.pop(); finish(); }
+        else if (token.name === 'startString') { valueText = ''; longString = false; }
+        else if (token.name === 'stringChunk' && !longString) {
+          if (valueText.length + token.value.length > 80) { valueText = ''; longString = true; }
+          else valueText += token.value;
+        } else if (token.name === 'endString') scalar(longString ? '' : valueText);
+        else if (token.name === 'numberValue') scalar(Number(token.value));
+        else if (['trueValue', 'falseValue', 'nullValue'].includes(token.name)) scalar(token.value);
+      } catch (error) { input.destroy(); stream.destroy(error); }
+    });
+  });
+  if (!Number.isSafeInteger(nodeCount) || nodeCount < 0 || !nodesSeen || !stringsSeen ||
+      examined !== nodeCount || values !== nodeCount * fields.length || maxNameId >= strings || names.size)
+    throw TypeError('Incomplete heap snapshot nodes/string table');
+  return { bytes, sha256: hash.digest('hex'), census: { nodeCount, totalSelfSizeBytes,
+    types: [...byType.values()].sort((a, b) => b.selfSizeBytes - a.selfSizeBytes),
+    topClasses: [...byClass.values()].sort((a, b) => b.selfSizeBytes - a.selfSizeBytes).slice(0, top),
+    definition: 'V8 snapshot node self_size, after snapshot GC; not retained/exclusive bytes or total native memory.' } };
+}
+
+async function main() {
 
 const args = process.argv.slice(2);
 const topIdx = args.indexOf('--top');
@@ -115,76 +205,14 @@ let totalSizeBytes = 0;
 let parsedSnapshots = 0;
 
 for (const file of files) {
-  let snap;
   try {
-    snap = JSON.parse(readFileSync(file, 'utf8'));
-  } catch {
-    console.error(`  skip (unparseable): ${file}`);
-    continue;
-  }
-
-  const meta = snap.snapshot?.meta;
-  if (!meta) {
-    console.error(`  skip (no snapshot.meta): ${file}`);
-    continue;
-  }
-
-  const nodeFields = meta.node_fields;
-  const nodeTypeNames = meta.node_types?.[0]; // e.g. ["hidden","array","string","object","code",…]
-  const nf = nodeFields?.length;
-  if (!nf || !Array.isArray(nodeTypeNames)) {
-    console.error(`  skip (missing node_fields or node_types): ${file}`);
-    continue;
-  }
-
-  const typeIdx = nodeFields.indexOf('type');
-  const nameIdx = nodeFields.indexOf('name');
-  const selfSizeIdx = nodeFields.indexOf('self_size');
-  if (typeIdx < 0 || nameIdx < 0 || selfSizeIdx < 0) {
-    console.error(
-      `  skip (node_fields missing type/name/self_size — got: ${nodeFields.join(',')}): ${file}`,
-    );
-    continue;
-  }
-
-  const nodes = snap.nodes;
-  const strings = snap.strings;
-  const nodeCount = snap.snapshot.node_count ?? 0;
-  if (!Array.isArray(nodes) || !Array.isArray(strings)) {
-    console.error(`  skip (nodes or strings not arrays): ${file}`);
-    continue;
-  }
-
-  parsedSnapshots++;
-
-  for (let i = 0; i < nodeCount; i++) {
-    const base = i * nf;
-    const typeId = nodes[base + typeIdx];
-    const nameId = nodes[base + nameIdx];
-    const selfSize = nodes[base + selfSizeIdx] ?? 0;
-
-    // Classify into a retainer CLASS. For object/closure/code/regexp nodes the
-    // `name` field is a class / function / source name — useful to keep. But for
-    // STRING-family nodes (V8 types "string" / "concatenated string" /
-    // "sliced string") the `name` is the string's own *content*: unbounded and
-    // NOT a class. Keying by it would make every distinct string its own "class"
-    // (and dump multi-line bodies into the table). Collapse all string nodes
-    // under one `(string)` bucket — go to DevTools for the actual strings.
-    // Empty names fall back to the V8 node type.
-    const typeStr = nodeTypeNames[typeId] ?? 'unknown';
-    const isStringNode = typeStr.includes('string');
-    const nameStr = isStringNode ? '' : strings[nameId] ?? '';
-    const key = nameStr || `(${typeStr})`;
-
-    const prev = byClass.get(key);
-    if (prev) {
-      prev.selfSize += selfSize;
-      prev.count += 1;
-    } else {
-      byClass.set(key, { selfSize, count: 1 });
+    const { census } = await summarizeHeapSnapshotStream(createReadStream(file), { top: 100 });
+    parsedSnapshots++; totalSizeBytes += census.totalSelfSizeBytes;
+    for (const row of census.topClasses) {
+      const prev = byClass.get(row.class) ?? { selfSize: 0, count: 0 };
+      prev.selfSize += row.selfSizeBytes; prev.count += row.count; byClass.set(row.class, prev);
     }
-    totalSizeBytes += selfSize;
-  }
+  } catch (error) { console.error(`  skip (unparseable): ${file}: ${error.message}`); }
 }
 
 if (parsedSnapshots === 0) {
@@ -244,4 +272,5 @@ if (asJson) {
 }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  main().catch(error => { console.error(error.message); process.exitCode = 1; });

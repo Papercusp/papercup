@@ -1339,11 +1339,9 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             const captured = (await cdp.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
               JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
             if (captured !== snapshotPath) throw Error('Private snapshot destination mismatch');
-            const { summarizeHeapSnapshot } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
-            const bytes = readFileSync(snapshotPath);
-            report.heapSnapshot = { sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length,
-              durationMs: Date.now() - started, pid: host.pid,
-              census: summarizeHeapSnapshot(JSON.parse(bytes.toString('utf8'))) };
+            const { summarizeHeapSnapshotStream } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
+            const summary = await summarizeHeapSnapshotStream(require('node:fs').createReadStream(snapshotPath));
+            report.heapSnapshot = { ...summary, durationMs: Date.now() - started, pid: host.pid };
           } finally {
             require('node:fs').rmSync(snapshotPath, { force: true });
             report.snapshotRemoved = !require('node:fs').existsSync(snapshotPath); publish();
