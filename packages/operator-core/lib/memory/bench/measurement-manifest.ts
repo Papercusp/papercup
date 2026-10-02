@@ -344,7 +344,8 @@ export function assertMeasuredExecution(arm: MeasurementArm, actual: { device: s
 export function assertNativeProfilerQualification(importer: { exitCode: number; output: string },
   capture: { databaseIntegrity: string; cudaApiRecords: number; cudaKernelRecords: number }): void {
   const fatalMarkers = ['processeventserror', 'unknown driver api function index:',
-    'cannot find string for an exterior index', 'errors occurred while processing the raw events'];
+    'cannot find string for an exterior index', 'errors occurred while processing the raw events',
+    'import failed:', 'fatal error:'];
   if (importer.exitCode !== 0 || typeof importer.output !== 'string'
     || importer.output.split('\n').some((line) => {
       const text = line.trimStart().toLowerCase();

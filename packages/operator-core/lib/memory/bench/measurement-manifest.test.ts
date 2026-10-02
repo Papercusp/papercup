@@ -74,6 +74,8 @@ describe('native CUDA profiler qualification', () => {
     'Unknown driver API function index: 752',
     'Cannot find string for an exterior index',
     '**** Errors occurred while processing the raw events. ****',
+    'Import Failed: Qdstrm file does not have valid time conversion factors.',
+    'Fatal error: invalid_command_line_syntax',
   ])('rejects partial decoding even when the importer exit code is zero: %s', (output) => {
     expect(() => assertNativeProfilerQualification({ exitCode: 0, output }, decodedCuda)).toThrow('profiler import failed');
   });
