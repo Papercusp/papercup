@@ -54,6 +54,7 @@ set -uo pipefail
 
 IMAGE=""; KEY=""; PUBKEY=""; OUTDIR="./.supply-chain-out"
 INSECURE=0; FAIL_ON_VULNS=0; SKIP_SCAN=0; SKIP_SECRET_SCAN=0; MIN_PKGS=50
+MIN_AVAILABLE_PACKAGES="${VENDOR_MIN_AVAILABLE_PACKAGES:-1000}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,6 +67,7 @@ while [ $# -gt 0 ]; do
     --skip-scan) SKIP_SCAN=1; shift;;
     --skip-secret-scan) SKIP_SECRET_SCAN=1; shift;;
     --min-packages) MIN_PKGS="${2:-50}"; shift 2;;
+    --min-available-packages) MIN_AVAILABLE_PACKAGES="${2:-1000}"; shift 2;;
     -h|--help) sed -n '2,45p' "$0"; exit 0;;
     *) echo "usage error: unknown argument $1" >&2; exit 2;;
   esac
@@ -221,7 +223,7 @@ echo "attested provenance to $REF"
 # ---------------------------------------------------------------------------------------------
 if [ "$SKIP_SCAN" -eq 1 ]; then
   step "5/6  SBOM + scan SKIPPED (--skip-scan)"
-  SBOM_PKGS="skipped"; ACTIONABLE="skipped"
+  SBOM_PKGS="skipped"; ACTIONABLE="skipped"; VENDOR_PENDING="skipped"; VENDOR_CHECK="skipped"
 else
   [ -n "$SYFT" ] && [ -x "$SYFT" ]   || die "syft not found (set SYFT_BIN)" 2
   [ -n "$GRYPE" ] && [ -x "$GRYPE" ] || die "grype not found (set GRYPE_BIN)" 2
@@ -262,28 +264,107 @@ else
   # vendor namespace. Measured on the P-012 AWS bake: 2,226 of 2,328 "actionable" were the
   # linux-kernel artifact while this filter accepted rpm only (WI-10005674). Mirrored exactly by
   # isGenericEl9KernelCpe in apps/operator/lib/release/bootc-image-release-request-cli.ts.
-  GENERIC_KERNEL_CPE_EXCLUDED=$(jq '
+  #
+  # D-027 (WI-10005719) — VENDOR-PENDING. A fixed Critical/High finding stays ACTIONABLE unless
+  # BOTH hold: (a) the vendor owns it — every file it sits in is listed by an INSTALLED RPM in the
+  # attested SBOM itself (the rpmdb-located rpm artifacts' metadata.files), or the artifact IS an
+  # installed RPM (located in the rpmdb) — and (b) the built image's own repos hold nothing newer:
+  # `dnf --refresh check-update` exit 0 inside the image, with at least one enabled repo and
+  # MIN_AVAILABLE_PACKAGES available as the positive control that dnf really read its metadata.
+  # Such a finding is a fix the vendor has not shipped, which no rebuild here can reach. It leaves
+  # the deny population but is counted (GRYPE_VENDOR_PENDING) and listed (vendor-pending.json),
+  # never dropped silently. check-update exit 100 (an update EXISTS) or any error keeps every
+  # candidate actionable, so a fix the vendor HAS shipped can never be classified pending. Files
+  # papercusp installs outside RPM (/opt/papercusp, bundled runtimes) and stale base-layer copies
+  # (/sysroot/ostree/repo/objects) are owned by no installed RPM and stay actionable. An `.rpm`
+  # ARCHIVE lying in the image is not installed (its location is not the rpmdb), so it neither
+  # owns files nor counts as vendor-owned. Mirrored exactly by vendorOwnership +
+  # actionableGrypeReport in apps/operator/lib/release/bootc-image-release-request-cli.ts.
+  JQ_GATE_DEFS='
     def generic_kernel_cpe:
       ((.artifact.name // "") | ascii_downcase | test("(^|-)kernel($|-)"))
       and (((.artifact.type // "") | ascii_downcase) as $t | $t == "rpm" or $t == "linux-kernel")
       and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el9([._-]|$)"))
       and ((.vulnerability.namespace // "") | ascii_downcase) == "nvd:cpe";
-    [.matches[]
-      | select(.vulnerability.fix.state=="fixed")
-      | select(.vulnerability.severity=="Critical" or .vulnerability.severity=="High")
-      | select(generic_kernel_cpe)] | length
+    def fixed_crit_high:
+      .vulnerability.fix.state == "fixed"
+      and (.vulnerability.severity == "Critical" or .vulnerability.severity == "High");
+    def rpmdb_path: test("/rpm/(rpmdb\\.sqlite|Packages(\\.db)?)$");
+    def installed_rpm($paths):
+      ((.type // "") | ascii_downcase) == "rpm"
+      and ($paths | length > 0 and all(.[]; rpmdb_path));
+    def finding_paths: [(.artifact.locations // [])[] | (.path // "")];
+    def vendor_owned($owned):
+      (.artifact | installed_rpm([(.locations // [])[] | (.path // "")]))
+      or (finding_paths | length > 0 and all(.[]; $owned[.] == true));
+  '
+  GENERIC_KERNEL_CPE_EXCLUDED=$(jq "$JQ_GATE_DEFS"'
+    [.matches[] | select(fixed_crit_high) | select(generic_kernel_cpe)] | length
   ' "$OUTDIR/vulns.json")
-  ACTIONABLE=$(jq '
-    def generic_kernel_cpe:
-      ((.artifact.name // "") | ascii_downcase | test("(^|-)kernel($|-)"))
-      and (((.artifact.type // "") | ascii_downcase) as $t | $t == "rpm" or $t == "linux-kernel")
-      and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el9([._-]|$)"))
-      and ((.vulnerability.namespace // "") | ascii_downcase) == "nvd:cpe";
-    [.matches[]
-      | select(.vulnerability.fix.state=="fixed")
-      | select(.vulnerability.severity=="Critical" or .vulnerability.severity=="High")
-      | select(generic_kernel_cpe | not)] | length
+  ACTIONABLE=$(jq "$JQ_GATE_DEFS"'
+    [.matches[] | select(fixed_crit_high) | select(generic_kernel_cpe | not)] | length
   ' "$OUTDIR/vulns.json")
+
+  # (a) every path an installed RPM owns, from the same SBOM grype just scanned.
+  jq "$JQ_GATE_DEFS"'
+    [.artifacts[]?
+      | select(installed_rpm([(.locations // [])[] | (.path // "")]))
+      | (.metadata.files // [])[] | (.path // empty)]
+    | unique | map({key: ., value: true}) | from_entries
+  ' "$OUTDIR/sbom.syft.json" > "$OUTDIR/rpm-owned-paths.json" \
+    || die "could not derive RPM file ownership from the SBOM"
+  jq --slurpfile owned "$OUTDIR/rpm-owned-paths.json" "$JQ_GATE_DEFS"'
+    [.matches[]
+      | select(fixed_crit_high) | select(generic_kernel_cpe | not) | select(vendor_owned($owned[0]))
+      | { id: .vulnerability.id, severity: .vulnerability.severity,
+          namespace: .vulnerability.namespace, fixedIn: (.vulnerability.fix.versions // []),
+          artifact: { name: .artifact.name, version: .artifact.version, type: .artifact.type },
+          paths: finding_paths }]
+  ' "$OUTDIR/vulns.json" > "$OUTDIR/vendor-pending-candidates.json" \
+    || die "could not classify vendor-owned findings"
+  VENDOR_CANDIDATES=$(jq 'length' "$OUTDIR/vendor-pending-candidates.json")
+
+  # (b) does the vendor already ship something newer? Asked only when a candidate exists, inside
+  # the image at this DIGEST, against the repos the image itself is configured with.
+  VENDOR_CHECK="not-needed"; VENDOR_PENDING=0
+  if [ "$VENDOR_CANDIDATES" -gt 0 ]; then
+    VENDOR_CHECK_SH=$(cat <<'SH'
+dnf -q --refresh check-update; rc=$?
+echo "VENDOR_CHECK_UPDATE_EXIT=$rc"
+echo "VENDOR_ENABLED_REPOS=$(dnf -q -C repolist --enabled 2>/dev/null | awk 'NR > 1 && NF' | wc -l)"
+echo "VENDOR_AVAILABLE_PACKAGES=$(dnf -q -C repoquery --available --qf '%{name}\n' 2>/dev/null | sort -u | wc -l)"
+SH
+)
+    VC_RC=0
+    "${PODMAN[@]}" run --rm --network host "${TLS_ARGS[@]}" --entrypoint /bin/sh "$REF" \
+      -c "$VENDOR_CHECK_SH" > "$OUTDIR/vendor-check.log" 2>&1 || VC_RC=$?
+    vc_field() { sed -n "s/^$1=\([0-9][0-9]*\)\$/\1/p" "$OUTDIR/vendor-check.log" | tail -1; }
+    CU_EXIT=$(vc_field VENDOR_CHECK_UPDATE_EXIT)
+    VC_REPOS=$(vc_field VENDOR_ENABLED_REPOS)
+    VC_AVAIL=$(vc_field VENDOR_AVAILABLE_PACKAGES)
+    if [ "$VC_RC" -eq 0 ] && [ "$CU_EXIT" = "0" ] && [ "${VC_REPOS:-0}" -ge 1 ] \
+       && [ "${VC_AVAIL:-0}" -ge "$MIN_AVAILABLE_PACKAGES" ]; then
+      VENDOR_CHECK="no-updates"; VENDOR_PENDING=$VENDOR_CANDIDATES
+    elif [ "$CU_EXIT" = "100" ]; then
+      VENDOR_CHECK="updates-available"
+    else
+      VENDOR_CHECK="error"
+    fi
+    jq -n --arg digest "$DIGEST" --arg checkedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg verdict "$VENDOR_CHECK" --argjson containerExit "$VC_RC" \
+      --arg cu "${CU_EXIT:-}" --arg repos "${VC_REPOS:-}" --arg avail "${VC_AVAIL:-}" \
+      --argjson floor "$MIN_AVAILABLE_PACKAGES" \
+      '{ digest: $digest, checkedAt: $checkedAt, verdict: $verdict, containerExit: $containerExit,
+         checkUpdateExit: ($cu | tonumber? // null), enabledRepos: ($repos | tonumber? // null),
+         availablePackages: ($avail | tonumber? // null), availablePackagesFloor: $floor }' \
+      > "$OUTDIR/vendor-updates.json" || die "could not record vendor-updates.json"
+  fi
+  if [ "$VENDOR_PENDING" -gt 0 ]; then
+    cp "$OUTDIR/vendor-pending-candidates.json" "$OUTDIR/vendor-pending.json"
+  else
+    echo '[]' > "$OUTDIR/vendor-pending.json"
+  fi
+  ACTIONABLE=$((ACTIONABLE - VENDOR_PENDING))
   # ⛔ D-289: the raw total is not a verdict. Measured on the P-306 image, 4 kernel RPMs each
   # reported an IDENTICAL 5,395 matches — one kernel's CVE set counted four times under four
   # names — so ~95% of a 29,872 headline was a single component counted repeatedly. Print the
@@ -291,6 +372,11 @@ else
   echo "GRYPE_MATCHES_RAW=$TOTAL   (matches, NOT distinct vulnerabilities — do not quote bare)"
   echo "GRYPE_TOP_COMPONENT=$(jq -r '.matches | group_by(.artifact.name) | max_by(length) | "\(.[0].artifact.name)=\(length)"' "$OUTDIR/vulns.json")"
   echo "GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=$GENERIC_KERNEL_CPE_EXCLUDED   (EL9 upstream CPE matches; vendor namespaces remain actionable)"
+  echo "GRYPE_VENDOR_PENDING=$VENDOR_PENDING   (of $VENDOR_CANDIDATES RPM-owned; vendor check: $VENDOR_CHECK; listed in vendor-pending.json — D-027)"
+  case "$VENDOR_CHECK" in
+    updates-available) echo "  the image's repos ship NEWER RPMs (vendor-check.log): re-bake so the Containerfile's dnf upgrade takes them; nothing is pending" ;;
+    error) echo "  the vendor check did not complete (vendor-check.log): every RPM-owned finding stays actionable" ;;
+  esac
   echo "GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=$ACTIONABLE   <- the gate population"
 
   # The SBOM travels WITH the image, attested to the same digest, so a consumer can obtain it
@@ -345,6 +431,8 @@ cat > "$OUTDIR/supply-chain-summary.json" <<SUM
   "sbomAttested": $( [ "$SKIP_SCAN" -eq 0 ] && echo true || echo false ),
   "sbomPackages": "$SBOM_PKGS",
   "actionableCriticalHighWithFix": "$ACTIONABLE",
+  "vendorPending": "$VENDOR_PENDING",
+  "vendorCheck": "$VENDOR_CHECK",
   "secretScan": "$SECRET_SCAN",
   "verifiedFromRegistry": true
 }
