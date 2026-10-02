@@ -73,6 +73,14 @@ describe('private V8 heap snapshot census', () => {
       .toBe(result.census.totalSelfSizeBytes);
   });
 
+  it('reports decode failures without quoting private input', async () => {
+    const { summarizeHeapRetainers } = await import('../../../scripts/analyze-heap-snapshots.mjs');
+    await expect(summarizeHeapRetainers(Buffer.from('{"private":"DoNotExportThisPayload"}')))
+      .rejects.toThrow('Heap retainer analysis failed at decode-bytes');
+    try { await summarizeHeapRetainers(Buffer.from('{"private":"DoNotExportThisPayload"}')); }
+    catch (error) { expect(String(error)).not.toContain('DoNotExportThisPayload'); }
+  });
+
   it('distinguishes exclusive large allocations from shared holders in a real dominator graph', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'p011-heap-retainers-'));
     try {
