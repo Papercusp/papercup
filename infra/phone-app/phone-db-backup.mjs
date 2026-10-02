@@ -128,6 +128,7 @@ async function backup(out) {
 // owner IDs, rate sheets, database URLs and provider events remain private.
 export function assessUsageAccounts(accounts, now = Date.now()) {
   const counts = { missingPolicy: 0, suspended: 0, expired: 0, exhausted: 0, malformed: 0 };
+  const nonemptyText = value => typeof value === 'string' && value.trim().length > 0;
   if (!Array.isArray(accounts) || accounts.length === 0 || accounts.length > 1000 ||
       !Number.isFinite(now)) {
     return { ok: false, action: 'usage-status', accountsChecked: 0,
@@ -139,8 +140,14 @@ export function assessUsageAccounts(accounts, now = Date.now()) {
     if (!policy) { counts.missingPolicy++; continue; }
     const start = Date.parse(policy.periodStart), end = Date.parse(policy.periodEnd);
     const micros = [account.spentMicros, account.reservedMicros, policy.hardCapMicros];
-    if (!policy.approvedBy || !policy.approvalRef || !policy.rateSheet?.id ||
-        policy.rateSheet.currency !== 'USD' || !policy.rateSheet.sourceRefs?.length ||
+    if (!policy || typeof policy !== 'object' || Array.isArray(policy) ||
+        !nonemptyText(policy.approvedBy) || !nonemptyText(policy.approvalRef) ||
+        !policy.rateSheet || typeof policy.rateSheet !== 'object' ||
+        Array.isArray(policy.rateSheet) || !nonemptyText(policy.rateSheet.id) ||
+        policy.rateSheet.currency !== 'USD' ||
+        !Array.isArray(policy.rateSheet.sourceRefs) ||
+        policy.rateSheet.sourceRefs.length === 0 ||
+        !policy.rateSheet.sourceRefs.every(nonemptyText) ||
         !Number.isFinite(Date.parse(policy.rateSheet.effectiveAt)) ||
         !Number.isFinite(Date.parse(policy.rateSheet.capturedAt)) ||
         !Number.isFinite(start) ||
