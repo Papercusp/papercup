@@ -705,7 +705,7 @@ DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5
 async function turnProvenanceGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
-      const { filesRemoved, rowsDropped } = gcLedgerDir();
+      const { filesRemoved, rowsDropped } = await gcLedgerDir();
       console.log(
         `[turn-provenance-gc] removed ${filesRemoved} dead ledger file(s), dropped ${rowsDropped} expired row(s)`,
       );
