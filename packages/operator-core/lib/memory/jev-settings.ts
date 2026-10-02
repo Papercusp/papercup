@@ -33,6 +33,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { recordDecisionModelCall } from '../decision-model-ledger';
 import { maskIntegrationKey, readIntegrationKey, writeIntegrationCredentials } from '../integration-credentials';
 import { activeWorkspaceId } from '../workspace-registry';
+import { alertOwnerOnJevAccountRefusal } from './jev-account-alert';
 import { jevFetch } from './jev-transport';
 
 export const JEV_MODES = ['off', 'shadow', 'on'] as const;
@@ -230,7 +231,15 @@ export function ensureJevDecisionClient(): DecisionClient {
     // P-003: every call — answered or inconclusive — lands in decision_model_calls.
     // Fire-and-forget; the client never awaits it and swallows its faults.
     // Pricing is passed so cost_usd is filled in; without it every row's cost is null.
-    onCall: (record) => recordDecisionModelCall(record, { pricing: JEV_PRICING }).then(() => undefined),
+    // WI-10005694: a provider refusal only the owner can fix (402 no credits,
+    // 401/403 bad key) notifies the owner once a day instead of failing silently.
+    onCall: (record) =>
+      Promise.all([
+        recordDecisionModelCall(record, { pricing: JEV_PRICING }),
+        alertOwnerOnJevAccountRefusal(record).catch((err) => {
+          console.warn(`[jev-account-alert] owner notification failed: ${err instanceof Error ? err.message : String(err)}`);
+        }),
+      ]).then(() => undefined),
   });
   configureDecisionModel(client);
   return client;

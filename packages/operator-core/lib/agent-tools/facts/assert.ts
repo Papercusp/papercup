@@ -47,6 +47,8 @@ import {
   detectSafetySlotKeyIntent,
 } from './safety-slot-key-intent';
 import { detectUndeliverableGuardRail } from './undeliverable-guard-rail';
+import { detectWallPlanStateGap, readWalledItemStatusesPg } from './wall-plan-state';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   carryProvenanceFields,
@@ -1181,6 +1183,18 @@ export default defineTool({
     const fact = await acquireWithContentionRetry(() =>
       boundedOrgTxn((tx) => assertFact(factInput, tx)),
     );
+    // WI-10005685: a wall: fact that names a plan item does not bind placement —
+    // goal placement obligations, launch admission and claims read plan STATE.
+    // Name every cited item still marked placeable, with the write that binds it.
+    // Fail-soft: a read error leaves the receipt without the field.
+    const wallPlanState = slotted.key.startsWith('wall:')
+      ? await detectWallPlanStateGap(
+          slotted.key,
+          slotted.body,
+          identity.workspaceId?.trim() || activeWorkspaceId(),
+          readWalledItemStatusesPg,
+        )
+      : null;
     // P-009 / D-011: an ASSUMPTION advances this agent's assumption watermark,
     // which every subsequent tool call is stamped with. `fact.id` is the
     // append-versioned row id P-008(a) made immutable — that immutability is
@@ -1399,6 +1413,7 @@ export default defineTool({
             ...(truncation ? { truncated: truncation } : {}),
             ...(sourceQuoteRedacted ? { sourceQuoteRedacted } : {}),
             ...(slotIntentWarning ? { slotIntentWarning } : {}),
+            ...(wallPlanState ? { wallPlanState } : {}),
             ...(undeliverableGuardRail ? { undeliverableGuardRail } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),
