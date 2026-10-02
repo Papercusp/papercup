@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
+import { describeSearchLegs } from '../search/describe-leg';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import { SEARCH_SOURCES } from '../search/sources';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
@@ -216,6 +217,11 @@ export default defineTool({
       ts: string | null; excerpt: string; highlight?: string; score: number; source: string;
     }
     const hits: RawHit[] = [];
+    // WI-10005676: the engine's per-leg verdict (hybrid path only — verbatim mode
+    // never calls runHybridSearch). Kept so a degraded semantic half is visible on
+    // the RESULT, not only in a hook banner: a search that silently went
+    // lexical-only reads exactly like one that found nothing.
+    let searchLegs: Parameters<typeof describeSearchLegs>[0] | null = null;
 
     if (mode === 'verbatim') {
       const f = filters ?? {};
@@ -261,7 +267,7 @@ export default defineTool({
       const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
       // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed
       // call inside runHybridSearch, not just the acquisition above.
-      const { results } = await runHybridSearch(sources, {
+      const { results, legs } = await runHybridSearch(sources, {
         caller: 'sessions:search',
         sql: tx,
         query: args.query,
@@ -275,6 +281,7 @@ export default defineTool({
         filters: { ...(filters ?? {}), readerIds: selfOwnerIds },
         log: ctx.log,
       });
+      searchLegs = legs;
       for (const r of results) {
         if (r.source === 'session_turn') {
           const ref = parseTurnRef(r.source_id);
@@ -614,6 +621,10 @@ export default defineTool({
       ...(zeroHitCaveat || staleIndexCaveat || toolPartCaveat
         ? { zeroHitCaveat: [staleIndexCaveat, toolPartCaveat, zeroHitCaveat].filter(Boolean).join(' ') }
         : {}),
+      // WI-10005676 / EI-19478862482607876: the engine's per-leg verdict, so a
+      // search that ran lexical-only (semantic leg 0 candidates / blocked / failed)
+      // says so on the result. Hybrid only — verbatim mode has no engine legs.
+      ...(searchLegs ? { legs: describeSearchLegs(searchLegs) } : {}),
       // Machine-legible receipt for the same fact, so a caller (or a later audit)
       // can distinguish a real empty from a degraded one without parsing prose.
       ...(refreshDegraded
