@@ -126,6 +126,8 @@ const {
   makeQuotaBlockDetector,
   verifyNativeTurnStartWithRetry,
   findNativeTranscriptMarker,
+  leadingTurnOriginMarker,
+  unwrapWholePaste,
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
   shouldRetryCarryOnFreshEpoch,
