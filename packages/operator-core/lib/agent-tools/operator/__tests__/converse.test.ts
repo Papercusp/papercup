@@ -711,6 +711,8 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     // local verdict would say `absent` for every alternate and wrongly skip every failover.
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     agentBackendCredentialVerdictMock.mockReturnValue({ usable: false, reason: 'absent' });
+    // converse's seam mock reads this switch, not the real transform configuration below.
+    customerPiMocks.spawnTransform.mockReturnValue(true);
     configureAgentSpawnTransform((request) => ({
       command: request.command,
       args: [...request.args],
@@ -734,6 +736,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
       expect(res.data.assembled).toBe('answered on claude');
     } finally {
       configureAgentSpawnTransform(undefined);
+      customerPiMocks.spawnTransform.mockReturnValue(false);
       agentBackendCredentialVerdictMock.mockReturnValue({ usable: true, basis: 'refreshable' });
       errSpy.mockRestore();
     }
