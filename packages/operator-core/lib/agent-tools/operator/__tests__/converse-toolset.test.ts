@@ -46,6 +46,21 @@ describe('selectConverseTools', () => {
     selectConverseTools({ role: 'papercup', hostTrust: 'owner', publicDoorNames: spy });
     expect(spy).not.toHaveBeenCalled();
   });
+
+  it('owner trust running as the hosted customer gets only the customer-safe tool surface', () => {
+    expect(selectConverseTools({
+      role: 'papercup',
+      hostTrust: 'owner',
+      agentRunsAsCustomer: true,
+      publicDoorNames: doors,
+    })).toEqual([
+      'mcp__agentmcp__capability:read',
+      'mcp__agentmcp__capability:fetch',
+      'mcp__agentmcp__tasks:ops',
+      'mcp__agentmcp__chat:ask_choice',
+      DELEGATE_DEEP_TOOL,
+    ]);
+  });
 });
 
 describe('buildConverseMcpMount', () => {
@@ -93,5 +108,28 @@ describe('buildConverseMcpMount', () => {
     expect(
       buildConverseMcpMount({ ...base, hostTrust: 'owner', superuserToken: 'su-tok', principalToken: null, agentRunsAsCustomer: false })?.bearer,
     ).toBe('su-tok');
+  });
+
+  it('D-421: customer-run owner trust mounts only its exact PI bearer, never the disk token', () => {
+    const m = buildConverseMcpMount({
+      ...base,
+      hostTrust: 'owner',
+      superuserToken: 'su-tok',
+      principalToken: ' customer-pi-bearer ',
+      agentRunsAsCustomer: true,
+    });
+    expect(m).toEqual({
+      url: 'http://localhost:3070/api/mcp?principal=pi&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
+      bearer: 'customer-pi-bearer',
+    });
+    expect(m?.url).not.toContain('superuser');
+    expect(m?.bearer).not.toBe('su-tok');
+    expect(buildConverseMcpMount({
+      ...base,
+      hostTrust: 'owner',
+      superuserToken: 'su-tok',
+      principalToken: '  ',
+      agentRunsAsCustomer: true,
+    })).toBeNull();
   });
 });

@@ -39,8 +39,10 @@ const DEEP_DELEGATING_ROLES: ReadonlySet<string> = new Set(['papercup']);
 export interface SelectConverseToolsInput {
   role: string;
   hostTrust: ConverseHostTrust;
-  /** The public host's door names in colon form (capabilityToolNames(
-   *  OWNED_LOOP_TOOL_SELECTION)). Called only on public trust. */
+  /** The owner host deliberately runs the brain under the hosted customer OS identity. */
+  agentRunsAsCustomer?: boolean;
+  /** The customer-safe door names in colon form (capabilityToolNames(
+   *  OWNED_LOOP_TOOL_SELECTION)). Used on public trust and customer-run owner sessions. */
   publicDoorNames: () => readonly string[];
 }
 
@@ -59,7 +61,7 @@ function dedupe(names: readonly string[]): readonly string[] {
  */
 export function selectConverseTools(input: SelectConverseToolsInput): readonly string[] {
   const deep = DEEP_DELEGATING_ROLES.has(input.role) ? [DELEGATE_DEEP_TOOL] : [];
-  if (input.hostTrust === 'owner') {
+  if (input.hostTrust === 'owner' && !input.agentRunsAsCustomer) {
     return dedupe([...ALL_AGENT_MCP_TOOLS, ...deep]);
   }
   const doors = input.publicDoorNames().map(toAllowedToolName);
@@ -106,7 +108,12 @@ export function buildConverseMcpMount(input: ConverseMcpMountInput): ConverseMcp
     `&tools=${encodeURIComponent(toolsParam)}` +
     (input.uiClientId ? `&client=${encodeURIComponent(input.uiClientId)}` : '');
   if (input.hostTrust === 'owner') {
-    if (!input.superuserToken || input.agentRunsAsCustomer) return null;
+    if (input.agentRunsAsCustomer) {
+      const principalBearer = input.principalToken?.trim() ?? '';
+      if (!principalBearer) return null;
+      return { url: `${input.baseUrl}/api/mcp?principal=pi&${common}`, bearer: principalBearer };
+    }
+    if (!input.superuserToken) return null;
     return { url: `${input.baseUrl}/api/mcp?superuser=1&${common}`, bearer: input.superuserToken };
   }
   // Public trust: no superuser param, no disk token — ever. The per-user

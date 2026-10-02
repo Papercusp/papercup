@@ -268,8 +268,13 @@ describe('Azure operation that finished with an error (WI-10005333)', () => {
   it.each([
     ['AuthorizationFailed', 403],
     ['LinkedAuthorizationFailed', 403],
+    ['RequestDisallowedByPolicy', 403],
+    ['InvalidTemplate', 400],
     ['InvalidTemplateDeployment', 400],
     ['InvalidParameter', 400],
+    ['InvalidParameterValue', 400],
+    ['InvalidRequestContent', 400],
+    ['InvalidResourceReference', 400],
     ['QuotaExceeded', 400],
     ['ResourceQuotaExceeded', 400],
     ['SkuNotAvailable', 400],
