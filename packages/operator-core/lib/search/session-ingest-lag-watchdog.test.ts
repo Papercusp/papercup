@@ -19,7 +19,10 @@ import {
   type AdapterLagObservation,
   type IngestLagSweepDeps,
 } from './session-ingest-lag-watchdog';
-import { evaluateInteractiveUsageFreshness } from '../interactive-usage/freshness';
+import {
+  INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS,
+  evaluateInteractiveUsageFreshness,
+} from '../interactive-usage/freshness';
 
 const HOUR = 3_600_000;
 const obs = (over: Partial<AdapterLagObservation> = {}): AdapterLagObservation => ({
@@ -201,6 +204,29 @@ describe('sessionIngestLagSweep', () => {
     expect(res).toEqual([expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'error' })]);
     expect(d.recordFire).not.toHaveBeenCalled();
     expect(d.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('alerts when a recent interactive sample has event-to-receipt lag above 15 minutes', async () => {
+    const nowMs = Date.now();
+    const d = {
+      ...deps([]),
+      now: nowMs,
+      observeInteractiveUsageFreshness: async () => evaluateInteractiveUsageFreshness(
+        nowMs - 1_000,
+        nowMs,
+        undefined,
+        INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS + 1,
+      ),
+    };
+    const res = await sessionIngestLagSweep({}, d);
+    expect(res).toEqual([expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'alerted' })]);
+    expect(d.recentWatchdogFires).toHaveBeenCalledWith(
+      'papercusp-workspace', 'papercusp', 1, 'interactive-usage-freshness', 'interactive',
+    );
+    expect(d.recordFire).toHaveBeenCalledWith(expect.objectContaining({ source: 'interactive-usage-freshness' }));
+    expect(d.openEscalation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      severity: 'advisory', summary: 'Interactive usage ingestion freshness is stale',
+    }));
   });
 
   it('is fail-soft: an observe failure returns an error row, never throws', async () => {
