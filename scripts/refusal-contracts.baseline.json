@@ -9,8 +9,6 @@
     "packages/operator-core/lib/agent-tools/plans/lint.ts::stored_blocked_with_blocked_by": 1,
     "packages/operator-core/lib/agent-tools/plans/lint.ts::unknown_blocked_by": 1,
     "packages/operator-core/lib/agent-tools/plans/set-status.ts::blocked_guard": 1,
-    "packages/operator-core/lib/agent-tools/work_items/set_blocker.ts::work_item_ref_dependency_refused": 2,
-    "packages/operator-core/lib/agent-tools/work_items/work-item-ref-blocker-edges.ts::work_item_ref_dependency_refused": 1,
     "packages/operator-core/lib/auth/hosted/billing/stripe-billing-client.ts::live_mode_not_allowed": 1,
     "packages/operator-core/lib/connected-apps/scope-policy.ts::hard_denied": 1,
     "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.ts::forbidden": 1,
