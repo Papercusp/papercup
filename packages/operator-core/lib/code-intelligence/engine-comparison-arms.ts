@@ -14,9 +14,11 @@
  * overstate absolute served latency for the graph engines.
  */
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { analyzeEnv, GITNEXUS_ANALYZE_STACK_KB } from '../harness/routines/gitnexus-reindex-action';
 import type { CorpusCase } from './acceptance-corpus';
 import type { EngineArm, EngineQueryResult, PhaseCost } from './engine-comparison';
 import type { SymbolSite } from './contracts';
@@ -71,6 +73,8 @@ export async function execTimed(cmd: string, args: readonly string[], opts: Exec
 
 export interface ArmDeps {
   loadAvg1(): number | null;
+  /** Process runner; defaults to `execTimed`. Injected by tests so no real engine is spawned. */
+  exec?: typeof execTimed;
 }
 
 const phaseOf = (r: ExecResult, deps: ArmDeps, okOverride?: boolean): PhaseCost => ({
@@ -186,6 +190,40 @@ export interface GitnexusArmConfig {
   readonly startLineBase?: 0 | 1;
 }
 
+export interface GitnexusAnalyzeInvocation {
+  readonly cmd: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+}
+
+/**
+ * How the bench spawns `gitnexus analyze`: EXACTLY the way production's `system:gitnexus-reindex` does
+ * (`analyzeEnv` pins + `node --stack-size=<kb> <cli> …`), not the vendor's bare defaults.
+ *
+ * WHY (WI-10005581): the bench used to spawn the `.bin` shim with only `HOME` set, so the installed
+ * 1.6.9 analyzer ran on the vendor defaults — a 16 GiB LadybugDB max_db_size, a 2 GiB buffer pool and
+ * gitnexus's manual WAL checkpoint (the Windows rename-race driver production switches OFF on Linux).
+ * An incremental refresh after the edit fixture then died inside that manual checkpoint with
+ * "Buffer manager exception: Maximum database size of 17179869184 bytes has been reached" followed by
+ * SIGSEGV (exit 139) instead of a clean error, leaving a 0-byte `lbug.shadow` behind. Measuring the
+ * engine under an environment production never runs graded a configuration, not the engine.
+ *
+ * `analyzeEnv` pins NODE_OPTIONS (heap + semi-space), which makes gitnexus SKIP its own re-exec, and
+ * `--stack-size` is not legal in NODE_OPTIONS — so it travels as argv to the resolved CLI entry
+ * (`realpathSync` of the `.bin` symlink; works for the installed 1.6.9 and the pinned 1.6.12 candidate).
+ * An ambient operator-set pin still wins inside `analyzeEnv`.
+ */
+export function gitnexusAnalyzeInvocation(
+  cfg: Pick<GitnexusArmConfig, 'bin' | 'home'>,
+  args: readonly string[],
+  base: NodeJS.ProcessEnv = process.env,
+): GitnexusAnalyzeInvocation {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(analyzeEnv(base))) if (typeof v === 'string') env[k] = v;
+  env.HOME = cfg.home;
+  return { cmd: process.execPath, args: [`--stack-size=${GITNEXUS_ANALYZE_STACK_KB}`, realpathSync(cfg.bin), ...args], env };
+}
+
 /**
  * `GitnexusDispatch` over the one-shot CLI. The facade parses the envelope, so
  * the CLI arms reuse the PRODUCTION parser instead of growing a second one.
@@ -228,8 +266,13 @@ export function createGitnexusArm(
   opForIntent: (intent: string) => string | null,
 ): EngineArm {
   const dispatch = createGitnexusCliDispatch(cfg);
-  const run = (args: readonly string[]) =>
-    execTimed(cfg.bin, args, { cwd: cfg.treeRoot, env: { HOME: cfg.home }, timeoutMs: cfg.timeoutMs ?? 1_800_000 });
+  const exec = deps.exec ?? execTimed;
+  // `analyze` (cold index AND incremental refresh) is the ONLY write path, so it alone runs under the
+  // production analyze environment. Query commands keep the plain one-shot invocation.
+  const run = (args: readonly string[]) => {
+    const inv = gitnexusAnalyzeInvocation(cfg, args);
+    return exec(inv.cmd, inv.args, { cwd: cfg.treeRoot, env: inv.env, timeoutMs: cfg.timeoutMs ?? 1_800_000 });
+  };
   return {
     id: cfg.id,
     version: cfg.version,
