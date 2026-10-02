@@ -361,6 +361,6 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
     // EI-15777: same paused-miss branch must cancel the caller's OWN standing
     // work-item:claimable await(s) (self-scoped by assignee/ownerId) so a compliant
     // peer stand-down doesn't keep re-waking this member on a pull it can't make.
-    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-me');
+    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-me', { includeStanding: true });
   });
 });
