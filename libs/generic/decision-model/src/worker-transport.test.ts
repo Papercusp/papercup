@@ -285,6 +285,27 @@ describe('worker transport failure handling', () => {
     expect(fallbackCalls).toBe(1);
   });
 
+  it('a fallback-mode failure names the fallback transport, and worker-lost events are never empty (WI-10005372)', async () => {
+    const events: WorkerTransportEvent[] = [];
+    const refusedFallback: FetchLike = () =>
+      Promise.reject(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' }));
+    const transport = newTransport({ fallback: refusedFallback, events });
+    const c = client(toServer(transport.fetch, 0));
+    for (let i = 0; i < WORKER_TRANSPORT_MAX_FAILURES; i += 1) {
+      expect(await c.decide(request)).toMatchObject({ kind: 'answered' });
+      await transport.__killWorkerForTest();
+    }
+    expect(transport.mode()).toBe('fallback');
+    const lost = events.filter((e) => e.kind === 'worker-lost');
+    expect(lost).toHaveLength(WORKER_TRANSPORT_MAX_FAILURES);
+    for (const e of lost) expect(e.kind === 'worker-lost' && e.error.trim()).not.toBe('');
+    const out = await c.decide(request);
+    expect(out).toMatchObject({ kind: 'inconclusive', reason: 'network-error' });
+    const detail = out.kind === 'inconclusive' ? out.detail : '';
+    expect(detail).toMatch(/^FallbackTransportError: fallback transport \(calling thread\) failed; cause: /);
+    expect(detail).toContain('ECONNREFUSED');
+  });
+
   it('a request error names the transport, the phase and the code the worker caught (WI-10005372)', async () => {
     const transport = newTransport();
     const refused: FetchLike = (_url, init) => transport.fetch('http://127.0.0.1:1/v1/decide', init);

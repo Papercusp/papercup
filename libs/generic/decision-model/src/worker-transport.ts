@@ -35,7 +35,7 @@
 import { performance } from 'node:perf_hooks';
 import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_threads';
 import type { FetchLike } from './client.js';
-import type { ErrorFields } from './error-detail.js';
+import { describeError, type ErrorFields } from './error-detail.js';
 
 /** Budget used when a caller passes no deadline. The client always passes one. */
 const NO_DEADLINE_BUDGET_MS = 30_000;
@@ -272,6 +272,20 @@ function rebuild(fields: ErrorFields): Error {
 }
 
 /**
+ * The error a failed fallback-mode call rejects with: it names the fallback transport
+ * (the calling thread) and carries the original error as its `cause`, so a
+ * network-error detail says which transport failed (WI-10005372). Abort and timeout
+ * errors pass through unchanged because the client classifies them by name.
+ */
+function fallbackFailure(err: unknown): unknown {
+  const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : undefined;
+  if (name === 'AbortError' || name === 'TimeoutError') return err;
+  const tagged = new Error('fallback transport (calling thread) failed', { cause: err });
+  tagged.name = 'FallbackTransportError';
+  return tagged;
+}
+
+/**
  * The error a failed worker call rejects with: it names the transport, how far the
  * request got and when, and carries what the worker caught as its `cause` (WI-10005372).
  */
@@ -312,7 +326,7 @@ export function createWorkerTransport(options: WorkerTransportOptions): WorkerTr
     worker = null;
     failures += 1;
     failPending(err);
-    emit({ kind: 'worker-lost', error: err.message, failures });
+    emit({ kind: 'worker-lost', error: describeError(err), failures });
     if (failures >= WORKER_TRANSPORT_MAX_FAILURES && mode === 'worker') {
       mode = 'fallback';
       emit({ kind: 'fallback', reason: `transport worker died ${failures} times`, hasFallback: Boolean(options.fallback) });
@@ -426,7 +440,11 @@ export function createWorkerTransport(options: WorkerTransportOptions): WorkerTr
   return {
     fetch: (url, init) => {
       if (mode === 'worker') return fetchViaWorker(url, init);
-      if (mode === 'fallback' && options.fallback) return options.fallback(url, init);
+      if (mode === 'fallback' && options.fallback) {
+        return options.fallback(url, init).catch((err: unknown) => {
+          throw fallbackFailure(err);
+        });
+      }
       return Promise.reject(new Error(mode === 'closed' ? 'worker transport closed' : 'worker transport unavailable'));
     },
     mode: () => mode,
