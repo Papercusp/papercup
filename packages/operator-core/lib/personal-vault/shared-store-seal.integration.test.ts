@@ -92,7 +92,8 @@ vi.mock('../memory/conflict-judge', () => ({
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { discloseDocuments, assertDisclosurePermits, DisclosureRefused } = await import('./disclosure-ledger');
-const { sealSharedText, sharedSealRefOf, SEALED_FIELD_STUB } = await import('./shared-store-seal');
+const { sealSharedText, sharedSealRefOf, sharedSealStub, SEALED_FIELD_STUB, openSharedSealsForOwner, unsealRowsForOwner } =
+  await import('./shared-store-seal');
 const { setWorkItemCheckpointWithPrior } = await import('../work-item-checkpoint');
 const { workItemScope } = await import('../carry-note');
 const { assertFact } = await import('../agent-facts/store');
@@ -372,6 +373,116 @@ describe('personal:open-sealed', () => {
   it('reports an unknown ref as not found', async () => {
     const { data } = await openAs(READER, 'fact', 'never-sealed');
     expect(data).toMatchObject({ ok: false, code: 'sealed_content_not_found' });
+  });
+});
+
+// WI-10005548 / D-006: the owner is always a permitted reader. Every owner read
+// surface (thread views, the Orders panel's checkpoints, the Learning memory views)
+// shows a sealed row through unsealRowsForOwner; this drives it with the stub each
+// REAL writer stores and asserts the text comes back with nobody labelled.
+describe('the owner’s view of sealed rows (unsealRowsForOwner)', () => {
+  async function disclosureCount(): Promise<number> {
+    const [row] = await org.adminSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`;
+    return row!.n;
+  }
+  async function ownerView(text: string): Promise<string> {
+    const before = await disclosureCount();
+    const [row] = await unsealRowsForOwner([{ text }], {
+      workspaceId: WS,
+      textOf: (r) => r.text,
+      withText: (r, t) => ({ ...r, text: t }),
+    });
+    expect(await disclosureCount()).toBe(before);
+    return row!.text;
+  }
+
+  it('shows the text of a sealed work-item comment', async () => {
+    await restrictSender();
+    const post = await commentWorkItem(await featureItem(), SECRET, SENDER, { workspaceId: WS, harness: HARNESS, writerOwnerId: SENDER });
+    expect(sharedSealRefOf(post?.body)).toMatchObject({ store: 'work-item-comment' });
+    expect(await ownerView(post!.body)).toBe(SECRET);
+  });
+
+  it('shows the text of a sealed work-item checkpoint', async () => {
+    await restrictSender();
+    const workItemId = `WI-cp-${randomUUID().slice(0, 8)}`;
+    const { stored } = await setWorkItemCheckpointWithPrior({ workspaceId: WS, harness: HARNESS, workItemId }, SECRET, {
+      writerOwnerId: SENDER,
+    });
+    expect(sharedSealRefOf(stored)).toMatchObject({ store: 'work-item-checkpoint' });
+    expect(await ownerView(stored!)).toContain(SECRET);
+  });
+
+  it('shows the text of a sealed shared memory', async () => {
+    await restrictSender();
+    await remember.handler(
+      { kind: 'project', content: SECRET, harness_slug: HARNESS } as never,
+      { agent: SENDER, workspaceId: WS, principal: { workspaceId: WS } } as never,
+    );
+    const stub = /🔒 Sealed:[^"]*/.exec(JSON.stringify(h.backendRemember.mock.calls))?.[0];
+    expect(sharedSealRefOf(stub)).toMatchObject({ store: 'memory' });
+    expect(await ownerView(stub!)).toBe(SECRET);
+  });
+
+  it('shows the text of a sealed fact', async () => {
+    await restrictSender();
+    const key = `owner-view-${randomUUID().slice(0, 8)}`;
+    const fact = await assertFact({ workspaceId: WS, scope: 'workspace', key, body: SECRET, ttlSec: 3600, createdBy: SENDER, writerOwnerId: SENDER });
+    expect(await ownerView(fact.body)).toBe(SECRET);
+  });
+
+  it('opens a page of mixed rows in one pass and leaves ordinary rows untouched', async () => {
+    await restrictSender();
+    const a = await commentWorkItem(await featureItem(), SECRET, SENDER, { workspaceId: WS, harness: HARNESS, writerOwnerId: SENDER });
+    const b = await commentWorkItem(await featureItem(), `${SECRET} again`, SENDER, { workspaceId: WS, harness: HARNESS, writerOwnerId: SENDER });
+    const rows = [{ id: 1, body: a!.body }, { id: 2, body: 'plain' }, { id: 3, body: b!.body }];
+    const out = await unsealRowsForOwner(rows, { workspaceId: WS, textOf: (r) => r.body, withText: (r, body) => ({ ...r, body }) });
+    expect(out).toEqual([{ id: 1, body: SECRET }, rows[1], { id: 3, body: `${SECRET} again` }]);
+  });
+
+  it('spends no query on a page without a stub', async () => {
+    const untouchable = { begin: () => { throw new Error('the sealed store was read'); } } as unknown as postgres.Sql;
+    expect((await openSharedSealsForOwner(untouchable, { workspaceId: WS, texts: ['plain', null, 42] })).size).toBe(0);
+    const real = h.sql;
+    h.sql = untouchable;
+    try {
+      const rows = [{ text: 'plain' }];
+      expect(await unsealRowsForOwner(rows, { workspaceId: WS, textOf: (r) => r.text, withText: (r, text) => ({ ...r, text }) })).toEqual(rows);
+    } finally {
+      h.sql = real;
+    }
+  });
+
+  it('keeps the stub when its sealed row is gone or the sealed store cannot be read', async () => {
+    const orphan = sharedSealStub({ store: 'fact', ref: randomUUID(), writerOwnerId: SENDER, labels: 1 });
+    expect(await ownerView(orphan)).toBe(orphan);
+
+    await restrictSender();
+    const post = await commentWorkItem(await featureItem(), SECRET, SENDER, { workspaceId: WS, harness: HARNESS, writerOwnerId: SENDER });
+    const real = h.sql;
+    h.sql = { begin: () => Promise.reject(new Error('sealed store offline')) } as unknown as postgres.Sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const [row] = await unsealRowsForOwner([{ text: post!.body }], { workspaceId: WS, textOf: (r) => r.text, withText: (r, text) => ({ ...r, text }) });
+      expect(row!.text).toBe(post!.body);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      h.sql = real;
+      warn.mockRestore();
+    }
+  });
+
+  it('reads under row security, and only the workspace it names', async () => {
+    await restrictSender();
+    const post = await commentWorkItem(await featureItem(), SECRET, SENDER, { workspaceId: WS, harness: HARNESS, writerOwnerId: SENDER });
+    const own = await inWorkspace((tx) => openSharedSealsForOwner(tx, { workspaceId: WS, texts: [post!.body] }));
+    expect(own.get(post!.body)).toBe(SECRET);
+    const other = await org.appSql.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, ['shared-seal-other']);
+      return openSharedSealsForOwner(tx, { workspaceId: 'shared-seal-other', texts: [post!.body] });
+    });
+    expect(other.size).toBe(0);
   });
 });
 

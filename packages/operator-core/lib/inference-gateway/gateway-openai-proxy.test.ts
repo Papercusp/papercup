@@ -643,6 +643,8 @@ describe('proxyOpenAi — happy path + header discipline', () => {
       'low', 'medium', 'high', 'xhigh', 'max',
     ]);
     expect(body.models?.some((m) => m.slug === 'gpt-6-astra')).toBe(true);
+    // WI-10005673: the gateway's own fallback rows must never claim a compaction hash.
+    expect(body.models?.filter((m) => 'comp_hash' in m)).toEqual([]);
     expect(body.models?.find((m) => m.slug === 'gpt-5.6-sol')?.supported_reasoning_levels).toContainEqual(
       expect.objectContaining({ effort: 'max' }),
     );
@@ -739,8 +741,9 @@ describe('proxyOpenAi — happy path + header discipline', () => {
       // cannot catch a merge that lets the cache override live rows.
       JSON.stringify({
         models: [
-          { slug: 'gpt-5.6-sol', display_name: 'stale cache' },
-          { slug: 'gpt-6-sol', display_name: 'stale cache GPT-6-Sol' },
+          // comp_hash on both rows: a stale cache's hash must never be served (WI-10005673).
+          { slug: 'gpt-5.6-sol', display_name: 'stale cache', comp_hash: 'stale-cache-hash' },
+          { slug: 'gpt-6-sol', display_name: 'stale cache GPT-6-Sol', comp_hash: 'stale-cache-hash' },
         ],
       }),
     );
@@ -768,6 +771,7 @@ describe('proxyOpenAi — happy path + header discipline', () => {
             {
               slug: 'gpt-6-sol',
               display_name: 'Native GPT-6-Sol',
+              comp_hash: '3000',
               visibility: 'list',
               priority: 2,
               supported_reasoning_levels: [{ effort: 'ultra', description: 'Native ultra' }],
@@ -799,10 +803,18 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     const responses = await Promise.all([first, second]);
     expect(responses.map((response) => response.status)).toEqual([200, 200]);
     const bodies = (await Promise.all(responses.map((response) => response.json()))) as Array<{
-      models: Array<{ slug: string; display_name?: string }>;
+      models: Array<{ slug: string; display_name?: string; comp_hash?: string }>;
     }>;
     for (const body of bodies) {
       expect(body.models.find((model) => model.slug === 'gpt-6-sol')?.display_name).toBe('Native GPT-6-Sol');
+      // WI-10005673: comp_hash comes ONLY from the live catalog. A row the live catalog did not
+      // supply (fallback lineup or the stale pool-home cache) must carry no comp_hash at all,
+      // because Codex compacts before a turn whenever the hash differs from the previous turn's.
+      expect(body.models.find((model) => model.slug === 'gpt-6-sol')?.comp_hash).toBe('3000');
+      expect(body.models.find((model) => model.slug === 'gpt-5.6-sol')).toBeDefined();
+      expect(
+        body.models.filter((model) => model.slug !== 'gpt-6-sol' && model.comp_hash !== undefined),
+      ).toEqual([]);
       expect(body.models.some((model) => model.slug === 'gpt-6-luna')).toBe(true);
       expect(body.models.some((model) => model.slug === 'gpt-future')).toBe(true);
       expect(JSON.stringify(body)).not.toContain(accessToken);

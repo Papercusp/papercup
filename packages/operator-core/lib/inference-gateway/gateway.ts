@@ -5175,7 +5175,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       supports_image_detail_original: true,
       context_window: contextWindow,
       max_context_window: maxContextWindow,
-      comp_hash: 'papercusp-gateway',
+      // NO comp_hash here, deliberately (WI-10005673). Codex compares each turn's comp_hash with
+      // the previous turn's and, when both are present and differ, compacts before the turn
+      // (CompactionReason::CompHashChanged). This used to say 'papercusp-gateway' while the live
+      // upstream catalog says e.g. '3000', so every thread that crossed between the two sources
+      // compacted on its next turn, and the managed PreCompact hook turned that into a
+      // carry-respawn that lost the history. The gateway does not know the compaction hash, so
+      // it must not claim one: Codex skips the check when either side is absent.
       effective_context_window_percent: 95,
       experimental_supported_tools: [],
       input_modalities: ['text', 'image'],
@@ -5252,7 +5258,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const modelsBySlug = new Map(fallbackModels.map((entry) => [entry.slug, entry]));
     // Old pool-home cache first, then the freshly fetched account catalog. Later sources win
     // metadata while retaining any reasoning level the safer fallback knew about.
-    for (const source of [localModels, liveModels]) {
+    // comp_hash is taken ONLY from the live account catalog (WI-10005673). A pool-home cache can
+    // be arbitrarily stale, and serving its hash while live is unavailable reintroduces the
+    // cross-source flip that forces Codex into a pre-turn CompHashChanged compaction.
+    const withoutCompHash = (row: CodexModel): CodexModel => {
+      const { comp_hash: _staleCompHash, ...rest } = row;
+      return rest as CodexModel;
+    };
+    for (const source of [localModels.map(withoutCompHash), liveModels]) {
       for (const incoming of source) {
         const prior = modelsBySlug.get(incoming.slug);
         if (!prior) order.push(incoming.slug);

@@ -797,6 +797,25 @@ async function resolveHiveMemberSlugs(potHomeSlug: string, workspaceId?: string)
  * is a silent correctness bug: the badge would count a different corpus than
  * the rows it sits above.
  */
+/**
+ * WI-10005548 / D-006: a memory a restricted agent wrote to a shared pool is stored
+ * as a sealed stub. The Learning views are the owner's, and the owner is always a
+ * permitted reader, so they show the text. This runs on the SOURCE rows, before
+ * retainMemoryTitle clamps a title to 200 chars: a stub is longer, so a clamped
+ * title would lose the ref it is opened by.
+ */
+async function unsealMemoriesForOwner<T extends { text: string }>(
+  workspaceId: string | null | undefined,
+  rows: readonly T[],
+): Promise<T[]> {
+  const { unsealRowsForOwner } = await import('../personal-vault/shared-store-seal');
+  return unsealRowsForOwner(rows, {
+    workspaceId,
+    textOf: (row) => row.text,
+    withText: (row, text) => ({ ...row, text }),
+  });
+}
+
 async function retainStoreDeps(
   sql: import('postgres').Sql,
   workspaceId: string,
@@ -822,7 +841,7 @@ async function retainStoreDeps(
     if (!avail.ok) throw new Error(avail.reason);
     const scopes = await resolveMemoryScopes();
     if (scopes.length === 0) return [];
-    return backend.list({ scope: scopes.length === 1 ? scopes[0]! : scopes });
+    return unsealMemoriesForOwner(workspaceId, await backend.list({ scope: scopes.length === 1 ? scopes[0]! : scopes }));
   };
 
   return {
@@ -836,7 +855,10 @@ async function retainStoreDeps(
       ? {
           listMemoriesPage: async (opts) => {
             const { listCanonicalRetainMemoriesPage } = await import('./learning-retain-read');
-            return listCanonicalRetainMemoriesPage(sql, await resolveMemoryScopes(), opts);
+            return unsealMemoriesForOwner(
+              workspaceId,
+              await listCanonicalRetainMemoriesPage(sql, await resolveMemoryScopes(), opts),
+            );
           },
           countMemories: async () => {
             const { countCanonicalRetainMemories } = await import('./learning-retain-read');
@@ -5532,7 +5554,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const avail = await backend.available();
           if (!avail.ok) throw new Error(avail.reason);
           const entry = await backend.get(id);
-          return entry ? (entry as typeof entry & { scope?: string }) : null;
+          if (!entry) return null;
+          const { activeWorkspaceId } = await import('../workspace-registry');
+          const [owned] = await unsealMemoriesForOwner(activeWorkspaceId(), [entry]);
+          return owned as typeof entry & { scope?: string };
         },
       });
       return detail ? [detail] : [];
@@ -6787,7 +6812,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const backend = getMemoryBackend();
           const avail = await backend.available();
           if (!avail.ok) throw new Error(avail.reason);
-          return backend.list({ scope });
+          const { activeWorkspaceId } = await import('../workspace-registry');
+          return unsealMemoriesForOwner(activeWorkspaceId(), await backend.list({ scope }));
         },
         loadPack: (id) => loadKnowledgePack(id),
         listPotSlugs: async () => {
@@ -7731,7 +7757,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         ...post,
         id: typeof post.id === 'bigint' ? Number(post.id) : post.id,
       }));
-      return [{ thread: thread[0], posts: safePosts }];
+      // WI-10005548 / D-006: a post a restricted agent wrote is stored as a sealed
+      // stub; the owner is always a permitted reader, so this view shows the text.
+      const [{ unsealRowsForOwner }, { activeWorkspaceId }] = await Promise.all([
+        import('../personal-vault/shared-store-seal'),
+        import('../workspace-registry'),
+      ]);
+      const ownerPosts = await unsealRowsForOwner(safePosts, {
+        workspaceId: activeWorkspaceId(),
+        textOf: (post) => post.body,
+        withText: (post, body) => ({ ...post, body }),
+      });
+      return [{ thread: thread[0], posts: ownerPosts }];
     },
   },
   'conversations.agentChatList': {
