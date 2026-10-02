@@ -2728,6 +2728,82 @@
     ],
     "next": "Read exact current evidence/server-derived testRun metadata. Give repaired scenarios unique refs; select one successful negative and one repaired recurrence per scenario while retaining unit+integration layers. Reuse current clean receipts and compare hashes. Only selected PASS permits exact17377 identity read and conditional withdrawal, then governing(no bindingIds/workItemIds/evidenceRefs). Reconcile D014 through the leader; preserve D003/D013/D016 and all carried checks."
   },
+  "p003MeasuredAdmissionRepairFire186": {
+    "recordedAt": "2026-10-02T12:56:29Z",
+    "scope": "WOE-P003-MEASURED-ADMISSION@3 governing PASS on the current staging evaluator. This is one clause of P006 verification; P006, rubric ratification, real-goal acceptance, audit and shipment remain open.",
+    "repair": "Reused exact server-derived testRun metadata from binding21728/run20527058 and its server-measured file basis. Added scenario-specific repaired reference21756; no source or test change and no test rerun. Selected exactly one negative and one repaired recurrence per scenario, retaining unit and integration layers.",
+    "newBinding": {
+      "id": 21756,
+      "evidenceRef": "packages/operator-core/lib/goal-launch-settings.test.ts#at-ceiling-refused:repaired:test-run-20527058",
+      "testRunId": 20527058,
+      "testRunStatus": "pass",
+      "testRunCommit": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+      "worktreeDirty": false,
+      "metadataSourceBinding": 21728
+    },
+    "causalPairs": {
+      "at-ceiling-refused": { "negativeBinding": 21749, "negativeRun": 20527520, "repairedBinding": 21756, "repairedRun": 20527058 },
+      "under-ceiling-admitted": { "negativeBinding": 21750, "negativeRun": 20527568, "repairedBinding": 21754, "repairedRun": 20527628 }
+    },
+    "selected": {
+      "bindingIds": [21756, 21749, 21750, 21754],
+      "verdict": "PASS",
+      "allApplicableRatings": "pass",
+      "requiredProofFloor": "l3",
+      "evaluatorBuild": { "sha": "c11fb0c0b0", "version": "0.0.0" },
+      "limits": "Selected-cohort result is diagnostic; the separate unfiltered governing evaluation below establishes clause acceptance."
+    },
+    "withdrawal": {
+      "prerequisites": "Fresh exact identities all belong to WI1074216/MEASURED-ADMISSION@3; selected replacement PASS and all four replacements server-measured CURRENT before withdrawal. D003 immutable baseline and D013/D014/D016 restrictions were read and preserved.",
+      "bindingIds": [17377, 21728, 21729, 21751, 21752, 21753],
+      "receipt": { "ok": 6, "failed": 0 },
+      "old17377": { "testRunId": 20323895, "status": "pass", "worktreeDirty": true, "sourceAndTest": "stale", "commitSha": "80386f03710821e65a0b124efb1200ee9889d5d6" },
+      "reason": "17377 is obsolete dirty historical proof. The other five rows duplicated scenarios or file references. Current replacement independently satisfies the unchanged contract before binding-only withdrawal; immutable test runs and evidence history remain retained.",
+      "sourceGuard": "spec-evidence-store.ts retractSpecEvidence updates only retracted_at/retracted_by/retraction_reason on the exact evidence row; no test-run write or historical evidence rewrite.",
+      "postReadback": "Exactly21756/21754/21750/21749 active, each server-measured CURRENT; bounded.truncatedByLimit=false."
+    },
+    "governing": {
+      "bindingIdsFilter": "omitted",
+      "workItemIdsFilter": "omitted",
+      "evidenceRefsFilter": "omitted",
+      "governing": true,
+      "specId": "WOE-P003-MEASURED-ADMISSION",
+      "specRevision": 3,
+      "specFingerprint": "88d121c3c71be424972e8424aeaaf8fb37ab74eca80bd0a1e9a6cac727fd9617",
+      "verdict": "PASS",
+      "wouldBlock": [],
+      "evaluatorBuild": { "sha": "c11fb0c0b0", "version": "0.0.0" }
+    },
+    "historicalLedgerReadback": {
+      "exactRows": [20323895, 20527058, 20527520, 20527568, 20527628, 20527660, 20527669],
+      "count": 7,
+      "truncatedByLimit": false,
+      "observation": "Historical20323895 remains PASS/dirty=true at80386f037108. Clean positives20527058/20527628 remain PASS/dirty=false/scratch=false. Four calibrated mutation rows remain FAIL/dirty=false/scratch=false. Their caught-control interpretation remains the dated Fire185 proof, not a new execution."
+    },
+    "acceptedClauseCensus": {
+      "population": 28,
+      "pass": 13,
+      "fail": 15,
+      "unknown": 0,
+      "governing": true,
+      "proof": "/tmp/p006-fire186-whole-governing-decoded.json",
+      "passSpecIds": ["WOE-P001-BLOCKER", "WOE-P001-CLAIM", "WOE-P001-EXCLUSIONS", "WOE-P001-IDEMPOTENCE", "WOE-P001-ORDER", "WOE-P001-TERMINAL", "WOE-P002-AUTHORITY", "WOE-P002-ELECTION", "WOE-P002-HANDOFF", "WOE-P002-RESPAWN", "WOE-P002-STALE-RESPAWN", "WOE-P002-UNKNOWN", "WOE-P003-MEASURED-ADMISSION"],
+      "failSpecIds": ["WOE-P003-BREACH", "WOE-P003-NUMERATOR", "WOE-P003-UNMEASURED", "WOE-P003-UNMEASURED-ADMISSION", "WOE-P003-WINDOW", "WOE-P004-CUSTODY", "WOE-P004-REAL-CALL", "WOE-P004-SCHEDULER-DIAGNOSIS", "WOE-P004-SLOW-BOOT", "WOE-P004-WAKE", "WOE-P005-HAND-DISPATCH", "WOE-P005-MATERIALIZATION", "WOE-P005-SOVEREIGNTY", "WOE-P006-REAL-CARD", "WOE-P006-SHIPMENT"],
+      "limits": "This is the explicit accepted 28-clause population from Fire183, freshly evaluated without evidence cohort filters. It is not a rubric ratification, successful real-goal card, final plan acceptance or shipment."
+    },
+    "testReruns": 0,
+    "protected": "Fire185 failing selected receipt remains historical. D003 baseline, D013 completed FAIL real-goal card, D014 bootstrap boundary, D016 completed18368 disposition,24 work-item checks and12 loop checks remain separate and preserved. No native/P2P/restart/LIVE_GATE_OPS action.",
+    "receipts": ["/tmp/p006-fire186-at-repaired-bind-decoded.json", "/tmp/p006-fire186-admission-selected-decoded.json", "/tmp/p006-fire186-admission-current-replacement-decoded.json", "/tmp/p006-fire186-admission-retire-decoded.json", "/tmp/p006-fire186-admission-live-readback-decoded.json", "/tmp/p006-fire186-admission-governing-decoded.json", "/tmp/p006-fire186-whole-governing-decoded.json"],
+    "numeratorPreparation": {
+      "currentSpecRead": "plans:get-specs returned active NUMERATOR revision3, hash2f7cd66811ac2c062a655e8905b8a0ef15ab2b5ec89d389e45b67058f056c71d, required unit+integration layers and one-to-one causal pairing.",
+      "requiredScenarios": ["attributed-authoritative", "diagnostic-excluded", "potless-attributed"],
+      "existingIntegrationProof": "Clean full42 run20527628 contains maintained assertions at spend-rollup.integration.test.ts306,336,587: attributed105 versus diagnostic205; pot-less attributed140; diagnostic125 with authoritative null/no-lineage-samples. Source/test hashes match Fire185. Reuse this unchanged receipt after exact binding/metadata checks.",
+      "maintainedUnitSurface": "spend-rollup-scope-labels.test.ts exists and pins source authority, no-lineage handling, population labels and non-additivity. There is no spend-rollup.test.ts. Do not treat a failed lookup of that nonexistent path as missing project tests or create a parallel harness.",
+      "nextProofWork": "Read the existing unit ledger and calibrated numerator mutation receipts. If named semantic unit scenarios are not already adequate, extend the maintained unit surface with isolated computeGoalSpendRollup cases; keep real-PG query semantics in the existing integration suite. Need one successful negative/repaired pair per three scenarios before withdrawal or governing acceptance.",
+      "leaderBoundaryRequest": "coord-send-84eab6aa087a4952a3bf8e94af554d599e15e5d9024bcfa014b96753e9f64850 resolves to current leader su-25bc0450-2829-42b9-a2dd-1431c99e4ba8; woken1 is queued delivery, pickup/decision unverified. Previous D014 question went to the preceding leader. Independent NUMERATOR work continues."
+    },
+    "next": "Prepare NUMERATOR@3 from exact current scenarios, source hashes and existing clean spend-rollup receipts; reuse unchanged proof when its layer/scenario/lineage fits before considering another test. Preserve15 remaining FAILs and unresolved D014 contract boundary."
+  },
   "p003PreparationFire183": {
     "scope": "Read-only preparation; all six accepted P003 clauses remain FAIL. No P003 evidence binding, withdrawal, test execution or source change.",
     "acceptedRevisions": "BREACH, MEASURED-ADMISSION, NUMERATOR, UNMEASURED, UNMEASURED-ADMISSION and WINDOW are revision3 with required unit+integration evidence and one-to-one causal scenarios.",
@@ -2759,5 +2835,5 @@
     },
     "recoveryReceipts": ["/tmp/p006-fire183-p003-specs-decoded.json", "/tmp/p006-fire183-p003-evidence-decoded.json", "/tmp/p006-fire183-grader-full-decoded.json", "/tmp/p006-fire183-real-goal-card.json"]
   },
-  "next": "Continue P003 MEASURED-ADMISSION from the prepared exact scenarios/current hashes with necessary clean unit and calibrated counterexample proof, then required integration evidence. Preserve stale17377 until selected replacement PASS; do not withdraw or rebind P002 again. Reconcile D014 versus UNMEASURED-ADMISSION acceptance explicitly, preserve D003 baseline, reuse D013's completed FAIL real-goal card and keep independent rubric ratification/closure audit/final shipment open. Preserve separate P007/P008 checks and dated historical evidence; no unchanged native rerun."
+  "next": "MEASURED-ADMISSION@3 now governs PASS (Fire186); do not repeat its binding repair or17377 withdrawal. Prepare NUMERATOR@3 from exact current scenarios, writer/test hashes and existing clean rollup receipts, reusing unchanged proof where adequate. Remaining15 accepted clauses FAIL. Reconcile D014 versus UNMEASURED-ADMISSION acceptance explicitly; preserve D003 baseline, D013 completed FAIL real-goal card, D016 history and independent rubric ratification/closure audit/final shipment obligations. Preserve separate P007/P008 checks and dated historical evidence; no unchanged native/P002 rerun."
 }
