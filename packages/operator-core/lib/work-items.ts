@@ -1010,6 +1010,13 @@ export interface ListWorkItemsFilter {
    * family is bug/change/task, all nature 'work' (D-013), so a set without 'work' drops it.
    */
   natures?: readonly DatatypeNature[];
+  /**
+   * D-041 (WI-10005358): 'agent' keeps only rows the write doors accept (the shared
+   * agentWorkCategoryWhereSql predicate); 'human' keeps human-audience rows; unset or 'any'
+   * applies no audience filter. Applied in BOTH family shape fragments, so list and both
+   * counts agree (WI-5512 parity). The work_items:list TOOL chooses the agent default.
+   */
+  audience?: WorkAudienceFilter;
   state?: string;
   /**
    * WI-38339 — `state` as a SET, for the question a single value cannot ask. Measured
@@ -1308,7 +1315,8 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
           )`
         : sql`TRUE`
     }
-    AND ${natureWhereSql(sql, filter.natures, filter.kind)}`;
+    AND ${natureWhereSql(sql, filter.natures, filter.kind)}
+    AND ${audienceWhereSql(sql, filter.audience)}`;
 }
 
 /**
@@ -1324,6 +1332,7 @@ function issueShapeFilterArgs(filter: ListWorkItemsFilter) {
     createdSince: filter.createdSince,
     updatedSince: filter.updatedSince,
     sourcePlanSlug: filter.sourcePlanSlug,
+    audience: filter.audience,
   };
 }
 
@@ -1738,7 +1747,13 @@ export {
   type TerminalOwnerOriginHealReason,
 } from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
-import { ISSUE_FAMILY_ROUTE_KINDS, agentWorkCategoryWhereSql, issueFamilyRouteSql } from './work-nature/agent-work-predicate';
+import {
+  ISSUE_FAMILY_ROUTE_KINDS,
+  agentWorkCategoryWhereSql,
+  audienceWhereSql,
+  issueFamilyRouteSql,
+  type WorkAudienceFilter,
+} from './work-nature/agent-work-predicate';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare

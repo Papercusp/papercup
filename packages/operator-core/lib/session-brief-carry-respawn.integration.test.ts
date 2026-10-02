@@ -20,7 +20,7 @@ const sessionBriefMigration = resolve(
 // both the missing-column failure and the real migrated write/consume/restore path.
 const pendingCarryMigration = resolve(
   here,
-  '../../../libs/papercusp/libs/db/sql/1340-session-brief-pending-carry-respawn.sql.DRAFT',
+  '../../../libs/papercusp/libs/db/sql/1340-session-brief-pending-carry-respawn.sql',
 );
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const OWNER = `su-carry-respawn-${RUN}`;

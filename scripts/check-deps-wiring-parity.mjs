@@ -891,6 +891,24 @@ const AUDIT_ROW_OWN_WORKSPACE_DEFAULT =
   'intentional (adjudicated 2026-09-30, WI-10004167): omitting workspaceId writes to the process\'s own workspace ' +
   '(desktop-audit.ts:163-165 `activeWorkspaceId()`); only the control-plane relay copy targets another workspace.';
 
+/**
+ * WI-10005393 — `AwsSdkCredentialResolvers.getWebIdentityToken` is consumed ONLY by the
+ * `fromWebToken` branch of `createAwsSdkCredentialProvider` (aws-sdk-client.ts:452-453:
+ * `const mint = resolvers.getWebIdentityToken; if (!mint) throw …`), and that branch is
+ * reachable only from the hosted OIDC method (`planAwsSdkCredentialProvider`,
+ * aws-connection.ts:54+). The two sites below build a provider ONLY for a hosted
+ * `customer-role` source — hosted-aws-auth.ts `customerRoleSource` and
+ * hosted-aws-host-discovery.ts both throw `hosted_provider_delegation_aws_method_not_organization_bound`
+ * for any other method — and a `customer-role` source plans to `fromTemporaryCredentials`
+ * (aws-connection.ts:37-52), never `fromWebToken`. So the minter is unreachable at these
+ * sites, and its absence cannot become a silent no-op: if the plan ever DID reach
+ * `fromWebToken`, `aws_workspace_host_web_identity_token_source_required` would fail LOUD.
+ * The wired site (aws-sdk-client.ts:596) serves every credential method, which is why it
+ * carries the seam. Wiring a minter here would be dead code, not a fix.
+ */
+const CUSTOMER_ROLE_NEVER_WEB_IDENTITY =
+  'WI-10005393 adjudicated: this site builds credentials only for a hosted customer-role source, which plans to fromTemporaryCredentials and never reaches the fromWebToken branch that reads getWebIdentityToken (aws-sdk-client.ts:452); an absent minter there fails loud';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -1027,6 +1045,10 @@ const FAIL_BASELINE = new Map([
   // call site states: a dependency held by a live lock may be changing its EXPORTS,
   // so an old copy at HEAD cannot satisfy the importer's new symbols.
   ['QuarantineImportGuardDeps|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|isResolvableAtHead', LIVE_LOCK_IMPORTER_NO_HEAD_FALLBACK],
+
+  // WI-10005393 — rows taken from the measured `--list` population, not hand-written.
+  ['AwsSdkCredentialResolvers|packages/operator-core/lib/workspace-host/hosted-aws-auth.ts|getWebIdentityToken', CUSTOMER_ROLE_NEVER_WEB_IDENTITY],
+  ['AwsSdkCredentialResolvers|packages/operator-core/lib/workspace-host/hosted-aws-host-discovery.ts|getWebIdentityToken', CUSTOMER_ROLE_NEVER_WEB_IDENTITY],
 ]);
 
 /**

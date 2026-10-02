@@ -93,6 +93,7 @@ import {
   isLegacyFleetScopeDowngradeAdmission,
   type LegacyFleetScopeDowngradeAdmission,
 } from './work-item-fleet-scope-recovery';
+import { audienceWhereSql, type WorkAudienceFilter } from './work-nature/agent-work-predicate';
 
 /**
  * EI-217141: a fleet leader's explicit assignment is the one narrow exception to
@@ -1256,6 +1257,8 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
 
 export interface ListIssuesFilter {
   state?: IssueState;
+  /** D-041 (WI-10005358): see ListWorkItemsFilter.audience. Applied by issueShapeWhereSql. */
+  audience?: WorkAudienceFilter;
   /** Case-insensitive literal substring matched against title + body. */
   q?: string;
   scope?: string;
@@ -1732,7 +1735,8 @@ export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
         : filter.includeChildren === false
           ? sql`(${col('parent_id')} IS NULL OR ${col('parent_id')} = '')`
           : sql`TRUE`
-    }`;
+    }
+    AND ${audienceWhereSql(sql, filter.audience, aliased ? 'ei' : null)}`;
 }
 
 /**

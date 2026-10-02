@@ -293,6 +293,8 @@ for (const existing of [false, true]) {
     const showConfiguration = guide.getByRole('button', { name: 'Show me' });
     await showConfiguration.focus(); await page.keyboard.press('Enter');
     if (!existing) {
+      await expect(page.locator('[data-tutorial-target="cloud-configuration"]')).toBeFocused();
+      await page.keyboard.press('Tab');
       const name = page.getByRole('textbox', { name: 'Workspace name' });
       await expect(name).toBeFocused();
       // Atomic fill hides dropped intermediate updates in a controlled,

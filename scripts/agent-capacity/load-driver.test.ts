@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { achievedConcurrency, drive, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
+import { achievedConcurrency, checkParkedPlan, drive, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, summarizeParked, toolOutcomesDiverge, versionMismatches, type ParkRelease } from './load-driver';
 
 describe('parseAgentEnv', () => {
   it('absent or blank is no extra env', () => {
@@ -440,5 +440,63 @@ const call = async (n) => {
       });
       expect(summarize([r])).toMatchObject({ clean: 0, diverged: 1, toolDiverged: 1 });
     });
+  });
+
+  it('parked (P-015): extra claude sessions idle on a held reply until one shared release, then finish intact, reported apart', async () => {
+    let release: ParkRelease | null = null;
+    const runs = await drive({
+      cacheDir: path.join(root, 'cache'),
+      agents: 1,
+      sessions: [meta({ id: 'claude-s1' })],
+      corpus,
+      corpusDir: path.join(root, 'corpus'),
+      outDir: path.join(root, 'out'),
+      runId: 'T',
+      speed: 0,
+      staggerMs: 0,
+      durationSec: 0,
+      isolation: 'none',
+      keepWork: false,
+      parked: { agents: 2, atRequest: 2, releaseAtSec: 1 },
+      onRelease: (e) => (release = e),
+    });
+    const active = runs.filter((r) => !r.parked);
+    const parked = runs.filter((r) => r.parked);
+    expect(active.map((r) => r.instance)).toEqual(['T-s0-i0']);
+    expect(parked.map((r) => r.instance).sort()).toEqual(['T-p0-i0', 'T-p1-i0']);
+    for (const r of runs) expect(r).toMatchObject({ exitCode: 0, timedOut: false, diverged: false, served: { exact: 2, exhausted: 0 } });
+    // The active session finished before the release (1 s after the start); each parked one sat on
+    // its 2nd reply and finished only after it, with the reply intact.
+    expect(release).toMatchObject({ held: 2, parked: 2 });
+    const releasedAt = Date.parse((release as unknown as ParkRelease).at);
+    const endOf = (r: (typeof runs)[number]) => Date.parse(r.startedAt) + r.wallMs;
+    expect(endOf(active[0])).toBeLessThan(releasedAt);
+    for (const r of parked) {
+      expect(endOf(r)).toBeGreaterThanOrEqual(releasedAt - 5);
+      const printed = JSON.parse(readFileSync(path.join(root, 'out', 'sessions', `${r.instance}.cli.jsonl`), 'utf8'));
+      expect(printed.out.map((o: [number, string]) => o[1])).toEqual(['data: reply-0\n\n', 'data: reply-1\n\n']);
+    }
+    const served = readFileSync(path.join(root, 'out', 'served.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { instance: string; seq: number; heldMs?: number });
+    const held = served.filter((s) => s.heldMs !== undefined);
+    expect(held.map((s) => [s.instance, s.seq]).sort()).toEqual([['T-p0-i0', 1], ['T-p1-i0', 1]]);
+    for (const s of held) expect(s.heldMs).toBeGreaterThanOrEqual(500);
+    expect(readFileSync(path.join(root, 'out', 'parked.jsonl'), 'utf8')).toContain('"event":"release"');
+    expect(summarizeParked(runs, release)).toMatchObject({ runs: 2, heldAtRelease: 2, failed: 0 });
+    expect(summarize(active)).toMatchObject({ runs: 1, clean: 1, failed: 0 });
+  });
+});
+
+describe('checkParkedPlan (P-015)', () => {
+  it('returns the claude sessions to park, or none without a plan', () => {
+    const s = [meta({ id: 'claude-a' }), meta({ id: 'codex-b', cli: 'codex' })];
+    expect(checkParkedPlan(undefined, s, 600)).toEqual([]);
+    expect(checkParkedPlan({ agents: 0, atRequest: 4, releaseAtSec: 1 }, s, 600)).toEqual([]);
+    expect(checkParkedPlan({ agents: 3, atRequest: 4, releaseAtSec: 360 }, s, 600).map((m) => m.sessionId)).toEqual(['claude-a']);
+  });
+
+  it('refuses a plan that cannot run: no claude session, a bad hold point, or a release after the step ends', () => {
+    expect(() => checkParkedPlan({ agents: 2, atRequest: 4, releaseAtSec: 60 }, [meta({ id: 'codex-b', cli: 'codex' })], 600)).toThrow(/claude/);
+    expect(() => checkParkedPlan({ agents: 2, atRequest: 0, releaseAtSec: 60 }, [meta({ id: 'claude-a' })], 600)).toThrow(/park-at-request/);
+    expect(() => checkParkedPlan({ agents: 2, atRequest: 4, releaseAtSec: 600 }, [meta({ id: 'claude-a' })], 600)).toThrow(/inside --duration-sec/);
   });
 });

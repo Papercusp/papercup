@@ -469,8 +469,10 @@ describe('pending carry-respawn session-brief helpers', () => {
 
     await expect(consumePendingCarryRespawn(identity.ownerId, { nowMs: slot.createdAtMs })).resolves.toEqual(slot);
     expect(rec.statements[0]).toContain('UPDATE harness_shared.session_briefs');
+    expect(rec.statements[0]).toContain('WITH pending AS MATERIALIZED');
+    expect(rec.statements[0]).toContain('FOR UPDATE');
     expect(rec.statements[0]).toContain('pending_carry_respawn IS NOT NULL');
-    expect(rec.statements[0]).toContain('RETURNING pending_carry_respawn');
+    expect(rec.statements[0]).toContain('RETURNING pending.pending_carry_respawn');
     expect(rec.calls[0]).toContain(identity.ownerId);
   });
 

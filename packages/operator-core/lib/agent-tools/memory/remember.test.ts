@@ -96,6 +96,8 @@ import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
 import { journalPendingWrite } from '../../memory/write-journal';
+import { isMemoryPaused } from '../../memory/memory-pause';
+import { wornMemoryIdentityIds } from '../../knowledge-packs/identity-learning';
 import { createAnthropicJudge, conflictJudgeAvailable } from '../../memory/anthropic-judge';
 
 type FakeBackend = {
@@ -1019,6 +1021,112 @@ describe('memory:remember — source attribution (EI-10358)', () => {
     expect(meta.source).toBe('agent');
     expect(meta.source_role).toBeUndefined();
     expect(meta.source_session).toBeUndefined();
+  });
+});
+
+describe('memory:remember pre-write deadlines (EI-24844815056615401)', () => {
+  it('returns without writing when user resolution stalls', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(getSessionUserOrDefault).mockImplementationOnce(
+      () => new Promise<Awaited<ReturnType<typeof getSessionUserOrDefault>>>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({
+        ok: false,
+        stored: false,
+        reason: 'memory_timeout',
+        step: 'user_resolution',
+      });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps the pause gate fail-open when its cached database read stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(isMemoryPaused).mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails closed when identity provenance stalls, before the journal or memory store', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(wornMemoryIdentityIds).mockClear().mockImplementationOnce(
+      () => new Promise<string[]>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler(
+        { content: 'a fact from a real session', kind: 'reference' },
+        {
+          principal: { workspaceId: 'ws-test' },
+          role: 'worker',
+          uiClientId: 'su-abc123',
+        } as unknown as Parameters<typeof remember.handler>[1],
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({
+        ok: false,
+        stored: false,
+        reason: 'memory_timeout',
+        step: 'identity_provenance',
+      });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('continues with an unjournaled write when the best-effort journal insert stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear().mockImplementationOnce(
+      () => new Promise<string | null>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
+      expect(parsed.journaled).toBeUndefined();
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
   });
 });
 

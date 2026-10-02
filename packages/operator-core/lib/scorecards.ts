@@ -684,7 +684,15 @@ export function evaluateScorecardInstrumentContract(input: {
       }
     }
     const expected = expectedInstrumentVerdict(input.ratings[criterion.key]?.rating ?? '');
-    if (expected && expected !== snapshot.verdict) verdictMismatches.push(instrumentKey);
+    // WI-10005422: an instrument that could not decide ('unknown') cannot CONTRADICT a
+    // negative claim. A rubric may fail a criterion on grounds the instrument cannot see
+    // (WOE goal-mode-foundation fails a critical unknown left unowned, which the base-card
+    // resolver reads as 'unknown'), so that fail is unconfirmed, not contradicted. A claimed
+    // PASS over an unknown snapshot stays a mismatch: a positive needs the measurement.
+    const unconfirmedNegative = expected === 'fail' && snapshot.verdict === 'unknown';
+    if (expected && expected !== snapshot.verdict && !unconfirmedNegative) {
+      verdictMismatches.push(instrumentKey);
+    }
   }
 
   return {

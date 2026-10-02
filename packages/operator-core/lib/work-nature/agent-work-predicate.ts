@@ -86,6 +86,25 @@ export function agentWorkCategoryWhereSql(sql: postgres.Sql, alias: string | nul
   return sql.unsafe(`harness_shared.work_item_is_agent_work(${p}nature, ${p}audience, NULL, NULL)`);
 }
 
+/**
+ * D-041 (enterprise-data-sources-2026-10-01, WI-10005358): the READ-side audience filter.
+ * 'agent' is the SAME category predicate the write doors refuse on (D-024/D-035), imported
+ * rather than restated, so a row a default agent list shows is a row the doors accept.
+ * 'human' selects human-audience rows; 'any' (or unset) applies no audience filter.
+ */
+export const WORK_AUDIENCE_FILTERS = ['agent', 'human', 'any'] as const;
+export type WorkAudienceFilter = (typeof WORK_AUDIENCE_FILTERS)[number];
+
+export function audienceWhereSql(
+  sql: postgres.Sql,
+  audience: WorkAudienceFilter | null | undefined,
+  alias: string | null = null,
+) {
+  if (audience === 'agent') return agentWorkCategoryWhereSql(sql, alias);
+  if (audience === 'human') return sql.unsafe(`${columnPrefix(alias)}audience = 'human'`);
+  return sql.unsafe('TRUE');
+}
+
 /** The in-memory twin, for paths that hold a row rather than a query. Same truth table. */
 export function isAgentWork(row: {
   nature: string | null | undefined;

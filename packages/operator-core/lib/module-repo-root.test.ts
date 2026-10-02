@@ -10,6 +10,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { moduleRepoRoot } from './module-repo-root';
+import { presentOnDisk } from '../../../scripts/lib/tracked-files.mjs';
 
 const FAKE_ROOT = '/srv/checkout';
 const atFakeRoot = (dir: string) => dir === FAKE_ROOT;
@@ -136,9 +137,9 @@ describe('census: no new fixed import.meta.url climbs to the repo root', () => {
   });
 
   it('the scanned tree has no unlisted site, and every listed site still exists (shrink-only)', () => {
-    const files = execFileSync('git', ['ls-files', '-z', '--', ...SCOPE], { cwd: REPO_ROOT, encoding: 'utf8' })
+    const files = presentOnDisk(execFileSync('git', ['ls-files', '-z', '--', ...SCOPE], { cwd: REPO_ROOT, encoding: 'utf8' })
       .split('\0')
-      .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec)\.tsx?$/.test(f));
+      .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec)\.tsx?$/.test(f)), REPO_ROOT);
     expect(files.length).toBeGreaterThan(1000); // the census really read the tree
 
     const found: Record<string, number> = {};

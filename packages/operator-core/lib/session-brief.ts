@@ -203,9 +203,11 @@ export async function clearPendingCarryRespawn(
 }
 
 /**
- * Atomically consume the slot with UPDATE ... RETURNING. Concurrent bootstrap
- * workers cannot both receive the same payload; expired or malformed payloads
- * are still cleared so they cannot leak into a later ordinary launch.
+ * Atomically lock the pending row, clear it, and return the locked pre-update
+ * value. A bare UPDATE ... RETURNING pending_carry_respawn returns the new NULL
+ * value, which would silently discard every consumed payload. Concurrent
+ * bootstrap workers cannot both receive the same payload; expired or malformed
+ * payloads are still cleared so they cannot leak into a later ordinary launch.
  */
 export async function consumePendingCarryRespawn(
   ownerId: string,
@@ -215,11 +217,18 @@ export async function consumePendingCarryRespawn(
   const nowMs = options.nowMs ?? Date.now();
   const sql = options.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
-    UPDATE harness_shared.session_briefs
+    WITH pending AS MATERIALIZED (
+      SELECT owner_id, pending_carry_respawn
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${ownerId}
+         AND pending_carry_respawn IS NOT NULL
+       FOR UPDATE
+    )
+    UPDATE harness_shared.session_briefs AS brief
        SET pending_carry_respawn = NULL, updated_at = now()
-     WHERE owner_id = ${ownerId}
-       AND pending_carry_respawn IS NOT NULL
-    RETURNING pending_carry_respawn
+      FROM pending
+     WHERE brief.owner_id = pending.owner_id
+    RETURNING pending.pending_carry_respawn
   `;
   return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs);
 }

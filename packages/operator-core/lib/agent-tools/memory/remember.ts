@@ -23,7 +23,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { lexicalSimilarity } from '@papercusp/memory';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
-import { MemoryTimeoutError, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
+import { MemoryTimeoutError, memoryToolTimeoutMs, withMemoryTimeout, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
 import { expandRefsForEmbed } from '../../memory/ref-expand';
 import { getWorkItem } from '../../work-items';
@@ -220,12 +220,42 @@ export default defineTool({
     }),
   ),
   async handler(args, ctx) {
-    const user = await getSessionUserOrDefault();
+    let user: Awaited<ReturnType<typeof getSessionUserOrDefault>>;
+    try {
+      user = await withMemoryTimeout(
+        getSessionUserOrDefault(),
+        'memory:remember user resolution',
+        memoryToolTimeoutMs(),
+      );
+    } catch (err) {
+      if (!(err instanceof MemoryTimeoutError)) throw err;
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: false,
+          stored: false,
+          reason: 'memory_timeout',
+          step: 'user_resolution',
+        }) }],
+      };
+    }
     // EI-10355: the user's "stop remembering things about me" switch. Checked
     // BEFORE journalPendingWrite() below — a paused write must leave NO pending
     // journal row, or the embed-backfill drain would resurrect it and store the
     // memory anyway on resume (a pause that merely defers is not a pause).
-    if (await isMemoryPaused(user.id)) {
+    let paused = false;
+    try {
+      paused = await withMemoryTimeout(
+        isMemoryPaused(user.id),
+        'memory:remember pause lookup',
+        memoryToolTimeoutMs(),
+      );
+    } catch (err) {
+      if (!(err instanceof MemoryTimeoutError)) throw err;
+      // isMemoryPaused deliberately fails open on an unavailable PG read; a
+      // timeout is the same unavailable-read case, and the write path keeps
+      // the existing consent semantics while bounding the wait.
+    }
+    if (paused) {
       return {
         content: [{ type: 'text', text: JSON.stringify(MEMORY_PAUSED_REFUSAL) }],
       };
@@ -337,7 +367,26 @@ export default defineTool({
     if (args.hive_slug) metadata.hive_slug = args.hive_slug;
     if (ctx.uiClientId && ctx.principal?.workspaceId) {
       const { wornMemoryIdentityIds } = await import('../../knowledge-packs/identity-learning');
-      metadata.worn_identity_ids = await wornMemoryIdentityIds(ctx.uiClientId, ctx.principal.workspaceId);
+      try {
+        metadata.worn_identity_ids = await withMemoryTimeout(
+          wornMemoryIdentityIds(ctx.uiClientId, ctx.principal.workspaceId),
+          'memory:remember identity provenance',
+          memoryToolTimeoutMs(),
+        );
+      } catch (err) {
+        if (!(err instanceof MemoryTimeoutError)) throw err;
+        // Provenance stays fail-closed: if the applied identity cannot be read,
+        // do not store an unstamped memory. Return promptly instead of leaving
+        // the caller behind an unbounded pre-write lookup.
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false,
+            stored: false,
+            reason: 'memory_timeout',
+            step: 'identity_provenance',
+          }) }],
+        };
+      }
     }
 
     // EI-10432 — federation egress needs a ROUTING KEY, and this path never set
@@ -413,19 +462,27 @@ export default defineTool({
     // (dedup/conflict) CLOSE the row so the drain never resurrects a write
     // the tool refused. journalId === null ⇒ journaling degraded (e.g. the
     // migration hasn't applied) — behavior is then exactly the old lossy path.
-    const journalId = await journalPendingWrite({
-      scope: scopeKey,
-      kind: args.kind,
-      content: args.content,
-      // The internal marker never reaches the stored memory payload. It lets
-      // the journal drain finish the SAME supersession if the embed/store or
-      // validity-close leg fails after this call has durably parked the write.
-      metadata: args.supersede
-        ? { ...metadata, __journal_supersede_of: args.supersede }
-        : metadata,
-      verbatim: true,
-      shareable: args.shareable,
-    });
+    let journalId: string | null;
+    try {
+      journalId = await withMemoryTimeout(journalPendingWrite({
+        scope: scopeKey,
+        kind: args.kind,
+        content: args.content,
+        // The internal marker never reaches the stored memory payload. It lets
+        // the journal drain finish the SAME supersession if the embed/store or
+        // validity-close leg fails after this call has durably parked the write.
+        metadata: args.supersede
+          ? { ...metadata, __journal_supersede_of: args.supersede }
+          : metadata,
+        verbatim: true,
+        shareable: args.shareable,
+      }), 'memory:remember write-ahead journal', memoryToolTimeoutMs());
+    } catch (err) {
+      if (!(err instanceof MemoryTimeoutError)) throw err;
+      // Journaling is best-effort by contract. A late INSERT is reconciled by
+      // the drain's near-duplicate guard; do not let it hold up the live write.
+      journalId = null;
+    }
     const journaledFields = journalId
       ? {
           journaled: true,

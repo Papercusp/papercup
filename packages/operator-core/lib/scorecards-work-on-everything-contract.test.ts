@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   computeWorkOnEverythingRollup,
+  evaluateScorecardInstrumentContract,
   validateWorkOnEverythingEvidenceEnvelope,
   WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC,
   resolveScorecardInstrumentSnapshots,
@@ -292,5 +293,31 @@ describe('registered scorecard instrument provenance', () => {
       supplied: { custom: { verdict: 'pass', measuredAt: subject.windowEnd, provenance: 'platform-computed' } },
     }, read([]));
     expect(snapshots?.custom.provenance).toBe('self-reported');
+  });
+
+  // WI-10005422: WOE rev 39 fails goal-mode-foundation when a critical unknown is left
+  // unowned, even with no failing base rating. The resolver cannot see ownership, so it
+  // reads 'unknown'. An instrument that cannot decide must not refuse that rubric-faithful
+  // fail, while a claimed pass still needs the measurement.
+  it.each([
+    { claimed: 'fail', measured: 'unknown', mismatch: false },
+    { claimed: 'severe', measured: 'unknown', mismatch: false },
+    { claimed: 'fail', measured: 'fail', mismatch: false },
+    { claimed: 'pass', measured: 'unknown', mismatch: true },
+    { claimed: 'exemplary', measured: 'unknown', mismatch: true },
+    { claimed: 'fail', measured: 'pass', mismatch: true },
+    { claimed: 'pass', measured: 'fail', mismatch: true },
+  ] as const)('claimed $claimed against a measured $measured is a mismatch: $mismatch', ({ claimed, measured, mismatch }) => {
+    const out = evaluateScorecardInstrumentContract({
+      rubric,
+      ratings: { 'goal-mode-foundation': rating({ rating: claimed }) },
+      instrumentSnapshots: {
+        'woe.goal-mode-base-scorecard': {
+          verdict: measured, measuredAt: '2026-09-20T00:59:00Z', provenance: 'platform-computed',
+        },
+      },
+      nowMs: now(),
+    });
+    expect(out.verdictMismatches).toEqual(mismatch ? ['woe.goal-mode-base-scorecard'] : []);
   });
 });

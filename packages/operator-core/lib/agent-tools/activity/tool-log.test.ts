@@ -143,6 +143,15 @@ describe('activity:tool-log timestamp boundaries', () => {
     expect(h.rows).toHaveBeenCalledWith(expect.objectContaining({ ownerId: full }));
   });
 
+  it('keeps a su-respawn owner id usable for historical queries without a live roster match', async () => {
+    const full = 'su-respawn-1529d5283907a0f8c68b462778e0d1e3';
+
+    await tool.handler(argsSchema.safeParse({ owner: full }).data as never, {} as never);
+
+    expect(h.knownOwnerIdSet).not.toHaveBeenCalled();
+    expect(h.rows).toHaveBeenCalledWith(expect.objectContaining({ ownerId: full }));
+  });
+
   it('documents that both boundaries are absolute ISO timestamps', () => {
     expect(guidance?.when ?? '').toMatch(/absolute ISO 8601 timestamps/i);
     expect(guidance?.when ?? '').toMatch(/relative durations.*not supported/i);
