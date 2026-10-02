@@ -1351,16 +1351,16 @@ describe('WI-10005285 — one exact-tree read per settlement pass', () => {
     );
     warn.mockRestore();
 
-    // One batched read over every safe declared path, plus ONE per-row read for the row that
-    // declared a path the batch leaves out. Before WI-10005285 this pass made four reads.
-    expect(calls).toEqual([
-      ['a.ts', 'b.ts', 'c.ts', 'dir/e.ts', 'missing.ts'],
-      ['a.ts', '/reports/rpt_fixture'],
-    ]);
+    // ONE batched read over every safe declared path answers every row. Before WI-10005285
+    // this pass made four reads; before WI-10005343 the out-of-repo row still made its own
+    // read, which git refused (exit 128), so it was skipped as lookup-unavailable on every
+    // pass forever. It is now answered from the batch with a deterministic residual.
+    expect(calls).toEqual([['a.ts', 'b.ts', 'c.ts', 'dir/e.ts', 'missing.ts']]);
     expect(result.upgraded.sort()).toEqual(['WI-AB', 'WI-C']);
-    expect(result.residual).toBe(1);
-    expect(result.lookupUnavailable).toEqual(['WI-OUTSIDE']);
+    expect(result.residual).toBe(2);
+    expect(result.lookupUnavailable).toEqual([]);
     expect(updates.find((u) => u.id === 'WI-RESIDUAL')).toEqual({ id: 'WI-RESIDUAL', residual: 1 });
+    expect(updates.find((u) => u.id === 'WI-OUTSIDE')).toEqual({ id: 'WI-OUTSIDE', residual: 1 });
   });
 
   it('gives each row exactly the verdict a per-row read gives it', async () => {
