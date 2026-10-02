@@ -16,6 +16,7 @@ import {
   repoRelativeTestPath,
   recordedTestPath,
   testRunBindingSchema,
+  withRepoIdentityMemo,
   type TestRunBindingDeps,
   type TestRunEvidenceRow,
 } from './bind-from-test-run';
@@ -466,6 +467,47 @@ describe('recorded test paths across worktrees', () => {
     expect(await recordedTestPath(canonical, { root: nested, file_path: TEST }, async () => { throw new Error('missing'); })).toBeNull();
     expect(await recordedTestPath(canonical, { root: nested, file_path: `../${TEST}` }, git)).toBeNull();
     expect(await recordedTestPath(canonical, { root: nested, file_path: `${canonical}/${TEST}` }, git)).toBeNull();
+  });
+
+  it('WI-10005436: a binding loop forks each repository-identity read once, not once per row', async () => {
+    const calls: string[] = [];
+    const counting = async (cwd: string, args: readonly string[]) => {
+      calls.push(`${cwd} ${args.join(' ')}`);
+      return git(cwd, args);
+    };
+    for (let row = 0; row < 5; row += 1) {
+      expect(await recordedTestPath(canonical, { root: nested, file_path: TEST }, counting)).toBe(`libs/child/${TEST}`);
+    }
+    // One pass is 4 identity reads (canonical common dir, nested common dir, nested superproject,
+    // checkpoint common dir) + 1 top level; five rows must not cost five passes.
+    expect(calls).toHaveLength(5);
+    expect(new Set(calls).size).toBe(5);
+  });
+
+  it('WI-10005436: identity answers expire, failures are never reused, and other reads pass through', async () => {
+    let t = 0;
+    let fail = true;
+    const calls: string[] = [];
+    const base = async (cwd: string, args: readonly string[]) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'cat-file') return '';
+      if (fail) throw new Error('not a repository');
+      return cwd;
+    };
+    const memo = withRepoIdentityMemo(base, { ttlMs: 1_000, now: () => t });
+    const top = ['rev-parse', '--show-toplevel'];
+    await expect(memo('/r', top)).rejects.toThrow('not a repository');
+    fail = false;
+    expect(await memo('/r', top)).toBe('/r'); // the failure was not cached
+    expect(await memo('/r', top)).toBe('/r'); // the success was
+    expect(calls.filter((c) => c === top.join(' '))).toHaveLength(2);
+    t = 1_000;
+    expect(await memo('/r', top)).toBe('/r'); // expired: asked again
+    expect(calls.filter((c) => c === top.join(' '))).toHaveLength(3);
+    await memo('/r', ['cat-file', '-e', `${'a'.repeat(40)}:x`]);
+    await memo('/r', ['cat-file', '-e', `${'a'.repeat(40)}:x`]);
+    expect(calls.filter((c) => c.startsWith('cat-file'))).toHaveLength(2); // content reads are not memoized here
+    expect(await withRepoIdentityMemo(base, { ttlMs: 1_000, now: () => t })('/other', top)).toBe('/other'); // keyed by cwd
   });
 });
 

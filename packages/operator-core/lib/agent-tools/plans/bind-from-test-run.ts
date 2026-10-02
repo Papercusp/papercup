@@ -47,7 +47,85 @@ import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
 import { repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { defaultGitRunner, type GitRunner } from './evidence-measurement-pin';
+
+/**
+ * WI-10005436: how long a repository-IDENTITY answer (git common dir, worktree top level,
+ * superproject) is reused. Those answers depend on the directory layout, not on HEAD, the index or
+ * any object, so a binding loop that binds run after run from the same checkout need not re-fork
+ * them per row. On the ~1.7 GB operator each fork costs ~160 ms of synchronous main-thread time
+ * (EI-24852529885337741); an execve census of :3170 counted ~44 of these per 10 min during a peer's
+ * binding loop. Only successful answers are kept, so a path that is not (yet) a repository is
+ * re-asked every time. A layout change inside this window (a checkout deleted and a DIFFERENT
+ * repository re-created at the same path) is the only staleness, and disposable clones use unique
+ * mkdtemp paths, so it does not arise in practice.
+ */
+export const REPO_IDENTITY_TTL_MS = 60_000;
+
+const REPO_IDENTITY_ARGS: ReadonlySet<string> = new Set([
+  'rev-parse --path-format=absolute --git-common-dir',
+  'rev-parse --show-toplevel',
+  'rev-parse --show-superproject-working-tree',
+]);
+
+/** Above this many entries per runner, a miss first drops every expired one. */
+const REPO_IDENTITY_PRUNE_AT = 64;
+
+interface IdentityEntry {
+  promise: Promise<string>;
+  settledAt: number | null;
+}
+
+/** Keyed by the UNDERLYING runner, so an injected test runner never shares answers with production. */
+const repoIdentityMemos = pinModuleState(
+  '@papercusp/operator-core.bind-from-test-run.repo-identity-memo',
+  () => new WeakMap<GitRunner, Map<string, IdentityEntry>>(),
+);
+
+/**
+ * `git` with repository-identity reads (see REPO_IDENTITY_TTL_MS) shared per underlying runner:
+ * single-flight while in flight, reused for `ttlMs` after success, never reused after a failure.
+ * Every other call passes straight through.
+ */
+export function withRepoIdentityMemo(
+  git: GitRunner,
+  opts: { ttlMs?: number; now?: () => number } = {},
+): GitRunner {
+  const ttlMs = opts.ttlMs ?? REPO_IDENTITY_TTL_MS;
+  const now = opts.now ?? Date.now;
+  let entries = repoIdentityMemos.get(git);
+  if (!entries) {
+    entries = new Map();
+    repoIdentityMemos.set(git, entries);
+  }
+  const memo = entries;
+  const fresh = (e: IdentityEntry, t: number) => e.settledAt === null || t - e.settledAt < ttlMs;
+  return (cwd, args) => {
+    const joined = args.join(' ');
+    if (!REPO_IDENTITY_ARGS.has(joined)) return git(cwd, args);
+    const key = `${resolve(cwd)}\0${joined}`;
+    const t = now();
+    const hit = memo.get(key);
+    if (hit && fresh(hit, t)) return hit.promise;
+    if (memo.size >= REPO_IDENTITY_PRUNE_AT) {
+      for (const [k, e] of memo) if (!fresh(e, t)) memo.delete(k);
+    }
+    const entry: IdentityEntry = { promise: Promise.resolve(''), settledAt: null };
+    entry.promise = git(cwd, args).then(
+      (out) => {
+        entry.settledAt = now();
+        return out;
+      },
+      (err: unknown) => {
+        if (memo.get(key) === entry) memo.delete(key);
+        throw err;
+      },
+    );
+    memo.set(key, entry);
+    return entry.promise;
+  };
+}
 
 /** Same bound as a hand-built `repo-files` measurement. */
 export const FROM_TEST_RUN_MAX_SOURCE_PATHS = 32;
@@ -223,6 +301,7 @@ export async function recordedTestPath(
   if (!repoRelativeTestPath(row.root, file)) return null;
   const local = repoRelativeTestPath(root, file);
   if (local) return local;
+  git = withRepoIdentityMemo(git);
   try {
     const common = (await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
     if (!isAbsolute(common)) return null;
@@ -285,6 +364,7 @@ export async function asCommittedTestPath(
   if (!row.root || !isAbsolute(row.root) || !row.file_path) return null;
   const inClone = repoRelativeTestPath(row.root, resolve(row.root, row.file_path));
   if (!inClone) return null;
+  git = withRepoIdentityMemo(git);
   const segments = resolve(row.root).split(sep).filter(Boolean);
   const prefixes = [''];
   for (let k = 1; k <= Math.min(segments.length, MAX_SUBMODULE_PREFIX_SEGMENTS); k += 1) {
@@ -328,6 +408,7 @@ export async function canonicalAsCommittedPrefix(
     // Not a superproject commit: look for the submodule checkout that holds it.
   }
   const dirs = canonicalTestPath.split('/').slice(0, -1);
+  git = withRepoIdentityMemo(git);
   for (let k = dirs.length; k >= 1; k -= 1) {
     const repoPrefix = dirs.slice(0, k).join('/');
     const repo = resolve(root, repoPrefix);
