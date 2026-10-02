@@ -81,6 +81,7 @@ describe('improvements:learning_loops handler', () => {
       installSlug: '@singleton', name: 'sg:calibration', active: true,
       lastFiredAt: '2026-01-01T00:00:00.000Z', nextFireAt: null,
       pauseReviewBy: null,
+      lastPauseResumedAtMs: null,
     });
     expect(computeM.mock.calls[0]![2]).toMatchObject({ homeSlug: 'acme-home' });
   });
@@ -91,6 +92,15 @@ describe('improvements:learning_loops handler', () => {
     expect(b.workspaceId).toBe('default'); // no ctx workspace → activeWorkspaceId()
     const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
     expect(routines[0]).toMatchObject({ active: false, lastFiredAt: null, nextFireAt: '2026-02-01T00:00:00.000Z' });
+  });
+
+  it('maps the persisted resume epoch to a number for the health classifier', async () => {
+    h.rows = [{
+      install_slug: '@singleton', name: 'sg:calibration', active: true,
+      last_fired_at: null, next_fire_at: null, last_pause_resumed_at_ms: '1767225600000',
+    }];
+    await tool.handler({} as never, { workspaceId: 'ws-1' } as never);
+    expect(computeM.mock.calls[0]![1][0]).toMatchObject({ lastPauseResumedAtMs: 1767225600000 });
   });
 
   it('WI-5322: su-ideation reads FIRING from routing activity even when the tick ledger is stale', async () => {
