@@ -4,6 +4,32 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## Shared target-schema readiness — 2026-10-02, Fire161
+
+The maintained verifier now checks shared schema readiness before allocating its
+work directory, copying dependencies or building the private API. It extends the
+existing PG probe with `--require-applied-schema`, reuses the migration runner's
+eligibility and numeric ordering, and reads the existing migration ledger through
+a read-only connection. Pending and unavailable results refuse preparation with
+distinct exits. The probe has bounded connection, query and process deadlines.
+It sources the same operator `.env.local` as the launcher and prints a target
+fingerprint rather than credentials. Ordinary launcher fallback and the isolated
+PG route retain their existing behavior.
+
+The registered Node suite passed 19 tests with no skips, including actual CLI and
+shell fixtures. Eight new checks failed against the old source. The verifier's
+eight focused files now have terminal passing ledger rows: seven passed in the
+initial matrix; the source-snapshot suite passed all 26 tests after repairing its
+stale admission-wrapper fixtures and line-continuation assertion. Syntax and diff
+checks passed. Exact source/log hashes, commands and ledger IDs are retained in
+`sharedSchemaReadinessFire161` in the native source/output audit JSON.
+
+A bounded execution of the real preflight against the selected shared DB returned
+ready, with no pending eligible migration files, during 07:43–07:44Z. That is a
+dated read, not a future boot guarantee: recheck before another native attempt.
+No native instance was launched, and there is no new popup, FCP or LCP result.
+P-007/R-7 and the separate P-006/P-008 acceptance remain open.
+
 ## R171 boot failure recovery — 2026-10-02, Fire160
 
 The newer Fire159 record supersedes the old unlaunched preparation note. R171
@@ -28,7 +54,8 @@ Before another expensive attempt, extend the existing PG probe and verifier
 preflight to establish the selected shared target schema's readiness before
 copy/build work. Reuse the migration runner's selection rules and ledger;
 preserve its backup guard, ordinary launcher fallback and isolated-DB path.
-This detector repair is pending. No unchanged R171 replay is justified.
+This detector repair was pending at Fire160 and is verified above at Fire161.
+No unchanged R171 replay is justified.
 
 Exact result, manifest, log and cleanup references are under
 `r171BootFailureRecoveredFire160` in the native source/output audit JSON.
