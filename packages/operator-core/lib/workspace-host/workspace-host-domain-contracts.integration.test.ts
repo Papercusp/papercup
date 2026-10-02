@@ -29,6 +29,7 @@ const {
   WorkspaceHostControllerFenceError,
   beginWorkspaceHostOperation,
   readWorkspaceHostControl,
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
   readWorkspaceHostDestroyTarget,
   recordWorkspaceHostObservation,
   updateWorkspaceHostLifecycleState,
@@ -313,13 +314,62 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       WHERE workspace_id = ${workspaceId} AND host_id = 'host-retry-after-failed-first'
       ORDER BY created_at, id
     `;
+    // prov-1-concurrent's refusal is recorded (WI-10005312) and, never having run, did not fence
+    // the retry.
     expect(operations.map((row) => [row.id, row.status, Number(row.desired_revision)])).toEqual([
       ['prov-1', 'failed', 1],
+      ['prov-1-concurrent', 'failed', 1],
       ['prov-1-r2', 'queued', 1],
     ]);
 
     // Control: the retry is now the in-flight first operation, so a third attempt is fenced again.
     await expect(provision('prov-1-r3')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+  });
+
+  // WI-10005312: a fenced begin rolled back the only write of the operation row, so a request
+  // already answered 202 had no row and its timeline could never show the failure.
+  it('records a fence refusal as a terminal row that never runs, holds authority, or hides live progress', async () => {
+    const hostId = 'host-refusal-recorded';
+    const { workspaceId, provision, finish } = await seedFirstProvision(hostId);
+
+    await expect(provision('prov-refused')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    const [refused] = await db.adminSql<
+      { status: string; code: string | null; finished: boolean; controller_id: string | null; desired_revision: number }[]
+    >`
+      SELECT status, error->>'code' AS code, finished_at IS NOT NULL AS finished, controller_id, desired_revision
+      FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND id = 'prov-refused'
+    `;
+    expect(refused).toEqual({
+      status: 'failed',
+      code: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      finished: true,
+      controller_id: 'controller-a',
+      desired_revision: 1,
+    });
+
+    // The refusal is newer than prov-1, yet the host's current progress is still the in-flight
+    // prov-1, because a refused request never ran on the host.
+    const control = await readWorkspaceHostControl(workspaceId);
+    expect(control).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'workspace', id: hostId, operation: expect.objectContaining({ id: 'prov-1' }) }),
+      ]),
+    );
+
+    // The refused row names the host's current controller AND revision, so only the refusal
+    // exclusion keeps it from passing the authority check and being "finished" as a success.
+    await expect(finish('prov-refused', 'succeeded')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    // DBOS re-runs a failed step with the same input: once the fence clears, the retry of the
+    // refused id is admitted and replaces its refusal in place.
+    await finish('prov-1', 'failed');
+    await provision('prov-refused');
+    const [retried] = await db.adminSql<{ status: string; error: unknown; finished_at: Date | null }[]>`
+      SELECT status, error, finished_at FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND id = 'prov-refused'
+    `;
+    expect(retried).toEqual({ status: 'queued', error: null, finished_at: null });
   });
 
   it('still fences a same-revision provision after a succeeded first provision or a failed one under recovery', async () => {
