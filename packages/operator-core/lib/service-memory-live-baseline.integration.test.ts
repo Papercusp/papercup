@@ -8,6 +8,7 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { closeInspector, createCdpClient, readProcessMemory } from '../../../scripts/cdp-inspector.mjs';
+import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 
 const root = resolve(__dirname, '../../..');
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
@@ -76,7 +77,7 @@ describe('actual current-build operator memory baseline', () => {
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
         'Current disk bundle hash is recorded separately from the health-reported loaded build.'] };
-    const publish = () => writeFileSync(path, JSON.stringify(report, null, 2) + '\n');
+    const publish = () => writeFileSync(path, serializeIdentitySafeJson(report));
     let client: ReturnType<typeof createCdpClient> | undefined;
     let port: number | undefined;
     let opened = false;
