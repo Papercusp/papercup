@@ -1059,6 +1059,145 @@ function ifBranchFor(node, ifStatement) {
   return null;
 }
 
+function nearestConstScope(node, functionNode) {
+  for (let current = node.parent; current && current !== functionNode; current = current.parent) {
+    if (ts.isBlock(current) || ts.isCaseBlock(current) || isLoopStatement(current)) return current;
+  }
+  return functionNode;
+}
+
+function lexicalDistance(node, ancestor) {
+  let distance = 0;
+  for (let current = node; current && current !== ancestor; current = current.parent) distance++;
+  return current === ancestor ? distance : Number.MAX_SAFE_INTEGER;
+}
+
+function visibleConstBinding(identifier, bindings, sourceFile) {
+  const start = identifier.getStart(sourceFile);
+  return bindings
+    .filter(
+      (binding) =>
+        binding.name === identifier.text &&
+        binding.node.getStart(sourceFile) < start &&
+        isWithinNode(identifier, binding.scope),
+    )
+    .sort(
+      (a, b) =>
+        lexicalDistance(identifier, a.scope) - lexicalDistance(identifier, b.scope) ||
+        b.node.getStart(sourceFile) - a.node.getStart(sourceFile),
+    )[0];
+}
+
+function conjunctionTerms(node, result = []) {
+  if (ts.isParenthesizedExpression(node)) return conjunctionTerms(node.expression, result);
+  if (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+  ) {
+    conjunctionTerms(node.left, result);
+    conjunctionTerms(node.right, result);
+  } else {
+    result.push(node);
+  }
+  return result;
+}
+
+function canonicalFlowExpression(
+  node,
+  sourceFile,
+  fileName,
+  bindings,
+  knownTruthy = new Set(),
+  resolving = new Set(),
+) {
+  if (ts.isParenthesizedExpression(node)) {
+    return canonicalFlowExpression(
+      node.expression,
+      sourceFile,
+      fileName,
+      bindings,
+      knownTruthy,
+      resolving,
+    );
+  }
+  if (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+  ) {
+    const truthy = new Set(knownTruthy);
+    const prefix = [];
+    const terms = conjunctionTerms(node);
+    for (const term of terms) {
+      const value = canonicalFlowExpression(
+        term,
+        sourceFile,
+        fileName,
+        bindings,
+        truthy,
+        resolving,
+      );
+      prefix.push(value);
+      truthy.add(value);
+      truthy.add(prefix.join(' && '));
+    }
+    return prefix.join(' && ');
+  }
+  if (ts.isIdentifier(node)) {
+    const binding = visibleConstBinding(node, bindings, sourceFile);
+    if (binding && !resolving.has(binding.name)) {
+      const nextResolving = new Set(resolving);
+      nextResolving.add(binding.name);
+      return canonicalFlowExpression(
+        binding.initializer,
+        sourceFile,
+        fileName,
+        bindings,
+        knownTruthy,
+        nextResolving,
+      );
+    }
+    return normalisedExpressionText(node, sourceFile, fileName);
+  }
+  if (ts.isConditionalExpression(node)) {
+    const condition = canonicalFlowExpression(
+      node.condition,
+      sourceFile,
+      fileName,
+      bindings,
+      knownTruthy,
+      resolving,
+    );
+    if (knownTruthy.has(condition)) {
+      return canonicalFlowExpression(
+        node.whenTrue,
+        sourceFile,
+        fileName,
+        bindings,
+        knownTruthy,
+        resolving,
+      );
+    }
+    const whenTrue = canonicalFlowExpression(
+      node.whenTrue,
+      sourceFile,
+      fileName,
+      bindings,
+      new Set([...knownTruthy, condition]),
+      resolving,
+    );
+    const whenFalse = canonicalFlowExpression(
+      node.whenFalse,
+      sourceFile,
+      fileName,
+      bindings,
+      knownTruthy,
+      resolving,
+    );
+    return '(' + condition + ' ? ' + whenTrue + ' : ' + whenFalse + ')';
+  }
+  return normalisedExpressionText(node, sourceFile, fileName);
+}
+
 function mutuallyExclusiveIfBranches(a, b, functionNode) {
   for (let parent = a.parent; parent && parent !== functionNode; parent = parent.parent) {
     if (!ts.isIfStatement(parent)) continue;
@@ -1104,9 +1243,9 @@ function exitAffectsLoopIterations(exitNode, loopNode) {
   return abruptFlowTarget(exitNode) === loopNode;
 }
 
-function invocationFlowToken(node, child, sourceFile, fileName) {
+function invocationFlowToken(node, child, sourceFile, fileName, bindings) {
   if (ts.isIfStatement(node)) {
-    const condition = normalisedExpressionText(node.expression, sourceFile, fileName);
+    const condition = canonicalFlowExpression(node.expression, sourceFile, fileName, bindings);
     const branch = ifBranchFor(child, node) ?? 'outside';
     return 'if:' + condition + ':' + branch;
   }
@@ -1118,21 +1257,23 @@ function invocationFlowToken(node, child, sourceFile, fileName) {
   return token;
 }
 
-function flowPathTokens(node, root, sourceFile, fileName, callNode = null) {
+function flowPathTokens(node, root, sourceFile, fileName, bindings, callNode = null) {
   const tokens = [];
   let child = node;
   for (let parent = node.parent; parent && parent !== root; parent = parent.parent) {
     const oneShotHeader = callNode && isLoopStatement(parent) && loopHeaderCallExecutesOnce(callNode, parent);
-    const token = oneShotHeader ? null : invocationFlowToken(parent, child, sourceFile, fileName);
+    const token = oneShotHeader
+      ? null
+      : invocationFlowToken(parent, child, sourceFile, fileName, bindings);
     if (token) tokens.push(token);
     child = parent;
   }
   return tokens.reverse();
 }
 
-function seamInvocationContext(callNode, functionNode, flowNodes, sourceFile, fileName) {
+function seamInvocationContext(callNode, functionNode, flowNodes, sourceFile, fileName, bindings) {
   const callStart = callNode.getStart(sourceFile);
-  const context = flowPathTokens(callNode, functionNode, sourceFile, fileName, callNode).map(
+  const context = flowPathTokens(callNode, functionNode, sourceFile, fileName, bindings, callNode).map(
     (token) => 'path:' + token,
   );
 
@@ -1144,7 +1285,7 @@ function seamInvocationContext(callNode, functionNode, flowNodes, sourceFile, fi
     ) {
       continue;
     }
-    const path = flowPathTokens(node, functionNode, sourceFile, fileName);
+    const path = flowPathTokens(node, functionNode, sourceFile, fileName, bindings);
     context.push('prior-exit:' + [...path, token].join(' > '));
   }
 
@@ -1166,7 +1307,7 @@ function seamInvocationContext(callNode, functionNode, flowNodes, sourceFile, fi
         continue;
       }
       const relation = exit.node.getStart(sourceFile) < callStart ? 'before' : 'after';
-      const path = flowPathTokens(exit.node, loop.node, sourceFile, fileName);
+      const path = flowPathTokens(exit.node, loop.node, sourceFile, fileName, bindings);
       context.push(
         'loop-exit:' +
           loop.token +
@@ -1215,8 +1356,10 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
         controlFlow: [],
         seamContexts: [],
         _node: node,
+        _parentRecord: functionStack.at(-1) ?? null,
         _flowNodes: [],
         _seamOccurrences: [],
+        _constBindings: [],
       };
       records.push(record);
       functionStack.push(record);
@@ -1228,6 +1371,20 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
 
     const current = functionStack.at(-1);
     if (current) {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer &&
+        ts.isVariableDeclarationList(node.parent) &&
+        (node.parent.flags & ts.NodeFlags.Const) !== 0
+      ) {
+        current._constBindings.push({
+          name: node.name.text,
+          node,
+          initializer: node.initializer,
+          scope: nearestConstScope(node, current._node),
+        });
+      }
       const token = controlFlowToken(node, source, fileName);
       if (token) {
         current.controlFlow.push(token);
@@ -1250,22 +1407,29 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
   ts.forEachChild(source, visit);
   return records
     .filter((record) => record.seams.length > 0)
-    .map((record) => ({
-      function: record.function,
-      identity: record.identity,
-      seams: record.seams,
-      controlFlow: record.controlFlow,
-      seamContexts: record._seamOccurrences.map(({ node, seam }) => ({
-        seam,
-        context: seamInvocationContext(
-          node,
-          record._node,
-          record._flowNodes,
-          source,
-          fileName,
-        ),
-      })),
-    }));
+    .map((record) => {
+      const bindings = [];
+      for (let owner = record; owner; owner = owner._parentRecord) {
+        bindings.push(...owner._constBindings);
+      }
+      return {
+        function: record.function,
+        identity: record.identity,
+        seams: record.seams,
+        controlFlow: record.controlFlow,
+        seamContexts: record._seamOccurrences.map(({ node, seam }) => ({
+          seam,
+          context: seamInvocationContext(
+            node,
+            record._node,
+            record._flowNodes,
+            source,
+            fileName,
+            bindings,
+          ),
+        })),
+      };
+    });
 }
 
 /**

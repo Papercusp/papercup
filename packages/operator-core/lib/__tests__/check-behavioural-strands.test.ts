@@ -271,6 +271,21 @@ describe('the trigger: a seam gained call sites', () => {
     expect(rows.map(({ seam }) => seam)).toEqual(['runner()']);
   });
 
+  it('treats a const-hoisted alias in an equivalent guard as unchanged eligibility', () => {
+    const before = `
+      export function run(input, filter: Filter) {
+        if (input.kind === 'ok' && input.principal) filter(input.principal);
+      }
+    `;
+    const after = `
+      export function run(input, filter: Filter) {
+        const principal = input.kind === 'ok' ? input.principal : undefined;
+        if (input.kind === 'ok' && principal) filter(principal);
+      }
+    `;
+    expect(changedSeamControlFlow(before, after, 'const-hoist.ts')).toEqual([]);
+  });
+
   it('still reports a changed early-return guard before a dependency call', () => {
     const before = `
       export function run(input, runner: Runner) {
