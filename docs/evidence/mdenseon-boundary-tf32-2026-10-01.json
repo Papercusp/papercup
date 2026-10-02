@@ -2045,5 +2045,82 @@
     "fullGpuPopulationComplete": false,
     "next": "Audit allocation evidence before any further expensive attempt. Preserve V2; use existing cell selection only for a new named measurement of remaining cells, with actual terminal and profiler evidence."
   },
+  "nativeCudaPaddedV7Qualification": {
+    "status": "Selected padded request group qualified with actual successful model terminal, complete loader closure and unique kernel/request bindings",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v7",
+    "workItem": "WI-10004540",
+    "runtimeQualification": "5856442c637fca6d3d86cd5900a6fd82ccb9b4cd4f4b4188fb2c6803b2deb04f",
+    "selectedCell": "padded",
+    "diagnosticOnly": true,
+    "modelProcessId": 2966640,
+    "completedAt": "2026-10-02T17:42:15.877934Z",
+    "captureExitCode": 0,
+    "exportExitCode": 0,
+    "captureCompletion": {
+      "bytes": 4095,
+      "sha256": "57f90a2703d1e40a35b7a1a2234fbd6ed81fc562956d147f3610082f7c3eb5c9",
+      "artifactsVerified": 25
+    },
+    "rawResult": {
+      "bytes": 602717,
+      "sha256": "6024b5a231645d39a4499d7ad78cf91471f010cdda45cbf44e5ca142e14537ce"
+    },
+    "terminalReceipt": {
+      "bytes": 304,
+      "sha256": "60e1331305f3f78b5510c7e02011dbc7f9321b1435f9cdc78e869cbf59002ee1",
+      "source": "spawn-pipe",
+      "captureStartedBeforeExec": true,
+      "eof": true,
+      "exitCode": 0,
+      "signal": null
+    },
+    "stderr": {
+      "bytes": 45165,
+      "sha256": "c784c1c746602c79c2e7eaadf8857e0fdbc800ae05c15e781c497fc24b414ac0"
+    },
+    "offlineAssessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-padded-v7-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 1119372,
+      "sha256": "f5ad6d116a5f80e33098121904255cfbe5a948665e67aeb2e01cbacdcaf819d1",
+      "assessor": "cache:validation/mdenseon-boundary-WI10004540-20261001/assess-native-padded-v7-v1.mjs",
+      "assessorSha256": "cc2400874d14780b21377cf20052d41d4c804f813ad27ee85850d6aaaecf9000",
+      "canonicalSummaryRederivedEqual": true,
+      "modelInferencePerformed": false
+    },
+    "requestGroup": {
+      "caseIds": ["short-query", "unicode", "code", "whitespace", "empty"],
+      "actualInferenceBatchSize": 1,
+      "nativeCalls": 10,
+      "inputTraces": 10,
+      "nativeStartEndTraces": 20,
+      "passedSingleReferenceAndGroupVectorGates": true,
+      "tokenIdsAndActualWorkerGraphNativeCallsVerified": true,
+      "scope": "Five exact prerequisite singles plus five group members. The shipped worker executes one text per inference; the named padded group does not claim one padded tensor submission."
+    },
+    "profilerAssessment": {
+      "version": "2026.3.2.476",
+      "databaseIntegrity": "ok",
+      "cudaKernelRows": 8644,
+      "uniqueCudaLaunchRows": 8644,
+      "nativeRequestWindows": 10,
+      "completeKernelProcessCensusVerified": true,
+      "uniqueKernelLaunchRequestBindingVerified": true,
+      "clockBasis": "Qualified matched CUDA CLOCK_MONOTONIC origin plus API launch intervals, with unshifted/unnormalized export"
+    },
+    "loaderAssessment": {
+      "completeBeforeInferenceClosureVerified": true,
+      "generatedObjectMapJoins": 34,
+      "initializationJoins": 35,
+      "unjoinedMappedFiles": 0,
+      "noLoaderActivityDuringMeasuredWindows": true,
+      "kernelVdsoBytes": 8192,
+      "scope": "Canonical actual model process executable/interpreter/generated-addon/file-map census before first selected Run, unchanged through last selected Run; vDSO separately fingerprinted kernel memory. Excludes anonymous JIT/arbitrary mmap memory."
+    },
+    "deviceIdentityAndCapacityVerified": true,
+    "fullGpuPopulationComplete": false,
+    "notMeasuredByThisCapture": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length", "full-eight-input-ranking"],
+    "priorFailuresPreserved": "FullV2 remains exit1 on actual8192 allocation. PaddedV7 does not supersede that failed cell or promote it to success."
+  },
   "separateOpenDefect": "EI-24795092971119894 is DONE/COMMITTED for the independent-reference/failure-receipt detector repair. Actual8192 allocation compatibility remains owned by WI-10004540; no successful GPU8192 inference is claimed."
 }
