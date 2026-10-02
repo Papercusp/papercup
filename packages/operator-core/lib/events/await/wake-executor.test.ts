@@ -3627,6 +3627,58 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
     expect(msg.data).toMatch(/^⟦turn-origin:wake-pump nonce:[a-f0-9]{16}⟧\n\[await-event\]/);
   });
+
+  // WI-10005327: the real tagger is async (its ledger write runs off the event
+  // loop). The ledger row must land BEFORE the turn is typed, because the hook
+  // classifies at prompt-submit. A tagger that resolves on a later tick proves
+  // the executor waits for it rather than racing ahead.
+  it('awaits an ASYNC tagger: the inject happens only after its ledger write resolves', async () => {
+    const order: string[] = [];
+    const injectPsuHost = vi.fn(async () => {
+      order.push('inject');
+      return true;
+    });
+    const tagTurn = (async (args: { origin: string; text: string }) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push('ledger-written');
+      return {
+        taggedText: `⟦tagged:${args.origin}⟧\n${args.text}`,
+        envelope: `⟦tagged:${args.origin}⟧`,
+        nonce: 'later-tick',
+        origin: args.origin,
+        ledgerWritten: true,
+      };
+    }) as never;
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toMatch(/^⟦tagged:wake-pump⟧\n\[await-event\]/);
+    expect(order).toEqual(['ledger-written', 'inject']);
+  });
+
+  it('an async tagger that REJECTS still delivers an unverified envelope', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn: (async () => {
+          throw new Error('EIO on the ledger dir');
+        }) as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toMatch(/^⟦turn-origin:wake-pump nonce:[a-f0-9]{16}⟧\n\[await-event\]/);
+  });
 });
 
 describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 Phase 2)', () => {
