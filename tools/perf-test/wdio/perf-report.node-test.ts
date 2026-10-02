@@ -209,6 +209,124 @@ test('native sampling marks disabled scheduler-wait accounting and missing count
   assert.match(sample.unavailable.join(' '), /schedstat/);
 });
 
+test('native lifecycle checks a missing owned identity directly and keeps signal/reaping unknown', () => {
+  const f = nativeProcFixture();
+  const previous = collectOwnedWebKitSample(f.options, f.proc).processes;
+  f.files.set('/proc/25/task/25/children', '');
+  f.files.delete('/proc/30/stat');
+  const proc = { ...f.proc, read: (file: string) => {
+    if (file === '/proc/30/stat') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    return f.proc.read(file);
+  } };
+  const sample = collectOwnedWebKitSample(f.options, proc, new Set(), previous);
+  const row = sample.lifecycle.find(({ pid }) => pid === 30)!;
+  assert.equal(row.status, 'procfs-missing');
+  assert.equal(row.signal, null);
+  assert.equal(row.exitCode, null);
+  assert.equal(row.reaping, 'unknown');
+  assert.equal(row.lastOwnedReadCompletedEpochMs, previous[1].readCompletedEpochMs);
+  assert(row.readCompletedEpochMs >= row.readStartedEpochMs);
+  assert(!f.reads.some((file) => file.startsWith('/proc/90/')));
+});
+
+test('native lifecycle distinguishes reparenting and incomplete discovery from process disappearance', () => {
+  for (const reparented of [false, true]) {
+    const f = nativeProcFixture();
+    const previous = collectOwnedWebKitSample(f.options, f.proc).processes;
+    if (reparented) {
+      f.files.set('/proc/25/task/25/children', '');
+      f.files.set('/proc/30/stat', f.stat(30, 1));
+    } else f.files.delete('/proc/25/task/25/children');
+    const sample = collectOwnedWebKitSample(f.options, f.proc, new Set(), previous);
+    const row = sample.lifecycle.find(({ pid }) => pid === 30)!;
+    assert.equal(row.status, 'same-identity-present');
+    assert.equal(row.parentPid, reparented ? 1 : 25);
+    assert.equal(row.discoveryIncomplete, !reparented);
+    assert.equal(row.signal, null);
+    assert.equal(row.reaping, 'unknown');
+    assert(!sample.processes.some(({ pid }) => pid === 30));
+  }
+});
+
+test('native lifecycle observes an unreaped zombie even after its executable link is gone', () => {
+  const f = nativeProcFixture();
+  const previous = collectOwnedWebKitSample(f.options, f.proc).processes;
+  f.files.set('/proc/30/stat', f.stat(30, 25).replace(') S ', ') Z '));
+  f.links.delete('/proc/30/exe');
+  const row = collectOwnedWebKitSample(f.options, f.proc, new Set(), previous).lifecycle
+    .find(({ pid }) => pid === 30)!;
+  assert.equal(row.status, 'zombie');
+  assert.equal(row.state, 'Z');
+  assert.equal(row.reaping, 'not-reaped');
+  assert.equal(row.signal, null);
+  assert.equal(row.exitCode, null);
+});
+
+test('native lifecycle rejects PID reuse and races without attributing the replacement to the old process', () => {
+  for (const racing of [false, true]) {
+    const f = nativeProcFixture();
+    const previous = collectOwnedWebKitSample(f.options, f.proc).processes;
+    f.files.set('/proc/25/task/25/children', '');
+    if (!racing) f.files.set('/proc/30/stat', f.stat(30, 25, '101'));
+    let reads = 0;
+    const proc = { ...f.proc, read: (file: string) => {
+      const value = f.proc.read(file);
+      if (racing && file === '/proc/30/stat' && ++reads === 1) {
+        f.files.set(file, f.stat(30, 1, '101'));
+      }
+      return value;
+    } };
+    const row = collectOwnedWebKitSample(f.options, proc, new Set(), previous).lifecycle
+      .find(({ pid }) => pid === 30)!;
+    assert.equal(row.status, racing ? 'unavailable' : 'identity-replaced');
+    assert.equal(row.state, null);
+    assert.equal(row.parentPid, null);
+    assert.equal(row.signal, null);
+    assert.equal(row.reaping, 'unknown');
+  }
+});
+
+test('native lifecycle refuses malformed/denied/oversized reads and a PID appearing between missing reads', () => {
+  for (const failure of ['denied', 'malformed', 'oversized', 'appeared', 'boot']) {
+    const f = nativeProcFixture();
+    const previous = collectOwnedWebKitSample(f.options, f.proc).processes;
+    f.files.set('/proc/25/task/25/children', '');
+    let reads = 0;
+    const proc = { ...f.proc, read: (file: string) => {
+      if (file !== '/proc/30/stat') return f.proc.read(file);
+      reads++;
+      if (failure === 'denied') throw Object.assign(new Error('private-read-error'), { code: 'EACCES' });
+      if (failure === 'malformed') return 'malformed';
+      if (failure === 'oversized') return 'x'.repeat(4097);
+      if (failure === 'appeared' && reads === 1) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      if (failure === 'boot') f.files.set('/proc/sys/kernel/random/boot_id', 'boot-B');
+      return f.proc.read(file);
+    } };
+    if (failure === 'boot') {
+      assert.throws(() => collectOwnedWebKitSample(f.options, proc, new Set(), previous), /driver exited\/reused/);
+      continue;
+    }
+    const sample = collectOwnedWebKitSample(f.options, proc, new Set(), previous);
+    const row = sample.lifecycle.find(({ pid }) => pid === 30)!;
+    assert.equal(row.status, 'unavailable');
+    assert.equal(row.signal, null);
+    assert.equal(row.reaping, 'unknown');
+    assert(!JSON.stringify(row).includes('private-read-error'));
+  }
+});
+
+test('native lifecycle bounds previously observed identities before performing extra proc reads', () => {
+  const f = nativeProcFixture();
+  const previous = collectOwnedWebKitSample(f.options, f.proc).processes;
+  f.reads.length = 0;
+  assert.throws(() => collectOwnedWebKitSample(f.options, f.proc, new Set(),
+    Array.from({ length: 65 }, () => previous[1])), /64-identity bound/);
+  assert.equal(f.reads.length, 0);
+  assert.throws(() => collectOwnedWebKitSample(f.options, f.proc, new Set(),
+    [{ ...previous[1], pid: -1 }]), /invalid previously observed/);
+  assert.equal(f.reads.length, 0);
+});
+
 test('native environment records only explicit diagnostic keys on owned app and renderer lifetimes', () => {
   const f = nativeProcFixture();
   f.files.set('/proc/20/environ', 'GST_REGISTRY_UPDATE=no\0GST_REGISTRY=/private/registry.bin\0API_KEY=excluded-secret\0');
@@ -526,7 +644,10 @@ test('native diagnostic buffers during sampling, flushes on stop, and preserves 
     assert.equal(rows[0].maxSamples, 1200);
     assert.equal(rows[0].persistence, 'buffered-until-finish');
     assert.equal(rows[0].maxBufferedBytes, 16 * 1024 * 1024);
-    assert.equal(rows[0].schemaVersion, 'native-process-probe-v4');
+    assert.equal(rows[0].schemaVersion, 'native-process-probe-v5');
+    assert.equal(rows[0].lifecycle.maxIdentities, 64);
+    assert.equal(rows[0].lifecycle.maxStatBytes, 4096);
+    assert(rows.filter((row) => row.kind === 'sample').every((row) => Array.isArray(row.lifecycle)));
     assert.equal(rows[0].environment.maxBytes, 128 * 1024);
     assert.equal(rows[0].environment.persistence, 'once-per-pid-identity');
     assert.equal(rows[0].output.persistence, 'per-sample-buffered');
