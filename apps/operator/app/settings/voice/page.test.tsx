@@ -43,7 +43,9 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: unknown, options?: RequestInit) => ({
     ok: options?.method === 'PUT' || String(url).endsWith('/operator-credentials') || String(url).includes('-spend'),
     json: async () => options?.method === 'PUT'
-      ? { ...h.prefs, ...JSON.parse(String(options.body)) }
+      // The PUT persists server-side, so the mocked sync query (re-read every render,
+      // as the real one is after invalidate()) must return the saved value too.
+      ? (h.prefs = { ...h.prefs, ...JSON.parse(String(options.body)) })
       : String(url).includes('-spend') ? { spend: [] }
       : { google: { configured: true }, openai: { configured: true }, elevenlabs: { configured: true } },
   })));

@@ -117,8 +117,12 @@ describe('userpromptsubmit-provenance.sh', () => {
     const out = runHook({ prompt: 'please fix the login page' });
     const ctx = contextOf(out);
 
-    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE FAILED');
-    expect(ctx).toContain('orders:record'); // it names the manual repair, not just the fault
+    // No receipt is UNCONFIRMED, not failed: the write may have committed before the
+    // reply was lost, so the notice names the idempotent repair (retry orders:capture
+    // with the same sourceTurnRef), not a fresh orders:record that would duplicate it.
+    expect(ctx).toContain('OWNER-DIRECTIVE CAPTURE UNCONFIRMED');
+    expect(ctx).toContain('Retry orders:capture');
+    expect(ctx).toContain('Do not create another directive with orders:record');
 
     // Fail-OPEN: the classification still lands and the turn is never blocked. A notice
     // that cost the owner their stamp would be a worse bug than the silence it replaced.
@@ -137,7 +141,7 @@ describe('userpromptsubmit-provenance.sh', () => {
     // out of that branch (the regression that would silently start recording wake-pump
     // and loop-fire turns as owner directives) and this assertion fails immediately.
     expect(ctx).toContain('VERIFIED');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('CONTROL: a MACHINE-GENERATED SURFACE turn carries no capture notice either', () => {
@@ -148,7 +152,7 @@ describe('userpromptsubmit-provenance.sh', () => {
       }),
     );
     expect(ctx).toContain('MACHINE-GENERATED SURFACE');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('envelope + live nonce + matching hash → VERIFIED with the LEDGER origin', () => {
@@ -278,7 +282,7 @@ describe('userpromptsubmit-provenance.sh', () => {
     }));
     expect(ctx).toContain('MACHINE-GENERATED SURFACE');
     expect(ctx).not.toContain('OWNER (interactive)');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('keeps an owner quoting the usage-limit reset message as an owner turn', () => {
@@ -322,7 +326,7 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('VERIFIED AGENT-ORIGIN');
     expect(ctx).not.toContain('hash differs');
     expect(ctx).not.toContain('OWNER (interactive)');
-    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
+    expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE');
   });
 
   it('WI-10002461: a paste-wrapped envelope with NO ledger row → UNVERIFIED, never OWNER', () => {
