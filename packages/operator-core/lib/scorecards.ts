@@ -1134,7 +1134,7 @@ export type { ScorecardGradingAuditCurrentness };
 
 export interface ScorecardSubjectRubricCurrentness {
   state: 'current' | 'stale' | 'unknown';
-  reason: 'current' | 'subject-rubric-mismatch' | 'recorded-identity-missing' | 'live-identity-missing' |
+  reason: 'current' | 'meaning-unchanged' | 'subject-rubric-mismatch' | 'recorded-identity-missing' | 'live-identity-missing' |
     'revision-mismatch' | 'meaning-revision-mismatch' | 'criteria-hash-mismatch';
   recordedRevision: number | null;
   currentRevision: number | null;
@@ -1157,11 +1157,26 @@ export function classifySubjectRubricCurrentness(
   if (recorded?.rubricRef && recorded.rubricRef !== subjectRef) {
     return { state: 'unknown', reason: 'subject-rubric-mismatch', ...base };
   }
+  const recordedMeaningRevision = recorded?.meaningRevision;
+  const currentMeaningRevision = live.barContract?.meaningRevision;
+  const meaningRevisionMatches =
+    typeof recordedMeaningRevision === 'number' &&
+    Number.isInteger(recordedMeaningRevision) &&
+    recordedMeaningRevision > 0 &&
+    typeof currentMeaningRevision === 'number' &&
+    Number.isInteger(currentMeaningRevision) &&
+    currentMeaningRevision > 0 &&
+    recordedMeaningRevision === currentMeaningRevision;
+  const criteriaHashChanged = (recorded?.criteriaHash?.trim() || null) !== (live.criteriaHash?.trim() || null);
+  const currentness = classifyRubricEvidenceCurrentness(
+    recorded ?? {},
+    { revision: live.revision, criteriaHash: live.criteriaHash, meaningRevision: currentMeaningRevision },
+  );
   return {
-    ...classifyRubricEvidenceCurrentness(
-      recorded ?? {},
-      { revision: live.revision, criteriaHash: live.criteriaHash, meaningRevision: live.barContract?.meaningRevision },
-    ),
+    ...currentness,
+    ...(currentness.state === 'current' && meaningRevisionMatches && criteriaHashChanged
+      ? { reason: 'meaning-unchanged' as const }
+      : {}),
     ...base,
   };
 }

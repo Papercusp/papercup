@@ -36,6 +36,7 @@ export default defineConfig({
           items: [
             'using-the-app',
             'workspaces-and-agents',
+            'cloud-workspaces',
             'harness-templates',
             'harness-snapshots',
             'plugins',

@@ -166,6 +166,9 @@ beforeAll(async () => {
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'condition-upsert.integration',
     extra: [
+      // findConditionObjects LEFT JOINs event_awaits_effective (checkpoint-await lease
+      // extension); without the view the query throws and the read degrades to no-object.
+      '710-event-awaits-effective-deadline-view.sql',
       '741-work-items-condition-key-singleton.sql',
       '777-work-items-embedding-recipe-discriminator.sql',
       '1110-work-items-admission-flags-generated-columns.sql',

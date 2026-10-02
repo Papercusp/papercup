@@ -793,11 +793,16 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(start).toBeGreaterThan(-1);
     const end = src.indexOf('\n}\n', start);
     expect(end).toBeGreaterThan(start);
-    const body = src.slice(start, end);
+    // Strip comments first: the function's own rationale mentions
+    // `writeFileSync(mcpPath, …)` as history, and must not trip the guard.
+    const code = src
+      .slice(start, end)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
     // The slice must contain the write it guards, or the guard passes vacuously.
-    expect(body).toMatch(/\bawait fsp\.rename\(tmp, mcpPath\)/);
-    expect(body).toMatch(/\bawait fsp\.writeFile\(tmp, /);
-    expect(body).not.toMatch(/\b\w+Sync\(/);
+    expect(code).toMatch(/\bawait fsp\.rename\(tmp, mcpPath\)/);
+    expect(code).toMatch(/\bawait fsp\.writeFile\(tmp, /);
+    expect(code).not.toMatch(/\b\w+Sync\(/);
   });
 
   it('falls back to bash -lc (no terminal emulator, no systemd-run) detached with a log fd, and reports ok+pid when the session outlives the probe', async () => {

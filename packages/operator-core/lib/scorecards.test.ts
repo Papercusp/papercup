@@ -492,9 +492,14 @@ describe('graded subject rubric currentness (EI-23978920367779836)', () => {
     });
   });
 
-  it('preserves BAR meaning across a method-only edit', () => {
+  it('explains currentness when BAR meaning is unchanged across a method-only edit', () => {
     expect(classifySubjectRubricCurrentness('acceptance-rubric', { ...recorded, meaningRevision: 2 }, {
       ...live, barContract: { meaningRevision: 2 },
+    } as never)).toMatchObject({ state: 'current', reason: 'meaning-unchanged' });
+    expect(classifySubjectRubricCurrentness('acceptance-rubric', {
+      ...recorded, criteriaHash: 'same', meaningRevision: 2,
+    }, {
+      ...live, criteriaHash: 'same', barContract: { meaningRevision: 2 },
     } as never)).toMatchObject({ state: 'current', reason: 'current' });
   });
 });

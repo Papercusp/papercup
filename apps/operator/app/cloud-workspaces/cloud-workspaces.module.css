@@ -755,13 +755,9 @@
 }
 
 .connectLayout[data-panel-open="true"] {
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
-}
-
-@media (max-width: 900px) {
-  .connectLayout[data-panel-open="true"] {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  /* The desktop pane can be narrow inside a wide window. Fit both children
+     to this grid's width so provider controls never overlap the form. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
 }
 
 .providerRows {

@@ -96,8 +96,9 @@ describe('RSR-P-024-C — a directed ask or an owner directive starts a turn', (
     expect(v.class).toBe('owner-directive');
   });
 
-  it("a wake:'required' FYI and a thread reply keep their turn", () => {
+  it("a wake:'required' message and its persisted boolean form plus a thread reply keep their turn", () => {
     expect(classifyInboxWakeMessage(msg({ expects: 'none', wake: 'required' }))).toMatchObject({ actionable: true, class: 'required-wake' });
+    expect(classifyInboxWakeMessage(msg({ expects: 'none', wake: true }))).toMatchObject({ actionable: true, class: 'actionable' });
     expect(classifyInboxWakeMessage(msg({ expects: 'none', related_msg_id: 'm-0' }))).toMatchObject({ actionable: true, class: 'reply' });
   });
 
