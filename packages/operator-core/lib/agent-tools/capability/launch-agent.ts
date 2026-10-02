@@ -484,7 +484,7 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          "The agent's requested FIRST TURN (no plan required). REQUIRED with `resume`/`fork` as the resumed session's next-turn request (\"here's what changed, carry on\"). The top-level field may be omitted for a fresh plan-bound launch, when fresh per-member entries supply briefs, or for a `successor` (which seeds its own carry brief). Delivery is not evidence the turn began or claimed work; read launch verification.",
+          'First-turn request; REQUIRED for resume/fork. Optional for fresh plan-bound or per-member briefs, or a successor with seeded carry. Delivery does not prove a turn started or claimed work; read launch verification.',
         ),
       plan: z
         .string()
@@ -532,7 +532,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume an existing session mid-thread — its full context comes back. A non-empty `brief` is required because it is the resumed session\'s actionable next turn. For ordinary in-place continuation, send `{ resume, brief }`; omitted runtime settings use the target or saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; explicit resume overrides are intentional and may be refused when they conflict with a saved fleet profile. Use `successor` when recovery needs a fresh context with explicit runtime/carry settings while retaining identity. Pass EITHER agentId (usual) or sessionId (exact pin).',
+          'Resume full context with a required non-empty brief. Choose agentId (latest) OR sessionId (exact). Omitted runtime settings use the target/saved fleet profile; account/model overrides may conflict with that profile. carry is rejected for resume/fork; use successor for fresh context with explicit runtime/carry and retained identity.',
         ),
       successor: z
         .object({
@@ -545,7 +545,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. Use this when recovery needs explicit fresh-context `account`, `model`, or `carry` settings while preserving identity. A successor is visible by default when `headless` is omitted or `false`; set `headless: true` for no window. It cannot be combined with `restoreVisible`. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
+          'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows account/model/carry overrides. Visible by default; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
         ),
       fork: z
         .boolean()
@@ -557,7 +557,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. If the target is already ended or no managed host remains, the tool safely falls through to an ordinary exact resume without terminating anything. When a host is present, refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. For a stale headless host (`not-a-window`), omit `restoreVisible` and use ordinary exact resume, which performs guarded stale-headless recovery. The old agent-launched host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
+          'Recover an exact resume.sessionId after its desktop window disappeared. No surviving host: ordinary exact resume. A surviving host is shut down gracefully ONLY with kernel cgroup proof its window is dead; alive/unknown/non-window hosts are refused. For stale headless hosts omit this flag and use ordinary exact resume. Verify the restored visible terminal.',
         ),
       agent: z
         .enum(['claude', 'codex', 'omp'])
@@ -612,7 +612,7 @@ export default defineTool({
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/context/limit/role/carry/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a registered persona id (see its own description); invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `claimKinds` needs a self-pulling fleet — use fleet:launch-on-plan for that claim-lane behavior.',
+          'Index-aligned FRESH multi-launch config (entry 0 = agent 1). Set fields override top-level args, then system defaults. Registered roles only; invalid personas fail atomically before launch. Missing entries use flat args; omitted count uses members.length. Not for resume/fork. claimKinds requires a self-pulling fleet via fleet:launch-on-plan.',
         ),
       cwd: z
         .string()
