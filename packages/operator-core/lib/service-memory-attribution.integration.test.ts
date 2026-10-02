@@ -1347,7 +1347,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               phase('private-heap-retainer-analysis');
               const analysisStarted = Date.now();
               report.heapRetainers = { ...(await summarizeHeapRetainers(readFileSync(snapshotPath),
-                { top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32 })),
+                { top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32,
+                  decoderControl: e.PAPERCUSP_P011_NATIVE_HEAP_DECODER || undefined })),
                 durationMs: Date.now() - analysisStarted, pid: host.pid };
               publish();
             }

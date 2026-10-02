@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { summarizeHeapSnapshot, summarizeHeapSnapshotStream, summarizeHeapRetainers } from '../../../scripts/analyze-heap-snapshots.mjs';
+import { summarizeHeapSnapshot, summarizeHeapSnapshotStream, summarizeHeapRetainers, checkNativeHeapDecode } from '../../../scripts/analyze-heap-snapshots.mjs';
 
 describe('private V8 heap snapshot census', () => {
   it('detects a real surviving large array without exporting private string payloads', async () => {
@@ -106,6 +106,15 @@ describe('private V8 heap snapshot census', () => {
       `], { env: { ...process.env, P011_HEAP_DIR: directory }, encoding: 'utf8', timeout: 60000 });
       expect(result.status, result.stderr).toBe(0);
       const bytes = readFileSync(join(directory, 'owners.heapsnapshot'));
+      if (process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER) {
+        const control = checkNativeHeapDecode(bytes, process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER);
+        expect(control.decoded).toBe(true);
+        expect(control.inputSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+        const invalid = checkNativeHeapDecode(Buffer.from('{"private":"DoNotExportThisPayload"}'), process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER);
+        expect(invalid.decoded).toBe(false);
+        expect(invalid.stderrBytes).toBeGreaterThan(0);
+        expect(JSON.stringify(invalid)).not.toContain('DoNotExportThisPayload');
+      }
       const report = await summarizeHeapRetainers(bytes, { top: 30, perClass: 4, retainerDepth: 1 });
       const exclusive = report.groups.find(group => group.class === 'ExclusiveHeapFixture');
       expect(exclusive?.nodes[0].retainedSizeBytes).toBeGreaterThan(15_000_000);
