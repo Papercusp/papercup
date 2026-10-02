@@ -120,7 +120,9 @@ function arg(name: string): string | undefined {
 
 function git(repo: string, args: string[]): string {
   try {
-    return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+    return execFileSync('git', ['-C', repo, ...args], {
+      encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024,
+    }).trim();
   } catch (e) {
     return `error: ${String(e).slice(0, 120)}`;
   }
