@@ -136,6 +136,12 @@ export interface ArmReport {
   readonly cases: readonly CaseMeasurement[];
   readonly fixtures: readonly UpdateFixtureResult[];
   readonly error: string | null;
+  /**
+   * ISO instant the arm run FINISHED, recorded INSIDE the report by the CLI at arm-run time. Run identity
+   * (`deriveRunMeta`) is derived from this CONTENT, never from file mtimes (which a copy/clone resets) or the
+   * wall clock at aggregate time (EI-24858052475884275). Absent on legacy reports → epoch fallback.
+   */
+  readonly measuredAt?: string;
 }
 
 export interface RunOptions {
