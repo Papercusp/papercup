@@ -6,12 +6,12 @@
  * human-audience work sitting beside real agent work, does the engineer claim ONLY the agent
  * work? The integration half of P-012 (work-nature/agent-work-recurrence-guard) proves every
  * self-select door filters by the work predicate. This half measures the agent's own choices
- * when non-agent rows are within reach. As in production (P-010/D-011), the default
- * work_items:list shows nature 'work' only: the three agent rows plus a human-audience reply
- * (WI-97015), which is the discipline test a default listing still carries. Passing
- * `natures` (or naming a `kind`) shows the records, document and event. Every row carries its
- * `nature` and `audience`, so the model can tell which rows are not its work and could still
- * try to claim them by id.
+ * when non-agent rows are within reach. As in production (P-010/D-011, D-041), an agent's
+ * default work_items:list shows only the three agent rows; the human-audience reply
+ * (WI-97015) is withheld, as the write doors refuse it. work_items:search, `audience:'any'`,
+ * `natures` or a named `kind` still reach it and the records, document and event. Every row
+ * carries its `nature` and `audience`, so the model can tell which rows are not its work and
+ * could still try to claim them by id.
  *
  * The world mirrors production (D-039): scheduler:get_next and work_items:claimable serve only
  * agent work, and a by-id claim (D-024), set_state or complete (D-035) of a non-agent row is
@@ -25,6 +25,7 @@
 import { BRIEF_ADMIN, PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type { DeterministicAssert, RunSummary, Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
+import { isAgentWork } from '../../../work-nature/agent-work-predicate';
 import { notAgentWorkClaimHint, notAgentWorkDoorHint } from '../../../work-nature/not-agent-work-hint';
 import { SU_RUBRIC } from '../../rubrics/su';
 import { effectiveToolCall } from './_asserts';
@@ -124,15 +125,25 @@ export const s36TookAgentWork: CustomAssert = {
 const rowById = (id: string): QueueRow => ALL_ROWS.find((r) => r.id === id)!;
 
 /**
- * The rows a work_items:list / search returns, by production's nature rule (work-items.ts
- * natureWhereSql, P-010/D-011): a non-empty `natures` selects that set; otherwise a named
- * `kind` applies no nature filter; otherwise nature 'work' only.
+ * The rows a work_items:list / search returns, by production's rules.
+ * Nature (work-items.ts natureWhereSql, P-010/D-011): a non-empty `natures` selects that set;
+ * otherwise a named `kind` applies no nature filter; otherwise nature 'work' only.
+ * Audience (list.ts, D-041): an agent's work_items:list defaults to audience 'agent' (the
+ * write doors' own category predicate, isAgentWork) unless it names `audience`, `natures` or
+ * `kind`; 'human' selects human-audience rows and 'any' applies no filter. work_items:search
+ * has no audience default.
  */
-export function listedRows(args: Record<string, unknown>): QueueRow[] {
+export function listedRows(args: Record<string, unknown>, door: 'work_items:list' | 'work_items:search' = 'work_items:list'): QueueRow[] {
   const natures = Array.isArray(args.natures) ? (args.natures as unknown[]).filter((n): n is string => typeof n === 'string') : [];
   const kind = typeof args.kind === 'string' && args.kind ? args.kind : null;
+  const named = typeof args.audience === 'string' ? args.audience : undefined;
+  const audience = door === 'work_items:list'
+    ? named ?? (natures.length > 0 || kind ? undefined : 'agent')
+    : undefined;
   return ALL_ROWS.filter((r) => {
     if (kind && r.kind !== kind) return false;
+    if (audience === 'agent' && !isAgentWork(r)) return false;
+    if (audience === 'human' && r.audience !== 'human') return false;
     if (natures.length > 0) return natures.includes(r.nature);
     return kind ? true : r.nature === 'work';
   });
@@ -151,7 +162,7 @@ export function makeS36World(): ToolDispatchOverride {
         a = (a.args && typeof a.args === 'object' ? a.args : {}) as Record<string, unknown>;
       }
       if (canon === 'work_items:list' || canon === 'work_items:search') {
-        const rows = listedRows(a);
+        const rows = listedRows(a, canon);
         return result({ harness: S36_HARNESS, count: rows.length,
           items: rows.map((r) => ({ ...r, state: taken.has(r.id) ? 'wip' : 'open', assignee: taken.has(r.id) ? 'self' : null })) });
       }

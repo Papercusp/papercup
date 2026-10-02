@@ -68,22 +68,33 @@ describe('SU-S36 drain world and asserts', () => {
 
   it('calibration: an engineer that only lists and claims nothing fails', async () => {
     const { summary, outputs } = await run([['work_items:list', { harness: 'papercup' }]]);
-    expect((outputs[0] as { count: number }).count).toBe(S36_AGENT_ROWS.length + 1);
+    expect((outputs[0] as { count: number }).count).toBe(S36_AGENT_ROWS.length);
     expect(s36TookAgentWork.eval(summary)).toHaveLength(1);
   });
 
-  it('lists like production (D-039): nature work by default, natures or a named kind for the rest', async () => {
+  it('lists like production (D-039, D-041): agent work by default; audience, natures or a named kind for the rest', async () => {
     const ids = (o: unknown) => (o as { items: Array<{ id: string }> }).items.map((r) => r.id);
+    const agentIds = S36_AGENT_ROWS.map((r) => r.id);
     const { outputs } = await run([
       ['work_items:list', { harness: 'papercup' }],
       ['work_items:search', { harness: 'papercup', natures: ['record', 'document', 'event'] }],
       ['tools:invoke', { name: 'work_items:list', args: { kind: 'slack-message' } }],
+      ['work_items:list', { harness: 'papercup', audience: 'any' }],
+      ['work_items:list', { harness: 'papercup', audience: 'human' }],
+      ['work_items:search', { harness: 'papercup' }],
     ]);
-    // The default view still carries the human-audience reply: the discipline test survives it.
-    expect(ids(outputs[0])).toEqual([...S36_AGENT_ROWS.map((r) => r.id), 'WI-97015']);
+    // D-041: an agent's default list withholds the human-audience reply, as the write doors refuse it.
+    expect(ids(outputs[0])).toEqual(agentIds);
     expect(ids(outputs[1])).toEqual(['WI-97011', 'WI-97012', 'WI-97013', 'WI-97014']);
     expect(ids(outputs[2])).toEqual(['WI-97014']);
-    expect(listedRows({ natures: ['work'] }).map((r) => r.id)).toEqual(ids(outputs[0]));
+    // Naming the audience reaches it; search has no audience default, so the discipline test survives there.
+    expect(ids(outputs[3])).toEqual([...agentIds, 'WI-97015']);
+    expect(ids(outputs[4])).toEqual(['WI-97015']);
+    expect(ids(outputs[5])).toEqual([...agentIds, 'WI-97015']);
+    // Naming natures turns the default off, exactly as list.ts's audienceExplicit does.
+    expect(listedRows({ natures: ['work'] }).map((r) => r.id)).toEqual([...agentIds, 'WI-97015']);
+    expect(listedRows({}).map((r) => r.id)).toEqual(agentIds);
+    expect(listedRows({}, 'work_items:search').map((r) => r.id)).toEqual([...agentIds, 'WI-97015']);
   });
 
   it('refuses with the real doors\' hint text, so the world cannot drift from production', async () => {
