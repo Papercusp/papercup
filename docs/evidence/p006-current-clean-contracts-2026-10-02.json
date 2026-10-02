@@ -2516,5 +2516,51 @@
     "bindingsAwaitingConditionalWithdrawal": [21716, 17942, 17943, 17944, 17948, 17959, 17960, 17961],
     "limits": "Selected replacement proof passes, but no authority governing verdict is claimed. All eight superseded binding references remain active pending exact identity readback and conditional withdrawal. Historical runs and D003/D013/D016 are preserved. P006, P007 and P008 remain open."
   },
-  "next": "Read the current seven AUTHORITY replacement bindings and selected PASS receipt; verify source/test hashes and eight obsolete identities before binding-only withdrawal, preserving all historical runs. Then run AUTHORITY and the whole accepted-clause governing evaluator without bindingIds/workItemIds/evidenceRefs on staging. Do not repeat unchanged tests or native diagnostics. Continue P003-P006 proof, independent rubric ratification, D013 real-goal card reuse, closure audit and final shipment; preserve separate P007/P008 checks."
+  "p002AuthorityGoverningFire183": {
+    "nativeSession": "01a0fc7a-5124-77d0-8504-465c9c37d7e5",
+    "continuity": "The delayed Fire183 wake carried Fire179; authoritative loop checkpoint and canonical evidence instead contained later Fire180 proof. Live claims and all24 work-item check claims were refreshed before acting.",
+    "fingerprintVerification": "All seventeen canonical source/test hashes match p002CurrentProof and the retained clean920030a3 checkout. Its working tree remains clean. No unchanged test rerun.",
+    "selectedProof": {
+      "route": "Attributed staging :3170",
+      "evaluatorBuild": {"sha": "61ea9e254d", "version": "0.0.0"},
+      "governing": false,
+      "bindingIds": [21717, 21718, 21719, 21720, 21721, 21722, 21723],
+      "verdicts": {"pass": 1, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire183-authority-selected-decoded.json"
+    },
+    "withdrawal": {
+      "bindingIds": [21716, 17942, 17943, 17944, 17948, 17959, 17960, 17961],
+      "counts": {"ok": 8, "failed": 0},
+      "identityGuard": "Exact WI-1074216/AUTHORITY@3 identities re-read. Seven historical references retain their prior evidenceRef/testRunId identities and test-run-worktree-not-clean status; aggregate21716 is replaced by one-to-one scenarios21721-23. Fresh selected replacement adequacy passed before withdrawal.",
+      "receipt": "/tmp/p006-fire183-authority-retract-decoded.json",
+      "readback": "Default evidence read returns exactly21717-21723, all server-measured CURRENT. No obsolete binding remains active."
+    },
+    "historicalLedger": {
+      "testRunIds": [20350341, 20350367, 20350355, 20350357, 20350358],
+      "verified": "Exact id/status/commitSha/worktreeDirty/isScratchConfig/source/root/filePath/startedAt/finishedAt fields and returned ledger counts are unchanged before versus after withdrawal. Historical rows and D003 baseline/D013 real-goal requirement/D016 audit are retained.",
+      "receipt": "/tmp/p006-fire183-authority-historical-decoded.json"
+    },
+    "governingProof": {
+      "route": "Attributed staging :3170; no bindingIds, workItemIds or evidenceRefs selection",
+      "evaluatorBuild": {"sha": "61ea9e254d", "version": "0.0.0"},
+      "governing": true,
+      "specId": "WOE-P002-AUTHORITY",
+      "specRevision": 3,
+      "verdicts": {"pass": 1, "fail": 0, "unknown": 0},
+      "wouldBlock": [],
+      "receipt": "/tmp/p006-fire183-authority-governing-decoded.json"
+    },
+    "wholePlanCensus": {
+      "route": "Attributed staging :3170; no clause, binding, work-item or evidence-ref selection",
+      "evaluatorBuild": {"sha": "61ea9e254d", "version": "0.0.0"},
+      "governing": true,
+      "acceptedClauses": 28,
+      "verdicts": {"pass": 12, "fail": 16, "unknown": 0},
+      "passedCohorts": ["P001:6", "P002:6"],
+      "failedCohorts": ["P003:6", "P004:5", "P005:3", "P006:2"],
+      "receipt": "/tmp/p006-fire183-whole-governing-decoded.json"
+    },
+    "limits": "P006 remains partial. P003-P006 proof, independent rubric review/ratification, D013 real-goal card acceptance, closure audit and final shipment remain open. P007 root/product/R7 and P008 historical cause/adoption/R8 are separate open acceptance. No product source/test, accepted-clause, BAR, immutable baseline, native, P2P, shared restart or LIVE_GATE_OPS change. Fire180 records above remain dated history."
+  },
+  "next": "Continue remaining P003-P006 proof from the current governing census; read accepted P003 clauses, current fingerprints and existing calibrated controls before running only necessary proof. Reuse D013's completed real-goal grader/card, never parallel-monitor it. Independent rubric ratification, closure audit and final shipment remain required. Preserve separate P007/P008 checks and dated historical evidence; do not rebind/retract P002 again or rerun unchanged native diagnostics."
 }
