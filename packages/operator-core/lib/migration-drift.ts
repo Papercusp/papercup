@@ -356,17 +356,22 @@ export interface ClassifyContentDriftOptions {
  * attention, while reporting a half-landed migration as benign silences the
  * signal the detector exists to carry.
  */
-export function classifyContentDrift(
+export async function classifyContentDrift(
   raw: ReadonlyArray<MigrationContentDrift>,
-  readAppliedText: (d: MigrationContentDrift) => AppliedMigrationTextResult,
+  readAppliedText: (d: MigrationContentDrift) =>
+    | AppliedMigrationTextResult
+    | Promise<AppliedMigrationTextResult>,
   readDiskText: (filename: string) => string | null,
   opts: ClassifyContentDriftOptions = {},
-): ClassifiedMigrationContentDrift[] {
+): Promise<ClassifiedMigrationContentDrift[]> {
   const budgetMs = opts.budgetMs ?? DEFAULT_CLASSIFY_BUDGET_MS;
   const startedAt = opts.now?.() ?? Date.now();
   const now = () => opts.now?.() ?? Date.now();
+  const classified: ClassifiedMigrationContentDrift[] = [];
 
-  return raw.map((d): ClassifiedMigrationContentDrift => {
+  // Keep the history reads sequential: each one yields to the event loop while
+  // bounding child-process fan-out and preserving the classifier's time budget.
+  for (const d of raw) {
     const unclassified = (why: string): ClassifiedMigrationContentDrift => ({
       ...d,
       classification: 'unclassified',
@@ -374,57 +379,79 @@ export function classifyContentDrift(
     });
 
     // The corpus only grows: 68 drifted files cost ~13s today, so an unbounded
-    // walk becomes a real stall at 200. Past the budget, stop spending and mark
+    // walk becomes expensive at 200. Past the budget, stop spending and mark
     // the rest unclassified — which counts as HAZARDOUS, so running out of time
     // can never make drift look benign.
     if (now() - startedAt > budgetMs) {
-      return unclassified(
-        `not classified — the ${budgetMs}ms classification budget was exhausted before reaching ` +
-          `this file (${raw.length} drifted files); re-run with a larger budgetMs to classify it`,
+      classified.push(
+        unclassified(
+          `not classified — the ${budgetMs}ms classification budget was exhausted before reaching ` +
+            `this file (${raw.length} drifted files); re-run with a larger budgetMs to classify it`,
+        ),
       );
+      continue;
     }
 
     let applied: AppliedMigrationTextResult;
     try {
-      applied = readAppliedText(d);
+      applied = await readAppliedText(d);
     } catch (err) {
-      return unclassified(
-        `applied text unrecoverable: ${(err as Error)?.message ?? 'unknown error'}`,
+      classified.push(
+        unclassified(`applied text unrecoverable: ${(err as Error)?.message ?? 'unknown error'}`),
       );
+      continue;
     }
-    if (!applied.ok) return unclassified(`applied text unrecoverable: ${applied.reason}`);
+    if (!applied.ok) {
+      classified.push(unclassified(`applied text unrecoverable: ${applied.reason}`));
+      continue;
+    }
 
     let disk: string | null;
     try {
       disk = readDiskText(d.filename);
     } catch (err) {
-      return unclassified(`on-disk text unreadable: ${(err as Error)?.message ?? 'unknown error'}`);
+      classified.push(
+        unclassified(`on-disk text unreadable: ${(err as Error)?.message ?? 'unknown error'}`),
+      );
+      continue;
     }
-    if (disk === null) return unclassified('on-disk text unreadable');
+    if (disk === null) {
+      classified.push(unclassified('on-disk text unreadable'));
+      continue;
+    }
 
     const appliedNorm = normalizeMigrationSql(applied.text);
-    if (!appliedNorm.ok) return unclassified(`applied SQL unparseable: ${appliedNorm.reason}`);
+    if (!appliedNorm.ok) {
+      classified.push(unclassified(`applied SQL unparseable: ${appliedNorm.reason}`));
+      continue;
+    }
     const diskNorm = normalizeMigrationSql(disk);
-    if (!diskNorm.ok) return unclassified(`on-disk SQL unparseable: ${diskNorm.reason}`);
+    if (!diskNorm.ok) {
+      classified.push(unclassified(`on-disk SQL unparseable: ${diskNorm.reason}`));
+      continue;
+    }
 
     const at = applied.commit.slice(0, 12);
-    if (appliedNorm.normalized === diskNorm.normalized) {
-      return {
-        ...d,
-        classification: 'comments-only',
-        classificationDetail:
-          `executable SQL is identical to the applied blob (${at}); only comments/whitespace ` +
-          `differ, so the live schema still matches this file`,
-      };
-    }
-    return {
-      ...d,
-      classification: 'executable',
-      classificationDetail:
-        `executable SQL DIFFERS from the applied blob (${at}) — the edit never ran and never ` +
-        `will; repair with a NEW migration re-applying the intended state`,
-    };
-  });
+    classified.push(
+      appliedNorm.normalized === diskNorm.normalized
+        ? {
+            ...d,
+            classification: 'comments-only',
+            classificationDetail:
+              `executable SQL is identical to the applied blob (${at}); only comments/whitespace ` +
+              `differ, so the live schema still matches this file`,
+          }
+        : {
+            ...d,
+            classification: 'executable',
+            classificationDetail:
+              `executable SQL DIFFERS from the applied blob (${at}) — the edit never ran and never ` +
+              `will; repair with a NEW migration re-applying the intended state`,
+          },
+    );
+  }
+
+  return classified;
 }
 
 /** EI-19415309774723126: `000-baseline.sql` is FROZEN/GENERATED — regenerated
@@ -639,7 +666,7 @@ export async function checkMigrationDrift(
   const contentDrift = rawContentDrift === null
     ? null
     : opts.classifyContent
-    ? classifyContentDrift(
+    ? await classifyContentDrift(
         rawContentDrift,
         (d) =>
           contentDriftSqlDir

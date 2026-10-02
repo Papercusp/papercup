@@ -151,8 +151,8 @@ describe('classifyContentDrift', () => {
     commit: 'e786f7391c46dd32ec2a53b7e819289e087f3e86',
   });
 
-  it('classifies a comment-only edit as benign, citing the commit it compared against', () => {
-    const [got] = classifyContentDrift(
+  it('classifies a comment-only edit as benign, citing the commit it compared against', async () => {
+    const [got] = await classifyContentDrift(
       [entry],
       appliedOk('ALTER TABLE t ADD COLUMN c int;\n'),
       () => '-- FORWARD-COMPAT: cannot break the deployed release.\nALTER TABLE t ADD COLUMN c int;\n',
@@ -163,8 +163,8 @@ describe('classifyContentDrift', () => {
     expect(got).toMatchObject(entry);
   });
 
-  it('classifies a real half-landed migration as executable (the mig-708 hazard)', () => {
-    const [got] = classifyContentDrift(
+  it('classifies a real half-landed migration as executable (the mig-708 hazard)', async () => {
+    const [got] = await classifyContentDrift(
       [entry],
       appliedOk('ALTER TABLE t ADD COLUMN a int;\n'),
       () => 'ALTER TABLE t ADD COLUMN a int;\nALTER TABLE t ADD COLUMN closed_ts timestamptz;\n',
@@ -173,10 +173,10 @@ describe('classifyContentDrift', () => {
     expect(got.classificationDetail).toMatch(/never ran and never will/);
   });
 
-  it('SAFETY: unrecoverable applied text is `unclassified`, never benign', () => {
+  it('SAFETY: unrecoverable applied text is `unclassified`, never benign', async () => {
     // The packaged/headless case — no git repo, so recovery is impossible by
     // construction. The correct outcome is today's behavior (report the drift).
-    const [got] = classifyContentDrift(
+    const [got] = await classifyContentDrift(
       [entry],
       () => ({ ok: false, reason: 'the file has no git history in this tree' }),
       () => 'anything',
@@ -185,24 +185,24 @@ describe('classifyContentDrift', () => {
     expect(got.classificationDetail).toMatch(/applied text unrecoverable/);
   });
 
-  it('SAFETY: unlexable SQL on either side is `unclassified`, never benign', () => {
-    const [fromApplied] = classifyContentDrift([entry], appliedOk("SELECT 'oops;"), () => 'SELECT 1;');
+  it('SAFETY: unlexable SQL on either side is `unclassified`, never benign', async () => {
+    const [fromApplied] = await classifyContentDrift([entry], appliedOk("SELECT 'oops;"), () => 'SELECT 1;');
     expect(fromApplied.classification).toBe('unclassified');
     expect(fromApplied.classificationDetail).toMatch(/applied SQL unparseable/);
 
-    const [fromDisk] = classifyContentDrift([entry], appliedOk('SELECT 1;'), () => "SELECT 'oops;");
+    const [fromDisk] = await classifyContentDrift([entry], appliedOk('SELECT 1;'), () => "SELECT 'oops;");
     expect(fromDisk.classification).toBe('unclassified');
     expect(fromDisk.classificationDetail).toMatch(/on-disk SQL unparseable/);
   });
 
-  it('SAFETY: an unreadable on-disk file is `unclassified`, never benign', () => {
-    const [got] = classifyContentDrift([entry], appliedOk('SELECT 1;'), () => null);
+  it('SAFETY: an unreadable on-disk file is `unclassified`, never benign', async () => {
+    const [got] = await classifyContentDrift([entry], appliedOk('SELECT 1;'), () => null);
     expect(got.classification).toBe('unclassified');
     expect(got.classificationDetail).toMatch(/on-disk text unreadable/);
   });
 
-  it('SAFETY: a THROWING seam is caught and reported, never allowed to look benign', () => {
-    const [fromApplied] = classifyContentDrift(
+  it('SAFETY: a THROWING seam is caught and reported, never allowed to look benign', async () => {
+    const [fromApplied] = await classifyContentDrift(
       [entry],
       () => {
         throw new Error('git exploded');
@@ -212,15 +212,15 @@ describe('classifyContentDrift', () => {
     expect(fromApplied.classification).toBe('unclassified');
     expect(fromApplied.classificationDetail).toMatch(/git exploded/);
 
-    const [fromDisk] = classifyContentDrift([entry], appliedOk('SELECT 1;'), () => {
+    const [fromDisk] = await classifyContentDrift([entry], appliedOk('SELECT 1;'), () => {
       throw new Error('EACCES');
     });
     expect(fromDisk.classification).toBe('unclassified');
     expect(fromDisk.classificationDetail).toMatch(/EACCES/);
   });
 
-  it('every entry always carries a populated classificationDetail', () => {
-    const many = classifyContentDrift(
+  it('every entry always carries a populated classificationDetail', async () => {
+    const many = await classifyContentDrift(
       [entry, { ...entry, filename: '728-b.sql' }],
       appliedOk('SELECT 1;'),
       () => 'SELECT 1; -- c',
@@ -229,7 +229,7 @@ describe('classifyContentDrift', () => {
     for (const d of many) expect(d.classificationDetail.length).toBeGreaterThan(0);
   });
 
-  it('stops spending past the budget and marks the REST unclassified, never benign', () => {
+  it('stops spending past the budget and marks the REST unclassified, never benign', async () => {
     // Injected clock: the first entry is classified, then time jumps past the
     // budget, so everything after it must degrade to unclassified rather than
     // keep walking git history.
@@ -240,7 +240,7 @@ describe('classifyContentDrift', () => {
       { filename: 'b.sql', recordedSha256: 'r', diskSha256: 'd' },
       { filename: 'c.sql', recordedSha256: 'r', diskSha256: 'd' },
     ];
-    const got = classifyContentDrift(
+    const got = await classifyContentDrift(
       many,
       appliedOk('SELECT 1;'),
       () => 'SELECT 1; -- benign comment',
@@ -254,9 +254,9 @@ describe('classifyContentDrift', () => {
     expect(got[2].classification).toBe('unclassified');
   });
 
-  it('is empty-safe — the normal case, where nothing drifted at all', () => {
+  it('is empty-safe — the normal case, where nothing drifted at all', async () => {
     expect(
-      classifyContentDrift(
+      await classifyContentDrift(
         [],
         () => {
           throw new Error('must not be called');
