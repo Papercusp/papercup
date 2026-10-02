@@ -62,10 +62,12 @@ export default defineTool({
     const { sql } = getOrgPg();
     // No transaction is held across the delegate's model call (it can outlast
     // idle_in_transaction_session_timeout): search in one, deliver in another.
-    const inWorkspaceTx = <T>(fn: (tx: postgres.TransactionSql) => Promise<T>): Promise<T> =>
+    // The store/authorization helpers type their handle as `Sql`, which is what
+    // `ctx.tx` is for a needsWorkspaceTx tool; a transaction handle serves both.
+    const inWorkspaceTx = <T>(fn: (tx: postgres.Sql) => Promise<T>): Promise<T> =>
       sql.begin(async (tx) => {
         await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
-        return fn(tx);
+        return fn(tx as unknown as postgres.Sql);
       }) as Promise<T>;
 
     let queryEmbedding: number[] | null = null;
