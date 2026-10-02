@@ -42,12 +42,22 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import { mapWithConcurrency } from './gym/concurrency';
 
 export const RETENTION_SCHEMA = 'papercusp-release-retention/v1';
 export const RECLAIM_DELETER = 'release:cut-reclaim';
 export const DEFAULT_MIN_IDLE_HOURS = 24;
 const GIT_TIMEOUT_MS = 120_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
+/**
+ * The authored-work read is the only git-heavy phase, and it runs inside one MCP call
+ * (release:cut, ~55s request timeout). Serially it cost 54.4s of a 56.0s dry-run on
+ * 2026-10-02 07:02Z: 24 trees, median 2.1s each, under load ~126/128 (EI-24849983022443070).
+ * Trees and, within a tree, submodules are independent reads, so both run width-bounded.
+ * At these widths at most 16 git children run at once.
+ */
+export const AUTHORED_TREE_CONCURRENCY = 4;
+export const AUTHORED_SUBMODULE_CONCURRENCY = 4;
 
 // ---------------------------------------------------------------- parsing (pure)
 
@@ -617,6 +627,7 @@ export async function inspectAuthoredWork(
   tree: string,
   canonicalRoot: string,
   releaseVersionPaths: readonly string[],
+  opts: { submoduleConcurrency?: number } = {},
 ): Promise<AuthoredWork> {
   try {
     const authored: string[] = [];
@@ -634,19 +645,36 @@ export async function inspectAuthoredWork(
       await git(canonicalRoot, ['for-each-ref', '--count=1', `--contains=${head}`, '--format=%(refname)'])
     ).trim();
     if (!containing) authored.push(`HEAD ${head.slice(0, 10)} (no ref contains it)`);
-    const subs = await git(tree, ['submodule', 'status', '--recursive']);
-    for (const line of subs.split('\n')) {
+    const subs: Array<{ sha: string; rel: string }> = [];
+    for (const line of (await git(tree, ['submodule', 'status', '--recursive'])).split('\n')) {
       const m = /^([ +\-U])([0-9a-f]{40}) (.+?)(?: \(.*\))?$/.exec(line);
       if (!m || m[1] === '-') continue;
       const [, , sha, rel] = m as unknown as [string, string, string, string];
-      judge(
-        parsePorcelainV2(await git(path.join(tree, rel), ['status', '--porcelain=v2', '-z', '--ignore-submodules=all']), rel),
-      );
-      try {
-        await git(path.join(canonicalRoot, rel), ['cat-file', '-e', `${sha}^{commit}`], 30_000);
-      } catch {
-        authored.push(`${rel}@${sha.slice(0, 10)} (commit absent from canonical checkout)`);
-      }
+      subs.push({ sha, rel });
+    }
+    // Submodules are independent reads: run them width-bounded, then judge in submodule
+    // order so the result is deterministic. A git failure is RETURNED, not thrown, so no
+    // sibling read is left running after this call has already decided ok:false.
+    const reads = await mapWithConcurrency(
+      subs,
+      opts.submoduleConcurrency ?? AUTHORED_SUBMODULE_CONCURRENCY,
+      async ({ sha, rel }) => {
+        try {
+          const status = await git(path.join(tree, rel), ['status', '--porcelain=v2', '-z', '--ignore-submodules=all']);
+          const present = await git(path.join(canonicalRoot, rel), ['cat-file', '-e', `${sha}^{commit}`], 30_000).then(
+            () => true,
+            () => false,
+          );
+          return { rel, sha, status, present, error: null as unknown };
+        } catch (e) {
+          return { rel, sha, status: '', present: false, error: e };
+        }
+      },
+    );
+    for (const r of reads) {
+      if (r.error !== null) throw r.error;
+      judge(parsePorcelainV2(r.status, r.rel));
+      if (!r.present) authored.push(`${r.rel}@${r.sha.slice(0, 10)} (commit absent from canonical checkout)`);
     }
     return { ok: true, authored, machineWritten };
   } catch (e) {
@@ -667,6 +695,8 @@ export interface GatherOptions {
   retentionDir?: string;
   minIdleHours?: number;
   nowMs?: number;
+  /** trees whose authored-work read runs at once (default AUTHORED_TREE_CONCURRENCY) */
+  authoredConcurrency?: number;
   /** test seams (sync or async; the defaults are async so the host's event loop keeps running) */
   listWorktrees?: (repoPath: string) => ReclaimWorktree[] | Promise<ReclaimWorktree[]>;
   probe?: (worktreePath: string) => TreeProbe;
@@ -724,9 +754,15 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
   if (canonicalRoot) {
     const inspect =
       opts.authoredWork ?? ((tree: string, canon: string) => inspectAuthoredWork(tree, canon, opts.releaseVersionPaths));
-    for (const v of cheap.verdicts) {
-      if (v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED) authored.set(v.path, await inspect(v.path, canonicalRoot));
-    }
+    const pending = cheap.verdicts
+      .filter((v) => v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED)
+      .map((v) => v.path);
+    const results = await mapWithConcurrency(
+      pending,
+      opts.authoredConcurrency ?? AUTHORED_TREE_CONCURRENCY,
+      async (tree) => inspect(tree, canonicalRoot),
+    );
+    pending.forEach((tree, i) => authored.set(tree, results[i] as AuthoredWork));
   }
   return planCutReclaim({ ...base, authored });
 }
