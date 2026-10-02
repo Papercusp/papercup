@@ -251,6 +251,70 @@ beforeEach(async () => {
   await admin`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
 });
 
+describe('P-002: holder election and bounded handoff through real PG and liveness', () => {
+  async function electSuccessor(): Promise<void> {
+    await seedGoal();
+    await attachHolder(HOLDER);
+    const [first] = await admin<Array<{ goal_lease_epoch: string }>>`
+      SELECT goal_lease_epoch FROM harness_shared.agent_modes
+       WHERE workspace_id = ${WS} AND owner_id = ${HOLDER} AND mode = ${GOAL_MODE}`;
+    const elected = await setMode({
+      workspaceId: WS, ownerId: REPLACEMENT, modeId: GOAL_MODE, enabled: true,
+      reason: 'test: elected successor', setBy: HOLDER, subject: GOAL,
+      goalElectionExpectation: { ownerId: HOLDER, epoch: Number(first.goal_lease_epoch) },
+      sql: admin,
+    });
+    expect(elected.ok).toBe(true);
+  }
+
+  it('elects one effective holder and reports loss even while the historical holder is live', async () => {
+    await electSuccessor();
+    await seedPresence(HOLDER, { pid: process.pid, ageSeconds: 0 });
+    await seedAdvSession(HOLDER);
+    const deadPid = reapedPid();
+    expectProbeDead(deadPid);
+    await seedPresence(REPLACEMENT, { pid: deadPid, ageSeconds: 0 });
+    await seedAdvSession(REPLACEMENT);
+
+    const holders = await resolveGoalHolders(admin, { workspaceId: WS, goalId: GOAL });
+    expect(holders.elected?.ownerId).toBe(REPLACEMENT);
+    expect(holders.allLive.map((holder) => holder.ownerId)).toEqual([HOLDER]);
+    expect(holders.live).toEqual([]);
+    expect(holders.liveness).toBe('lost');
+  });
+
+  it('permits only the named predecessor during the deadline, then rejects expiry and a third live row', async () => {
+    await electSuccessor();
+    for (const ownerId of [HOLDER, REPLACEMENT]) {
+      await seedPresence(ownerId, { pid: process.pid, ageSeconds: 0 });
+      await seedAdvSession(ownerId);
+    }
+    const read = () => resolveGoalHolders(admin, { workspaceId: WS, goalId: GOAL });
+    const bounded = await read();
+    expect(bounded.elected?.ownerId).toBe(REPLACEMENT);
+    expect(bounded.live.map((holder) => holder.ownerId)).toEqual([REPLACEMENT]);
+    expect(bounded.overlap.status).toBe('handoff');
+
+    await admin`UPDATE harness_shared.agent_modes
+                   SET goal_handoff_expires_at = now() - interval '1 second'
+                 WHERE workspace_id = ${WS} AND owner_id = ${REPLACEMENT} AND mode = ${GOAL_MODE}`;
+    expect((await read()).overlap.status).toBe('violation');
+
+    await admin`UPDATE harness_shared.agent_modes
+                   SET goal_handoff_expires_at = now() + interval '1 minute'
+                 WHERE workspace_id = ${WS} AND owner_id = ${REPLACEMENT} AND mode = ${GOAL_MODE}`;
+    await admin`INSERT INTO harness_shared.agent_modes
+      (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject, goal_lease_epoch)
+      VALUES (${WS}, ${'su-third-holder'}, ${GOAL_MODE}, ${GOAL_MODE},
+              ${'test: stale third holder'}, ${HOLDER}, false, now(), ${GOAL}, 0)`;
+    await seedPresence('su-third-holder', { pid: process.pid, ageSeconds: 0 });
+    await seedAdvSession('su-third-holder');
+    const third = await read();
+    expect(third.elected?.ownerId).toBe(REPLACEMENT);
+    expect(third.overlap.status).toBe('violation');
+  });
+});
+
 describe('a KILLED goal holder (pid gone, adv_sessions.ended_at never written)', () => {
   it('resolves as lost, relaunches, and stops reading as active — the full invariant', async () => {
     const pid = reapedPid();
