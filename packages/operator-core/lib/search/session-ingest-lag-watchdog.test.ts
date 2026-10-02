@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   evaluateIngestLag,
+  evaluateInteractiveUsageFreshness,
   sessionIngestLagSweep,
   remainderIsConsumableWork,
   INGEST_LAG_MIN_BACKLOG_BYTES,
@@ -132,6 +133,8 @@ describe('sessionIngestLagSweep', () => {
 
   const deps = (observations: AdapterLagObservation[], fires = 0) => ({
     observe: async () => observations,
+    observeInteractiveUsageFreshness: async (_workspaceId: string, nowMs?: number) =>
+      evaluateInteractiveUsageFreshness(nowMs ?? Date.now(), nowMs ?? Date.now()),
     recentWatchdogFires: vi.fn<NonNullable<IngestLagSweepDeps['recentWatchdogFires']>>(async () => fires),
     recordFire: vi.fn<NonNullable<IngestLagSweepDeps['recordFire']>>(async () => undefined as never),
     openEscalation: vi.fn<NonNullable<IngestLagSweepDeps['openEscalation']>>(async () => undefined as never),
@@ -171,6 +174,30 @@ describe('sessionIngestLagSweep', () => {
     const res = await sessionIngestLagSweep({}, d);
     expect(res[0].outcome).toBe('healthy');
     expect(d.recentWatchdogFires).not.toHaveBeenCalled();
+  });
+
+  it('alerts on stale interactive usage freshness without attributing a cause', async () => {
+    const d = {
+      ...deps([]),
+      observeInteractiveUsageFreshness: async () => evaluateInteractiveUsageFreshness(1_000, 2_000_000),
+    };
+    const res = await sessionIngestLagSweep({}, d);
+    expect(res).toEqual([expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'alerted' })]);
+    expect(d.recordFire).toHaveBeenCalledWith(expect.objectContaining({ source: 'interactive-usage-freshness' }));
+    expect(d.openEscalation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      body: expect.stringContaining('does not establish why samples were not written'),
+    }));
+  });
+
+  it('reports unavailable interactive freshness without alerting as a proven stall', async () => {
+    const d = {
+      ...deps([]),
+      observeInteractiveUsageFreshness: async () => evaluateInteractiveUsageFreshness(null),
+    };
+    const res = await sessionIngestLagSweep({}, d);
+    expect(res).toEqual([expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'error' })]);
+    expect(d.recordFire).not.toHaveBeenCalled();
+    expect(d.openEscalation).not.toHaveBeenCalled();
   });
 
   it('is fail-soft: an observe failure returns an error row, never throws', async () => {
