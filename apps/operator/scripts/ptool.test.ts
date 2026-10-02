@@ -47,6 +47,8 @@ import {
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_CHECKPOINT_RUN_TIMEOUT_MS,
   PTOOL_CONNECT_TIMEOUT_MS,
+  PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
+  PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
   PTOOL_COORD_ORIENT_TIMEOUT_MS,
   PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
@@ -357,12 +359,20 @@ describe('ptool operator routing', () => {
     })).toBe(false);
   });
 
-  it('does not spend the managed retry budget on an explicit or bare env URL pin', () => {
+  it('keeps explicit and bare local URL pins in place with a short retry budget', () => {
+    const localPinRetryOptions = {
+      maxAttempts: PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
+      totalTimeoutMs: PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
+    };
     expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:32951' }, {}))
-      .toEqual({ maxAttempts: 1 });
+      .toEqual(localPinRetryOptions);
     expect(ptoolConnectionRetryOptions({}, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:32951',
-    })).toEqual({ maxAttempts: 1 });
+    })).toEqual(localPinRetryOptions);
+    expect(ptoolConnectionRetryOptions({ url: 'https://example.test' }, {}))
+      .toEqual({ maxAttempts: 1 });
+    expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:9071' }, {}))
+      .toEqual({ maxAttempts: 1 });
     expect(ptoolConnectionRetryOptions({}, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
       PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
@@ -2068,19 +2078,43 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     }
   });
 
-  it('fails a dead explicit URL pin after its single bounded attempt', async () => {
+  it('recovers a direct local pin by retrying the same named-call candidate', async () => {
+    const pinned = 'http://127.0.0.1:3170';
+    const env = { PAPERCUSP_OPERATOR_URL: pinned };
+    const args = { tool: 'work_items:get' };
+    const candidates = resolvePtoolInvocationCandidates(args, env);
+    const retryOptions = ptoolConnectionRetryOptions(args, env);
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' }))
+      .mockResolvedValueOnce(client);
+    const sleeps: number[] = [];
+
+    expect(candidates).toEqual([pinned]);
+    expect(shouldRediscoverOperatorUrl(args, env)).toBe(false);
+    await expect(connectWithOperatorCandidates(connectOnce, candidates, {}, {
+      ...retryOptions,
+      retryJitterMs: 0,
+      sleep: async (ms) => { sleeps.push(ms); },
+    })).resolves.toEqual({ client, operatorUrl: pinned });
+    expect(connectOnce.mock.calls.map(([url]) => url)).toEqual([pinned, pinned]);
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  it('bounds retries for a dead direct local URL pin to its short recovery window', async () => {
+    const pinned = 'http://127.0.0.1:32951';
     const connectOnce = vi.fn().mockRejectedValue(
-      Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:32951'), { code: 'ECONNREFUSED' }),
+      Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' }),
     );
     await expect(
-      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:32951', {}, {
-        ...ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:32951' }, {}),
-        attemptTimeoutMs: 15_000,
-        totalTimeoutMs: PTOOL_CONNECT_TIMEOUT_MS,
+      connectWithLocalRetry(connectOnce, pinned, {}, {
+        ...ptoolConnectionRetryOptions({ url: pinned }, {}),
+        attemptTimeoutMs: PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
         sleep: vi.fn(async () => {}),
+        retryJitterMs: 0,
       }),
     ).rejects.toThrow(/ECONNREFUSED/);
-    expect(connectOnce).toHaveBeenCalledTimes(1);
+    expect(connectOnce).toHaveBeenCalledTimes(PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS);
   });
 
   it('honors Retry-After as a minimum and adds positive jitter', async () => {
