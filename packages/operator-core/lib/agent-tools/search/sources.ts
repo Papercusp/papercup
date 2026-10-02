@@ -43,6 +43,7 @@ const ENGINEER_ISSUES_CHUNK_PARENT = {
   key: ['base_harness_slug', 'issue_id'],
 } as const;
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 
 /** Exact stored-space predicate for every vector source below. No extra read:
@@ -905,7 +906,44 @@ const sessionTurnFilterSql = (p: SearchSourceParams) => {
     sourceKind: f.sourceKind ?? null,
     since: f.since ?? null,
     until: f.until ?? null,
+    readerIds: f.readerIds ?? null,
   };
+};
+
+/**
+ * D-006 / P-013 (personal-data-reader-set-labels): with `filters.readerIds`, a
+ * turn another agent recorded inside its disclosure windows is excluded from
+ * matching, so it never competes for a result slot and the result size reveals
+ * nothing about its text (personal-vault/transcript-exclusion.ts). Without
+ * `readerIds` the source applies no reader rule.
+ */
+const sessionTurnReaderSql = (p: SearchSourceParams, qualifier: string) => {
+  const readerIds = p.filters?.readerIds;
+  if (!readerIds) return p.sql`TRUE`;
+  const sql = p.sql as unknown as Parameters<typeof restrictedTurnSql>[0];
+  return p.sql`NOT ${restrictedTurnSql(sql, qualifier, readerIds) as never}`;
+};
+
+/**
+ * The session_turn source's scope predicate over the alias `st`: workspace,
+ * harness and the filter bag, without the reader rule. Shared with the
+ * query-independent withheld count in sessions:search so the count and the
+ * search cover the same rows.
+ */
+export const sessionTurnScopeSql = (p: Pick<SearchSourceParams, 'sql' | 'workspaceId' | 'scopeFilter' | 'filters'>) => {
+  const f = sessionTurnFilterSql(p as SearchSourceParams);
+  return p.sql`
+          (st.workspace_id = ${p.workspaceId} OR st.workspace_id = 'default')
+      AND (${p.scopeFilter ?? null}::text IS NULL OR st.harness_slug = ${p.scopeFilter ?? null})
+      AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
+      AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
+      AND (${f.turnOrigin}::text IS NULL OR st.turn_origin_verdict = ${f.turnOrigin})
+      AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR st.turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
+      AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR st.turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
+      AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
+      AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
+      AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
+      AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)`;
 };
 
 /**
@@ -972,7 +1010,8 @@ const sessionTurn: SearchSource = {
       AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
       AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
       AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
-      AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)`;
+      AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
+      AND ${sessionTurnReaderSql(p, 'session_turns')}`;
     // EI-24045346484356708: the coverage-graded branch never admitted literal
     // rows (its match is the anchor alone), so the fill stays 'and'-mode only.
     const literalToken =
@@ -1104,17 +1143,8 @@ const sessionTurn: SearchSource = {
     // them inside BOTH legs before each leg's LIMIT, exactly as the two
     // hand-written legs did.
     const parentFilter = p.sql`
-          (st.workspace_id = ${p.workspaceId} OR st.workspace_id = 'default')
-      AND (${p.scopeFilter}::text IS NULL OR st.harness_slug = ${p.scopeFilter})
-      AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
-      AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
-      AND (${f.turnOrigin}::text IS NULL OR st.turn_origin_verdict = ${f.turnOrigin})
-      AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR st.turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
-      AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR st.turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
-      AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
-      AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
-      AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
-      AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)`;
+          ${sessionTurnScopeSql(p)}
+      AND ${sessionTurnReaderSql(p, 'st')}`;
     // WI-37603. The outer tag is the TRANSACTION handle (iterative scan on);
     // the nested `p.sql` fragments stay on the outer handle, which is safe
     // because a postgres.js fragment is a lazy builder — only the outer query

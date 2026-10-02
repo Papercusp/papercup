@@ -15,6 +15,16 @@
  * A withheld turn is COUNTED, never silently dropped: each surface reports the
  * tally on its result (`withheldReceipt`).
  *
+ * A COUNT MUST NOT DEPEND ON THE QUERY. If a search reported "1 hit withheld"
+ * only when the query matched a restricted turn, a caller could confirm any
+ * guess about that turn's text without ever reading it. So the query-driven
+ * surfaces (sessions:search, consult routing) exclude restricted turns INSIDE
+ * the matching SQL (`restrictedTurnSql`), before any ranking or LIMIT. The
+ * count they report covers the caller's whole scope, whatever the query
+ * (`countRestrictedTurnsInScope`, `restrictedTranscriptSummary`). Only
+ * sessions:read, which selects turns by position rather than by content,
+ * counts per returned turn.
+ *
  * Two fail-closed rules:
  *   - A turn with NO recorded owner cannot be attributed to an agent, so it is
  *     withheld whenever ANY other agent's disclosure window covers its time.
@@ -206,32 +216,142 @@ export async function withholdRestrictedTurns<T>(
   return exclusion.partition(turns, stampOf);
 }
 
+type Fragment = postgres.PendingQuery<postgres.Row[]>;
+
+const QUALIFIER = /^[a-z_][a-z0-9_]*$/;
+
+/** `qualifier` as an escaped identifier, so `${q}.owner` renders `"st".owner`. */
+function ident(sql: Db, qualifier: string, who: string): Fragment {
+  if (!QUALIFIER.test(qualifier)) throw new Error(`${who}: invalid qualifier ${qualifier}`);
+  return (sql as postgres.Sql)(qualifier) as unknown as Fragment;
+}
+
+function selfList(selfOwnerIds: ReadonlyArray<string | null | undefined>): string[] {
+  return [...new Set(selfOwnerIds.map(normOwner).filter((o): o is string => o !== null))];
+}
+
 /**
- * Owners among `owners` who have EVER held a disclosure (active or released).
- * Consult forks a routed expert's whole transcript into its answer session, so a
- * per-turn filter cannot make that fork safe; the expert is withheld instead.
+ * SQL that is TRUE when the transcript row `qualifier` (a `session_turns` or
+ * `session_turn_parts` alias or table name) is withheld from a caller whose
+ * identities are `selfOwnerIds`: the same rule as `TranscriptExclusion.withholds`.
+ * Put `NOT (…)` of it inside a matching query so a restricted turn never
+ * competes for a result slot.
  */
-export async function restrictedTranscriptOwners(sql: Db, owners: readonly string[]): Promise<Set<string>> {
-  const wanted = [...new Set(owners.map(normOwner).filter((o): o is string => o !== null))];
-  if (wanted.length === 0) return new Set();
+export function restrictedTurnSql(
+  sql: Db,
+  qualifier: string,
+  selfOwnerIds: ReadonlyArray<string | null | undefined>,
+): Fragment {
+  const q = ident(sql, qualifier, 'restrictedTurnSql');
+  const self = selfList(selfOwnerIds);
+  const at = sql`COALESCE(${q}.ts, ${q}.ingested_at)` as unknown as Fragment;
+  return sql`(
+    EXISTS (SELECT 1 FROM harness_shared.personal_disclosures d
+             WHERE d.agent_owner_id = ${q}.owner
+               AND d.agent_owner_id <> ALL(${self}::text[])
+               AND d.delivered_at <= ${at}
+               AND (d.released_at IS NULL OR ${at} < d.released_at))
+    OR ((${q}.owner IS NULL OR btrim(${q}.owner) = '')
+        AND EXISTS (SELECT 1 FROM harness_shared.personal_disclosures d
+                     WHERE d.agent_owner_id <> ALL(${self}::text[])
+                       AND d.delivered_at <= ${at}
+                       AND (d.released_at IS NULL OR ${at} < d.released_at)))
+  )` as unknown as Fragment;
+}
+
+/**
+ * How many `session_turns` rows inside `scope` are withheld from the caller —
+ * a count that does not depend on any query text. `scope` is a predicate over
+ * the alias `st`. Driven from the (small) disclosure ledger so the transcript
+ * index is reached only through its (owner, ts) index.
+ */
+export async function countRestrictedTurnsInScope(
+  sql: Db,
+  params: { selfOwnerIds: ReadonlyArray<string | null | undefined>; scope: Fragment },
+): Promise<WithheldTally> {
+  const self = selfList(params.selfOwnerIds);
   try {
-    const rows = await sql<Array<{ owner: string }>>`
-      SELECT DISTINCT agent_owner_id AS owner
-        FROM harness_shared.personal_disclosures
-       WHERE agent_owner_id = ANY(${wanted}::text[])`;
-    return new Set(rows.map((row) => row.owner));
+    const [row] = await sql<Array<{ owned: number; unattributed: number }>>`
+      SELECT
+        (SELECT count(DISTINCT (st.workspace_id, st.source_kind, st.session_id, st.turn_idx))::int
+           FROM harness_shared.personal_disclosures d
+           JOIN harness_shared.session_turns st
+             ON st.owner = d.agent_owner_id
+            AND COALESCE(st.ts, st.ingested_at) >= d.delivered_at
+            AND (d.released_at IS NULL OR COALESCE(st.ts, st.ingested_at) < d.released_at)
+          WHERE d.agent_owner_id <> ALL(${self}::text[])
+            AND ${params.scope}) AS owned,
+        (SELECT count(DISTINCT (st.workspace_id, st.source_kind, st.session_id, st.turn_idx))::int
+           FROM harness_shared.personal_disclosures d
+           JOIN harness_shared.session_turns st
+             ON (st.owner IS NULL OR btrim(st.owner) = '')
+            AND COALESCE(st.ts, st.ingested_at) >= d.delivered_at
+            AND (d.released_at IS NULL OR COALESCE(st.ts, st.ingested_at) < d.released_at)
+          WHERE d.agent_owner_id <> ALL(${self}::text[])
+            AND ${params.scope}) AS unattributed`;
+    const owned = Number(row?.owned ?? 0);
+    const unattributed = Number(row?.unattributed ?? 0);
+    return { turns: owned + unattributed, byReason: { 'disclosure-window': owned, unattributed } };
   } catch (error) {
     throw ledgerUnavailable(error);
   }
 }
 
-/** The receipt a read surface spreads into its result; empty when nothing was withheld. */
-export function withheldReceipt(tally: WithheldTally): { withheld?: { restricted_turns: number; unattributed_turns?: number; rule: string } } {
+/** SQL that is TRUE when `qualifier`'s owner has EVER held a disclosure (consult's owner-level rule). */
+export function restrictedOwnerSql(sql: Db, qualifier: string): Fragment {
+  const q = ident(sql, qualifier, 'restrictedOwnerSql');
+  return sql`EXISTS (SELECT 1 FROM harness_shared.personal_disclosures d WHERE d.agent_owner_id = ${q}.owner)` as unknown as Fragment;
+}
+
+/**
+ * Consult's owner-level rule. Its answer session forks a routed expert's WHOLE
+ * transcript, so a per-turn filter cannot make that fork safe: an expert who has
+ * ever held a disclosure (active or released) is not a routable source at all.
+ * Routing excludes such experts in SQL (`restrictedOwnerSql`); this returns the
+ * query-independent count it reports — every such agent other than
+ * `excludeOwners`, and every turn they recorded in `workspaceId`'s index.
+ */
+export async function restrictedTranscriptSummary(
+  sql: Db,
+  params: { workspaceId: string; excludeOwners: ReadonlyArray<string | null | undefined> },
+): Promise<{ owners: number; turns: number }> {
+  const exclude = selfList(params.excludeOwners);
+  try {
+    const [row] = await sql<Array<{ owners: number; turns: number }>>`
+      WITH restricted AS (
+        SELECT DISTINCT agent_owner_id AS owner
+          FROM harness_shared.personal_disclosures
+         WHERE agent_owner_id <> ALL(${exclude}::text[])
+      )
+      SELECT (SELECT count(*)::int FROM restricted) AS owners,
+             (SELECT count(*)::int
+                FROM harness_shared.session_turns st
+                JOIN restricted r ON st.owner = r.owner
+               WHERE st.workspace_id = ${params.workspaceId} OR st.workspace_id = 'default') AS turns`;
+    return { owners: Number(row?.owners ?? 0), turns: Number(row?.turns ?? 0) };
+  } catch (error) {
+    throw ledgerUnavailable(error);
+  }
+}
+
+/**
+ * The receipt a read surface spreads into its result; empty when nothing was
+ * withheld. `breakdown` names where the withheld turns came from (non-zero
+ * entries only). A turn can sit in two buckets — for example both in a
+ * search's scope and in a returned hit's context window — so the total may
+ * count it twice; it never counts a withheld turn zero times.
+ */
+export function withheldReceipt(
+  tally: WithheldTally,
+  breakdown: Record<string, number> = {},
+): { withheld?: { restricted_turns: number; unattributed_turns?: number; rule: string } & Record<string, number | string> } {
   if (tally.turns === 0) return {};
+  const parts = Object.fromEntries(Object.entries(breakdown).filter(([, n]) => n > 0));
   return {
     withheld: {
       restricted_turns: tally.turns,
       ...(tally.byReason.unattributed > 0 ? { unattributed_turns: tally.byReason.unattributed } : {}),
+      ...parts,
       rule: D006_TRANSCRIPT_RULE,
     },
   };
