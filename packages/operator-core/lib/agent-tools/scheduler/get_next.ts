@@ -1620,7 +1620,7 @@ export default defineTool({
       // claimable await(s) right here so no future release re-wakes them for a
       // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
       // same posture as the successful-claim cancel below.
-      const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
+      const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId, { includeStanding: true }).catch(() => 0);
       return {
         content: [
           {
@@ -2535,12 +2535,10 @@ export default defineTool({
             : Promise.resolve(null),
         ]);
       }
-      // EI-10541: a successful self-pull means this agent is transitioning idle -> working, so
-      // cancel its standing `work-item:claimable` idle-park await(s) — holding a claim and waiting
-      // for claimable work are mutually exclusive, and a pre-claim await left armed (e.g. this claim
-      // came from a leader-fed spec bump, not the await firing) otherwise keeps firing spurious ~30-min
-      // timeout wakes while the agent is busy. Best-effort + subscriber-scoped: a cancel failure must
-      // never break the claim path (fails soft, like the recall port above).
+      // EI-10541: a successful self-pull moves this agent from idle to working. Retire only a
+      // pending one-shot claimable wake (e.g. left by a leader-fed spec bump); reusable standing
+      // watches remain armed for the next claimable transition. Best-effort + subscriber-scoped:
+      // a cancel failure must never break the already-committed claim path.
       await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
       // EI-20099413453852234: the same idle -> working transition also makes the caller's
       // DECLARED INTENT stale, which peers read as "this holder isn't really working it".
