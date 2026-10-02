@@ -3007,6 +3007,97 @@ describe('false-absence symlink-traversal guard (EI-20825101204716643)', () => {
 });
 
 /**
+ * FIFO-read hang guard (EI-24862273512503301).
+ *
+ * Claude Code re-opens a path after a Bash command reads it, after the command
+ * has returned and outside the Bash timeout. open(2) of a FIFO blocks until a
+ * writer attaches, so once the writer has closed, the tool result never comes
+ * back (measured 2026-10-02 in the J5 outage drill, wchan wait_for_partner).
+ *
+ * Every fixture here is a REAL FIFO made with mkfifo, and the gate is judged
+ * through the same stdin/stdout contract the host uses. The guard itself must
+ * never open the pipe: if it did, these tests would hang rather than pass,
+ * because no test ever attaches a writer.
+ */
+describe('FIFO-read hang guard (EI-24862273512503301)', () => {
+  let dir: string;
+  let fifo: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fifo-guard-'));
+    fifo = join(dir, 'pipe');
+    execFileSync('mkfifo', [fifo]);
+    writeFileSync(join(dir, 'regular'), 'x\n');
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const at = (command: string, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input: { command },
+    session_id: nextSid(),
+    cwd: dir,
+  });
+
+  const expectFifoDeny = (out: GateOut) => {
+    expect(out.status).toBe(0);
+    const decision = parseDecision(out).hookSpecificOutput;
+    expect(decision.permissionDecision).toBe('deny');
+    expect(decision.permissionDecisionReason as string).toContain('FIFO-read hang guard');
+  };
+
+  it('PREMISE: the fixture is a real FIFO, so every deny below is about a pipe', () => {
+    expect(statSync(fifo).isFIFO()).toBe(true);
+    expect(statSync(join(dir, 'regular')).isFIFO()).toBe(false);
+  });
+
+  it.each([
+    ['absolute operand', () => `cat ${fifo}`],
+    ['relative operand resolved against the stated cwd', () => 'cat pipe'],
+    ['through a `cd`', () => `cd ${dir} && head -n 3 pipe`],
+    ['behind a wrapper (`sudo -n`)', () => `sudo -n cat ${fifo}`],
+    ['a pattern-taking reader (`grep`)', () => 'grep -n foo pipe'],
+    ['the second segment of a pipeline', () => `echo hi | wc -l ${fifo}`],
+  ])('denies a read of a FIFO: %s', (_label, command) => {
+    expectFifoDeny(runGate(at(command())));
+  });
+
+  it('names the pipe and the regular-file remedy in the refusal', () => {
+    const reason = parseDecision(runGate(at(`cat ${fifo}`)))
+      .hookSpecificOutput.permissionDecisionReason as string;
+    expect(reason).toContain(fifo);
+    expect(reason).toContain('REGULAR FILE');
+    expect(reason).toContain('wait_for_partner');
+  });
+
+  /**
+   * CALIBRATION CONTROL: the same reader on a regular file in the same
+   * directory. Without it, every allow below would also pass if the guard were
+   * simply inert.
+   */
+  it('silent for a regular file — the deny is about the pipe, not about `cat`', () => {
+    expectAllow(runGate(at(`cat ${join(dir, 'regular')}`)));
+  });
+
+  it.each([
+    ['inspecting the pipe without opening it (`ls -l`)', () => `ls -l ${fifo}`],
+    ['inspecting the pipe without opening it (`stat`)', () => `stat ${fifo}`],
+    ['a redirect: the shell opens it, not a named operand', () => `cat < ${fifo}`],
+    ['a command that only MENTIONS the words', () => 'echo cat pipe'],
+    ['an unresolvable operand (`$VAR`)', () => 'cat $P'],
+    ['/dev/stdin, which resolves against the hook process', () => 'cat /dev/stdin'],
+  ])('silent for %s', (_label, command) => {
+    expectAllow(runGate(at(command())));
+  });
+
+  it('silent for a Codex shell — the re-open is a Claude Code behaviour', () => {
+    expectAllow(runGate(at(`cat ${fifo}`, 'exec_command')));
+  });
+});
+
+/**
  * WI-6944 — the `;`-chain half of the same exit-code trap. The advisory above
  * only matches a PIPE; a `;`-chain masks identically but through a separate
  * TRAILING command:
