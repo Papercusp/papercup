@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readlinkSync, readdirSync, statSync, writeFil
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { closeInspector, createCdpClient, readProcessMemory } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, readProcessMemory } from '../../../scripts/cdp-inspector.mjs';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 
 const root = resolve(__dirname, '../../..');
@@ -60,6 +60,10 @@ describe('actual current-build operator memory baseline', () => {
     const base = process.env.PAPERCUSP_P011_LIVE_URL;
     const expectedBuild = process.env.PAPERCUSP_P011_LIVE_BUILD;
     const destination = process.env.PAPERCUSP_P011_REPORT;
+    const pinnedOwners = process.env.PAPERCUSP_P011_PINNED_OWNERS
+      ? JSON.parse(process.env.PAPERCUSP_P011_PINNED_OWNERS) : undefined;
+    if (pinnedOwners !== undefined && (!Array.isArray(pinnedOwners) || pinnedOwners.length < 1 ||
+        pinnedOwners.some(owner => typeof owner !== 'string'))) throw Error('Exact pinned owners must be a nonempty string array');
     expect(Number.isInteger(pid) && pid > 0).toBe(true);
     expect(base).toBe('http://127.0.0.1:3170');
     expect(expectedBuild).toMatch(/^[a-f0-9]{7,40}$/);
@@ -71,8 +75,10 @@ describe('actual current-build operator memory baseline', () => {
       samples: [], windows: [], requests: [], operations: [], cleanup: {},
       metricDefinitions: { pssBytes: 'smaps_rollup Pss kernel kB times 1024',
         heapAndNative: 'V8/Node counters, overlapping with PSS; no additive native-residual estimate',
+        pinnedState: 'Reachable logical payloads under named roots; not total retained heap/native bytes',
         observerMs: 'wall time for inspector counter read and proc descendant census' },
       limits: { windows: 3, idleMs: 2000, requestsPerWindow: 8, concurrency: 2, descendantsPerSample: 64 },
+      pinnedOwners,
       limitations: ['Main service PID only; HTTP requests may be served by sibling workers.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
@@ -135,9 +141,12 @@ describe('actual current-build operator memory baseline', () => {
       const sample = async (label: string) => {
         const started = performance.now();
         const memory = await readProcessMemory(client!, { expectedPid: pid });
+        const pinnedState = process.env.PAPERCUSP_P011_PINNED_STATE ? await readPinnedState(client!, {
+          expectedPid: pid, owners: pinnedOwners,
+        }) : undefined;
         const os = processSample(pid); assertIdentity(before, os);
         remainingDescendants = 64;
-        report.samples.push({ label, at: new Date().toISOString(), ...memory, os,
+        report.samples.push({ label, at: new Date().toISOString(), ...memory, os, pinnedState,
           descendants: descendants(pid), observerMs: performance.now() - started }); publish();
       };
       const query = '/api/zero-harness/rest-query?name=workItems.byHarness&args=' +
@@ -165,6 +174,13 @@ describe('actual current-build operator memory baseline', () => {
       expect(report.bundle.diskSha256After).toBe(report.bundle.diskSha256);
       expect(report.samples).toHaveLength(9); expect(report.requests).toHaveLength(24);
       expect(report.samples.every((row: any) => row.os.pssBytes > 0 && row.memory.heapUsed > 0)).toBe(true);
+      if (process.env.PAPERCUSP_P011_PINNED_STATE) expect(report.samples.every((row: any) =>
+        row.pinnedState.pid === pid && row.pinnedState.registryPresent &&
+        row.pinnedState.population >= row.pinnedState.checked && row.pinnedState.checked > 0)).toBe(true);
+      if (pinnedOwners) expect(report.samples.every((row: any) =>
+        row.pinnedState.selection?.missingOwners.length === 0 &&
+        row.pinnedState.selection?.selectedNotChecked === 0 &&
+        row.pinnedState.checked === pinnedOwners.length)).toBe(true);
       report.incomplete = false;
     } catch (error) { report.error = error instanceof Error ? error.message : String(error); throw error; }
     finally {

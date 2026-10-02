@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
-import { closeInspector, createCdpClient, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
 
 class FakeWebSocket extends EventEmitter {
   static instances: FakeWebSocket[] = [];
@@ -58,6 +58,101 @@ function makeClient(responses: Map<string, unknown>, options: Record<string, unk
     ...options,
   });
 }
+
+describe('named pinned payload attribution on a real Node inspector', () => {
+  it('reserves work for a light later root and selects exact owners independently of registry order', async () => {
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+        ['fixture.heavy', { value: new Map(Array.from({ length: 100 }, (_, i) => [i, 'heavy'])) }],
+        ['fixture.light', { value: { payload: 'later!' } }]
+      ]);
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      const fair = await readPinnedState(client, { expectedPid: child.pid!, maxEntries: 4, maxObjects: 6, budgetMs: 200 });
+      expect(fair.roots[0]).toMatchObject({ owner: 'fixture.heavy', mapEntries: 100, traversalLimited: true });
+      expect(fair.roots[1]).toMatchObject({ owner: 'fixture.light', objects: 1, stringCodeUnits: 6, traversalLimited: false });
+      expect(fair.entries).toBeLessThanOrEqual(4); expect(fair.objects).toBeLessThanOrEqual(6);
+      const selected = await readPinnedState(client, { expectedPid: child.pid!, owners: ['fixture.light'],
+        maxSlots: 1, maxEntries: 4, budgetMs: 200 });
+      expect(selected).toMatchObject({ population: 2, checked: 1, notChecked: 1, limited: false,
+        selection: { requestedOwners: ['fixture.light'], selectedPopulation: 1, missingOwners: [],
+          excludedBySelection: 1, selectedNotChecked: 0 } });
+      expect(selected.roots).toHaveLength(1);
+      expect(selected.roots[0]).toMatchObject({ owner: 'fixture.light', stringCodeUnits: 6, traversalLimited: false });
+      const missing = await readPinnedState(client, { expectedPid: child.pid!, owners: ['fixture.absent'] });
+      expect(missing).toMatchObject({ checked: 0, selection: { missingOwners: ['fixture.absent'], selectedPopulation: 0 } });
+      await expect(readPinnedState(client, { expectedPid: child.pid!, owners: [] })).rejects.toThrow('owners');
+      await expect(readPinnedState(client, { expectedPid: child.pid!, owners: ['fixture.light', 'fixture.light'] }))
+        .rejects.toThrow('owners');
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+  }, 20_000);
+
+  it('attributes payloads, discloses caps/shared references, and avoids getters/proxy/iterator effects', async () => {
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
+      let effects = 0;
+      const shared = Buffer.alloc(19), cache = new Map([['key', 'payload'], ['shared', shared]]);
+      cache[Symbol.iterator] = () => { effects++; throw new Error('application iterator'); };
+      const root = { cache, rows: ['hello', shared], proxy: new Proxy({}, { ownKeys() { effects++; throw Error('proxy'); } }) };
+      Object.defineProperty(root, 'getter', { enumerable: true, get() { effects++; throw Error('getter'); } });
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+        ['fixture.cache', { value: root }], ['fixture.shared', { value: shared }],
+        ['fixture.large', { value: new Map(Array.from({length: 20}, (_, i) => [i, 'abc'])) }]
+      ]);
+      globalThis.effectCount = () => effects;
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      const methods: string[] = [];
+      const observed = { evaluate: async (expression: string, params?: Record<string, unknown>) => {
+        methods.push('Runtime.evaluate'); return client!.evaluate(expression, params);
+      } };
+      const report = await readPinnedState(observed, { expectedPid: child.pid!, budgetMs: 200 });
+      expect(report.population).toBe(3); expect(report.checked).toBe(3); expect(report.limited).toBe(false);
+      expect(report.roots[0]).toMatchObject({ owner: 'fixture.cache', maps: 1, mapEntries: 2,
+        arrays: 1, arrayEntries: 2, stringCodeUnits: 21, byteViewExtents: 19,
+        accessorsSkipped: 1, proxiesSkipped: 1, sharedEdges: 1 });
+      expect(report.roots[1]).toMatchObject({ owner: 'fixture.shared', byteViewExtents: 0, sharedEdges: 1 });
+      expect(report.roots[2]).toMatchObject({ mapEntries: 20, stringCodeUnits: 60 });
+      expect(await readPinnedState(observed, { expectedPid: child.pid!, maxSlots: 1, budgetMs: 200 }))
+        .toMatchObject({ population: 3, checked: 1, notChecked: 2, limited: true });
+      const capped = await readPinnedState(observed, { expectedPid: child.pid!, maxEntries: 1, budgetMs: 200 });
+      expect(capped.limited).toBe(true); expect(capped.entries).toBeLessThanOrEqual(1);
+      const shallow = await readPinnedState(observed, { expectedPid: child.pid!, maxDepth: 1, budgetMs: 200 });
+      expect(shallow.roots[0].depthLimited).toBeGreaterThan(0);
+      expect((await client.evaluate('effectCount()', { returnByValue: true })).result.value).toBe(0);
+      expect(methods.every(method => method === 'Runtime.evaluate')).toBe(true);
+      await expect(readPinnedState(observed, { expectedPid: child.pid! + 1 })).rejects.toThrow('PID mismatch');
+      await expect(readPinnedState(observed, { expectedPid: child.pid!, maxEntries: 0 })).rejects.toThrow('limits');
+      await client.evaluate("delete globalThis[Symbol.for('@papercusp/module-singleton.slots')]");
+      expect(await readPinnedState(observed, { expectedPid: child.pid! })).toMatchObject({ registryPresent: false, population: null });
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+  }, 20_000);
+});
 
 describe('bounded function caller attribution on a real Node inspector', () => {
   it('names real compiler callers without pauses and cleans success, partial setup and body failures', async () => {
