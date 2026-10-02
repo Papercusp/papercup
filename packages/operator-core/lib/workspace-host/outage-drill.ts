@@ -19,8 +19,13 @@
  * How the outage is made: an EGRESS DENY firewall rule on the canary host's OWN network for the
  * addresses the Papercusp origin resolves to at drill time (derived, never a hand-kept range
  * list). Stopping the shared control plane instead would take down every other host's connector
- * too, so the drill never does that. IAP SSH keeps working: it is ingress from Google's IAP range
- * and its replies are allowed by the stateful firewall.
+ * too, so the drill never does that.
+ *  - GCP: one EGRESS DENY VPC firewall rule on the host network. IAP SSH keeps working: it is
+ *    ingress from Google's IAP range and its replies are allowed by the stateful firewall.
+ *  - AWS: one DENY egress entry per address on the network ACL of the host stack's private subnet
+ *    (hosted-aws-host-stack.ts builds that VPC for workspace hosts only). A security group cannot
+ *    express a deny, and the ACL is stateless, so it also cuts the connector socket already open.
+ *    SSH over SSM keeps working: the tunnel runs to the regional SSM endpoint, not to Papercusp.
  *
  * Every side effect is injected (`OutageDrillDeps`), so the sequencing and the verdict are unit
  * tested and the live run differs only in its deps.
@@ -94,15 +99,118 @@ export function classifyConnections(
   }));
 }
 
-/** The gcloud argv that creates and deletes the drill's egress deny rule. */
-export interface EgressDenyRule {
-  readonly name: string;
+/** One reversible network change: the cloud-CLI argv that applies it and the argv that undoes it. */
+export interface EgressBlockStep {
   readonly createArgs: readonly string[];
   readonly deleteArgs: readonly string[];
 }
 
+/**
+ * The drill's egress block on the host's own network. Every step must apply for the outage to exist,
+ * and every step that applied is undone afterwards, even when a later step failed. GCP needs one
+ * firewall rule; AWS needs one network-ACL entry per address, because an ACL entry holds one CIDR.
+ */
+export interface EgressBlock {
+  readonly name: string;
+  readonly steps: readonly EgressBlockStep[];
+}
+
+/** The gcloud argv that creates and deletes the drill's GCP egress deny rule. */
+export interface EgressDenyRule extends EgressBlockStep {
+  readonly name: string;
+}
+
+/** Where the drill blocks egress: the GCP host network, or the network ACL on the AWS host subnet. */
+export type EgressBlockTarget = GcpEgressBlockTarget | AwsEgressBlockTarget;
+
+export interface GcpEgressBlockTarget {
+  readonly cloud: 'gcp';
+  readonly project: string;
+  readonly network: string;
+  readonly ruleName: string;
+}
+
+/** One existing EGRESS entry of a network ACL, as `aws ec2 describe-network-acls` reports it. */
+export interface AwsNetworkAclEntry {
+  readonly ruleNumber: number;
+  readonly ruleAction: 'allow' | 'deny';
+}
+
+export interface AwsEgressBlockTarget {
+  readonly cloud: 'aws';
+  readonly region: string;
+  /** The network ACL associated with the host's subnet (the host stack's dedicated private subnet). */
+  readonly networkAclId: string;
+  /** That ACL's current egress entries, so the drill's entries take free numbers ahead of every allow. */
+  readonly egressEntries: readonly AwsNetworkAclEntry[];
+}
+
 const RULE_NAME = /^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/;
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const AWS_REGION = /^[a-z]{2}(-[a-z]+)+-\d+$/;
+const NETWORK_ACL_ID = /^acl-[0-9a-f]{8,17}$/;
+/** The highest rule number a network ACL entry may carry. */
+const AWS_ACL_MAX_RULE_NUMBER = 32_766;
+
+/** The deduplicated, sorted IPv4 addresses to block; refuses an empty set and any non-IPv4 address. */
+function blockableAddresses(addresses: readonly string[]): string[] {
+  const ranges = [...new Set(addresses.map(normalizeAddress))].sort();
+  if (ranges.length === 0) throw new Error('outage drill: no Papercusp addresses to block');
+  for (const address of ranges) {
+    const match = IPV4.exec(address);
+    if (!match || match.slice(1).some((octet) => Number(octet) > 255)) {
+      throw new Error(`outage drill: ${address} is not an IPv4 address (the drill blocks IPv4 only)`);
+    }
+  }
+  return ranges;
+}
+
+/**
+ * AWS: one DENY egress entry per address on the host subnet's network ACL. ACL entries are evaluated
+ * lowest number first, so each deny takes a free number below the ACL's first ALLOW egress entry.
+ * ACLs are stateless, so the deny also cuts the connector socket that is already open, the same
+ * outcome the GCP rule produces. Like the GCP rule, it covers every instance on that subnet.
+ */
+export function buildAwsNetworkAclEgressDeny(target: AwsEgressBlockTarget, addresses: readonly string[]): EgressBlock {
+  if (!AWS_REGION.test(target.region)) throw new Error(`outage drill: invalid AWS region ${target.region}`);
+  if (!NETWORK_ACL_ID.test(target.networkAclId)) throw new Error(`outage drill: invalid network ACL id ${target.networkAclId}`);
+  const ranges = blockableAddresses(addresses);
+  const used = new Set(target.egressEntries.map((entry) => entry.ruleNumber));
+  const allows = target.egressEntries
+    .filter((entry) => entry.ruleAction === 'allow' && entry.ruleNumber <= AWS_ACL_MAX_RULE_NUMBER)
+    .map((entry) => entry.ruleNumber);
+  const ceiling = allows.length > 0 ? Math.min(...allows) : AWS_ACL_MAX_RULE_NUMBER + 1;
+  const numbers: number[] = [];
+  for (let candidate = 1; candidate < ceiling && numbers.length < ranges.length; candidate += 1) {
+    if (!used.has(candidate)) numbers.push(candidate);
+  }
+  if (numbers.length < ranges.length) {
+    throw new Error(
+      `outage drill: network ACL ${target.networkAclId} has ${numbers.length} free egress rule number(s) below its first allow (rule ${ceiling}); ${ranges.length} needed`,
+    );
+  }
+  const scope = ['--region', target.region, '--network-acl-id', target.networkAclId, '--egress'];
+  return {
+    name: `${target.networkAclId} egress deny rules ${numbers.join(',')}`,
+    steps: ranges.map((address, index) => {
+      const ruleNumber = String(numbers[index]);
+      return {
+        createArgs: [
+          'ec2', 'create-network-acl-entry', ...scope, '--rule-number', ruleNumber,
+          '--protocol', '-1', '--rule-action', 'deny', '--cidr-block', `${address}/32`,
+        ],
+        deleteArgs: ['ec2', 'delete-network-acl-entry', ...scope, '--rule-number', ruleNumber],
+      };
+    }),
+  };
+}
+
+/** The block for the target's cloud: argv for gcloud (GCP) or the aws CLI (AWS). */
+export function buildEgressBlock(target: EgressBlockTarget, addresses: readonly string[]): EgressBlock {
+  if (target.cloud === 'aws') return buildAwsNetworkAclEgressDeny(target, addresses);
+  const rule = buildEgressDenyRule({ ...target, addresses });
+  return { name: rule.name, steps: [rule] };
+}
 
 export function buildEgressDenyRule(input: {
   readonly project: string;
@@ -111,14 +219,7 @@ export function buildEgressDenyRule(input: {
   readonly addresses: readonly string[];
 }): EgressDenyRule {
   if (!RULE_NAME.test(input.ruleName)) throw new Error(`outage drill: invalid firewall rule name ${input.ruleName}`);
-  const ranges = [...new Set(input.addresses.map(normalizeAddress))].sort();
-  if (ranges.length === 0) throw new Error('outage drill: no Papercusp addresses to block');
-  for (const address of ranges) {
-    const match = IPV4.exec(address);
-    if (!match || match.slice(1).some((octet) => Number(octet) > 255)) {
-      throw new Error(`outage drill: ${address} is not an IPv4 address (GCP egress rules here are IPv4-only)`);
-    }
-  }
+  const ranges = blockableAddresses(input.addresses);
   const scope = ['--project', input.project];
   return {
     name: input.ruleName,
@@ -145,7 +246,7 @@ export interface HostCommandResult {
 export interface OutageDrillDeps {
   /** Run a shell command ON the host as the workspace account (IAP SSH in production). */
   readonly hostExec: (command: string) => Promise<HostCommandResult>;
-  /** Run gcloud with argv (no shell). */
+  /** Run the target cloud's CLI with argv, no shell: gcloud for a GCP target, aws for an AWS target. */
   readonly cloudExec: (args: readonly string[]) => Promise<HostCommandResult>;
   /** A/AAAA records for a hostname, as seen from the drill runner. */
   readonly resolveAddresses: (hostname: string) => Promise<string[]>;
@@ -160,9 +261,8 @@ export interface OutageDrillDeps {
 }
 
 export interface OutageDrillConfig {
-  readonly project: string;
-  readonly network: string;
-  readonly ruleName: string;
+  /** Where the egress block goes: the GCP host network or the AWS host subnet's network ACL. */
+  readonly target: EgressBlockTarget;
   /** The Papercusp origin the host's connector dials, e.g. https://app.papercusp.com. */
   readonly papercuspOrigin: string;
   /** The model provider endpoint the agent calls directly, e.g. https://api.anthropic.com. */
@@ -378,15 +478,12 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
     errors,
   };
 
-  let rule: EgressDenyRule | null = null;
+  let block: EgressBlock | null = null;
+  // Every step that applied, in order, so the lift undoes a half-applied block too.
+  const applied: EgressBlockStep[] = [];
   try {
     if (errors.length > 0) return evidence;
-    rule = buildEgressDenyRule({
-      project: config.project,
-      network: config.network,
-      ruleName: config.ruleName,
-      addresses: papercuspAddresses,
-    });
+    block = buildEgressBlock(config.target, papercuspAddresses);
     evidence.before.connections = classify(await ss());
     evidence.before.connectorLastSeenAt = (await deps.readConnectorLastSeenAt())?.toISOString() ?? null;
     log(`before: ${evidence.before.connections.filter((c) => c.class === 'papercusp').length} Papercusp connection(s)`);
@@ -409,8 +506,11 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
     if (started.code !== 0) throw new Error(`agent launch failed (exit ${started.code}): ${started.stderr.trim()}`);
     log('agent task started');
 
-    const blocked = await deps.cloudExec(rule.createArgs);
-    if (blocked.code !== 0) throw new Error(`egress block failed: ${blocked.stderr.trim()}`);
+    for (const step of block.steps) {
+      const blocked = await deps.cloudExec(step.createArgs);
+      if (blocked.code !== 0) throw new Error(`egress block failed: ${blocked.stderr.trim()}`);
+      applied.push(step);
+    }
     evidence.blockedAt = iso();
     log(`blocked Papercusp at ${evidence.blockedAt}`);
 
@@ -462,10 +562,15 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
   } catch (error) {
     errors.push(String(error instanceof Error ? error.message : error));
   } finally {
-    if (rule && evidence.blockedAt !== null) {
-      const lifted = await deps.cloudExec(rule.deleteArgs).catch((error) => ({ code: 1, stdout: '', stderr: String(error) }));
-      evidence.ruleDeleted = lifted.code === 0;
-      if (!evidence.ruleDeleted) errors.push(`egress block NOT removed (${rule.name}): ${lifted.stderr.trim()}`);
+    if (block && applied.length > 0) {
+      // Undo in reverse and keep going past a failure: one stuck step must not strand the others.
+      const failures: string[] = [];
+      for (const step of [...applied].reverse()) {
+        const lifted = await deps.cloudExec(step.deleteArgs).catch((error) => ({ code: 1, stdout: '', stderr: String(error) }));
+        if (lifted.code !== 0) failures.push(lifted.stderr.trim());
+      }
+      evidence.ruleDeleted = failures.length === 0;
+      if (!evidence.ruleDeleted) errors.push(`egress block NOT removed (${block.name}): ${failures.join('; ')}`);
       evidence.liftedAt = iso();
       log(`lifted block at ${evidence.liftedAt}`);
     }
