@@ -58,7 +58,7 @@ import {
   parseGradedGeneration,
   computeWorkOnEverythingRollup,
   resolveScorecardInstrumentSnapshots,
-  validateWorkOnEverythingEvidenceEnvelope,
+  validateRubricRatingContracts,
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
@@ -1904,7 +1904,7 @@ export async function emitScorecard(
     // `disregard` — the agent-facing emit door enforces what the schema teaches.
     validateScorecardPoorRatingDisposition(observationForValidation, rubric);
     try {
-      validateWorkOnEverythingEvidenceEnvelope(args.rubricRef, ratings);
+      validateRubricRatingContracts(args.rubricRef, ratings);
     } catch (error) {
       return {
         ok: false as const,

@@ -332,11 +332,9 @@ export default defineTool({
       ? ownerPrincipal !== null && ownerPrincipal.workspaceId === workspaceId
       : publicPrincipal?.kind === 'pi' && publicPrincipal.workspaceId === workspaceId;
     // D-421 (WI-10003195): with the hosted customer-identity spawn transform installed, the
-    // brain's agent CLI runs as the customer workspace account. The owner mount's bearer is the
-    // operator superuser token — a credential that account must never hold (it reaches tools
-    // that execute as the service identity, undoing D-417), and the transform refuses any spawn
-    // carrying it. So the owner brain runs tool-less there rather than failing every turn, until
-    // a customer-scoped bearer exists.
+    // brain's agent CLI runs as the customer workspace account. That account must never hold the
+    // operator superuser token (it reaches tools that execute as the service identity, undoing
+    // D-417). The MCP mount below therefore uses a separate, exact-tool-scoped PI bearer.
     const hostedCustomerIdentity = hostTrust === 'owner' && agentSpawnTransformConfigured();
     // The brain's tool surface for this turn — host-TRUST-keyed (D-007 §2), and
     // resolved BEFORE the prompt build so the catalog advertises exactly the set

@@ -89,6 +89,7 @@ describe('parseGoalOwnerReport', () => {
       { text: '**COST:** unknown (goal-pots rollup unavailable)' },
       { text: '## OWNER-WALLED — none' },
       { text: '- KILLED: none' },
+      { text: 'NEXT WAKE: loop fire in ~8 min' },
     ]);
 
     expect(parsed).toEqual({
@@ -99,6 +100,7 @@ describe('parseGoalOwnerReport', () => {
         cost: 'unknown (goal-pots rollup unavailable)',
         ownerWalled: 'none',
         killed: 'none',
+        nextWake: 'loop fire in ~8 min',
       },
       missing: [],
       empty: [],
@@ -108,10 +110,20 @@ describe('parseGoalOwnerReport', () => {
 
   it('accepts a legacy flat body whose heading values are on following lines', () => {
     const parsed = parseGoalOwnerReport(
-      `Goal ${GOAL}\n\nMOVED\nP-001 landed\n\nCOST\n12c measured\n\nOWNER_WALLED\nnone\n\nKILLED\nold experiment`,
+      `Goal ${GOAL}\n\nMOVED\nP-001 landed\n\nCOST\n12c measured\n\nOWNER_WALLED\nnone\n\nKILLED\nold experiment\n\nNEXT_WAKE\nowner reply`,
     );
     expect(parsed.complete).toBe(true);
     expect(parsed.fields.ownerWalled).toBe('none');
+    expect(parsed.fields.nextWake).toBe('owner reply');
+  });
+
+  // WI-10005205 recurrence guard: holders omitted the next-wake reason because
+  // the gate accepted a four-heading report as complete. A report without
+  // NEXT WAKE must stay incomplete, so the send/escalate gates refuse it.
+  it('refuses a four-heading report that omits NEXT WAKE', () => {
+    const parsed = parseGoalOwnerReport('MOVED: P-006\nCOST: 3c\nOWNER-WALLED: none\nKILLED: none');
+    expect(parsed).toMatchObject({ attempted: true, complete: false, missing: ['nextWake'], empty: [], duplicate: [] });
+    expect(() => stampGoalOwnerReport(GOAL, parsed)).toThrow(/incomplete/);
   });
 
   it('reports missing, empty, and duplicate fields instead of choosing silently', () => {
@@ -119,7 +131,7 @@ describe('parseGoalOwnerReport', () => {
     expect(parsed).toMatchObject({
       attempted: true,
       complete: false,
-      missing: ['ownerWalled'],
+      missing: ['ownerWalled', 'nextWake'],
       empty: ['cost'],
       duplicate: ['moved'],
     });
@@ -132,7 +144,9 @@ describe('parseGoalOwnerReport', () => {
 });
 
 describe('goal owner report evidence', () => {
-  const complete = parseGoalOwnerReport('MOVED: P-006\nCOST: 3c\nOWNER-WALLED: none\nKILLED: stale plan');
+  const complete = parseGoalOwnerReport(
+    'MOVED: P-006\nCOST: 3c\nOWNER-WALLED: none\nKILLED: stale plan\nNEXT WAKE: loop fire ~14:40Z',
+  );
 
   it('stamps the server-resolved goal and validates every normalized field', () => {
     const stamp = stampGoalOwnerReport(GOAL, complete);
@@ -143,9 +157,16 @@ describe('goal owner report evidence', () => {
       cost: '3c',
       ownerWalled: 'none',
       killed: 'stale plan',
+      nextWake: 'loop fire ~14:40Z',
     });
     expect(isGoalOwnerReportStamp(stamp, GOAL)).toBe(true);
     expect(isGoalOwnerReportStamp(stamp, 'wrong-goal')).toBe(false);
+  });
+
+  it('still counts a stamp written before NEXT WAKE existed (evidence contract is the core four)', () => {
+    const { nextWake: _omitted, ...preChange } = stampGoalOwnerReport(GOAL, complete);
+    expect(isGoalOwnerReportStamp(preChange, GOAL)).toBe(true);
+    expect(envelopeHasCompleteGoalOwnerReport({ [GOAL_OWNER_REPORT_FIELD]: preChange }, GOAL)).toBe(true);
   });
 
   it('accepts a current stamp or a complete goal-naming legacy body, never an arbitrary human ping', () => {
@@ -315,6 +336,6 @@ describe('GOAL_OWNER_REPORT_HEADINGS', () => {
 
   it('advertises exactly the four contract fields, in contract order', () => {
     expect(Object.keys(GOAL_OWNER_REPORT_HEADINGS)).toEqual([...GOAL_OWNER_REPORT_FIELDS]);
-    expect(GOAL_OWNER_REPORT_HEADING_LIST).toBe('MOVED / COST / OWNER-WALLED / KILLED');
+    expect(GOAL_OWNER_REPORT_HEADING_LIST).toBe('MOVED / COST / OWNER-WALLED / KILLED / NEXT WAKE');
   });
 });

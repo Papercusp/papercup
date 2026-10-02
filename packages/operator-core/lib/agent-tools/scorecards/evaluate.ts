@@ -19,7 +19,7 @@ import {
   resolveScorecardReleaseGateBinding,
   scorecardRatingsClaimPass,
   scorecardEvidenceFingerprint,
-  validateWorkOnEverythingEvidenceEnvelope,
+  validateRubricRatingContracts,
   computeWorkOnEverythingRollup,
   resolveScorecardInstrumentSnapshots,
   type ScorecardInstrumentSnapshot,
@@ -312,7 +312,7 @@ export async function evaluateScorecard(
     // grader BEFORE the terminal emit that a poor rating must route somewhere.
     validateScorecardPoorRatingDisposition(observation, rubric);
     try {
-      validateWorkOnEverythingEvidenceEnvelope(args.rubricRef, ratings);
+      validateRubricRatingContracts(args.rubricRef, ratings);
     } catch (error) {
       return {
         ok: false as const,

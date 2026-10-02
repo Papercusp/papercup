@@ -135,7 +135,7 @@ describe('docs-build-singleflight (EI-11539)', () => {
     const cmd = 'echo changed >> "$RUN_DIR/source/page.mdx"; echo attempt >> "$RUN_DIR/order"';
     const child = launch(cmd);
     let err = '';
-    child.stderr?.on('data', (data) => { err += String(data); });
+    child.stderr?.setEncoding('utf8').on('data', (data: string) => { err += data; });
     expect(await exited(child)).toBe(1);
     expect(readFileSync(join(tmp, 'order'), 'utf8').trim().split('\n')).toHaveLength(2);
     expect(err).toContain('mirror is not verified current');

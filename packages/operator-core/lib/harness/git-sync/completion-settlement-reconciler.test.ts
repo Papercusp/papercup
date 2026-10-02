@@ -15,6 +15,7 @@ import {
   completionBlobHistoryContains,
   completionHeadBlobMap,
   createCompletionBlobHistoryReader,
+  createCompletionHistorySearchMemo,
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
 import { isCompletionSettled } from '../../work-item-completion-authority';

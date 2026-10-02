@@ -3007,5 +3007,17 @@
     "receipts": ["/tmp/p006-fire195-window-measured.json", "/tmp/p006-fire195-window-withdraw.json", "/tmp/p006-fire195-window-governing.json", "/tmp/p006-fire195-prior-p003-current.json"],
     "toolLimits": "Large current reads were door-projected; complete spill recovered using manifest bodyOffsetInPayload before relying on identities. No incidental DRAIN issue filed."
   },
-  "next": "WINDOW@3 now governs PASS. Renew test-stale NUMERATOR21845-21850 with current clean positives20534705/20534918 and calibrated controls on changed tests; renew MEASURED21754 using current clean integration20534918 while preserving its three CURRENT unit bindings. Read exact identities and selected adequacy before binding-only withdrawals, then unfiltered governing/census. Preserve D003/D013FAIL/D014/D016, independent rubric review/ratification, successful real-goal card, closure audit and shipment; P007/P008 remain separate. No unchanged native/P001/P002 replay."
+  "p003MeasuredAdmissionRenewalFire195": {
+    "recordedAt": "2026-10-02T14:28:38Z",
+    "scope": "MEASURED-ADMISSION@3 governing PASS after renewal of its sole test-stale integration binding. No source/test changes or test replay.",
+    "reuse": "Clean full44 integration20534918 already verifies snapshot and launch-time at/under-ceiling behavior. Three existing unit bindings21756/21749/21750 remain freshly server-measured CURRENT; their tests did not change.",
+    "replacement": {"bindingId": 21864, "testRunId": 20534918, "scenario": "under-ceiling-admitted"},
+    "currentness": "Exact21864/21756/21749/21750 CURRENT, clause revision3/fingerprint88d121c3c71be424972e8424aeaaf8fb37ab74eca80bd0a1e9a6cac727fd9617; one negative and one recurrence per required scenario.",
+    "selected": {"verdict": "PASS", "governing": false, "wouldBlock": []},
+    "withdrawal": {"bindingId": 21754, "status": "retracted", "reason": "Test-stale historical integration binding only, after replacement CURRENT and selected PASS. Historical20527628 retained."},
+    "governing": {"verdict": "PASS", "governing": true, "requiredProofFloor": "l3", "wouldBlock": [], "evaluatorBuild": {"sha": "a27db452a1", "version": "0.0.0"}, "cohortFilters": "workItemIds/evidenceRefs/bindingIds omitted"},
+    "receipts": ["/tmp/p006-fire195-measured-positive-bind.json", "/tmp/p006-fire195-measured-current.json", "/tmp/p006-fire195-measured-selected.json", "/tmp/p006-fire195-measured-withdraw.json", "/tmp/p006-fire195-measured-governing.json"],
+    "limits": "NUMERATOR21845-21850 remain test-stale and need three fresh calibrated negatives. No new whole-plan census, independent ratification, successful real-goal acceptance, closure audit or shipment claimed. D003/D013FAIL/D014/D016 preserved."
+  },
+  "next": "WINDOW@3 and MEASURED-ADMISSION@3 govern PASS at staginga27db452a1. Do not repeat17381/21754 withdrawals or replay unchanged positive tests. Renew test-stale NUMERATOR21845-21850 with current clean positives20534705/20534918 and three calibrated controls on changed tests. Use maintained copy-out overlay mutation-probe and dedicated-native-PG helper against retained cleanf95526ac26 clone; verify exact2selected controls and unchanged source/owned cleanup. Read exact identities and selected adequacy before binding-only withdrawals, then unfiltered governing/census. Preserve D003/D013FAIL/D014/D016, independent rubric review/ratification, successful real-goal card, closure audit and shipment; P007/P008 remain separate. No unchanged native/P001/P002 replay."
 }

@@ -32,7 +32,8 @@ beforeEach(() => {
 
 describe('coord:escalate GOAL owner-report boundary (P-006 / A-05)', () => {
   const goalId = 'goal-1';
-  const completeBody = 'MOVED: P-006 advanced\nCOST: unknown (goal-pots unavailable)\nOWNER-WALLED: none\nKILLED: none';
+  const completeBody =
+    'MOVED: P-006 advanced\nCOST: unknown (goal-pots unavailable)\nOWNER-WALLED: none\nKILLED: none\nNEXT WAKE: owner reply';
 
   it('stamps a complete report with the server-resolved current subject', async () => {
     h.getModeSubject.mockResolvedValueOnce(goalId);
@@ -55,6 +56,7 @@ describe('coord:escalate GOAL owner-report boundary (P-006 / A-05)', () => {
             cost: 'unknown (goal-pots unavailable)',
             ownerWalled: 'none',
             killed: 'none',
+            nextWake: 'owner reply',
           },
         }),
       }),

@@ -9,6 +9,9 @@
  *   owner   — the desktop / TUI / device surfaces of the workspace owner: the
  *             curated operator working set (ALL_AGENT_MCP_TOOLS) over the
  *             `superuser=1` MCP mount with the on-disk superuser token.
+ *   owner + customer-run — owner prompt trust, but the CLI process runs as the
+ *             hosted customer OS identity. It gets the customer-safe owned-loop
+ *             toolset over an exact, short-lived PI bearer; never the disk token.
  *   public  — the browser-reachable portal behind its per-user boundary: the
  *             OWNED-loop capability DOORS (`capability:*` + the task facades —
  *             OWNED_LOOP_TOOL_SELECTION, the same set the agent-chats seam gave
@@ -84,7 +87,7 @@ export interface ConverseMcpMountInput {
   /**
    * D-421 (WI-10003195): the brain's agent CLI runs as the hosted customer workspace
    * account (the spawn transform is installed). That account must never hold the
-   * operator superuser token, so the owner mount is withheld and the brain runs tool-less.
+   * operator superuser token; a separate PI bearer is required for a customer-safe mount.
    */
   agentRunsAsCustomer?: boolean;
 }

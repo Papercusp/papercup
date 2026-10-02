@@ -477,6 +477,26 @@ for (const existing of [false, true]) {
       await page.getByRole('button', { name: 'Show me', exact: true }).click();
       await page.getByRole('button', { name: 'My workspace', exact: false }).first().click();
     }
+    // A 640 CSS-pixel viewport exercises the same layout width as the native
+    // 200% zoom review. Measure rendered text, including overflowing glyphs.
+    const fullViewport = page.viewportSize()!;
+    await page.setViewportSize({ width: 640, height: 900 });
+    const workspaceRow = page.getByRole('button', { name: 'My workspace GCP', exact: false }).first();
+    await workspaceRow.scrollIntoViewIfNeeded();
+    const rowLayout = await workspaceRow.evaluate(element => {
+      const name = element.querySelector('strong')!;
+      const chip = element.querySelector('[data-drifting]')!;
+      const range = document.createRange(); range.selectNodeContents(name);
+      const lines = Array.from(range.getClientRects());
+      const status = chip.getBoundingClientRect();
+      return { lines: lines.map(rect => rect.toJSON()), status: status.toJSON(),
+        overlaps: lines.some(rect => rect.left < status.right && rect.right > status.left
+          && rect.top < status.bottom && rect.bottom > status.top) };
+    });
+    await test.info().attach('narrow-workspace-name-layout', { body: JSON.stringify(rowLayout), contentType: 'application/json' });
+    expect(rowLayout.lines.length).toBeGreaterThan(0);
+    expect(rowLayout.overlaps).toBe(false);
+    await page.setViewportSize(fullViewport);
     await page.getByRole('region', { name: 'Browser workspace session for My workspace' }).getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(guide.getByRole('heading', { name: 'Launch your first agent' })).toBeVisible();
     const heights = await page.getByRole('region', { name: 'Browser workspace session for My workspace' }).locator('.xterm').evaluate(async element => {

@@ -26,6 +26,22 @@ const principalMocks = vi.hoisted(() => ({
     trust: 'trusted' as const,
   })),
 }));
+const customerPiMocks = vi.hoisted(() => ({
+  spawnTransform: vi.fn(() => false),
+  start: vi.fn(async (args: { sessionId: string }) => ({
+    sessionId: args.sessionId,
+    bearer: 'pi-customer-token',
+  })),
+  end: vi.fn(async (_workspaceId: string, _sessionId: string) => undefined),
+}));
+vi.mock('@papercusp/papercusp-shared/agent', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  agentSpawnTransformConfigured: () => customerPiMocks.spawnTransform(),
+}));
+vi.mock('@papercusp/agent-mcp/provisioning', () => ({
+  startPiSession: (args: { sessionId: string }) => customerPiMocks.start(args),
+  endPiSession: (workspaceId: string, sessionId: string) => customerPiMocks.end(workspaceId, sessionId),
+}));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
@@ -191,6 +207,9 @@ function makeCtx() {
 let fetchMock: any;
 
 beforeEach(() => {
+  customerPiMocks.spawnTransform.mockReturnValue(false);
+  customerPiMocks.start.mockClear();
+  customerPiMocks.end.mockClear();
   vi.mocked(runAgentChat).mockReset();
   // Default: a non-empty stream so the handler commits output (no retry/throw).
   vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
@@ -245,6 +264,44 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     // The param is the colon MCP-catalog name (mcp__agentmcp__ prefix stripped).
     const tools = new URL(url).searchParams.get('tools') ?? '';
     expect(tools.split(',')).toEqual(['tasks:read', 'chat:ask_choice']);
+  });
+
+  it('D-421 customer-run owner chat gets an exact PI mount and revokes its temporary bearer', async () => {
+    customerPiMocks.spawnTransform.mockReturnValue(true);
+    await handler(
+      { messages: [], trigger: 'user_message', role: 'papercup', hostTrust: 'owner', sessionUser: null },
+      { ...makeCtx(), role: 'papercup' },
+    );
+
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as {
+      allowedTools?: string[];
+      mcpConfig?: McpConfig;
+    };
+    const url = mcpUrlOf(call.mcpConfig)!;
+    expect(url).toContain('/api/mcp?principal=pi&workspace=ws-real');
+    expect(url).not.toContain('superuser');
+    expect(call.mcpConfig?.mcpServers.agentmcp.headers.Authorization).toBe('Bearer pi-customer-token');
+    expect(new URL(url).searchParams.get('tools')?.split(',')).toEqual([
+      'capability:read',
+      'tasks:ops',
+      'chat:ask_choice',
+      'voice:delegate_deep',
+    ]);
+    expect(call.allowedTools).toEqual([
+      'mcp__agentmcp__capability:read',
+      'mcp__agentmcp__tasks:ops',
+      'mcp__agentmcp__chat:ask_choice',
+      'mcp__agentmcp__voice:delegate_deep',
+    ]);
+    expect(customerPiMocks.start).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-real',
+      allowedTools: ['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep'],
+      capabilities: ['chat:write', 'not-granted', 'operator:read'],
+      expiresAt: expect.any(Date),
+    }));
+    const sessionId = customerPiMocks.start.mock.calls[0]?.[0]?.sessionId;
+    expect(sessionId).toMatch(/^operator-converse-/);
+    expect(customerPiMocks.end).toHaveBeenCalledWith('ws-real', sessionId);
   });
 
   it('spawns with disableToolSearch so the shrunk surface loads non-deferred (P-009)', async () => {

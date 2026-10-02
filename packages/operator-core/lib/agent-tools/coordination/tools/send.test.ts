@@ -2716,9 +2716,10 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
     { text: 'COST: unknown (goal-pots rollup unavailable)' },
     { text: 'OWNER-WALLED: none' },
     { text: 'KILLED: stale experiment' },
+    { text: 'NEXT WAKE: loop fire in ~8 min' },
   ];
 
-  it('resolves the live GOAL subject and stamps one complete four-section send', async () => {
+  it('resolves the live GOAL subject and stamps one complete five-section send', async () => {
     mockResolvedOnceTyped(getModeSubjectMock, goalId);
     const b = await body({
       to: ['human'],
@@ -2740,7 +2741,22 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
       cost: 'unknown (goal-pots rollup unavailable)',
       ownerWalled: 'none',
       killed: 'stale experiment',
+      nextWake: 'loop fire in ~8 min',
     });
+  });
+
+  // WI-10005205 recurrence guard at the operation boundary: a four-heading
+  // report (the shape holders sent for days) is refused and nothing persists.
+  it('refuses a four-heading report that omits NEXT WAKE before persistence', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, goalId);
+    const b = await body({
+      to: ['human'],
+      summary: 'Goal owner report',
+      expects: 'none',
+      body: completeBody.filter((s) => !s.text.startsWith('NEXT WAKE')),
+    });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'goal-owner-report-incomplete', missing: ['nextWake'] });
+    expect(sendM).not.toHaveBeenCalled();
   });
 
   it('returns and persists a not-stamped diagnosis for inline report labels, including chunked sends without why', async () => {
@@ -2750,6 +2766,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
       'COST: unknown (goal-pots rollup unavailable)',
       'OWNER-WALLED: none',
       'KILLED: stale experiment',
+      'NEXT WAKE: owner reply',
       `Supporting detail: ${'recent movement evidence '.repeat(50)}`,
     ].join(' ');
 
@@ -2769,7 +2786,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
         status: 'not-stamped',
         goalId,
         reason: 'not-attempted',
-        missing: ['moved', 'cost', 'ownerWalled', 'killed'],
+        missing: ['moved', 'cost', 'ownerWalled', 'killed', 'nextWake'],
         bodyDeliveryCap: 600,
         message: expect.stringContaining('will not reset the report cadence'),
       },
@@ -2781,7 +2798,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
       status: 'not-stamped',
       goalId,
       reason: 'not-attempted',
-      missing: ['moved', 'cost', 'ownerWalled', 'killed'],
+      missing: ['moved', 'cost', 'ownerWalled', 'killed', 'nextWake'],
     });
     expect(getModeSubjectMock).toHaveBeenCalledWith('ws1', 'me', 'goal');
   });
@@ -2799,7 +2816,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
       ok: false,
       error: 'goal-owner-report-incomplete',
       goalId,
-      missing: ['ownerWalled'],
+      missing: ['ownerWalled', 'nextWake'],
       empty: ['cost'],
     });
     expect(sendM).not.toHaveBeenCalled();
@@ -2835,6 +2852,7 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
       { text: `COST: ${'lineage 7d measured 102.78 usd; '.repeat(10)}` },
       { text: `OWNER-WALLED: ${'none this round; '.repeat(16)}` },
       { text: `KILLED: ${'nothing killed; '.repeat(18)}` },
+      { text: 'NEXT WAKE: loop fire in ~8 min' },
     ];
 
     it('refuses a complete over-cap report before any part is persisted', async () => {

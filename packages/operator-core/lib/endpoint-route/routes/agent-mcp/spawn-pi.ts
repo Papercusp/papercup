@@ -18,6 +18,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { operatorApiBase } from '../../../operator-api-base';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
+import '../../../agent-tools/index';
 
 export default defineTool({
   method: 'POST',
