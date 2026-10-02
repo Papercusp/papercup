@@ -36,6 +36,8 @@ const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const freshWs = () => `p328_ws_${randomBytes(3).toString('hex')}`;
 const DAY_MS = 86_400_000;
+/** How long to wait for verifyAppKey's detached auth-failure writes to land. */
+const AUTH_FAILURE_WAIT = { timeout: 15_000, interval: 100 };
 
 /** The same key id with a different secret: well-formed, attributable, refused as a mismatch. */
 function wrongSecret(key: string): string {
@@ -100,11 +102,13 @@ describe('P-328 sweep reads (real PG, migration 1267)', () => {
     expect((await verifyAppKey('pcapp_not-a-key')).ok).toBe(false);
     expect((await verifyAppKey(key)).ok).toBe(true);
 
-    // The count is fire-and-forget on the auth path, so wait for it to land.
+    // The count is fire-and-forget on the auth path, so wait for it to land. vi.waitFor's 1 s
+    // default is too short for ten detached writes on a shared, loaded test database; the
+    // assertion still demands the exact count, so a lost increment still fails here.
     await vi.waitFor(async () => {
       const [row] = await sweptIn(ws);
       expect(row.auth_failures).toBe(AUTH_FAILURE_ALERT_THRESHOLD);
-    });
+    }, AUTH_FAILURE_WAIT);
     const rows = await h.adminSql`
       SELECT failures, last_reason FROM harness_shared.connected_app_auth_failures WHERE app_id = ${app.id}
     `;
@@ -170,7 +174,10 @@ describe('P-328 sweep reads (real PG, migration 1267)', () => {
     });
     await calls(ws, `app:${app.id}`, 300, 1, 50);
     for (let i = 0; i < AUTH_FAILURE_ALERT_THRESHOLD; i += 1) await verifyAppKey(wrongSecret(key));
-    await vi.waitFor(async () => expect((await sweptIn(ws))[0]?.auth_failures).toBe(AUTH_FAILURE_ALERT_THRESHOLD));
+    await vi.waitFor(
+      async () => expect((await sweptIn(ws))[0]?.auth_failures).toBe(AUTH_FAILURE_ALERT_THRESHOLD),
+      AUTH_FAILURE_WAIT,
+    );
 
     const notified: Array<{ dedupeKey: string; workspaceId: string }> = [];
     const result = await runConnectedAppAlertSweep({
