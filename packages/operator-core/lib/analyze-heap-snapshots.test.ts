@@ -79,7 +79,10 @@ describe('private V8 heap snapshot census', () => {
       const result = spawnSync(process.execPath, ['-e', String.raw`
         const { writeHeapSnapshot } = require('node:v8');
         class ExclusiveHeapFixture { constructor() { this.values = Array(2000000).fill(17); } }
-        class SharedHeapFixture { constructor(values) { this.values = values; } }
+        // A known private allocation puts the shared-holder class in the ranked
+        // window, while the much larger shared array must remain non-exclusive.
+        class SharedHeapFixture { constructor(values) { this.values = values;
+          this.privateValues = Array(125000).fill(29); } }
         globalThis.exclusive = new ExclusiveHeapFixture();
         const shared = Array(2000000).fill(23);
         globalThis.left = new SharedHeapFixture(shared);
@@ -96,7 +99,7 @@ describe('private V8 heap snapshot census', () => {
       const shared = report.groups.find(group => group.class === 'SharedHeapFixture');
       expect(shared?.count).toBe(2);
       expect(shared?.nodes).toHaveLength(2);
-      expect(shared?.nodes.every(node => node.retainedSizeBytes < 1_000_000)).toBe(true);
+      expect(shared?.nodes.every(node => node.retainedSizeBytes > 1_000_000 && node.retainedSizeBytes < 2_000_000)).toBe(true);
       const retainedSharedArray = report.groups.flatMap(group => group.nodes).find(node =>
         node.type === 'Object' && node.class === 'Array' && node.retainedSizeBytes > 15_000_000 &&
         node.retainers.filter(retainer => retainer.class === 'SharedHeapFixture').length === 2);
