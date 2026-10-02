@@ -297,6 +297,15 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
   } as WorkspaceHostDesiredSpec;
 }
 
+/**
+ * The provisioning model of a NEW Papercusp-hosted AWS host (WI-10005389): spot, matching
+ * `PAPERCUSP_HOSTED_GCP_PROVISIONING_MODEL` and for the same cost reason. On AWS it is a persistent
+ * spot request that stops on interruption, so a reclaim keeps both EBS volumes and EC2 restarts
+ * the instance itself (aws-provider.ts `AWS_SPOT_MARKET_OPTIONS`). A bring-your-own-cloud host is
+ * not defaulted: the account and the bill are the customer's.
+ */
+export const PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL = 'spot' as const;
+
 /** D-008/D-009: the e2-standard-4 equivalent (4 vCPU, 16 GiB) and the same data volume. */
 export const AWS_FIRST_WORKSPACE_DEFAULTS = {
   size: 'm6i.xlarge',
@@ -347,6 +356,7 @@ export function awsFirstWorkspaceDesiredSpec(input: {
       instanceProfileArn: infra.instanceProfileArn,
       launchTemplateId: infra.launchTemplateId,
       kmsKeyArn: infra.kmsKeyArn,
+      ...(configuration.papercuspHosted ? { provisioningModel: PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL } : {}),
     },
   } as WorkspaceHostDesiredSpec;
 }

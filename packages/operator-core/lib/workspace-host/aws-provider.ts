@@ -93,12 +93,47 @@ export interface AwsRunInstancesInput {
       };
     },
   ];
+  /**
+   * Present only for a spot host. RunInstances then also files a persistent spot request, and
+   * the third tag specification tags that request so the managed-tag inventory and the IAM
+   * TagOnlyAtCreation guard both cover it.
+   */
+  InstanceMarketOptions?: AwsSpotMarketOptions;
   TagSpecifications: readonly [
     { ResourceType: 'instance'; Tags: readonly AwsTag[] },
     { ResourceType: 'volume'; Tags: readonly AwsTag[] },
+    { ResourceType: 'spot-instances-request'; Tags: readonly AwsTag[] }?,
   ];
   UserData?: string;
 }
+
+/**
+ * A spot host's market options (WI-10005389; GCP's analogue is `GCP_SPOT_SCHEDULING`, D-028).
+ *
+ * - `stop`, not `terminate`: an interruption keeps the root and data EBS volumes, so the host
+ *   comes back with its state and agents resume. GCP's spot hosts use STOP for the same reason.
+ * - `persistent`: RunInstances accepts `stop` only for a persistent request. While the request is
+ *   open, EC2 itself restarts the stopped instance once capacity returns; a controller
+ *   StartInstances on an interrupted spot instance is refused. No `ValidUntil`, so the request
+ *   stays open until it is cancelled (AWS: "Otherwise, the request remains active until you
+ *   cancel it").
+ * - No `MaxPrice`: AWS recommends against one, because a cap only adds interruptions.
+ *
+ * The persistent request outlives a TerminateInstances: terminating the instance while the
+ * request is open makes EC2 launch a replacement. Destroy therefore cancels the request first.
+ */
+export interface AwsSpotMarketOptions {
+  MarketType: 'spot';
+  SpotOptions: { SpotInstanceType: 'persistent'; InstanceInterruptionBehavior: 'stop' };
+}
+
+export const AWS_SPOT_MARKET_OPTIONS: AwsSpotMarketOptions = Object.freeze({
+  MarketType: 'spot',
+  SpotOptions: Object.freeze({ SpotInstanceType: 'persistent', InstanceInterruptionBehavior: 'stop' }),
+}) as AwsSpotMarketOptions;
+
+export const AWS_WORKSPACE_HOST_PROVISIONING_MODELS = ['standard', 'spot'] as const;
+export type AwsWorkspaceHostProvisioningModel = (typeof AWS_WORKSPACE_HOST_PROVISIONING_MODELS)[number];
 
 export interface AwsCreateVolumeInput {
   AvailabilityZone: string;
@@ -127,6 +162,8 @@ export interface AwsInstanceObservation {
   ssmOnline?: boolean;
   /** EC2's StateReason: why the instance left `pending`/`running` (e.g. Client.InvalidKMSKey.InvalidState). */
   stateReason?: { code: string; message?: string };
+  /** EC2's SpotInstanceRequestId: present exactly when the instance is a spot instance. */
+  spotInstanceRequestId?: string;
   observedAt: string;
 }
 
@@ -273,6 +310,11 @@ export interface AwsWorkspaceHostSdkClient {
   rebootInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult>;
   repairInstance(instanceId: string): Promise<AwsProviderMutationResult>;
   terminateInstances(instanceIds: readonly string[]): Promise<AwsProviderMutationResult>;
+  /**
+   * Cancel spot instance requests. Cancelling never terminates the instance; it only stops EC2
+   * from relaunching or restarting it. A request EC2 no longer knows counts as cancelled.
+   */
+  cancelSpotInstanceRequests(spotInstanceRequestIds: readonly string[]): Promise<AwsProviderMutationResult>;
 
   createSnapshot(input: AwsCreateSnapshotInput): Promise<AwsCreatedSnapshot>;
   findSnapshotByClientToken(clientToken: string): Promise<AwsSnapshotObservation | undefined>;
@@ -328,6 +370,8 @@ export interface AwsWorkspaceHostDesiredProviderSettings {
   dataDeviceName: string;
   volumeType: string;
   userData?: string;
+  /** `spot` launches with `AWS_SPOT_MARKET_OPTIONS`; an absent value means `standard` (on-demand). */
+  provisioningModel: AwsWorkspaceHostProvisioningModel;
 }
 
 type AwsStepInput =
@@ -462,7 +506,18 @@ function readSettings(desired: WorkspaceHostDesiredSpec): AwsWorkspaceHostDesire
     volumeType:
       provider.volumeType === undefined ? 'gp3' : requireString(provider.volumeType, 'aws.desired.provider.volumeType'),
     userData: provider.userData === undefined ? undefined : requireUserData(provider.userData),
+    provisioningModel: provisioningModel(provider.provisioningModel),
   };
+}
+
+function provisioningModel(value: unknown): AwsWorkspaceHostProvisioningModel {
+  if (value === undefined) return 'standard';
+  if ((AWS_WORKSPACE_HOST_PROVISIONING_MODELS as readonly unknown[]).includes(value)) {
+    return value as AwsWorkspaceHostProvisioningModel;
+  }
+  throw new Error(
+    `aws.desired.provider.provisioningModel must be one of ${AWS_WORKSPACE_HOST_PROVISIONING_MODELS.join(', ')}`,
+  );
 }
 
 /** AWS EC2 accepts at most 64 ASCII characters for ClientToken. */
@@ -744,10 +799,18 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           },
         },
       ],
-      TagSpecifications: [
-        { ResourceType: 'instance', Tags: tags },
-        { ResourceType: 'volume', Tags: tags },
-      ],
+      ...(settings.provisioningModel === 'spot' ? { InstanceMarketOptions: AWS_SPOT_MARKET_OPTIONS } : {}),
+      TagSpecifications:
+        settings.provisioningModel === 'spot'
+          ? [
+              { ResourceType: 'instance', Tags: tags },
+              { ResourceType: 'volume', Tags: tags },
+              { ResourceType: 'spot-instances-request', Tags: tags },
+            ]
+          : [
+              { ResourceType: 'instance', Tags: tags },
+              { ResourceType: 'volume', Tags: tags },
+            ],
       ...(settings.userData ? { UserData: Buffer.from(settings.userData, 'utf8').toString('base64') } : {}),
     };
 
@@ -1070,6 +1133,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         };
       }
       case 'terminate-instance': {
+        await this.cancelOpenSpotRequest(input.instanceId);
         const result = await this.client.terminateInstances([input.instanceId]);
         await this.client.waitForInstanceState(input.instanceId, 'terminated', ctx.signal);
         const fresh = await this.client.describeInstance(input.instanceId);
@@ -1084,6 +1148,20 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         return this.destroyed(request, input.hostId, input.volumeId, result.requestId);
       }
     }
+  }
+
+  /**
+   * Cancel the persistent spot request behind a spot instance, before it is terminated
+   * (WI-10005389). While the request is open EC2 treats a terminated instance as interrupted
+   * capacity and launches a replacement, which would leave a billable host no controller step
+   * created or tracks. Cancelling never touches the instance itself. Run on every attempt, not
+   * only the first: a retried step may find the instance already terminated with the request
+   * still open, and the SDK client counts an unknown request as cancelled.
+   */
+  private async cancelOpenSpotRequest(instanceId: string): Promise<void> {
+    const observed = await this.client.describeInstance(instanceId);
+    if (!observed?.spotInstanceRequestId) return;
+    await this.client.cancelSpotInstanceRequests([observed.spotInstanceRequestId]);
   }
 
   /**

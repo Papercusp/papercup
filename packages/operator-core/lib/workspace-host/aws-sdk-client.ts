@@ -24,6 +24,7 @@
  */
 import {
   AttachVolumeCommand,
+  CancelSpotInstanceRequestsCommand,
   CreateSnapshotCommand,
   CreateVolumeCommand,
   DeleteVolumeCommand,
@@ -1052,6 +1053,14 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
             },
           ],
           IamInstanceProfile: { Arn: input.IamInstanceProfile.Arn },
+          ...(input.InstanceMarketOptions
+            ? {
+                InstanceMarketOptions: {
+                  MarketType: input.InstanceMarketOptions.MarketType,
+                  SpotOptions: { ...input.InstanceMarketOptions.SpotOptions },
+                },
+              }
+            : {}),
           BlockDeviceMappings: [
             {
               DeviceName: disk.DeviceName,
@@ -1221,6 +1230,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
             },
           }
         : {}),
+      ...(instance.SpotInstanceRequestId ? { spotInstanceRequestId: instance.SpotInstanceRequestId } : {}),
       observedAt: this.now(),
     };
     if (stateName !== 'running') return observation;
@@ -1361,6 +1371,21 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     } catch (error) {
       if (isNotFound(error, ['InvalidInstanceID.NotFound'])) return {};
       throw sanitizeError(error, 'terminate-instances', this.redactor);
+    }
+  }
+
+  async cancelSpotInstanceRequests(spotInstanceRequestIds: readonly string[]): Promise<AwsProviderMutationResult> {
+    if (spotInstanceRequestIds.length === 0) return {};
+    await this.assertMutationAccount();
+    try {
+      const result = await this.ec2.send(
+        new CancelSpotInstanceRequestsCommand({ SpotInstanceRequestIds: [...spotInstanceRequestIds] }),
+      );
+      return { requestId: result.$metadata.requestId };
+    } catch (error) {
+      // A request EC2 no longer knows cannot relaunch anything, which is all the cancel is for.
+      if (isNotFound(error, ['InvalidSpotInstanceRequestID.NotFound'])) return {};
+      throw sanitizeError(error, 'cancel-spot-instance-requests', this.redactor);
     }
   }
 

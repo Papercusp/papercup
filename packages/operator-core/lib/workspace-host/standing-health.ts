@@ -161,8 +161,12 @@ function reachBlocker(reading: WorkspaceHostSoakInstanceReading): string | null 
   return null;
 }
 
-/** Cloud statuses for a stopped instance: GCP's TERMINATED, EC2's stopped. */
-const WORKSPACE_HOST_STOPPED_STATUSES: ReadonlySet<string> = new Set(['TERMINATED', 'stopped']);
+/**
+ * Cloud statuses for a stopped instance: GCP's TERMINATED, and EC2's `stopped` as the AWS soak
+ * reading reports it (upper-cased, `awsWorkspaceHostSoakReading`). The set used to hold the raw
+ * lower-case EC2 name, which no reading ever carries, so no AWS host could match (WI-10005389).
+ */
+const WORKSPACE_HOST_STOPPED_STATUSES: ReadonlySet<string> = new Set(['TERMINATED', 'STOPPED']);
 
 /** The check a reclaimed spot host carries; the pass keys its restart off this name. */
 export const WORKSPACE_HOST_SPOT_RECLAIMED_CHECK = 'spot-reclaimed';

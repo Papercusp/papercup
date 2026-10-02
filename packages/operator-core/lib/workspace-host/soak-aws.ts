@@ -63,6 +63,8 @@ export function awsWorkspaceHostSoakReading(
     status: observation.state === 'running' ? 'RUNNING' : observation.state.toUpperCase().replace(/-/g, '_'),
     instanceId: observation.instanceId,
     ...(observation.imageId ? { sourceImage: observation.imageId } : {}),
+    // EC2 names a spot instance's request on the instance itself (WI-10005389).
+    ...(observation.spotInstanceRequestId ? { preemptible: true } : {}),
   };
 }
 

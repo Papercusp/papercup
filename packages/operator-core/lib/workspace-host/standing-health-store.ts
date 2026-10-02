@@ -63,6 +63,16 @@ export async function prepareWorkspaceHostReclaimRestart(
   }
   const host = await (deps.readTarget ?? ((ws, id) => readWorkspaceHostDestroyTarget(ws, id)))(workspaceId, hostId);
   if (!host) return { kind: 'skip', reason: 'the host row is gone' };
+  if (host.desired.target === 'aws') {
+    // WI-10005389: an AWS spot host runs on a persistent spot request with stop-on-interrupt, and
+    // EC2 itself restarts the instance once capacity returns. EC2 refuses a StartInstances on an
+    // instance it interrupted, so a controller start could only fail. The reclaim is still
+    // attested, so the host reads unhealthy until the next standing pass sees it running.
+    return {
+      kind: 'skip',
+      reason: 'EC2 restarts an interrupted persistent spot instance itself; a controller start is refused',
+    };
+  }
   const stored = await (deps.readConnection ?? ((ws, id) => readWorkspaceHostConnection(ws, id)))(
     workspaceId,
     host.connectionId,
@@ -125,8 +135,8 @@ export async function listWorkspaceHostStandingHealthTargets(
 
 /**
  * The `desired_spec.provider.provisioningModel` value of a spot host (gcp-provider.ts
- * `GCP_WORKSPACE_HOST_PROVISIONING_MODELS`; an absent value means `standard`). Only GCP provisions
- * spot hosts today.
+ * `GCP_WORKSPACE_HOST_PROVISIONING_MODELS`, aws-provider.ts `AWS_WORKSPACE_HOST_PROVISIONING_MODELS`;
+ * an absent value means `standard`).
  */
 export const WORKSPACE_HOST_SPOT_PROVISIONING_MODEL = 'spot';
 
@@ -144,7 +154,7 @@ export async function listWorkspaceHostSpotReclaimTargets(
     SELECT workspace_id, id
       FROM harness_shared.workspace_hosts
      WHERE controller_id = ${controllerId}
-       AND target = 'gcp'
+       AND target = ANY(${[...WORKSPACE_HOST_STANDING_HEALTH_TARGETS] as string[]}::text[])
        AND desired_state = ANY(${[...WORKSPACE_HOST_STANDING_HEALTH_DESIRED_STATES] as string[]}::text[])
        AND desired_spec -> 'provider' ->> 'provisioningModel' = ${WORKSPACE_HOST_SPOT_PROVISIONING_MODEL}
      ORDER BY workspace_id, id
