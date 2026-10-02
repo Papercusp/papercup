@@ -71,6 +71,8 @@ const markButton = (text, scope = "document") => {
   return selector;
 };
 const navigate = (step) => ev(`window.__TSR_ROUTER__.navigate({to:'/cloud-workspaces',search:{step:${JSON.stringify(step)}}}); true`);
+const connectForm = 'form[aria-labelledby="connect-panel-heading"]';
+const connectSubmit = `${connectForm} button[type="submit"]`;
 
 try {
   ev(`(() => {
@@ -96,10 +98,12 @@ try {
   navigate("connect");
   poll('[data-stage="connect"]', "!!document.querySelector('button[aria-label=\"Connect Amazon Web Services\"]:not([disabled])')", "AWS admission available");
   click('button[aria-label="Connect Amazon Web Services"]');
-  poll('form[aria-labelledby="connect-panel-heading"]', "!document.querySelector('input[aria-label=\"Google Cloud project ID\"]') && document.querySelector('button[type=submit]').disabled", "AWS fields and incomplete admission guard");
+  poll(connectForm, `!document.querySelector('input[aria-label="Google Cloud project ID"]') && document.querySelector(${JSON.stringify(connectSubmit)}).disabled`, "AWS fields and incomplete admission guard");
   for (const [label,value] of [["Connection label","AWS native fixture"],["Injected credential reference","resolver://aws/native"],["AWS account ID","123456789012"],["VPC ID","vpc-native"],["Private subnet ID","subnet-native"],["Security group IDs","sg-native"],["Launch template ID","lt-native"],["AMI ID","ami-native"],["Instance profile ARN","arn:aws:iam::123456789012:instance-profile/native"],["KMS key ARN","arn:aws:kms:us-east-1:123456789012:key/native"]]) type(label,value);
   poll('a[download]', "document.querySelector('a[download]').getAttribute('href')==='/api/workspace-hosts/aws-setup-template?accountId=123456789012&region=us-east-1'", "AWS setup-template download link");
-  click('button[type="submit"]');
+  evidence.submitCandidates = JSON.parse(ev("JSON.stringify([...document.querySelectorAll('button[type=submit]')].map(e=>({label:e.textContent.trim(),disabled:e.disabled,form:e.closest('form')?.getAttribute('aria-labelledby')})))"));
+  poll(connectForm, `!document.querySelector(${JSON.stringify(connectSubmit)}).disabled`, "AWS complete admission guard");
+  click(connectSubmit);
   poll('nav[aria-label="Cloud workspace setup"]', "window.__cwNative.calls.some(c=>c.payload.action==='connect' && c.payload.target==='aws' && c.payload.vpcId==='vpc-native' && c.payload.securityGroupIds[0]==='sg-native' && c.payload.credentialSource.method==='default-chain')", "AWS connection request captured");
   navigate("configure");
   poll('[data-stage="configure"]', "document.body.textContent.includes('m6i.xlarge')", "AWS catalog renders");
