@@ -781,7 +781,22 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     expect(fold.liveness).toBe('unknown');
     expect(fold.elected?.live).toBeNull();
     expect(fold.live).toEqual([]);
-    const { deps, launches } = drillDeps();
+    // A selected permanent wrong-seam control deliberately turns the oracle's
+    // measured UNKNOWN into ended only at the respawner input. The assertions
+    // above still prove the real oracle and fold saw unknown. The launch
+    // assertion below must fail under this control, proving it rejects the
+    // original unknown-as-loss failure instead of merely seeing no holder row.
+    const wrongUnknownAsLoss = process.env.PAPERCUSP_GOAL_UNKNOWN_CONTROL === 'treat-unknown-as-lost';
+    const { deps, launches } = drillDeps(wrongUnknownAsLoss ? {
+      resolveLiveness: async (ownerIds) => {
+        const measured = await resolveLiveness(ownerIds);
+        const actual = measured.get('su-vanished-holder');
+        if (!actual) throw new Error('unknown-holder control lost its oracle calibration');
+        return new Map([...measured, ['su-vanished-holder', {
+          ...actual, sessionState: 'ended' as const, signalMissing: false,
+        }]]);
+      },
+    } : {});
     const tick = await runGoalHolderRespawnOnce(rootSql, deps);
     expect(tick).toMatchObject({ scanned: 1, eligible: 1, attempted: 0, respawned: 0 });
     expect(launches).toEqual([]);
