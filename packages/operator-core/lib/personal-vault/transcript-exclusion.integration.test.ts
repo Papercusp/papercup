@@ -27,7 +27,8 @@ import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const WS = 'transcript-excl-test';
-const PEER = 'su-tx-peer';
+// Session-shaped, so sessions:timeline accepts it as a full ownerId without a presence row.
+const PEER = 'su-7e570000-0000-4000-8000-00000000beef';
 const READER = 'su-tx-reader';
 const OTHER = 'su-tx-other';
 const SECRET = 'zebracopper: Alice says the merger closes Friday';
