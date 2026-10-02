@@ -25,6 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { linuxProcStateFromStat, readProcessGroupId, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
+import { reportFreezeDeadlines, type InnerTimeoutHint, type LedgerDeadline } from './freeze-deadline';
 import { notifyTaskKillRequested } from './kill-notify';
 import { closeTask, getSubtree, getTask, reopenStrandedTask, updateTaskLimits } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
@@ -51,7 +52,17 @@ function execFileAsync(file: string, args: string[], opts?: Record<string, unkno
 }
 
 export type ControlOutcome =
-  | { ok: true; taskId: string; action: string; detail?: string }
+  | {
+      ok: true;
+      taskId: string;
+      action: string;
+      detail?: string;
+      /** freeze/thaw only (EI-24796665684871321): wall-clock deadlines the task carries — the
+       *  freezer stops CPU, never the clock, so a deadline keeps burning while frozen. */
+      deadline?: LedgerDeadline | null;
+      innerTimeouts?: InnerTimeoutHint[];
+      warnings?: string[];
+    }
   | { ok: false; taskId: string; action: string; error: ControlError; detail?: string };
 
 export type ControlError =
@@ -891,9 +902,21 @@ async function setFrozen(taskId: string, frozen: boolean, opts: ControlDeps): Pr
     };
   }
   const res = await systemctl([action, row.scopeUnit], d);
-  return res.ok
-    ? { ok: true, taskId, action, detail: `scope ${row.scopeUnit} ${frozen ? 'frozen' : 'thawed'}` }
-    : { ok: false, taskId, action, error: 'command_failed', detail: res.detail };
+  if (!res.ok) return { ok: false, taskId, action, error: 'command_failed', detail: res.detail };
+  // The freezer stops CPU, not the clock: report every wall-clock deadline the task carries so
+  // the caller can see a freeze that will trip it on thaw (EI-24796665684871321). Warn, never
+  // refuse — freeze is pressure relief and a deadline-bearing task is still better frozen than
+  // thrashing; what was missing was the information to choose.
+  const report = reportFreezeDeadlines(row, d.now(), action);
+  return {
+    ok: true,
+    taskId,
+    action,
+    detail: `scope ${row.scopeUnit} ${frozen ? 'frozen' : 'thawed'}`,
+    ...(report.ledgerDeadline ? { deadline: report.ledgerDeadline } : {}),
+    ...(report.innerTimeouts.length > 0 ? { innerTimeouts: report.innerTimeouts } : {}),
+    ...(report.warnings.length > 0 ? { warnings: report.warnings } : {}),
+  };
 }
 
 export interface LimitInput {
