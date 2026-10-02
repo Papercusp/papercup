@@ -941,3 +941,27 @@ export function startDbos(): Promise<void> {
   }
   return dbosStartInFlight;
 }
+
+/**
+ * WI-10004957: `/api/health` is pure liveness and answers while DBOS is still launching, so a
+ * request that arrives in the first seconds after a bg-host restart found `dbosStarted()` false
+ * and was refused 503 "provisioning workflow is unavailable" even though DBOS was a moment
+ * away. A route may instead wait, bounded, for a launch that is ALREADY IN FLIGHT here. When no
+ * launch is in flight (a request-only host, DBOS disabled, or a launch that already failed and
+ * is waiting on its retry timer) this returns at once, so it never delays a host that will not
+ * launch DBOS in the next few seconds. Never throws; resolves to the final `dbosStarted()`.
+ */
+export const DBOS_LAUNCH_IN_FLIGHT_WAIT_MS = 15_000;
+
+export async function awaitDbosLaunchInFlight(timeoutMs: number = DBOS_LAUNCH_IN_FLIGHT_WAIT_MS): Promise<boolean> {
+  if (dbosStarted()) return true;
+  const inFlight = dbosStartInFlight;
+  if (!inFlight || timeoutMs <= 0) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    inFlight.catch(() => undefined),
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return dbosStarted();
+}

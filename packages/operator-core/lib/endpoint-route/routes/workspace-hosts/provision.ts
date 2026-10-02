@@ -12,7 +12,9 @@ import {
   type StartWorkspaceHostProvisioningInput,
 } from '../../../dbos/workspace-host-provision-workflow';
 import { workspaceHostAuditUrl } from '../../../workspace-host/admission-window';
-import { dbosStarted } from '../../../dbos/bootstrap';
+import { awaitDbosLaunchInFlight, dbosStarted } from '../../../dbos/bootstrap';
+
+const defaultAwaitProvisioning = () => awaitDbosLaunchInFlight();
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   listLiveWorkspaceHostIdsOnConnection,
@@ -57,6 +59,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export interface WorkspaceHostProvisionRouteDependencies {
   activeWorkspaceId: () => string;
   provisioningAvailable: () => boolean;
+  /** WI-10004957: bounded wait for an in-flight DBOS launch before refusing 503. */
+  awaitProvisioning?: () => Promise<boolean>;
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
   /**
    * Live hosts already on the connection, for the per-connection instance cap (instance-cap.ts).
@@ -159,7 +163,10 @@ export function createWorkspaceHostProvisionRoute(
       if (dependencies.authorizeHost && !(await dependencies.authorizeHost(requestedDesired.hostId))) {
         return Response.json({ ok: false, error: 'workspace_host_not_bound' }, { status: 403 });
       }
-      if (!dependencies.provisioningAvailable()) {
+      if (
+        !dependencies.provisioningAvailable() &&
+        !(await (dependencies.awaitProvisioning ?? defaultAwaitProvisioning)())
+      ) {
         try {
           const forwarded = await (dependencies.forwardRequest ?? defaultWorkspaceHostRequestForwarder)(
             '/api/workspace-hosts/provision',

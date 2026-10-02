@@ -445,6 +445,52 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(startDestroy).not.toHaveBeenCalled();
     expect(startLifecycle).not.toHaveBeenCalled();
   });
+
+  // WI-10004957: right after a bg-host restart /api/health is already ok while DBOS is still
+  // launching. A request in that window must wait for the in-flight launch, not 503.
+  it('waits for an in-flight DBOS launch instead of refusing 503 or forwarding', async () => {
+    const { dependencies, startDestroy } = harness();
+    let launched = false;
+    dependencies.provisioningAvailable = () => launched;
+    const awaitProvisioning = vi.fn(async () => {
+      launched = true;
+      return true;
+    });
+    dependencies.awaitProvisioning = awaitProvisioning;
+    const forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async () => null);
+    dependencies.forwardRequest = forwardRequest;
+
+    const response = await post(dependencies, destroyBody);
+
+    expect(response.status).not.toBe(503);
+    expect(awaitProvisioning).toHaveBeenCalledTimes(1);
+    expect(forwardRequest).not.toHaveBeenCalled();
+    expect(startDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses 503 when the bounded launch wait ends without DBOS', async () => {
+    const { dependencies, startDestroy } = harness();
+    dependencies.provisioningAvailable = () => false;
+    const awaitProvisioning = vi.fn(async () => false);
+    dependencies.awaitProvisioning = awaitProvisioning;
+    dependencies.forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async () => null);
+
+    const response = await post(dependencies, destroyBody);
+
+    expect(response.status).toBe(503);
+    expect(awaitProvisioning).toHaveBeenCalledTimes(1);
+    expect(startDestroy).not.toHaveBeenCalled();
+  });
+
+  it('does not wait when provisioning is already available', async () => {
+    const { dependencies } = harness();
+    const awaitProvisioning = vi.fn(async () => true);
+    dependencies.awaitProvisioning = awaitProvisioning;
+
+    await post(dependencies, destroyBody);
+
+    expect(awaitProvisioning).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /workspace-hosts/action customer-acceptance', () => {

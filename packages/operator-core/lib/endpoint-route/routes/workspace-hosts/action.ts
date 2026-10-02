@@ -15,7 +15,10 @@ import type {
   WorkspaceHostImageRef,
   WorkspaceHostSnapshotRef,
 } from '@papercusp/deployment-driver';
-import { dbosStarted } from '../../../dbos/bootstrap';
+import { awaitDbosLaunchInFlight, dbosStarted } from '../../../dbos/bootstrap';
+
+/** Bounded wait for an in-flight DBOS launch (DBOS_LAUNCH_IN_FLIGHT_WAIT_MS). */
+const defaultAwaitProvisioning = () => awaitDbosLaunchInFlight();
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   readWorkspaceHostConnection,
@@ -184,6 +187,11 @@ function parseCanaryEvidence(value: unknown): WorkspaceHostDestroyCanaryEvidence
 export interface WorkspaceHostActionRouteDependencies {
   activeWorkspaceId: () => string;
   provisioningAvailable: () => boolean;
+  /**
+   * WI-10004957: when provisioning is not yet available, wait (bounded) for a DBOS launch already
+   * in flight on this host before refusing 503. Resolves to whether provisioning became available.
+   */
+  awaitProvisioning?: () => Promise<boolean>;
   readTarget: (workspaceId: string, hostId: string) => Promise<StoredWorkspaceHostDestroyTarget | null>;
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
   startDestroy: (input: StartWorkspaceHostDestroyInput) => ReturnType<typeof startWorkspaceHostDestroyWorkflow>;
@@ -407,7 +415,10 @@ export function createWorkspaceHostActionRoute(
           return requestError('workspace-host release shipment could not be recorded', 500);
         }
       }
-      if (!dependencies.provisioningAvailable()) {
+      if (
+        !dependencies.provisioningAvailable() &&
+        !(await (dependencies.awaitProvisioning ?? defaultAwaitProvisioning)())
+      ) {
         try {
           const forwarded = await (dependencies.forwardRequest ?? defaultWorkspaceHostRequestForwarder)(
             '/api/workspace-hosts/action',

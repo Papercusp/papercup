@@ -13,7 +13,28 @@ import {
   resolvePgLaunchRetryMs,
   assertSafeDbosAppVersionPartition,
   isRetryableDbosLaunchError,
+  awaitDbosLaunchInFlight,
 } from './bootstrap';
+
+// WI-10004957: provisioning routes wait on this only for a launch that is already in flight.
+describe('awaitDbosLaunchInFlight', () => {
+  it('returns false at once when DBOS is not started and no launch is in flight', async () => {
+    const started = Date.now();
+    await expect(awaitDbosLaunchInFlight(10_000)).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('returns true at once when DBOS already started', async () => {
+    const g = globalThis as unknown as { __papercuspDbosStarted?: boolean };
+    const prior = g.__papercuspDbosStarted;
+    g.__papercuspDbosStarted = true;
+    try {
+      await expect(awaitDbosLaunchInFlight(0)).resolves.toBe(true);
+    } finally {
+      g.__papercuspDbosStarted = prior;
+    }
+  });
+});
 
 describe('withDbosIdleTxGrace', () => {
   const ENV_KEY = 'PAPERCUSP_DBOS_IDLE_IN_TX_TIMEOUT_SEC';
