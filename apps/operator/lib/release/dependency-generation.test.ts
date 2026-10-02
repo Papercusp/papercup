@@ -3383,4 +3383,47 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
     },
     NATIVE_SHELL_TIMEOUT_MS,
   );
+
+  // D-019: every repository's gate shares one generation root, and a full-scope
+  // build has the same closure fingerprint everywhere. Live, papercusp's 07:09Z
+  // build picked a newer 7-tree generation from ANOTHER repository and reused
+  // 0 of 95 trees while its own previous generation sat unused.
+  it(
+    'prefers its own layout over a newer generation from another repository in a shared root',
+    () => {
+      const sharedRoot = mkdtempSync(join(tmpdir(), 'dependency-generation-shared-'));
+      roots.push(sharedRoot);
+      const env = { ...incrementalEnv('0'), DEPENDENCY_GENERATION_RETAIN_COUNT: '10' };
+
+      const own = makeIntegration();
+      const first = publish(own, env, sharedRoot);
+      expect(first.status, first.stderr).toBe(0);
+      const ownIdentity = publishedPath(first.stdout).split('/').pop();
+
+      // Another repository: only the root tree path is shared, with other bytes.
+      const foreign = makeIntegration();
+      rmSync(join(foreign, 'packages'), { recursive: true });
+      mkdirSync(join(foreign, 'apps/other/node_modules/x'), { recursive: true });
+      writeFileSync(join(foreign, 'apps/other/node_modules/x/index.js'), 'x-v1\n');
+      writeFileSync(join(foreign, 'node_modules/pkg/index.js'), 'foreign-root\n');
+      const foreignBuild = publish(foreign, env, sharedRoot);
+      expect(foreignBuild.status, foreignBuild.stderr).toBe(0);
+      const foreignIdentity = publishedPath(foreignBuild.stdout).split('/').pop();
+      expect(foreignIdentity).not.toBe(ownIdentity);
+
+      writeFileSync(join(own, 'packages/a/node_modules/local/index.js'), 'local-v2\n');
+      const second = publish(own, env, sharedRoot);
+      expect(second.status, second.stderr).toBe(0);
+      expect(lastSummary(second)).toMatchObject({
+        result: 'published',
+        predecessor: ownIdentity,
+        trees_reused: '2',
+        trees_copied: '1',
+      });
+      expect(second.stderr).toContain(
+        `selected reusable immutable predecessor ${ownIdentity} (identical_trees=2 shared_trees=3)`,
+      );
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
 });

@@ -1242,9 +1242,32 @@ DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST=''
 # object token proves that the exact immutable predecessor we inspected is still
 # the one we copy. Legacy generations deliberately miss this path and retain the
 # historical full-copy fallback.
+#
+# D-019 (WI-10004927): one generation root is shared by every repository whose
+# gate runs this script, and the closure fingerprint of a full-scope build is
+# the same for all of them. Ranking by created time alone therefore picked a
+# 7-tree generation from another repository as papercusp's predecessor, so 0 of
+# 207,877 files could be reused. When the caller passes its live manifest,
+# candidates are ranked by how much of THIS layout they cover: identical trees
+# first, then shared tree paths, then age. A candidate sharing no tree path with
+# the live layout can contribute nothing and is never selected.
+dependency_generation_manifest_overlap() {
+  local current="$1" candidate="$2"
+  if [ ! -s "$current" ] || [ ! -f "$candidate" ]; then
+    printf '0 0\n'
+    return 0
+  fi
+  LC_ALL=C awk -F'\t' '
+    NR == FNR { fingerprint[$1] = $2; next }
+    ($1 in fingerprint) { shared++; if (fingerprint[$1] == $2) exact++ }
+    END { printf "%d %d\n", exact, shared }
+  ' "$current" "$candidate"
+}
+
 dependency_generation_find_reusable_predecessor() {
-  local generation_root="$1" target_identity="$2"
+  local generation_root="$1" target_identity="$2" current_manifest="${3:-}"
   local generation identity marker created record token_before token_after
+  local exact shared
   local ranked=()
   DEPENDENCY_GENERATION_PREDECESSOR_ID=''
   DEPENDENCY_GENERATION_PREDECESSOR_PATH=''
@@ -1263,12 +1286,21 @@ dependency_generation_find_reusable_predecessor() {
       [ "$(dependency_generation_read_field "$marker" scope)" \
           = "$DEPENDENCY_GENERATION_SCOPE_MODE" ] || continue
       created="$(dependency_generation_created_order_ns "$marker")"
-      printf '%020d %s\n' "$created" "$identity"
-    done | sort -k1,1nr -k2,2r
+      exact=0
+      shared=0
+      if [ -n "$current_manifest" ]; then
+        read -r exact shared < <(
+          dependency_generation_manifest_overlap \
+            "$current_manifest" "$generation/.tree-manifest"
+        )
+        [ "${shared:-0}" -gt 0 ] || continue
+      fi
+      printf '%010d %010d %020d %s\n' "${exact:-0}" "${shared:-0}" "$created" "$identity"
+    done | sort -k1,1nr -k2,2nr -k3,3nr -k4,4r
   )
 
   for record in "${ranked[@]}"; do
-    identity="${record#* }"
+    identity="${record##* }"
     generation="$generation_root/$identity"
     [ -f "$generation/.tree-manifest" ] || continue
     if ! dependency_generation_acquire_selector_lease "$generation_root" "$identity"; then
@@ -1284,7 +1316,9 @@ dependency_generation_find_reusable_predecessor() {
         DEPENDENCY_GENERATION_PREDECESSOR_PATH="$generation"
         DEPENDENCY_GENERATION_PREDECESSOR_TREE="$generation/tree"
         DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST="$generation/.tree-manifest"
-        dependency_generation_log "selected reusable immutable predecessor $identity"
+        read -r exact shared _ <<< "$record"
+        dependency_generation_log \
+          "selected reusable immutable predecessor $identity (identical_trees=$((10#$exact)) shared_trees=$((10#$shared)))"
         return 0
       fi
     fi
@@ -2441,7 +2475,8 @@ dependency_generation_ensure_once() {
   fi
 
   if [ "$reuse_manifest_eligible" = 'true' ] \
-    && dependency_generation_find_reusable_predecessor "$generation_root" "$identity"; then
+    && dependency_generation_find_reusable_predecessor \
+      "$generation_root" "$identity" "$before_manifest"; then
     predecessor_identity="$DEPENDENCY_GENERATION_PREDECESSOR_ID"
   fi
 
