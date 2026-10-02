@@ -33,7 +33,8 @@
  * remains a possible (riskier) follow-up if duplication resurfaces.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 // ── bundled-vs-dev-tsx spawn-plan resolution ────────────────────────────────
 // esbuild bundles EVERY module into one serve.mjs; in a PACKAGED build
@@ -68,6 +69,8 @@ export interface ResolveSidecarSpawnPlanOpts {
    *  itself silently reintroduces EI-20493378309289396 (see below), and a type
    *  error at every call site is the only thing that reliably prevents that. */
   spawnerPid: number;
+  /** Optional maintained sibling bundle. Older installs keep re-execing self. */
+  bundledScriptName?: string;
 }
 
 /** Pure: decide HOW to spawn a sidecar child (bundled re-exec-self vs dev
@@ -76,9 +79,19 @@ export interface ResolveSidecarSpawnPlanOpts {
 export function resolveSidecarSpawnPlan(opts: ResolveSidecarSpawnPlanOpts): SidecarSpawnPlan {
   const isBundled = !opts.selfPath.endsWith('.ts') && !opts.selfPath.endsWith('.tsx');
   if (isBundled) {
+    let entry = opts.selfPath;
+    if (opts.bundledScriptName) {
+      const candidate = join(dirname(opts.selfPath), opts.bundledScriptName);
+      try {
+        const info = statSync(candidate);
+        if (info.isFile() && info.size > 0) entry = candidate;
+      } catch {
+        // Older installations have no sibling; preserve the full-entry divert.
+      }
+    }
     return {
       cmd: opts.execPath, // the bundled node (e.g. ./bin/node), re-exec'ing selfPath
-      args: [opts.selfPath],
+      args: [entry],
       env: { [opts.bundledModeEnvVar]: '1', ...parentIdentityEnv(opts.spawnerPid) },
       mode: 'bundled-reexec',
     };

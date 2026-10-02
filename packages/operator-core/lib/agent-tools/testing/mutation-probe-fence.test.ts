@@ -20,6 +20,10 @@ vi.mock('@papercusp/backup/hook', async original => {
   return { ...actual, terminateSpawnTree: vi.fn(actual.terminateSpawnTree) };
 });
 
+// runTestFilesCore also consults the restricted-write fence (WI-10005634), which reads the
+// disclosure ledger through getOrgPg and fails CLOSED without it. This suite has no Postgres
+// and is about the mutation fence; restricted-hold-fence.test.ts covers that fence.
+vi.mock('./restricted-hold-fence', () => ({ restrictedHoldRefusal: async () => null }));
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
   getTxPool: vi.fn(() => ({})),
