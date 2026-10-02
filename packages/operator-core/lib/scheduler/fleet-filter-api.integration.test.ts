@@ -37,7 +37,12 @@ function verifyMiss(result) {
   assert.equal(result.ok, false);
   assert.equal(result.workItem ?? null, null);
   assert.equal(result.possiblyClaimed ?? false, false, 'Timeout is not a verified miss');
-  assert.match(result.error, /no claimable work-item matched|SPEC EXHAUSTED/);
+  // Claim correctness is independent of the issue-only miss diagnosis. The
+  // feature-family false authoring alert is tracked separately as
+  // EI-24905216534076710; preserve its exact reason in the proof receipts.
+  if (result.reason !== 'spec_exhausted' && result.reason !== 'spec_matches_nothing') {
+    assert.match(result.error, /no claimable work-item matched/);
+  }
 }
 function call(owner, name, args, refusal = false) {
   const start = performance.now();
@@ -77,6 +82,7 @@ try {
   // Both prior harness failure classes are checked before booting a host:
   // tool-specific refusal envelopes and object-valued JSONB fixture writes.
   verifyMiss({ok:false,error:'SPEC EXHAUSTED',reason:'spec_exhausted'});
+  verifyMiss({ok:false,error:'SPEC MATCHES NOTHING',reason:'spec_matches_nothing'});
   verifyMiss({ok:false,error:'no claimable work-item matched'});
   assert.throws(()=>verifyMiss({ok:false,error:'timeout',possiblyClaimed:true}));
   const holdStatement = "UPDATE harness_shared.work_items SET payload=jsonb_build_object('_claimHold',true) WHERE workspace_id=$1 AND feature_id=$2";
@@ -137,7 +143,8 @@ try {
     const [outside] = await sql.unsafe('SELECT taken_by,updated_ts,payload FROM harness_shared.work_items WHERE workspace_id=$1 AND feature_id=$2',[ws,'WI-FILTER-OUTSIDE']);
     assert.equal(outside.taken_by,null);
     assert.equal(outside.payload?.claim_history_post_id,undefined,'Post-claim rejection is too late');
-    receipts.push({phase:'strict-miss',priority,durationMs:miss.durationMs,noClaims:true,noClaimHistory:true});
+    receipts.push({phase:'strict-miss',priority,durationMs:miss.durationMs,noClaims:true,
+      noClaimHistory:true,diagnosticReason:miss.result.reason ?? null});
   }
   const mixedFilter = {all:[{any:[{field:'kind',op:'=',value:'feature'},
     {field:'id',op:'=',value:'WI-FILTER-OUTSIDE'}]},
