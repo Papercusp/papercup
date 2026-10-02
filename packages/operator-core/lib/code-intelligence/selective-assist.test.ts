@@ -81,6 +81,9 @@ describe('decideGraphAssist — the two triggers', () => {
       expect(d.assist, change).toBe('graph');
       expect(d.trigger).toBe('shared-helper-change');
       expect(d.plan?.op).toBe('callers');
+      // The assist already knows the defining file; it must hand it to the facade
+      // so a same-name definition elsewhere cannot make the lookup ambiguous.
+      expect(d.plan?.args).toMatchObject({ name: 'managedSpawn', file_path: base.path });
       expect(d.fallback).toBe('lsp');
     }
     for (const change of ['comment', 'format', 'internal'] as const) {

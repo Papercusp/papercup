@@ -203,7 +203,12 @@ export function decideGraphAssist(intent: AssistIntent): AssistDecision {
     // with a sentinel site (no file/line), so there is nothing to re-verify
     // against current source. Callers return real sites we can check.
     reason: `Substantive ${change} change to exported \`${sym}\`: one callers lookup lists consumers to confirm in current source.`,
-    plan: { op: 'callers', args: { name: sym, limit: ASSIST_SITE_LIMIT } },
+    // `file_path` is the file being changed, i.e. where the symbol is DEFINED. A
+    // shared-helper name is routinely defined more than once in the index (a test
+    // fixture mirror, a same-named export), and the facade refuses to guess among
+    // candidates — so without the defining file a real caller lookup degraded to
+    // the fallback route every time (WI-10005154, live: getNextWorkItem).
+    plan: { op: 'callers', args: { name: sym, file_path: path, limit: ASSIST_SITE_LIMIT } },
     fallback: 'lsp',
   };
 }
