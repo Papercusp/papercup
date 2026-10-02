@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { RouteContext, RouteDefinition } from '../define-route';
+import { harnessScopedCtx } from '../../agent-tools/_harness-scope';
 
 /* ─── Mocks for the DB-touching service modules the routes import ───────
  * All mock fns live in a vi.hoisted() bundle so the (hoisted) vi.mock
@@ -308,6 +309,28 @@ describe('device/plans', () => {
 });
 
 describe('device/attention', () => {
+  it('satisfies the real canonical harness gate while preserving the paired workspace', async () => {
+    // The prior permissive dispatch mock hid the live harness_required 503.
+    // Exercise the exact resolver used by plans:attention, before any source
+    // can fabricate a successful empty feed.
+    expect(() => harnessScopedCtx(undefined, {})).toThrow();
+    m.dispatchProjectedTool.mockImplementationOnce(async (_tool, name, ...call) => {
+      expect(name).toBe('plans:attention');
+      const [args, toolCtx] = call as [
+        { harness?: string }, { harnessSlug?: string; workspaceId: string },
+      ];
+      const scoped = harnessScopedCtx(args.harness, toolCtx);
+      expect(scoped).toMatchObject({ harnessSlug: 'papercup', workspaceId: 'ws-e4' });
+      return { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({
+        groups: [{ planSlug: 'scope-guard', items: [{ id: 'real-scope-item' }] }],
+      }) }] } };
+    });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(200);
+    expect((await res.json()).groups[0].items).toEqual([{ id: 'real-scope-item' }]);
+  });
+
   it('retains a failed canonical dispatch cause without reporting an empty healthy inbox', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     m.dispatchProjectedTool.mockResolvedValueOnce({ ok: false, error: { code: 'invalid_input', message: 'invalid page' } });

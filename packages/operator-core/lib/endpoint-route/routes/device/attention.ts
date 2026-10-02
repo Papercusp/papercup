@@ -75,6 +75,10 @@ const attention = defineTool({
       progress: () => {},
       emit: () => {},
       workspaceId: principal.workspaceId,
+      // The canonical reader requires an explicit harness scope. Use the
+      // same operator-home source as desktop attention while retaining the
+      // paired workspace partition for every workspace-level source.
+      harnessSlug: operatorHomeHarnessSlug(),
       role: 'operator',
       runId: globalThis.crypto.randomUUID(),
       spawnId: globalThis.crypto.randomUUID(),
