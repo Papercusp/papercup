@@ -21,6 +21,8 @@ import {
   refreshTargetSessionBeforeRead,
 } from './_shared';
 import { SESSION_TURN_TEXT_CAP } from '../../search/session-ingest';
+import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
+import { emptyTally, withheldReceipt, withholdRestrictedTurns } from '../../personal-vault/transcript-exclusion';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 const SESSION_TURN_TEXT_CHUNK_CAP = 1_500;
@@ -274,12 +276,15 @@ export default defineTool({
       speaker: string;
       owner: string | null;
       ts: string | null;
+      /** When the turn was recorded, for the D-006 window test: ts, else ingest time. */
+      stamp_at?: string | null;
       text: string;
       text_full_chars: number;
       text_offset?: number;
       source_completeness?: 'complete' | 'unknown';
     }>>`
       SELECT source_kind, session_id, turn_idx, speaker, owner, ts::text AS ts,
+             COALESCE(ts, ingested_at)::text AS stamp_at,
              length(text)::int AS text_full_chars,
              ${textOffset}::int AS text_offset,
              substring(text FROM ${textOffset + 1}::int FOR ${textLimit}::int) AS text
@@ -439,6 +444,27 @@ export default defineTool({
       }
     }
 
+    // D-006 / P-013: turns another agent recorded inside its disclosure windows
+    // are withheld from this caller and counted, after BOTH the index and the
+    // archive paths so neither can serve them. A self read sees its own chain.
+    let withheld = emptyTally();
+    try {
+      const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? null;
+      const partitioned = await withholdRestrictedTurns(
+        tx,
+        { selfOwnerIds: [callerOwnerId, ...(ownerIds ?? [])] },
+        rows,
+        (row) => ({ owner: row.owner, at: row.stamp_at ?? row.ts }),
+      );
+      rows.splice(0, rows.length, ...partitioned.kept);
+      withheld = partitioned.withheld;
+    } catch (error) {
+      if (error instanceof DisclosureRefused) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(disclosureRefusalData(error)) }], isError: true };
+      }
+      throw error;
+    }
+
     return {
       content: [{
         type: 'text' as const,
@@ -448,6 +474,7 @@ export default defineTool({
           ...(selfSession ? { session_ids: returnedSessions } : {}),
           ...(selfNote ? { note: selfNote } : {}),
           ...(archiveNote ? { note: archiveNote } : {}),
+          ...withheldReceipt(withheld),
           // EI-9970: this is the WINDOW size (rows returned here, capped by
           // `limit`), NOT the session's total turn count — see the tool
           // description. sessions:list's `turns` is the total; do not conflate.

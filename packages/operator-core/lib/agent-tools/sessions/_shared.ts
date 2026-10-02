@@ -361,6 +361,20 @@ export async function refreshLiveSessionsBeforeRead(
   };
 }
 
+/**
+ * A window turn plus the two fields the D-006 transcript exclusion decides on
+ * (personal-vault/transcript-exclusion.ts). `owner`/`at` are for that decision
+ * only — strip them with `toWindowTurn` before a window leaves the tool.
+ */
+export interface StampedWindowTurn extends WindowTurn {
+  owner: string | null;
+  at: string | null;
+}
+
+export function toWindowTurn({ owner: _owner, at: _at, ...turn }: StampedWindowTurn): WindowTurn {
+  return turn;
+}
+
 /** ±context turns around one hit (per-turn text bounded for token economy). */
 export async function hydrateWindow(
   sql: Sql,
@@ -370,11 +384,12 @@ export async function hydrateWindow(
   aroundIdx: number,
   context: number,
   perTurnChars = 700,
-): Promise<WindowTurn[]> {
+): Promise<StampedWindowTurn[]> {
   const lo = Math.max(0, aroundIdx - context);
   const hi = aroundIdx + context;
-  const rows = await sql<Array<{ turn_idx: number; speaker: string; ts: string | null; text: string }>>`
-    SELECT turn_idx, speaker, ts::text AS ts, left(text, ${perTurnChars}) AS text
+  const rows = await sql<Array<{ turn_idx: number; speaker: string; ts: string | null; text: string; owner: string | null; at: string | null }>>`
+    SELECT turn_idx, speaker, ts::text AS ts, left(text, ${perTurnChars}) AS text,
+           owner, COALESCE(ts, ingested_at)::text AS at
       FROM harness_shared.session_turns
      WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
        AND source_kind = ${sourceKind} AND session_id = ${sessionId}
@@ -384,7 +399,36 @@ export async function hydrateWindow(
   return rows.map((row) => ({
     ref: formatSessionTurnRef(sourceKind, sessionId, row.turn_idx),
     ...row,
+    owner: row.owner ?? null,
+    at: row.at ?? row.ts ?? null,
   }));
+}
+
+/**
+ * Owner and record time of specific indexed turns, keyed by
+ * `formatSessionTurnRef`. Hybrid search hits carry neither, and the D-006
+ * transcript exclusion needs both. A turn absent from the index is absent from
+ * the map, which the exclusion treats as unattributed.
+ */
+export async function loadTurnStamps(
+  sql: Sql,
+  workspaceId: string,
+  keys: ReadonlyArray<{ sourceKind: string; sessionId: string; turnIdx: number }>,
+): Promise<Map<string, { owner: string | null; at: string | null }>> {
+  const out = new Map<string, { owner: string | null; at: string | null }>();
+  if (keys.length === 0) return out;
+  const rows = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number; owner: string | null; at: string | null }>>`
+    SELECT t.source_kind, t.session_id, t.turn_idx, t.owner, COALESCE(t.ts, t.ingested_at)::text AS at
+      FROM harness_shared.session_turns t
+      JOIN unnest(${keys.map((k) => k.sourceKind)}::text[], ${keys.map((k) => k.sessionId)}::text[], ${keys.map((k) => k.turnIdx)}::int[])
+           AS k(source_kind, session_id, turn_idx)
+        ON t.source_kind = k.source_kind AND t.session_id = k.session_id AND t.turn_idx = k.turn_idx
+     WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
+  `;
+  for (const row of rows) {
+    out.set(formatSessionTurnRef(row.source_kind, row.session_id, row.turn_idx), { owner: row.owner ?? null, at: row.at ?? null });
+  }
+  return out;
 }
 
 /**

@@ -25,7 +25,12 @@ import {
   sessionSearchEnabled, disabledResult, hydrateWindow, parseTurnRef,
   formatSessionTurnRef,
   refreshLiveSessionsBeforeRead, refreshTargetSessionBeforeRead, type WindowTurn,
+  loadTurnStamps, toWindowTurn, type StampedWindowTurn,
 } from './_shared';
+import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
+import {
+  addTally, emptyTally, loadTranscriptExclusion, withheldReceipt, type TranscriptExclusion,
+} from '../../personal-vault/transcript-exclusion';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-origin';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
@@ -390,10 +395,24 @@ export default defineTool({
       try {
         const pf = filters ?? {};
         const pOwners = pf.owners && pf.owners.length ? pf.owners : null;
+        // D-006 / P-013: a count over another agent's restricted tool parts is a
+        // substring ORACLE on its content, so those parts never count. Same rule
+        // as personal-vault/transcript-exclusion.ts, expressed in SQL; a ledger
+        // read failure fails the probe (caught below), which shows no caveat.
+        const partSelf = [
+          callerOwnerId,
+          ...(args.session === 'self' || args.owner === 'self' ? (filters?.owners ?? []) : []),
+        ].filter((owner): owner is string => Boolean(owner));
         const [row] = await tx<Array<{ hits: string }>>`
           SELECT COUNT(*)::text AS hits
-            FROM harness_shared.session_turn_parts
+            FROM harness_shared.session_turn_parts p
            WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+             AND NOT EXISTS (
+               SELECT 1 FROM harness_shared.personal_disclosures d
+                WHERE d.agent_owner_id <> ALL(${partSelf}::text[])
+                  AND (p.owner IS NULL OR d.agent_owner_id = p.owner)
+                  AND d.delivered_at <= COALESCE(p.ts, p.ingested_at)
+                  AND (d.released_at IS NULL OR COALESCE(p.ts, p.ingested_at) < d.released_at))
              AND (${pOwners}::text[] IS NULL OR owner = ANY(${pOwners}::text[]))
              AND (${pf.sessionId ?? null}::text IS NULL OR session_id = ${pf.sessionId ?? null})
              AND (${pf.sourceKind ?? null}::text IS NULL OR source_kind = ${pf.sourceKind ?? null})
@@ -438,9 +457,66 @@ export default defineTool({
       }
     }
 
+    // D-006 / P-013: a turn another agent recorded inside its disclosure windows
+    // is withheld from this caller — the hit itself AND any ±context window turn —
+    // and counted on the result. Hybrid hits carry no owner/time, so stamp them
+    // from the index first; one ledger read then decides the whole page.
+    const selfChain = args.session === 'self' || args.owner === 'self' ? (filters?.owners ?? []) : [];
+    const selfOwnerIds = [callerOwnerId, ...selfChain];
+    const turnHits = pageHits.filter((h) => h.source === 'session_turn');
+    const stampByRef = await loadTurnStamps(
+      tx,
+      workspaceId,
+      turnHits.filter((h) => h.owner === null).map((h) => ({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx })),
+    );
+    const hitStamp = (h: RawHit) =>
+      h.owner !== null
+        ? { owner: h.owner, at: h.ts }
+        : stampByRef.get(formatSessionTurnRef(h.sourceKind, h.sessionId, h.turnIdx)) ?? { owner: null, at: null };
+    const windowsByHit = new Map<RawHit, StampedWindowTurn[]>();
+    if (context > 0) {
+      for (const h of turnHits) {
+        try {
+          windowsByHit.set(h, await hydrateWindow(
+            tx,
+            workspaceId,
+            h.sourceKind,
+            h.sessionId,
+            h.turnIdx,
+            context,
+            SESSION_SEARCH_WINDOW_TURN_CHARS,
+          ));
+        } catch { /* window is a bonus, never fail the search */ }
+      }
+    }
+    let exclusion: TranscriptExclusion;
+    try {
+      exclusion = await loadTranscriptExclusion(tx, {
+        selfOwnerIds,
+        stamps: [...turnHits.map(hitStamp), ...[...windowsByHit.values()].flat()],
+      });
+    } catch (error) {
+      if (error instanceof DisclosureRefused) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(disclosureRefusalData(error)) }], isError: true };
+      }
+      throw error;
+    }
+    // coord_message hits are not transcript turns: P-006 seals them at write.
+    const withheld = emptyTally();
+    const keptHits: RawHit[] = [];
+    for (const h of pageHits) {
+      const reason = h.source === 'session_turn' ? exclusion.withholds(hitStamp(h)) : null;
+      if (reason === null) {
+        keptHits.push(h);
+      } else {
+        withheld.turns += 1;
+        withheld.byReason[reason] += 1;
+      }
+    }
+
     // Hydrate ±context windows only for this page.
     const out: SearchOutput[] = [];
-    for (const h of pageHits) {
+    for (const h of keptHits) {
       const turnOrigin = h.source === 'session_turn'
         ? turnOrigins.get(turnOriginKey({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx }))
           ?? unknownTurnOrigin(
@@ -450,18 +526,11 @@ export default defineTool({
           )
         : undefined;
       let window: WindowTurn[] | undefined;
-      if (h.source === 'session_turn' && context > 0) {
-        try {
-          window = await hydrateWindow(
-            tx,
-            workspaceId,
-            h.sourceKind,
-            h.sessionId,
-            h.turnIdx,
-            context,
-            SESSION_SEARCH_WINDOW_TURN_CHARS,
-          );
-        } catch { /* window is a bonus, never fail the search */ }
+      const stampedWindow = windowsByHit.get(h);
+      if (stampedWindow) {
+        const shownWindow = exclusion.partition(stampedWindow, (turn) => turn);
+        addTally(withheld, shownWindow.withheld);
+        window = shownWindow.kept.map(toWindowTurn);
       }
       out.push(shapeSearchOutput({
         source: h.source,
@@ -539,6 +608,8 @@ export default defineTool({
             },
           }
         : {}),
+      // D-006 / P-013: hits and window turns withheld from this caller, counted.
+      ...withheldReceipt(withheld),
     };
 
     const cursorFor = (resultCount: number, more: boolean): string | undefined => more
