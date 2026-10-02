@@ -831,7 +831,7 @@ async function tagWatchdogContinuation(ownerId: string, note: string): Promise<s
   const addressedNote = addressContinuationToOwner(note, ownerId);
   try {
     const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
-    return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: addressedNote }).taggedText;
+    return (await tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: addressedNote })).taggedText;
   } catch {
     return addressedNote; // provenance must never strand a context boundary
   }

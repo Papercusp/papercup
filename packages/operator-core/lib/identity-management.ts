@@ -481,7 +481,8 @@ async function nudgeOwner(
       : 'A soft identity stack change is ready. Continue normally; the control transition attached to this turn carries the validated layer and the host acknowledgement records when it becomes applied.';
   let data = message;
   try {
-    data = tagTurnForInjection({ sid: ownerId, origin: 'coord-inject:identity-management', text: message }).taggedText;
+    data = (await tagTurnForInjection({ sid: ownerId, origin: 'coord-inject:identity-management', text: message }))
+      .taggedText;
   } catch {
     /* a provenance write must not hide the delivery failure */
   }

@@ -413,6 +413,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/verify-identities-r3.mjs: this is P-015 R-3's live self-drill VERIFICATION driver, the sibling of the reviewed verify-identities-r4.mjs row, run by hand in an observing session. Its starts are three synchronous execFileSync calls, each awaited to completion before the next and retaining only one captured stdout string: `node scripts/mcp-call.mjs` (one tool call, timeout 180s, 8 MiB maxBuffer), the production user-prompt-submit hook (timeout 30s, 8 MiB maxBuffer), and one `git rev-parse HEAD`. It holds no resident queue and adds no residency after it exits. Routing it through Governor.admit would gate an evidence-producing acceptance drill behind the runtime capacity it is meant to observe.",
   },
   {
+    path: "scripts/verify-cloud-workspaces-aws.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/verify-cloud-workspaces-aws.mjs (WI-10005277): this is an isolated Tauri UI acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1, a private display >= :90, a live bridge PID, and verifier binaries before acting. Cloud list and mutation responses are intercepted by `window.__cwNative` fixtures; the evidence explicitly records `syntheticCloudResponses=true` and `realAwsLifecycleProven=false`, so the script starts no AWS worker or resource. Its only process-start primitive is `command()`, synchronous `execFileSync` with a 120-second per-child timeout. Every tauri-agent-tools, poll, bash, xdotool, and screenshot child is awaited to exit before the next call; it retains output only for this acceptance run, detaches no child, and holds no resident queue. It adds no independently managed runtime capacity for Governor.admit to meter.",
+  },
+  {
     path: "scripts/fixmic.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

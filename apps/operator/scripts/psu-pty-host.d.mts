@@ -6,6 +6,14 @@
  *  against a COPY outside the checkout — never by mutating this file in the
  *  shared tree, which git-sync would sweep into a commit mid-probe. */
 export function hashHostScript(path?: string): string | null;
+/**
+ * Persist only this closed classification of the operator target. The full URL can
+ * contain credentials, paths, or query tokens and is never host-event evidence.
+ *
+ * @param {EnvironmentMap} [env]
+ * @returns {'direct-3170'|'other'|'unset'}
+ */
+export function operatorPinEvidence(env?: EnvironmentMap): "direct-3170" | "other" | "unset";
 /** WI-38292: is this host or its launcher executing code older than disk?
  *  `stale` is true when either component's known hashes differ — an unreadable file
  *  degrades to "not stale" so a transient fs error can never turn a working respawn

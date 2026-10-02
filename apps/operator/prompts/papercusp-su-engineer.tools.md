@@ -177,36 +177,25 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   | packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval, never an authority for symbol truth |
 
   **The graph is a SELECTIVE assist, not a per-read tax** (plan
-  `gitnexus-selective-hardening-and-comparison-2026-09-13`, P-006). Reach for
-  it at exactly two decisions: ONE already-known exact identifier (where it
-  lives / who depends on it → `graph:query { op:'symbol' }`), or a SUBSTANTIVE
-  edit (signature / rename / removal / behavior) to an EXPORTED symbol in shared
-  `lib` code whose consumers you do not know (`graph:query { op:'callers' }`).
-  Never for log/error strings, env or constant names, config/data files,
-  prose, runtime/process questions, multi-term or regex keyword search, or
-  trivial edits — those stay `rg`/`lsp:query`. One bounded call, then
-  re-check every returned site against CURRENT source; a stale, empty, refused
-  or timed-out graph answer is NOT absence — keep your existing `rg`/`lsp:query`
-  route (`code-intelligence/selective-assist.ts`).
+  `gitnexus-selective-hardening-and-comparison-2026-09-13`, P-006): only for ONE
+  known exact identifier (`graph:query { op:'symbol' }`) or a substantive edit
+  to an EXPORTED shared-lib symbol with unknown consumers (`op:'callers'`); all
+  else stays `rg`/`lsp:query`. One bounded call, re-checked against current
+  source; a stale, empty or refused answer is NOT absence
+  (`code-intelligence/selective-assist.ts`).
 
   ⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`
   is UNAVAILABLE: historical builds returned empty or unranked noise, and
-  current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065).
-  The bridge now refuses it before child dispatch so it cannot take down the
-  otherwise-working siblings. Use `gitnexus.context` for a known symbol,
+  current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065),
+  so the bridge refuses it. Use `gitnexus.context` for a known symbol,
   `graph:query` for topology, or `rg` for keywords. Raw `repomix.pack` skips
   the pinned version and the secret-scanning rails `code:pack` enforces
-  (D-040/D-041). ⚠ The gitnexus row reaches you through the plugin bridge, so
-  test it rather than assuming: if a call answers `Unknown namespace(s):
-  gitnexus`, the pinned-resolver fix has not deployed yet (P-006) — fall back to
-  `rg` + `lsp:query` for that question class until it does, and do NOT read the
-  absence as "no call chains exist". 📖 Versions, re-provisioning, and the six
-  high-risk failure modes (confident wrong answers OR a hard-crashed evidence
-  channel, incl. a STALE index):
-  `/internal/docs/agent-insights/code-intelligence-backends-runbook`. (Plugin tools — `design-phase.*`, `fetch_plus.*`,
-  `gitnexus.*` — surface on every su session since the plugin-host boot warm;
-  EI-38's "workspace-scoped only" was the post-restart empty-registry window
-  in disguise — see the `plugin-tools-empty-registry-window` insight.)
+  (D-040/D-041). ⚠ A gitnexus call answering `Unknown namespace(s): gitnexus`
+  means fall back to `rg` + `lsp:query` — never "no call chains exist". 📖
+  Versions, re-provisioning, the six high-risk failure modes (incl. a STALE
+  index): `/internal/docs/agent-insights/code-intelligence-backends-runbook`.
+  (Plugin tools surface on every su session — see the
+  `plugin-tools-empty-registry-window` insight.)
 - **`work_items:list { assignedBy, kind:'task' }` + `coord:presence`** = "my
   background agents"; completions push to your `coord:inbox` — no poll.
 - **`blueprint:catalog` → `extend`/`validate` → `harness:create`** — discovery

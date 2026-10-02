@@ -13,7 +13,7 @@
  * Part of code-recipes-2026-06-21 Phase 1 (P-002, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -46,14 +46,6 @@ const contractMigration = join(
   'sql',
   '897-code-recipe-contract.sql',
 );
-const profileMigrationArmed = join(
-  here, '..', '..', '..', 'libs', 'papercusp', 'libs', 'db', 'sql',
-  '1154-prose-embedding-profile-identity.sql',
-);
-const profileMigration = existsSync(profileMigrationArmed)
-  ? profileMigrationArmed
-  : `${profileMigrationArmed}.DRAFT`;
-
 /** A throwaway 768-dim embedding (the store only round-trips presence, not value). */
 const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 768 }, () => seed);
 const profiledEmbedding = (embedding: number[]) => ({
@@ -70,7 +62,9 @@ describe('code_recipes store (real PG)', () => {
     // Migration 897 is armed. Re-apply its idempotent DDL in this isolated
     // database so store coverage remains bound to the production migration.
     await db.adminSql.unsafe(readFileSync(contractMigration, 'utf8')).simple();
-    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
+    // The org fixture has already applied the full migration chain, including
+    // 1154 before migration 1327 renamed personal_documents and left a compat
+    // view. Replaying 1154 against that head-schema view fails with ALTER TABLE.
   }, 120_000);
 
   afterAll(async () => {

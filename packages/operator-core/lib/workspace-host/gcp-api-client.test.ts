@@ -856,6 +856,36 @@ describe('ADC-backed GCP workspace-host API client', () => {
       error: { code: 'QUOTA_EXCEEDED', message: 'GCP operation failed (QUOTA_EXCEEDED)' },
     });
     expect(JSON.stringify(observed)).not.toContain(TOKEN);
+    // No httpErrorStatusCode on the wire: nothing is invented, and QUOTA_EXCEEDED is never a throttle.
+    expect(observed.error).not.toHaveProperty('status');
+    expect(observed.error).not.toHaveProperty('throttled');
+  });
+
+  it('a failed operation carries its own HTTP status and marks rate-limit codes as throttled (WI-10005323)', async () => {
+    const answer = (codes: string[], httpErrorStatusCode: number) =>
+      makeClient(
+        vi.fn(async () =>
+          json({
+            name: 'operation-1',
+            status: 'DONE',
+            zone: `projects/${PROJECT}/zones/${ZONE}`,
+            httpErrorStatusCode,
+            httpErrorMessage: 'FORBIDDEN',
+            error: { errors: codes.map((code) => ({ code, message: `provider detail ${TOKEN}` })) },
+          }),
+        ) as typeof fetch,
+      ).waitForOperation({ name: 'operation-1', projectId: PROJECT, scope: 'zone', location: ZONE, requestId: REQUEST_ID });
+
+    const denied = await answer(['SERVICE_ACCOUNT_ACCESS_DENIED'], 403);
+    expect(denied.error).toEqual({
+      code: 'SERVICE_ACCOUNT_ACCESS_DENIED',
+      message: 'GCP operation failed (SERVICE_ACCOUNT_ACCESS_DENIED)',
+      status: 403,
+    });
+    expect(JSON.stringify(denied)).not.toContain(TOKEN);
+    expect((await answer(['RESOURCE_OPERATION_RATE_EXCEEDED'], 403)).error).toMatchObject({ status: 403, throttled: true });
+    expect((await answer(['RESOURCE_NOT_READY'], 400)).error).toMatchObject({ status: 400, throttled: true });
+    expect((await answer(['QUOTA_EXCEEDED'], 403)).error).not.toHaveProperty('throttled');
   });
 
   it('creates, reads, and deletes a dedicated regional Router/NAT with provider-read absence', async () => {

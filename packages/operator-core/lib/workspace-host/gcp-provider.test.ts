@@ -7,6 +7,7 @@ import {
   WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   runFakeWorkspaceHostProviderContractSuite,
+  workspaceHostProviderRetryClass,
   type WorkspaceHostApplyResult,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderContext,
@@ -21,6 +22,7 @@ import {
   GCP_WORKSPACE_HOST_TRANSPORTS,
   buildGcpWorkspaceHostTransportProfile,
   createGcpWorkspaceHostProvider,
+  GcpOperationFailedError,
   GCP_WORKSPACE_HOST_CALL_PERMISSIONS,
   gcpInstanceInsertPermissions,
   gcpWorkspaceHostRequestUuid,
@@ -651,6 +653,58 @@ async function provision(
   }
   return { host: { hostId: spec.hostId, target: 'gcp', resources }, resources };
 }
+
+describe('GCP operation that finished with an error (WI-10005323)', () => {
+  /** Apply the plan's first step with every operation wait answering `error`; return what it threw. */
+  async function failFirstStep(error: NonNullable<GcpOperationObservation['error']>): Promise<unknown> {
+    const { client, provider } = providerAndClient();
+    client.waitForOperation = async (operation) => ({ ...operation, status: 'DONE', observedAt: NOW, error });
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'op-fail', idempotencyKey: 'op-fail', desired: desired() },
+      context(),
+    );
+    return provider
+      .apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] }, context())
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown,
+      );
+  }
+
+  it('a refused operation (HTTP 4xx) is terminal, so the provision fails instead of reconciling forever', async () => {
+    // Measured 2026-10-02 (prov-0f9b1ba8db30d143becc130a-r3): the VM insert finished DONE with
+    // SERVICE_ACCOUNT_ACCESS_DENIED and the runner looped on "outcome uncertain; reconciliation required".
+    const thrown = await failFirstStep({
+      code: 'SERVICE_ACCOUNT_ACCESS_DENIED',
+      message: 'GCP operation failed (SERVICE_ACCOUNT_ACCESS_DENIED)',
+      status: 403,
+    });
+    expect(thrown).toBeInstanceOf(GcpOperationFailedError);
+    expect(thrown).toMatchObject({ status: 403, code: 'SERVICE_ACCOUNT_ACCESS_DENIED' });
+    expect(workspaceHostProviderRetryClass(thrown)).toBe('terminal');
+  });
+
+  it('a rate-limited operation is throttled even though Google reports it as 403', async () => {
+    const thrown = await failFirstStep({
+      code: 'RESOURCE_OPERATION_RATE_EXCEEDED',
+      message: 'GCP operation failed (RESOURCE_OPERATION_RATE_EXCEEDED)',
+      status: 403,
+      throttled: true,
+    });
+    expect(workspaceHostProviderRetryClass(thrown)).toBe('throttled');
+  });
+
+  it('a server-side failure, or one with no status, stays ambiguous and is reconciled', async () => {
+    const stockout = await failFirstStep({
+      code: 'ZONE_RESOURCE_POOL_EXHAUSTED',
+      message: 'GCP operation failed (ZONE_RESOURCE_POOL_EXHAUSTED)',
+      status: 503,
+    });
+    expect(workspaceHostProviderRetryClass(stockout)).toBe('ambiguous');
+    const unknown = await failFirstStep({ message: 'GCP operation failed' });
+    expect(workspaceHostProviderRetryClass(unknown)).toBe('ambiguous');
+  });
+});
 
 describe('GCP workspace-host provider planning', () => {
   it('normalizes an undersized boot disk during planning before any provider mutation can run', async () => {

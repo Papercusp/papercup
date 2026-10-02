@@ -296,15 +296,17 @@ function recoveryMaterializeInput(ref: LoopRoutineRef, ownerId: string, now: num
   };
 }
 
-function recoveryFirstPrompt(ownerId: string, spec: RespawnLaunchSpec): string {
+async function recoveryFirstPrompt(ownerId: string, spec: RespawnLaunchSpec): Promise<string> {
   if (spec.firstPrompt?.trim()) return spec.firstPrompt;
   const recoveryPrompt = addressContinuationToOwner(CONTEXT_OVERFLOW_RECOVERY_PROMPT, ownerId);
   try {
-    return tagTurnForInjection({
-      sid: ownerId,
-      origin: 'watchdog',
-      text: recoveryPrompt,
-    }).taggedText;
+    return (
+      await tagTurnForInjection({
+        sid: ownerId,
+        origin: 'watchdog',
+        text: recoveryPrompt,
+      })
+    ).taggedText;
   } catch {
     return recoveryPrompt;
   }
@@ -363,7 +365,7 @@ async function recoverContextOverflow(
       availability.host.sock,
       {
         mode: 'carry-respawn',
-        data: recoveryFirstPrompt(ownerId, spec),
+        data: await recoveryFirstPrompt(ownerId, spec),
         systemPromptAddendum: spec.systemPromptAddendum,
         ownerId,
       },

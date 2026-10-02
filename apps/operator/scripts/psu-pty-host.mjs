@@ -117,6 +117,37 @@ export function hashHostScript(path = HOST_SCRIPT_PATH) {
  *  makes that detectable at all: it is the only value in the process that still
  *  describes the code actually executing after the file on disk moves on. */
 export const LOADED_HOST_CODE_VERSION = hashHostScript();
+
+/**
+ * Persist only this closed classification of the operator target. The full URL can
+ * contain credentials, paths, or query tokens and is never host-event evidence.
+ *
+ * @param {EnvironmentMap} [env]
+ * @returns {'direct-3170'|'other'|'unset'}
+ */
+export function operatorPinEvidence(env = process.env) {
+  const raw = typeof env?.PAPERCUSP_OPERATOR_URL === 'string'
+    ? env.PAPERCUSP_OPERATOR_URL.trim()
+    : '';
+  if (!raw) return 'unset';
+  try {
+    const url = new URL(raw);
+    const loopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname);
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    if (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      loopback &&
+      url.port === '3170' &&
+      ['/', '/api/mcp'].includes(path)
+    ) {
+      return 'direct-3170';
+    }
+  } catch {
+    // An invalid or non-local target is deliberately reduced to the fixed enum.
+  }
+  return 'other';
+}
+
 // The launcher supplies the long-lived carry/model callbacks. Replacing only
 // that sibling leaves this process on its old callbacks until it also adopts.
 const LOADED_LAUNCHER_CODE_VERSION = hashHostScript(LAUNCHER_SCRIPT_PATH);
@@ -11519,6 +11550,8 @@ export function hostThroughPty(o) {
             loaded: hostCode.loaded,
             onDisk: hostCode.onDisk,
             launcher: hostCode.launcher ?? null,
+            // Store the closed enum only. The direct target URL may carry credentials.
+            operatorPin: operatorPinEvidence(env),
             // ADDITIVE — absent on rows written by older hosts, so a reader must
             // treat `undefined` as "not recorded", never as false.
             adoptable,
@@ -12128,6 +12161,40 @@ export function hostThroughPty(o) {
         // Decide whether a failed fresh epoch is retryable before recording a
         // terminal carry drop; a retry must not increment the drop counter.
         onDrop: () => {},
+        // A recycled Claude su session can arrive while the native Papercusp
+        // MCP endpoint is still reconnecting. Keep the carry out of the composer
+        // until the closed-loop reconnect check proves papercusp-su ready.
+        prepareBeforeWrite:
+          respawnMode === 'carry-respawn' &&
+          String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude' &&
+          sessionClass === 'claude-su'
+            ? async () => {
+                const tap = makeOutputTap();
+                try {
+                  const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
+                    serverName: 'papercusp-su',
+                    write: (bytes) => child.write(bytes),
+                    readTap: tap.read,
+                    resetTap: tap.reset,
+                  }));
+                  appendHostEvent(
+                    ownerId,
+                    result.ok ? 'respawn-carry-mcp-ready' : 'respawn-carry-mcp-unavailable',
+                    {
+                      mode: respawnMode,
+                      nativeId: nativeId ?? null,
+                      serverName: 'papercusp-su',
+                      step: result.step,
+                      attempts: result.attempts,
+                      detail: result.detail,
+                    },
+                  );
+                  return { ok: result.ok, reason: 'carry-mcp-unavailable' };
+                } finally {
+                  tap.close();
+                }
+              }
+            : null,
       });
       const retryOnFreshEpoch = (reason, proofReason = null) => {
         if (!shouldRetryCarryOnFreshEpoch({
