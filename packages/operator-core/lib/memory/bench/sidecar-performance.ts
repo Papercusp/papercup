@@ -405,3 +405,40 @@ export async function runPerformanceBlocks(manifestFile: string, expectedSha: st
     state.status = 'completed'; update(); return output;
   } catch (e) { state.status = 'failed'; update(); throw e; }
 }
+
+/** A queued/running snapshot is never a prerequisite for another model matrix.
+ * Re-read terminal state and bind the saved summary to every immutable raw
+ * receipt before permitting the next launch. This performs no inference. */
+export async function verifyCompletedPerformanceRun(manifestFile: string, expectedSha: string) {
+  if ((await fingerprintFile(manifestFile)).sha256 !== expectedSha) throw new Error('predecessor manifest fingerprint mismatch');
+  const manifest = validateMeasurementManifest(JSON.parse(fs.readFileSync(manifestFile, 'utf8')));
+  if (manifest.ownerId !== measurementOwner()) throw new Error('predecessor owner mismatch');
+  const first = manifest.cells.find((cell) => cell.bar === 'performance');
+  if (!first) throw new Error('predecessor has no performance cells');
+  const input = loadPerformanceInput({ manifest, cell: first } as PreparedMeasurement);
+  const schedule = performanceSchedule(input.seed, input.blocks, manifest.arms.map((arm) => arm.id));
+  const root = path.join(fs.realpathSync(manifest.privateRoot), manifest.runId);
+  const driverFile = path.join(root, 'driver.json'), summaryFile = path.join(root, 'performance-summary.json');
+  const driver = JSON.parse(fs.readFileSync(driverFile, 'utf8'));
+  if (driver.status !== 'completed' || driver.current || driver.ownerId !== manifest.ownerId
+    || driver.manifestSha256 !== expectedSha || hashJson(driver.completed) !== hashJson(schedule.map((cell) => cell.cellId))) {
+    throw new Error('predecessor performance matrix is not complete');
+  }
+  const saved = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+  if (saved.ownerId !== manifest.ownerId || saved.manifestSha256 !== expectedSha
+    || !Array.isArray(saved.rawArtifacts) || saved.rawArtifacts.length !== schedule.length) {
+    throw new Error('predecessor summary identity/population mismatch');
+  }
+  const receipts: PerformanceReceipt[] = [];
+  for (const scheduled of schedule) {
+    const cell = manifest.cells.find((candidate) => candidate.id === scheduled.cellId)!;
+    const raw = path.join(root, `${cell.output}.json`);
+    const pin = saved.rawArtifacts.find((candidate: { path: string }) => candidate.path === raw);
+    if (!pin || hashJson(pin) !== hashJson(await fingerprintFile(raw))) throw new Error('predecessor raw receipt fingerprint mismatch');
+    receipts.push(JSON.parse(fs.readFileSync(raw, 'utf8')) as PerformanceReceipt);
+  }
+  const derived = summarizePerformanceReceipts(manifest, expectedSha, input, receipts);
+  if (hashJson(derived) !== hashJson(saved.summary)) throw new Error('predecessor summary disagrees with raw receipts');
+  return { manifestSha256: expectedSha, driver: await fingerprintFile(driverFile), summary: await fingerprintFile(summaryFile),
+    cells: schedule.length, inferencePerformed: false };
+}
