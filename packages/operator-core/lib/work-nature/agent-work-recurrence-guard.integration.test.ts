@@ -372,12 +372,12 @@ describe('D-035: work_items:set_state and work_items:complete refuse every non-a
     for (const door of ['work_items:set_state', 'work_items:complete'] as const) {
       const passedNonAgent: string[] = [];
       for (const s of nonAgent) {
-        const r = await refuseNonAgentWorkAtDoor(door, s.id, H);
+        const r = await refuseNonAgentWorkAtDoor(door, s.id, H, PROBE_CTX);
         if (r?.error !== NOT_AGENT_WORK || r.door !== door || r.nature !== s.nature) passedNonAgent.push(label(s.id));
       }
       expect(passedNonAgent).toEqual([]);
       const refusedAgent: string[] = [];
-      for (const s of agent) if ((await refuseNonAgentWorkAtDoor(door, s.id, H)) !== null) refusedAgent.push(label(s.id));
+      for (const s of agent) if ((await refuseNonAgentWorkAtDoor(door, s.id, H, PROBE_CTX)) !== null) refusedAgent.push(label(s.id));
       expect(refusedAgent).toEqual([]);
     }
   });
@@ -414,5 +414,105 @@ describe('D-035: work_items:set_state and work_items:complete refuse every non-a
       SELECT feature_id, status FROM harness_shared.work_items
        WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ANY(${[...before.keys()]})`;
     expect(rows.filter((r) => r.status !== before.get(r.feature_id)).map((r) => label(r.feature_id))).toEqual([]);
+  });
+
+  // D-038 (WI-10005369): the owner's Queue UI reaches set_state through the palette bridge
+  // (capabilities/invoke.ts). This ctx is that bridge's server-built identity, field for field.
+  const OWNER_UI_CTX = {
+    workspaceId: WS,
+    harnessSlug: H,
+    role: 'operator',
+    spawnId: 'palette',
+    isSuperuser: false,
+    uiClientId: 'pui-4242',
+    principal: {
+      kind: 'system',
+      slug: 'loopback',
+      workspaceId: WS,
+      authMethod: 'process-internal',
+      trust: 'trusted',
+      capabilities: new Set(['*']),
+      roles: new Set<string>(),
+    },
+  } as never;
+  const humanSeed = () => {
+    const s = SEEDS.find((x) => x.nature === 'work' && x.audience === 'human' && !['done', 'dropped', 'passed'].includes(x.status));
+    expect(s, 'the seed set must carry a non-terminal human-audience work row').toBeDefined();
+    return s as Seeded;
+  };
+
+  it('D-038 (i): an agent caller is refused on a human-audience row at both doors', async () => {
+    const { refuseNonAgentWorkAtDoor, NOT_AGENT_WORK } = await import('./agent-work-door-gate');
+    const s = humanSeed();
+    for (const door of ['work_items:set_state', 'work_items:complete'] as const) {
+      const r = await refuseNonAgentWorkAtDoor(door, s.id, H, PROBE_CTX);
+      expect(r?.error, `${door} ${label(s.id)}`).toBe(NOT_AGENT_WORK);
+      expect(r?.audience).toBe('human');
+    }
+  });
+
+  it('D-038 (iii): an agent carrying spoofed UI markers is still refused, at the gate and through the real handler', async () => {
+    const { refuseNonAgentWorkAtDoor, NOT_AGENT_WORK, isOwnerUiCaller } = await import('./agent-work-door-gate');
+    const { classifyCallOrigin, CALL_ORIGIN_HEADER } = await import('../telemetry-call-origin');
+    const s = humanSeed();
+    const loopback = (OWNER_UI_CTX as { principal: unknown }).principal;
+    const spoofs: Record<string, unknown> = {
+      // An su bearer that also claims the palette spawn id and the loopback principal.
+      'superuser+palette': { isSuperuser: true, uiClientId: 'pui-1', spawnId: 'palette', principal: loopback },
+      // A caller-supplied uiClientId and a DECLARED ui origin header, without the palette spawn id.
+      'declared-ui-origin': {
+        isSuperuser: false,
+        uiClientId: 'pui-1',
+        spawnId: 'mcp-7f3a',
+        principal: loopback,
+        requestOrigin: { headers: { [CALL_ORIGIN_HEADER]: 'ui' } },
+      },
+      // The palette spawn id on an agent principal.
+      'palette-on-agent-principal': {
+        isSuperuser: false,
+        spawnId: 'palette',
+        principal: { kind: 'agent', slug: 'su-spoof', authMethod: 'bearer' },
+      },
+    };
+    // Calibration: the telemetry classifier DOES call the declared header 'ui', which is exactly
+    // why the gate must not key on it.
+    expect(classifyCallOrigin({ requestOrigin: { headers: { [CALL_ORIGIN_HEADER]: 'ui' } }, spawnId: 'mcp-7f3a' }).origin).toBe('ui');
+    // Positive control: the real bridge identity IS recognised, so the refusals below are not vacuous.
+    expect(isOwnerUiCaller(OWNER_UI_CTX)).toBe(true);
+    for (const [name, ctx] of Object.entries(spoofs)) {
+      expect(isOwnerUiCaller(ctx as never), name).toBe(false);
+      const r = await refuseNonAgentWorkAtDoor('work_items:set_state', s.id, H, ctx as never);
+      expect(r?.error, name).toBe(NOT_AGENT_WORK);
+    }
+    // Argument-level spoof through the real handler: UI-looking args from an agent caller.
+    const setState = (await import('../agent-tools/work_items/set_state')).default;
+    const viaArgs = firstResult(
+      await setState.handler(
+        { id: s.id, state: 'dropped', completionRef: 'spoof', assumptions: 'none', harness: H, spawnId: 'palette', callerOrigin: 'ui', viaUi: true } as never,
+        PROBE_CTX,
+      ),
+    );
+    expect(viaArgs.error).toBe('not_agent_work');
+  });
+
+  it("D-038 (ii): the owner's UI identity is admitted on a human-audience row and the Queue close lands", async () => {
+    const { refuseNonAgentWorkAtDoor } = await import('./agent-work-door-gate');
+    const s = humanSeed();
+    for (const door of ['work_items:set_state', 'work_items:complete'] as const) {
+      expect(await refuseNonAgentWorkAtDoor(door, s.id, H, OWNER_UI_CTX), door).toBeNull();
+    }
+    // The exact closeWorkItem call (apps/operator/app/admin/plans/plans-api.ts) through the real handler.
+    const setState = (await import('../agent-tools/work_items/set_state')).default;
+    const out = firstResult(
+      await setState.handler(
+        { id: s.id, state: 'dropped', completionRef: 'owner closed from the Queue', assumptions: 'none', harness: H } as never,
+        OWNER_UI_CTX,
+      ),
+    );
+    expect(out.error, JSON.stringify(out).slice(0, 300)).not.toBe('not_agent_work');
+    const [row] = await db.sql<{ status: string }[]>`
+      SELECT status FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${s.id}`;
+    expect(row?.status, JSON.stringify(out).slice(0, 300)).toBe('dropped');
   });
 });

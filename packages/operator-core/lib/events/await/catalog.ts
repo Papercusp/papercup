@@ -677,6 +677,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
   },
   {
+    family: 'scorecard-grading-audit',
+    keyTemplate: 'scorecard:grading-audit:<id>',
+    params: [{ name: 'id', required: true, describe: 'the AUDITED scorecard id (not the audit card), e.g. EI-123' }],
+    describe:
+      "A scorecard's grading-integrity audit SETTLED (pending → passed|failed, or an explicit superseding correction). Payload carries `state` and `auditIssueId`, so you can branch on the verdict without re-reading. The audited card is terminal from the moment it was filed, so work-item:status:<id> never fires for this — park here after filing a vetting attestation or spec-adequacy card instead of re-polling scorecards:get.",
+    emitter:
+      'scorecard-emitted-events (packages/operator-core/lib/scorecard-emitted-events.ts) — fired from scorecards:emit when the filed grading-integrity card settles its subject via recordGradingAudit (EI-24852356444105284)',
+    exists: true,
+    replacesPoll: 'polling scorecards:get for gradingAudit.state',
+  },
+  {
     family: 'plan-acceptance-changed',
     keyTemplate: 'plan:acceptance:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the subject plan slug' }],

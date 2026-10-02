@@ -55,15 +55,14 @@ import '../flag-override-store-boot-effect';
 import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
 import { installFlagOverrideStore } from '../flag-override-store';
 import { ensureFlagChangeListener } from '../flag-change-listener';
-import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   resolveSpawnerSocketPath,
-  ownerPidFromSocketPath,
   reapOrphanedSpawnerSockets,
 } from './spawner-socket-path';
 import { execProcess, type ExecParams, type ExecResult } from './sidecar-exec-process';
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
+import { armSpawnerSidecarOrphanWatchdog } from './spawner-sidecar-orphan-watchdog';
 
 // JSON-RPC 2.0 response builders
 function rpcResult(result: unknown, id: number | string): object {
@@ -426,73 +425,6 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     unlinkSocket();
   });
 
-  armOrphanWatchdog(socketPath, shutdown);
+  armSpawnerSidecarOrphanWatchdog(socketPath, shutdown);
   return server;
-}
-
-/** How often to ask whether the host we serve is still alive. */
-export const ORPHAN_CHECK_INTERVAL_MS = 30_000;
-
-/**
- * Exit when the host this sidecar serves is gone (P-005, mechanism proved in D-011).
- *
- * A sidecar CANNOT rely on its spawner to stop it. Registration of the parent-side
- * shutdown hooks is per-call-site — `host-bootstrap` does it, `git-via-sidecar` and
- * the orchestrator runner do not — so every agent process that touched the sidecar
- * through those paths left one running forever. Measured: 49 of 50 live sidecars had
- * a dead owner, 37 of them stranded in closed terminal windows. And because the
- * socket is pid-keyed, an orphan is not a redundant spare — nothing can ever address
- * it again. It is a corpse holding RAM.
- *
- * So the guarantee is moved INTO the sidecar, where it holds for every caller —
- * including ones that never registered a hook, and including a host killed with
- * SIGKILL, which no parent-side handler can catch.
- *
- * ── why it asks about the OWNER pid, not its own parent ─────────────────────
- *
- * The obvious test — "did my ppid change?" — does not work here. The sidecar is the
- * tail of a `host → npm exec → sh -c → node` chain, so when the HOST dies the pid
- * that gets reparented is `npm`, several links up; this process keeps its `sh`
- * parent and notices nothing. (Measured on the 50 live instances: the `npm` links
- * carry ppid 1/systemd, the node processes do not.) The socket name is the only
- * durable record of the actual owner, which is why it is read here.
- *
- * Pid reuse can only make this MISS an orphan (a recycled pid reads as alive), never
- * kill a live sidecar — the safe direction, and the same fail-toward-not-acting rule
- * the scope classifier follows.
- */
-function armOrphanWatchdog(socketPath: string, shutdown: (reason: string) => void): void {
-  const ownerPid = ownerPidFromSocketPath(socketPath);
-  if (ownerPid === null) {
-    // An explicitly-configured socket path carries no owner — UNKNOWN, so do not
-    // arm. Guessing here would let a misconfigured path shut down a healthy sidecar.
-    console.log('[spawner-sidecar] orphan watchdog not armed (socket path names no owner pid)');
-    return;
-  }
-
-  managedSetInterval(
-    'spawner-sidecar-orphan-watchdog',
-    ORPHAN_CHECK_INTERVAL_MS,
-    () => {
-      if (pidAlive(ownerPid)) return;
-      console.warn(
-        `[spawner-sidecar] owner pid ${ownerPid} is gone — nothing can reach ${socketPath} again; exiting rather than leaking`,
-      );
-      shutdown('owner-gone');
-    },
-    // D-004: 'must-sample'. `pidAlive` is D-004's own worked example of a source with
-    // no publisher — the kernel emits no event when a NON-CHILD pid dies, so the only
-    // way to learn the owner is gone is to look.
-    { category: 'watchdog', classification: 'must-sample' },
-  );
-}
-
-/** `kill -0`: EPERM means it exists but is not ours, which is still ALIVE. */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
-  }
 }

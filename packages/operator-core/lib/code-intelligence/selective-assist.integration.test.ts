@@ -241,11 +241,14 @@ describe.skipIf(!AVAILABLE)('selective graph assist — live backend, real sourc
   );
 
   it(
-    'an AMBIGUOUS shared helper resolves to the existing route instead of guessing a definition',
+    'a same-name shared helper is disambiguated by the defining file, never by guessing a definition',
     async () => {
-      // getNextWorkItem has more than one definition in the live index, and the
-      // facade refuses to pick one (it has no file/uid disambiguator). The assist
-      // must therefore fall back to lsp — never confidently answer for the wrong one.
+      // getNextWorkItem has more than one definition in the live index (a test
+      // fixture mirror), so by name alone the facade refuses to pick one. The change
+      // intent carries the defining file, which the assist now forwards as
+      // `file_path` (WI-10005154) — so the lookup may resolve to the production
+      // symbol. If the index is stale/unavailable the assist must still fall back
+      // to lsp — never confidently answer for the wrong definition.
       const r = await runSelectiveAssist(
         {
           kind: 'change',

@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 1,
+    "fingerprint": "325a3240536eb81d70fc4fca6e7b8636db9f0b5e1e2dc3ae34fdb3b65f3faa31",
+    "requiredLayer": "live"
+  },
+  "recordedAt": "2026-10-02T08:27:23Z",
+  "status": "partial-evidence-qualified-acceptance-open",
+  "newTestRuns": [],
+  "ordinaryBaseline": {
+    "child": "WI-10005366",
+    "testRunId": 20499766,
+    "bindingId": 21377,
+    "recordedTestLayer": "integration",
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json",
+      "sha256": "02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694"
+    },
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-qualification-2026-10-02.json",
+      "sha256": "48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd"
+    },
+    "buildSha": "5689cb42afea859733423d0a361c20e79078f4fa",
+    "bundleSha256": "8a97736b596731b4acf603e37684396f33f0c51a598551ed1b201d2214fe14e8",
+    "coverage": "13 PID/startTicks-bound samples; three 2000 ms idle windows; 24 exact 128-row HTTP responses at concurrency 8; zero forced profiler/GC/queryObjects operations; host cleanup verified.",
+    "servingArtifactStable": false,
+    "fullTransitiveSourceCurrentness": "unknown",
+    "namedSourceCurrentness": "Seven named files match the recorded test-side SHA256 values. Six also match the selected serving checkout; the test file differs from that checkout, as explicitly recorded in R2 qualification.",
+    "sampleDefinitions": "PSS is smaps_rollup kernel kB converted to bytes. Heap, external and ArrayBuffer are Node/V8 counters; they do not form a disjoint additive partition of PSS.",
+    "unforcedIdleObservation": {
+      "interval": "idle-2-start to idle-2-end",
+      "pssBytes": [962311168, 675415040],
+      "heapUsedBytes": [567014528, 422440600],
+      "arrayBufferBytes": [72542031, 1115965],
+      "interpretation": "A bounded observation of counters decreasing during idle. No GC-cause, native-allocation, leak, or intervention-reduction conclusion follows."
+    },
+    "acceptance": "Supports the pinned private HTTP baseline only. Recorded integration layer does not fulfill the required live layer."
+  },
+  "sourceDispositions": [
+    {
+      "source": "Hard-expired cache roots",
+      "owner": "EI-24812912892068980",
+      "state": "verified-scoped-reduction",
+      "evidence": "docs/evidence/papercusp-oct1-p011-cache-root-shapes-r9-2026-10-01.json; docs/evidence/papercusp-oct1-p011-cache-resource-comparison-r10-2026-10-01.json",
+      "mechanism": "Cold entries stayed strongly reachable below LRU capacity after hard expiry. Ordinary reads now scan a bounded number of entries and delete hard-expired roots.",
+      "matchedResult": "Equivalent 1042-entry fixture: 438 hard-expired reachable entries become zero; 604 useful entries remain. Heap difference after diagnostic collection is 163653752 bytes. PSS did not decrease.",
+      "guard": "packages/operator-core/lib/cache-retention.performance.integration.test.ts; saved runs 20440084 and 20440113. The recurring control removes pruning without requiring historical Git objects.",
+      "falsifier": "Equivalent fixture retains any of the 438 expired roots after the bounded read sweep, loses one of the 604 useful entries, or changes returned values/invalidation/single-flight behavior.",
+      "limits": "Synthetic bodies and diagnostic GC establish root/heap reclamation, not production retained-byte totals, physical savings or production p95."
+    },
+    {
+      "source": "Closure compiler worker lifetime",
+      "owner": "WI-10005114",
+      "state": "verified-scoped-lifecycle-reduction",
+      "evidence": "docs/evidence/papercusp-oct1-p011-esbuild-comparison-r12-2026-10-01.json; docs/evidence/papercusp-oct1-p011-esbuild-fork-comparison-r14-2026-10-01.json; docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json",
+      "matchedResult": "Saved inline/fork fixture: native compiler idle PSS 140925 KiB versus fork caller 4791 KiB after owned worker exit. R24 independently observes the exercised HTTP caller and executable-identified compiler descendants, followed by cleanup.",
+      "guard": "Compiler and mutation-allowlist project suites; cleanup regression WI-10005185 has saved 77 passing tests with zero skips.",
+      "falsifier": "The exercised closure call returns before its owned worker/process group exits, retains executable-identified descendants, or kills an unrelated concurrent compiler.",
+      "limits": "Disposable-worker proof does not identify the original long-lived 4.2 GiB services or establish production memory recovery."
+    },
+    {
+      "source": "Historical long-lived esbuild services",
+      "owner": "EI-24815884898197408",
+      "state": "unresolved-attribution",
+      "evidence": "docs/evidence/papercusp-oct1-p011-passive-service-mapping-r11-2026-10-01.json",
+      "observation": "Historical four-service census totals about 4.2 GiB PSS. Three rechecked ancestors were live HTTP workers; the fourth exited before ancestry recheck. Orphan/leak findings are not established.",
+      "nextDistinguishingObservation": "Bind a future high-PSS native descendant to executable hash, PID/startTicks, live ancestry, actual invoking compiler path and equivalent completed-work/idle resource windows. Absence in a later census cannot establish recovery of the historical instance.",
+      "falsifier": "A supported non-defect lifetime disposition would be overturned by repeated post-completion retention in the same verified owner and workload. No such disposition is claimed here."
+    },
+    {
+      "source": "Historical PostgreSQL parse/DataRow allocations",
+      "owner": "WI-10004890",
+      "state": "unresolved-retainer-and-initiating-query",
+      "evidence": "docs/evidence/papercusp-oct1-memory-attribution-2026-10-01.json",
+      "observation": "Saved sampled allocation stacks locate the decoder; they do not identify the initiating query, unique retained bytes or owning root. Async stacks and bounded query-result diagnostic rings cannot reconstruct a missing historical initiating call.",
+      "relatedWork": "WI-10004929/P-013 is done: matched query-latency and invalidation-rate evidence, with response parity. Its recorded completion supplies no matched PSS/retainer attribution.",
+      "nextDistinguishingObservation": "Identify a current decoded-result owner, capture matched named-query workload and PSS/allocation windows, and compare owner reachability across equivalent completion/idle phases without mutating production profiling.",
+      "falsifier": "A bounded-query non-defect disposition would be overturned by reachable completed results accumulating under equivalent calls while useful-context cardinality stays constant. No universal non-defect disposition is claimed here."
+    },
+    {
+      "source": "Anonymous/native and cgroup remainder",
+      "owner": "WI-10004890",
+      "state": "unresolved-allocation-owner",
+      "evidence": "docs/evidence/papercusp-oct1-p011-passive-service-mapping-r11-2026-10-01.json; docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json",
+      "observation": "Anonymous mappings are not synonymous with native allocations. Cgroup memory includes file cache, kernel memory and descendants. Heap/external/ArrayBuffer counters overlap and cannot be subtracted from PSS to obtain a native total.",
+      "nextDistinguishingObservation": "Use allocation-owner evidence and a matched intervention, with unchanged useful workload and PID/startTicks identity, before attributing an anonymous/PSS remainder.",
+      "falsifier": "An allocator-fragmentation claim is rejected unless owner-specific allocation/free behavior distinguishes it from live data or code and shows the claimed PSS effect."
+    }
+  ],
+  "acceptanceGaps": [
+    "Required live layer and ambient/current-build acceptance remain open.",
+    "Historical compiler caller and remaining parser/native retained ownership remain unresolved.",
+    "Complete executed-source currentness is unknown; seven named hashes are a bounded qualification.",
+    "R8/R9 final comparison, independent acceptance and verified shipment remain open."
+  ],
+  "scope": "Evidence census and source qualification under existing P-011. No replay, new service, profiler mutation, cache clearing, service restart or live-gate operation."
+}

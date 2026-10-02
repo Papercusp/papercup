@@ -290,7 +290,8 @@ export default defineTool({
         // D-035 (WI-10005358): FIRST, before any arm/assumption/state write — a row that is not
         // agent work by category (a record, document, event or human-audience row) is refused
         // here exactly as the by-id claim refuses it (D-024). Typed, no agent-passable override.
-        const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:set_state', it.id, harness);
+        // ctx carries the server-derived caller identity: only the owner's UI is exempt (D-038).
+        const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:set_state', it.id, harness, ctx);
         if (notAgentWork) return notAgentWork;
         if (String(it.state).trim().toLowerCase() === 'blocked') {
           const current = await getWorkItem(it.id, harness);

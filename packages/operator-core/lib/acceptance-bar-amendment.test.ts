@@ -493,6 +493,59 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
   });
 
+  it('accepts a first-line reviewer pointer followed by verification notes', async () => {
+    const queries: Array<{ query: string; values: unknown[] }> = [];
+    let call = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ query: strings.join('?'), values });
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{
+            author_id: 'su-reviewer',
+            body: '\n  approve thread-post:456\n\nRecomputed the changed BAR hashes and confirmed they match the preview.',
+            approved_at: '2026-10-02T07:11:00.000Z',
+          }]
+        : [{ author_id: 'su-requester', body: JSON.stringify(RECEIPT) }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).resolves.toMatchObject({
+      approvalRef: 'thread-post:123',
+      approvedBy: 'su-reviewer',
+      approvedAt: '2026-10-02T07:11:00.000Z',
+    });
+    expect(queries).toHaveLength(2);
+    expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
+  });
+
+  it('refuses a later pointer to a different preview', async () => {
+    let calls = 0;
+    const sql = (() => {
+      calls += 1;
+      return Promise.resolve([{
+        author_id: 'su-reviewer',
+        body: 'approve thread-post:456\nVerified the hashes.\nFor a different rubric, approve thread-post:789.',
+        approved_at: '2026-10-02T07:11:00.000Z',
+      }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).rejects.toThrow('acceptance_bar_approval_ambiguous_preview_pointer');
+    expect(calls).toBe(1);
+  });
+
+  it('does not accept a reviewer pointer below preceding verification prose', async () => {
+    await expect(resolve('Verified the hashes first.\napprove thread-post:456')).rejects.toThrow(
+      /acceptance_bar_approval_unparseable/,
+    );
+  });
+
   it('resolves a reviewer pointer to one inline approval JSON line surrounded by preview prose', async () => {
     let call = 0;
     const preview = [

@@ -157,6 +157,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       disarmedWhileReachable: [],
       repairedWakeStarved: [],
       vetoedByWithheldFire: [],
+      vetoedByAwaitSuppression: [],
       disarmedUnaddressableHarness: [],
       vetoedByToolActivity: [],
       reArmedToolLiveParked: [],
@@ -1773,6 +1774,78 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
       expect(res.paused).toBe(0);
       expect(armWake).toHaveBeenCalledTimes(1);
       expect(rearm).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('await-suppression veto (WI-10005352)', () => {
+    // The measured 2026-10-02 shape (su-ce50c06d), shifted onto the live clock: a wake delivered
+    // at -53m, answered by a turn at -48m; the -42m fire suppressed on a blocking await and
+    // re-armed to resume in +7m. Fire-to-wake is 11m, inside the 30m floor, so this is NOT
+    // wake-starved and the withheld-fire veto above never sees it. computeTurnsStalled's
+    // frozen-gap branch condemns it because no fire has landed for a floor's worth of time.
+    const MIN = 60_000;
+    function suppressedShape(over: Partial<LoopStatus> = {}) {
+      const now = Date.now();
+      const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
+      return status({
+        ownerId: 'su-suppressed',
+        turnsStalled: true,
+        lastWakeAt: iso(-53 * MIN),
+        lastTurnAt: iso(-48 * MIN),
+        lastRealTurnAt: iso(-48 * MIN),
+        lastFiredAt: iso(-42 * MIN),
+        lastWithheldAt: iso(-42 * MIN + 1_000),
+        lastWithheldReason: 'await-blocking',
+        nextFireAt: iso(7 * MIN),
+        ...over,
+      });
+    }
+    async function sweep(s: LoopStatus) {
+      const sql = fakeSql([{ id: 'rt_suppressed', target_owner_id: 'su-suppressed' }]);
+      const getStatuses = vi.fn(async () => new Map([['su-suppressed', s]]));
+      const autoPause = vi.fn<AutoPauseFn>(async () => {});
+      const rearm = vi.fn<RearmFn>(async () => {});
+      const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const notify = vi.fn<NotifyFn>(async () => {});
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, rearm, armWake, probeReachability: reach(false), broadcast, notify },
+      );
+      return { res, autoPause, rearm };
+    }
+
+    it('refuses to disarm an owner whose last fire was await-suppressed with a resume still pending', async () => {
+      const { res, autoPause, rearm } = await sweep(suppressedShape());
+
+      expect(res.vetoedByAwaitSuppression).toEqual(['su-suppressed']);
+      expect(res.paused).toBe(0);
+      expect(autoPause).not.toHaveBeenCalled();
+      // Left alone: the suppression re-arm already owns next_fire_at.
+      expect(rearm).not.toHaveBeenCalled();
+    });
+
+    it('CONTROL — once the resume has passed with no fire or turn, the ordinary disarm applies', async () => {
+      const { res, autoPause } = await sweep(suppressedShape({ nextFireAt: new Date(Date.now() - MIN).toISOString() }));
+
+      expect(res.vetoedByAwaitSuppression).toEqual([]);
+      expect(res.paused).toBe(1);
+      expect(autoPause).toHaveBeenCalledTimes(1);
+    });
+
+    it('CONTROL — a newer fire past the withhold means the suppression is not the latest event', async () => {
+      const { res } = await sweep(
+        suppressedShape({ lastWithheldAt: new Date(Date.now() - 50 * MIN).toISOString() }),
+      );
+
+      expect(res.vetoedByAwaitSuppression).toEqual([]);
+      expect(res.paused).toBe(1);
+    });
+
+    it('CONTROL — a fire-gate withhold is not this veto (keyed on the await-blocking reason)', async () => {
+      const { res } = await sweep(suppressedShape({ lastWithheldReason: 'fire-gate' }));
+
+      expect(res.vetoedByAwaitSuppression).toEqual([]);
     });
   });
 });

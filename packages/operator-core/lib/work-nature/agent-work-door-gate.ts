@@ -17,10 +17,45 @@
  * that waiting or retrying cannot change. If a legitimate agent-door caller of non-agent
  * rows turns up, raise it to the plan leader before adding any bypass (D-035).
  *
+ * The ONE exemption (D-038, WI-10005369): the human owner acting through the desktop UI.
+ * The owner's Queue actions (plans-api.ts closeWorkItem / clearWorkItemOwnerGate) reach
+ * work_items:set_state through the palette bridge, and a human-audience row is exactly the
+ * row its owner acts on. The exemption keys ONLY on caller identity the SERVER derived
+ * ({@link isOwnerUiCaller}), never on a tool argument, a request header or `uiClientId`,
+ * all of which a caller can supply. Every agent caller is still refused.
+ *
  * Failure semantics: a read failure THROWS. The bulk runner turns it into a per-item
  * `ok:false`, so an outage never becomes a silent grant and never fabricates a refusal.
  */
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { getWorkItem, readNonAgentWorkCategory } from '../work-items';
+import { notAgentWorkDoorHint } from './not-agent-work-hint';
+
+/** The caller fields the gate reads. A narrow Pick so tests can build one without a full ctx. */
+export type AgentWorkDoorCaller = Pick<UnifiedToolContext, 'spawnId' | 'isSuperuser' | 'principal'>;
+
+/**
+ * True only for the human owner acting through the desktop UI: the palette bridge
+ * (`capabilities/invoke.ts` invokeServerCapability), which is the sole place that stamps
+ * `spawnId: 'palette'` and runs as the fixed `loopback` system principal with
+ * `authMethod: 'process-internal'` and no superuser bit. All three come from server code.
+ * The MCP transport mints its own random spawnId and sets `isSuperuser` for an su bearer, so
+ * an agent session cannot produce this shape through any argument.
+ *
+ * Deliberately NOT `classifyCallOrigin(...).origin === 'ui'`: that verdict honours a
+ * caller-DECLARED `ui` origin header, so it is spoofable by design (it is telemetry).
+ *
+ * Residual, disclosed: the palette route is loopback-only, so a local process that POSTs to
+ * /api/agent-mcp/run-tool directly gets the palette identity. That is the palette's own trust
+ * boundary for every operator tool it can run, not something this gate can narrow.
+ */
+export function isOwnerUiCaller(caller: AgentWorkDoorCaller | null | undefined): boolean {
+  if (!caller) return false;
+  if (caller.spawnId !== 'palette') return false;
+  if (caller.isSuperuser === true) return false;
+  const p = caller.principal;
+  return !!p && p.kind === 'system' && p.slug === 'loopback' && p.authMethod === 'process-internal';
+}
 
 export const NOT_AGENT_WORK = 'not_agent_work' as const;
 
@@ -46,12 +81,19 @@ export type NotAgentWorkRefusal = {
  * Returns the typed refusal when `id` resolves to a row that is not agent work by
  * category, else null. An absent row yields null: the door's own write path reports
  * not-found, so the gate does not invent a second spelling of that error.
+ *
+ * `caller` is the dispatch ctx (REQUIRED, so a door cannot forget to pass it and silently
+ * lose the owner exemption or, worse, gain one). Only {@link isOwnerUiCaller} admits.
  */
 export async function refuseNonAgentWorkAtDoor(
   door: AgentWorkDoor,
   id: string,
-  harness?: string | null,
+  harness: string | null | undefined,
+  caller: AgentWorkDoorCaller | null,
 ): Promise<NotAgentWorkRefusal | null> {
+  // D-038: the owner's own UI action on their own human-audience row. Checked before the
+  // read so the owner path costs nothing; it never reads anything the caller supplied.
+  if (isOwnerUiCaller(caller)) return null;
   const current = await getWorkItem(id, harness ?? undefined);
   if (!current) return null;
   // Scope the category read to the harness the row ACTUALLY resolved in: a bare WI-<n> id
@@ -67,10 +109,6 @@ export async function refuseNonAgentWorkAtDoor(
     door,
     nature: category.nature,
     audience: category.audience,
-    hint:
-      `This row is nature '${category.nature}'${category.audience ? `, audience '${category.audience}'` : ''}, ` +
-      "not agent work (nature 'work', audience 'agent'), so no agent may change its state or complete it " +
-      `through ${door} — the same rule that refuses it at the by-id claim. Do not retry. ` +
-      'A human-audience item is acted on by its owner; a record, document or event is data to read, not work.',
+    hint: notAgentWorkDoorHint(door, category.nature, category.audience),
   };
 }

@@ -252,11 +252,11 @@ export function buildAmendmentReviewBrief(
     JSON.stringify(input.preview.approval),
     '```',
     answerOn
-      ? `To approve, post exactly one line with ${commentCall}, body: approve ${input.previewPostRef}`
-      : `To approve, use consult:reply { conversation_id:'<this consult>', kind:'answer', body:'approve ${input.previewPostRef}', evidence:[...] }; the body must be exactly one line: approve ${input.previewPostRef}.`,
+      ? `To approve, use ${commentCall}, body: approve ${input.previewPostRef} on the first non-empty line. Add verification notes on later lines if useful; any later approval pointer must name the same preview.`
+      : `To approve, use consult:reply { conversation_id:'<this consult>', kind:'answer', body:'approve ${input.previewPostRef}', evidence:[...] }; the first non-empty body line must be exactly approve ${input.previewPostRef}. You may add verification notes on later lines, but any later approval pointer must name the same preview.`,
     answerOn
-      ? `That line is the signature: the apply guard takes its author and time from your post. If the change weakens a requirement or you cannot verify it, post the objection with that same ${commentCall} instead; any other text is not an approval. Post once, do not edit files or recruit anyone, then end your session.`
-      : `The typed reply is the signature: the apply guard takes its author and time from the post. Once the review is settled, call consult:close { conversation_id:'<this consult>', outcome:'answered', answer:'<concise review conclusion>', evidence:[...] }. consult:reply records the signed post; consult:close records the accepted answer. If the change weakens a requirement or you cannot verify it, reply with the evidence-backed objection and close it as answered; if you cannot answer here, consult:decline.`,
+      ? `That first non-empty line is the signature: the apply guard takes its author and time from your post. If the change weakens a requirement or you cannot verify it, post the objection with that same ${commentCall} instead. Post once, do not edit files or recruit anyone, then end your session.`
+      : `The first non-empty line is the signature: the apply guard takes its author and time from the post. Once the review is settled, call consult:close { conversation_id:'<this consult>', outcome:'answered', answer:'<concise review conclusion>', evidence:[...] }. consult:reply records the signed post; consult:close records the accepted answer. If the change weakens a requirement or you cannot verify it, reply with the evidence-backed objection and close it as answered; if you cannot answer here, consult:decline.`,
   ].join('\n');
 }
 

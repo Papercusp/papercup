@@ -518,6 +518,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/lib/schema-symbol-drift.mjs: the symbol-level judge that decides whether a regenerated libs/papercusp/libs/db schema voids a gate test proof. Its starts are synchronous `execFileSync` calls behind injectable `exec` seams. `gitReadAtSha` runs `git ls-tree` and `git show <sha>:<path>` reads, walking into submodule gitlinks, each bounded by a 30 s timeout, SIGKILL and a 64 MiB maxBuffer. `drizzleConstructionSmoke` runs one `node --import tsx -e` child (120 s timeout) that imports the two generated schema files and runs drizzle's eager relational-config construction, and the judge evaluates it at most once per run. Every call is awaited to exit and only returns text. Its one production caller is scripts/affected-tests.mjs (`gitSchemaDriftJudge`), which already runs inside the gate run or a pc-heavy test slot, so it adds no residency or queue of its own. Any read, git or smoke failure answers 'affected', the conservative verdict.",
   },
   {
+    path: "scripts/lib/tsc-service.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/tsc-service.mjs (WI-10005362): the scoped lint:tsc client of the shared typecheck service. Its only starts are in `tscServiceTemplateSocket`, reached only when PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE is set (hosted workspace hosts): two synchronous `spawnSync('systemctl', ['--user', 'start' | 'show', <unit>])` calls against the caller's own user manager, each bounded by a 15 s timeout and awaited to exit before the client continues. Nothing is detached and no queue is kept. `systemctl --user start` only makes the per-checkout socket unit listen; the typecheck server it may socket-activate runs in its own systemd unit under the MemoryHigh/MemoryMax limits written by customerTscServiceInstallLines (libs/generic/deployment-driver/src/workspace-host-bootstrap.ts), the same shape as the tower's papercup-tsc-service unit, so its residency is bounded by that cgroup rather than by this client. Any start or show failure returns an error and the caller falls back to its own compile.",
+  },
+  {
     path: "scripts/lib/targeted-task-reuse.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

@@ -337,8 +337,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief).toContain(JSON.stringify(baseInput.patch));
     expect(brief).toContain('R-1 (bar-meaning: falsifier)');
     expect(brief).toContain('Tighten the falsifier.');
-    // The apply resolver accepts exactly /^approve thread-post:(\d+)$/ on the reviewer's post.
-    expect(brief).toContain("To approve, use consult:reply { conversation_id:'<this consult>', kind:'answer', body:'approve thread-post:42', evidence:[...] }; the body must be exactly one line: approve thread-post:42.");
+    // The first non-empty reviewer line is the pointer; later verification prose is allowed.
+    expect(brief).toContain("the first non-empty body line must be exactly approve thread-post:42. You may add verification notes on later lines");
+    expect(brief).toContain('any later approval pointer must name the same preview.');
     expect(brief).toContain("Once the review is settled, call consult:close { conversation_id:'<this consult>', outcome:'answered', answer:'<concise review conclusion>', evidence:[...] }.");
     expect(brief).toContain('consult:reply records the signed post; consult:close records the accepted answer.');
     expect(brief).not.toContain('answer this consult');
@@ -496,7 +497,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
   it('the fresh brief asks for one work_items:comment on the preview work-item, not a consult answer', () => {
     const brief = buildAmendmentReviewBrief(input, answerOn);
     expect(brief.split('\n')).toContain(
-      "To approve, post exactly one line with work_items:comment { id:'WI-7', harness:'papercusp' }, body: approve thread-post:42",
+      "To approve, use work_items:comment { id:'WI-7', harness:'papercusp' }, body: approve thread-post:42 on the first non-empty line. Add verification notes on later lines if useful; any later approval pointer must name the same preview.",
     );
     expect(brief).not.toContain('answer this consult');
     // A judge cannot call rubrics:amend, so the fresh brief must not require it.

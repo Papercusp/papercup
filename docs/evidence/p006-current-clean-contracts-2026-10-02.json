@@ -1,0 +1,74 @@
+{
+  "workItem": "WI-1074216",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "recordedAt": "2026-10-02T08:21:56.155942+00:00",
+  "scope": "Clean committed positive unit/real-PG tests only. Failure controls/bindings/governing acceptance/rubric regrade/shipment remain open.",
+  "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+  "cloneRoot": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+  "cloneGitStatusEmpty": true,
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:as-committed -- test:file --ref=920030a3b939abd0c2b828fdb1ade3e291fb1071 --any --keep -- packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts",
+  "result": {
+    "files": 3,
+    "pass": 41,
+    "fail": 0,
+    "skip": 0,
+    "exit": 0
+  },
+  "terminalLedger": {
+    "packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts": 20499866,
+    "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts": 20500782,
+    "packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts": 20500781
+  },
+  "ledgerReadback": "All three exact rows pass, worktreeDirty=false, isScratchConfig=false, source=local, harness=papercusp, root=retained clone, commit=pin. Read via testing:runs in this continuation.",
+  "sourceBindings": [
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "sha256": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts",
+      "sha256": "ea048ad71b63631b86a7fce8a73a2cf3f0f7b151fdb371075e7f6867cf9eb652",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts",
+      "sha256": "89f9b52932c10f37b5da6555712204922ad9ad647c7b0b54a554cd7576b6c424",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure-observations.ts",
+      "sha256": "23d49753b6b3525a2c975f0ab3e0313b66e82a09fdcf9509ac58101a778ec0cb",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure-observations.integration.test.ts",
+      "sha256": "9d7961a61b2f7bbeb7169f4fcf68206305d5d3a61aed5cf4b0d35d519f1700ac",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    },
+    {
+      "path": "packages/operator-core/lib/goals/plan-closure.ts",
+      "sha256": "6931558021380d44b75909a1834ca5775e16433d4f585895415795d50a372781",
+      "committedCloneMatchesPin": true,
+      "canonicalCurrentMatchesPin": true
+    }
+  ],
+  "log": "/tmp/p006-current-clean-contracts-920030a3.log",
+  "logSha256": "cde5d4b08b32dab5240754b501a339339d2e6870f4095b39711c85c8d5979b16",
+  "criteria": "Read current BLOCKER@3 integration/unit dependency-blocker,draft-refusal,eligible-control and TERMINAL@3 integration/unit satisfied-closure,shipped-without-closure. Governing read before new tests failed solelyfreshness; no accepted criteria lowered.",
+  "previous29Pass": {
+    "unitIds": [
+      20488692,
+      20488693
+    ],
+    "dirty": true,
+    "logHashVerified": true,
+    "sourceDrift": "goal-launch-settings changed; no current acceptance reuse"
+  },
+  "next": "At fresh context verify live claims/current writer/test hashes. Run maintained lifecycle negative controls on the clean pinned subject under unchanged oracle, bind fresh positive unit/integration plus current negatives/scenarios through existing evidence surface, re-read selected then governing adequacy before any obsolete binding disposition. Independent rubric ratification, real-goal card reuse and other clauses/shipment remain open."
+}

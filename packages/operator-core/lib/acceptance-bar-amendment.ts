@@ -280,9 +280,18 @@ export async function resolveAcceptanceBarApproval(
   // reviewer can then sign that immutable workspace-local post with a short pointer,
   // avoiding a second manual transcription of dozens of SHA characters. The signer
   // and approval time still come exclusively from the reviewer's post above.
-  const previewPointer = /^approve thread-post:([1-9][0-9]*)$/.exec(post.body.trim());
+  const reviewerLines = post.body.split(/\r?\n/);
+  const firstNonEmptyLine = reviewerLines.findIndex((line) => line.trim().length > 0);
+  const firstLine = firstNonEmptyLine >= 0 ? reviewerLines[firstNonEmptyLine]!.trim() : '';
+  const previewPointer = /^approve thread-post:([1-9][0-9]*)$/.exec(firstLine);
   let receiptBody = post.body;
   if (previewPointer) {
+    const laterPointerIds = reviewerLines.slice(firstNonEmptyLine + 1).flatMap((line) =>
+      [...line.matchAll(/\bapprove thread-post:([1-9][0-9]*)\b/g)].map((match) => match[1]!),
+    );
+    if (laterPointerIds.some((id) => id !== previewPointer[1])) {
+      throw new Error('acceptance_bar_approval_ambiguous_preview_pointer');
+    }
     if (previewPointer[1] === match[1]) {
       throw new Error('acceptance_bar_approval_preview_self_reference');
     }
@@ -296,7 +305,7 @@ export async function resolveAcceptanceBarApproval(
     receiptBody = previewPost.body;
   }
   let body: unknown;
-  try { body = JSON.parse(approvalReceiptJsonSource(receiptBody)); } catch { throw new Error("acceptance_bar_approval_unparseable: the approval post must contain JSON or exactly `approve thread-post:<preview-post-id>` pointing to the requester's preview."); }
+  try { body = JSON.parse(approvalReceiptJsonSource(receiptBody)); } catch { throw new Error("acceptance_bar_approval_unparseable: the approval post must contain JSON or start with `approve thread-post:<preview-post-id>` as its first non-empty line, with any explanation following it."); }
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;

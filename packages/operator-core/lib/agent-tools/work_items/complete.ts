@@ -3126,7 +3126,8 @@ async function completeOne(
   // D-035 (WI-10005358): before ANY completion record, evidence or state write — a row that is
   // not agent work by category (record, document, event, human-audience) is refused exactly as
   // the by-id claim refuses it (D-024). Typed, no agent-passable override.
-  const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:complete', it.id, it.harness);
+  // ctx carries the server-derived caller identity: only the owner's UI is exempt (D-038).
+  const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:complete', it.id, it.harness, ctx);
   if (notAgentWork) return notAgentWork;
   // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
   // creation (still-under-investigation federation/replay-provenance defect). Trusting it
