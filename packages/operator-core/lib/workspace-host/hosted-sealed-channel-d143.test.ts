@@ -45,15 +45,27 @@ class CustomerHostAdmission {
     this.authorized.set(publicKeyBase64, this.generation);
   };
 
+  bumpGeneration = async (publicKeyBase64: string): Promise<number> => {
+    if (!this.authorized.has(publicKeyBase64)) throw new Error('client key is not authorized on the customer host');
+    this.generation += 1;
+    this.authorized.set(publicKeyBase64, this.generation);
+    for (const channel of this.live.get(publicKeyBase64) ?? []) channel.close();
+    this.live.delete(publicKeyBase64);
+    return this.generation;
+  };
+
   revoke = async (publicKeyBase64: string): Promise<void> => {
     this.authorized.delete(publicKeyBase64);
     for (const channel of this.live.get(publicKeyBase64) ?? []) channel.close();
     this.live.delete(publicKeyBase64);
   };
 
-  async connect(claimedPublicKeyBase64: string, clientKey: NoiseKeyPair) {
+  async connect(claimedPublicKeyBase64: string, clientKey: NoiseKeyPair, claimedGeneration?: number) {
     const generation = this.authorized.get(claimedPublicKeyBase64);
     if (!generation) throw new Error('client key is not authorized on the customer host');
+    if (claimedGeneration !== undefined && claimedGeneration !== generation) {
+      throw new Error(`stale connector generation ${claimedGeneration}; current generation is ${generation}`);
+    }
 
     const clientFrames: Record<string, unknown>[] = [];
     const hostFrames: Record<string, unknown>[] = [];
@@ -110,7 +122,7 @@ afterEach(() => {
   else process.env.PAPERCUSP_DESKTOP = previousDesktop;
 });
 
-describe('BYOC sealed-channel client lifecycle (P-007 / D-143)', () => {
+describe('BYOC sealed-channel D-143 lifecycle (P-007)', () => {
   it('connects, reconnects, advances generation, revokes live and future old-key sessions, and refuses key substitution', async () => {
     const admission = new CustomerHostAdmission();
     const first = await createByocClientKey(scope);
@@ -133,6 +145,18 @@ describe('BYOC sealed-channel client lifecycle (P-007 / D-143)', () => {
         { type: 'file.read', path: '/workspace/reconnected.txt' },
       ]);
 
+      expect(await admission.bumpGeneration(first.publicKeyBase64)).toBe(2);
+      await expect(reconnect.client.send({ type: 'pty.input', data: 'stale-live-generation' }))
+        .rejects.toThrow(/closed/);
+      await expect(admission.connect(first.publicKeyBase64, firstKey, 1))
+        .rejects.toThrow(/stale connector generation/);
+
+      const afterBump = await admission.connect(first.publicKeyBase64, firstKey);
+      expect(afterBump.generation).toBe(2);
+      await afterBump.client.send({ type: 'pty.input', data: 'current-generation' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(afterBump.hostFrames).toEqual([{ type: 'pty.input', data: 'current-generation' }]);
+
       rotated = await rotateByocClientKey(
         scope,
         first.publicKeyBase64,
@@ -140,13 +164,13 @@ describe('BYOC sealed-channel client lifecycle (P-007 / D-143)', () => {
         admission.revoke,
       );
       expect(rotated.status).toBe('complete');
-      await expect(reconnect.client.send({ type: 'pty.input', data: 'after-revocation' }))
+      await expect(afterBump.client.send({ type: 'pty.input', data: 'after-revocation' }))
         .rejects.toThrow(/closed/);
     });
 
     await withByocClientKey(scope, rotated.publicKeyBase64, async (replacementKey) => {
       const current = await admission.connect(rotated.publicKeyBase64, replacementKey);
-      expect(current.generation).toBe(2);
+      expect(current.generation).toBe(3);
       await current.client.send({ type: 'http.request', requestId: 'generation-2' });
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(current.hostFrames).toEqual([
