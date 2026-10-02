@@ -36,7 +36,15 @@ describe('GN-BENCH-PROVENANCE on the real committed four-arm evidence', () => {
     expect(v.residue).toEqual(recorded.residue);
     expect(v.reasons).toEqual(recorded.reasons);
     expect(v.sourceParity).toEqual(recorded.sourceParity);
-    // the installed arm ran on a dirty tree — that disclosure must survive, not be normalised away
+    // the clean installed-arm rerun (WI-10005374) put all four arms on one pristine tree
+    expect(v.sourceParity.same).toBe(true);
+    expect(v.sourceParity.fingerprints['gitnexus-installed']).not.toMatch(/\+dirty$/);
+  });
+
+  it('a dirty-tree installed arm is still disclosed as a parity break, not normalised away', () => {
+    const reports = loadReports().map((r): ArmReport =>
+      r.armId === 'gitnexus-installed' ? { ...r, treeFingerprint: `${r.treeFingerprint}+dirty` } : r);
+    const { v } = verdictOf(reports);
     expect(v.sourceParity.same).toBe(false);
     expect(v.sourceParity.fingerprints['gitnexus-installed']).toMatch(/\+dirty$/);
   });
