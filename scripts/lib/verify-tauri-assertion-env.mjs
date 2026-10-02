@@ -29,13 +29,28 @@ if (typeof manifest.assertionSha256 !== 'string' ||
   fail('assertion bytes disagree with manifest assertionSha256');
 }
 
+// Heredoc bodies belong to the command they feed, not to the shell's own
+// environment. In particular, a Python `D=Path(...)` must not replace a
+// preceding shell `D=/...` used by a manifest binding.
 const assignments = new Map();
+const heredocs = [];
 for (const line of source.split(/\r?\n/)) {
+  if (heredocs.length > 0) {
+    const next = heredocs[0];
+    if ((next.stripTabs ? line.replace(/^\t+/, '') : line) === next.delimiter) {
+      heredocs.shift();
+    }
+    continue;
+  }
   const match = line.match(/^(?:export[ \t]+)?([A-Z][A-Z0-9_]*)=(.*)$/);
-  if (!match) continue;
-  const [, key, value] = match;
-  if (assignments.has(key) && Object.hasOwn(expected, key)) fail(`${key} is assigned more than once`);
-  assignments.set(key, value);
+  if (match) {
+    const [, key, value] = match;
+    if (assignments.has(key) && Object.hasOwn(expected, key)) fail(`${key} is assigned more than once`);
+    assignments.set(key, value);
+  }
+  for (const opener of line.matchAll(/(?:^|[ \t])<<(-?)(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/g)) {
+    heredocs.push({ stripTabs: opener[1] === '-', delimiter: opener[2] ?? opener[3] ?? opener[4] });
+  }
 }
 
 const visiting = new Set();

@@ -78,7 +78,7 @@ function runAssertionPreflightOnly(assertionSource: string) {
   });
 }
 
-function runManifestPreflight(actual: string, claimed: string, claimedRoot?: string) {
+function runManifestPreflight(actual: string, claimed: string, claimedRoot?: string, heredocLines: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-env-manifest.'));
   const assertion = join(dir, 'assertion.sh');
   const manifest = join(dir, 'manifest.json');
@@ -87,6 +87,7 @@ function runManifestPreflight(actual: string, claimed: string, claimedRoot?: str
     `# VERIFY_TAURI_ASSERTION_ENV_MANIFEST=${manifest}`,
     `D=${dir}`,
     'export GST_DEBUG_FILE="$D/' + actual + '"',
+    ...heredocLines,
     '',
   ].join('\n');
   writeFileSync(assertion, source);
@@ -240,5 +241,27 @@ describe('WI-10002829 — assertion environment manifest preflight', () => {
     const result = runManifestPreflight('current/gst.%p.log', 'current/gst.%p.log');
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('VERIFY_TAURI_ASSERTION_ENV_OK 1 binding(s)');
+  });
+
+  it('ignores Python assignments inside a quoted heredoc', () => {
+    const result = runManifestPreflight(
+      'current/gst.%p.log',
+      'current/gst.%p.log',
+      undefined,
+      ["python3 - <<'PY'", "D=Path('not a shell assignment')", 'PY'],
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('VERIFY_TAURI_ASSERTION_ENV_OK 1 binding(s)');
+  });
+
+  it('does not let a heredoc spoof a manifest export', () => {
+    const result = runManifestPreflight(
+      'old/gst.%p.log',
+      'current/gst.%p.log',
+      undefined,
+      ["python3 - <<'PY'", 'export GST_DEBUG_FILE="$D/current/gst.%p.log"', 'PY'],
+    );
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('GST_DEBUG_FILE differs from manifest diagnosticEnv');
   });
 });
