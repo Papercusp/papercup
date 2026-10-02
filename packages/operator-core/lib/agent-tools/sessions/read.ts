@@ -115,7 +115,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. session:'self' reads YOUR OWN current session (pre-compaction turns included). Search-only `query` and `mode` arguments belong to sessions:search and are rejected here. " +
+    "Read a bounded window from indexed session transcripts. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. `session:'self'` spans YOUR OWN respawn chain, including predecessor turns. A self window may contain multiple native sessions: `session_id` is null, `session_ids` lists the represented sessions, and each turn's `ref` identifies its source. Pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. Search-only `query` and `mode` belong to sessions:search. " +
     `Turn text is returned in ${SESSION_TURN_TEXT_CHUNK_CAP}-character chunks by default; clipped turns carry text_truncated, text_full_chars, and a readMore continuation (text_offset/text_limit). A turn at the index cap also reports source_completeness (see returns). ` +
     "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {
@@ -128,7 +128,7 @@ export default defineTool({
     // but return shapes were not, so the only way to learn the shape was to call
     // once and introspect — one guaranteed wasted round-trip per tool, per agent.
     returns:
-      '{ ok, session_id, turn_count (SIZE OF THIS WINDOW, not the session total), turns: [{ ref, turn_idx, speaker, owner?, ts, text, text_truncated?, text_full_chars?, source_completeness?, text_offset?, readMore? }] } — clipped text carries a directly runnable readMore pointer for the next character chunk; each ref is reusable with sessions:read. Capped index rows report source_completeness as complete after archive recovery or unknown when recovery is unavailable/untrusted. Turns are ALWAYS returned oldest→newest.',
+      '{ ok, session_id (null when a self window spans multiple native sessions), session_ids? (sessions represented in a self window), note?, turn_count (SIZE OF THIS WINDOW, not the session total), turns: [{ ref, turn_idx, speaker, owner?, ts, text, text_truncated?, text_full_chars?, source_completeness?, text_offset?, readMore? }] } — each turn ref identifies its source session; clipped text carries a directly runnable readMore pointer for the next character chunk. Capped index rows report source_completeness as complete after archive recovery or unknown when recovery is unavailable/untrusted. Turns are ALWAYS returned oldest→newest.',
     seeAlso: ['sessions:search', 'sessions:list', 'sessions:digest'],
   },
   requirePrincipal: false,

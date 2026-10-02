@@ -100,6 +100,15 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     );
   });
 
+  it('documents the multi-session self-window contract', () => {
+    expect(projected.description).toContain("`session:'self'` spans YOUR OWN respawn chain");
+    expect(projected.description).toContain(
+      'A self window may contain multiple native sessions: `session_id` is null',
+    );
+    expect(projected.description).toContain('`session_ids` lists the represented sessions');
+    expect(projected.description).toContain("each turn's `ref` identifies its source");
+  });
+
   it('advertises an object result and preserves all rows in structuredContent', async () => {
     const rows = Array.from({ length: 33 }, (_, turn_idx) => ({
       source_kind: 'codex',
