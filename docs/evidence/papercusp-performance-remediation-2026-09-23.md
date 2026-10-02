@@ -14,18 +14,38 @@ index, verifier and assertion. Exact source and log fingerprints recover the
 independent file identity, initially absent private roots and assertion syntax
 checks passed before launch. The maintained desktop-native runtime route was read.
 
-One changed diagnostic is running as managed task `0muqithvq6lk7ndmy4e`.
-Its detector retains previously owned native lifetimes after discovery loss;
-the paired callback and attempt-scoped popup driver remain in place. No native
-result is claimed at this boundary. Media discovery restrictions, observer work,
-distinct clocks, changing private API and unknown original whole-SPA graph
-remain limits. P-007 cause, product repair, R-7 and its frozen cold/warm cohort
-remain open; P-006 and P-008 acceptance remain separate.
+The one changed diagnostic completed **FAIL**, with verifier and suite exit 1.
+Popup was **1937 ms** against 1500 ms, FCP was 1618 ms, and actual footer LCP
+was **5341 ms** against 4000 ms. The footer's paired requests were queued at
+4769 ms, its frame callback arrived at 4820 ms, its geometry read completed at
+4954 ms, and its timer arrived at 5006 ms. The first read occupied 134 ms;
+without an observer-off control this is a measured observer cost, not proof of
+the product's initiating cause. Popup request/headers/response/content/preview
+phases were 40/1289/1333/1355/1921 ms cumulatively from the click.
 
-Exact preparation fingerprints and failure-class audit:
-`r170PreparationFire149` in `p007-native-source-output-audit-2026-10-01.json`.
-Runtime artifacts are under `$HOME/.papercusp/perf/p007-native-current/r170-*`;
-recover the existing managed task before considering any new launch.
+The v5 native trace retained one renderer zombie observation and then missing
+procfs entries during suite completion. It preserved exact earlier lifetimes,
+unknown signal/exit status, and `not-reaped` only at the zombie read. There was
+no unexpected WebDriver session loss or popup timeout in this run. This proves
+native detector adoption; r169's loss cause and native timeout-path adoption
+remain unverified. Five owned PIDs and the source snapshot were absent before
+cleanup. Exact tmpfs identity and retained logs matched. Only the owned profiles,
+HOME, tmpfs logs and matched stale IPC socket/per-port advert were removed;
+the peer's default advert was preserved. Port 33700 refused at that check.
+
+The maintained writer uses one shared `results/measures.jsonl`, and its reset
+removes that same file. A dated 25-row snapshot matches the emitted measurements;
+it cannot establish isolation between concurrent named runs. Verify that class
+with controlled launchers before the acceptance cohort and extend the existing
+writer if needed. Media restrictions, observer work, distinct clocks, changing
+private API and unknown original whole-SPA graph remain limits. P-007 cause,
+product repair, R-7 and its frozen cold/warm cohort remain open; P-006 and P-008
+acceptance remain separate. No unchanged native replay is authorized.
+
+Exact preparation and terminal fingerprints, raw references and failure-class
+audit are under `r170PreparationFire149` and `r170LifecycleTerminalFire149` in
+`p007-native-source-output-audit-2026-10-01.json`. Preserved runtime artifacts
+are under `$HOME/.papercusp/perf/p007-native-current/r170-*`.
 
 ## Native disappearance detector — 2026-10-02, Fire147
 

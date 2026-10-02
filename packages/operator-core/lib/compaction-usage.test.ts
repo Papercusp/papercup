@@ -81,7 +81,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
       });
     writeFileSync(rollout, `${event(120_000, 9_000_000)}\n${event(156_981, 126_734_214)}\n`);
 
-    expect(codexContextSnapshotFromRollout(rollout)).toEqual({
+    expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
       tokens: 156_981,
       modelContextWindow: 258_400,
     });
@@ -153,7 +153,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     });
   });
 
-  it('D-007 reads the runtime-capped GPT-5.6 effective window from rollout telemetry', () => {
+  it('D-007 reads the runtime-capped GPT-5.6 effective window from rollout telemetry', async () => {
     writeFileSync(
       rollout,
       JSON.stringify({
@@ -167,12 +167,12 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
         },
       }) + '\n',
     );
-    const snapshot = codexContextSnapshotFromRollout(rollout);
+    const snapshot = await codexContextSnapshotFromRollout(rollout);
     expect(snapshot).toEqual({ tokens: 12_345, modelContextWindow: 828_400 });
     expect(snapshot!.modelContextWindow).toBeGreaterThan(400_000);
   });
 
-  it('skips a trailing rate-limit-only event and falls back to input+output when total_tokens is absent', () => {
+  it('skips a trailing rate-limit-only event and falls back to input+output when total_tokens is absent', async () => {
     writeFileSync(
       rollout,
       [

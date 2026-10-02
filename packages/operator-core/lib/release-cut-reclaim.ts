@@ -37,10 +37,11 @@
  * `git worktree prune` does for that one entry, without touching others), then deletes.
  * Each removal is appended to the shared deletion-audit.tsv the release scripts write.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 
 export const RETENTION_SCHEMA = 'papercusp-release-retention/v1';
 export const RECLAIM_DELETER = 'release:cut-reclaim';
@@ -394,16 +395,23 @@ export function resolveReclaimTargets(
 
 // ---------------------------------------------------------------- host probes (effectful)
 
-function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): string {
-  return String(
-    execFileSync('git', ['-C', cwd, ...args], {
-      encoding: 'utf8',
-      maxBuffer: GIT_MAX_BUFFER,
-      timeout,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }),
-  );
+const execFileAsync = promisify(execFile);
+
+/**
+ * Every git call in this module runs inside the operator host (release:cut), so it must
+ * never spawn synchronously: a sync spawn freezes the host's main event loop for the child's
+ * whole lifetime. On 2026-10-02 05:30Z the per-tree + per-submodule inspectAuthoredWork pass
+ * held :3170's loop for 24s and the event-loop sentinel SIGKILLed the host (WI-10005315,
+ * owner directive #1155). Guarded by release-cut-reclaim.test.ts ("never blocks the event loop").
+ */
+async function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<string> {
+  const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    maxBuffer: GIT_MAX_BUFFER,
+    timeout,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+  });
+  return String(stdout);
 }
 
 const errText = (e: unknown) => (e instanceof Error ? e.message.split('\n')[0] ?? e.message : String(e)).slice(0, 160);
@@ -547,11 +555,14 @@ export interface HolderTarget {
  * root PID namespace (a nested namespace sees only its own processes — a confident false
  * idle, the trap measured on this box, memory 41104d77).
  */
-export function scanProcHolders(targets: HolderTarget[], procRoot = '/proc'): HolderScan {
+export async function scanProcHolders(targets: HolderTarget[], procRoot = '/proc'): Promise<HolderScan> {
+  // Async on purpose: this walks every fd of every process (tens of thousands of readlinks
+  // on this box). A synchronous /proc walk on the operator main thread measured ~600ms per
+  // pass (WI-10005283); awaiting per process lets the event loop run between them.
   const holders = new Map<string, string[]>();
   let nsNote = '';
   try {
-    const status = fs.readFileSync(path.join(procRoot, 'self', 'status'), 'utf8');
+    const status = await fs.promises.readFile(path.join(procRoot, 'self', 'status'), 'utf8');
     const nspid = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/) ?? [];
     if (nspid.length > 1) nsNote = `nested-pid-namespace(${nspid.join('/')})`;
   } catch (e) {
@@ -561,7 +572,7 @@ export function scanProcHolders(targets: HolderTarget[], procRoot = '/proc'): Ho
   const all: HolderTarget[] = [...targets, { key: '\0control', prefixes: [control] }];
   let pids: string[] = [];
   try {
-    pids = fs.readdirSync(procRoot).filter((n) => /^\d+$/.test(n));
+    pids = (await fs.promises.readdir(procRoot)).filter((n) => /^\d+$/.test(n));
   } catch (e) {
     return { verified: false, reason: `proc-unreadable:${errText(e)}`, holders };
   }
@@ -570,17 +581,15 @@ export function scanProcHolders(targets: HolderTarget[], procRoot = '/proc'): Ho
     const base = path.join(procRoot, pid);
     const links = ['cwd', 'root', 'exe'].map((l) => path.join(base, l));
     try {
-      for (const fd of fs.readdirSync(path.join(base, 'fd'))) links.push(path.join(base, 'fd', fd));
+      for (const fd of await fs.promises.readdir(path.join(base, 'fd'))) links.push(path.join(base, 'fd', fd));
     } catch {
       // another user's process or one that just exited — its cwd/root/exe are still tried
     }
-    for (const link of links) {
-      let target: string;
-      try {
-        target = fs.readlinkSync(link);
-      } catch {
-        continue;
-      }
+    const targetsOfLinks = await Promise.all(links.map((l) => fs.promises.readlink(l).catch(() => null)));
+    for (let i = 0; i < links.length; i++) {
+      const link = links[i] as string;
+      const target = targetsOfLinks[i];
+      if (target == null) continue;
       for (const t of all) {
         if (!t.prefixes.some((p) => target === p || target.startsWith(`${p}/`))) continue;
         if (t.key === '\0control') {
