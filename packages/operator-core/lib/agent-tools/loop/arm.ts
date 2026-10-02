@@ -60,6 +60,7 @@ import {
 } from '../../external-condition-reachability';
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
+import { attestLoopControlConsumerView } from '../coordination/control-anchor-consumer-view';
 import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
 import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
@@ -1552,6 +1553,14 @@ export default defineTool({
       actorId: identity.ownerId,
       source: 'loop:arm',
     });
+    // WI-10005199 (EI-23770243810745552): the `routines` loop row is the WRITE target, but the
+    // wake-source verdict reads the projected `control_state->loop`, and that refresh is
+    // fail-soft (null on timeout while the arm stays committed). Attest the read the consumer
+    // will actually do, against what materializeLoop PERSISTED. Exception-only.
+    const controlConsumerView = attestLoopControlConsumerView(
+      { active: true, intervalSec: loop.intervalSec ?? intervalSec },
+      control,
+    );
 
     // WI-655 — wake-reachability is INTRINSIC to arming a loop, not a separate step.
     // (1) ARM the standing inbox-wake watch right here, so a loop is wakeable the instant
@@ -1707,6 +1716,7 @@ export default defineTool({
               workItem: claimedWorkItem,
               controlGeneration: control?.generation ?? null,
             },
+            ...(controlConsumerView.divergedFromWrite ? { controlConsumerView } : {}),
             workItemClaim,
             reachability: reachabilityOut,
             unboundedWarmLoopWarning,
