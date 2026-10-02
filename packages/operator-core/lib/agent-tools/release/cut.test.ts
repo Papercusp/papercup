@@ -957,6 +957,16 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(tool.args.safeParse({ ...runArgs, seedless: true }).success).toBe(true);
     expect(tool.args.safeParse({ ...runArgs, fullHistory: true }).success).toBe(true);
   });
+  it('binds the whole-cut task, detached tests, and preview to the same caller harness', async () => {
+    const ctx = { role: 'operator', harnessSlug: 'customer-app' } as never;
+    const preview = body(await tool.handler(runArgs as never, ctx));
+    expect(preview.wouldRun).toContain("PAPERCUSP_TEST_RUN_HARNESS='customer-app'");
+    await tool.handler({ ...runArgs, confirm: true } as never, ctx);
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'customer-app' }));
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: expect.objectContaining({ harnessSlug: 'customer-app' }),
+    }));
+  });
   it('attributes the whole cut to the explicit parent despite a stale subtask goal', async () => {
     provenanceM.mockResolvedValue({
       launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: 'WI-parent', planSlug: null, goalRef: 'WI-subtask',
@@ -1335,6 +1345,16 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
       explicitWorkItemId: 'WI-parent', requireExplicitForMultipleHeldItems: true,
     });
     expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-parent' }));
+  });
+  it('binds a leg task and its detached test proof to the caller harness', async () => {
+    const ctx = { role: 'operator', harnessSlug: 'customer-app' } as never;
+    const preview = body(await tool.handler(legArgs as never, ctx));
+    expect(preview.wouldRun).toContain("PAPERCUSP_TEST_RUN_HARNESS='customer-app'");
+    await tool.handler({ ...legArgs, confirm: true } as never, ctx);
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'customer-app' }));
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: expect.objectContaining({ harnessSlug: 'customer-app' }),
+    }));
   });
   it('refuses an explicit unheld leg item before opening or launching the task', async () => {
     provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_not_held', 'WI-other is not held'));

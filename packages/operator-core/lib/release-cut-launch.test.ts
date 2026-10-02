@@ -79,6 +79,14 @@ describe('version / channel validation', () => {
 describe('buildCutEnv — LOCAL-only enforced', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
   const runtime = { ownerName: 'Avi' };
+  it('binds focused proof to the task harness and never treats all-scope as a harness', () => {
+    expect(buildCutEnv({}, sourceSha, { ...runtime, harnessSlug: ' customer-app ' }))
+      .toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS', 'customer-app');
+    for (const harnessSlug of [undefined, null, '', ' ', '*', 'all']) {
+      expect(buildCutEnv({}, sourceSha, { ...runtime, harnessSlug }))
+        .not.toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS');
+    }
+  });
   it('always disables GitHub publish; adds only requested legs', () => {
     expect(buildCutEnv({}, sourceSha, runtime)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',

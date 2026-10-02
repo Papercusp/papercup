@@ -53,6 +53,7 @@ import { readIdentity } from '../locks/identity';
 import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import type { ResolveIdentityCtx } from '../coordination/identity';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runGovernedOperation } from '../../resource-governor/execution';
 import { loadHarnessRegistry, type HarnessRegistry } from '../../harness-registry';
@@ -332,10 +333,12 @@ function cutRuntimeEnv(
     migrationBootSmokeOverride?: MigrationBootSmokeOverride;
   },
   operation?: BeginCutOperationResult | null,
+  harnessSlug?: string | null,
 ): CutRuntimeEnv {
   return {
     ownerName: args.ownerName,
     ownerEmail: args.ownerEmail,
+    ...(harnessSlug ? { harnessSlug } : {}),
     ...(args.fullHistory ? { fullHistory: true } : {}),
     reuseSeed: args.reuseSeed,
     ...(args.seedless ? { seedless: true } : {}),
@@ -375,6 +378,7 @@ async function openCutOperation(input: {
   sourceSha: string;
   desktopRoot: string;
   workItemId?: string | null;
+  harnessSlug?: string | null;
 }): Promise<{ operation: BeginCutOperationResult | null; reason?: string }> {
   try {
     const operation = await beginCutOperation({
@@ -387,6 +391,7 @@ async function openCutOperation(input: {
       },
       cwd: input.desktopRoot,
       workItemId: input.workItemId ?? null,
+      harnessSlug: input.harnessSlug ?? null,
     });
     return { operation };
   } catch (error) {
@@ -1470,7 +1475,7 @@ export default defineTool({
           legs,
           args.sourceSha,
           '<PATH>',
-          cutRuntimeEnv(args),
+          cutRuntimeEnv(args, null, resolveConcreteHarnessSlug(undefined, ctx)),
           platform,
           orchestratorRoot,
         );
@@ -1543,6 +1548,7 @@ export default defineTool({
         sourceSha: args.sourceSha,
         desktopRoot: selected.desktopRoot,
         workItemId: cutWorkItem,
+        harnessSlug: resolveConcreteHarnessSlug(undefined, ctx),
       });
       if (!managed.operation) {
         return json({
@@ -1556,7 +1562,7 @@ export default defineTool({
         version: args.version,
         channel,
         expectedSourceSha: args.sourceSha,
-        runtime: cutRuntimeEnv(args, managed.operation),
+        runtime: cutRuntimeEnv(args, managed.operation, resolveConcreteHarnessSlug(undefined, ctx)),
         legs,
         platform,
         root: selected.desktopRoot,
@@ -1677,7 +1683,7 @@ export default defineTool({
         legs,
         args.sourceSha,
         '<PATH>',
-        cutRuntimeEnv(args),
+        cutRuntimeEnv(args, null, resolveConcreteHarnessSlug(undefined, ctx)),
         undefined,
         orchestratorRoot,
       );
@@ -1746,6 +1752,7 @@ export default defineTool({
       sourceSha: args.sourceSha,
       desktopRoot: selected.desktopRoot,
       workItemId: cutWorkItem,
+      harnessSlug: resolveConcreteHarnessSlug(undefined, ctx),
     });
     if (!managed.operation) {
       return json({
@@ -1759,7 +1766,7 @@ export default defineTool({
       version: args.version,
       channel,
       expectedSourceSha: args.sourceSha,
-      runtime: cutRuntimeEnv(args, managed.operation),
+      runtime: cutRuntimeEnv(args, managed.operation, resolveConcreteHarnessSlug(undefined, ctx)),
       legs,
       root: selected.desktopRoot,
       orchestratorRoot,

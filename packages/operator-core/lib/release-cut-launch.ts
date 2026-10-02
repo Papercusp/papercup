@@ -175,6 +175,8 @@ export function validateMigrationBootSmokeOverride(
 export interface CutRuntimeEnv {
   ownerName: string;
   ownerEmail?: string;
+  /** Caller scope shared by the managed task and its focused test proof. */
+  harnessSlug?: string | null;
   /** Explicit shipping policy: re-cut Git with its full reachable history. The
    * cutter distinguishes this from its depth-1 default by a PRESENT-EMPTY env
    * value, so the launcher must render the empty string rather than omit it. */
@@ -271,6 +273,10 @@ export function buildCutEnv(
   if (runtime.migrationBootSmokeOverride) env.PAPERCUSP_SKIP_MIGRATION_BOOTSMOKE = '1';
   const ownerEmail = runtime.ownerEmail?.trim();
   if (ownerEmail) env.PAPERCUSP_RELEASE_OWNER_EMAIL = ownerEmail;
+  const harnessSlug = runtime.harnessSlug?.trim();
+  if (harnessSlug && harnessSlug !== '*' && harnessSlug !== 'all') {
+    env.PAPERCUSP_TEST_RUN_HARNESS = harnessSlug;
+  }
   // Absent => release-local.sh skips the writeback rather than guessing a path.
   // It is a no-op when the cut already runs in the canonical checkout, so passing
   // it unconditionally is safe.
