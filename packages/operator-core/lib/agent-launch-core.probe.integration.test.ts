@@ -230,6 +230,26 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
     });
     expect(healthyNoClaim.workerAttestation.ready).toBe(true);
 
+    // The successful scheduler call alone cannot stand in for either a
+    // structured no-claim result or a canonical work-item claim.
+    await sql`
+      UPDATE harness_shared.tool_invocations
+      SET metadata_json = '{}'::jsonb
+      WHERE workspace_id = ${workspaceId} AND coord_owner_id = ${ownerId}
+        AND tool_name = 'scheduler:get_next' AND status = 'ok'
+    `;
+    const missingCustody = await probe();
+    expect(missingCustody.workerAttestation.stages.agentCall.status).toBe('satisfied');
+    expect(missingCustody.workerAttestation.stages.schedulerPull.status).toBe('satisfied');
+    expect(missingCustody.workerAttestation.stages.durableWake.status).toBe('satisfied');
+    expect(missingCustody.workerAttestation.stages.disposition).toEqual({
+      status: 'missing', kind: 'missing',
+    });
+    expect(missingCustody.workerAttestation.failures.map((failure) => failure.code)).toEqual([
+      'disposition-missing',
+    ]);
+    expect(missingCustody.workerAttestation.ready).toBe(false);
+
     await sql`UPDATE harness_shared.routines SET active = false WHERE target_owner_id = ${ownerId}`;
     await sql`
       INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, worked_by_history)
