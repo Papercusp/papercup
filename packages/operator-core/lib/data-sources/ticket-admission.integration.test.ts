@@ -105,7 +105,7 @@ async function mintedWork(): Promise<Array<{ feature_id: string; created_by: str
            (SELECT count(*)::int FROM harness_shared.work_admissions a
              WHERE a.workspace_id = w.workspace_id AND a.work_item_id = w.feature_id) AS admission_count
       FROM harness_shared.work_items w
-     WHERE w.workspace_id = ${WS} AND w.feature_id !~ ${CONNECTOR_ID_RE} AND w.created_at >= ${startedAt}
+     WHERE w.workspace_id = ${WS} AND w.feature_id !~ ${CONNECTOR_ID_RE} AND w.created_ts >= ${startedAt.getTime()}
      ORDER BY w.feature_id`;
 }
 
@@ -173,7 +173,7 @@ describe('ticket admission into work (P-020, R-14)', () => {
     expect(item).toEqual({ title: `${OWNER}/${REPO}#1: Agents should fix the tulip build`, nature: 'work' });
 
     // A Papercusp-owned field set on the admitted item survives the re-sync below.
-    await sql`UPDATE harness_shared.work_items SET assignee = ${PERSON} WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
+    await sql`UPDATE harness_shared.work_items SET taken_by = ${PERSON} WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
 
     source = await reread(source);
     gh.issues[0] = { ...gh.issues[0]!, title: 'Agents should fix the tulip build (retitled)', updated_at: '2026-10-01T11:00:00Z' };
@@ -182,7 +182,7 @@ describe('ticket admission into work (P-020, R-14)', () => {
     expect(await admissions()).toHaveLength(1);
     expect(await mintedWork()).toHaveLength(1);
     const [resynced] = await sql<Array<{ title: string; assignee: string | null }>>`
-      SELECT title, assignee FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
+      SELECT title, taken_by AS assignee FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
     expect(resynced).toEqual({ title: `${OWNER}/${REPO}#1: Agents should fix the tulip build (retitled)`, assignee: PERSON });
   });
 
