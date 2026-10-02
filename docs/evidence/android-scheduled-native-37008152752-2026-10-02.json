@@ -14,6 +14,33 @@
   "startedAt": "2026-10-02T12:40:59Z",
   "finishedAt": "2026-10-02T13:17:00Z",
   "exitCode": 0,
+  "assertions": [
+    {
+      "id": "actual-scheduled-trigger-and-executed-phases",
+      "passed": true,
+      "evidence": "Run37008152752 attempt1 event=schedule source50a00bc; job110841227767 executed host and native phases successfully. Archive attempt/proof source stamps both match the run source."
+    },
+    {
+      "id": "retained-archive-digest",
+      "passed": true,
+      "evidence": "Downloaded11228042084 ZIP SHA2946dec82bdfdf4051831e29168a15f6f6f18004a937cfb9bd133bee30d06deb equals GitHub's reported digest."
+    },
+    {
+      "id": "executed-junit-verdicts",
+      "passed": true,
+      "evidence": "Retained XML contains 3 fixture-free native tests, 33 debug unit tests and 33 release unit tests, each with zero suite/testcase failures, errors or skips."
+    },
+    {
+      "id": "tested-apk-copy-identity",
+      "passed": true,
+      "evidence": "App SHA184fd133b3f22fff1d9e4cd87af12f925d13c0257481922c9d591e969beaf147 and instrumentation SHA28786b24d66f46dd51ee8bde823e50ccdb34d9742c431edd89aa2f4919691047 match their cached and direct archive copies."
+    },
+    {
+      "id": "scope-remains-historical-unpaired-debug",
+      "passed": true,
+      "evidence": "Exact source workflow invokes connected without nativePairingFixture. Historical50a00bc proof is retained as debug/automatic contribution; current5b30, paired JNI, signed candidate, physical-phone and Play acceptance are not claimed."
+    }
+  ],
   "summary": "Historical scheduled Android verification passed: 3 fixture-free native tests and 66 debug/release unit tests, no failures/errors/skips. Full paired Inbox JNI journey was not selected by this workflow. Source50a00bc predates current5b30; no current-source, signed-candidate, physical-phone or Play acceptance. Earlier schedule-gap origin remains unconfirmed.",
   "repository": "papercup-rust-mobile",
   "sourceCommit": "50a00bc2bce67e59da826a311792fd3d7712baab",
