@@ -1564,6 +1564,9 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     // viewport breakpoint let the provider track collapse to zero and cover
     // the form. The open panel must reflow using its own available width.
     expect(cloudPageCss).toContain("repeat(auto-fit, minmax(min(100%, 380px), 1fr))");
+    const configureColumns = /\.configureColumns\s*\{([^}]+)\}/.exec(cloudPageCss)?.[1];
+    expect(configureColumns).toContain("repeat(auto-fit, minmax(min(100%, 380px), 1fr))");
+    expect(cloudPageCss).not.toMatch(/@media[^{}]+\{\s*\.configureColumns/);
     expect(cloudPageCss).not.toContain("container-name: cw-shell");
 
     const mediumStart = cloudPageCss.indexOf(

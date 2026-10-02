@@ -895,25 +895,21 @@
 
 .configureColumns {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
   gap: 16px;
   align-items: start;
 }
 
-@media (max-width: 1000px) {
-  .configureColumns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 .configureFields {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 12px;
 }
 
 .configureSummary {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 12px;
   position: sticky;
