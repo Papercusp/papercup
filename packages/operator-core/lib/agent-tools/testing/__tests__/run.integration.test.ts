@@ -223,6 +223,14 @@ describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
     expect(output.match(/TEST_FILE_ROUTE_ERROR/g)).toHaveLength(1);
     expect(output).not.toContain('TESTING_RUN_PRIORITY_DIAGNOSTICS');
   });
+
+  it.each(['ADMISSION_ERROR', 'FINALIZATION_ERROR'])('keeps the %s failure cause after later progress evicts it', (kind) => {
+    const capture = createBoundedRouterOutputCapture();
+    const diagnostic = `TEST_FILE_${kind} detail=original-failure origin=original-stack`;
+    capture.append('stderr', `${diagnostic}\n`);
+    capture.append('stdout', 'TEST_FILE_PROGRESS state=running\n'.repeat(500));
+    expect(capture.finish().slice(-2_000)).toContain(diagnostic);
+  });
 });
 
 describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
@@ -268,6 +276,38 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
         canonicalRepoRoot: selectorCanonical,
       }),
     ).toEqual({ root: selectorPhantom, source: 'requested' });
+  });
+});
+
+describe('completed child with failed router finalization (WI-10004947)', () => {
+  it.each(['vitest-json', 'node-summary'])('preserves measured counts and the cause without an overall green: %s', async (reportKind) => {
+    const file = 'packages/x/completed.test.ts';
+    const root = await makeScratchTestCheckout('papercusp-testing-finalization-', file);
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const report = {
+      numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,
+      numTotalTestSuites: 1, numPassedTestSuites: 1, numFailedTestSuites: 0,
+      startTime: Date.now(), success: true,
+      testResults: [{
+        name: join(root, file), status: 'passed',
+        assertionResults: [{ fullName: 'completed before finalization', status: 'passed' }],
+      }],
+    };
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      reportKind === 'vitest-json'
+        ? `writeFileSync(process.argv.find(a => a.startsWith('--outputFile=')).slice('--outputFile='.length), ${JSON.stringify(JSON.stringify(report))});`
+        : "console.log('# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0');",
+      "console.error('TEST_FILE_FINALIZATION_ERROR detail=receipt-finish-failed');",
+      "console.log('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed finalizationError=true');",
+      'process.exitCode = 3;',
+    ].join('\n'));
+    const out = await runTestFilesCore({ root, files: [file], timeoutMs: 10_000 });
+    expect(out.error, JSON.stringify(out)).toBeUndefined();
+    if (out.error !== undefined) return;
+    expect(out).toMatchObject({ ok: false, passed: 1, failed: 0, skipped: 0, files: 1 });
+    expect(out.routerOutput).toContain('TEST_FILE_FINALIZATION_ERROR detail=receipt-finish-failed');
+    expect(out.routerOutput).not.toContain('no test file ran');
   });
 });
 
@@ -1005,6 +1045,7 @@ describe('testing:run (integration)', () => {
       runElapsedMs: 14825,
     });
     expect(parseRouterTerminalCompletion(output.replace('exitStatus=0', 'exitStatus=1'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('status=passed', 'status=passed finalizationError=true'))).toBeNull();
     expect(parseRouterTerminalCompletion('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed')).toBeNull();
   });
 

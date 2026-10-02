@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -29,6 +30,7 @@ import {
   transformFailureMarker,
   perGroupVitestArgs,
   runCapturedTestProcess,
+  runGovernedTestFileProcess,
   runVitestList,
   stopTestScope,
   testScopeRuntimeMaxSec,
@@ -1521,6 +1523,21 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(result.governedAdmissionError).not.toBe(true);
     expect(result.governedFinalizationError.cause).toBe(origin);
     expect(result.actualDemand).toBeDefined();
+  });
+
+  it.each([0, 1])('also preserves an actual synchronous Node child after finalization failure, exit %s', async (status) => {
+    const origin = new Error('Node receipt finish failed');
+    const run = vi.fn(() => spawnSync(process.execPath, ['-e', `process.stdout.write('child output'); process.exit(${status})`], {
+      encoding: 'utf8',
+    }));
+    const result = await runGovernedTestFileProcess(async (_options: unknown, callback: Function) => {
+      await callback();
+      throw origin;
+    }, { demand: { cpuWeight: 1 } }, run);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status, stdout: 'child output', signal: null });
+    expect(result.governedAdmissionError).not.toBe(true);
+    expect(result.governedFinalizationError.cause).toBe(origin);
   });
 
   it.each([0, 1])('keeps the measured verdict and refuses an overall green after finalization failure, child exit %s', async (status) => {

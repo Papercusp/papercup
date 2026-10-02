@@ -2249,17 +2249,7 @@ export function resolveTestChildLauncher({
   return { launcher, ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit: ownedScope };
 }
 
-/**
- * Run one captured test child without blocking this router's event loop.
- *
- * On Linux, prefer `systemd-run --user --scope --collect` so the short-lived child tree moves into
- * a sibling user scope instead of remaining in the caller's cgroup. The process-group watchdog
- * still targets the scope's owned group id, never a name/pattern. Hosts without systemd-run retain
- * the `setsid --wait` process-group boundary; other platforms fall back to signaling the owned
- * direct child only.
- *
- * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
- */
+/** Share outcome retention across the asynchronous Vitest and synchronous Node:test routes. */
 export async function runGovernedTestFileProcess(governedProcessImpl, options, runChild) {
   let childResult;
   let childCompleted = false;
@@ -2304,6 +2294,17 @@ function printTestFinalizationError(result) {
   );
 }
 
+/**
+ * Run one captured test child without blocking this router's event loop.
+ *
+ * On Linux, prefer `systemd-run --user --scope --collect` so the short-lived child tree moves into
+ * a sibling user scope instead of remaining in the caller's cgroup. The process-group watchdog
+ * still targets the scope's owned group id, never a name/pattern. Hosts without systemd-run retain
+ * the `setsid --wait` process-group boundary; other platforms fall back to signaling the owned
+ * direct child only.
+ *
+ * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
+ */
 export function runCapturedTestProcess(command, args, options = {}) {
   const {
     cwd,
@@ -3470,8 +3471,8 @@ export async function main(
       : 'unknown';
   console.log(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
-      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)} skippedTests=${skippedField}`,
-      summary.anyFinalizationError ? 'finalizationError=true' : '',
+      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)} skippedTests=${skippedField}` +
+      (summary.anyFinalizationError ? ' finalizationError=true' : ''),
   );
   if (summary.anyFinalizationError) return TEST_FILE_EXIT_FINALIZATION_ERROR;
   return summary.anyFailed ? TEST_FILE_EXIT_FAILED : TEST_FILE_EXIT_PASSED;

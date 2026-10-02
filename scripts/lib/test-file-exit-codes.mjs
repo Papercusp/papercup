@@ -47,7 +47,7 @@
  * `--dry`, 0 means "routing resolved and nothing was run BY DESIGN", not
  * "measured and green". Every other 0 is a measured pass.
  *
- * That fourth code is why this module is worth its own file rather than a
+ * The EX_TEMPFAIL code is why this module is worth its own file rather than a
  * comment. Writing the contract down surfaced it: a first draft of this file
  * documented 0/1/2 only, because the three `return 2` sites are the ones an
  * agent hits and `return 75` sits two thousand lines away in a barrier check. A
@@ -59,7 +59,7 @@
  * (`ensurePapercuspTmpdir()`, `applyWorkerCapEnv(...)`) on import, so a
  * consumer that only wants to CLASSIFY an exit code — the operator's
  * `testing:run`, a gate script, a test — must not be made to import it to do
- * so. This module is three constants and two pure predicates, and imports
+ * so. This module contains constants and two pure predicates, and imports
  * nothing.
  */
 

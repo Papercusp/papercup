@@ -868,6 +868,7 @@ export function normalizeTestFilePaths(
  * `packages/operator-core/lib/__tests__/test-file-exit-codes.test.ts`:
  * 0 = measured pass, 1 = MEASURED and genuinely failed, 2 = NOT MEASURED
  * (route/launch/admission error, watchdog reap, or a refused false-green),
+ * 3 = measured child outcome with failed governor finalization (never green),
  * 75 = EX_TEMPFAIL, also not measured and explicitly retryable.
  *
  * This comment used to read "1 = a refused false-green OR a genuine test
@@ -1731,7 +1732,7 @@ const ROUTER_PRIORITY_DIAGNOSTIC_CHARS = 1_600;
  * marker from the raw tail (EI-23084691057182393).
  */
 const ROUTER_PRIORITY_DIAGNOSTIC_RE =
-  /^\s*(?:TEST_FILE_(?:ROUTE_ERROR|NOT_MEASURED|WATCHDOG|FREEZE_QUALIFIER|MID_INSTALL_SUSPECTED|TRANSFORM_FAILURE|COLLECTION_ATTRIBUTION|GROUP_RESULT|NAME_FILTER_NO_MATCH|ALL_SKIPPED|REQUIRE_RAN|RESULT)\b|(?:Error|Caused by):\s|(?:✗\s+BROKEN|✓\s+ok|unmatched)\b)/u;
+  /^\s*(?:TEST_FILE_(?:ADMISSION_ERROR|FINALIZATION_ERROR|ROUTE_ERROR|NOT_MEASURED|WATCHDOG|FREEZE_QUALIFIER|MID_INSTALL_SUSPECTED|TRANSFORM_FAILURE|COLLECTION_ATTRIBUTION|GROUP_RESULT|NAME_FILTER_NO_MATCH|ALL_SKIPPED|REQUIRE_RAN|RESULT)\b|(?:Error|Caused by):\s|(?:✗\s+BROKEN|✓\s+ok|unmatched)\b)/u;
 
 export interface BoundedRouterOutputCapture {
   append(channel: 'stdout' | 'stderr', value: Buffer | string): void;
@@ -2747,6 +2748,11 @@ export function parseRouterTerminalCompletion(output: string): RouterTerminalCom
   let marker: RegExpExecArray | null = null;
   for (const match of output.matchAll(markerRe)) marker = match;
   if (!marker) return null;
+
+  // A finished child is not proof that receipt finalization succeeded. This
+  // recovery path has no router exit code yet; never turn the preserved child
+  // pass into an overall green after its finalization error (WI-10004947).
+  if (/\bfinalizationError=true\b/.test(marker[0])) return null;
 
   const requested = Number(marker[1]);
   const executed = Number(marker[2]);
