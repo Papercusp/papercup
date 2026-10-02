@@ -210,6 +210,7 @@ mkdir -p "$(dirname "$OUTFILE")"
 LOCKFILE="$OUTFILE.build.lock"
 TMPFILE="$OUTFILE.tmp.$$"
 METAFILE="$TMPFILE.meta.json"
+PROBE_STAMP="$TMPFILE.probe-window.json"
 # EI-18119538868734274: the blueprints/ and sql/ asset directories below are
 # published with the SAME tmp-then-atomic-swap discipline as $TMPFILE here —
 # see the two "publish" comments further down for why (a live process's
@@ -218,7 +219,7 @@ METAFILE="$TMPFILE.meta.json"
 NEW_BLUEPRINTS_DIR=""
 NEW_SQL_DIR=""
 SYSTEMD_ENV_RUNNER_TMP=""
-trap 'rm -f "$TMPFILE" "$METAFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"; [[ -n "$SYSTEMD_ENV_RUNNER_TMP" ]] && rm -f "$SYSTEMD_ENV_RUNNER_TMP"' EXIT
+trap 'rm -f "$TMPFILE" "$METAFILE" "$PROBE_STAMP"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"; [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"; [[ -n "$SYSTEMD_ENV_RUNNER_TMP" ]] && rm -f "$SYSTEMD_ENV_RUNNER_TMP"' EXIT
 
 # EI-20093985382484201: A BUNDLE FAILURE MUST NOT TAKE THE SERVICE DOWN.
 # ExecStartPre runs this on EVERY restart against the LIVE shared tree, which
@@ -287,19 +288,43 @@ bundle_rc=0
   # esbuild error under a Node stack — while the fallback banner below still claimed
   # "the esbuild error is above". Abort here so the real error is the last thing in
   # $BUILD_LOG and the checker only ever runs on a metafile that exists.
-  if ! npx --yes esbuild@0.25.0 "$ENTRY" \
-    --bundle --platform=node --format=esm --target=node22 \
-    --outfile="$TMPFILE" \
-    --metafile="$METAFILE" \
-    --banner:js="$HOST_BANNER" \
-    "${HOST_BANNER_DEFINES[@]}" \
-    --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
-    "${BUNDLED_SOURCE_SHA_DEFINE[@]}" \
-    --log-limit=20 \
-    "${HOST_EXTERNALS[@]}"; then
-    echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
-    exit 1
-  fi
+  #
+  # WI-10005321: never bundle a tree an in-tree mutation probe has deliberately broken.
+  # This bundler reads the LIVE shared tree, and a probe holds a file mutated for the
+  # length of a guard run; the probe's verified restore cannot reach a bundle that
+  # already captured the mutant (2026-10-02: bg-host ran with its tool-ceiling denial
+  # disabled for ~8 min). `wait` blocks (bounded) while a window is open in this
+  # checkout or any submodule; `verify` re-checks after esbuild, and a window that
+  # opened mid-build costs one rebuild. Still blocked → exit 1, so the fallback below
+  # boots the last-known-good bundle, marked stale, instead of a mutant.
+  probe_attempt=1
+  while :; do
+    node "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
+      --stamp-file "$PROBE_STAMP" --timeout-sec "${PAPERCUSP_BUNDLE_PROBE_WAIT_SEC:-90}" || exit 1
+    if ! npx --yes esbuild@0.25.0 "$ENTRY" \
+      --bundle --platform=node --format=esm --target=node22 \
+      --outfile="$TMPFILE" \
+      --metafile="$METAFILE" \
+      --banner:js="$HOST_BANNER" \
+      "${HOST_BANNER_DEFINES[@]}" \
+      --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
+      "${BUNDLED_SOURCE_SHA_DEFINE[@]}" \
+      --log-limit=20 \
+      "${HOST_EXTERNALS[@]}"; then
+      echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
+      exit 1
+    fi
+    if node "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" verify --root "$REPO_ROOT" \
+      --stamp-file "$PROBE_STAMP"; then
+      break
+    fi
+    if (( probe_attempt >= 2 )); then
+      echo "ERROR: a mutation probe opened a window during both bundle attempts; refusing to publish a bundle that may hold a mutant (WI-10005321)."
+      exit 1
+    fi
+    probe_attempt=$((probe_attempt + 1))
+    echo "→ a mutation-probe window opened during the bundle; rebuilding once (WI-10005321)"
+  done
   # This subshell is the left side of `|| bundle_rc=$?`; Bash disables errexit inside such a
   # tested compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
   # publishing the rejected bundle and returning success. Fail explicitly before the atomic swap.
