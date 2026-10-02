@@ -59,9 +59,9 @@ export function stewardHandDispatchNotice(goalId: string, requestedAssignee: str
  * common case, which costs no read).
  */
 export async function evaluateStewardHandDispatch(args: {
-  workspaceId: string | undefined;
-  ownerId: string | undefined;
-  assignTo: string | undefined;
+  workspaceId: string | null | undefined;
+  ownerId: string | null | undefined;
+  assignTo: string | null | undefined;
   goalContextId: string | null;
   sql?: Sql;
 }): Promise<StewardHandDispatchVerdict> {
