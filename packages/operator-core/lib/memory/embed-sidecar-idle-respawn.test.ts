@@ -11,10 +11,15 @@
  *  2. the wiring passes the per-attempt ensure hook only for a sidecar this
  *     process spawns, never for an explicit URL another process supervises.
  */
-import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const fake = vi.hoisted(() => ({ children: [] as Array<import('node:events').EventEmitter & Record<string, unknown>> }));
+type FakeChild = import('node:events').EventEmitter & {
+  stdout: import('node:events').EventEmitter;
+  stderr: import('node:events').EventEmitter;
+  killed: boolean;
+};
+
+const fake = vi.hoisted(() => ({ children: [] as FakeChild[] }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -49,8 +54,8 @@ import {
 } from './embed-sidecar-spawn';
 import { localSidecarEnsure, type SidecarWiringDeps } from './embed-sidecar-wiring';
 
-function say(child: EventEmitter & Record<string, unknown>, line: string): void {
-  (child.stdout as EventEmitter).emit('data', Buffer.from(`${line}\n`));
+function say(child: FakeChild, line: string): void {
+  child.stdout.emit('data', Buffer.from(`${line}\n`));
 }
 
 describe('ensureEmbedSidecar during an announced idle exit (P-531)', () => {

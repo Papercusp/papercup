@@ -184,9 +184,12 @@ export function measureAwsAmiScan(input) {
   if (input.npmManifestsPresent && npmCataloged === 0) {
     fail('sbom-npm-coverage-zero: the image ships node_modules but syft cataloged no npm packages');
   }
+  // OS coverage: zero distro packages means the package database was never read, so a low
+  // vulnerability count would describe the scanner, not the image.
   const rpmCataloged = sbom.artifacts.filter((artifact) => artifact && artifact.type === 'rpm').length;
-  if (rpmCataloged === 0) {
-    fail('sbom-rpm-coverage-zero: syft cataloged no rpm packages, so the OS package database was not read');
+  const debCataloged = sbom.artifacts.filter((artifact) => artifact && artifact.type === 'deb').length;
+  if (rpmCataloged + debCataloged === 0) {
+    fail('sbom-os-coverage-zero: syft cataloged no rpm or deb packages, so the OS package database was not read');
   }
 
   const matches = vuln.matches;
