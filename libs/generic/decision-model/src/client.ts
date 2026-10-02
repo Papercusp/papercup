@@ -18,6 +18,7 @@
  */
 import { performance } from 'node:perf_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { describeError } from './error-detail.js';
 import type {
   DecisionCallRecord,
   DecisionOutcome,
@@ -365,7 +366,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
     try {
       key = await options.resolveKey();
     } catch (err) {
-      return inconclusive('no-key', `credential lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      return inconclusive('no-key', `credential lookup failed: ${describeError(err)}`);
     }
     if (!key) return inconclusive('no-key');
 
@@ -412,7 +413,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
           meta.transportLatencyMs = timing.elapsedMs;
           return inconclusive(why, timing.detail);
         }
-        return inconclusive('network-error', err instanceof Error ? err.message : String(err));
+        return inconclusive('network-error', describeError(err));
       } finally {
         abort.dispose();
       }
@@ -464,7 +465,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
         outcome = {
           kind: 'inconclusive',
           reason: 'network-error',
-          detail: truncate(`client fault: ${err instanceof Error ? err.message : String(err)}`),
+          detail: truncate(`client fault: ${describeError(err)}`),
           latencyMs: now() - startedAt.getTime(),
           attempts: 0,
         };

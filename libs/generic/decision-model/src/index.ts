@@ -44,6 +44,7 @@ export {
   type WorkerTransportEvent,
   type WorkerTransportOptions,
 } from './worker-transport.js';
+export { describeError, errorFields, isErrorFields, type ErrorFields } from './error-detail.js';
 export {
   toDecisionLedgerEntry,
   canonicalJson,

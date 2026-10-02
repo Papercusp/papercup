@@ -35,6 +35,7 @@
 import { performance } from 'node:perf_hooks';
 import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_threads';
 import type { FetchLike } from './client.js';
+import type { ErrorFields } from './error-detail.js';
 
 /** Budget used when a caller passes no deadline. The client always passes one. */
 const NO_DEADLINE_BUDGET_MS = 30_000;
@@ -58,6 +59,25 @@ const agents = {
 
 function clock() {
   return performance.timeOrigin + performance.now();
+}
+
+// Plain fields of a thrown value, so the calling side can describe it (WI-10005372).
+// Node reports a connect that failed on every address of a host as an AggregateError
+// whose message is EMPTY; the cause is only in code and errors. Mirrors errorFields()
+// in error-detail.ts (this source cannot import it); the tests pin the two together.
+function errorFields(err, depth) {
+  depth = depth || 0;
+  if (typeof err !== 'object' || err === null) {
+    return { name: 'Error', message: err === undefined ? '' : String(err), code: null, errors: [], cause: null };
+  }
+  const nested = depth < 3 && Array.isArray(err.errors) ? err.errors.slice(0, 4) : [];
+  return {
+    name: typeof err.name === 'string' && err.name !== '' ? err.name : 'Error',
+    message: typeof err.message === 'string' ? err.message.trim() : '',
+    code: typeof err.code === 'string' || typeof err.code === 'number' ? String(err.code) : null,
+    errors: nested.map((inner) => errorFields(inner, depth + 1)),
+    cause: depth < 3 && err.cause !== undefined && err.cause !== null ? errorFields(err.cause, depth + 1) : null,
+  };
 }
 
 function flattenHeaders(raw) {
@@ -156,22 +176,26 @@ parentPort.on('message', (call) => {
           text: Buffer.concat(chunks).toString('utf8'),
         });
       });
-      res.on('error', (err) => reply({ ok: false, error: err.message }));
+      res.on('error', (err) => reply({ ok: false, error: errorFields(err) }));
       res.on('close', () => {
         if (!res.complete) reply({ ok: false, error: 'response closed before it completed' });
       });
     },
   );
-  req.on('error', (err) => reply({ ok: false, error: err.message }));
+  req.on('error', (err) => reply({ ok: false, error: errorFields(err) }));
   req.on('finish', () => progress('sent'));
   req.end(body);
 });
 `;
 
+/** Test seam: the worker source, so a test can pin its errorFields() copy to error-detail.ts. */
+export const WORKER_SOURCE_FOR_TEST = WORKER_SOURCE;
+
 /** What the worker posts back for one call. */
 type WorkerReply = (
   | { ok: true; status: number; headers: Record<string, string>; text: string }
-  | { ok: false; error: string; timedOut?: boolean }
+  /** `error` is plain fields for a request/response error, a fixed string for the worker's own refusals. */
+  | { ok: false; error: string | ErrorFields; timedOut?: boolean }
 ) & {
   transportMs: number;
   /** How far the request got: started (not fully sent), sent (no response headers yet), headers. */
@@ -235,6 +259,27 @@ export interface WorkerTransport {
 
 function timeoutError(message: string): Error {
   return new DOMException(message, 'TimeoutError');
+}
+
+/** Rebuild a thrown value from its posted fields, so `describeError` renders it as the worker saw it. */
+function rebuild(fields: ErrorFields): Error {
+  const err = new Error(fields.message) as Error & { code?: string; errors?: Error[] };
+  err.name = fields.name;
+  if (fields.code !== null) err.code = fields.code;
+  if (fields.errors.length > 0) err.errors = fields.errors.map(rebuild);
+  if (fields.cause) err.cause = rebuild(fields.cause);
+  return err;
+}
+
+/**
+ * The error a failed worker call rejects with: it names the transport, how far the
+ * request got and when, and carries what the worker caught as its `cause` (WI-10005372).
+ */
+function workerFailure(reply: { error: string | ErrorFields; transportMs: number; phase: WorkerPhase }): Error {
+  const caught = typeof reply.error === 'string' ? new Error(reply.error) : rebuild(reply.error);
+  const err = new Error(`phase=${reply.phase} after ${ms(reply.transportMs)}`, { cause: caught });
+  err.name = 'WorkerTransportError';
+  return err;
 }
 
 function abortReason(signal: AbortSignal): unknown {
@@ -324,7 +369,7 @@ export function createWorkerTransport(options: WorkerTransportOptions): WorkerTr
             if (reply.timedOut) {
               init.deadline?.reportIncomplete({ elapsedMs: reply.transportMs, detail: describeWorkerTimeout(reply) });
             }
-            reject(reply.timedOut ? timeoutError(reply.error) : new Error(reply.error));
+            reject(reply.timedOut ? timeoutError(String(reply.error)) : workerFailure(reply));
           }
         });
       }
