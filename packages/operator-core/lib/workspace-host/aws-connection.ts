@@ -89,6 +89,9 @@ export const AWS_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   // WI-10005389: a spot host is launched by a PERSISTENT spot request, and terminating its instance
   // while that request is still open makes EC2 launch a replacement. Destroy cancels it first.
   'ec2:CancelSpotInstanceRequests',
+  // WI-10005454: the teardown census reads live spot requests, so a request that survived destroy
+  // is visible to the zero-orphan proof instead of only to the cancel step.
+  'ec2:DescribeSpotInstanceRequests',
   // aws-byoc-gcp-parity D-009: the client already makes these calls as the customer role
   // (security-group inbound check, console output, launch-template discovery).
   'ec2:DescribeSecurityGroups',

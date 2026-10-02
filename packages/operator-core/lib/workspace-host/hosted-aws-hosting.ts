@@ -140,6 +140,8 @@ export const PAPERCUSP_HOSTING_ACTION_CLASSES: Readonly<Record<AwsWorkspaceHostP
   'ec2:DescribeSnapshots': 'observe',
   'ec2:DescribeSecurityGroups': 'observe',
   'ec2:DescribeLaunchTemplates': 'observe',
+  // WI-10005454: the teardown census; Describe* has no resource-level scope.
+  'ec2:DescribeSpotInstanceRequests': 'observe',
   'ec2:RunInstances': 'create',
   'ec2:CreateVolume': 'create',
   'ec2:CreateSnapshot': 'create',

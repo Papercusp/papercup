@@ -92,6 +92,17 @@ function fakeAws(callerAccount = ACCOUNT) {
             };
           case 'ec2:DescribeSnapshotsCommand':
             return { ...meta, Snapshots: [{ SnapshotId: 'snap-1', State: 'completed', Tags: tags() }] };
+          case 'ec2:DescribeSpotInstanceRequestsCommand':
+            // WI-10005454: only a request that can still launch an instance is a census resource.
+            return {
+              ...meta,
+              SpotInstanceRequests: [
+                { SpotInstanceRequestId: 'sir-live', State: 'active', LaunchedAvailabilityZone: 'us-east-2a', Tags: tags() },
+                { SpotInstanceRequestId: 'sir-cancelled', State: 'cancelled', Tags: tags() },
+                { SpotInstanceRequestId: 'sir-closed', State: 'closed', Tags: tags() },
+                { SpotInstanceRequestId: 'sir-failed', State: 'failed', Tags: tags() },
+              ],
+            };
           default:
             throw new Error(`fake AWS does not implement ${name}`);
         }
@@ -145,7 +156,7 @@ function censusInput(overrides: Partial<AwsWorkspaceHostResourceCensusInput> = {
 }
 
 describe('AWS managed-resource inventory (SDK v3 client)', () => {
-  it('paginates instances, volumes and self-owned snapshots by the workspace managed tags', async () => {
+  it('paginates instances, volumes, self-owned snapshots and live spot requests by the workspace managed tags', async () => {
     const { sent, client } = fakeAws();
     const inventory = await client.listManagedResources({ projectId: ACCOUNT, region: REGION, workspaceId: WORKSPACE });
 
@@ -155,16 +166,23 @@ describe('AWS managed-resource inventory (SDK v3 client)', () => {
       'vm:i-stray',
       'disk:vol-live',
       'snapshot:snap-1',
+      'spot-request:sir-live',
     ]);
+    expect(inventory.observed.at(-1)).toMatchObject({
+      resource: { target: 'aws', kind: 'spot-request', parentProviderId: ACCOUNT, region: REGION, zone: 'us-east-2a' },
+      labels: { [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId]: HOST },
+    });
     expect(inventory.observed[0]).toMatchObject({
       resource: { target: 'aws', parentProviderId: ACCOUNT, region: REGION, zone: 'us-east-2a' },
       labels: { [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId]: HOST },
       observedAt: NOW,
     });
-    expect(inventory.inventoryEvidence.map((entry) => entry.kind)).toEqual(['vm', 'disk', 'snapshot']);
+    expect(inventory.inventoryEvidence.map((entry) => entry.kind)).toEqual(['vm', 'disk', 'snapshot', 'spot-request']);
+    expect(inventory.inventoryEvidence.at(-1)!.providerEvidenceRef).toContain('/describe-spot-instance-requests?');
 
     const describes = sent.filter((entry) => entry.name.startsWith('ec2:Describe'));
     expect(describes.every((entry) => entry.region === REGION)).toBe(true);
+    expect(describes.map((entry) => entry.name)).toContain('ec2:DescribeSpotInstanceRequestsCommand');
     expect(describes.filter((entry) => entry.name === 'ec2:DescribeInstancesCommand').map((entry) => entry.input.NextToken)).toEqual([
       undefined,
       'page-2',
@@ -200,11 +218,16 @@ describe('AWS managed-resource inventory (SDK v3 client)', () => {
     const provider = createAwsWorkspaceHostProvider({ client, now: () => NOW });
     const inventory = await provider.inventoryManagedResources({ projectId: ACCOUNT, region: REGION, workspaceId: WORKSPACE });
     const census = censusAwsWorkspaceHostResources(
-      censusInput({ observed: inventory.observed, inventoryEvidence: inventory.inventoryEvidence, retained: [ref('snapshot', 'snap-1')] }),
+      censusInput({
+        expected: [ref('vm', 'i-live'), ref('disk', 'vol-live'), ref('spot-request', 'sir-live')],
+        observed: inventory.observed,
+        inventoryEvidence: inventory.inventoryEvidence,
+        retained: [ref('snapshot', 'snap-1')],
+      }),
     );
     expect(census.untracked).toEqual([]);
     expect(census.missing).toEqual([]);
-    expect(census.managed.map((entry) => entry.resource.providerId)).toEqual(['i-live', 'vol-live', 'snap-1']);
+    expect(census.managed.map((entry) => entry.resource.providerId)).toEqual(['i-live', 'vol-live', 'snap-1', 'sir-live']);
     // Without registeredHostResources this is the STRICT workspace-wide census: i-stray carries
     // another host's tag in the same workspace, so it is surfaced rather than silently ignored.
     expect(census.labelMismatches.map((entry) => entry.resource.providerId)).toEqual(['i-stray']);
@@ -216,7 +239,21 @@ describe('censusAwsWorkspaceHostResources', () => {
   it('is clean when every expected resource is observed with this host and workspace tags', () => {
     const census = censusAwsWorkspaceHostResources(censusInput());
     expect(census.clean).toBe(true);
-    expect(census.inventoryEvidence.map((entry) => entry.kind)).toEqual(['vm', 'disk', 'snapshot']);
+    expect(census.inventoryEvidence.map((entry) => entry.kind)).toEqual(['vm', 'disk', 'snapshot', 'spot-request']);
+  });
+
+  it('is not clean after a teardown while the host still has a live spot request (WI-10005454)', () => {
+    // The post-delete census expects nothing to survive. A persistent request left open would
+    // relaunch the host, so it must read as an untracked survivor, not pass silently.
+    const census = censusAwsWorkspaceHostResources(
+      censusInput({ expected: [], observed: [observation('spot-request', 'sir-open')] }),
+    );
+    expect(census.clean).toBe(false);
+    expect(census.untracked.map((entry) => `${entry.resource.kind}:${entry.resource.providerId}`)).toEqual([
+      'spot-request:sir-open',
+    ]);
+    expect(census.reaperPlan[0]!.preconditions).not.toContain('durable-data-disposition');
+    expect(censusAwsWorkspaceHostResources(censusInput({ expected: [], observed: [] })).clean).toBe(true);
   });
 
   it('plans an untracked managed volume for confirm-and-delete with a data-disposition precondition', () => {
@@ -247,7 +284,11 @@ describe('censusAwsWorkspaceHostResources', () => {
 
   it('refuses an incomplete inventory and a resource from another cloud', () => {
     expect(() => censusAwsWorkspaceHostResources(censusInput({ inventoryEvidence: evidence().slice(0, 2) }))).toThrow(
-      'AWS workspace-host census inventory incomplete: snapshot',
+      'AWS workspace-host census inventory incomplete: snapshot, spot-request',
+    );
+    // An inventory that never read spot requests cannot prove a spot host's teardown clean.
+    expect(() => censusAwsWorkspaceHostResources(censusInput({ inventoryEvidence: evidence().slice(0, 3) }))).toThrow(
+      'AWS workspace-host census inventory incomplete: spot-request',
     );
     expect(() =>
       censusAwsWorkspaceHostResources(censusInput({ expected: [{ ...ref('vm', 'i-live'), target: 'gcp' }] })),

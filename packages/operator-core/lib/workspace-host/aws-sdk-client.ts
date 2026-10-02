@@ -36,6 +36,7 @@ import {
   DescribeRegionsCommand,
   DescribeSecurityGroupsCommand,
   DescribeSnapshotsCommand,
+  DescribeSpotInstanceRequestsCommand,
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
   EC2Client,
@@ -76,6 +77,7 @@ import {
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   awsWorkspaceHostManagedFilters,
+  type AwsWorkspaceHostCensusResourceKind,
   type AwsWorkspaceHostInventoryRequest,
   type AwsWorkspaceHostInventorySnapshot,
 } from './aws-safety';
@@ -145,6 +147,11 @@ export const AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG = 'papercusp:client-token';
 const DEFAULT_ROLE_SESSION_NAME = 'papercusp-workspace-host';
 const ORG_ROLE_SESSION_NAME = 'papercusp-org-role';
 const HOURS_PER_MONTH = 730;
+/**
+ * Spot request states that can still launch an instance (WI-10005454). `disabled` is a persistent
+ * request whose instance was stopped: starting the instance re-opens it, so it is still live.
+ */
+const AWS_LIVE_SPOT_REQUEST_STATES: ReadonlySet<string> = new Set(['open', 'active', 'disabled']);
 
 /** The SDK's credential provider shape, derived so no transitive `@smithy/types` import is needed. */
 export type AwsSdkCredentialIdentityProvider = ReturnType<typeof fromNodeProviderChain>;
@@ -1439,10 +1446,12 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
 
   /**
    * Controller-independent inventory (aws-byoc-gcp-parity-2026-10-01 P-003): every EC2 instance,
-   * EBS volume and self-owned EBS snapshot in the region carrying this workspace's managed tags,
-   * fully paginated. It verifies the credentials resolve to the account it names, because a census
-   * that reads "clean" is only meaningful about the account it actually enumerated. Terminated
-   * instances and deleted volumes are absent (they no longer bill and cannot be deleted again).
+   * EBS volume, self-owned EBS snapshot and live spot instance request in the region carrying this
+   * workspace's managed tags, fully paginated. It verifies the credentials resolve to the account it
+   * names, because a census that reads "clean" is only meaningful about the account it actually
+   * enumerated. Terminated instances and deleted volumes are absent (they no longer bill and cannot
+   * be deleted again), and so are spot requests that can no longer launch anything (cancelled,
+   * closed, failed): WI-10005454.
    */
   async listManagedResources(request: AwsWorkspaceHostInventoryRequest): Promise<AwsWorkspaceHostInventorySnapshot> {
     const accountId = request.projectId?.trim() ?? '';
@@ -1480,18 +1489,26 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
         token = page.NextToken;
       }
     };
-    const [instancePages, volumePages, snapshotPages] = await Promise.all([
+    const [instancePages, volumePages, snapshotPages, spotRequestPages] = await Promise.all([
       readPages('describe-instances', (NextToken) => ec2.send(new DescribeInstancesCommand({ Filters, NextToken }))),
       readPages('describe-volumes', (NextToken) => ec2.send(new DescribeVolumesCommand({ Filters, NextToken }))),
       readPages('describe-snapshots', (NextToken) =>
         ec2.send(new DescribeSnapshotsCommand({ OwnerIds: ['self'], Filters, NextToken })),
+      ),
+      readPages('describe-spot-instance-requests', (NextToken) =>
+        ec2.send(new DescribeSpotInstanceRequestsCommand({ Filters, NextToken })),
       ),
     ]);
     const observedAt = this.now();
     const tagMap = (tags: readonly { Key?: string; Value?: string }[] | undefined): Record<string, string> =>
       Object.fromEntries((tags ?? []).filter((tag) => tag.Key).map((tag) => [tag.Key!, tag.Value ?? '']));
     const observed: ManagedWorkspaceHostResourceObservation[] = [];
-    const add = (kind: 'vm' | 'disk' | 'snapshot', providerId: string, zone: string | undefined, tags: Record<string, string>) =>
+    const add = (
+      kind: AwsWorkspaceHostCensusResourceKind,
+      providerId: string,
+      zone: string | undefined,
+      tags: Record<string, string>,
+    ) =>
       observed.push({
         resource: { target: 'aws', kind, providerId, parentProviderId: accountId, region, ...(zone ? { zone } : {}) },
         labels: tags,
@@ -1509,6 +1526,15 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       if (!snapshot.SnapshotId) continue;
       add('snapshot', snapshot.SnapshotId, undefined, tagMap(snapshot.Tags));
     }
+    for (const request of spotRequestPages.flatMap((page) => page.SpotInstanceRequests ?? [])) {
+      if (!request.SpotInstanceRequestId || !AWS_LIVE_SPOT_REQUEST_STATES.has(request.State ?? '')) continue;
+      add(
+        'spot-request',
+        request.SpotInstanceRequestId,
+        request.LaunchedAvailabilityZone ?? request.LaunchSpecification?.Placement?.AvailabilityZone,
+        tagMap(request.Tags),
+      );
+    }
     const filterRef = Filters.map((filter) => `${filter.Name}=${filter.Values.join(',')}`).join('&');
     const evidenceRef = (operation: string) => `aws://ec2/${accountId}/${region}/${operation}?${filterRef}`;
     return {
@@ -1518,6 +1544,11 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
         { kind: 'vm', strategy: 'managed-labels', providerEvidenceRef: evidenceRef('describe-instances') },
         { kind: 'disk', strategy: 'managed-labels', providerEvidenceRef: evidenceRef('describe-volumes') },
         { kind: 'snapshot', strategy: 'managed-labels', providerEvidenceRef: evidenceRef('describe-snapshots') },
+        {
+          kind: 'spot-request',
+          strategy: 'managed-labels',
+          providerEvidenceRef: evidenceRef('describe-spot-instance-requests'),
+        },
       ],
     };
   }

@@ -31,7 +31,14 @@ export const AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS = {
   workspaceId: 'papercusp:workspace-id',
 } as const;
 
-export const AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS = ['vm', 'disk', 'snapshot'] as const;
+/**
+ * `spot-request` (WI-10005454): a spot host is launched by a PERSISTENT spot request tagged with the
+ * host's managed tags. While that request is open it relaunches the host after a terminate, so a
+ * teardown is only proven clean once the census also reads no live request for the host. Only live
+ * requests (open, active, disabled) are enumerated; a cancelled, closed or failed one cannot launch
+ * anything and is absent, the same way a terminated instance is.
+ */
+export const AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS = ['vm', 'disk', 'snapshot', 'spot-request'] as const;
 export type AwsWorkspaceHostCensusResourceKind = (typeof AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS)[number];
 
 export const AWS_WORKSPACE_HOST_CENSUS_PROFILE: WorkspaceHostCensusProfile<AwsWorkspaceHostCensusResourceKind> = {
