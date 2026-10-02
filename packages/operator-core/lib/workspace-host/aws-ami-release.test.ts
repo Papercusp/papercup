@@ -297,6 +297,9 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
   missingTool?: string;
   badKmsRegion?: string;
   proofResidue: readonly string[] = [];
+  /** Lets a test corrupt the canary proof (wrong fixture / bad attestation) after it is built. */
+  proofOverride?: (proof: AwsAmiCleanAccountLaunchProof) => AwsAmiCleanAccountLaunchProof;
+  canaryFixture?: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0]['fixture'];
 
   async buildCandidate(input: Parameters<AwsAmiReleaseAdapter['buildCandidate']>[0]) {
     this.calls.push(`build:${input.sourceRegion}`);
@@ -374,7 +377,9 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
     input: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0],
   ): Promise<AwsAmiCleanAccountLaunchProof> {
     this.calls.push(`canary:${input.region}`);
-    return {
+    this.canaryFixture = input.fixture;
+    const observedAt = '2026-08-23T01:30:00Z';
+    const proof: AwsAmiCleanAccountLaunchProof = {
       evidenceRef: `aws://${input.accountId}/${input.region}/canary`,
       accountId: input.accountId,
       region: input.region,
@@ -388,8 +393,11 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
       publicIpv4Assigned: false,
       terminated: true,
       residualResourceIds: this.proofResidue,
-      observedAt: '2026-08-23T01:30:00Z',
+      observedAt,
+      fixtureId: input.fixture.fixtureId,
+      attestation: workspaceHostCleanRoomFixtureAttestation(input.fixture, observedAt),
     };
+    return this.proofOverride ? this.proofOverride(proof) : proof;
   }
 
   async publishVersionManifest(manifest: AwsAmiVersionManifest) {
@@ -506,6 +514,37 @@ describe('AWS workspace-host AMI release', () => {
     expect(adapter.calls).not.toContain('publish-manifest');
     expect(adapter.calls).not.toContain('activate-pins');
     expect(adapter.calls.some((call) => call.startsWith('deprecate:'))).toBe(false);
+  });
+
+  it('hands the canary the canonical clean-room fixture whose script matches its own digest (WI-10005604)', async () => {
+    const adapter = new FakeAdapter();
+    await executeAwsAmiRelease(request(), adapter);
+    const fixture = adapter.canaryFixture!;
+    expect(fixture.bootstrapInput.hostId).toMatch(/^aws-clean-ami-/);
+    expect(fixture.fixtureId).toContain(VERSION);
+    expect(createHash('sha256').update(fixture.bootstrapScript, 'utf8').digest('hex')).toBe(
+      fixture.bootstrapScriptSha256,
+    );
+    expect(adapter.manifest?.cleanAccountProof.fixtureId).toBe(fixture.fixtureId);
+  });
+
+  it('does not publish when the canary ran a different fixture than the release built', async () => {
+    const adapter = new FakeAdapter();
+    adapter.proofOverride = (proof) => ({ ...proof, fixtureId: 'some-other-fixture' });
+    await expect(executeAwsAmiRelease(request(), adapter)).rejects.toThrow('different fixture');
+    expect(adapter.calls).not.toContain('publish-manifest');
+  });
+
+  it('does not publish when the canary attestation is unhealthy or does not match the fixture', async () => {
+    const unhealthy = new FakeAdapter();
+    unhealthy.proofOverride = (proof) => ({ ...proof, attestation: { ...proof.attestation, status: 'degraded' as never } });
+    await expect(executeAwsAmiRelease(request(), unhealthy)).rejects.toThrow('healthy bootstrap attestation');
+    expect(unhealthy.calls).not.toContain('publish-manifest');
+
+    const forged = new FakeAdapter();
+    forged.proofOverride = (proof) => ({ ...proof, attestation: { ...proof.attestation, hostId: 'aws-clean-ami-forged' } });
+    await expect(executeAwsAmiRelease(request(), forged)).rejects.toThrow('attestation failed validation');
+    expect(forged.calls).not.toContain('activate-pins');
   });
 
   it('does not start a Packer build when the common release gate is red', async () => {

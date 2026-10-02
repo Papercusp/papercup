@@ -3,7 +3,11 @@ import { createHash } from 'node:crypto';
 import { canonicalize } from '@papercusp/publish-auth/jcs';
 import {
   WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+  buildWorkspaceHostCleanRoomInstallFixture,
+  validateWorkspaceHostBootstrapAttestation,
+  type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBuilderKind,
+  type WorkspaceHostCleanRoomInstallFixture,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
 
@@ -171,6 +175,14 @@ export interface AwsAmiCleanAccountLaunchProof {
   terminated: boolean;
   residualResourceIds: readonly string[];
   observedAt: string;
+  /** The fixture the canary executed; must equal the one the release built (WI-10005604). */
+  fixtureId: string;
+  /**
+   * The host's own bootstrap attestation, printed by the fixture's script and read back over
+   * SSM. `bootstrapAttestationHealthy` is only believed when this validates against the
+   * release fixture's bootstrapInput, the same rule the GCP clean-room proof follows.
+   */
+  attestation: WorkspaceHostBootstrapAttestation;
 }
 
 export interface AwsAmiPublishedRegion {
@@ -252,6 +264,8 @@ export interface AwsAmiReleaseAdapter {
     releaseVersion: string;
     releaseSha256: string;
     buildManifestIdentity: string;
+    /** Canonical clean-room install fixture; the canary runs its bootstrapScript over SSM. */
+    fixture: WorkspaceHostCleanRoomInstallFixture;
   }): Promise<AwsAmiCleanAccountLaunchProof>;
   publishVersionManifest(manifest: AwsAmiVersionManifest): Promise<{
     uri: string;
@@ -498,11 +512,47 @@ function validateInspection(
   };
 }
 
+/**
+ * The canonical clean-room install fixture for the AWS clean-account canary — built from the
+ * release gate's own clean-room attestation exactly as the GCP image-family adapter does, so
+ * the AMI is proven to run the SAME bootstrap the gate accepted (WI-10005604). Deterministic:
+ * observedAt is the release's publishedAt, never the wall clock.
+ */
+export function awsCleanAccountFixture(
+  request: AwsAmiReleaseRequest,
+  artifact: WorkspaceHostImageArtifact,
+  imageId: string,
+): WorkspaceHostCleanRoomInstallFixture {
+  const attestation = request.releaseGate.cleanRoomReport.attestation;
+  if (!attestation) fail('release gate clean-room attestation is required to build the AWS canary fixture');
+  return buildWorkspaceHostCleanRoomInstallFixture(artifact, {
+    fixtureId: `aws-ami-${artifact.image.version}-${imageId}`,
+    action: 'install',
+    provider: 'aws',
+    architecture: artifact.buildManifest.baseImage.architecture,
+    observedAt: request.publishedAt,
+    hostId: `aws-clean-${imageId}`,
+    migrationId: attestation.migration.id,
+    minimumNodeMajor: attestation.runtime.minimumNodeMajor,
+    service: {
+      name: attestation.service.name,
+      port: attestation.service.port,
+      user: attestation.service.user,
+      group: attestation.service.group,
+    },
+    isolation: {
+      workspaceUser: attestation.isolation.workspaceUser,
+      workspaceGroup: attestation.isolation.workspaceGroup,
+    },
+  });
+}
+
 function validateCleanProof(
   proof: AwsAmiCleanAccountLaunchProof,
   request: AwsAmiReleaseRequest,
   artifact: WorkspaceHostImageArtifact,
   imageId: string,
+  fixture: WorkspaceHostCleanRoomInstallFixture,
 ): void {
   if (
     proof.accountId !== request.cleanAccount.accountId ||
@@ -528,6 +578,25 @@ function validateCleanProof(
     );
   }
   requireTimestamp(proof.observedAt, 'cleanAccountProof.observedAt');
+  if (proof.fixtureId !== fixture.fixtureId) fail('clean-account launch proof ran a different fixture than the release built');
+  if (!proof.attestation || typeof proof.attestation !== 'object' || proof.attestation.status !== 'healthy') {
+    fail('clean-account launch proof did not carry a healthy bootstrap attestation');
+  }
+  const input = fixture.bootstrapInput;
+  const validation = validateWorkspaceHostBootstrapAttestation(proof.attestation, {
+    contractVersion: input.contractVersion,
+    action: input.action,
+    hostId: input.hostId,
+    release: input.release,
+    migrationId: input.migrationId,
+    minimumNodeMajor: input.minimumNodeMajor,
+    service: input.service,
+    workspaceAuthorizedKeys: input.workspaceAuthorizedKeys,
+    ...(input.isolation ? { isolation: input.isolation } : {}),
+    ...(input.entrypoints ? { entrypoints: input.entrypoints } : {}),
+    ...(input.publicMetadata ? { publicMetadata: input.publicMetadata } : {}),
+  });
+  if (!validation.ok) fail(`clean-account bootstrap attestation failed validation: ${validation.errors.join('; ')}`);
 }
 
 /**
@@ -643,14 +712,16 @@ export async function executeAwsAmiRelease(
   }
 
   const cleanImageId = imageIds.get(request.cleanAccount.region)!;
+  const cleanFixture = awsCleanAccountFixture(request, artifact, cleanImageId);
   const cleanProof = await adapter.launchCleanAccountCanary({
     ...request.cleanAccount,
     imageId: cleanImageId,
     releaseVersion: artifact.image.version,
     releaseSha256: workspaceHostReleaseSubjectSha256(artifact),
     buildManifestIdentity: artifact.buildManifest.manifestIdentity,
+    fixture: cleanFixture,
   });
-  validateCleanProof(cleanProof, request, artifact, cleanImageId);
+  validateCleanProof(cleanProof, request, artifact, cleanImageId, cleanFixture);
 
   const activePins = regions.map((region) => ({
     region: region.region,
