@@ -596,10 +596,18 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
     expect((await createHostedFirstWorkspace(hosted.deps).run(PAPERCUSP_REQUEST)).ok).toBe(true);
     expect(hosted.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
 
-    // The customer's own cloud is left exactly as they provisioned it.
+    // aws-byoc-gcp-parity D-015: a GCP host in the customer's own project is set up the same way;
+    // a portal customer has no controller of their own, so without it the workspace would stay
+    // 'provisioning' forever.
     const byoc = harness();
     expect((await createHostedFirstWorkspace(byoc.deps).run(REQUEST)).ok).toBe(true);
-    expect(byoc.admissionOptions).toEqual([{}]);
+    expect(byoc.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
+
+    // AWS bring-up (over SSM) is not built yet (D-015 rule 3): an AWS host is admitted without one
+    // rather than with a bring-up that would fail.
+    const aws = harness();
+    expect((await createHostedFirstWorkspace(aws.deps).run(AWS_REQUEST)).ok).toBe(true);
+    expect(aws.admissionOptions).toEqual([{}]);
   });
 
   it("ignores any configuration the browser sends: no request can steer Papercusp's cloud", async () => {
