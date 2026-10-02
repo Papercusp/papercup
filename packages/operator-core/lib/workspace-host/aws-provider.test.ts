@@ -489,7 +489,27 @@ describe('AWS zero-orphan coverage (aws-byoc-gcp-parity P-007)', () => {
   // host's ownership tag survives" for the kinds it enumerates. So every EC2 resource type the
   // provider TAGS for a host must map to an AWS census kind; a new tagged type (a per-host security
   // group, an instance profile, an ENI) would otherwise survive teardown invisibly.
-  const EC2_TAG_TYPE_TO_CENSUS_KIND: Record<string, string> = { instance: 'vm', volume: 'disk', snapshot: 'snapshot' };
+  const EC2_TAG_TYPE_TO_CENSUS_KIND: Record<string, string> = {
+    instance: 'vm',
+    volume: 'disk',
+    snapshot: 'snapshot',
+    // WI-10005454: a spot host's persistent request is host-tagged, so the census must read it.
+    'spot-instances-request': 'spot-request',
+  };
+
+  it('maps every resource type a SPOT host tags to a census kind, including its spot request', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'orphan-spot', idempotencyKey: 'orphan-spot', desired: spotDesired() },
+      context(),
+    );
+    const tagged = taggedResourceTypes(plan.steps.map((step) => step.input));
+    expect([...tagged].sort()).toEqual(['instance', 'spot-instances-request', 'volume']);
+    for (const type of tagged) {
+      expect(EC2_TAG_TYPE_TO_CENSUS_KIND[type], `no census kind for tagged EC2 type '${type}'`).toBeDefined();
+      expect(AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS as readonly string[]).toContain(EC2_TAG_TYPE_TO_CENSUS_KIND[type]);
+    }
+  });
 
   it('tags only resource types the teardown census enumerates, and creates no per-host SG or instance profile', async () => {
     const { provider } = providerAndClient();
