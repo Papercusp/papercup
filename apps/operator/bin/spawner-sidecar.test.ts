@@ -32,7 +32,7 @@ it('installs boot and lifecycle safeguards before loading the server; preserves 
   await vi.waitFor(() => expect(state.calls).toContain('server-start'));
   expect(state.calls).toEqual(['allocator', 'integrity', 'flags', 'timestamps', 'stdio', 'fatal-diagnostics', 'parent-watch', 'server-import', 'server-start']);
   const onFault = process.listeners('unhandledRejection').find(listener => !originalRejections.has(listener))!;
-  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+  const exit = vi.spyOn(process, 'exit').mockImplementation(vi.fn<typeof process.exit>());
   const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
   onFault(new Error('real fault'), Promise.resolve());
   expect(exit).toHaveBeenCalledWith(1);
