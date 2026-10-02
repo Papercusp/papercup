@@ -32,6 +32,53 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+
+/** A complete node census, not a dominator graph or exclusive retained bytes.
+ * Snapshot string names contain actual payloads. Only fixed V8 types and
+ * constructor-shaped labels are eligible for this persisted aggregate.
+ */
+export function summarizeHeapSnapshot(snap, { top = 30 } = {}) {
+  if (!Number.isInteger(top) || top < 1 || top > 100) throw new TypeError('Invalid heap census top limit');
+  const meta = snap?.snapshot?.meta;
+  const fields = meta?.node_fields, types = meta?.node_types?.[0];
+  const count = snap?.snapshot?.node_count;
+  if (!Array.isArray(fields) || !Array.isArray(types) || !types.every(type => typeof type === 'string') ||
+      !Number.isSafeInteger(count) || count < 0 || !Array.isArray(snap.nodes) || !Array.isArray(snap.strings))
+    throw new TypeError('Invalid heap snapshot node metadata');
+  const ti = fields.indexOf('type'), ni = fields.indexOf('name'), si = fields.indexOf('self_size');
+  if (!fields.length || ti < 0 || ni < 0 || si < 0 || snap.nodes.length !== count * fields.length)
+    throw new TypeError('Incomplete heap snapshot nodes');
+  const byType = new Map(), byClass = new Map();
+  let totalSelfSizeBytes = 0;
+  for (let index = 0; index < count; index++) {
+    const base = index * fields.length;
+    const typeId = snap.nodes[base + ti], nameId = snap.nodes[base + ni], bytes = snap.nodes[base + si];
+    if (!Number.isSafeInteger(typeId) || typeId < 0 || typeId >= types.length ||
+        !Number.isSafeInteger(nameId) || nameId < 0 || nameId >= snap.strings.length ||
+        !Number.isSafeInteger(bytes) || bytes < 0) throw new TypeError('Invalid heap snapshot node values');
+    const type = types[typeId];
+    const raw = snap.strings[nameId];
+    // Never inspect STRING-family names as labels: they are the string content.
+    // Native/code names can contain filesystem paths or source text too.
+    const label = !type.includes('string') && typeof raw === 'string' && raw.length <= 80 &&
+      (/^[A-Za-z_$][A-Za-z0-9_.$]*$/.test(raw) || /^\(object (?:elements|properties)\)$/.test(raw))
+      ? raw : '(' + type + ')';
+    const key = type + '\0' + label;
+    const add = (map, key, initial) => {
+      const row = map.get(key) ?? { ...initial, count: 0, selfSizeBytes: 0 };
+      row.count++; row.selfSizeBytes += bytes; map.set(key, row);
+    };
+    add(byType, type, { type }); add(byClass, key, { type, class: label });
+    totalSelfSizeBytes += bytes;
+  }
+  return { nodeCount: count, totalSelfSizeBytes,
+    types: [...byType.values()].sort((a, b) => b.selfSizeBytes - a.selfSizeBytes),
+    topClasses: [...byClass.values()].sort((a, b) => b.selfSizeBytes - a.selfSizeBytes).slice(0, top),
+    definition: 'V8 snapshot node self_size, after snapshot GC; not retained/exclusive bytes or total native memory.' };
+}
+
+function main() {
 
 const args = process.argv.slice(2);
 const topIdx = args.indexOf('--top');
@@ -195,3 +242,6 @@ if (asJson) {
   );
   console.log(`     Snapshots are in: ${dir}`);
 }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

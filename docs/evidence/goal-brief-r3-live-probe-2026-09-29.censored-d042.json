@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "goal-brief R-3 live chain probe",
-  "framework": "read-only-sql-probe",
+  "framework": "operational",
   "command": [
     "env",
     "R3_CENSORED_BY=D-042",
@@ -11,8 +11,8 @@
     "docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-02T17:44:32.481Z",
-  "finishedAt": "2026-10-02T17:44:33.667Z",
+  "startedAt": "2026-10-02T17:46:45.041Z",
+  "finishedAt": "2026-10-02T17:46:46.217Z",
   "summary": "2/3 assertions passed; 1 censored per D-042 (r3-chain-survives-session-boundary), gate 2/2; 1 of 2 sessions resolved by the transcript witness alone",
   "assertions": [
     {

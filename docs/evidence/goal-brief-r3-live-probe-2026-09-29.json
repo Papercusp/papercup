@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "goal-brief R-3 live chain probe",
-  "framework": "read-only-sql-probe",
+  "framework": "operational",
   "command": [
     "npx",
     "tsx",
     "docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts"
   ],
   "exitCode": 1,
-  "startedAt": "2026-10-02T17:43:16.043Z",
-  "finishedAt": "2026-10-02T17:43:17.436Z",
+  "startedAt": "2026-10-02T17:46:41.139Z",
+  "finishedAt": "2026-10-02T17:46:42.171Z",
   "summary": "2/3 assertions passed; 1 of 2 sessions resolved by the transcript witness alone",
   "assertions": [
     {
