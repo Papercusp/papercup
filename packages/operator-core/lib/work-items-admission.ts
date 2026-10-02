@@ -917,7 +917,7 @@ export type StopTheLineRowContext = 'issue-wi' | 'feature-consolidated';
  *
  * The inner EXISTS probes the open red-streak condition row for the CANDIDATE ROW'S OWN
  * workspace+harness, so only the affected harness throttles; migration 741's partial
- * unique index on open condition keys makes the probe an index hit.
+ * unique index on non-null condition keys makes the probe an index hit.
  *
  * The feature-consolidated form has no `condition_key` column on the view (verified
  * 2026-09-01 against information_schema) and its kinds are placement kinds, so it gets
@@ -931,7 +931,10 @@ export function stopTheLineExclusionSql(sql: OrgSql, rowContext: StopTheLineRowC
       FROM harness_shared.work_items stl
      WHERE stl.workspace_id = ${sql.unsafe(`${q}workspace_id`)}
        AND stl.harness_slug = ${sql.unsafe(`${q}harness_slug`)}
-       AND stl.condition_key = ${GATE_RED_STREAK_CONDITION_PREFIX} || stl.harness_slug
+       -- Use the candidate harness already equated above: the equivalent inner-row
+       -- expression prevents a parameterized condition_key lookup and scans every
+       -- condition in the harness once per candidate (EI-23204229251577253).
+       AND stl.condition_key = ${GATE_RED_STREAK_CONDITION_PREFIX} || ${sql.unsafe(`${q}harness_slug`)}
        AND NOT (stl.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
        AND stl.created_ts <= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - ${STOP_THE_LINE_RED_HOURS * 3600 * 1000}
   )`;
