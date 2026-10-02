@@ -1134,6 +1134,19 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     }
   }, 2_000);
 
+  it('stamps every whole-fire metadata marker with its per-fire lock owner and PID', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    const patches = gitSyncActivityPatches();
+    expect(patches.length).toBeGreaterThan(1);
+    const owner = String(patches[0]?.owner);
+    expect(owner).toMatch(new RegExp(`^system:git-sync:${process.pid}:`));
+    expect(primaryLockOwners()).toEqual(new Set([owner]));
+    expect(patches.every((patch) => patch.owner === owner && patch.owner_pid === process.pid)).toBe(true);
+  });
+
   it('persists count-bearing completion-settlement progress for routine health readers', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
     reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, progress) => {
