@@ -22,6 +22,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, HarnessRequiredError, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { RefusalContract } from '../../capability-envelope/refusal-contract-types';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -281,7 +282,7 @@ type SetStatusValue =
   /** `onlyIfNotBlocked` tripped: the item is already blocked/needs-human and the caller
    *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
    *  report what it left alone. Not an error — see the `blocked_guard` branch below. */
-  | { ok: false; code: 'blocked_guard'; currentStatus: string | null }
+  | { ok: false; code: 'blocked_guard'; currentStatus: string | null; refusal: RefusalContract }
   /** `onlyIfNotCompleted` tripped: the item is `done` and an automated cascade tried to
    *  drop it. Not an error — see the `completed_guard` branch below. */
   | { ok: false; code: 'completed_guard'; currentStatus: string | null }
@@ -1485,7 +1486,19 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           nextStatus: it.status,
         })
       ) {
-        return { newBody: null, value: { ok: false, code: 'blocked_guard', currentStatus: oldStatus } };
+        return {
+          newBody: null,
+          value: {
+            ok: false,
+            code: 'blocked_guard',
+            currentStatus: oldStatus,
+            refusal: {
+              observed: { currentStatus: oldStatus, requestedStatus: it.status, onlyIfNotBlocked: String(it.onlyIfNotBlocked ?? false) },
+              liftsWhen: 'the item leaves blocked/needs-human (its explicit gate is lifted), or the flip is made without onlyIfNotBlocked by a caller deliberately reopening or completing the gate',
+              whoCanMakeItTrue: ['owner', 'another-agent'],
+            },
+          },
+        };
       }
       // ATTRIBUTED CLEAR (D-001). The mirror of the guard above: `onlyIfNotBlocked`
       // protects a block from being weakened, this one permits exactly ONE reflection to
@@ -1625,6 +1638,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         itemId: it.itemId,
         skipped: 'blocked_guard',
         currentStatus: result.value.currentStatus,
+        refusal: result.value.refusal,
         ...claimRollback,
         reason:
           `left at \`${result.value.currentStatus}\` — this explicit gate was preserved; ` +
