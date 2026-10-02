@@ -174,10 +174,10 @@ describe('small native ORT teardown control', () => {
     expect(JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'))).toMatchObject({ eof: true, exitCode: 0, signal: null });
   });
 
-  it('retains an uncaught model error as exit1 after FILE-worker cleanup, rather than successful closure', () => {
+  it.each(['uncaught', 'exit-code'] as const)('retains a model error with %s as exit1 after FILE-worker cleanup', terminal => {
     const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
     const child = spawnSync(process.execPath, [controlFixture, 'capture', root, JSON.stringify({
-      ortEntry, device: 'cpu', outcome: 'shape-error', release: 'environment', terminal: 'uncaught',
+      ortEntry, device: 'cpu', outcome: 'shape-error', release: 'environment', terminal,
     })], { encoding: 'utf8', timeout: 15000 });
     expect(child.status).toBe(1);
     expect(JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'))).toMatchObject({ eof: true, exitCode: 1, signal: null });

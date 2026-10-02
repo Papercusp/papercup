@@ -65,7 +65,7 @@ async function target(config) {
     });
     await initial.release();
   }
-  if (config.terminal !== undefined && !['settled', 'uncaught'].includes(config.terminal)) {
+  if (config.terminal !== undefined && !['settled', 'uncaught', 'exit-code'].includes(config.terminal)) {
     throw new Error('invalid native teardown terminal mode');
   }
   const worker = new Worker(new URL(import.meta.url), { workerData: config, execArgv: [] });
@@ -81,9 +81,11 @@ async function target(config) {
     if (!result) await worker.terminate();
   }
   process.stdout.write(JSON.stringify(result) + '\n');
-  if (config.terminal === 'uncaught') {
+  if (['uncaught', 'exit-code'].includes(config.terminal)) {
     if (!result.expectedError) throw new Error('uncaught control requires the retained shape error');
-    throw new Error(result.expectedError);
+    if (config.terminal === 'uncaught') throw new Error(result.expectedError);
+    process.stderr.write(result.expectedError + '\n');
+    process.exitCode = 1;
   }
 }
 
