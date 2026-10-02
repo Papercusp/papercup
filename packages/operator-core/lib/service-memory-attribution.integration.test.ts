@@ -751,7 +751,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 500_000);
 
-  it('binds matched PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async () => {
+  it.each(['diagnostic', 'ordinary'] as const)('binds %s PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async mode => {
     // Read the maintained desktop transport contract before bundle/DB work.
     // The separate device route supports only its curated mobile query names.
     const queryRoute = (await import('./endpoint-route/routes/zero-harness/rest-query')).default;
@@ -763,7 +763,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     symlinkSync(resolve(root, 'node_modules'), join(bundleRoot, 'node_modules'), 'dir');
     const probe = String.raw`
       const { spawn } = require('node:child_process');
-      const { readFileSync, writeFileSync, renameSync } = require('node:fs');
+      const { readFileSync, writeFileSync, renameSync, readlinkSync } = require('node:fs');
+      const { createHash } = require('node:crypto');
       const { pathToFileURL } = require('node:url');
       const path = require('node:path');
       const postgres = require('postgres');
@@ -772,13 +773,15 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const e = process.env, base = e.PAPERCUSP_OPERATOR_URL;
       const report = { schemaVersion: 1, plane: 'isolated-current-build-operator-api', incomplete: true,
-        buildSha: e.TEST_BUILD_SHA, bundleHash: e.TEST_BUNDLE_HASH, startedAt: new Date().toISOString(),
+        buildSha: e.TEST_BUILD_SHA, bundleHash: e.TEST_BUNDLE_HASH, sourceDirectory: e.TEST_SOURCE_DIRECTORY || null,
+        mode: e.TEST_COHORT_MODE, startedAt: new Date().toISOString(), profilerOperations: [],
         workload: { population: 1024, pageLimit: 128, windows: 3, requestsPerWindow: 8, concurrency: 8 },
         samples: [], windows: [], retainedContainers: [], phases: [], limitations: [
           'One owned request-only process; background, production workers and fleet workloads are not measured.',
           'Sampling selfSize is live sampled allocation, not total heap or a retained-state owner.',
           'Completed-result diagnostic bytes are PostgreSQL wire bytes, not HTTP, payload storage or retained heap.',
-          'Inspector sampling and forced GC are labeled diagnostic interventions, not ordinary production operation.'
+          'Diagnostic mode labels profiler/GC interventions; ordinary mode performs neither profiler mutation nor forced GC.',
+          'Idle windows are bounded private HTTP baseline windows, not ambient production idle or leak evidence.'
         ] };
       let host, cdp, sql, inspectorUrl, sampling = false;
       let errors = '', startup = '';
@@ -816,14 +819,22 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         };
         visit(pid); return result;
       };
+      const executableHashes = new Map();
       const osMemory = pid => {
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error('Positive serving PID required');
+        const stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
+        const startTicks = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+        const executable = readlinkSync('/proc/' + pid + '/exe');
+        if (!executableHashes.has(executable)) executableHashes.set(executable,
+          createHash('sha256').update(readFileSync('/proc/' + pid + '/exe')).digest('hex'));
         const rollup = readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8');
         const kb = name => {
           const match = rollup.match(new RegExp('^' + name + ':\\s+(\\d+) kB$', 'm'));
           if (!match) throw new Error('Missing ' + name + ' for PID ' + pid);
           return Number(match[1]) * 1024;
         };
-        return { pid, pssBytes: kb('Pss'), rssBytes: kb('Rss'), anonymousBytes: kb('Anonymous') };
+        return { pid, startTicks, executable, executableSha256: executableHashes.get(executable),
+          pssBytes: kb('Pss'), rssBytes: kb('Rss'), anonymousBytes: kb('Anonymous') };
       };
       const sample = async label => {
         const started = Date.now();
@@ -832,6 +843,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           const state = slots?.get('@papercusp/db-org.acquire-registry')?.value;
           if (!state) throw new Error('Completed-query registry is unobserved');
           return { pid: process.pid, memory: process.memoryUsage(), uptime: process.uptime(),
+            heap: process.getBuiltinModule('v8').getHeapStatistics(),
             pools: [...state.pools].map(([pool, value]) => ({ pool,
               totalRecorded: value.totalPgResults ?? 0,
               results: (value.pgResults ?? []).map(row => ({ source: row.source,
@@ -857,6 +869,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         walk(profile.head);
         return { sampledLiveBytes: [...totals.values()].reduce((a, b) => a + b, 0),
           top: [...totals].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([frame, bytes]) => ({ frame, bytes })) };
+      };
+      const profiler = async (method, args) => {
+        if (report.mode !== 'diagnostic') throw new Error('Profiler operation in ordinary baseline');
+        report.profilerOperations.push(method); return cdp.send(method, args);
       };
       (async () => {
         phase('private-profile-preflight');
@@ -906,6 +922,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         phase('inspector-owner-preflight');
         const { createCdpClient } = await import(pathToFileURL(path.join(process.cwd(), 'scripts/cdp-inspector.mjs')));
         cdp = createCdpClient(inspectorUrl); await cdp.connect();
+        report.pauses = 0;
+        cdp.ws.on('message', raw => { try { if (JSON.parse(String(raw)).method === 'Debugger.paused') report.pauses++; } catch {} });
         const owner = (await cdp.evaluate('({ pid: process.pid, entry: process.argv[1], arenaMax: process.env.MALLOC_ARENA_MAX })',
           { returnByValue: true })).result.value;
         report.inspector = { endpoint: inspectorUrl, ...owner };
@@ -919,6 +937,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         const warm = await call(route);
         if (warm.body.rows?.length !== 128) throw new Error('Fixture page did not return 128 rows');
         report.warmHttpBytes = warm.bytes;
+        const warmRows = JSON.stringify(warm.body.rows);
+        report.rowFingerprint = createHash('sha256').update(warmRows).digest('hex');
         const preflight = await sample('query-preflight');
         // readWorkItemsPageFromStore deliberately fetches limit+1 before slicing
         // the HTTP page. pgQueryFamily names the FIRST FROM (the spine CTE), not
@@ -932,28 +952,33 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           throw new Error('Completed named-query diagnostic unobserved');
         for (let window = 0; window < 3; window++) {
           phase('matched-window-' + window);
-          await cdp.send('HeapProfiler.startSampling', { samplingInterval: 32768 }); sampling = true;
-          await sample('idle-' + window + '-start'); await wait(750); await sample('idle-' + window + '-end');
-          const idle = await cdp.send('HeapProfiler.stopSampling'); sampling = false;
-          await cdp.send('HeapProfiler.startSampling', { samplingInterval: 32768 }); sampling = true;
+          if (report.mode === 'diagnostic') { await profiler('HeapProfiler.startSampling', { samplingInterval: 32768 }); sampling = true; }
+          const idleMs = report.mode === 'ordinary' ? 2000 : 750;
+          await sample('idle-' + window + '-start'); await wait(idleMs); await sample('idle-' + window + '-end');
+          const idle = sampling ? await profiler('HeapProfiler.stopSampling') : null; sampling = false;
+          if (report.mode === 'diagnostic') { await profiler('HeapProfiler.startSampling', { samplingInterval: 32768 }); sampling = true; }
           const start = await sample('ordinary-' + window + '-start');
           const requestStart = Date.now();
           const responses = await Promise.all(Array.from({ length: 8 }, () => call(route).then(({ body, bytes }) => {
             if (body.rows?.length !== 128) throw new Error('Concurrent fixture page mismatch');
-            return { rows: body.rows.length, bytes };
+            if (JSON.stringify(body.rows) !== warmRows) throw new Error('Useful fixture rows changed during concurrent reads');
+            return { rows: body.rows.length, bytes, rowFingerprint: report.rowFingerprint };
           })));
           const end = await sample('ordinary-' + window + '-end');
-          const ordinary = await cdp.send('HeapProfiler.stopSampling'); sampling = false;
-          report.windows.push({ window, idleMs: 750, requestWallMs: Date.now() - requestStart,
+          const ordinary = sampling ? await profiler('HeapProfiler.stopSampling') : null; sampling = false;
+          report.windows.push({ window, idleMs, requestWallMs: Date.now() - requestStart,
             startAt: start.at, endAt: end.at, responses,
             completedPageResults: end.pools.flatMap(pool => pool.results.filter(row =>
               completedPage(row) && row.recordedAt >= requestStart).map(row => ({ pool: pool.pool, ...row }))),
-            idleAllocation: allocationSummary(idle.profile), ordinaryAllocation: allocationSummary(ordinary.profile) });
-          // A separately labeled post-GC survivor sample distinguishes transient allocation.
-          await cdp.send('HeapProfiler.collectGarbage'); await sample('post-gc-' + window);
-          // Keep survivor enumeration outside the ordinary workload windows.
-          report.retainedContainers.push({ window, maps: await retainedContainerCensus(cdp, 'map'),
-            arrays: await retainedContainerCensus(cdp, 'array') }); publish();
+            idleAllocation: idle ? allocationSummary(idle.profile) : null,
+            ordinaryAllocation: ordinary ? allocationSummary(ordinary.profile) : null });
+          if (report.mode === 'diagnostic') {
+            // Keep GC/enumeration outside the measured request windows and
+            // entirely outside the ordinary baseline mode.
+            await profiler('HeapProfiler.collectGarbage'); await sample('post-gc-' + window);
+            report.retainedContainers.push({ window, maps: await retainedContainerCensus(cdp, 'map'),
+              arrays: await retainedContainerCensus(cdp, 'array') }); publish();
+          }
         }
         report.incomplete = false; phase('samples-complete');
       })().catch(error => { report.error = String(error); report.hostErrorTail = errors;
@@ -976,27 +1001,47 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     try {
       // Reject malformed embedded JS before the expensive runtime preparation.
       expect(() => new Function(probe)).not.toThrow();
-      const buildSha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-      const build = spawnSync('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
-        cwd: resolve(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
-      });
-      expect(build.status, build.stderr.slice(-3000)).toBe(0);
+      const sourceDirectory = process.env.PAPERCUSP_P011_SERVING_HOST_DIRECTORY;
+      const testBuildSha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+      const buildSha = sourceDirectory ? process.env.PAPERCUSP_P011_SERVING_BUILD_SHA : testBuildSha;
+      expect(buildSha, 'Copied serving artifacts require an explicit serving build identity.').toMatch(/^[a-f0-9]{10,64}$/);
+      if (sourceDirectory) {
+        cpSync(sourceDirectory, dirname(bundle), { recursive: true });
+      } else {
+        const build = spawnSync('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
+          cwd: resolve(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
+        });
+        expect(build.status, build.stderr.slice(-3000)).toBe(0);
+      }
       const bundleHash = createHash('sha256').update(readFileSync(bundle)).digest('hex');
       const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '-e', probe], {
         cwd: root, encoding: 'utf8', timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, TEST_BUNDLE_PATH: bundle, TEST_BUNDLE_HASH: bundleHash, TEST_BUILD_SHA: buildSha,
+          TEST_COHORT_MODE: mode, TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_TEST_BUILD_SHA: testBuildSha,
           TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX, TEST_QUERY_ROUTE: queryPath, TEST_REPORT_PATH: reportPath },
       });
       const report = readCohortReport(reportPath, result);
       if (process.env.PAPERCUSP_P011_REPORT) writeFileSync(process.env.PAPERCUSP_P011_REPORT, JSON.stringify(report, null, 2) + '\n');
       expect(result.status, report.phase + ': ' + (report.error ?? report.runner.error ?? result.stderr.slice(-3000))).toBe(0);
       expect(report.incomplete).toBe(false);
+      expect(report.mode).toBe(mode);
+      expect(report.pauses).toBe(0);
       expect(report.hostReaped).toBe(true);
       expect(existsSync(report.home)).toBe(false);
       expect(report.windows).toHaveLength(3);
-      expect(report.samples).toHaveLength(16);
-      expect(report.retainedContainers).toHaveLength(3);
+      expect(report.samples).toHaveLength(mode === 'ordinary' ? 13 : 16);
+      expect(report.retainedContainers).toHaveLength(mode === 'ordinary' ? 0 : 3);
+      expect(report.profilerOperations).toHaveLength(mode === 'ordinary' ? 0 : 15);
+      for (const window of report.windows) {
+        expect(window.responses).toHaveLength(8);
+        expect(window.responses.every((response: any) => response.rows === 128 &&
+          response.rowFingerprint === report.rowFingerprint)).toBe(true);
+        if (mode === 'ordinary') {
+          expect(window.idleMs).toBe(2000);
+          expect(window.idleAllocation).toBeNull(); expect(window.ordinaryAllocation).toBeNull();
+        }
+      }
       for (const census of report.retainedContainers.flatMap((row: any) => [row.maps, row.arrays])) {
         expect(census.checked + census.notApplicable + census.notChecked).toBe(census.population);
         expect(census.checked).toBeLessThanOrEqual(census.limits.objects);
@@ -1008,6 +1053,9 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         expect(sample.memory.heapUsed).toBeGreaterThan(0);
         expect(sample.memory.external).toBeGreaterThanOrEqual(0);
         expect(sample.memory.arrayBuffers).toBeGreaterThanOrEqual(0);
+        expect(sample.heap.used_heap_size).toBeGreaterThan(0);
+        expect(sample.processes[0].startTicks).toBe(report.samples[0].processes[0].startTicks);
+        expect(sample.processes[0].executableSha256).toMatch(/^[a-f0-9]{64}$/);
         expect(sample.processes[0].pssBytes).toBeGreaterThan(0);
         for (const pool of sample.pools) {
           expect(pool.results.length).toBeLessThanOrEqual(32);
