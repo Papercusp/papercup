@@ -205,11 +205,27 @@ async function committedUnchanged(realRoot: string, paths: string[]): Promise<Se
   } catch {
     return unchanged;
   }
-  await Promise.all(paths.map(async (path) => {
-    const blob = committed.get(path);
-    if (!blob) return;
+  const tracked = paths.filter((path) => committed.has(path));
+  if (tracked.length === 0) return unchanged;
+  // ONE fork for the whole set (EI-24852529885337741). Each operator-side fork costs ~160 ms of
+  // synchronous main-thread time, and this preflight runs on every testing:run while any probe
+  // lock is held: measured 2026-10-02 09:47-09:57Z on :3170 as 386 single-path forks in 10 min.
+  // `git hash-object -- <a> <b> ...` prints one blob per path, in argument order, applying each
+  // path's own clean filters exactly as N single calls would. It aborts on the first unreadable
+  // path, so on any failure (or a short reply) every path is re-proved on its own, which keeps
+  // the per-path semantics: one missing file leaves only itself fenced.
+  const batch = await git(['hash-object', '--', ...tracked])
+    .then((out) => out.split('\n').filter(Boolean))
+    .catch(() => null);
+  if (batch?.length === tracked.length) {
+    tracked.forEach((path, i) => {
+      if (batch[i] === committed.get(path)) unchanged.add(path);
+    });
+    return unchanged;
+  }
+  await Promise.all(tracked.map(async (path) => {
     const current = await git(['hash-object', '--', path]).catch(() => null);
-    if (current?.trim() === blob) unchanged.add(path);
+    if (current?.trim() === committed.get(path)) unchanged.add(path);
   }));
   return unchanged;
 }

@@ -367,6 +367,47 @@ describe('mutationProbeRefusal narrowing', () => {
       expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
       expect(refusal!.hint).toContain('mutation probe on src/other.ts and');
     });
+
+    // EI-24852529885337741: every operator-side fork costs ~160 ms of main-thread time and this
+    // preflight runs on every testing:run while a probe lock is held (386 single-path
+    // hash-object forks in 10 min on :3170, 2026-10-02). A PATH wrapper records each git argv.
+    function recordGitArgv<T>(run: () => Promise<T>): Promise<{ result: T; hashObject: string[] }> {
+      const bin = mkdtempSync(join(tmpdir(), 'fence-git-argv-'));
+      const log = join(bin, 'argv.log');
+      const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      writeFileSync(join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+      const savedPath = process.env.PATH;
+      process.env.PATH = `${bin}:${savedPath ?? ''}`;
+      return run().then((result) => {
+        const lines = existsSync(log) ? readFileSync(log, 'utf8').split('\n') : [];
+        return { result, hashObject: lines.filter((line) => / hash-object /.test(` ${line} `)) };
+      }).finally(() => {
+        process.env.PATH = savedPath;
+        rmSync(bin, { recursive: true, force: true });
+      });
+    }
+
+    it('proves every locked path with ONE hash-object fork', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      const { result, hashObject } = await recordGitArgv(() =>
+        mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/subject.ts', 'src/other.ts', 'src/mid.ts')));
+      expect(result).toBeNull();
+      expect(hashObject).toHaveLength(1);
+      expect(hashObject[0]).toMatch(/hash-object -- src\/subject\.ts src\/other\.ts src\/mid\.ts$/);
+    });
+
+    it('falls back to one fork per path when the batch fails, so a missing file fences only itself', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      rmSync(join(dir, 'src/other.ts'));
+      const { result, hashObject } = await recordGitArgv(() =>
+        mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/subject.ts', 'src/other.ts')));
+      expect(result).toMatchObject({ error: 'mutation_probe_active' });
+      expect(result!.hint).toContain('mutation probe on src/other.ts and');
+      expect(result!.hint).not.toContain('src/subject.ts');
+      expect(hashObject).toHaveLength(3);
+    });
   });
 
   it('does not mistake a commented literal package import for a dynamic import', async () => {
