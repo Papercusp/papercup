@@ -21,9 +21,35 @@
     }
   },
   "recordedAt": "2026-10-02T08:27:23Z",
-  "qualificationUpdatedAt": "2026-10-02T09:53:52Z",
+  "qualificationUpdatedAt": "2026-10-02T21:46:05Z",
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
+  "inboxPhysicalComparison": {
+    "measurementWorkItem": "WI-10005482",
+    "testRunId": 20542013,
+    "guardTestRunId": 20541975,
+    "recordedTestLayer": "integration",
+    "evidencePlane": "isolated-current-build-operator-api",
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json",
+      "bytes": 78023,
+      "sha256": "8da0585c8cd1155c563aed2dc092a7413ff90b5a0fc7095873b7dcdde0c4ae58"
+    },
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-qualification-2026-10-02.json",
+      "bytes": 11538,
+      "sha256": "428a8e7cd11df9eeca72c72ea7b840979cdc262595d6e2acb5786a7e6223be23"
+    },
+    "coverage": "Two independent private HTTP hosts from one emitted bundle with one guarded historical cache-key intervention; each has eleven PID/startTicks-bound resource samples, three idle/workload windows and twenty-four responses at concurrency eight. Exact full raw input contents remain unchanged; both hosts are reaped with no observed descendants or debugger pauses.",
+    "observedDifferenceInChanges": {
+      "pssBytes": 210301952,
+      "heapUsedBytes": 278221224,
+      "totalAllocatedBytes": 288349304
+    },
+    "definition": "Baseline completion-idle minus before, less shared completion-idle minus before. V8 cumulative allocation, heap usage and Linux PSS are separate overlapping measures; these deltas are not additive.",
+    "sourceCurrentness": "All nine named inputs were stable during the saved run. Seven still match at qualification time; scripts/cdp-inspector.mjs and the test emitter changed later. Full executed graph remains unknown. This is historical scoped evidence, not a current-suite or actual live-worker claim.",
+    "acceptance": "Establishes the selected full-inbox key mechanism, exact raw-context preservation and concurrent response parity in the private fixture. Unforced counter trajectories differ and GC events were not recorded; one sequential pair cannot establish statistical production savings, removable native bytes or latency non-regression. No new run, acceptance binding or shipment claim was created."
+  },
   "liveCurrentBuildBaseline": {
     "qualificationWorkItem": "WI-10005427",
     "measurementWorkItem": "WI-10005423",
@@ -107,6 +133,17 @@
   },
   "sourceDispositions": [
     {
+      "source": "Full inbox cache keys duplicate identical raw input across display variants",
+      "owner": "WI-10004890",
+      "state": "verified-scoped-sharing-and-resource-observation",
+      "evidence": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json; qualification sibling; saved test_runs:20542013 and test_runs:20541975",
+      "mechanism": "Display-only limit, ambient and intent dimensions split full-read raw cache values. The existing normalized full-read key shares one raw value while bounded reads retain their retrieval dimensions.",
+      "matchedResult": "Same exact 256-row fixture with 8388608 body string units and three windows of eight concurrent display variants: eight raw copies on baseline versus one on candidate, full-content digests and response IDs/summaries/counts equal. Observed growth difference is 210301952 PSS bytes and 288349304 cumulative allocated bytes.",
+      "guard": "Maintained service-memory-attribution.integration.test.ts counterfactual/cache-API/exact-namespace guards and opt-in paired physical cohort; three guards and one paired test passed in the saved ledger.",
+      "falsifier": "Equivalent full-read variants create duplicate raw entries, any complete raw body digest changes, concurrent response outcomes differ, bounded retrieval dimensions are collapsed, or the test leaves a private host/descendant alive.",
+      "limits": "One sequential private-host pair and correlated windows; unforced counter trajectories differ and GC events were not recorded, measured production variant frequency is unknown, and two diagnostic sources changed afterward. No precise production/retained/native savings or current-suite claim."
+    },
+    {
       "source": "Hard-expired cache roots",
       "owner": "EI-24812912892068980",
       "state": "verified-scoped-reduction",
@@ -177,9 +214,9 @@
     }
   ],
   "acceptanceGaps": [
-    "Actual current-build main-process baseline is recorded; full live/current-build retained-owner and paired-intervention acceptance remains open. Integration is the executable layer.",
+    "Actual current-build main-process baseline and the historical private inbox paired intervention are recorded; broader live retained-owner/native/descendant acceptance remains open. Integration is the executable layer.",
     "Historical compiler caller and remaining parser/native retained ownership remain unresolved.",
-    "Complete executed-source currentness is unknown; seven named hashes are a bounded qualification.",
+    "Complete executed-source currentness is unknown; each saved cohort has its own named-source bounds and drift qualification.",
     "R8/R9 final comparison, independent acceptance and verified shipment remain open."
   ],
   "scope": "Evidence census and source qualification under existing P-011. No replay, new service, profiler mutation, cache clearing, service restart or live-gate operation."
