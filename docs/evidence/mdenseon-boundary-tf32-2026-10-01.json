@@ -1140,5 +1140,51 @@
     "completeBeforeInferenceClosureVerified": false,
     "fullGpuPopulationComplete": false
   },
+  "nativeRuntimeResourcePreparation": {
+    "status": "Worker native-call library/capacity observation preparation verified; complete DLL closure and actual model GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "supersedesCurrentPins": "Current worker/native qualifier pins below supersede five files in the earlier nativeCallClockExtension. Its115-test proof remains historical; frozen R4/V6 and model-free Nsight calibration capture remain immutable.",
+    "reuse": "Add runtime evidence to the existing opt-in embed_native_inference lifecycle and existing private native-inference JSONL. Extend the same qualifier and conventional Vitest suite; no new callback, platform tool, table, service or production setting.",
+    "libraryObservation": "On Linux the worker samples /proc/self/maps before and after the actual synchronous addon Run. It fingerprints executable mappings, shared objects and .node addons with streaming SHA256; opened descriptor inode/device must match the map. Deleted/ambiguous mappings, inaccessible files, changes during hashing, malformed records and evidence order failures cannot qualify. Cached hashes are keyed by path/device/inode/size/mtime/ctime.",
+    "capacityObservation": "CUDA native-call boundaries run the existing nvidia-smi device-capacity query, adding GPU UUID and PCI identity, exact monotonic query brackets and executable fingerprint. CPU is not-applicable; failed/invalid CUDA queries retain unknown plus reason. Scope is all nvidia-smi devices, with CUDA_VISIBLE_DEVICES retained but not assumed to bind the provider. No allocator-cause claim follows from the sampled numbers.",
+    "recurrenceGuards": [ "empty/malformed library population", "invalid library fingerprint/map identity", "duplicate mapped paths", "snapshot outside native-call boundary", "sampler error and persistence failure", "library first observed after Run", "library bytes/map identity change", "invalid or unknown GPU capacity", "actual query argument mismatch" ],
+    "retainedFields": [ "nativeRuntimeTraceVerified", "observedLibraryClosureVerified", "gpuDeviceCapacityObserved" ],
+    "exports": [ "validNativeRuntimeSample", "nativeRuntimeTraceVerified", "nativeObservedLibraryClosureVerified", "nativeGpuCapacityObserved" ],
+    "verification": {
+      "initialRunGroupId": "1e24a474-0e3f-44ca-909a-5ffff81147cd",
+      "initialTestRunIds": [ 20534919, 20534920 ],
+      "initialResult": { "passed": 114, "failed": 0, "skipped": 0 },
+      "finalRunGroupId": "0e76bcda-f90c-49c6-b27b-ec0cbcd31620",
+      "testRunIds": [ 20535947, 20535948, 20535949, 20535951 ],
+      "passed": 152,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "tests": [ "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "libs/generic/memory/src/local-embedder-worker.test.ts", "libs/generic/memory/src/mdenseon-embedder.test.ts", "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts" ],
+      "actualNativeFixture": "The real upstream130-byte CPU ONNX fixture verifies mapped native addon fingerprints and snapshot order across queued calls and an actual dimension error. The real file-worker/Rust/fake-native fixture verifies valid and invalid GPU-query output with a private executable seam; no CUDA model runs in this test.",
+      "typecheck": "Four requested TypeScript source/test files plus loaded import graph clean; scoped compiler exit0. Plain ESM node --check and scoped git diff --check pass.",
+      "refusedAttempt": "a6c0c374-beb0-4cdd-84dd-af24bb789e42 used nonexistent local-embedder-worker-state.test.ts and was refused before execution; no test result claimed. Canonical existing worker test path used in final run. Caller frictionEI-24876620679253599 probation; no generic repair claimed."
+    },
+    "sources": [
+      { "path": "libs/generic/memory/src/local-embedder-worker.ts", "bytes": 55006, "sha256": "4f45cd0b989d8194aaa074c91efe712a384c40a273ec2aecfa40be732f81ea13" },
+      { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 25366, "sha256": "1c62e7e1c09535ccba60dddd586ab772d2cc0e2fc954528973a80a2743507f2d" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "bytes": 55217, "sha256": "528b712424fb3895da32e894df23017a5cff515afbbd19cb801a03b8f782b6cb" }
+    ],
+    "tests": [
+      { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 27314, "sha256": "ad98e8e2cf02979606b6a7c8c6717605be43dc2398c10418e741412bebebd530" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "bytes": 30664, "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41" }
+    ],
+    "limitations": [
+      "A library loaded and unloaded within Run can evade the maps snapshots; observedLibraryClosureVerified covers the observed maps population only. Complete-before-first-inference DLL closure requires independent loader evidence.",
+      "GPU capacity observation samples all devices; actual model GPU binding requires the profiler's device identity. Values describe measurement-time capacity, not successful allocation or the historical allocator failure cause.",
+      "These opt-in diagnostic observations add hashing/query overhead; they do not replace controlled V7 performance acceptance.",
+      "No pretrained model or CUDA-model capture replay. Native-model request joins, actual complete closure/capacity,8192/over-limit/mixed/full rankings and broader plan bars remain open."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
