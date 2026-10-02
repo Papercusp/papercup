@@ -220,6 +220,10 @@ function delegationOrganization(organizationId: string): HostedDelegationOrganiz
     organizationId,
     gcpTrustedPrincipal: async () => `serviceAccount:${email}`,
     gcpPapercuspHosting: async () => ({ projectId: 'papercusp-hosting', serviceAccountEmail: email }),
+    awsTrustedPrincipal: async () => ({
+      principalArn: `arn:aws:iam::999999999999:role/papercusp/orgs/pco-${organizationId}`,
+      externalIdRef: `resolver://aws-external-id/${organizationId}`,
+    }),
   };
 }
 

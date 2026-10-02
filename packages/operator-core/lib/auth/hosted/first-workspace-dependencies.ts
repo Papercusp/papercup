@@ -28,7 +28,7 @@ import {
   type HostedDelegationOrganization,
   type HostedProviderDelegationAdapter,
 } from '../../workspace-host/hosted-provider-delegation';
-import { gcpDelegationOrganization } from '../../workspace-host/hosted-gcp-auth';
+import { hostedDelegationOrganization } from '../../workspace-host/hosted-delegation-organization';
 import type { HostedFirstWorkspaceDependencies } from './first-workspace';
 import { createHostedWorkspaceAdmission } from './workspace-admission';
 import { createDefaultHostedWorkspaceAdmissionDependencies } from './workspace-admission-dependencies';
@@ -64,7 +64,10 @@ export interface HostedFirstWorkspaceRuntimeOptions {
    */
   readonly provisioning?: WorkspaceHostProvisioningEnqueuer;
   readonly provisioningAvailable?: () => boolean;
-  /** Default: the organization's own account in the GCP identity project (D-397). */
+  /**
+   * Default: the organization's own GCP account in the identity project (D-397) AND its own
+   * AWS role in the control-plane account (aws-byoc-gcp-parity D-001).
+   */
   readonly delegationOrganization?: (organizationId: string) => HostedDelegationOrganization;
 }
 
@@ -77,7 +80,7 @@ export function createHostedFirstWorkspaceDependencies(
     controlPlaneWorkspaceId,
   );
   const delegationOrganization = options.delegationOrganization ?? ((organizationId: string) =>
-    gcpDelegationOrganization(organizationId));
+    hostedDelegationOrganization(organizationId));
   // One manager per organization: it stamps and checks the owner of every record it touches.
   const manager = (organizationId: string) =>
     new HostedProviderDelegationManager(store, options.delegationAdapters, delegationOrganization(organizationId));

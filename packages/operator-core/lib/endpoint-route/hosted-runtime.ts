@@ -46,7 +46,9 @@ import {
   type HostedProviderDelegationAdapter,
   type HostedProviderDelegationRecord,
 } from '../workspace-host/hosted-provider-delegation';
-import { gcpDelegationOrganization, resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
+import { resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
+import { awsProviderDelegationAdapter } from '../workspace-host/hosted-aws-auth';
+import { hostedDelegationOrganization } from '../workspace-host/hosted-delegation-organization';
 import { papercuspHostingGrantEffective } from '../workspace-host/hosted-gcp-hosting';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
@@ -287,7 +289,7 @@ function routeKey(route: { method: string; path: string }): string {
 }
 
 export function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>> {
-  const unavailable = (provider: 'aws' | 'azure'): HostedProviderDelegationAdapter => ({
+  const unavailable = (provider: 'azure'): HostedProviderDelegationAdapter => ({
     async verify() { throw new Error(`hosted_provider_delegation_${provider}_adapter_unavailable`); },
     async revoke(record) {
       return { evidenceRef: `delegation://${record.workspaceId}/${record.connectionId}/${record.generation}/revoked` };
@@ -321,7 +323,10 @@ export function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 
       return { evidenceRef: `delegation://${record.workspaceId}/${record.connectionId}/${record.generation}/revoked` };
     },
   };
-  return { gcp, aws: unavailable('aws'), azure: unavailable('azure') };
+  // AWS walks the real chain: control plane -> the org's own role -> the customer's role
+  // with the org's ExternalId, then proves the customer role refuses it WITHOUT the ExternalId
+  // (aws-byoc-gcp-parity P-008, D-001, D-007).
+  return { gcp, aws: awsProviderDelegationAdapter(), azure: unavailable('azure') };
 }
 
 function tenantServerContext(principal: HostedPrincipal): VerifiedTenantServerContext {
@@ -381,7 +386,8 @@ export async function createHostedRuntime(
   };
   const connectorGateway = new HostedWorkspaceConnectorGateway(new PostgresHostedWorkspaceConnectorStore(runService));
   const delegationAdapters = dependencies.providerDelegationAdapters ?? productionProviderDelegationAdapters();
-  const delegationOrganization = dependencies.delegationOrganization ?? gcpDelegationOrganization;
+  const delegationOrganization = dependencies.delegationOrganization
+    ?? ((organizationId: string) => hostedDelegationOrganization(organizationId));
   const providerDelegationManager = (principal: HostedPrincipal) =>
     new HostedProviderDelegationManager(
       new PostgresHostedProviderDelegationStore(
