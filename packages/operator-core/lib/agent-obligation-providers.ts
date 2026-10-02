@@ -25,7 +25,7 @@ import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
 
-export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v5';
+export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v6';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
@@ -225,6 +225,11 @@ const EXACT_PLAN_REFUSAL_GUIDANCE = {
   'family-disagreement': { status: 'blocked', summary: 'reconcile the promoted row family and exact-plan claim filter before retrying' },
   'insufficient-executable-width': { status: 'blocked', summary: 'reconcile occupied lanes and requested seats; launch only a separately verified executable width' },
 } satisfies Record<Exclude<ExactPlanAdmissionReason, 'ready'>, { status: 'blocked' | 'unknown'; summary: string }>;
+
+/** `ref (P-003, P-004)` list for the plans an owner wall holds — shared by reason and brief wording. */
+function ownerWalledSummary(plans: readonly GoalPortfolioPlan[]): string {
+  return plans.map((plan) => `${plan.ref} (${plan.placement.wall?.itemIds.join(', ') ?? 'needs-human'})`).join('; ');
+}
 
 function placementNote(placement: GoalPlanPlacement): string {
   const fleet = placement.fleet
@@ -462,7 +467,13 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     });
   }
 
-  const applicablePlans = portfolio.worklist.filter((plan) => plan.placement.state !== 'terminal');
+  // WI-10005657: an owner-walled plan is neither terminal nor placeable — only
+  // the owner can advance it, so it must create no demand (and no mandate). It
+  // is surfaced by name, never silently dropped.
+  const ownerWalledPlans = portfolio.worklist.filter((plan) => plan.placement.state === 'owner-walled');
+  const applicablePlans = portfolio.worklist.filter(
+    (plan) => plan.placement.state !== 'terminal' && plan.placement.state !== 'owner-walled',
+  );
   // Preserve canonical worklist ordering among feasible next actions. A
   // blocked earlier plan is not a prerequisite for an independent later one.
   // Retain the blocker as the fallback when no placement can advance.
@@ -508,6 +519,30 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     });
   }
 
+  if (applicablePlans.length === 0 && ownerWalledPlans.length > 0) {
+    return defineAgentObligation({
+      ...common,
+      title: 'Every open goal plan is owner-walled — nothing is launchable',
+      // Same shape as `none:`: the generation is policy identity, so an unchanged
+      // wall never becomes a fresh obligation episode on every turn.
+      episode: `owner-walled:${input.sourceGeneration}`,
+      status: 'not-applicable',
+      reason: `every non-terminal worklist plan is waiting on the owner (${ownerWalledSummary(ownerWalledPlans)}); a fleet launch cannot resolve it`,
+      causalRank: 0,
+      applicableDemand: 0,
+      evidence: [
+        ...placementEvidence(input, ownerWalledPlans[0]),
+        ...ownerWalledPlans.map((plan) => evidence(
+          `goal-plan-placement:${plan.ref}:${portfolio.assembledAt}`,
+          portfolio.assembledAt,
+          input.sourceGeneration,
+          placementNote(plan.placement),
+          'plan is owner-walled; no placement demand',
+        )),
+      ],
+    });
+  }
+
   if (applicablePlans.length === 0) {
     return defineAgentObligation({
       ...common,
@@ -521,7 +556,10 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     });
   }
 
-  if (alert) {
+  // An alert naming an owner-walled plan is the cohort watchdog seeing an unstaffed
+  // started plan — true, and deliberately so. The wall is the more specific
+  // writer, so it is not a "writers disagree" conflict.
+  if (alert && !ownerWalledPlans.some((plan) => plan.slug === alert.planSlug)) {
     const alertPlan = portfolio.worklist.find((plan) => plan.slug === alert.planSlug);
     if (!alertPlan || alertPlan.placement.reconciliation.consistent || alertPlan.placement.state === 'terminal') {
       const observed = alertPlan
@@ -559,7 +597,9 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       // becoming a brand-new obligation episode on every turn.
       episode: `covered:${input.sourceGeneration}`,
       status: 'satisfied',
-      reason: 'every non-terminal worklist plan is working or independently led with a consistent canonical receipt',
+      reason:
+        'every non-terminal worklist plan is working or independently led with a consistent canonical receipt' +
+        (ownerWalledPlans.length ? `; owner-walled plans create no demand: ${ownerWalledSummary(ownerWalledPlans)}` : ''),
       causalRank: 0,
       applicableDemand: applicablePlans.length,
       evidence: [...placementEvidence(input, applicablePlans[0]), ...covered],

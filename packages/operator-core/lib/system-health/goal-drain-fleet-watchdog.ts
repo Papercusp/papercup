@@ -484,7 +484,10 @@ export async function readGoalPlanFleetCohort(
           FROM harness_shared.plan_items
          WHERE workspace_id = ANY(${workspaceIds}::text[])
            AND plan_slug = ANY(${planSlugs}::text[])
-           AND status NOT IN ('done', 'dropped')`,
+           -- WI-10005657: a needs-human item is reserved to the owner; no fleet can claim
+           -- it, so it is not "unstaffed work". A plan whose only open items are needs-human
+           -- (owner-walled) therefore has no itemIds and raises no coverage alert.
+           AND status NOT IN ('done', 'dropped', 'needs-human', 'needs_human')`,
       sql<{ workspace_id: string; harness_slug: string; plan_slug: string; item_id: string; owner: string }[]>`
         SELECT workspace_id, harness_slug, plan_slug, item_id, owner
           FROM harness_shared.plan_item_claims
