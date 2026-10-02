@@ -37,6 +37,7 @@
 
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { DisclosureRefused } from './disclosure-ledger';
 
 type Db = postgres.Sql | postgres.TransactionSql;
@@ -129,6 +130,25 @@ export async function readRestrictedEditHoldings(sql: Db = getOrgPg().sql): Prom
     throw ledgerUnavailable('git-sync restricted-write hold', error);
   }
   return restrictedHoldingsFromRows(rows);
+}
+
+/**
+ * git-sync's commit-gate census: every live edit lock plus every restricted hold.
+ * Both halves are strict, so either read failing throws and git-sync fails the tick
+ * closed rather than staging a held path. Used for the initial census AND the
+ * final-commit-seam refresh (git-sync-action.ts).
+ */
+export async function readGitSyncCensusStrict(
+  deps: {
+    locks?: () => Promise<LiveLockHolding[]>;
+    restricted?: () => Promise<RestrictedEditHolding[]>;
+  } = {},
+): Promise<LiveLockHolding[]> {
+  const [locks, restricted] = await Promise.all([
+    (deps.locks ?? liveLockHoldingsStrict)(),
+    (deps.restricted ?? (() => readRestrictedEditHoldings()))(),
+  ]);
+  return [...locks, ...restricted];
 }
 
 /** Whether `ownerId` holds any unreleased disclosure. Throws `disclosure_ledger_unavailable`. */

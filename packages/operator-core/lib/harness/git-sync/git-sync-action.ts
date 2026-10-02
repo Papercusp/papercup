@@ -52,7 +52,9 @@ import {
 } from '../../agent-tools/locks/su-lock-store';
 import { describeStaleHolderVerdict, reclaimDeadExclusiveHolders } from '../../agent-tools/locks/resource-acquire-wait';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
-import { liveLockHoldingsStrict } from '../../agent-tools/locks/live-lock-paths';
+import type { liveLockHoldingsStrict } from '../../agent-tools/locks/live-lock-paths';
+// P-014: the commit-gate census is live locks ∪ restricted-disclosure holds.
+import { isRestrictedHoldIntent, readGitSyncCensusStrict } from '../../personal-vault/git-sync-hold';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { describeFetchError, loopbackFetch } from '../../loopback-fetch';
@@ -2814,6 +2816,10 @@ async function notifySkippedLockedPaths(slug: string, outcome: GitSyncOutcome): 
   const byHolder = new Map<string, Array<Extract<GitSyncSkippedPath, { owner: string }>>>();
   for (const skipped of skippedPaths) {
     if (!('owner' in skipped)) continue;
+    // P-014: a restricted-disclosure hold is not an edit lock. Its holder cannot lift it
+    // with locks:release (only releasing the disclosure does), so telling them to on every
+    // tick is noise. The routine metadata still records the skipped path and its intent.
+    if (isRestrictedHoldIntent(skipped.intent)) continue;
     const holder = skipped.owner.trim();
     if (!holder) continue;
     const rows = byHolder.get(holder);
@@ -3428,7 +3434,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // the RAW error, before the liveness wrapper. Non-contention faults still fail closed on the
       // first attempt, unchanged. ~6s of backoff against a 600s (LOCK_TTL_SEC) idle deadline.
       liveLockHoldingRows = await guarded('read-live-file-locks', () =>
-        acquireWithContentionRetry(() => liveLockHoldingsStrict()),
+        acquireWithContentionRetry(() => readGitSyncCensusStrict()),
       );
     } catch (error) {
       if (liveness.timedOut) throw liveness.timeoutError;
@@ -3569,7 +3575,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // initial census above protects setup, while this guarded callback closes
         // the longer submodule/guard window where a peer can acquire a lock.
         refreshLiveLockHoldings: () =>
-          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(() => liveLockHoldingsStrict())).then(
+          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(() => readGitSyncCensusStrict())).then(
             (rows) => toRepoLockCoordinates(rows, false),
           ),
         loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
