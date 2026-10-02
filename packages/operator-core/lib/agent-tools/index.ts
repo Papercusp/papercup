@@ -305,6 +305,7 @@ import './personal/search';
 import './personal/purge';
 import './personal/privacy-rules';
 import './personal/declassify';
+import './personal/open-sealed';
 import './documents/search';
 import './documents/subscriptions';
 // external-triggers P-008: reply only to the Slack thread anchored by a durable plan run.

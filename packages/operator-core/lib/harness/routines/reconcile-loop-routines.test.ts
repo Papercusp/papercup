@@ -661,6 +661,84 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
     );
   });
 
+  // WI-10005545: a provider-killed turn still produces a loop-origin turn (the prompt landed and
+  // the reply IS the API error), so 'loop-turn' is the via a psu-hosted warm loop reaches. It was
+  // never reclassified: measured 2026-10-02, goal holder su-9ec5d030's 13:53:06Z and 14:02:01Z
+  // fires each answered 'API Error: Request rejected (429) ...' and were recorded 'ok' at the
+  // bare interval. The test above is the negative control (ordinary text stays 'ok').
+  it("reclassifies a loop-turn settle whose reply is a provider 429 as a lifecycle death ('error'), not a false 'ok'", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_loop_turn_at: pgString(T0 + 8_000),
+            presence_last_active_at: null,
+            last_assistant_text_after_fire:
+              "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.",
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 9_000,
+      recordFire,
+      escalateLifecycleDeath,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'loop-turn', completedAt: T0 + 8_000 });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-lifecycle-death:model_error',
+      'error',
+    );
+    expect(recordFire).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 'loop-loop-turn', 'ok');
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-loop-origin',
+        targetOwnerId: 'su-loop-origin',
+        verdict: expect.objectContaining({ reason: 'model_error' }),
+      }),
+    );
+  });
+
+  it('a loop-turn settle whose reply is a usage wall re-arms past the bare interval (reset-aware), not straight back into the wall', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_loop_turn_at: pgString(T0 + 8_000),
+            presence_last_active_at: null,
+            last_assistant_text_after_fire: "You've hit your session limit · resets 5:40am (America/New_York)",
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 9_000,
+      recordFire,
+      escalateLifecycleDeath,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('loop-turn');
+    // A false 'ok' would schedule completedAt + interval = T0 + 68_000.
+    expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 8_000 + 60_000);
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-lifecycle-death:usage_limit',
+      'error',
+    );
+  });
+
   // EI-24791346664119438: `delivered_at` is a SETTLE stamp (coalesce / turn-end settles write
   // now()), so a SHORT loop-fire turn can end before it lands. Measured 2026-10-02: fire prompt
   // at created+1s, reply at delivered-2s. Flooring the proof on delivered_at scored that real

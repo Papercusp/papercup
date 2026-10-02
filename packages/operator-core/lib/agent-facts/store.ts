@@ -36,6 +36,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
+import { sealSharedTextInTxOrRefuse } from '../personal-vault/shared-store-seal';
 // P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
 // never re-declared — cell-contract.ts declares itself the canonical home and
 // forbids a local copy, and a second enumeration is precisely how a caller's

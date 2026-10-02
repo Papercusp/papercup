@@ -1754,11 +1754,24 @@ export async function reconcileLoopRoutines(
       // unreclassified meant its own captured wedge text was fetched and then silently never
       // read — the loop kept re-firing at the bare interval into the same wall instead of the
       // reset-aware delay every other via already gets.
+      // WI-10005545: 'loop-turn' is reclassified too. completionSignal() returns it FIRST for a
+      // warm loop whenever a loop-origin turn was indexed after the fire — and a provider-killed
+      // turn IS such a turn (the prompt landed, the reply is the API error). Leaving it out meant
+      // every psu-hosted warm loop recorded a 429 / usage-wall turn as 'ok' and re-fired at the
+      // bare interval with the failure-streak circuit reading 0 (measured 2026-10-02: goal holder
+      // su-9ec5d030, fires 13:53:06Z and 14:02:01Z, both 'API Error: Request rejected (429)').
+      // Like presence-quiescence, it is a turn-completion clock, not a real-work signal, so the
+      // reply text decides; note-refresh stays excluded for the reason above.
       let turnDeath: LoopLifecycleDeathVerdict | null = null;
       if (signal) {
         completedAt = signal.completedAt;
         via = signal.via;
-        if (via === 'lifecycle' || via === 'turn-journal' || via === 'presence-quiescence') {
+        if (
+          via === 'lifecycle' ||
+          via === 'turn-journal' ||
+          via === 'presence-quiescence' ||
+          via === 'loop-turn'
+        ) {
           turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
         }
       } else {

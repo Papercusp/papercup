@@ -44,6 +44,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import { boundedPgReadTxn } from './pg-read-query';
 import { getBuildInfo } from './build-info';
 import { createBugFreshnessEnvelope, isFreshnessTrackedKind } from './work-item-claim-freshness';
@@ -4037,7 +4038,8 @@ export async function commentIssue(
   id: string,
   body: string,
   authorId?: string,
-  opts: { workspaceId?: string; harness?: string | null } = {},
+  /** `writerOwnerId`: see commentWorkItem — the agent whose own text `body` is (P-012 / D-006). */
+  opts: { workspaceId?: string; harness?: string | null; writerOwnerId?: string | null } = {},
 ): Promise<ThreadPostRow | null> {
   const issue = await getIssue(id);
   if (!issue) return null;
@@ -4054,6 +4056,16 @@ export async function commentIssue(
       getSql: () => tx,
       getWorkspaceId: () => opts.workspaceId?.trim() || coordScopeWorkspace(),
     });
+    // P-012 / D-006: seal in THIS transaction (see commentWorkItem).
+    const stored = opts.writerOwnerId?.trim()
+      ? await sealSharedTextInTxOrRefuse(tx, {
+          workspaceId: opts.workspaceId?.trim() || coordScopeWorkspace(),
+          writerOwnerId: opts.writerOwnerId,
+          store: 'work-item-comment',
+          text: body,
+          context: { workItemId: id },
+        })
+      : null;
     const thread = await txThreads.getOrCreateThread(issueRef(id), {
       thread_id: threadId(id),
       title: issue.title,
@@ -4061,7 +4073,7 @@ export async function commentIssue(
       created_ts: issue.createdAt,
       harness_slug: opts.harness ?? undefined,
     });
-    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: created });
+    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body: stored?.text ?? body, created_ts: created });
   });
   // Fan-out is best-effort + deadline-bounded (fanoutForObject) — it runs AFTER the
   // durable write commits and can never hang or roll back the caller's comment.

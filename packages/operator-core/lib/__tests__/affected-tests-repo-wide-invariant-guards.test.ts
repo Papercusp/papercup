@@ -182,6 +182,20 @@ function commitSha(ref: string): string {
   return sha;
 }
 
+/**
+ * Resolve a MOVING ref once and hand the probe a stable spelling of that same commit.
+ *
+ * WI-10005544: passing `HEAD^` itself to the router let git-sync race the two resolutions.
+ * The test resolved HEAD^ to 6b8aa9e5, git-sync committed twice, and the router then
+ * resolved HEAD^ to d888157d, so the forwarded-base assertion failed although the guard
+ * was attached correctly. The abbreviated sha cannot move, but it is still a ref the router
+ * must expand to the full 40-char sha, so the ref-to-sha resolution stays exercised.
+ */
+function pinnedBase(ref: string): { base: string; probeRef: string } {
+  const base = commitSha(ref);
+  return { base, probeRef: base.slice(0, 12) };
+}
+
 function dryTaskLine(out: string, task: string): string {
   const line = out.split('\n').find((candidate) => candidate.includes(`:: ${task.split(' :: ')[1]}`));
   expect(line, `dry probe did not list ${task}:\n${out}`).toBeDefined();
@@ -193,11 +207,12 @@ function dryTaskLine(out: string, task: string): string {
  * `dryTasks`: `--dry` prints human task descriptions, while `--print-affected`
  * is the machine-readable surface used by release-prefix tooling.
  */
-function printAffected(changedPaths: string): string {
+function printAffected(changedPaths: string, probeEnv?: NodeJS.ProcessEnv): string {
   const res = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', changedPaths, '--print-affected'], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: 120_000,
+    ...(probeEnv ? { env: probeEnv } : {}),
   });
   expect(res.error, `CLI failed to spawn: ${res.error?.message}`).toBeUndefined();
   expect(res.status, `print-only probe failed:\n${res.stderr ?? ''}`).toBe(0);
@@ -377,8 +392,7 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
   });
 
   it('expands a file-level basename before selecting workspaces or forwarding guard files', () => {
-    const baseRef = 'HEAD^';
-    const base = commitSha(baseRef);
+    const { base, probeRef: baseRef } = pinnedBase('HEAD^');
     const out = dryTasks(OUTSIDE_TS_BASENAME, baseRef);
     expect(
       out,
@@ -424,8 +438,7 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
   });
 
   it('forwards the runner base and exact triggering paths to the vimock strand guard', () => {
-    const baseRef = 'HEAD^';
-    const base = commitSha(baseRef);
+    const { base, probeRef: baseRef } = pinnedBase('HEAD^');
     const out = dryTasks(OUTSIDE_TS_PATH, baseRef);
     expect(
       out,
@@ -447,8 +460,7 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
   });
 
   it('attaches and forwards a SUBMODULE ROOT — the only superproject path for internal edits', () => {
-    const baseRef = 'HEAD^';
-    const base = commitSha(baseRef);
+    const { base, probeRef: baseRef } = pinnedBase('HEAD^');
     const submodule = someSubmodulePath();
     expect(
       dryTasks(submodule, baseRef),
@@ -1671,8 +1683,7 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
   });
 
   it('forwards the authoritative base and exact triggering paths so git-sync cannot make it vacuous', () => {
-    const baseRef = 'HEAD^';
-    const base = commitSha(baseRef);
+    const { base, probeRef: baseRef } = pinnedBase('HEAD^');
     const out = dryTasks(RFS_OUTSIDE_TS_PATH, baseRef);
     expect(
       out,
@@ -2031,7 +2042,17 @@ describe('repo-wide guards survive a change that maps to ZERO workspaces (EI-194
 
 describe('affected-tests: --print-affected includes repo-wide guards (EI-20099180021812549)', () => {
   it('keeps AFFECTED_WS lines and emits machine-readable AFFECTED_GUARD lines', () => {
-    const out = printAffected('apps/operator/app/adv/hud/GoalSessionsRail.tsx');
+    // WI-10005544: graph suggestions (P-008) add workspaces from the COMMITTED dependency
+    // snapshot, which counts only while it is under 24h old and its importer hashes still
+    // match. With suggestions on, this file's closure moved between ['@papercusp/web'] and
+    // [web, operator-ui, operator-vite] (via GoalDetailPanel -> HudView -> the vite route and
+    // the operator-ui surface) depending on snapshot age alone. This case asserts the
+    // print-affected surface and the package-graph baseline, so pin suggestions off.
+    // Suggestion behaviour has its own suite: affected-tests-graph-suggestions.test.ts.
+    const out = printAffected('apps/operator/app/adv/hud/GoalSessionsRail.tsx', {
+      ...process.env,
+      PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS: '0',
+    });
     const lines = out.split('\n').filter(Boolean);
 
     expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual(['AFFECTED_WS\t@papercusp/web']);
