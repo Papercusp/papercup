@@ -220,3 +220,48 @@ export function r33AbVerdicts(summaries: Readonly<Partial<Record<R33AbSite, Pair
 export function r33AbPasses(verdicts: readonly R33AbVerdict[]): boolean {
   return verdicts.length === R33_AB_SITES.length && verdicts.every((v) => v.withinBudget === true);
 }
+
+/**
+ * The 1-min load average D-024's baselines were measured at (D-038 records
+ * 69.9/75.9/90.2 for the 1/5/15-min averages).
+ */
+export const D024_LOAD_1MIN = 69.9;
+
+/**
+ * D-041: the same-time A/B does not cancel load. What B adds grows with load
+ * (consult +6.3 ms at 1-min load 68.6, +10 to +12 ms at 94-131), so a reading
+ * counts only when the 1-min load average is within +/-20% of D-024's at both
+ * ends of the timed rounds. Only the 1-min average is gated because the rounds
+ * last about 1.5 min, which it brackets; the band is two-sided so a quiet box
+ * cannot flatter the reading either.
+ */
+export const R33_AB_LOAD_BAND = Object.freeze({
+  low: round1(D024_LOAD_1MIN * 0.8),
+  high: round1(D024_LOAD_1MIN * 1.2),
+});
+
+export interface R33AbLoadCheck {
+  matched: boolean;
+  band: { low: number; high: number };
+  /** 1-min load average when the timed rounds started and ended. */
+  start: number | null;
+  end: number | null;
+  reason?: string;
+}
+
+/** Is a 1-min load average inside D-041's band? */
+export function inR33AbLoadBand(load1: number): boolean {
+  return Number.isFinite(load1) && load1 >= R33_AB_LOAD_BAND.low && load1 <= R33_AB_LOAD_BAND.high;
+}
+
+/** D-041's gate over `os.loadavg()` read at the start and end of the timed rounds. */
+export function r33AbLoadCheck(loadavgStart: readonly number[], loadavgEnd: readonly number[]): R33AbLoadCheck {
+  const band = { ...R33_AB_LOAD_BAND };
+  const start = loadavgStart[0] ?? null;
+  const end = loadavgEnd[0] ?? null;
+  const out = (where: string, v: number | null) =>
+    `1-min load at ${where} ${v ?? 'unknown'} is outside D-041's band ${band.low}-${band.high}`;
+  if (start === null || !inR33AbLoadBand(start)) return { matched: false, band, start, end, reason: out('start', start) };
+  if (end === null || !inR33AbLoadBand(end)) return { matched: false, band, start, end, reason: out('end', end) };
+  return { matched: true, band, start, end };
+}

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { D024_BASELINE_P95_MS } from './chunk-search-latency';
 import {
+  D024_LOAD_1MIN,
   R33_AB_ARMS,
   R33_AB_FLOOR_MS,
+  R33_AB_LOAD_BAND,
   R33_AB_SITES,
   armOrder,
+  inR33AbLoadBand,
   r33AbBudgetMs,
+  r33AbLoadCheck,
   r33AbPasses,
   r33AbVerdicts,
   summarisePaired,
@@ -137,6 +141,33 @@ describe('chunk-search same-time A/B (R-33, D-040)', () => {
       expect(bySite.work_item.invalidReason).toContain('B returned no rows in 1 pair');
       expect(bySite.plans.withinBudget).toBe(true);
       expect(r33AbPasses(v)).toBe(false);
+    });
+  });
+
+  describe('load band (D-041)', () => {
+    it('is +/-20% of the 1-min load D-024 was measured at', () => {
+      expect(D024_LOAD_1MIN).toBe(69.9);
+      expect(R33_AB_LOAD_BAND).toEqual({ low: 55.9, high: 83.9 });
+    });
+
+    it('is two-sided: a box quieter than D-024 does not count either', () => {
+      expect(inR33AbLoadBand(55.9)).toBe(true);
+      expect(inR33AbLoadBand(83.9)).toBe(true);
+      expect(inR33AbLoadBand(55.8)).toBe(false);
+      expect(inR33AbLoadBand(84)).toBe(false);
+      expect(inR33AbLoadBand(Number.NaN)).toBe(false);
+    });
+
+    it('gates the 1-min average at both ends of the rounds, ignoring the 5- and 15-min ones', () => {
+      expect(r33AbLoadCheck([70, 140, 140], [80, 140, 140]).matched).toBe(true);
+      // Run 1 (2026-10-02 11:15Z): in band at neither end.
+      const run1 = r33AbLoadCheck([93.65, 93.28, 87.35], [130.89, 104.26, 91.69]);
+      expect(run1.matched).toBe(false);
+      expect(run1.reason).toMatch(/start 93\.65/);
+      const endOut = r33AbLoadCheck([70, 70, 70], [90, 70, 70]);
+      expect(endOut.matched).toBe(false);
+      expect(endOut.reason).toMatch(/end 90/);
+      expect(r33AbLoadCheck([], []).matched).toBe(false);
     });
   });
 });

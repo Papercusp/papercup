@@ -6,7 +6,7 @@
  *
  *   PAPERCUSP_EMBED_SIDECAR_URL=http://127.0.0.1:3384 \
  *   npx tsx packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts \
- *     [--rounds 3] [--out chunk-search-ab.json] [--sites plans,turns,...]
+ *     [--rounds 3] [--out chunk-search-ab.json] [--sites plans,turns,...] [--band-wait-min 0]
  *
  * Run it from the repository root. PAPERCUSP_EMBED_SIDECAR_URL must name the
  * operator's embed sidecar (`systemctl --user show papercup-bg-host.service -p
@@ -14,9 +14,13 @@
  * addon whose teardown can abort this process with exit 134 after the results are
  * written (EI-19464316359123796), which would erase the verdict the exit code carries.
  *
- * Exit 0: every site has a valid reading within its budget. Exit 1: at least one
- * site is over budget or has no valid reading (the JSON says which and why).
- * Exit 2: the run itself failed.
+ * Exit 0: the load was in D-041's band and every site has a valid reading within
+ * its budget. Exit 1: the load was in band and at least one site is over budget or
+ * has no valid reading (the JSON says which and why). Exit 2: no reading — the
+ * 1-min load was outside D-041's band at the start or end of the timed rounds, or
+ * the run itself failed. `--band-wait-min N` waits up to N minutes, after warmup,
+ * for the load to enter the band before timing; without it an out-of-band start
+ * exits 2 without timing anything.
  *
  * WHAT RUNS
  * Everything runs in this process against the operator database, with THIS tree's
@@ -36,8 +40,9 @@
  * bound on chunking's own cost, never a flattering one.
  *
  * A failed call is recorded, not retried: an error invalidates that site's reading
- * (see r33AbVerdicts). Load averages are recorded but not gated: both arms see the
- * same instant, which is what replaced D-038's load matching.
+ * (see r33AbVerdicts). Both arms see the same instant, but what B adds still grows
+ * with load (D-041), so the 1-min load average is gated at both ends of the timed
+ * rounds against the load D-024's baselines were measured at (r33AbLoadCheck).
  */
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
@@ -62,8 +67,11 @@ import {
   R33_AB_ARMS,
   R33_AB_PRE_CHANGE_REF,
   R33_AB_SITES,
+  R33_AB_LOAD_BAND,
   armOrder,
+  inR33AbLoadBand,
   r33AbBudgetMs,
+  r33AbLoadCheck,
   r33AbPasses,
   r33AbVerdicts,
   summarisePaired,
@@ -336,6 +344,26 @@ async function main(): Promise<number> {
     }
   }
 
+  // D-041: wait (bounded) for the 1-min load to enter the band before timing.
+  const bandWaitMin = Number(arg('--band-wait-min') ?? 0);
+  if (!Number.isFinite(bandWaitMin) || bandWaitMin < 0) throw new Error('--band-wait-min takes a non-negative number');
+  const bandDeadline = Date.now() + bandWaitMin * 60_000;
+  while (!inR33AbLoadBand(os.loadavg()[0]) && Date.now() < bandDeadline) {
+    await new Promise((z) => setTimeout(z, 15_000));
+  }
+  if (!inR33AbLoadBand(os.loadavg()[0])) {
+    console.log(
+      'R33_AB_SUMMARY ' +
+        JSON.stringify({
+          passes: false,
+          reading: 'load-unmatched',
+          loadCheck: r33AbLoadCheck(os.loadavg(), os.loadavg()),
+          note: `1-min load never entered ${R33_AB_LOAD_BAND.low}-${R33_AB_LOAD_BAND.high} within ${bandWaitMin} min; nothing was timed`,
+        }),
+    );
+    return 2;
+  }
+
   const samples = Object.fromEntries(sites.map((s) => [s, [] as PairedSample[]])) as Record<R33AbSite, PairedSample[]>;
   const loadavgStart = os.loadavg();
   const startedAt = new Date().toISOString();
@@ -368,12 +396,18 @@ async function main(): Promise<number> {
     sites.map((s) => [s, summarisePaired(samples[s])]),
   );
   const verdicts = r33AbVerdicts(summaries);
-  const passes = r33AbPasses(verdicts);
+  const loadCheck = r33AbLoadCheck(loadavgStart, loadavgEnd);
+  const budgetsPass = r33AbPasses(verdicts);
+  const passes = loadCheck.matched && budgetsPass;
   const result = {
     bench: 'chunk-search-ab',
     plan: 'generic-rag-chunking-2026-09-29',
     bar: 'R-33',
     methodDecision: 'D-040',
+    loadDecision: 'D-041',
+    reading: loadCheck.matched ? 'valid' : 'load-unmatched',
+    loadCheck,
+    budgetsPass,
     baselineDecision: 'D-024',
     preChangeRef: R33_AB_PRE_CHANGE_REF,
     startedAt,
@@ -400,6 +434,9 @@ async function main(): Promise<number> {
     'R33_AB_SUMMARY ' +
       JSON.stringify({
         passes,
+        reading: result.reading,
+        loadCheck,
+        budgetsPass,
         commit: result.measuredCode.commits['.'],
         dirty: result.measuredCode.files.filter((f) => f.dirty).map((f) => f.path),
         verdicts: verdicts.map((v) => ({
@@ -415,6 +452,7 @@ async function main(): Promise<number> {
         out,
       }),
   );
+  if (!loadCheck.matched) return 2;
   return passes ? 0 : 1;
 }
 
