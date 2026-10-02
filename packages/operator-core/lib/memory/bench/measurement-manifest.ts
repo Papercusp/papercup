@@ -360,6 +360,67 @@ export function assertNativeProfilerQualification(importer: { exitCode: number; 
 export interface NativeProfilerRequestWindow {
   runTag: string; processId: number; nativeThreadId: number; startMonotonicNs: string; endMonotonicNs: string;
 }
+/** Detect loader activity that maps snapshots can miss, including a complete
+ * load/unload between native-call boundaries. The caller retains the complete
+ * target stderr from process exec through EOF, its fingerprint and exit receipt.
+ * No absence-of-activity result by itself proves a fingerprinted DLL closure:
+ * loader paths/namespaces still need to be joined to the pre-inference maps. */
+export function inspectNativeLoaderActivity(stderr: string, windows: NativeProfilerRequestWindow[]) {
+  if (!stderr || !windows.length) throw new Error('native loader population missing');
+  const processId = windows[0].processId, expected = new Map<string, NativeProfilerRequestWindow>();
+  for (const w of windows) {
+    if (!w.runTag || expected.has(w.runTag) || w.processId !== processId
+      || !Number.isSafeInteger(w.processId) || w.processId <= 0
+      || !Number.isSafeInteger(w.nativeThreadId) || w.nativeThreadId <= 0
+      || !/^[1-9]\d*$/.test(w.startMonotonicNs) || !/^[1-9]\d*$/.test(w.endMonotonicNs)
+      || BigInt(w.startMonotonicNs) >= BigInt(w.endMonotonicNs)) throw new Error('invalid native loader request population');
+    expected.set(w.runTag, w);
+  }
+  const seen = new Map<string, string[]>(), markers: number[] = [], lines = stderr.split('\n');
+  let previousNs = 0n;
+  for (const [index, line] of lines.entries()) {
+    if (!line.startsWith('PC_NATIVE_RUN\t')) continue;
+    let marker;
+    try { marker = JSON.parse(line.slice('PC_NATIVE_RUN\t'.length)); }
+    catch { throw new Error('malformed native loader marker'); }
+    if (marker?.processId !== processId) throw new Error('native loader marker process mismatch');
+    const w = expected.get(marker.runTag), phases = seen.get(marker.runTag) ?? [];
+    if (!w || marker.nativeThreadId !== w.nativeThreadId || phases.length >= 2
+      || marker.phase !== (phases.length ? 'end' : 'start')
+      || marker.monotonicNs !== (marker.phase === 'start' ? w.startMonotonicNs : w.endMonotonicNs)
+      || BigInt(marker.monotonicNs) < previousNs) throw new Error('native loader marker does not bind request window');
+    phases.push(marker.phase); seen.set(marker.runTag, phases); markers.push(index);
+    previousNs = BigInt(marker.monotonicNs);
+  }
+  if (seen.size !== expected.size || [...seen.values()].some(phases => phases.length !== 2)) {
+    throw new Error('native loader request markers incomplete');
+  }
+  const first = markers[0], last = markers.at(-1)!, startupLibraries = new Set<string>();
+  const activity: Array<{ line: number; operation: string; object: string; namespace: string | null }> = [];
+  let startupComplete = false, startupMaps = 0;
+  for (const [index, line] of lines.entries()) {
+    const row = line.match(/^\s*(\d+):\s*(.*)$/);
+    if (!row || Number(row[1]) !== processId) continue;
+    const text = row[2];
+    if (index < first && text.startsWith('transferring control:')) startupComplete = true;
+    if (index < first && /;\s+generating link map$/.test(text)) startupMaps++;
+    const initialization = text.match(/^calling init:\s+(.+)$/);
+    if (index < first && initialization) startupLibraries.add(initialization[1]);
+    if (index <= first || index >= last) continue;
+    const map = text.match(/^file=(.+) \[(\d+)\];\s+(generating|destroying) link map$/);
+    const call = text.match(/^calling (init|fini):\s*(.*?)\s*(?:\[(\d+)\])?$/);
+    if (map) activity.push({ line: index+1, operation: map[3]+'-map', object: map[1], namespace: map[2] });
+    else if (call) activity.push({ line: index+1, operation: call[1], object: call[2], namespace: call[3] ?? null });
+    else if (/generating link map|destroying link map|calling init:|calling fini:|error:|fatal:/i.test(text)) {
+      throw new Error('unsupported or failed native loader activity');
+    }
+  }
+  if (!startupComplete || !startupMaps || !startupLibraries.size) throw new Error('native loader startup evidence missing');
+  return { processId, runTags: [...expected.keys()], startupLibraries: [...startupLibraries].sort(), activity,
+    noLoaderActivityDuringPopulation: activity.length === 0,
+    completeBeforeInferenceClosureVerified: false as const,
+    scope: 'glibc loader stderr ordering from first native Run start through last Run end' };
+}
 export interface NativeProfilerLaunch {
   processId: number; nativeThreadId: number; correlationId: number; startNs: string; endNs: string;
 }

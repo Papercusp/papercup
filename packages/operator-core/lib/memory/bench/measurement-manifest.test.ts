@@ -3,10 +3,72 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
+import { spawnSync } from 'node:child_process';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
 const roots: string[] = [];
+describe('native loader population evidence', () => {
+  const window = { runTag: 'pc-embed:123:1:0:1:1', processId: 123, nativeThreadId: 456,
+    startMonotonicNs: '100', endMonotonicNs: '200' };
+  const marker = (phase: string, overrides = {}) => 'PC_NATIVE_RUN\t'+JSON.stringify({ runTag: window.runTag,
+    processId: 123, nativeThreadId: 456, phase, monotonicNs: phase === 'start' ? '100' : '200', ...overrides });
+  const startup = ['123: file=libc.so.6 [0];  generating link map',
+    '123: calling init: /lib/libc.so.6', '123: transferring control: /runtime/node'];
+  const log = (...middle: string[]) => [...startup, marker('start'), ...middle, marker('end')].join('\n');
+  it('binds complete markers and keeps no-activity distinct from complete DLL closure', () => {
+    expect(inspectNativeLoaderActivity(log('999: file=child.so [0];  generating link map'), [window]))
+      .toMatchObject({ noLoaderActivityDuringPopulation: true, completeBeforeInferenceClosureVerified: false });
+  });
+  it('detects a transient load/unload even when the snapshot population would be unchanged', () => {
+    const result = inspectNativeLoaderActivity(log('123: file=/runtime/transient.so [2];  generating link map',
+      '123: calling init: /runtime/transient.so', '123: calling fini: /runtime/transient.so [2]',
+      '123: file=/runtime/transient.so [2];  destroying link map'), [window]);
+    expect(result.noLoaderActivityDuringPopulation).toBe(false);
+    expect(result.activity.map(x=>x.operation)).toEqual(['generating-map','init','fini','destroying-map']);
+    expect(result.activity[0].namespace).toBe('2');
+  });
+  it.each(['missing-start','missing-end','duplicate','tag','thread','clock','process','malformed','startup','format'])
+    ('rejects %s evidence', failure => {
+      let text = log();
+      if (failure === 'missing-start') text = [...startup, marker('end')].join('\n');
+      if (failure === 'missing-end') text = [...startup, marker('start')].join('\n');
+      if (failure === 'duplicate') text = log(marker('start'));
+      if (['tag','thread','clock','process'].includes(failure)) text = [...startup,
+        marker('start', failure === 'tag' ? {runTag:'another'} : failure === 'thread' ? {nativeThreadId:1}
+          : failure === 'clock' ? {monotonicNs:'99'} : {processId:999}), marker('end')].join('\n');
+      if (failure === 'malformed') text = log('PC_NATIVE_RUN\t{');
+      if (failure === 'startup') text = [marker('start'),marker('end')].join('\n');
+      if (failure === 'format') text = log('123: file=broken; generating link map');
+      expect(()=>inspectNativeLoaderActivity(text,[window])).toThrow('native loader');
+    });
+  it.runIf(process.platform === 'linux')('observes real glibc load/unload of a model-free shared object', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(),'native-loader-fixture-')); roots.push(root);
+    const library = path.join(root,'transient.so');
+    const compiler = spawnSync('/usr/bin/cc',['-x','c','-shared','-fPIC','-nostdlib','-o',library,'-'],
+      { input:'int pc_loader_fixture(void) { return 7; }',encoding:'utf8',timeout:10000 });
+    expect(compiler.status,compiler.stderr).toBe(0);
+    const program = `import ctypes,_ctypes,json,os,time
+def marker(phase):
+ n=str(time.clock_gettime_ns(time.CLOCK_MONOTONIC)); row=dict(runTag='fixture',processId=os.getpid(),nativeThreadId=os.getpid(),phase=phase,monotonicNs=n)
+ os.write(2,('PC_NATIVE_RUN\\t'+json.dumps(row)+'\\n').encode()); return n
+start=marker('start')
+library=ctypes.CDLL(${JSON.stringify(library)})
+assert library.pc_loader_fixture()==7
+_ctypes.dlclose(library._handle)
+end=marker('end')
+print(json.dumps(dict(runTag='fixture',processId=os.getpid(),nativeThreadId=os.getpid(),startMonotonicNs=start,endMonotonicNs=end)))`;
+    const env: NodeJS.ProcessEnv={...process.env,LD_DEBUG:'files'}; delete env.LD_DEBUG_OUTPUT;
+    const child=spawnSync('/usr/bin/python3',['-I','-S','-c',program],{env,encoding:'utf8',timeout:10000,maxBuffer:1024*1024});
+    expect(child.status,child.stderr).toBe(0);
+    const result=inspectNativeLoaderActivity(child.stderr,[JSON.parse(child.stdout)]);
+    expect(result.noLoaderActivityDuringPopulation).toBe(false);
+    expect(result.activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({operation:'generating-map',object:library}),
+      expect.objectContaining({operation:'destroying-map',object:library}),
+    ]));
+  });
+});
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 function prepared(): PreparedMeasurement {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'independent-eval-test-')); roots.push(dir);
