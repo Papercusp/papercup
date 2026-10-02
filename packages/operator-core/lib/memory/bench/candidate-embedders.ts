@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { moduleRepoRoot } from '../../module-repo-root';
 import os from 'node:os';
-import { ORT_SESSION_OPTIONS, type WorkerInputTrace, type WorkerInferenceTrace, type WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { ORT_SESSION_OPTIONS, validNativeRuntimeSample, type WorkerInputTrace, type WorkerInferenceTrace, type WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
   shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS, buildMdenseOnEmbedder,
   embedExecutionTarget, MDENSEON_MODEL, MDENSEON_REVISION } from '@papercusp/memory';
@@ -169,6 +169,24 @@ export function nativeRawClockTraceVerified(events: WorkerNativeInferenceTrace[]
     executable = identity; previousRaw = BigInt(clock.rawNs);
   }
   return true;
+}
+
+export function nativeRuntimeTraceVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  return !!events?.length && events.length % 2 === 0
+    && events.every((event,i)=>event.phase === (i%2 ? 'end' : 'start') && validNativeRuntimeSample(event));
+}
+/** Observing a provider library only after Run does not qualify pre-inference
+ * closure. Changes to bytes or mapped identity also invalidate the claim. */
+export function nativePreInferenceClosureVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  if (!nativeRuntimeTraceVerified(events)) return false;
+  for (let i=0;i<events!.length;i+=2) {
+    const before = new Map(events![i].runtime!.libraries.map(f=>[f.path,JSON.stringify(f)]));
+    if (events![i+1].runtime!.libraries.some(f=>before.get(f.path)!==JSON.stringify(f))) return false;
+  }
+  return true;
+}
+export function nativeGpuCapacityObserved(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  return nativeRuntimeTraceVerified(events) && events!.every(e=>e.device==='cuda' && e.runtime!.gpuMemory.status==='measured');
 }
 
 export function nativeBoundaryPopulation(request: NativeBoundaryRequest, selectedCell?: string) {
@@ -359,6 +377,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
         throw new Error('native boundary synchronous Run evidence mismatch');
       }
       if (process.platform === 'linux' && !nativeRawClockTraceVerified(nativeInferenceTraces)) throw new Error('native boundary RAW clock evidence mismatch');
+      if (process.platform === 'linux' && !nativeRuntimeTraceVerified(nativeInferenceTraces)) throw new Error('native boundary runtime evidence mismatch');
     }
     for (const batch of selected.batches) {
       activeCell = batch.id;
@@ -390,6 +409,9 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       }
       if (process.platform === 'linux' && !nativeInferenceTracesByCase.every((item) => nativeRawClockTraceVerified(item.traces))) {
         throw new Error('native boundary request-group RAW clock evidence mismatch');
+      }
+      if (process.platform === 'linux' && !nativeInferenceTracesByCase.every(item=>nativeRuntimeTraceVerified(item.traces))) {
+        throw new Error('native boundary request-group runtime evidence mismatch');
       }
       batches.push(result);
       fs.writeFileSync(`${output}.${batch.id}.json`, JSON.stringify({ ...identity, ...result }), { flag: 'wx', mode: 0o600 });
