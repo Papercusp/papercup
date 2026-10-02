@@ -89,8 +89,8 @@ describe('named pinned payload attribution on a real Node inspector', () => {
       console.log('ready'); setInterval(() => {}, 1000);
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     try {
       const deadline = Date.now() + 10_000;
       while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
@@ -176,8 +176,8 @@ describe('named pinned payload attribution on a real Node inspector', () => {
       console.log('ready'); setInterval(() => {}, 1000);
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     try {
       const deadline = Date.now() + 10_000;
       while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
@@ -215,8 +215,8 @@ describe('named pinned payload attribution on a real Node inspector', () => {
       console.log('ready'); setInterval(() => {}, 1000);
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     try {
       const deadline = Date.now() + 10_000;
       while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
@@ -263,8 +263,8 @@ describe('named pinned payload attribution on a real Node inspector', () => {
       console.log('ready'); setInterval(() => {}, 1000);
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     try {
       const deadline = Date.now() + 10_000;
       while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
@@ -309,8 +309,8 @@ describe('named pinned payload attribution on a real Node inspector', () => {
       console.log('ready'); setInterval(() => {}, 1000);
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     try {
       const deadline = Date.now() + 10_000;
       while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
@@ -357,8 +357,8 @@ describe('bounded function caller attribution on a real Node inspector', () => {
       console.log('ready'); setInterval(() => {}, 1000);
     `], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
     const requests: Array<{ method: string, args?: Record<string, unknown> }> = [];
     let pauses = 0;
     try {
