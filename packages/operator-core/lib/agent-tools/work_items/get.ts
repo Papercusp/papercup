@@ -213,7 +213,7 @@ async function withWorkItemsGetBudget<T>(
 export const THREAD_WINDOW_MAX = 10;
 
 const RESUME_ARGUMENT_CONSTRAINT =
-  'resume requires one item and cannot be combined with detail, checksOnly, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments';
+  'resume requires one item and cannot be combined with detail, checksOnly, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the full record)';
 
 /**
  * P-002 (WI-2145856): every undeclared key a real caller reached for when they
