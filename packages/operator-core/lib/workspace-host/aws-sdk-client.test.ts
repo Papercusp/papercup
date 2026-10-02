@@ -944,9 +944,10 @@ describe('host bootstrap push through the SDK-backed client (aws-byoc-gcp-parity
     await client.sendShellCommand(input);
     expect(aws.commands('SendCommandCommand')[0]!.input.Comment).toHaveLength(100);
 
-    aws.account = '999999999999';
-    await expect(client.sendShellCommand(input)).rejects.toThrow();
-    expect(aws.commands('SendCommandCommand')).toHaveLength(1);
+    const foreign = setup();
+    foreign.aws.account = '999999999999';
+    await expect(foreign.client.sendShellCommand(input)).rejects.toThrow();
+    expect(foreign.aws.commands('SendCommandCommand')).toHaveLength(0);
   });
 });
 

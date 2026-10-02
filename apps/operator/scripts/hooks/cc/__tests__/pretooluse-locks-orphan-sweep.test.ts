@@ -174,8 +174,8 @@ describe('EI-22176521893516708 — orphaned-claim reconcile', () => {
   it('filters an inherited foreign offer before the host orphan sweep', async () => {
     const priorOffer = process.env.PAPERCUSP_FOREIGN_OFFER_ID;
     process.env.PAPERCUSP_FOREIGN_OFFER_ID = 'inherited-offer';
-    seed('orphan', { lockId: 'orphan-lock', ageSec: GRACE_SEC + 5 });
     try {
+      seed('orphan', { lockId: 'orphan-lock', ageSec: GRACE_SEC + 5 });
       await runEdit('inherited-offer-edit');
       expect(releasedIds()).toContain('orphan-lock');
       expect(exists('last-orphan-sweep.json')).toBe(true);

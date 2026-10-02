@@ -302,6 +302,38 @@ describe('GitHub Issues ticket connector (P-019)', () => {
     });
   });
 
+  it('default work reads (list, counts, search) never return an ingested ticket; an explicit ask does (R-13)', async () => {
+    const gh = fakeGitHub();
+    const source = await connect();
+    await syncGitHubRepoMembership(sql, source, { client: gh.client });
+    // Baselines BEFORE ingestion: the default reads must not move when tickets land.
+    const countBefore = await countWorkItems({ harness: HARNESS });
+    const byStateBefore = await countWorkItemsByState({ harness: HARNESS });
+    await pollGitHubIssuesOnce(sql, source, { client: gh.client, now: () => T0 });
+
+    const connectorIds = (items: ReadonlyArray<{ id: string }>) =>
+      items.map((i) => i.id).filter((id) => /^TK[TS]-/.test(id)).sort();
+    const stored = await connectorRows();
+    const ticketIds = stored.filter((r) => r.kind === 'ticket').map((r) => r.feature_id).sort();
+    const changeIds = stored.filter((r) => r.kind === 'ticket-status-change').map((r) => r.feature_id).sort();
+    expect(ticketIds).toHaveLength(2);
+    expect(changeIds).toHaveLength(3);
+
+    // Default reads: nature 'work' only.
+    expect(connectorIds(await listWorkItems({ harness: HARNESS }))).toEqual([]);
+    expect(await countWorkItems({ harness: HARNESS })).toBe(countBefore);
+    expect(await countWorkItemsByState({ harness: HARNESS })).toEqual(byStateBefore);
+    expect(connectorIds((await searchWorkItems('Gazebo', { harness: HARNESS, semantic: false })).items)).toEqual([]);
+
+    // Explicit asks: by nature or by naming the kind.
+    expect(connectorIds(await listWorkItems({ harness: HARNESS, natures: ['record'] }))).toEqual(ticketIds);
+    expect(connectorIds(await listWorkItems({ harness: HARNESS, natures: ['event'] }))).toEqual(changeIds);
+    expect(connectorIds(await listWorkItems({ harness: HARNESS, kind: 'ticket' as never }))).toEqual(ticketIds);
+    expect(await countWorkItems({ harness: HARNESS, natures: ['record'] })).toBe(2);
+    const searched = await searchWorkItems('Gazebo', { harness: HARNESS, semantic: false, natures: ['record'] });
+    expect(connectorIds(searched.items)).toHaveLength(1);
+  });
+
   it('re-polls idempotently: tickets update in place, no duplicate change or document', async () => {
     const gh = fakeGitHub();
     let source = await connect();

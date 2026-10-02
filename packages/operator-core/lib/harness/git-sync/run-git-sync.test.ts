@@ -70,7 +70,6 @@ import type { FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
-// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
 import { withFsMutex, withFsMutexRead } from '../../../../../scripts/lib/fs-mutex.mjs';
 // @ts-expect-error -- buildless plain-JS module family, no declaration file.
 import { installLockNameForRoot } from '../../../../../scripts/lib/install-lock-name.mjs';

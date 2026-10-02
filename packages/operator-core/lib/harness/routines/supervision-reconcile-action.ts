@@ -10,8 +10,6 @@
  * than a per-install blueprint `triggers.schedule` entry (an operator-HOME-level concern, not a
  * per-blueprint-install one — mirrors `hive-git-gc-routine.ts`'s documented deviation).
  */
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { moduleRepoRoot } from '../../module-repo-root';
 import {
@@ -34,7 +32,6 @@ import { fileSupervisionGiveUpEi, resolveSupervisionGiveUpEi } from '../../super
 import { fileSupervisionPausedEi, resolveSupervisionPausedEi } from '../../supervision/paused-unit-ei';
 import { execFileViaSidecar } from '../../fleet/git-via-sidecar';
 
-const execFileP = promisify(execFile);
 // Not a fixed `../` climb: inside the host bundle that lands outside the checkout and the
 // drop-in check reports `unavailable` on every run (P-016). See module-repo-root.ts.
 const REPO_ROOT = moduleRepoRoot(import.meta.url);
@@ -221,8 +218,17 @@ export function parseSystemdDropInCheckOutput(output: string): DropInInstallChec
 
 /** Run the existing checker once per supervision tick with a hard bound. */
 export async function runSystemdDropInInstallCheck(
+  // WI-10005118: this runs every 60 s inside the multi-GB bg-host, so fork it from the spawner
+  // sidecar like the reconcile's systemctl/journalctl calls above (a local fork's cost grows
+  // with the parent's RSS and blocks the main thread). Reject semantics match execFile.
   execute: DropInCheckExecutor = async (command, args, options) => {
-    const { stdout, stderr } = await execFileP(command, args, options);
+    const { stdout, stderr } = await execFileViaSidecar(command, args, {
+      timeoutMs: options.timeout,
+      cwd: options.cwd,
+      maxBuffer: options.maxBuffer,
+      subsystem: 'supervision-dropin-check',
+      sidecarVar: SUPERVISION_RECONCILE_SIDECAR_VAR,
+    });
     return { stdout, stderr };
   },
 ): Promise<DropInInstallCheckResult> {

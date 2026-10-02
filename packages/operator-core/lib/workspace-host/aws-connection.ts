@@ -1,3 +1,4 @@
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import {
   assertWorkspaceHostSecretIsolation,
   type CloudCredentialRef,
@@ -229,6 +230,8 @@ export interface AwsWorkspaceHostPreflightIssue {
     | 'probe-failed';
   message: string;
   remediation: string;
+  /** Present on fail-closed authority refusals (WI-10005197): what compared, what lifts it, who can. */
+  refusal?: RefusalContract;
 }
 
 export interface AwsWorkspaceHostPreflightRequest {
@@ -537,6 +540,13 @@ export async function preflightAwsWorkspaceHostConnection(
         code: 'permission-denied',
         message: `Permission '${action}' is denied${evidence.reason ? `: ${evidence.reason}` : '.'}`,
         remediation: `Grant '${action}' to the selected role with the narrowest applicable resource scope.`,
+        refusal: {
+          observed: { action, allowed: 'false', reason: evidence.reason ?? null },
+          liftsWhen:
+            `the selected IAM role is granted '${action}' (an AWS account administrator attaches it with the ` +
+            'narrowest applicable resource scope) and the preflight is re-run. Re-running unchanged cannot pass',
+          whoCanMakeItTrue: ['owner'],
+        } satisfies RefusalContract,
       });
     }
   }

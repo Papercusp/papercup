@@ -1156,50 +1156,6 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     );
   });
 
-  it('reacquires the shared restart barrier while completion settlement is running', async () => {
-    runGitSyncMock.mockResolvedValue(syncedOutcome);
-    let sharedBarrierOwnersDuringSettlement: string[] = [];
-    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async () => {
-      sharedBarrierOwnersDuringSettlement = [...heldResourcesByOwner.entries()]
-        .filter(([, resources]) => resources.includes('git-sync'))
-        .map(([owner]) => owner);
-      return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
-    });
-
-    await action(ctx);
-
-    const sharedBarrierAcquires = tryAcquireResourceMock.mock.calls
-      .map(([, opts]) => opts as { resource: string; mode: string; owner: string })
-      .filter(({ resource, mode }) => resource === 'git-sync' && mode === 'shared');
-    expect(sharedBarrierAcquires).toHaveLength(2);
-    expect(sharedBarrierOwnersDuringSettlement).toEqual([sharedBarrierAcquires[1]?.owner]);
-    expect(sharedBarrierAcquires[1]?.owner).not.toBe(sharedBarrierAcquires[0]?.owner);
-    expect([...heldResourcesByOwner.values()].flat()).not.toContain('git-sync');
-  });
-
-  it('skips completion settlement when a restart is already queued on the shared barrier', async () => {
-    runGitSyncMock.mockResolvedValue(syncedOutcome);
-    let sharedBarrierAttempts = 0;
-    tryAcquireResourceMock.mockImplementation(async (_tx, rawOptions) => {
-      const options = rawOptions as { resource: string; mode: string };
-      if (options.resource === 'git-sync' && options.mode === 'shared' && ++sharedBarrierAttempts === 2) {
-        return { ok: false, reason: 'exclusive_pending', holders: [] };
-      }
-      return { ok: true };
-    });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    try {
-      await action(ctx);
-
-      expect(sharedBarrierAttempts).toBe(2);
-      expect(reconcileProposedCompletionsAtCommitMock).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('completion settlement skipped'));
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
   it('EI-24496143892913296: the first post-leg after settlement restamps the activity marker and drops the stale N/total', async () => {
     // Before the fix the marker stayed phase:'completion-settlement' (frozen 9/200, frozen
     // updated_at) for every leg that ran after settlement ended, so routines:list read a
@@ -1460,6 +1416,50 @@ describe('EI-18799539619330782: git-sync routine-metadata access is tenant-scope
 });
 
 describe('P-009/P-006 lock discipline (per-slug resources)', () => {
+  it('holds a fresh shared restart barrier while completion settlement is running', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let sharedBarrierOwnersDuringSettlement: string[] = [];
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async () => {
+      sharedBarrierOwnersDuringSettlement = [...heldResourcesByOwner.entries()]
+        .filter(([, resources]) => resources.includes('git-sync'))
+        .map(([owner]) => owner);
+      return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+    });
+
+    await action(ctx);
+
+    const sharedBarrierAcquires = tryAcquireResourceMock.mock.calls
+      .map(([, opts]) => opts as { resource: string; mode: string; owner: string })
+      .filter(({ resource, mode }) => resource === 'git-sync' && mode === 'shared');
+    expect(sharedBarrierAcquires).toHaveLength(2);
+    expect(sharedBarrierOwnersDuringSettlement).toEqual([sharedBarrierAcquires[1]?.owner]);
+    expect(sharedBarrierAcquires[1]?.owner).not.toBe(sharedBarrierAcquires[0]?.owner);
+    expect([...heldResourcesByOwner.values()].flat()).not.toContain('git-sync');
+  });
+
+  it('skips completion settlement when a restart is already queued on the shared barrier', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let sharedBarrierAttempts = 0;
+    tryAcquireResourceMock.mockImplementation(async (_tx, rawOptions) => {
+      const options = rawOptions as { resource: string; mode: string };
+      if (options.resource === 'git-sync' && options.mode === 'shared' && ++sharedBarrierAttempts === 2) {
+        return { ok: false, reason: 'exclusive_pending', holders: [] };
+      }
+      return { ok: true };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(sharedBarrierAttempts).toBe(2);
+      expect(reconcileProposedCompletionsAtCommitMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('completion settlement skipped'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('SKIPS the tick when a peer holds a lock (back-pressure) — releasing the partial acquisitions', async () => {
     // per-slug + first extra acquire; the last extra is held by a peer
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
@@ -2095,10 +2095,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       ),
     ).toBe(true);
     const barrierAcquires = tryAcquireResourceMock.mock.calls
-      .map(([, opts]) => opts as { resource: string; mode: string })
+      .map(([, opts]) => opts as { resource: string; mode: string; owner?: string })
       .filter(({ resource }) => resource === 'git-sync');
-    expect(barrierAcquires).toHaveLength(2);
+    // The original owner retries after reclaiming the terminal resolver; settlement
+    // then acquires a third, fresh owner after the primary lock set has been released.
+    expect(barrierAcquires).toHaveLength(3);
     expect(barrierAcquires.every(({ mode }) => mode === 'shared')).toBe(true);
+    expect(barrierAcquires[0]?.owner).toBe(barrierAcquires[1]?.owner);
+    expect(barrierAcquires[2]?.owner).not.toBe(barrierAcquires[1]?.owner);
     expect(runGitSyncMock).toHaveBeenCalledOnce();
   });
 

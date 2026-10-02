@@ -369,22 +369,19 @@ describe('the gate can actually fail', () => {
 // ---------------------------------------------------------------------------
 
 // @covers INV-02
-describe('the LINK door trusts a caller-declared target kind (EI-19387076313999646)', () => {
-  it('mints an INERT edge when dst.kind mis-declares the target family, and the gate CATCHES it', async () => {
-    // EI-19387076313999646 was filed from a SOURCE READ during P-008's writer census and had
-    // never been executed. This is that execution, and it confirms the report.
-    //
-    // linkWorkItem resolves the SOURCE's family from the database (`wi.family`) but takes the
-    // DESTINATION's `kind` on trust. Its only check on dst is a FORM one —
+describe('the LINK door resolves a caller-declared target kind (EI-19387076313999646)', () => {
+  it('re-files a mis-declared dst.kind under the target row family, so the gate finds nothing', async () => {
+    // EI-19387076313999646: linkWorkItem used to take the DESTINATION's `kind` on trust. Its only
+    // check on dst is a FORM one —
     //     if (dst.kind === FEATURE_KIND && !isQualifiedFeatureRef(dst.ref)) return { error }
-    // — which asks whether the ref LOOKS qualified, never whether it RESOLVES to a
-    // feature-family row. So a harness-qualified ref naming an ISSUE satisfies the guard and
-    // writes blocked_kind='feature' for an issue item: the exact live D-017 shape. The edge is
-    // form-valid, mirrored, acyclic, counted by every row-shape check, and gates nothing.
+    // — so a harness-qualified ref naming an ISSUE passed it and wrote blocked_kind='feature' for
+    // an issue item: the live D-017 shape, form-valid and inert.
     //
-    // This is deliberately NOT asserted as an error — the door genuinely accepts the call
-    // today. Pinning the CURRENT behaviour is what makes the fix detectable: when the door
-    // starts resolving the target's family, this test fails and says so.
+    // The fix (work-item-deps-store.ts resolveActualDepEndpoint, called by
+    // mirrorWorkItemBlockingEdge) resolves both endpoints against the target row before writing.
+    // This test originally pinned the DEFECT so the fix would surface here as a red; it did
+    // (WI-10005221), so it now pins the FIXED behaviour. If the resolution regresses, the row
+    // assertion below reads blocked_kind='feature' again and the verdict reports a mismatch.
     await seedIssue('WI-6001');
     await seedIssue('WI-6002');
 
@@ -395,14 +392,14 @@ describe('the LINK door trusts a caller-declared target kind (EI-193870763139996
       'blocks',
       { harness: H, by: 'su-test' },
     );
-    expect(res, 'the door accepts the mis-declared target — this is the defect').toEqual({ ok: true });
+    expect(res, 'the door still accepts the call; it corrects the kind instead of refusing').toEqual({ ok: true });
 
-    // THE GATE CATCHES IT. This is the case that justifies running the detector over writer
-    // output rather than over hand-written rows: no hand-written fixture would have thought to
-    // produce this, because it is produced by a real door behaving as currently written.
-    const v = await verdict();
-    expect(v.defects, 'EI-19387076313999646: the link door minted an endpoint the detector rejects').toBeGreaterThan(0);
-    expect(v.mismatched.length).toBeGreaterThan(0);
-    expect(v.mismatched.some((d) => d.ref.includes('WI-6002'))).toBe(true);
+    // The writer actually wrote, and wrote the edge under the target's REAL family.
+    const deps = await db.sql<{ blocked_kind: string; blocked_ref: string; blocker_kind: string; blocker_ref: string }[]>`
+      SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref FROM harness_shared.work_item_deps`;
+    expect(deps).toEqual([{ blocked_kind: 'issue', blocked_ref: 'WI-6002', blocker_kind: 'issue', blocker_ref: 'WI-6001' }]);
+
+    // THE GATE agrees. The controls in 'the gate can actually fail' keep this from being vacuous.
+    expect(await verdict()).toMatchObject({ defects: 0, mismatched: [], dangling: [] });
   });
 });

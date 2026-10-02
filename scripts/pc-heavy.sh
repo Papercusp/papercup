@@ -925,38 +925,41 @@ _pc_heavy_internal_preempt_run() {
   # Deliberately NOT `ps -s <sid>`: that scans every process on the host and
   # measured ~0.64 s of CPU per call on a ~10k-process box (2026-10-02), far
   # too costly at a 2 s cadence times every running heavy job. This walk reads
-  # only the job's own entries. A descendant that re-parents away (double-fork
-  # daemon) leaves the tree and is not counted; heavy jobs do not do that.
+  # only the job's own entries — measured the same day at ~16 ms for a
+  # 15-process tree and ~94 ms for 86 processes, with every status file summed
+  # in ONE cat|awk pass (a bash read loop per status file cost 2-3x that).
+  # A descendant that re-parents away (double-fork daemon) leaves the tree and
+  # is not counted; heavy jobs do not do that.
   _peak_sample() {
-    local -a _queue=() _kids=()
-    local _pid='' _f='' _k='' _v='' _rest='' _anon=0 _rss=0 _seen=0 _visited=0
+    local -a _queue=() _kids=() _files=()
+    local _pid='' _f='' _sums='' _seen=0 _anon=0 _rss=0 _i=0
     [ -n "${_peak_ledger:-}" ] || return 0
     case "${_preempt_child_pid:-}" in ''|*[!0-9]*) return 0 ;; esac
     _queue=("$_preempt_child_pid")
-    # The bound only guards a pathological tree; a real job is far below it.
-    while [ "${#_queue[@]}" -gt 0 ] && [ "$_visited" -lt 4096 ]; do
-      _pid="${_queue[0]}"
-      _queue=("${_queue[@]:1}")
-      _visited=$(( _visited + 1 ))
+    # Index walk (no array shifting). The bound only guards a pathological
+    # tree; a real job is far below it.
+    while [ "$_i" -lt "${#_queue[@]}" ] && [ "$_i" -lt 4096 ]; do
+      _pid="${_queue[$_i]}"
+      _i=$(( _i + 1 ))
       case "$_pid" in ''|*[!0-9]*) continue ;; esac
-      # Redirect stderr FIRST: a process that exits mid-walk makes the input
-      # redirection fail, and that must stay silent.
-      if { while read -r _k _v _rest; do
-             case "$_k" in
-               RssAnon:) _anon=$(( _anon + _v )) ;;
-               VmRSS:) _rss=$(( _rss + _v )) ;;
-             esac
-           done; } 2>/dev/null < "/proc/$_pid/status"; then
-        _seen=$(( _seen + 1 ))
-      fi
+      _files+=("/proc/$_pid/status")
       for _f in /proc/"$_pid"/task/*/children; do
-        [ -r "$_f" ] || continue
         _kids=()
-        # The file has no trailing newline, so read returns 1 after filling.
+        # No trailing newline, so read returns 1 after filling; a process that
+        # exited mid-walk makes the redirection fail, silently.
         read -r -a _kids 2>/dev/null < "$_f" || true
         [ "${#_kids[@]}" -gt 0 ] && _queue+=("${_kids[@]}")
       done
     done
+    # cat skips a status file whose process has exited and keeps going (mawk
+    # would abort on it), so one vanished worker cannot void the sample. Its
+    # non-zero status is swallowed INSIDE the pipe: under `set -o pipefail` it
+    # would otherwise fail the whole substitution and discard a good reading.
+    _sums="$({ cat "${_files[@]}" 2>/dev/null || true; } | awk '
+      $1 == "Name:" { n++ } $1 == "RssAnon:" { a += $2 } $1 == "VmRSS:" { r += $2 }
+      END { printf "%d %d %d\n", n, a, r }')"
+    read -r _seen _anon _rss <<<"${_sums:-0 0 0}" || true
+    case "${_seen:-}:${_anon:-}:${_rss:-}" in *[!0-9:]*|:*|*::*|*:) return 0 ;; esac
     [ "$_seen" -gt 0 ] || return 0
     _peak_samples=$(( _peak_samples + 1 ))
     if [ "$_anon" -gt "$_peak_anon_kib" ]; then _peak_anon_kib="$_anon"; fi

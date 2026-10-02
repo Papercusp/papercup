@@ -121,7 +121,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/harness-insights/github-facts.ts',
   'packages/operator-core/lib/harness/join-steps.ts',
   'packages/operator-core/lib/harness/open-fork-pr.ts',
-  'packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts',
   'packages/operator-core/lib/harness/upstream-repo-context.ts',
   'packages/operator-core/lib/papercup/papercup-pane-input.ts',
   'packages/operator-core/lib/pot-eval/ground-truth.ts',

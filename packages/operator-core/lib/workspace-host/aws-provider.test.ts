@@ -1,3 +1,4 @@
+import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import {
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
@@ -12,6 +13,7 @@ import {
   AWS_WORKSPACE_HOST_CLIENT_TOKEN_LENGTH,
   awsWorkspaceHostClientToken,
   createAwsWorkspaceHostProvider,
+  type AwsCommandInvocationObservation,
   type AwsCreateSnapshotInput,
   type AwsCreateVolumeInput,
   type AwsCreatedInstance,
@@ -21,10 +23,16 @@ import {
   type AwsInstanceObservation,
   type AwsProviderMutationResult,
   type AwsRunInstancesInput,
+  type AwsShellCommandInput,
   type AwsSnapshotObservation,
   type AwsVolumeObservation,
   type AwsWorkspaceHostSdkClient,
 } from './aws-provider';
+import {
+  AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC,
+  awsEbsNvmeDevicePath,
+  renderAwsHostBootstrapPush,
+} from './aws-host-bootstrap-push';
 import { cloudResourceKindForDeleteOp, describeCloudResourceDeleteAddress } from './cloud-resource-obligations';
 import type { WorkspaceHostResourceCreatedEvent } from './gcp-provider';
 import type { AwsWorkspaceHostInventoryRequest, AwsWorkspaceHostInventorySnapshot } from './aws-safety';
@@ -64,10 +72,17 @@ function desired(): WorkspaceHostDesiredSpec {
   };
 }
 
-function context(provider: Readonly<Record<string, unknown>> = {}): WorkspaceHostProviderContext {
+/** What the controller renders for provision and repair (D-013); the provider refuses those without it. */
+const HOST_BOOTSTRAP = '#!/usr/bin/env bash\necho papercusp-bootstrap\n';
+
+function context(
+  provider: Readonly<Record<string, unknown>> = {},
+  hostBootstrapScript: string | null = HOST_BOOTSTRAP,
+): WorkspaceHostProviderContext {
   return {
     workspaceId: 'workspace-aws-1',
     requestId: 'request-aws-1',
+    ...(hostBootstrapScript === null ? {} : { hostBootstrapScript }),
     connection: {
       target: 'aws',
       cloudCredentialRef: { kind: 'cloud', ref: 'resolver://aws/development' },
@@ -155,10 +170,35 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     return undefined;
   }
 
+  /** Whether SSM ever reports the instance Online within the wait (D-013). */
+  ssmOnline = true;
+  /** What the pushed bootstrap command settles to. */
+  commandInvocation: AwsCommandInvocationObservation = { status: 'Success', responseCode: 0 };
+  readonly ssmOnlineWaits: string[] = [];
+  readonly shellCommands: AwsShellCommandInput[] = [];
+  readonly commandWaits: Array<{ commandId: string; instanceId: string }> = [];
+
+  async waitForSsmOnline(instanceId: string): Promise<boolean> {
+    this.ssmOnlineWaits.push(instanceId);
+    return this.ssmOnline;
+  }
+
+  async sendShellCommand(input: AwsShellCommandInput): Promise<{ commandId: string; requestId?: string }> {
+    this.shellCommands.push(input);
+    const commandId = `command-${this.shellCommands.length}`;
+    return { commandId, requestId: `request:send:${commandId}` };
+  }
+
+  async waitForCommandInvocation(commandId: string, instanceId: string): Promise<AwsCommandInvocationObservation> {
+    this.commandWaits.push({ commandId, instanceId });
+    return this.commandInvocation;
+  }
+
   async createVolume(input: AwsCreateVolumeInput): Promise<AwsCreatedVolume> {
     this.createVolumeCalls.push(input);
     const existing = this.volumeTokens.get(input.ClientToken);
-    const volumeId = existing ?? `vol-${this.volumeTokens.size + 1}`;
+    // Real EBS ids are vol- plus 17 hex digits; the bootstrap push derives the NVMe device from it.
+    const volumeId = existing ?? `vol-${String(this.volumeTokens.size + 1).padStart(17, '0')}`;
     this.volumeTokens.set(input.ClientToken, volumeId);
     this.volumes.set(volumeId, {
       volumeId,
@@ -445,6 +485,7 @@ describe('AWS workspace-host provider planning', () => {
       { id: 'create-data-volume', dependsOn: [] },
       { id: 'run-instance', dependsOn: ['create-data-volume'] },
       { id: 'attach-data-volume', dependsOn: ['create-data-volume', 'run-instance'] },
+      { id: 'start-host-bootstrap', dependsOn: ['attach-data-volume'] },
     ]);
 
     const volume = first.steps[0].input as unknown as { request: AwsCreateVolumeInput };
@@ -674,7 +715,7 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
     expect(report.provisionedResources.map((item) => item.kind)).toEqual(['disk', 'vm']);
     expect(report.destroyConfirmations.map((item) => item.providerResourceId)).toEqual([
       'i-00000000000000001',
-      'vol-1',
+      'vol-00000000000000001',
     ]);
   });
 
@@ -730,11 +771,11 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
       expect(result.state).toBe('destroyed');
       if (result.state === 'destroyed') confirmations.push(result.confirmation.providerResourceId);
     }
-    expect(confirmations).toEqual(['i-00000000000000001', 'vol-1']);
+    expect(confirmations).toEqual(['i-00000000000000001', 'vol-00000000000000001']);
     expect(client.terminateCalls).toBe(1);
     expect(client.deleteVolumeCalls).toBe(1);
     expect(client.describedInstances).toContain('i-00000000000000001');
-    expect(client.describedVolumes).toContain('vol-1');
+    expect(client.describedVolumes).toContain('vol-00000000000000001');
     expect(client.waitedInstanceStates.map(({ state }) => state)).toContain('terminated');
     expect(client.waitedVolumeStates.map(({ state }) => state)).toContain('deleted');
   });
@@ -822,7 +863,7 @@ describe('AWS workspace-host provider teardown-obligation observers', () => {
     await provision(client, provider);
 
     expect(created.map((event) => [event.resource.kind, event.resource.providerId])).toEqual([
-      ['disk', 'vol-1'],
+      ['disk', 'vol-00000000000000001'],
       ['vm', 'i-00000000000000001'],
     ]);
     for (const event of created) {
@@ -854,7 +895,7 @@ describe('AWS workspace-host provider teardown-obligation observers', () => {
 
     expect(destroyed).toEqual([
       { deleteOp: 'terminate-instance', providerId: 'i-00000000000000001', workspaceId: 'workspace-aws-1' },
-      { deleteOp: 'delete-volume', providerId: 'vol-1', workspaceId: 'workspace-aws-1' },
+      { deleteOp: 'delete-volume', providerId: 'vol-00000000000000001', workspaceId: 'workspace-aws-1' },
     ]);
     const createdKindById = new Map(created.map((event) => [event.resource.providerId, event.resource.kind]));
     for (const event of destroyed) {
@@ -875,5 +916,182 @@ describe('AWS workspace-host provider teardown-obligation observers', () => {
     await expect(
       provider.apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] }, context()),
     ).rejects.toThrow('obligation ledger unavailable');
+  });
+});
+
+describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => {
+  /** Provision up to (not including) the bootstrap step; returns that step and the known resources. */
+  async function provisionToBootstrap(client: FakeAwsWorkspaceHostSdkClient, provider: ReturnType<typeof createAwsWorkspaceHostProvider>) {
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'provision-1', idempotencyKey: 'provision-1', desired: desired() },
+      context(),
+    );
+    const bootstrap = plan.steps.at(-1)!;
+    const resources: WorkspaceHostResourceRef[] = [];
+    for (const step of plan.steps.slice(0, -1)) {
+      const result = await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: [...resources] },
+        context(),
+      );
+      if ('resource' in result && result.resource) resources.push(result.resource);
+    }
+    expect(client.shellCommands).toHaveLength(0);
+    return { plan, bootstrap, resources };
+  }
+
+  it('declares the host bootstrap capability and the EC2 console status channel', () => {
+    const { provider } = providerAndClient();
+    expect(provider.capabilities.lifecycle.hostBootstrap).toBe(true);
+    expect(provider.capabilities.lifecycle.bootstrapStatusChannel).toBe('ec2-console-output');
+  });
+
+  it('plans the bootstrap as the last provision step, after the data volume attaches, carrying the rendered script', async () => {
+    const { client, provider } = providerAndClient();
+    const { bootstrap } = await provisionToBootstrap(client, provider);
+    expect(bootstrap).toMatchObject({
+      id: 'start-host-bootstrap',
+      dependsOn: ['attach-data-volume'],
+      destructive: false,
+      input: { op: 'start-host-bootstrap', hostId: 'host-aws-1', script: HOST_BOOTSTRAP },
+    });
+  });
+
+  it('refuses to plan a provision or a repair without a controller-rendered bootstrap', async () => {
+    const { client, provider } = providerAndClient();
+    await expect(
+      provider.plan(
+        { action: 'provision', operationId: 'p', idempotencyKey: 'p', desired: desired() },
+        context({}, null),
+      ),
+    ).rejects.toThrow('aws_workspace_host_bootstrap_missing');
+    await expect(
+      provider.plan(
+        { action: 'provision', operationId: 'p', idempotencyKey: 'p', desired: desired() },
+        context({}, '  \n'),
+      ),
+    ).rejects.toThrow('aws_workspace_host_bootstrap_missing');
+
+    const { host } = await provision(client, provider);
+    await expect(
+      provider.plan({ action: 'repair', operationId: 'r', idempotencyKey: 'r', host }, context({}, null)),
+    ).rejects.toThrow('aws_workspace_host_bootstrap_missing');
+  });
+
+  it('re-runs the bootstrap after repair, and only after repair', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const repair = await provider.plan({ action: 'repair', operationId: 'r', idempotencyKey: 'r', host }, context());
+    expect(repair.steps.map((step) => ({ id: step.id, dependsOn: step.dependsOn }))).toEqual([
+      { id: 'repair-instance', dependsOn: [] },
+      { id: 'start-host-bootstrap', dependsOn: ['repair-instance'] },
+    ]);
+    // Lifecycle actions that keep the boot disk need no bootstrap — and do not demand one.
+    for (const action of ['start', 'stop', 'restart'] as const) {
+      const plan = await provider.plan({ action, operationId: action, idempotencyKey: action, host }, context({}, null));
+      expect(plan.steps.map((step) => step.id)).toEqual([`${action}-instance`]);
+    }
+  });
+
+  it('pushes the bootstrap over SSM to the instance, naming the attached volume, and reports applied on Success', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, bootstrap, resources } = await provisionToBootstrap(client, provider);
+    const result = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: bootstrap, knownResources: resources },
+      context(),
+    );
+
+    expect(result.state).toBe('applied');
+    expect(client.ssmOnlineWaits).toEqual(['i-00000000000000001']);
+    expect(client.shellCommands).toHaveLength(1);
+    const [sent] = client.shellCommands;
+    expect(sent).toMatchObject({
+      instanceId: 'i-00000000000000001',
+      comment: 'Papercusp host bootstrap host-aws-1',
+      executionTimeoutSec: AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC,
+    });
+    expect(sent!.commands).toEqual(
+      renderAwsHostBootstrapPush({ volumeId: 'vol-00000000000000001', hostBootstrapScript: HOST_BOOTSTRAP }).commands,
+    );
+    // The device path rides inside the gzipped payload: decode it the way the host does.
+    const payload = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/.exec(sent!.commands.join('\n'))?.[1];
+    expect(payload).toBeDefined();
+    const script = gunzipSync(Buffer.from(payload!, 'base64')).toString('utf8');
+    expect(script).toContain(awsEbsNvmeDevicePath('vol-00000000000000001'));
+    expect(script).toContain('echo papercusp-bootstrap');
+    expect(client.commandWaits).toEqual([{ commandId: 'command-1', instanceId: 'i-00000000000000001' }]);
+  });
+
+  it('stays in progress, sending nothing, while SSM has not reported the instance Online', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, bootstrap, resources } = await provisionToBootstrap(client, provider);
+    client.ssmOnline = false;
+    const result = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: bootstrap, knownResources: resources },
+      context(),
+    );
+    expect(result.state).toBe('in-progress');
+    expect(client.shellCommands).toHaveLength(0);
+  });
+
+  it('stays in progress while the pushed command has not settled', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, bootstrap, resources } = await provisionToBootstrap(client, provider);
+    client.commandInvocation = { status: 'InProgress' };
+    const result = await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: bootstrap, knownResources: resources },
+      context(),
+    );
+    expect(result.state).toBe('in-progress');
+  });
+
+  it.each(['Failed', 'TimedOut', 'Cancelled', 'Undeliverable', 'Terminated'])(
+    'fails the step with the exit code and output tail when the push settles %s',
+    async (status) => {
+      const { client, provider } = providerAndClient();
+      const { plan, bootstrap, resources } = await provisionToBootstrap(client, provider);
+      client.commandInvocation = { status, responseCode: 3, stderr: 'papercusp: data device never appeared\n' };
+      await expect(
+        provider.apply(
+          { planId: plan.planId, operationId: plan.operationId, step: bootstrap, knownResources: resources },
+          context(),
+        ),
+      ).rejects.toThrow(
+        `aws_workspace_host_bootstrap_push_failed: ${status} exit=3: papercusp: data device never appeared`,
+      );
+    },
+  );
+
+  it('refuses to push before the volume and instance identities are known', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, bootstrap, resources } = await provisionToBootstrap(client, provider);
+    await expect(
+      provider.apply(
+        {
+          planId: plan.planId,
+          operationId: plan.operationId,
+          step: bootstrap,
+          knownResources: resources.filter((item) => item.kind !== 'disk'),
+        },
+        context(),
+      ),
+    ).rejects.toThrow();
+    expect(client.shellCommands).toHaveLength(0);
+  });
+
+  it('re-pushes on reconcile, since no provider record says whether an earlier push landed', async () => {
+    const { client, provider } = providerAndClient();
+    const { plan, bootstrap, resources } = await provisionToBootstrap(client, provider);
+    const result = await provider.reconcile(
+      {
+        planId: plan.planId,
+        operationId: plan.operationId,
+        step: bootstrap,
+        knownResources: resources,
+        reason: 'ambiguous-timeout',
+      },
+      context(),
+    );
+    expect(result.state).toBe('applied');
+    expect(client.shellCommands).toHaveLength(1);
   });
 });

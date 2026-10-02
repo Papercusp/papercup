@@ -33,6 +33,7 @@ import {
   unmeasuredHealthCheck,
 } from '@papercusp/deployment-driver';
 import { AWS_WORKSPACE_HOST_TARGET } from './aws-connection';
+import { AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC, renderAwsHostBootstrapPush } from './aws-host-bootstrap-push';
 import {
   AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS,
   type AwsWorkspaceHostInventoryRequest,
@@ -208,6 +209,16 @@ export interface AwsWorkspaceHostSdkClient {
    * cloud-init prints the SSH host keys there, which is how trust is pinned before the first SSH.
    */
   getConsoleOutput(instanceId: string): Promise<string | undefined>;
+  /** Wait until SSM reports the instance Online (D-013); false when the wait budget lapses. */
+  waitForSsmOnline(instanceId: string, signal?: AbortSignal): Promise<boolean>;
+  /** Run shell lines on one instance through AWS-RunShellScript (D-013). */
+  sendShellCommand(input: AwsShellCommandInput): Promise<{ commandId: string; requestId?: string }>;
+  /** The command's state on the instance once it settles or the wait budget lapses. */
+  waitForCommandInvocation(
+    commandId: string,
+    instanceId: string,
+    signal?: AbortSignal,
+  ): Promise<AwsCommandInvocationObservation>;
   runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance>;
   findInstanceByClientToken(clientToken: string): Promise<AwsInstanceObservation | undefined>;
   describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined>;
@@ -232,6 +243,22 @@ export interface AwsWorkspaceHostSdkClient {
    * Feeds `censusAwsWorkspaceHostResources` before and after a destroy.
    */
   listManagedResources(request: AwsWorkspaceHostInventoryRequest): Promise<AwsWorkspaceHostInventorySnapshot>;
+}
+
+export interface AwsShellCommandInput {
+  instanceId: string;
+  commands: readonly string[];
+  /** Shown in the SSM console; truncated to SSM's 100-character limit. */
+  comment: string;
+  executionTimeoutSec: number;
+}
+
+export interface AwsCommandInvocationObservation {
+  /** SSM CommandInvocationStatus: Success, Failed, TimedOut, Cancelled, or a non-terminal state. */
+  status: string;
+  responseCode?: number;
+  stdout?: string;
+  stderr?: string;
 }
 
 export interface AwsWorkspaceHostProviderOptions {
@@ -267,6 +294,8 @@ type AwsStepInput =
   | { op: 'create-data-volume'; request: AwsCreateVolumeInput; hostId: string; region: string }
   | { op: 'run-instance'; request: AwsRunInstancesInput; hostId: string; vpcId: string }
   | { op: 'attach-data-volume'; device: string; hostId: string }
+  // D-013: the controller-rendered bootstrap, pushed over SSM once the data volume is attached.
+  | { op: 'start-host-bootstrap'; hostId: string; script: string }
   | {
       op: 'start-instance' | 'stop-instance' | 'reboot-instance' | 'repair-instance';
       instanceId: string;
@@ -282,6 +311,9 @@ type AwsStepInput =
   // every provider (GCP steps carry the same name), so it is not optional.
   | { op: 'terminate-instance'; instanceId: string; hostId: string; resourceName: string }
   | { op: 'delete-volume'; volumeId: string; hostId: string; resourceName: string };
+
+/** SSM invocation states that mean the push itself failed (as opposed to still running). */
+const AWS_COMMAND_FAILED_STATUSES = new Set(['Failed', 'TimedOut', 'Cancelled', 'Cancelling', 'Undeliverable', 'Terminated']);
 
 const AWS_INSTANCE_RESOURCE_KIND = 'vm';
 const AWS_VOLUME_RESOURCE_KIND = 'disk';
@@ -303,14 +335,15 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     upgrade: false,
     repair: true,
     confirmedDestroy: true,
-    // P-030: the AWS launch path does not yet attach a controller-rendered bootstrap. Declaring
-    // false keeps the controller from rendering (and fail-closed refusing) for a provider that
-    // would discard the result; flip it in the same change that consumes hostBootstrapScript.
-    hostBootstrap: false,
+    // D-013: provision and repair push the controller-rendered bootstrap over SSM Run Command
+    // (`start-host-bootstrap`); it reports its outcome on the EC2 serial console.
+    hostBootstrap: true,
+    bootstrapStatusChannel: 'ec2-console-output',
   },
   transportKinds: AWS_WORKSPACE_HOST_TRANSPORTS,
   constraints: [
     'Launch Template, subnet, security groups, IAM instance profile, and customer KMS key are required',
+    'Nitro-based instance types only: the data volume is located by its NVMe volume id',
     'Restore and in-place image upgrades are not yet supported',
   ],
 };
@@ -418,6 +451,33 @@ function resource(
 
 function hostIdFor(request: WorkspaceHostPlanRequest): string {
   return request.action === 'provision' ? request.desired.hostId : request.host.hostId;
+}
+
+/**
+ * The `start-host-bootstrap` step (D-013). Fails closed when the controller supplied no bootstrap:
+ * this provider declares `hostBootstrap`, and nothing else would mount the data volume, so a host
+ * planned without one would come up with its state on the boot disk.
+ */
+function hostBootstrapStep(
+  ctx: WorkspaceHostProviderContext,
+  action: 'provision' | 'repair',
+  hostId: string,
+  idempotencyKey: string,
+  dependsOn: readonly string[],
+): WorkspaceHostPlanStep {
+  const script = ctx.hostBootstrapScript;
+  if (!script?.trim()) {
+    throw new Error(`aws_workspace_host_bootstrap_missing: '${action}' needs the controller-rendered host bootstrap`);
+  }
+  return {
+    id: 'start-host-bootstrap',
+    action,
+    resourceKind: AWS_INSTANCE_RESOURCE_KIND,
+    dependsOn: [...dependsOn],
+    idempotencyKey,
+    destructive: false,
+    input: { op: 'start-host-bootstrap', hostId, script } satisfies AwsStepInput,
+  };
 }
 
 function stepInput(step: WorkspaceHostPlanStep): AwsStepInput {
@@ -578,16 +638,20 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       repair: 'repair-instance',
     } as const;
     const op = opByAction[request.action];
+    const lifecycleStep: WorkspaceHostPlanStep = {
+      id: `${request.action}-instance`,
+      action: request.action,
+      resourceKind: AWS_INSTANCE_RESOURCE_KIND,
+      dependsOn: [],
+      idempotencyKey,
+      destructive: false,
+      input: { op, instanceId: instance.providerId, hostId: request.host.hostId } satisfies AwsStepInput,
+    };
+    // D-013 point 6: repair re-runs the lifecycle-rendered bootstrap once the instance is back.
+    if (request.action !== 'repair') return [lifecycleStep];
     return [
-      {
-        id: `${request.action}-instance`,
-        action: request.action,
-        resourceKind: AWS_INSTANCE_RESOURCE_KIND,
-        dependsOn: [],
-        idempotencyKey,
-        destructive: false,
-        input: { op, instanceId: instance.providerId, hostId: request.host.hostId } satisfies AwsStepInput,
-      },
+      lifecycleStep,
+      hostBootstrapStep(ctx, request.action, request.host.hostId, `${idempotencyKey}:host-bootstrap`, [lifecycleStep.id]),
     ];
   }
 
@@ -689,6 +753,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           hostId: desired.hostId,
         } satisfies AwsStepInput,
       },
+      hostBootstrapStep(ctx, 'provision', desired.hostId, `${request.idempotencyKey}:host-bootstrap`, [
+        'attach-data-volume',
+      ]),
     ];
   }
 
@@ -882,6 +949,32 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           return this.inProgress(request, result.requestId);
         }
         return this.applied(request, undefined, result.requestId);
+      }
+      case 'start-host-bootstrap': {
+        // D-013: the volume id names the guest device; the push installs mount + bootstrap and
+        // starts it as a transient unit. `applied` means STARTED — its outcome arrives on the
+        // ec2-console-output status channel, which the readiness wait reads.
+        const volume = requireKnownResource(request.knownResources, AWS_VOLUME_RESOURCE_KIND, request.step.id);
+        const instance = requireKnownResource(request.knownResources, AWS_INSTANCE_RESOURCE_KIND, request.step.id);
+        const push = renderAwsHostBootstrapPush({ volumeId: volume.providerId, hostBootstrapScript: input.script });
+        if (!(await this.client.waitForSsmOnline(instance.providerId, ctx.signal))) return this.inProgress(request);
+        const sent = await this.client.sendShellCommand({
+          instanceId: instance.providerId,
+          commands: push.commands,
+          comment: `Papercusp host bootstrap ${input.hostId}`,
+          executionTimeoutSec: AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC,
+        });
+        const invocation = await this.client.waitForCommandInvocation(sent.commandId, instance.providerId, ctx.signal);
+        if (invocation.status === 'Success') return this.applied(request, undefined, sent.requestId);
+        if (AWS_COMMAND_FAILED_STATUSES.has(invocation.status)) {
+          const detail = (invocation.stderr ?? invocation.stdout ?? '').trim().slice(-300);
+          throw new Error(
+            `aws_workspace_host_bootstrap_push_failed: ${invocation.status}` +
+              `${invocation.responseCode === undefined ? '' : ` exit=${invocation.responseCode}`}` +
+              `${detail ? `: ${detail}` : ''}`,
+          );
+        }
+        return this.inProgress(request, sent.requestId);
       }
       case 'start-instance':
         return this.setInstanceState(
@@ -1101,6 +1194,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     } else if (input.op === 'delete-volume') {
       const found = await this.client.describeVolume(input.volumeId);
       if (isVolumeAbsent(found)) return this.destroyed(request, input.hostId, input.volumeId);
+    } else if (input.op === 'start-host-bootstrap') {
+      // No provider-side record says whether a push landed; re-push. The wrapper leaves a running
+      // bootstrap alone, and the bootstrap itself is replay-safe.
     } else {
       const found = await this.client.describeInstance(input.instanceId);
       const wanted = input.op === 'stop-instance' ? 'stopped' : 'running';

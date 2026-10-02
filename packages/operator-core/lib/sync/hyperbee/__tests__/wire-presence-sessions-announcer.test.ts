@@ -42,12 +42,14 @@ vi.mock('../../../federated-pot-scope', () => ({
 }));
 
 let roster: Array<{ ownerId: string; intent: string | null }> = [];
+const listPresence = vi.fn(async (_args: { workspaceId: string }) => roster);
 vi.mock('../../../agent-tools/coordination/presence', () => ({
-  listPresence: async () => roster,
+  listPresence: (...a: unknown[]) => listPresence(...(a as [{ workspaceId: string }])),
 }));
 
+const fetchPresenceFleet = vi.fn(async (_ownerIds: string[]) => new Map());
 vi.mock('../../../agent-tools/coordination/presence-fleet', () => ({
-  fetchPresenceFleet: async () => new Map(),
+  fetchPresenceFleet: (...a: unknown[]) => fetchPresenceFleet(...(a as [string[]])),
 }));
 
 import {
@@ -76,10 +78,10 @@ function timers() {
   };
 }
 
-function handle(harnessSlug: string, topicHex: string) {
+function handle(harnessSlug: string, topicHex: string, workspaceId = 'ws') {
   const closeHooks: Array<() => void | Promise<void>> = [];
   const h: PresenceWireHandle = {
-    workspaceId: 'ws',
+    workspaceId,
     harnessSlug,
     ownLog: { keyHex: `log-${harnessSlug}` },
     append: async () => {},
@@ -106,10 +108,13 @@ function wire(h: PresenceWireHandle, t: ReturnType<typeof timers>) {
     resolveActiveRoutines: async () => null,
     setIntervalFn: t.setIntervalFn,
     clearIntervalFn: t.clearIntervalFn,
-    now: () => 1_000_000,
+    now: () => clock,
     onError: (err) => tickErrors.push(err),
   });
 }
+
+/** The announcers' injected clock (ms); tests advance it to age the roster memo. */
+let clock = 1_000_000;
 
 /** A tick swallows its own errors into onError — surface them so a failing tick is loud. */
 const tickErrors: unknown[] = [];
@@ -130,6 +135,9 @@ async function tickAll(t: ReturnType<typeof timers>) {
 
 beforeEach(() => {
   broadcastSessions.mockClear();
+  listPresence.mockClear();
+  fetchPresenceFleet.mockClear();
+  clock = 1_000_000;
   tickErrors.length = 0;
   roster = [
     { ownerId: 'su-a', intent: 'x' },
@@ -195,5 +203,75 @@ describe('sessions announcer is one per (workspace, topic) — WI-10002534', () 
     const a2 = handle('repo-a', 'topic-1');
     await wire(a2.h, t);
     expect(t.liveSessionAnnouncers()).toHaveLength(1);
+  });
+});
+
+/**
+ * WI-10005271 — announcers on DIFFERENT topics of the SAME workspace must share
+ * one roster read per tick. Measured on bg-host 2026-10-02: ~47 topics for one
+ * workspace, each announcer calling listPresence itself every 10 s
+ * (98 calls / 20 s, 96 of them from tickSessions).
+ */
+describe('one roster read per workspace per tick — WI-10005271', () => {
+  const TOPICS = ['topic-1', 'topic-2', 'topic-3', 'topic-4', 'topic-5', 'topic-6'];
+
+  it('N topics in one workspace: one tick each reads the roster ONCE and broadcasts N frames', async () => {
+    const t = timers();
+    for (const [i, topic] of TOPICS.entries()) await wire(handle(`repo-${i}`, topic).h, t);
+    expect(t.liveSessionAnnouncers()).toHaveLength(TOPICS.length);
+    await tickAll(t);
+    expect(listPresence).toHaveBeenCalledTimes(1);
+    expect(fetchPresenceFleet).toHaveBeenCalledTimes(1);
+    expect(broadcastSessions).toHaveBeenCalledTimes(TOPICS.length);
+    // Each topic still stamps its OWN label on the shared roster.
+    const byTopic = new Map(
+      broadcastSessions.mock.calls.map((c) => {
+        const [topic, sessions] = c as unknown as [string, Array<{ owner_id: string; harness_slug: string }>];
+        return [topic, sessions] as const;
+      }),
+    );
+    expect([...byTopic.keys()].sort()).toEqual([...TOPICS].sort());
+    for (const [i, topic] of TOPICS.entries()) {
+      const sessions = byTopic.get(topic)!;
+      expect(sessions.map((s) => s.owner_id)).toEqual(['su-a', 'su-b']);
+      expect(sessions.every((s) => s.harness_slug === `repo-${i}`)).toBe(true);
+    }
+  });
+
+  it('a later tick past the memo window re-reads the roster and announces the change', async () => {
+    const t = timers();
+    for (const [i, topic] of TOPICS.entries()) await wire(handle(`repo-${i}`, topic).h, t);
+    await tickAll(t);
+    expect(listPresence).toHaveBeenCalledTimes(1);
+    roster = [...roster, { ownerId: 'su-c', intent: 'z' }];
+    clock += SESSION_TICK_MS;
+    await tickAll(t);
+    expect(listPresence).toHaveBeenCalledTimes(2);
+    const latest = broadcastSessions.mock.calls.slice(-TOPICS.length) as unknown as Array<
+      [string, Array<{ owner_id: string }>]
+    >;
+    for (const [, sessions] of latest) expect(sessions.map((s) => s.owner_id)).toEqual(['su-a', 'su-b', 'su-c']);
+  });
+
+  it('a failed roster read is not cached: the next tick retries at the same instant', async () => {
+    const t = timers();
+    await wire(handle('repo-a', 'topic-1').h, t);
+    const [announcer] = t.liveSessionAnnouncers();
+    listPresence.mockRejectedValueOnce(new Error('pg down'));
+    announcer!.cb();
+    await vi.waitFor(() => expect(tickErrors.map(String)).toEqual(['Error: pg down']));
+    expect(broadcastSessions).not.toHaveBeenCalled();
+    tickErrors.length = 0;
+    await tickAll(t);
+    expect(listPresence).toHaveBeenCalledTimes(2);
+    expect(broadcastSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it('different workspaces never share a roster snapshot', async () => {
+    const t = timers();
+    await wire(handle('repo-a', 'topic-1', 'ws-1').h, t);
+    await wire(handle('repo-b', 'topic-2', 'ws-2').h, t);
+    await tickAll(t);
+    expect(listPresence.mock.calls.map((c) => c[0].workspaceId).sort()).toEqual(['ws-1', 'ws-2']);
   });
 });

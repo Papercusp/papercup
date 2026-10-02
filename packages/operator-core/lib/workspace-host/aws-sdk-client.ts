@@ -65,7 +65,13 @@ import {
   GetServiceQuotaCommand,
   ServiceQuotasClient,
 } from '@aws-sdk/client-service-quotas';
-import { DescribeInstanceInformationCommand, SSMClient } from '@aws-sdk/client-ssm';
+import {
+  DescribeInstanceInformationCommand,
+  GetCommandInvocationCommand,
+  SendCommandCommand,
+  SSMClient,
+  waitUntilCommandExecuted,
+} from '@aws-sdk/client-ssm';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   awsWorkspaceHostManagedFilters,
@@ -121,6 +127,8 @@ import type {
   AwsProviderMutationResult,
   AwsRunInstancesInput,
   AwsSecurityGroupIngressObservation,
+  AwsShellCommandInput,
+  AwsCommandInvocationObservation,
   AwsSnapshotObservation,
   AwsTag,
   AwsVolumeObservation,
@@ -307,6 +315,25 @@ function abortError(operation: string): Error {
   const error = new Error(`aws_workspace_host_${operation}_aborted`);
   error.name = 'AbortError';
   return error;
+}
+
+/** Sleep that rejects with the operation's abort error as soon as `signal` aborts. */
+function abortableDelay(ms: number, operation: string, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError(operation));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError(operation));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 // --- credentials --------------------------------------------------------------------------------
@@ -1073,6 +1100,74 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       this.ec2.send(new GetConsoleOutputCommand({ InstanceId: instanceId, Latest: true })),
     );
     return result.Output ? Buffer.from(result.Output, 'base64').toString('utf8') : undefined;
+  }
+
+  /**
+   * Wait until the instance's SSM agent reports Online (D-013): Run Command cannot reach an
+   * instance before its agent registers. Unlike the health enrichment, this read is REQUIRED, so
+   * access denied surfaces instead of reading as "not measured". False when the budget lapses.
+   */
+  async waitForSsmOnline(instanceId: string, signal?: AbortSignal): Promise<boolean> {
+    const deadline = Date.now() + this.waiter.maxWaitTimeSec * 1000;
+    for (;;) {
+      if (signal?.aborted) throw abortError('wait-ssm-online');
+      const result = await this.call('describe-instance-information', () =>
+        this.clients().ssm.send(
+          new DescribeInstanceInformationCommand({ Filters: [{ Key: 'InstanceIds', Values: [instanceId] }] }),
+        ),
+      );
+      const online = (result.InstanceInformationList ?? []).some(
+        (entry) => entry.InstanceId === instanceId && entry.PingStatus === 'Online',
+      );
+      if (online) return true;
+      if (Date.now() + this.waiter.minDelaySec * 1000 > deadline) return false;
+      await abortableDelay(this.waiter.minDelaySec * 1000, 'wait-ssm-online', signal);
+    }
+  }
+
+  /** Run shell lines on ONE instance through AWS-RunShellScript (D-013). */
+  async sendShellCommand(input: AwsShellCommandInput): Promise<{ commandId: string; requestId?: string }> {
+    await this.assertMutationAccount();
+    const result = await this.call('send-command', () =>
+      this.clients().ssm.send(
+        new SendCommandCommand({
+          InstanceIds: [input.instanceId],
+          DocumentName: 'AWS-RunShellScript',
+          Comment: input.comment.slice(0, 100),
+          Parameters: {
+            commands: [...input.commands],
+            executionTimeout: [String(input.executionTimeoutSec)],
+          },
+        }),
+      ),
+    );
+    const commandId = result.Command?.CommandId;
+    if (!commandId) throw new Error('aws_workspace_host_send_command_no_id');
+    return { commandId, requestId: result.$metadata.requestId };
+  }
+
+  /**
+   * The command's state on the instance once it settles (or the waiter budget lapses). The SDK
+   * waiter retries while the invocation does not exist yet; its FAILURE/timeout verdicts are not
+   * errors here — the fresh read below is what the caller judges.
+   */
+  async waitForCommandInvocation(
+    commandId: string,
+    instanceId: string,
+    signal?: AbortSignal,
+  ): Promise<AwsCommandInvocationObservation> {
+    await this.runWaiter('wait-command', signal, (config) =>
+      waitUntilCommandExecuted({ ...config, client: this.clients().ssm }, { CommandId: commandId, InstanceId: instanceId }),
+    );
+    const result = await this.call('get-command-invocation', () =>
+      this.clients().ssm.send(new GetCommandInvocationCommand({ CommandId: commandId, InstanceId: instanceId })),
+    );
+    return {
+      status: result.Status ?? 'Pending',
+      ...(typeof result.ResponseCode === 'number' ? { responseCode: result.ResponseCode } : {}),
+      ...(result.StandardOutputContent ? { stdout: result.StandardOutputContent } : {}),
+      ...(result.StandardErrorContent ? { stderr: result.StandardErrorContent } : {}),
+    };
   }
 
   async describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined> {

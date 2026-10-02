@@ -1259,9 +1259,8 @@ async function probeCodeDrift(
     };
   }
   try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const run = promisify(execFile);
+    // Every git/find below goes through the spawner sidecar (WI-10005118), never a local fork.
+    const run = defaultCodeDriftExec;
     // Boot time via the SHARED systemd probe (agent-tools/dev/systemd-service-probe)
     // rather than a second inline systemctl+ps: it already handles the unit-type
     // suffix correctly (EI-18700974567040702) and distinguishes "MainPID 0 = not
@@ -1802,6 +1801,32 @@ export async function resolveOwnServiceUnit(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/** Per-site kill-switch for the code-drift probes' sidecar route (`0` = force a local spawn). */
+export const CODE_DRIFT_SIDECAR_VAR = 'PAPERCUSP_CODE_DRIFT_SPAWN_SIDECAR';
+
+/**
+ * The production exec for the code-drift probes (`git rev-parse`, `git diff --name-only`,
+ * `find -printf`): forked by the spawner sidecar where this host has one. WI-10005118: a 30 s
+ * main-thread CPU profile of a 3.5 GB bg-host put probeCodeDrift at 47% of the main thread's
+ * spawn self time, because a local fork copies the parent's page tables (cost grows with RSS).
+ * Same contract as promisify(execFile): resolves on exit 0, rejects with `.code`/`.stdout` otherwise.
+ */
+export async function defaultCodeDriftExec(
+  file: string,
+  args: string[],
+  options: { cwd?: string; timeout: number; maxBuffer?: number },
+): Promise<{ stdout: string }> {
+  const { execFileViaSidecar } = await import('./fleet/git-via-sidecar');
+  const { stdout } = await execFileViaSidecar(file, args, {
+    timeoutMs: options.timeout,
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}),
+    subsystem: 'code-drift-probe',
+    sidecarVar: CODE_DRIFT_SIDECAR_VAR,
+  });
+  return { stdout };
 }
 
 /** Per-site kill-switch for the journal canary's sidecar route (`0` = force a local spawn). */

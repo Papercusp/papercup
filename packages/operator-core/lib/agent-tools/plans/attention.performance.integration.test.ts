@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { DARK_FLAGS, DARK_FLAGS_OWNER_CASES } from '@papercusp/flags';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { runWithWorkspace } from '../../workspace-als';
 import {
@@ -32,6 +33,7 @@ const SOURCE_PATHS = [
   'packages/operator-core/lib/plan-item-coverage.ts',
   'packages/operator-core/lib/sync-resolver/attention-counts.ts',
   'packages/operator-core/lib/agent-tools/plans/attention.performance.integration.test.ts',
+  'libs/flags/src/types.ts',
 ];
 type Output = 'counts' | 'refs';
 type Arm = 'full-feed-consumer' | 'compact-consumer';
@@ -52,7 +54,12 @@ function hashes() {
     sha256: createHash('sha256').update(readFileSync(resolve(ROOT, path))).digest('hex') }));
 }
 function digest(value: unknown) {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  // Object property insertion order is a transport detail. Array order, keys
+  // and values are semantic and must still distinguish different results.
+  const canonical = (input: unknown): unknown => Array.isArray(input) ? input.map(canonical)
+    : input && typeof input === 'object' ? Object.fromEntries(Object.entries(input)
+      .sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => [key, canonical(val)])) : input;
+  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 }
 function p95(samples: readonly number[]) {
   expect(samples.length).toBeGreaterThan(0);
@@ -83,6 +90,14 @@ afterAll(async () => {
 });
 
 describe('R-5 real PostgreSQL attention macro', () => {
+  it('compares semantic values without mistaking object insertion order for a result change', () => {
+    expect(digest({ counts: { total: 2, alerts: 1 }, degraded: false }))
+      .toBe(digest({ degraded: false, counts: { alerts: 1, total: 2 } }));
+    expect(digest({ refs: ['a', 'b'] })).not.toBe(digest({ refs: ['b', 'a'] }));
+    expect(digest({ counts: { total: 2 } })).not.toBe(digest({ counts: { total: 3 } }));
+    expect(digest({ total: 2 })).not.toBe(digest({ total: 2, degraded: false }));
+  });
+
   it('compares matched cold, warm and concurrent consumers and preserves exact invalidation', async () => {
     const windows: Window[] = [];
     const report: Record<string, unknown> = {
@@ -102,9 +117,16 @@ describe('R-5 real PostgreSQL attention macro', () => {
       uiClientId: `su-r5-${RUN}`, metadata: vi.fn(), log: vi.fn(), progress: vi.fn() };
     const expectedRefs = new Set(Array.from({ length: PLAN_COUNT }, (_, n) =>
       Array.from({ length: ITEMS_PER_PLAN }, (_, i) => `plan-item:r5-plan-${n}:P-${String(i + 1).padStart(3, '0')}`)).flat());
-    const expectedCounts = { decisionItems: PLAN_COUNT * ITEMS_PER_PLAN / 4,
-      decisionPlans: PLAN_COUNT, alerts: 0, total: PLAN_COUNT * ITEMS_PER_PLAN };
+    // These source-code registry notices intentionally appear in every harness.
+    // Freeze their exact independent IDs; never accept an unexplained count delta.
+    const registryRefs = [...DARK_FLAGS].filter(([, entry]) => DARK_FLAGS_OWNER_CASES.has(entry.case))
+      .map(([key]) => `dark-flag-ratification:${key}`).sort();
+    for (const id of registryRefs) expectedRefs.add(id);
+    report.registryPopulation = registryRefs;
+    const expectedCounts = { decisionItems: PLAN_COUNT * ITEMS_PER_PLAN / 4 + registryRefs.length,
+      decisionPlans: PLAN_COUNT, alerts: 0, total: expectedRefs.size };
     const expected = new Map<Output, string>();
+    const expectedValues = new Map<Output, unknown>();
     async function read(arm: Arm, output: Output, phase: string): Promise<ReadSample> {
       const start = performance.now();
       const res = await runWithWorkspace(WS, () => attention.handler({
@@ -132,12 +154,27 @@ describe('R-5 real PostgreSQL attention macro', () => {
         expect(new Set(value.refs.map((row: { id: string }) => row.id))).toEqual(expectedRefs);
       }
       const resultHash = digest(value);
-      if (!expected.has(output)) expected.set(output, resultHash);
+      if (!expected.has(output)) {
+        expected.set(output, resultHash);
+        expectedValues.set(output, structuredClone(value));
+      }
+      if (resultHash !== expected.get(output)) {
+        report.semanticMismatch = { arm, output, phase, expected: expectedValues.get(output), actual: value };
+        publish();
+      }
+      expect(value, 'Exact values and reference array order must match the paired oracle').toEqual(expectedValues.get(output));
       expect(resultHash, 'Full and compact consumers must have identical values and ordering').toBe(expected.get(output));
       return { phase, output, ms, wireBytes: Buffer.byteLength(wire), resultHash };
     }
     publish();
     try {
+      // Check both consumers before the repeated windows so population/schema
+      // errors produce complete diagnostics after two reads, not after an arm.
+      for (const output of ['counts', 'refs'] as const) {
+        await read('full-feed-consumer', output, 'preflight');
+        await read('compact-consumer', output, 'preflight');
+      }
+      report.pairedPreflight = { counts: true, refs: true };
       for (let window = 0; window < WINDOWS; window++) {
         const arms: Arm[] = window % 2 ? ['compact-consumer', 'full-feed-consumer'] : ['full-feed-consumer', 'compact-consumer'];
         for (const arm of arms) {

@@ -7,16 +7,11 @@
     "packages/operator-core/lib/agent-tools/plans/lint.ts::stored_blocked_with_blocked_by": 1,
     "packages/operator-core/lib/agent-tools/plans/lint.ts::unknown_blocked_by": 1,
     "packages/operator-core/lib/agent-tools/plans/set-status.ts::blocked_guard": 1,
-    "packages/operator-core/lib/auth/hosted/billing/stripe-billing-client.ts::live_mode_not_allowed": 1,
     "packages/operator-core/lib/endpoint-route/routes/admin/attention-bulk-resolve.ts::undo_refused": 1,
     "packages/operator-core/lib/p2p/receipts.ts::refusal_on_success_receipt": 1,
     "packages/operator-core/lib/p2p/receipts.ts::refusal_required": 1,
     "packages/operator-core/lib/scheduler/dependency-graph-analysis.ts::blocked-without-resolver": 1,
     "packages/operator-core/lib/scheduler/dependency-invariants.ts::legacy-blocked-without-resolver": 1,
-    "packages/operator-core/lib/scheduler/dependency-invariants.ts::typed-blocked-without-resolver": 1,
-    "packages/operator-core/lib/typed-properties.ts::forbidden": 1,
-    "packages/operator-core/lib/typed-properties.ts::shrink_blocked": 1,
-    "packages/operator-core/lib/workspace-host/aws-connection.ts::permission-denied": 1,
-    "packages/operator-core/lib/workspace-host/azure-connection.ts::permission-denied": 1
+    "packages/operator-core/lib/scheduler/dependency-invariants.ts::typed-blocked-without-resolver": 1
   }
 }

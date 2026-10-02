@@ -624,5 +624,38 @@
     "gpuAcceptanceComplete": false
   },
   "notChecked": ["successful GPU single-full-8192 vector parity", "GPU single-over-limit", "GPU mixed-length tensor", "full-population GPU rankings", "native Node GPU batches/over-limit", "native worker input/kernel traces"],
+  "nativeInputTracePreparation": {
+    "status": "pre-graph input evidence path and conventional guards verified locally; actual model/GPU validation pending",
+    "reuse": "Extend the existing embed worker messages and explicit qualification callback. The native boundary runner retains private per-cell JSONL before graph execution, including allocation failures. Normal calls request no input trace.",
+    "verification": {
+      "originRunId": "86dc64e4-c99f-4aea-81b5-83aaaf04016e",
+      "recoveryRunId": "25dc99b2-c3ed-4061-91b2-b7e4987c17ee",
+      "testRunIds": [20478094, 20478095, 20478099],
+      "passed": 67,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "testedHead": "938e464bafd13988021e0fdd19c3d40e55d957cd",
+      "worktreeDirty": true,
+      "scope": "Local working source; three named test files passed. Real worker/Rust-tokenizer tests submit exact truncated tensors to a fake graph, exercise success and graph failure, and prove input evidence precedes the terminal message. No model weights or GPU are used.",
+      "typecheck": "Requested source files plus direct type users/importers clean; 17 files checked, compiler exit 0",
+      "originTimeout": "Foreground 45-second transport ceiling; reused the automatically detached recovery and its saved ledger, without another test launch."
+    },
+    "sources": [
+      { "path": "libs/generic/memory/src/local-embedder-worker.ts", "sha256": "4d1acf2e8fcb7f7edd919e1a89c41f1390b50b5304a1f52a7d3e7e22429a0513" },
+      { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "sha256": "f9e75221a9e375ab1285a9674beddd68e8bcc278dac9933b55b4c3cb2e7351a5" },
+      { "path": "libs/generic/memory/src/mdenseon-embedder.ts", "sha256": "c2cc4ba139d3c520e2ea2500d35c8ef8d78bdf75697aac455f1063f4409a4b20" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "sha256": "57550008cf044c5fa1ce248d2db86f8becfc54bce591f59dca257f0230f73011" }
+    ],
+    "tests": [
+      { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "sha256": "b47a7dca416e0b0a83b7c64c8cc13666ca3a95ac3045da53df1b06299c550a18" },
+      { "path": "libs/generic/memory/src/mdenseon-embedder.test.ts", "sha256": "5ebcfbb71ffbcae72ee8715b030281f9a784d566be9589ceb87ad6ae4dcfc80d" },
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "sha256": "1d0b1db0fc213e45dbd54d08634ada81c5134ad93c7f8b93652311420fc7e614" }
+    ],
+    "realModelInferencePerformed": false,
+    "frozenV7AndV5RuntimeChanged": false,
+    "nativeKernelTrace": "still not exposed; input evidence does not establish CUDA compute-kernel execution",
+    "gpuAcceptanceComplete": false
+  },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }

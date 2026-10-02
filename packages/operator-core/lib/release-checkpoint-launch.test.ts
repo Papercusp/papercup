@@ -78,6 +78,7 @@ import {
   resolveCheckpointCapacity,
   CHECKPOINT_CAPACITY_MODE_ENV,
 } from './release-checkpoint-launch';
+import type { ExecSyncLike } from './release-checkpoint-launch';
 // WI-38356: the control + calibration cases below call the underlying reads directly, to prove
 // the submodule fixture is exercising the blind spot rather than a broken fake.
 import { containingSubmodulePath, excludedCommitsTouchingPath, gitReadFromExecSync } from './candidate-contains';

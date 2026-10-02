@@ -21,7 +21,6 @@
  * exactly as it did before this guard existed.
  */
 import { existsSync } from 'node:fs';
-// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
 import { withFsMutexRead } from '../../../scripts/lib/fs-mutex.mjs';
 // @ts-expect-error -- same buildless plain-JS module family, no declaration file.
 import { installLockNameForRoot } from '../../../scripts/lib/install-lock-name.mjs';

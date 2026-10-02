@@ -63,6 +63,30 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for a populated scorecards:get result with complete criterion evidence', () => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify({
+        ok: true,
+        scorecard: {
+          issueId: 'EI-24800707337861422',
+          criteria: [{ key: 'oracle-independence', rating: 'pass', evidence: 'complete criterion evidence' }],
+        },
+        evidenceRead: { complete: true, scope: 'selected-criterion', offset: 2540, totalChars: 5081 },
+      }) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-02T02:32:07.251Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toMatchObject({
+      scorecard: { issueId: 'EI-24800707337861422' },
+      evidenceRead: { complete: true },
+    });
+  });
+
   it.each([
     ['facts:list', { ok: true, mode: 'key', found: true, count: 1, facts: [{ key: 'guard-rail:example' }] }],
     ['tools:find', { ok: true, hits: [{ tool: 'facts:list' }] }],

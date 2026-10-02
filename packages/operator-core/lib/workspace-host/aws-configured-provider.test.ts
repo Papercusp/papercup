@@ -123,7 +123,13 @@ function desired(): WorkspaceHostDesiredSpec {
 }
 
 function ctx(): WorkspaceHostProviderContext {
-  return { workspaceId: 'workspace-aws-configured', requestId: 'request-1', connection: connection() };
+  return {
+    workspaceId: 'workspace-aws-configured',
+    requestId: 'request-1',
+    // Provision needs the controller-rendered bootstrap (aws-byoc-gcp-parity D-013).
+    hostBootstrapScript: '#!/usr/bin/env bash\necho papercusp-bootstrap\n',
+    connection: connection(),
+  };
 }
 
 /** Just enough EC2 for a create-data-volume step: CreateVolume + DescribeVolumes. */

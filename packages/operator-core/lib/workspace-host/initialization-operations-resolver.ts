@@ -30,7 +30,6 @@
 import { createHash, createPublicKey, randomUUID, type KeyObject } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
@@ -132,7 +131,9 @@ const HOST_KEY_BY_ATTRIBUTE = new Map<string, (typeof HOST_KEY_ALGORITHMS)[numbe
   ['ssh-rsa', 'ssh-rsa'],
 ]);
 
-const hostKeyEnrollmentQueues = new Map<string, Promise<void>>();
+// A serialization chain only: each entry is awaited for ORDER, never for its value, so an
+// enrollment (void) and a prune (GcpIapHostKeyPruneResult) can share one queue per file.
+const hostKeyEnrollmentQueues = new Map<string, Promise<unknown>>();
 const HOST_KEY_ENROLLMENT_MUTEX_PREFIX = 'workspace-host-known-hosts-';
 
 interface GcpIapHostKeyEnrollmentTestHooks {

@@ -13,7 +13,6 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { dirSizeBytesAsync, type DiskWalkBudget } from './disk';
 
-// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 export { PACKAGE_CACHE_MUTEX_NAME };
