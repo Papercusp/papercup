@@ -633,6 +633,13 @@ export interface EmbedSidecarActivity {
  * respawn it for them.
  */
 export const EMBED_SIDECAR_IDLE_EXIT_ENV = 'PAPERCUSP_EMBED_SIDECAR_IDLE_EXIT_MS';
+/**
+ * P-532b (WI-10005630): the header a health probe sets on its functional POST /embed. Such a
+ * request still counts as in flight (an idle shutdown never cuts it mid-answer) but does NOT
+ * refresh lastActivityAt. Measured on GCP cap-p532/cap-p532b: service-health's once-a-minute
+ * functional probe kept every packaged Server's sidecar from ever reaching its 5-min idle exit.
+ */
+export const EMBED_SIDECAR_PROBE_HEADER = 'x-papercusp-health-probe';
 /** Printed on stdout just before an idle exit, so the spawner can tell it from a crash. */
 export const EMBED_SIDECAR_IDLE_EXIT_LINE = 'PAPERCUSP_EMBED_SIDECAR_IDLE_EXIT';
 
@@ -1453,7 +1460,9 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   };
   const capabilities = Object.keys(handlers);
 
-  // P-531 idle-exit accounting: every routed request except the liveness probe.
+  // P-531 idle-exit accounting: every routed request except the liveness probe. A
+  // functional health probe (EMBED_SIDECAR_PROBE_HEADER, P-532b) is in flight while it
+  // runs but never counts as activity, or a once-a-minute probe keeps the model resident.
   let inFlight = 0;
   let lastActivityAt = Date.now();
   const server = http.createServer((req, res) => {
@@ -1462,11 +1471,12 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     const handle = handlers[route];
     if (handle) {
       if (route !== EMBED_SIDECAR_CAP_HEALTHZ) {
+        const probe = req.headers[EMBED_SIDECAR_PROBE_HEADER] === '1';
         inFlight += 1;
-        lastActivityAt = Date.now();
+        if (!probe) lastActivityAt = Date.now();
         res.once('close', () => {
           inFlight -= 1;
-          lastActivityAt = Date.now();
+          if (!probe) lastActivityAt = Date.now();
         });
       }
       handle(req, res);

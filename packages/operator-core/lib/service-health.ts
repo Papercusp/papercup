@@ -1550,6 +1550,16 @@ export async function probeEmbedSidecar(
       };
     }
     const resolved = explicitUrl ?? spawnMod.embedSidecarLocalUrl();
+    if (!explicitUrl && spawnMod.embedSidecarIdleByDesign()) {
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: Date.now() - start,
+        present: false,
+        note: 'embed sidecar is exiting idle (announced) — the next embed re-launches it; nothing to probe',
+      };
+    }
     if (!resolved) {
       // P-530: this Server spawns its sidecar on demand and none is running
       // now (not started yet, or it exited idle). Not an outage.
@@ -1572,12 +1582,32 @@ export async function probeEmbedSidecar(
     : exercise
       ? EMBED_SIDECAR_EXERCISE_PROBE_TIMEOUT_MS
       : EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS;
+  // P-532b: a per-tenant sidecar exits after 5 idle minutes. Its idle clock must not count
+  // this probe, and a sidecar that exits idle WHILE this probe runs is "not running", not DOWN.
+  const { EMBED_SIDECAR_PROBE_HEADER } = await import('./memory/embed-sidecar-server');
+  const exitedIdleMeanwhile = async (): Promise<ProbeResult | null> => {
+    if (process.env.PAPERCUSP_EMBED_SIDECAR_URL) return null;
+    try {
+      const spawnMod = await import('./memory/embed-sidecar-spawn');
+      if (!spawnMod.embedSidecarIdleByDesign()) return null;
+    } catch {
+      return null;
+    }
+    return {
+      name,
+      up: true,
+      status: null,
+      latencyMs: Date.now() - start,
+      present: false,
+      note: 'embed sidecar exited idle while this probe ran — the next embed re-launches it; not an outage',
+    };
+  };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), budgetMs);
   try {
     const response = await fetch(embedUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', [EMBED_SIDECAR_PROBE_HEADER]: '1' },
       body: JSON.stringify({
         model: 'gemma',
         kind: 'query',
@@ -1592,6 +1622,8 @@ export async function probeEmbedSidecar(
       signal: ctl.signal,
     });
     if (!response.ok) {
+      const idle = await exitedIdleMeanwhile();
+      if (idle) return idle;
       return {
         name,
         up: false,
@@ -1697,6 +1729,8 @@ export async function probeEmbedSidecar(
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    const idle = await exitedIdleMeanwhile();
+    if (idle) return idle;
     return {
       name,
       up: false,

@@ -80,6 +80,9 @@ let sidecarReady = false;
 /** P-531: the running child announced a deliberate idle exit and has not exited
  *  yet. Set from the IDLE_EXIT stdout line, cleared on exit/error. */
 let idleExitPending = false;
+/** P-532b: the last child exit was an announced idle exit and no child has started since.
+ *  Cleared by a crash or a new spawn, so a crashed sidecar is never mistaken for an idle one. */
+let lastExitIdle = false;
 /** P-530: the port the running child announced on its READY line. Null until
  *  the child is ready and again once it exits. */
 let spawnedPort: number | null = null;
@@ -295,6 +298,14 @@ function judgeRecordNow(record: EmbedSidecarRecord, healthPid?: number | null): 
 }
 
 /** The URL of the child this process holds, once it has announced its port. */
+/** P-532b: this tenant's sidecar is idle BY DESIGN — it announced an idle exit and is
+ *  shutting down, or it exited idle and nothing has re-launched it. A health probe reads
+ *  this so a sidecar that exits idle mid-probe is reported "not running", never DOWN,
+ *  while a crash (which clears it) still reads DOWN. */
+export function embedSidecarIdleByDesign(): boolean {
+  return idleExitPending || lastExitIdle;
+}
+
 function childUrl(): string | null {
   return spawnedPort !== null && isEmbedSidecarRunning() ? loopbackUrl(spawnedPort) : null;
 }
@@ -526,6 +537,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
       detached: false,
     });
     sidecarProcess = child;
+    lastExitIdle = false;
     /** P-530: the child is gone — forget its port and drop its record. */
     const forgetChild = (): void => {
       spawnedPort = null;
@@ -605,7 +617,9 @@ export async function spawnEmbedSidecar(): Promise<void> {
       sidecarReady = false;
       idleExitPending = false;
       forgetChild();
+      lastExitIdle = false;
       if (classifyEmbedSidecarExit({ idleExitAnnounced, code }) === 'idle-exit') {
+        lastExitIdle = true;
         console.log('[embed-sidecar] exited idle; the next embed re-launches it');
         // A caller that arrived during the idle shutdown is parked on
         // readyWaiters: re-launch now so it is not stranded until a timeout.
@@ -836,6 +850,7 @@ export function _resetEmbedSidecarSpawnStateForTests(): void {
   sidecarProcess = null;
   sidecarReady = false;
   idleExitPending = false;
+  lastExitIdle = false;
   spawnedPort = null;
   readyWaiters.length = 0;
 }
