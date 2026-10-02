@@ -37,6 +37,8 @@ const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '
 // a generic shell task need not inherit the operator's gateway environment.
 const { FLAGS } = await import('@papercusp/flags');
 const { getFlag } = await import('@papercusp/flags/server');
+const { installFlagOverrideStore } = await import('../../flag-override-store');
+installFlagOverrideStore();
 if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
   const { applyGatewayLlmEnv } = await import('../../inference-gateway/spawn-env');
   applyGatewayLlmEnv(true);
