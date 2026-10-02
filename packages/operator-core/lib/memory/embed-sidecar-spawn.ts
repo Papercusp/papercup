@@ -54,6 +54,9 @@ const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 let sidecarProcess: ChildProcess | null = null;
 let sidecarReady = false;
+/** P-531: the running child announced a deliberate idle exit and has not exited
+ *  yet. Set from the IDLE_EXIT stdout line, cleared on exit/error. */
+let idleExitPending = false;
 const readyWaiters: (() => void)[] = [];
 
 let deliberateStop = false;
@@ -282,6 +285,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
           // P-531: a deliberate idle exit is coming. Stop routing new work to
           // this process now; the exit handler below must not crash-respawn it.
           idleExitAnnounced = true;
+          idleExitPending = true;
           sidecarReady = false;
         }
 
@@ -306,12 +310,14 @@ export async function spawnEmbedSidecar(): Promise<void> {
     sidecarProcess.on('error', (err) => {
       sidecarProcess = null;
       sidecarReady = false;
+      idleExitPending = false;
       reject(err);
     });
 
     sidecarProcess.on('exit', (code) => {
       sidecarProcess = null;
       sidecarReady = false;
+      idleExitPending = false;
       if (classifyEmbedSidecarExit({ idleExitAnnounced, code }) === 'idle-exit') {
         console.log('[embed-sidecar] exited idle; the next embed re-launches it');
         // A caller that arrived during the idle shutdown is parked on
@@ -407,7 +413,14 @@ export async function ensureEmbedSidecar(
     return null;
   }
   const url = embedSidecarLocalUrl();
-  if (isEmbedSidecarRunning()) return url;
+  if (isEmbedSidecarRunning()) {
+    // P-531: a child that announced an idle exit is still alive but shutting
+    // down, so handing out its URL now would send the caller to a closing
+    // server. spawnEmbedSidecar() parks this caller on readyWaiters, and the
+    // exit handler re-launches immediately because a waiter is parked.
+    if (idleExitPending) await spawnEmbedSidecar();
+    return url;
+  }
   // Sibling-owned? Liveness alone is NOT enough to adopt: the sibling may be a
   // long-running bundle that predates the routes this caller needs, in which
   // case adopting it means 404-forever (EI-19314150478401738).
@@ -504,6 +517,7 @@ export function _resetEmbedSidecarSpawnStateForTests(): void {
   respawnAttempts = [];
   sidecarProcess = null;
   sidecarReady = false;
+  idleExitPending = false;
   readyWaiters.length = 0;
 }
 
