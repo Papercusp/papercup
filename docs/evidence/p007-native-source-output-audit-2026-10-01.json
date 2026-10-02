@@ -1,4 +1,51 @@
 {
+  "r171PreparationFire154": {
+    "scope": "Fresh preparation only. Native r171 has NOT launched; no performance result, adoption, product cause or R7 acceptance.",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r171-instrument-manifest.json",
+    "manifestSha256": "a68625cb4100caf0b5a4d509489bd7984042896eba461cbb33a7a3af5cc4a466",
+    "assertionSha256": "9afef2369afc4f300d45959fd2ec1163e401b77794203ec43d5c65cb99821a74",
+    "spaIndexSha256": "8f3453583e2c4642dcd4a76d68caf8415067b2c5455444a130bd469ebb0fd3bc",
+    "reused": "Independent r170 app/raw baseline copy, maintained early/Web Vitals builders and derived owned native assertion. Existing isolated JSONL collection and v5 sampler. No new runtime/service/app scaffold.",
+    "verification": "r170 terminal/cleanup hashes match. Only four of its21 selected bindings changed: startup probe, Node tests, measure writer and WDIO config. All21 rebound to current source; final87PASS and separate tsc logs bound. Two payloads freshly compiled, exact single-script index reconstruction and independent baseline identity PASS. Assertion bash syntax PASS. Fresh private HOME/profiles/tmpfs root absent. Artifact lock released after preparation.",
+    "controlledChangeRef": "firstFrameOperationGuardsFire154",
+    "measureChangeRef": "measurePersistenceIsolationFire152",
+    "hypothesis": "Actual-node-matched first-frame interval is dominated by computed-style, visibility-property or traversal reads.",
+    "alternative": "Rectangle/viewport reads dominate, or read intervals are small while queue-to-frame delay is large.",
+    "requiredObservation": "Ordered bounded first-frame operation rows and actual LCP candidate identity, both callback intervals, honest popup/LCP verdict and singleton logged unique collection path. Preserve exact collection rows/hash only if retained; missing/unpublished state remains explicit.",
+    "attemptAudit": "Shared reset/read contamination class now guarded by Fire152 real launcher/worker tests. Aggregate frame-operation ambiguity now guarded by Fire154 direct/bundled fixtures. The red run's fractional-clock fixture was corrected deterministically. Existing timeout/lifecycle evidence stays separate; no unchanged native replay.",
+    "limits": "Read partitions localize observer work only. No paired observer-off comparison; forced-layout or initiating product cause cannot be inferred. Original frozen SPA whole graph, private current API, media restriction and clock limits remain. P006/P008 acceptance remains separate.",
+    "next": "Fresh-context live claims/source/manifest/readiness checks, then one changed diagnostic via the maintained desktop-native verifier. Preserve terminal receipt and identity-checked owned cleanup. No source-tree cleanup, P2P, shared restart or LIVE_GATE_OPS."
+  },
+  "firstFrameOperationGuardsFire154": {
+    "scope": "Maintained startup observer and controlled direct/bundled Node guards only. No native adoption, forced-layout attribution, product cause or P007/R7 acceptance.",
+    "detectorGap": "The r170 first-frame interval134ms combined connection, up to32 ancestor style lookups/property checks/traversal, rectangle and viewport reads. The aggregate did not distinguish which observer operation occupied that interval.",
+    "reused": "Extend the existing first-frame report and early self-contained probe builder; no new collector, service, schema or product read.",
+    "change": "Retain ordered operation/depth/start/end/duration/threw rows for the first frame only, maximum99 per candidate. Preserve short-circuit property order, independent footer/subtitle identity,32-ancestor/frame caps and existing exception handling. Later frames do not append rows. Timing overhead remains observer work.",
+    "controlledGuard": "A clock-controlled bundled fixture records connection0ms, two style lookups5ms each, element visibility13ms, parent visibility0ms, two parent reads4ms each, rectangle7ms and viewport24ms:62ms aggregate. Direct guards preserve each throwing operation and omit private errors; first-frame-only/candidate independence and bundled32-ancestor cap guards pass.",
+    "red": "82PASS5FAIL0skip exit1: four new operation guards fail against old source, plus an existing fractional-clock exact-duration fixture fails with8636.999999999998 versus8637. This fifth failure is separately recorded, not attributed to the detector gap.",
+    "fixtureFix": "Node computes duration by subtracting start from end. The existing exact8637ms fixture used fractional performance.now(); Math.floor now supplies an integer fixture start. The exact assertion is retained and production measurement precision is unchanged.",
+    "green": "Initial87PASS0skip exit0. After the deterministic fixture correction, final87PASS0fail0skip exit0 and separate package tsc exit0. JSON/source/diff verification required before native preparation.",
+    "commands": [
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "sourceHashes": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "f453b14745eb23616330abccd587defb38e20a32bef00e8b19ddddbfa5851b04",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "f14c980769769ece13f0fc0563717d11b3a71f7ffacc2b88adac1c5339441d03",
+      "tools/perf-test/wdio/web-vitals-probe.ts": "a538a91400867c8f598026a75198783e1504bcc887c76ead017145e642835fc4",
+      "tools/perf-test/wdio/package.json": "d135380869d1d4063d2cfc8f9ff978a88de0f75b80bbab62614c02c68053457b",
+      "tools/perf-test/wdio/tsconfig.json": "6877007d5b926ffd8f76196a43df5209e584eccc7f084bbf17da965b51d88511"
+    },
+    "logHashes": {
+      "/tmp/p007-frame-partitions-red-fire154.log": "de00690f8c962f4f9e0a58af8d0ef959a89e07cba68d3e841d25e7de4b3badb3",
+      "/tmp/p007-frame-partitions-green-fire154.log": "1f02921d0ed3a18ccc359ec9bddca99ee96e101bce3f4607b0772a3f5bd889c4",
+      "/tmp/p007-frame-partitions-tsc-fire154.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+      "/tmp/p007-frame-partitions-final-fire154.log": "49d15f696fbf3733d0289bb7da540db62d5e5441a25ab61eae40817dc7ba3473",
+      "/tmp/p007-frame-partitions-final-tsc-fire154.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "limits": "Controlled durations prove partition semantics, not native observer overhead or r170 product causation. No paired observer-off control exists. Previous r170 startup/test bindings are historical. Media, API, original-SPA graph and clock limits remain.",
+    "next": "Fresh bound payload/manifest and ONE justified changed native diagnostic, recover exact logged per-run collection path and preserve terminal verdict plus owned cleanup. P007 root/initiatingcaller/product/R7/frozen5cold5warm and independent P006/P008 stay OPEN. No unchanged native replay, P2P, shared restart or LIVE_GATE_OPS."
+  },
   "measurePersistenceIsolationFire152": {
     "scope": "Maintained WDIO collection writer and actual launcher/worker process boundary only. No native performance rerun, product latency repair, cause attribution, R7 or shipment acceptance.",
     "recovery": "Fresh managed context recovered newer Fire149 terminal checkpoint instead of trusting stale pending-run wake note. Exact r170 summary28c1a7b8506e and cleanup124f075e6967 match. No native relaunch or carried exec handle used.",

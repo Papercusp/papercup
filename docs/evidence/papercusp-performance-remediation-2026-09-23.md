@@ -4,6 +4,45 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## First-frame observer operation guards — 2026-10-02, Fire154
+
+The existing startup probe now records separate first-frame intervals for the
+connection check, each ancestor's computed-style lookup, visibility properties
+and parent traversal, then rectangle and viewport checks. Records remain
+independent for footer and subtitle, are bounded to 99 per candidate, and are
+never appended by later frames. The existing read and short-circuit order is
+preserved. Throwing operations retain timing without exposing private errors.
+
+Four new direct/bundled guards failed against the old aggregate-only probe.
+A controlled fixture distinguishes 10 ms of style lookup, 13 ms of visibility
+properties, 8 ms of traversal, 7 ms of rectangle reads and 24 ms of viewport
+checks within a 62 ms interval. Separate guards cover exceptions, first-frame
+retention, candidate independence and the 32-ancestor limit. These are controlled
+observer measurements, not native rendering or product cause evidence.
+
+The red run also exposed an existing fixture's fractional-clock equality:
+Node returned 8636.999999999998 for a requested 8637 ms duration. An integer
+fixture start removes that arithmetic nondeterminism while retaining the exact
+assertion and production timing precision. The complete red result was
+82 pass / 5 fail; the final maintained suite is **87/87 pass**, zero skips,
+exit 0. Separate typechecking passed. Exact source/log fingerprints are under
+`firstFrameOperationGuardsFire154` in the native source/output audit JSON.
+
+r170's 134 ms aggregate remains unpartitioned historical evidence. Native
+adoption, timing overhead and a paired observer-off comparison are unmeasured.
+Fresh source/payload/manifest bindings and the logged isolated collection path
+are required for one justified changed native diagnostic. P-007 root cause,
+product, R-7 and its cold/warm cohort remain open; P-006/P-008 remain separate.
+
+r171 preparation is now complete, with an independent preserved app/baseline,
+two freshly compiled payloads and 21 current selected source/config bindings.
+The manifest binds the 87-pass suite, separate typecheck, exact index and derived
+assertion. Single early script, independent baseline identity, initially absent
+private roots and Bash syntax checks passed. The assertion recovers only the
+logged unique launcher collection and records whether it remains available;
+it cannot adopt the former shared file. No native r171 run has launched.
+Exact fingerprints are under `r171PreparationFire154` in the audit JSON.
+
 ## Isolated WDIO measure persistence — 2026-10-02, Fire152
 
 The controlled launcher/worker regression confirmed the shared-file defect:
