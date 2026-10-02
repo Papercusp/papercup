@@ -115,7 +115,6 @@ export const ALLOW_COUNTS = new Map([
   ['scripts/lint-tsc-workspaces.mjs|path-to-file-url', 1],
   ['scripts/lint-tsc.mjs|path-to-file-url', 1],
   ['scripts/load-claude-md-doc-parts.mjs|file-template', 1],
-  ['scripts/npm-install-safe.mjs|file-template', 1],
   ['scripts/proc-guard.mjs|file-template', 1],
   ['scripts/project-doc-parts.mjs|file-template', 1],
   ['scripts/refill-prose-vectors-727.mjs|path-to-file-url', 1],
