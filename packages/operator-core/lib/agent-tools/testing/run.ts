@@ -116,6 +116,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { managedSpawn, type ManagedSpawnResult } from '../../task-manager/managed-spawn';
 import { killScopeUnit, type ScopeControlOutcome } from '../../task-manager/control';
 import { mutationProbeRefusal } from './mutation-probe-fence';
+import { restrictedHoldRefusal } from './restricted-hold-fence';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -159,6 +160,7 @@ import {
 const PRE_LAUNCH_REFUSALS: ReadonlySet<string> = new Set([
   'invalid_root', 'ambiguous_workspace_path', 'managed_app_path_unresolved',
   'mutation_probe_active', 'mutation_probe_state_unknown',
+  'restricted_write_held', 'restricted_hold_state_unknown',
 ]);
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
@@ -1258,6 +1260,8 @@ export type TestFilesCoreResult =
         | 'managed_app_path_unresolved'
         | 'mutation_probe_active'
         | 'mutation_probe_state_unknown'
+        | 'restricted_write_held'
+        | 'restricted_hold_state_unknown'
         | 'aborted'
         | 'timeout'
         | 'route_error'
@@ -3023,6 +3027,9 @@ export async function runTestFilesCore(opts: {
   // caller and a probe that started in between.
   const mutationProbe = await mutationProbeRefusal(root, requestedPaths.ok ? requestedPaths.files : opts.files);
   if (mutationProbe) return { ok: false, runId, root, ...mutationProbe };
+  // WI-10005634 (D-012 residue): never execute, with network, code a restricted session wrote.
+  const restrictedHold = await restrictedHoldRefusal(root, requestedPaths.ok ? requestedPaths.files : opts.files);
+  if (restrictedHold) return { ok: false, runId, root, ...restrictedHold };
 
   // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
   // a file that happens to exist (with stale content) at the resolved root ran
@@ -3724,6 +3731,8 @@ export default defineTool({
       // this preflight; a refusal there after preparation is retracted below.
       const mutationProbe = await mutationProbeRefusal(rootSelection.root, selected.ok ? selected.files : files);
       if (mutationProbe) return { data: { ok: false, runId, root: rootSelection.root, ...mutationProbe } };
+      const restrictedHold = await restrictedHoldRefusal(rootSelection.root, selected.ok ? selected.files : files);
+      if (restrictedHold) return { data: { ok: false, runId, root: rootSelection.root, ...restrictedHold } };
       try {
         if (!selected.ok) throw new Error('evidence_test_selection_unresolved');
         prepared = await prepareTestEvidence(evidenceRequest, runId, selected.files, evidenceScope!);

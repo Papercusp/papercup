@@ -39,14 +39,14 @@ export type MutationProbeRefusal = {
   hint: string;
 };
 
-const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
+export const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 const CLOSURE_BUDGET_MS = 20_000;
 /**
  * Test-side code that reaches source through the FILESYSTEM or a child process instead of an
  * import. The import closure cannot see those reads, so a match refuses the run. A heuristic
  * that can only over-refuse: a false hit costs a retry, a miss would admit a mutant.
  */
-const OUT_OF_GRAPH_ACCESS =
+export const OUT_OF_GRAPH_ACCESS =
   /(?<![\w$])(?:readdirSync|readdir|opendirSync|opendir|globSync|glob|fastGlob|spawn|spawnSync|execSync|execFile|execFileSync|execa|fork)\s*\(|(?<![\w$.])exec\s*\(|import\.meta\.glob/;
 const TEST_SIDE_FILE = /(^|[\\/])(__tests__|tests?|fixtures?)[\\/]|\.(test|spec)\.|test-?(helpers?|utils?)/i;
 
@@ -285,8 +285,12 @@ function namedPathLiteral(file: string, text: string, filenames: string[]): stri
   return found;
 }
 
-/** Why one test file may observe a probed source, or null when its closure provably cannot. */
-async function reachReason(
+/**
+ * Why one test file may observe a probed source, or null when its closure provably cannot.
+ * Shared with the restricted-write fence (restricted-hold-fence.ts), whose held paths are
+ * "probes" in exactly this sense.
+ */
+export async function reachReason(
   closure: Set<string>, test: string, probes: string[], unfollowable: Map<string, string>,
 ): Promise<string | null> {
   const hit = probes.find((probe) => closure.has(probe));
