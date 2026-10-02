@@ -591,12 +591,20 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           const value = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
           return value.slice(value.lastIndexOf(')') + 2).split(' ');
         };
+        const executableHashes = new Map();
         const resources = pid => {
           const row = stat(pid), executable = fs.readlinkSync('/proc/' + pid + '/exe');
+          const executableStat = fs.statSync('/proc/' + pid + '/exe');
+          const executableKey = [executableStat.dev, executableStat.ino, executableStat.size, executableStat.mtimeMs].join(':');
+          let executableSha256 = executableHashes.get(executableKey);
+          if (!executableSha256) {
+            executableSha256 = hash(fs.readFileSync('/proc/' + pid + '/exe'));
+            executableHashes.set(executableKey, executableSha256);
+          }
           const memory = fs.readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8');
           const kb = name => Number(new RegExp('^' + name + ':\\s+(\\d+)', 'm').exec(memory)?.[1]);
           return { pid, parent: Number(row[1]), startTicks: row[19], executable,
-            executableSha256: hash(fs.readFileSync('/proc/' + pid + '/exe')),
+            executableSha256,
             pssKiB: kb('Pss'), anonymousKiB: kb('Anonymous'), privateDirtyKiB: kb('Private_Dirty') };
         };
         const descendants = pid => {
@@ -666,11 +674,17 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                 cohort.samples.push({ phase, ...parent, os: resources(child.pid), descendants: descendants(child.pid) }); publish();
               };
               await sample('preflight');
-              const collect = () => { for (const row of descendants(child.pid)) {
+              cohort.poll = { intervalMs: 20, ticks: 0, totalMs: 0, maxMs: 0 };
+              const collect = () => {
+                const started = performance.now();
+                for (const row of descendants(child.pid)) {
                 const key = row.pid + ':' + row.startTicks, prior = seen.get(key);
                 seen.set(key, { ...row, samples: (prior?.samples || 0) + 1,
                   peakPssKiB: Math.max(prior?.peakPssKiB || 0, row.pssKiB) });
-              } };
+                }
+                const elapsed = performance.now() - started;
+                cohort.poll.ticks++; cohort.poll.totalMs += elapsed; cohort.poll.maxMs = Math.max(cohort.poll.maxMs, elapsed);
+              };
               poll = setInterval(collect, 20);
               const traced = await withFunctionCallTrace(client, { expectedPid: child.pid,
                 targets: [{ name: 'fork', expression: "process.getBuiltinModule('child_process').fork" }],
@@ -680,6 +694,9 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
                   cohort.requests.push({ window, ...response });
                   if (response.value?.root !== home) throw Error('Testing request escaped the private repository: ' + response.value?.root);
                   if (response.value?.error !== 'mutation_probe_active') throw Error('Expected real mutation refusal: ' + JSON.stringify(response.value));
+                  if (mode === 'compiler' && !response.value.hint?.includes('may observe it: imports ')) {
+                    throw Error('Compiler closure was not established: ' + response.value.hint);
+                  }
                   await sample('window-' + window);
                 }
               });
