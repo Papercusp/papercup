@@ -471,6 +471,20 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   });
   if (!read) return { promoted: 0, skipped: 0, ...NO_EDGES, planUnreadable: true };
 
+  // WI-10005441: a rubric row is a grading bar, not a plan with work. Refuse it before any
+  // gate, so no gate can file against it (the spec-triad gate filed 25 on 2026-10-02) and no
+  // criterion is ever minted as a work-item. Promotion is reached from several callers
+  // (plans:start, scout/autostart, routines), so the refusal belongs here, not in one of them.
+  const { isSpecTriadExcludedTemplate } = await import('./agent-tools/plans/spec-triad-policy');
+  if (isSpecTriadExcludedTemplate(read.row.template)) {
+    return {
+      promoted: 0,
+      skipped: readRawPlanItems(read).filter((item) => isOpenStatus(item.status)).length,
+      ...NO_EDGES,
+      templateExcluded: read.row.template!,
+    };
+  }
+
   // P-003: promotion is independently callable (scout/autostart and routine
   // paths invoke this function directly), so plans:start cannot be its sole
   // authority. The shared snapshot is a no-op for legacy plans and fail-closed
