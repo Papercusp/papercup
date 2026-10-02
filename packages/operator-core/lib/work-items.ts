@@ -62,6 +62,7 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import {
   admittedWhereSql,
   admittedWhereSqlWi,
@@ -9869,14 +9870,26 @@ export async function commentWorkItem(
   id: string,
   body: string,
   authorId?: string,
-  opts: { workspaceId?: string; harness?: string } = {},
+  opts: {
+    workspaceId?: string;
+    harness?: string;
+    /**
+     * personal-data-reader-set-labels P-012 / D-006: the agent that authored
+     * `body`. While it holds a restricted Personal Vault disclosure the post is a
+     * sealed stub (personal:open-sealed opens it). Pass it wherever an agent's own
+     * text is posted; omit for system-templated comments.
+     */
+    writerOwnerId?: string | null;
+  } = {},
 ): Promise<ThreadPostRow | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   const workspaceId = opts.workspaceId?.trim() && opts.workspaceId.trim() !== '*' ? opts.workspaceId.trim() : undefined;
   const harness = opts.harness ?? wi.harness;
   // issue-family: commentIssue already creates the thread + fires the issue_commented fan-out.
-  if (wi.family === 'issue') return commentIssue(id, body, authorId, { workspaceId, harness });
+  if (wi.family === 'issue') {
+    return commentIssue(id, body, authorId, { workspaceId, harness, writerOwnerId: opts.writerOwnerId });
+  }
   // feature-family: thread on the feature ObjectRef + fan out to the work-item's subscribers.
   const ref = workItemObjectRef(wi);
   // Durable write (get-or-create thread + add post) in ONE bounded txn: ATOMIC
@@ -9889,6 +9902,17 @@ export async function commentWorkItem(
       getSql: () => tx,
       getWorkspaceId: () => workspaceId ?? activeWorkspaceId(),
     });
+    // P-012 / D-006: seal in THIS transaction, so the sealed row and its stub post
+    // commit together and the authored text never reaches coord_thread_posts.
+    const stored = opts.writerOwnerId?.trim()
+      ? await sealSharedTextInTxOrRefuse(tx, {
+          workspaceId: workspaceId ?? activeWorkspaceId(),
+          writerOwnerId: opts.writerOwnerId,
+          store: 'work-item-comment',
+          text: body,
+          context: { workItemId: id },
+        })
+      : null;
     const thread = await txThreads.getOrCreateThread(ref, {
       thread_id: `work-item-thread-${id}`,
       title: wi.title,
@@ -9896,7 +9920,7 @@ export async function commentWorkItem(
       created_ts: wi.createdAt,
       harness_slug: harness ?? undefined,
     });
-    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: nowIso() });
+    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body: stored?.text ?? body, created_ts: nowIso() });
   });
   const ev: InjectEvent = {
     from: authorId ?? 'substrate',
