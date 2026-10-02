@@ -10,7 +10,6 @@ import {
   withFsMutexRead,
   peekFsMutexSync,
   resolveFsMutexLockRoot,
-  // @ts-expect-error
 } from '../../../../scripts/lib/fs-mutex.mjs';
 
 const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
