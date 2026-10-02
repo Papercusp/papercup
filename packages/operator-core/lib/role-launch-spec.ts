@@ -962,7 +962,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   // above before the caller materializes the file.  The ledger write is
   // fail-soft by contract; the envelope still prevents a clean prompt from
   // falling through to the owner-interactive residual at ingest.
-  promptText = tagTurnForInjection({ sid, origin: 'role-prompt', text: promptText }).taggedText;
+  promptText = (await tagTurnForInjection({ sid, origin: 'role-prompt', text: promptText })).taggedText;
   const compiled = await compileLaunchSpecificationArtifact({
     promptText,
     promptFile,
