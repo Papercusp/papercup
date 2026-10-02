@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  awsSubnetNetworkAcl,
+  buildAwsNetworkAclEgressDeny,
   buildEgressDenyRule,
   classifyConnections,
   evaluateOutageDrill,
@@ -22,9 +24,7 @@ const PAPERCUSP = ['104.21.73.140', '172.67.145.145'];
 const MODEL = ['160.79.104.10'];
 
 const config: OutageDrillConfig = {
-  project: 'pc-canary',
-  network: 'pc-host-net',
-  ruleName: 'pc-j5-outage-drill-n1',
+  target: { cloud: 'gcp', project: 'pc-canary', network: 'pc-host-net', ruleName: 'pc-j5-outage-drill-n1' },
   papercuspOrigin: 'https://app.papercusp.com',
   modelProviderOrigin: 'https://api.anthropic.com',
   serviceUnit: 'papercusp-workspace.service',
@@ -52,6 +52,15 @@ interface FakeOptions {
   /** The firewall rule never takes effect. */
   readonly blockIneffective?: boolean;
   readonly deleteFails?: boolean;
+  /** The Nth create call (1-based) fails, e.g. an AWS ACL entry refused for the entry limit. */
+  readonly createFailsAt?: number;
+}
+
+/** create/delete for both clouds: gcloud `compute firewall-rules <verb>`, aws `ec2 <verb>-network-acl-entry`. */
+function cloudVerb(args: readonly string[]): string | undefined {
+  if (args[1] === 'create-network-acl-entry') return 'create';
+  if (args[1] === 'delete-network-acl-entry') return 'delete';
+  return args[2];
 }
 
 /** A host whose behaviour depends on whether the egress rule exists, driven by a fake clock. */
@@ -91,8 +100,13 @@ function fakeHost(options: FakeOptions = {}) {
     cloudExec: async (args) => {
       cloud.push([...args]);
       clock += 2_000;
-      if (args[2] === 'create') blocked = !options.blockIneffective;
-      if (args[2] === 'delete') {
+      if (cloudVerb(args) === 'create') {
+        if (cloud.filter((call) => cloudVerb(call) === 'create').length === options.createFailsAt) {
+          return { code: 1, stdout: '', stderr: 'NetworkAclEntryLimitExceeded' };
+        }
+        blocked = !options.blockIneffective;
+      }
+      if (cloudVerb(args) === 'delete') {
         if (options.deleteFails) return { code: 1, stdout: '', stderr: 'permission denied' };
         blocked = false;
         liftedAt = clock;
@@ -169,6 +183,62 @@ describe('buildEgressDenyRule', () => {
     expect(() => buildEgressDenyRule({ project: 'p', network: 'n', ruleName: 'pc-j5-x', addresses: [] })).toThrow(/no Papercusp addresses/);
     expect(() => buildEgressDenyRule({ project: 'p', network: 'n', ruleName: 'pc-j5-x', addresses: ['2606:4700::1'] })).toThrow(/IPv4/);
     expect(() => buildEgressDenyRule({ project: 'p', network: 'n', ruleName: 'Bad_Name', addresses: PAPERCUSP })).toThrow(/rule name/);
+  });
+});
+
+const ACL_ENTRIES = [
+  { ruleNumber: 100, ruleAction: 'allow' as const },
+  { ruleNumber: 32767, ruleAction: 'deny' as const },
+];
+const awsTarget = { cloud: 'aws' as const, region: 'us-east-2', networkAclId: 'acl-0123456789abcdef0', egressEntries: ACL_ENTRIES };
+const awsConfig: OutageDrillConfig = { ...config, target: awsTarget };
+
+describe('buildAwsNetworkAclEgressDeny', () => {
+  it('denies each address with its own entry, numbered ahead of the first allow, and deletes the same entries', () => {
+    const block = buildAwsNetworkAclEgressDeny(
+      { ...awsTarget, egressEntries: [{ ruleNumber: 1, ruleAction: 'deny' }, ...ACL_ENTRIES] },
+      ['172.67.145.145', '104.21.73.140', '104.21.73.140'],
+    );
+    const scope = ['--region', 'us-east-2', '--network-acl-id', 'acl-0123456789abcdef0', '--egress'];
+    expect(block.steps.map((step) => step.createArgs)).toEqual([
+      ['ec2', 'create-network-acl-entry', ...scope, '--rule-number', '2', '--protocol', '-1', '--rule-action', 'deny', '--cidr-block', '104.21.73.140/32'],
+      ['ec2', 'create-network-acl-entry', ...scope, '--rule-number', '3', '--protocol', '-1', '--rule-action', 'deny', '--cidr-block', '172.67.145.145/32'],
+    ]);
+    expect(block.steps.map((step) => step.deleteArgs)).toEqual([
+      ['ec2', 'delete-network-acl-entry', ...scope, '--rule-number', '2'],
+      ['ec2', 'delete-network-acl-entry', ...scope, '--rule-number', '3'],
+    ]);
+  });
+
+  it('refuses an ACL with no room ahead of its first allow, a bad ACL id, and a non-IPv4 address', () => {
+    expect(() => buildAwsNetworkAclEgressDeny({ ...awsTarget, egressEntries: [{ ruleNumber: 2, ruleAction: 'allow' }] }, PAPERCUSP))
+      .toThrow(/1 free egress rule number\(s\) below its first allow \(rule 2\); 2 needed/);
+    expect(() => buildAwsNetworkAclEgressDeny({ ...awsTarget, networkAclId: 'sg-0123456789abcdef0' }, PAPERCUSP)).toThrow(/network ACL id/);
+    expect(() => buildAwsNetworkAclEgressDeny(awsTarget, ['2606:4700::1'])).toThrow(/IPv4/);
+  });
+});
+
+describe('awsSubnetNetworkAcl', () => {
+  it('picks the ACL associated with the subnet and keeps only its egress entries', () => {
+    const json = JSON.stringify({
+      NetworkAcls: [
+        {
+          NetworkAclId: 'acl-0aaaaaaaaaaaaaaaa',
+          Associations: [{ SubnetId: 'subnet-1' }],
+          Entries: [
+            { RuleNumber: 100, RuleAction: 'allow', Egress: true },
+            { RuleNumber: 100, RuleAction: 'allow', Egress: false },
+            { RuleNumber: 32767, RuleAction: 'deny', Egress: true },
+          ],
+        },
+        { NetworkAclId: 'acl-0bbbbbbbbbbbbbbbb', Associations: [{ SubnetId: 'subnet-2' }], Entries: [] },
+      ],
+    });
+    expect(awsSubnetNetworkAcl(json, 'subnet-1')).toEqual({
+      networkAclId: 'acl-0aaaaaaaaaaaaaaaa',
+      egressEntries: [{ ruleNumber: 100, ruleAction: 'allow' }, { ruleNumber: 32767, ruleAction: 'deny' }],
+    });
+    expect(() => awsSubnetNetworkAcl(json, 'subnet-9')).toThrow(/found 0/);
   });
 });
 
@@ -274,6 +344,29 @@ describe('runOutageDrill + evaluateOutageDrill', () => {
     expect(evaluateOutageDrill(evidence).failures).toEqual(expect.arrayContaining([
       'drill error: egress block NOT removed (pc-j5-outage-drill-n1): permission denied',
       'the egress block was not removed',
+    ]));
+  });
+
+  it('runs on AWS: one ACL deny entry per address, lifted in reverse after the agent finishes', async () => {
+    const host = fakeHost();
+    const evidence = await runOutageDrill(awsConfig, host.deps);
+    expect(evaluateOutageDrill(evidence).failures).toEqual([]);
+    expect(evaluateOutageDrill(evidence).passed).toBe(true);
+    expect(host.cloud.map((args) => `${args[1]} ${args[8]}`)).toEqual([
+      'create-network-acl-entry 1', 'create-network-acl-entry 2', 'delete-network-acl-entry 2', 'delete-network-acl-entry 1',
+    ]);
+  });
+
+  it('undoes the AWS entries that applied when a later entry fails, and fails the drill', async () => {
+    const host = fakeHost({ createFailsAt: 2 });
+    const evidence = await runOutageDrill(awsConfig, host.deps);
+    expect(host.cloud.map((args) => `${args[1]} ${args[8]}`)).toEqual([
+      'create-network-acl-entry 1', 'create-network-acl-entry 2', 'delete-network-acl-entry 1',
+    ]);
+    expect(evidence.blockedAt).toBeNull();
+    expect(evidence.ruleDeleted).toBe(true);
+    expect(evaluateOutageDrill(evidence).failures).toEqual(expect.arrayContaining([
+      'drill error: egress block failed: NetworkAclEntryLimitExceeded',
     ]));
   });
 

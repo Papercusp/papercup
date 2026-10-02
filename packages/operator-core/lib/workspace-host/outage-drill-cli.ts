@@ -55,6 +55,18 @@ function run(file: string, args: readonly string[], timeoutMs: number): Promise<
   });
 }
 
+/** The network ACL on the AWS host's subnet, looked up from the instance. */
+async function resolveAwsTarget(region: string, instanceId: string, profileArgs: readonly string[]): Promise<AwsEgressBlockTarget> {
+  const aws = (args: readonly string[]) => run('aws', [...args, '--region', region, ...profileArgs, '--output', 'json'], 60_000);
+  const described = await aws(['ec2', 'describe-instances', '--instance-ids', instanceId, '--query', 'Reservations[0].Instances[0].SubnetId']);
+  if (described.code !== 0) throw new Error(`describe-instances failed: ${described.stderr.trim()}`);
+  const subnetId: unknown = JSON.parse(described.stdout);
+  if (typeof subnetId !== 'string' || !subnetId.startsWith('subnet-')) throw new Error(`instance ${instanceId} reports no subnet`);
+  const acls = await aws(['ec2', 'describe-network-acls', '--filters', `Name=association.subnet-id,Values=${subnetId}`]);
+  if (acls.code !== 0) throw new Error(`describe-network-acls failed: ${acls.stderr.trim()}`);
+  return { cloud: 'aws', region, ...awsSubnetNetworkAcl(acls.stdout, subnetId) };
+}
+
 function parseArgs(argv: readonly string[]): Map<string, string> {
   const args = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
@@ -80,19 +92,39 @@ export async function main(argv: readonly string[]): Promise<number> {
     return value;
   };
   let config: OutageDrillConfig;
-  let ssh: { alias: string; instance: string; project: string; zone: string };
+  let ssh: { alias: string; destination: string; proxyCommand: string };
+  let cloudCli: 'gcloud' | 'aws';
+  let cloudArgsSuffix: string[] = [];
   let hostId: string;
   try {
-    const project = need('project');
-    const zone = need('zone');
-    const instance = need('instance');
+    const cloud = args.get('cloud') ?? 'gcp';
     hostId = need('host-id');
     const nonce = args.get('nonce') ?? `j5${randomBytes(6).toString('hex')}`;
-    ssh = { alias: gcpIapHostKeyAlias({ projectId: project, zone, instanceName: instance, instanceId: need('instance-id') }), instance, project, zone };
+    let target: OutageDrillConfig['target'];
+    if (cloud === 'gcp') {
+      const project = need('project');
+      const zone = need('zone');
+      const instance = need('instance');
+      ssh = {
+        alias: gcpIapHostKeyAlias({ projectId: project, zone, instanceName: instance, instanceId: need('instance-id') }),
+        destination: instance,
+        proxyCommand: `gcloud compute start-iap-tunnel %h %p --listen-on-stdin --project=${project} --zone=${zone} --verbosity=error`,
+      };
+      cloudCli = 'gcloud';
+      target = { cloud: 'gcp', project, network: need('network'), ruleName: `pc-j5-outage-drill-${nonce}`.toLowerCase().slice(0, 63) };
+    } else if (cloud === 'aws') {
+      const region = need('region');
+      const instanceId = need('instance-id');
+      const awsProfile = args.get('aws-profile');
+      ssh = { alias: awsSsmHostKeyAlias({ region, instanceId }), destination: instanceId, proxyCommand: buildAwsSsmProxyCommand({ region, awsProfile }) };
+      cloudCli = 'aws';
+      cloudArgsSuffix = awsProfile ? ['--profile', awsProfile] : [];
+      target = await resolveAwsTarget(region, instanceId, cloudArgsSuffix);
+    } else {
+      throw new Error(`--cloud must be gcp or aws, got ${cloud}`);
+    }
     config = {
-      project,
-      network: need('network'),
-      ruleName: `pc-j5-outage-drill-${nonce}`.toLowerCase().slice(0, 63),
+      target,
       papercuspOrigin: args.get('papercusp-origin') ?? 'https://app.papercusp.com',
       modelProviderOrigin: args.get('model-origin') ?? 'https://api.anthropic.com',
       serviceUnit: args.get('service') ?? 'papercusp-workspace.service',
@@ -119,10 +151,10 @@ export async function main(argv: readonly string[]): Promise<number> {
           '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
           '-o', `UserKnownHostsFile=${join(controller, 'known_hosts')}`, '-o', `HostKeyAlias=${ssh.alias}`,
           '-o', 'IdentitiesOnly=yes', '-i', join(controller, 'id_ed25519'), '-o', 'ConnectTimeout=30',
-          '-o', `ProxyCommand=gcloud compute start-iap-tunnel %h %p --listen-on-stdin --project=${ssh.project} --zone=${ssh.zone} --verbosity=error`,
-          `${WORKSPACE_ACCOUNT}@${ssh.instance}`, command,
+          '-o', `ProxyCommand=${ssh.proxyCommand}`,
+          `${WORKSPACE_ACCOUNT}@${ssh.destination}`, command,
         ], 90_000),
-      cloudExec: (cloudArgs) => run('gcloud', cloudArgs, 120_000),
+      cloudExec: (cloudArgs) => run(cloudCli, [...cloudArgs, ...cloudArgsSuffix], 120_000),
       resolveAddresses: (hostname) => resolve4(hostname),
       readConnectorLastSeenAt: async () => {
         const rows = await sql<{ seen: Date | null }[]>`
