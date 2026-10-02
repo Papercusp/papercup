@@ -14,7 +14,7 @@ import {
   type FreshPgDb,
 } from '../test/_pg-helpers';
 import {
-  HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL,
+  HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL,
   COORD_REF_HOLDERS_DDL,
 } from '../test/_work-items-schema';
 
@@ -132,7 +132,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('admission-recovery-chain');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(COORD_REF_HOLDERS_DDL);
   await applyMigrationForTest(db.sql, resolve(import.meta.dirname,
