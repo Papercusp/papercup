@@ -27,6 +27,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { buildConsumerView, type ConsumerView } from './consumer-view';
 
 /** The subset of presence input that forms the durable brief. */
 export interface SessionBriefInput {
@@ -300,6 +301,47 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   return Object.keys(result).length > 0 ? result : null;
 }
 
+export type SessionBriefLifecycleMarkerKind = 'released' | 'poisoned';
+
+/**
+ * Consumer attestation for a lifecycle-marker write (WI-10005195, generalizing
+ * EI-23770243810745552). The upsert only proves a row was WRITTEN; the wake
+ * executor's stop gate reads `control_state` through `parseSessionBriefLifecycle`,
+ * which silently drops a marker that fails its shape checks — so a write can
+ * return `ok` while the consumer sees no marker and reanimates the session.
+ * This compares the marker the writer meant to store with what that exact parser
+ * returns from the row the upsert produced (`RETURNING control_state`).
+ */
+export function attestLifecycleConsumerView<K extends SessionBriefLifecycleMarkerKind>(
+  kind: K,
+  written: NonNullable<SessionBriefLifecycle[K]>,
+  controlStateAfterWrite: unknown,
+): ConsumerView<SessionBriefLifecycle[K] | null> {
+  return buildConsumerView({
+    readPath: `session_briefs.control_state -> parseSessionBriefLifecycle().${kind}`,
+    written,
+    consumed: parseSessionBriefLifecycle(controlStateAfterWrite)?.[kind] ?? null,
+  });
+}
+
+/**
+ * Exception-only: an agreeing consumer read adds nothing; a diverging one is
+ * logged with its view and makes the write report failure, because a marker the
+ * consumer cannot read is not a marker (poison callers then leave the session
+ * retryable instead of declaring it stopped).
+ */
+function lifecycleWriteReadByConsumer(
+  kind: SessionBriefLifecycleMarkerKind,
+  ownerId: string,
+  view: ConsumerView<unknown>,
+): boolean {
+  if (!view.divergedFromWrite) return true;
+  console.warn(
+    `[session-brief] ${kind} marker write for ${ownerId} landed but the consumer read diverged: ${JSON.stringify(view)}`,
+  );
+  return false;
+}
+
 /**
  * Read the durable lifecycle markers used by the wake executor. Fail-soft by
  * design: a temporary brief-store outage must not turn every ordinary wake
@@ -335,7 +377,7 @@ export async function markSessionBriefReleased(
   try {
     if (!ownerId || !workspaceId || !marker.fleet || !marker.at || !marker.by) return false;
     const markerJson = JSON.stringify(marker);
-    await getOrgPg().sql`
+    const rows = await getOrgPg().sql<Array<{ control_state: unknown }>>`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, control_state, control_generation, control_updated_at)
       VALUES (
@@ -375,8 +417,18 @@ export async function markSessionBriefReleased(
           ELSE harness_shared.session_briefs.control_transition
         END,
         updated_at = now()
+      RETURNING control_state
     `;
-    return true;
+    // Attest what the stop gate will READ, not just that the upsert ran.
+    return lifecycleWriteReadByConsumer(
+      'released',
+      ownerId,
+      attestLifecycleConsumerView(
+        'released',
+        { fleet: marker.fleet, at: marker.at, by: marker.by },
+        rows[0]?.control_state,
+      ),
+    );
   } catch {
     return false;
   }
@@ -404,7 +456,7 @@ export async function markSessionBriefPoisoned(
       evidence: marker.evidence.slice(0, 400),
     };
     const markerJson = JSON.stringify(boundedMarker);
-    await getOrgPg().sql`
+    const rows = await getOrgPg().sql<Array<{ control_state: unknown }>>`
       INSERT INTO harness_shared.session_briefs
         (owner_id, workspace_id, control_state, control_generation, control_updated_at)
       VALUES (
@@ -444,8 +496,26 @@ export async function markSessionBriefPoisoned(
           ELSE harness_shared.session_briefs.control_transition
         END,
         updated_at = now()
+      RETURNING control_state
     `;
-    return true;
+    // Attest what the wake executor's stop gate will READ, not just that the upsert ran.
+    return lifecycleWriteReadByConsumer(
+      'poisoned',
+      ownerId,
+      attestLifecycleConsumerView(
+        'poisoned',
+        {
+          advSessionId: boundedMarker.advSessionId,
+          sessionId: boundedMarker.sessionId,
+          startedAt: boundedMarker.startedAt,
+          at: boundedMarker.at,
+          by: boundedMarker.by,
+          reason: boundedMarker.reason,
+          evidence: boundedMarker.evidence,
+        },
+        rows[0]?.control_state,
+      ),
+    );
   } catch {
     return false;
   }

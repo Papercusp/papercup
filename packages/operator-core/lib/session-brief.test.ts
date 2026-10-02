@@ -24,6 +24,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 import {
+  attestLifecycleConsumerView,
   clearSessionBriefReleasedForFleet,
   getSessionBriefAmbientExcludedRefs,
   getSessionBrief,
@@ -233,21 +234,77 @@ describe('getSessionBrief (fail-soft read)', () => {
     await expect(getSessionBriefLifecycle('su-test-ei1742')).resolves.toEqual({ released, poisoned });
   });
 
+  const poisonMarker = {
+    advSessionId: 77,
+    sessionId: 'native-77',
+    startedAt: '2026-09-24T10:00:00.123456Z',
+    at: '2026-09-24T10:04:00.000Z',
+    by: 'resume-turn-detector',
+    reason: 'three consecutive unavailable tool references',
+    evidence: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools",
+  };
+
   it('writes a bounded poison marker for an exact adv-session incarnation', async () => {
-    const rec = recordingSql();
+    const rec = recordingSql([{ control_state: { lifecycle: { poisoned: poisonMarker } } }]);
     fakeSql = rec.sql;
-    const marker = {
-      advSessionId: 77,
-      sessionId: 'native-77',
-      startedAt: '2026-09-24T10:00:00.123456Z',
-      at: '2026-09-24T10:04:00.000Z',
-      by: 'resume-turn-detector',
-      reason: 'three consecutive unavailable tool references',
-      evidence: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools",
-    };
-    await expect(markSessionBriefPoisoned('su-member', 'ws-1', marker)).resolves.toBe(true);
+    await expect(markSessionBriefPoisoned('su-member', 'ws-1', poisonMarker)).resolves.toBe(true);
     expect(rec.calls[0]).toEqual(expect.arrayContaining(['su-member', 'ws-1']));
-    expect(rec.calls[0]).toContain(JSON.stringify(marker));
+    expect(rec.calls[0]).toContain(JSON.stringify(poisonMarker));
+  });
+
+  it('reports failure — and logs the consumer view — when the stored poison marker is unreadable by the stop gate (WI-10005195)', async () => {
+    // The upsert "landed" (a row came back) but its marker lacks `evidence`, so
+    // parseSessionBriefLifecycle — the stop gate's read — drops it: the write
+    // succeeded and the consumer still sees NO poison marker.
+    const { evidence: _dropped, ...unreadable } = poisonMarker;
+    fakeSql = recordingSql([{ control_state: { lifecycle: { poisoned: unreadable } } }]).sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(markSessionBriefPoisoned('su-member', 'ws-1', poisonMarker)).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain('poisoned marker write for su-member');
+    expect(line).toContain('"divergedFromWrite":true');
+    expect(line).toContain('"value":null');
+  });
+
+  it('is exception-only: an agreeing poison read stays silent', async () => {
+    fakeSql = recordingSql([{ control_state: { lifecycle: { poisoned: poisonMarker } } }]).sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(markSessionBriefPoisoned('su-member', 'ws-1', poisonMarker)).resolves.toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('attestLifecycleConsumerView (consumer-attested lifecycle writes, WI-10005195)', () => {
+  const released = { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' };
+
+  it('agrees when the consumer parser returns exactly the written marker', () => {
+    expect(
+      attestLifecycleConsumerView('released', released, { lifecycle: { released } }),
+    ).toEqual({
+      readPath: 'session_briefs.control_state -> parseSessionBriefLifecycle().released',
+      value: released,
+      divergedFromWrite: false,
+    });
+  });
+
+  it('diverges when the row has the marker at a path the consumer does not read', () => {
+    // Decoy placement: marker stored beside, not under, control_state.lifecycle.
+    const view = attestLifecycleConsumerView('released', released, { released });
+    expect(view.value).toBeNull();
+    expect(view.divergedFromWrite).toBe(true);
+  });
+
+  it('diverges when the consumer sees a DIFFERENT marker than the one written', () => {
+    const view = attestLifecycleConsumerView('released', released, {
+      lifecycle: { released: { ...released, fleet: 'other-fleet' } },
+    });
+    expect(view.value).toEqual({ ...released, fleet: 'other-fleet' });
+    expect(view.divergedFromWrite).toBe(true);
+  });
+
+  it('diverges when the RETURNING row is missing (nothing the consumer could read)', () => {
+    expect(attestLifecycleConsumerView('released', released, undefined).divergedFromWrite).toBe(true);
   });
 });
 
@@ -307,19 +364,38 @@ describe('getSessionBriefAmbientExcludedRefs (durable retrieval fence)', () => {
 
 describe('fleet release lifecycle helpers (EI-203843)', () => {
   it('marks a member with the durable fleet/freshness/actor tuple', async () => {
-    const rec = recordingSql();
+    const released = { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' };
+    const rec = recordingSql([{ control_state: { lifecycle: { released } } }]);
     fakeSql = rec.sql;
+    await expect(markSessionBriefReleased('su-member', 'ws-1', released)).resolves.toBe(true);
+    expect(rec.calls[0]).toEqual(expect.arrayContaining(['su-member', 'ws-1']));
+    expect(rec.calls[0]).toContain(JSON.stringify(released));
+  });
+
+  it('reports failure — and logs the consumer view — when the stored release marker is unreadable by the stop gate (WI-10005195)', async () => {
+    // Upsert returned a row, but its marker's `by` is empty so the stop gate's
+    // parser drops it; before this attestation the write still reported `true`.
+    fakeSql = recordingSql([
+      { control_state: { lifecycle: { released: { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: '' } } } },
+    ]).sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(
       markSessionBriefReleased('su-member', 'ws-1', {
         fleet: 'backend',
         at: '2026-08-20T10:00:00Z',
         by: 'su-leader',
       }),
-    ).resolves.toBe(true);
-    expect(rec.calls[0]).toEqual(expect.arrayContaining(['su-member', 'ws-1']));
-    expect(rec.calls[0]).toContain(
-      JSON.stringify({ fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' }),
-    );
+    ).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('"divergedFromWrite":true');
+  });
+
+  it('is exception-only: an agreeing release read stays silent', async () => {
+    const released = { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' };
+    fakeSql = recordingSql([{ control_state: { lifecycle: { released } } }]).sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(markSessionBriefReleased('su-member', 'ws-1', released)).resolves.toBe(true);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('clears only rows matching the resumed workspace and fleet', async () => {
