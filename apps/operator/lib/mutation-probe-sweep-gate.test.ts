@@ -569,6 +569,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
 
     expect(code).toBe(2);
     expect(out).toContain("no live file lock for 'subject.txt'");
+    // ORDER, not just call count (EI-24673276803601762): the fence must refuse BEFORE the
+    // (possibly expensive) baseline guard runs. Until 25489f80b8 the only fence call sat
+    // after the baseline, so a missing lock cost a full baseline run before refusing.
+    expect(out).not.toContain('running baseline guard');
     expect(out).not.toContain('mutant applied:');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
