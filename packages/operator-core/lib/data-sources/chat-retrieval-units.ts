@@ -270,10 +270,20 @@ export type CorpusRoute =
 type RouteInput = Pick<SourceRow, 'kind' | 'scope' | 'datatype_mappings' | 'destination_policy' | 'permission_mapping'>
   & Partial<Pick<SourceRow, 'scope_ref' | 'owner_user_id' | 'provider_account_id'>>;
 
+/** Which of a source's provider objects is being routed. Chat sources route `message`
+ *  (default chat-message); other connectors name their own object, e.g. a ticket source
+ *  routes `comment` with default ticket-comment. */
+export interface CorpusRouteObject {
+  mappingKey: string;
+  defaultDatatype: string;
+}
+
+const CHAT_MESSAGE_OBJECT: CorpusRouteObject = { mappingKey: 'message', defaultDatatype: DEFAULT_CHAT_MESSAGE_DATATYPE };
+
 /** Whether, and where, this data source's units go to the documents corpus. */
-export function corpusRouteFor(source: RouteInput): CorpusRoute {
-  const mapped = source.datatype_mappings?.message;
-  const datatype = typeof mapped === 'string' && mapped.trim() ? mapped.trim() : DEFAULT_CHAT_MESSAGE_DATATYPE;
+export function corpusRouteFor(source: RouteInput, object: CorpusRouteObject = CHAT_MESSAGE_OBJECT): CorpusRoute {
+  const mapped = source.datatype_mappings?.[object.mappingKey];
+  const datatype = typeof mapped === 'string' && mapped.trim() ? mapped.trim() : object.defaultDatatype;
   const natures = source.destination_policy?.[datatype];
   if (!Array.isArray(natures) || !natures.includes('document')) return { write: false, reason: 'destination_not_document' };
   const corpusSource = normalizePersonalSource(source.kind);
@@ -302,7 +312,7 @@ export function corpusRouteFor(source: RouteInput): CorpusRoute {
 }
 
 /** The dedupe key the corpus row is stored under (the vault prefixes personal keys by account). */
-function storedDedupeKey(route: Extract<CorpusRoute, { write: true }>, unitKey: string, kind: string): string {
+export function storedDedupeKey(route: Extract<CorpusRoute, { write: true }>, unitKey: string, kind: string): string {
   if (route.scope !== 'personal') return unitKey;
   return dedupeKeyFor({ source: route.source, kind, dedupeKey: unitKey, providerAccountId: route.providerAccountId });
 }
@@ -326,8 +336,9 @@ async function upsertPotDocument(sql: Sql, workspaceId: string, potSlug: string,
                   updated_at = now()`;
 }
 
-/** Write one unit's corpus row to the destination its route names. */
-async function writeCorpusDocument(
+/** Write one unit's corpus row to the destination its route names. An organization route
+ *  needs the permission list the row is read through (see ensurePermissionList). */
+export async function writeCorpusDocument(
   sql: Sql,
   workspaceId: string,
   route: Extract<CorpusRoute, { write: true }>,
@@ -377,14 +388,15 @@ export function renderChatUnit(messages: readonly LiveMessage[]): string {
 }
 
 /** The channel's permission list, created empty (nobody can read) when missing. */
-async function ensureChannelList(sql: Sql, workspaceId: string, source: string, channelId: string): Promise<{ id: string; title: string }> {
+/** The permission list for one provider ACL container (a Slack channel, a GitHub repository). */
+export async function ensurePermissionList(sql: Sql, workspaceId: string, source: string, sourceRef: string): Promise<{ id: string; title: string }> {
   await sql`
     INSERT INTO harness_shared.document_permission_lists (workspace_id, source, source_ref, title)
-    VALUES (${workspaceId}, ${source}, ${channelId}, '')
+    VALUES (${workspaceId}, ${source}, ${sourceRef}, '')
     ON CONFLICT (workspace_id, source, source_ref) DO NOTHING`;
   const rows = await sql<Array<{ id: string; title: string }>>`
     SELECT id, title FROM harness_shared.document_permission_lists
-     WHERE workspace_id = ${workspaceId} AND source = ${source} AND source_ref = ${channelId}`;
+     WHERE workspace_id = ${workspaceId} AND source = ${source} AND source_ref = ${sourceRef}`;
   return rows[0]!;
 }
 
@@ -503,7 +515,7 @@ export async function rollupChatUnits(
     }
 
     const list = route.write && route.scope === 'organization'
-      ? await ensureChannelList(sql, workspaceId, route.source, bucket.channel_id)
+      ? await ensurePermissionList(sql, workspaceId, route.source, bucket.channel_id)
       : null;
     const docKind = unitKind === 'thread' ? 'chat-thread' : 'chat-window';
     const target = route.write
