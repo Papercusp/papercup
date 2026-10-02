@@ -24,7 +24,26 @@
  * The prefilter is a deliberately coarse copy of the operator's rule list (an
  * installed hook cannot import repository modules). It must match every rule's
  * sample: restricted-egress-guard.test.ts pins it to PROVIDER_EGRESS_RULES.
+ *
+ * NETWORK LAYER (WI-10005589, plan Decision D-012). Matching names cannot see a
+ * host built at run time (`'https://' + 'slack' + '.com'`, base64, a script the
+ * agent wrote). So for a psu session the hook also asks whether the session is
+ * RESTRICTED (`status: true`), on every call it matches, and when it is — or when
+ * that cannot be shown otherwise — :
+ *   - Bash is REWRITTEN (updatedInput) to run inside bwrap with `--unshare-net`:
+ *     an empty network namespace whose only interface is its own loopback, so no
+ *     egress exists to refuse. The user bus/systemd sockets (/run/user/<uid>), the
+ *     docker socket and tmux sockets are hidden (each would let a sandboxed command
+ *     ask a host-side service to run something on the host network), and the files
+ *     the CLI itself executes or reads tools from (settings, hooks, MCP config, git
+ *     hooks) are read-only. No bwrap → `unshare --net`; neither → deny.
+ *   - WebFetch and every non-Papercusp MCP tool are DENIED (both egress from the
+ *     CLI process itself, outside any shell sandbox).
+ *   - Edit/Write/MultiEdit/NotebookEdit of those runtime-config paths are DENIED.
  */
+import { existsSync } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
+import path from 'node:path';
 import { operatorBase, sessionId } from '../inject/core.mjs';
 
 const CHECK_TIMEOUT_MS = 4000;
@@ -67,50 +86,177 @@ export function prefilterHits(texts) {
   return texts.some((text) => PROVIDER_PREFILTER.some((re) => re.test(text)));
 }
 
+/** The installed matcher (desktop-install/papercusp-files.ts must use this exact string). */
+export const RESTRICTED_EGRESS_MATCHER = 'Bash|WebFetch|Edit|Write|MultiEdit|NotebookEdit|mcp__(?!papercusp).*';
+
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/** @param {string} toolName */
+function isForeignMcp(toolName) {
+  return toolName.startsWith('mcp__') && !toolName.startsWith('mcp__papercusp');
+}
+
 /**
- * @param {{
- *   toolName: string,
- *   toolInput?: Record<string, unknown>,
- *   env?: NodeJS.ProcessEnv,
- *   fetchImpl?: typeof fetch,
- * }} params
- * @returns {Promise<{ decision: 'allow' } | { decision: 'deny', reason: string }>}
+ * Files the agent CLI itself executes or loads tools from. A restricted session
+ * that could write one would run code (a hook, an MCP server, a git hook run by
+ * git-sync) outside the shell sandbox.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} cwd
+ * @returns {string[]}
  */
-export async function decideEgress({ toolName, toolInput, env = process.env, fetchImpl = fetch }) {
-  const texts = egressTexts(toolName, toolInput);
-  if (!texts.length || !prefilterHits(texts)) return { decision: 'allow' };
-  const owner = sessionId(env);
-  if (!owner) return { decision: 'allow' };
+export function restrictedRuntimePaths(env = process.env, cwd = process.cwd()) {
+  const home = env.HOME || homedir();
+  const paths = [
+    env.CLAUDE_CONFIG_DIR || '',
+    path.join(home, '.claude'),
+    path.join(home, '.claude.json'),
+    path.join(home, '.papercusp', 'hooks'),
+    path.join(cwd, '.claude'),
+    path.join(cwd, '.mcp.json'),
+    path.join(cwd, '.git', 'hooks'),
+  ].filter(Boolean);
+  return [...new Set(paths.map((p) => path.resolve(p)))];
+}
+
+/**
+ * @param {string} target
+ * @param {readonly string[]} roots
+ */
+export function isRestrictedRuntimePath(target, roots) {
+  const abs = path.resolve(target);
+  return roots.some((root) => abs === root || abs.startsWith(`${root}${path.sep}`));
+}
+
+/** @param {string} value */
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The Bash command, wrapped so it runs with NO network (see the module header).
+ * Returns null when no network sandbox is available on this host.
+ * @param {string} command
+ * @param {{
+ *   env?: NodeJS.ProcessEnv,
+ *   cwd?: string,
+ *   uid?: number,
+ *   exists?: (p: string) => boolean,
+ *   bwrap?: string,
+ *   unshare?: string,
+ * }} [opts]
+ * @returns {string | null}
+ */
+export function sandboxedBashCommand(command, opts = {}) {
+  const env = opts.env ?? process.env;
+  const exists = opts.exists ?? existsSync;
+  const uid = opts.uid ?? userInfo().uid;
+  const bwrap = opts.bwrap ?? '/usr/bin/bwrap';
+  const unshare = opts.unshare ?? '/usr/bin/unshare';
+  if (exists(bwrap)) {
+    const args = ['--dev-bind', '/', '/', '--unshare-net'];
+    for (const dir of [`/run/user/${uid}`, path.join(env.TMUX_TMPDIR || '/tmp', `tmux-${uid}`), '/run/screen']) {
+      if (exists(dir)) args.push('--tmpfs', dir);
+    }
+    if (exists('/run/docker.sock')) args.push('--ro-bind', '/dev/null', '/run/docker.sock');
+    for (const p of restrictedRuntimePaths(env, opts.cwd ?? process.cwd())) {
+      if (exists(p)) args.push('--ro-bind', p, p);
+    }
+    return [bwrap, ...args, '--', '/bin/bash', '-c', command].map(shellQuote).join(' ');
+  }
+  if (exists(unshare)) {
+    return [unshare, '--user', '--map-current-user', '--net', '--', '/bin/bash', '-c', command].map(shellQuote).join(' ');
+  }
+  return null;
+}
+
+/**
+ * Ask the operator for the textual verdict and the session's restriction status.
+ * `restricted` is null when it cannot be shown either way.
+ * @returns {Promise<{ refuse: string | null, restricted: boolean | null, detail: string }>}
+ */
+async function askOperator({ owner, toolName, texts, env, fetchImpl }) {
   try {
     const res = await fetchImpl(`${operatorBase(env)}/api/agent-mcp/restricted-egress-check`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ owner, tool: toolName, texts }),
+      body: JSON.stringify({ owner, tool: toolName, texts, status: true }),
       signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
     });
     const body = res.ok ? await res.json() : null;
     if (!body || body.ok !== true) {
-      return {
-        decision: 'deny',
-        reason:
-          `This ${toolName} call names a mail, chat, calendar or social provider, and the operator could not ` +
-          `confirm this session is unrestricted (HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}). ` +
-          `Retry when the operator is reachable, or use the gated verb (mail:send, chat:post, …).`,
-      };
+      return { refuse: null, restricted: null, detail: `HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}` };
     }
-    if (body.verdict === 'refuse') {
-      return { decision: 'deny', reason: String(body.reason || `${body.code ?? 'disclosure_egress_refused'}`) };
-    }
-    return { decision: 'allow' };
+    const refuse = body.verdict === 'refuse' ? String(body.reason || body.code || 'disclosure_egress_refused') : null;
+    const restricted = typeof body.restricted === 'boolean' ? body.restricted : null;
+    return { refuse, restricted, detail: restricted === null ? 'the disclosure ledger could not be read' : '' };
   } catch (error) {
+    return { refuse: null, restricted: null, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * @param {{
+ *   toolName: string,
+ *   toolInput?: Record<string, unknown>,
+ *   cwd?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   fetchImpl?: typeof fetch,
+ *   sandbox?: (command: string) => string | null,
+ * }} params
+ * @returns {Promise<
+ *   | { decision: 'allow' }
+ *   | { decision: 'deny', reason: string }
+ *   | { decision: 'rewrite', updatedInput: Record<string, unknown> }
+ * >}
+ */
+export async function decideEgress({ toolName, toolInput, cwd, env = process.env, fetchImpl = fetch, sandbox }) {
+  const owner = sessionId(env);
+  if (!owner) return { decision: 'allow' };
+  const input = toolInput ?? {};
+  const where = cwd || process.cwd();
+
+  if (EDIT_TOOLS.has(toolName)) {
+    const target = input.file_path ?? input.notebook_path;
+    if (typeof target !== 'string' || !isRestrictedRuntimePath(target, restrictedRuntimePaths(env, where))) {
+      return { decision: 'allow' };
+    }
+  } else if (toolName !== 'Bash' && toolName !== 'WebFetch' && !isForeignMcp(toolName)) {
+    return { decision: 'allow' };
+  }
+
+  const texts = egressTexts(toolName, input);
+  const { refuse, restricted, detail } = await askOperator({ owner, toolName, texts, env, fetchImpl });
+  if (refuse) return { decision: 'deny', reason: refuse };
+  if (restricted === false) return { decision: 'allow' };
+
+  const why =
+    restricted === true
+      ? 'this session has read restricted personal data'
+      : `the operator could not confirm this session is unrestricted (${detail}), so it is treated as restricted`;
+  if (toolName === 'Bash' && typeof input.command === 'string') {
+    const wrapped = (sandbox ?? ((command) => sandboxedBashCommand(command, { env, cwd: where })))(input.command);
+    if (wrapped) return { decision: 'rewrite', updatedInput: { ...input, command: wrapped } };
     return {
       decision: 'deny',
-      reason:
-        `This ${toolName} call names a mail, chat, calendar or social provider, and the operator could not be ` +
-        `reached to confirm this session is unrestricted (${error instanceof Error ? error.message : String(error)}). ` +
-        `Retry when the operator is reachable, or use the gated verb (mail:send, chat:post, …).`,
+      reason: `Bash is unavailable: ${why}, and this host has no network sandbox (bwrap or unshare) to run it offline.`,
     };
   }
+  if (toolName === 'WebFetch') {
+    return {
+      decision: 'deny',
+      reason: `WebFetch is unavailable: ${why}. Use the gated verbs (mail:send, chat:post, …) to reach a person, or have the owner release the disclosure.`,
+    };
+  }
+  if (isForeignMcp(toolName)) {
+    return {
+      decision: 'deny',
+      reason: `${toolName} is unavailable: ${why}, and a non-Papercusp MCP server is an ungated route off the machine.`,
+    };
+  }
+  return {
+    decision: 'deny',
+    reason: `${toolName} of an agent runtime file (settings, hooks, MCP config, git hooks) is unavailable: ${why}. Code there runs outside the shell sandbox.`,
+  };
 }
 
 /**
@@ -151,23 +297,24 @@ async function main() {
   } catch {
     return;
   }
-  const result = await decideEgress({ toolName: String(payload.tool_name ?? ''), toolInput: payload.tool_input });
-  if (result.decision !== 'deny') return;
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: result.reason,
-      },
-    }),
-  );
+  const result = await decideEgress({
+    toolName: String(payload.tool_name ?? ''),
+    toolInput: payload.tool_input,
+    cwd: typeof payload.cwd === 'string' ? payload.cwd : undefined,
+  });
+  if (result.decision === 'allow') return;
+  const hookSpecificOutput =
+    result.decision === 'rewrite'
+      ? { hookEventName: 'PreToolUse', updatedInput: result.updatedInput }
+      : { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: result.reason };
+  process.stdout.write(JSON.stringify({ hookSpecificOutput }));
 }
 
 const invokedDirectly = process.argv[1] && process.argv[1].endsWith('pretooluse-restricted-egress-guard.mjs');
 if (invokedDirectly) {
   main().catch(() => {
     // A crashed guard must not wedge the session; the server-side checks
-    // (capability:bash, the gated verbs) still hold.
+    // (capability:bash, the gated verbs) still hold. decideEgress itself never
+    // throws on an operator failure — it treats that as restricted.
   });
 }

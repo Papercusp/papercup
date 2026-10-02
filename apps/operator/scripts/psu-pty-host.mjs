@@ -897,6 +897,18 @@ function nativeUserPromptText(content, depth = 0) {
 
 /** Codex stores its injected AGENTS.md launch context as a user row before the
  * first task prompt. It is setup context, not a submitted task turn. */
+/** WI-10005628: Claude Code records a local slash command typed before the kickoff
+ * (the host's `/mcp` reconnect, `/clear`, …) as user rows ahead of the first task
+ * prompt: an `isMeta` `<local-command-caveat>` row, then `<command-name>/mcp…` and
+ * `<local-command-stdout>…`. They are not task turns. Treating the caveat as "the
+ * first fresh task prompt" ended the scan before the real kickoff row (measured
+ * su-fbcd9de3 20:11:08Z: the auditor was working 7s later and was still killed). */
+const CLAUDE_LOCAL_COMMAND_ROW_RE =
+  /^\s*<(?:local-command-caveat|command-name|command-message|command-args|local-command-stdout|local-command-stderr)>/;
+function isClaudeLocalCommandRow(row, text) {
+  return row?.isMeta === true || CLAUDE_LOCAL_COMMAND_ROW_RE.test(String(text ?? ''));
+}
+
 function isNativeLaunchContextPrompt(text) {
   return String(text ?? '').replace(/\r\n?/g, '\n').trimStart().startsWith('# AGENTS.md instructions\n');
 }
@@ -973,6 +985,7 @@ function scanNativeTranscriptMarker({
             if (userContent == null) continue;
             userPromptText = nativeUserPromptText(userContent);
             if (isNativeLaunchContextPrompt(userPromptText)) continue;
+            if (isClaudeLocalCommandRow(row, userPromptText)) continue;
           }
           const rawTimestamp = row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at;
           let rowIsFresh = false;

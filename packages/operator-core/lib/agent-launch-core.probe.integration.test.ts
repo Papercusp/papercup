@@ -9,7 +9,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: holder.sql }),
 }));
 
-const { probeFreshLaunchSessions } = await import('./agent-launch-core');
+const { probeFreshLaunchSessions, verifyFreshLaunchStarted } = await import('./agent-launch-core');
 let sql: postgres.Sql;
 let dbName: string;
 let adminUri: string;
@@ -100,5 +100,109 @@ describe('fresh-launch tool-call attribution (real PG)', () => {
     const after = await probe();
     expect(after[0]?.successfulCalls).toBe(1);
     expect(after[0]?.workerAttestation.stages.agentCall.status).toBe('satisfied');
+  });
+
+  it('requires a real call, scheduler disposition, and durable wake before reporting a member ready', async () => {
+    const workspaceId = 'ws-readiness';
+    const ownerId = 'su-readiness';
+    const launcherOwnerId = 'su-launcher-readiness';
+    const since = Date.now() - 5_000;
+    const firstSeen = since + 1_500;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, session_id, coord_owner_id, workspace_id, first_seen_at, launch_spec, launch_argv)
+      VALUES (2, 'native-readiness', ${ownerId}, ${workspaceId}, to_timestamp(${firstSeen / 1000}),
+              '{}'::jsonb, ${JSON.stringify(['psu', `--launched-by=${launcherOwnerId}`])}::jsonb)
+    `;
+    await sql`
+      INSERT INTO harness_shared.coord_presence (workspace_id, owner_id)
+      VALUES (${workspaceId}, ${ownerId})
+    `;
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at)
+      VALUES (${workspaceId}, ${ownerId}, 'ok', 'agent', 'activity:report',
+              to_timestamp(${(firstSeen + 100) / 1000}))
+    `;
+
+    const probe = async () => {
+      const sessions = await probeFreshLaunchSessions({ workspaceId, launcherOwnerId, since });
+      expect(sessions).toHaveLength(1);
+      return sessions[0]!;
+    };
+    const slowBoot = await verifyFreshLaunchStarted(
+      { workspaceId, launcherOwnerId, since, expected: 1 },
+      { pollMs: 1, timeoutMs: 1, sleep: async () => {} },
+    );
+    expect(slowBoot.agentStarted).toBeNull();
+    expect(slowBoot.workerReady).toBe(false);
+    expect(slowBoot.note).toMatch(/UNVERIFIED/);
+
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at)
+      VALUES (${workspaceId}, ${ownerId}, 'ok', 'agent', 'coord:orient',
+              to_timestamp(${(firstSeen + 200) / 1000}))
+    `;
+    const noScheduler = await probe();
+    expect(noScheduler.workerAttestation.stages.agentCall.status).toBe('satisfied');
+    expect(noScheduler.workerAttestation.stages.schedulerPull.status).toBe('missing');
+    expect(noScheduler.workerAttestation.ready).toBe(false);
+
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at)
+      VALUES (${workspaceId}, ${ownerId}, 'error', 'agent', 'scheduler:get_next',
+              to_timestamp(${(firstSeen + 300) / 1000}))
+    `;
+    const failedPull = await probe();
+    expect(failedPull.workerAttestation.stages.schedulerPull.status).toBe('failed');
+    expect(failedPull.workerAttestation.failures.map((failure) => failure.code)).toContain('scheduler-pull-failed');
+
+    await sql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, coord_owner_id, status, call_origin, tool_name, invoked_at, metadata_json)
+      VALUES (${workspaceId}, ${ownerId}, 'ok', 'agent', 'scheduler:get_next',
+              to_timestamp(${(firstSeen + 400) / 1000}),
+              ${sql.json({ schedulerDisposition: { kind: 'no-claim', reason: 'lane_drained' } })})
+    `;
+    const noWake = await probe();
+    expect(noWake.workerAttestation.stages.schedulerPull.status).toBe('satisfied');
+    expect(noWake.workerAttestation.stages.disposition).toEqual({
+      status: 'satisfied', kind: 'no-claim', reason: 'lane_drained',
+    });
+    expect(noWake.workerAttestation.stages.durableWake.status).toBe('missing');
+    expect(noWake.workerAttestation.ready).toBe(false);
+
+    await sql`
+      INSERT INTO harness_shared.routines (target_owner_id, name, active)
+      VALUES (${ownerId}, ${`loop-${ownerId}`}, true)
+    `;
+    const healthyNoClaim = await probe();
+    expect(healthyNoClaim.workerAttestation.stages.durableWake).toEqual({
+      status: 'satisfied', wakeSource: 'loop',
+    });
+    expect(healthyNoClaim.workerAttestation.ready).toBe(true);
+
+    await sql`UPDATE harness_shared.routines SET active = false WHERE target_owner_id = ${ownerId}`;
+    await sql`
+      INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, worked_by_history)
+      VALUES (${workspaceId}, 'WI-readiness', ${ownerId}, '[]'::jsonb)
+    `;
+    const claimedWithoutWake = await probe();
+    expect(claimedWithoutWake.workerAttestation.stages.disposition).toEqual({
+      status: 'satisfied', kind: 'claimed', workItemId: 'WI-readiness',
+    });
+    expect(claimedWithoutWake.workerAttestation.ready).toBe(false);
+
+    await sql`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, policy, event_key, note)
+      VALUES (${ownerId}, 'wake', 'work-item:claimable', 'readiness integration control')
+    `;
+    const claimedWithEventWake = await probe();
+    expect(claimedWithEventWake.workerAttestation.stages.durableWake).toEqual({
+      status: 'satisfied', wakeSource: 'event',
+    });
+    expect(claimedWithEventWake.workerAttestation.ready).toBe(true);
   });
 });

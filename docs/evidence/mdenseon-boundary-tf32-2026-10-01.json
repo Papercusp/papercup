@@ -2756,5 +2756,125 @@
     "loggingLimit": "First-initializer effect is measured on the small fixture, not retroactively attributed to the full model. Its measured arena limit is not the uninstrumented/full model arena configuration.",
     "next": "Keep WI-10005599 open. Diagnose intermittent host heap corruption from the small reproduction; trace actual first initializer before enabling arena logs on a future model capture. No blind large retry or acceptance promotion."
   },
+  "nativeCudaAllocatorDetectorControls": {
+    "status": "Bounded allocator-instrumented controls completed; historical heap abort remains unresolved",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "capture": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-allocator-detector-v1",
+      "artifact": "completion.json",
+      "bytes": 27329,
+      "sha256": "3dcf2323b5ffa8980a35c4dfb69f2f068b4ff487cc2e9f26f64e6b03207fb32d"
+    },
+    "allocatorEnvironment": {
+      "GLIBC_TUNABLES": "glibc.malloc.tcache_count=0:glibc.malloc.perturb=165:glibc.malloc.check=3",
+      "MALLOC_CHECK_": "3",
+      "MALLOC_PERTURB_": "165",
+      "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libc_malloc_debug.so.0"
+    },
+    "allocatorLibraries": [
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libc_malloc_debug.so.0",
+        "bytes": 60744,
+        "sha256": "bd019e51ce7d91743961d13d0c6524eb54cafdf2ca87358f19ccc1403f9c6ea3"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        "bytes": 2129424,
+        "sha256": "3a15d66867d83762c7f2f1e37359cb8f6c5743edb369c65285cb0b1c4f7498bf"
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "bytes": 236616,
+        "sha256": "c20a2dc8917c755f02b94049356320fe1f62ac7d9f8994731f807d9df39302da"
+      }
+    ],
+    "admission": {
+      "bridge": "scripts/lib/governed-test-process.mjs::runGovernedTestProcess",
+      "receiptId": "RG-21505679-9c9d-4ee6-9fd5-b8ff570bae0f",
+      "leaseId": "46a77ddc-d64d-403d-adae-e7170802e70c",
+      "inherited": false,
+      "forwardedSerializationVerifiedInNativeFileWorkers": true,
+      "reviewedFixtureDisposition": "WI-10005620",
+      "historicalStandaloneTypedInheritance": "unmeasured"
+    },
+    "controls": [
+      {
+        "cell": "cpu-allocator-precondition",
+        "instrumentedByComputeSanitizer": false,
+        "processId": 3110192,
+        "exitCode": 1,
+        "signal": null,
+        "debuggerPipeEof": true,
+        "debugAllocatorMapped": true,
+        "heapCorruptionMessage": false
+      },
+      {
+        "cell": "cuda-native-allocator-control",
+        "instrumentedByComputeSanitizer": false,
+        "processId": 3111733,
+        "exitCode": 1,
+        "signal": null,
+        "debuggerPipeEof": true,
+        "debugAllocatorMapped": true,
+        "heapCorruptionMessage": false
+      },
+      {
+        "cell": "cuda-instrumented-allocator-control",
+        "instrumentedByComputeSanitizer": true,
+        "processId": 3115451,
+        "exitCode": 1,
+        "signal": null,
+        "debuggerPipeEof": true,
+        "debugAllocatorMapped": true,
+        "inferiorSanitizerInitObserved": true,
+        "sanitizerApiErrorSummary": 0,
+        "heapCorruptionMessage": false
+      }
+    ],
+    "verification": {
+      "rawArtifactPinsVerified": 28,
+      "historicalSmallControlPinsRechecked": 136,
+      "testRunGroup": "a77b6298-399d-469d-aebf-03269373953d",
+      "testRunIds": [
+        20559170,
+        20559171
+      ],
+      "passed": 63,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "namedFiles": 1,
+        "checkedFiles": 1,
+        "errors": 0,
+        "scope": "native-cuda-allocation-preflight.test.ts"
+      },
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 11769,
+          "sha256": "45e4d1331647dbf282863b9e1d036e519b169e1169786a75f2649429ceef3e71"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 16147,
+          "sha256": "9cb423e7204cf9463667fd61926d496786e2c343d47b347656eb78e8bc16f436"
+        }
+      ]
+    },
+    "limits": [
+      "One CPU precondition and at most two CUDA cells; not a statistical absence claim",
+      "Debugger, debug malloc and allocator settings change observation",
+      "Loaded debug allocator and requested tunables do not qualify corruption-detector sensitivity",
+      "No heap origin, durable fix, physical CUDA allocation cause or full-model first initializer established",
+      "Historical signals and all prior model captures remain immutable"
+    ],
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "next": "Keep WI-10005599 open. Qualify the host allocator detector with a maintained corruption-specific positive control or collect new allocator/initializer causal evidence. Do not repeat this pair or a large model run without a new distinguishing probe."
+  },
   "separateOpenDefect": "EI-24795092971119894 is DONE/COMMITTED for the independent-reference/failure-receipt detector repair. Actual8192 allocation compatibility remains owned by WI-10004540; no successful GPU8192 inference is claimed."
 }
