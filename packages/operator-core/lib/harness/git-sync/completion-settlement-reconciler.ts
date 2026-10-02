@@ -9,6 +9,7 @@ import {
   completionBlobHistoryContains,
   completionHeadBlobMap,
   completionWorkingTreeBlobSha,
+  createCompletionBlobHistoryReader,
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
 import { sendMessage } from '../../agent-tools/coordination/messages';
@@ -567,7 +568,11 @@ async function reconcileProposedCompletionsCore(
   const baseLookup = deps.lookup ?? completionHeadBlobMap;
   // A custom exact-tree lookup is the unit-test seam for the older tree-only
   // contract. Tests opt into history explicitly; production uses the safe Git reader.
-  const historyLookup = deps.historyLookup ?? (deps.lookup ? undefined : completionBlobHistoryContains);
+  // WI-10005357: production shares one gitlink-reading history reader across the pass, so the
+  // per-path `ls-tree` reads collapse to about one per (commit, repository) instead of one per
+  // declared path per side. A fresh reader per pass keeps nothing across passes.
+  const historyReader = deps.historyLookup || deps.lookup ? undefined : createCompletionBlobHistoryReader();
+  const historyLookup = deps.historyLookup ?? historyReader?.contains;
   const workingTreeLookup = deps.workingTreeLookup ?? (deps.lookup ? undefined : completionWorkingTreeBlobSha);
   const notifyStranded = deps.notifyStranded ?? (deps.sql ? undefined : notifySettlementStranded);
   const emit = deps.emit ?? emitAwaitedEvent;
@@ -594,6 +599,8 @@ async function reconcileProposedCompletionsCore(
   if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
 
   // WI-10005285: every row is read against the same commit, so read the tree once per pass.
+  // WI-10005357: the history reader's gitlink reads at that commit batch the same way.
+  historyReader?.hint(scope.repositoryRoot, commitSha, declaredPathsForBatch(rows));
   let batchUnavailable = false;
   const lookup =
     rows.length > 1
@@ -642,6 +649,9 @@ async function reconcileProposedCompletionsCore(
         return emittedTree;
       };
       const historyMatches = new Map<string, string>();
+      // A row's history reads at its close-time HEAD fold into one ls-tree (read lazily,
+      // so a row whose paths all match the commit costs nothing here).
+      historyReader?.hint(parsed.data.repositoryRoot, parsed.data.headSha, parsed.data.normalizedPaths);
       const residualPaths = await residualPathsForCommit(
         parsed.data,
         commitSha,

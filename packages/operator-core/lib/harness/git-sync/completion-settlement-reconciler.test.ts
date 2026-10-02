@@ -14,6 +14,7 @@ import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records'
 import {
   completionBlobHistoryContains,
   completionHeadBlobMap,
+  createCompletionBlobHistoryReader,
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
 import { isCompletionSettled } from '../../work-item-completion-authority';
@@ -320,6 +321,119 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     expect(await ask(refusingGit, 'file.ts')).toBeUndefined();
     expect(await ask(slowGit, 'dir/file.ts')).toBe('unmeasured');
     expect(await ask(refusingGit, 'dir/file.ts')).toBeUndefined();
+  });
+
+  // WI-10005357: a settlement pass resolved every declared path with its own `ls-tree`, per
+  // side. The shared reader must give the SAME verdicts (superproject and submodule paths,
+  // found and not found) while issuing one gitlink read per (repository, commit) once the
+  // paths are announced. A git wrapper logs each real exec, so the counts are measured.
+  it('a shared reader answers exactly like the unshared one with one gitlink read per commit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-history-shared-'));
+    TEMP_ROOTS.push(root);
+    const subRoot = join(root, 'modules', 'nested');
+    mkdirSync(join(root, 'dir', 'deeper'), { recursive: true });
+    mkdirSync(join(root, 'other'), { recursive: true });
+    mkdirSync(join(subRoot, 'src'), { recursive: true });
+    const run = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim();
+    for (const repo of [root, subRoot]) {
+      run(repo, 'init', '-q');
+      run(repo, 'config', 'user.email', 'fixture@example.test');
+      run(repo, 'config', 'user.name', 'Settlement Fixture');
+    }
+    const superPaths = ['dir/a.ts', 'dir/b.ts', 'dir/deeper/c.ts', 'other/d.ts'];
+    for (const path of superPaths) writeFileSync(join(root, path), `export const v = "${path} before";\n`);
+    writeFileSync(join(subRoot, 'src', 'file.ts'), 'export const v = "sub before";\n');
+    run(subRoot, 'add', '--', 'src/file.ts');
+    run(subRoot, 'commit', '-q', '-m', 'submodule base');
+    writeFileSync(join(root, '.gitmodules'), '[submodule "nested"]\n\tpath = modules/nested\n\turl = ./nested.git\n');
+    run(root, 'add', '--', '.gitmodules', ...superPaths);
+    run(root, 'update-index', '--add', '--cacheinfo', '160000,' + run(subRoot, 'rev-parse', 'HEAD') + ',modules/nested');
+    run(root, 'commit', '-q', '-m', 'close head');
+    const closeHeadSha = run(root, 'rev-parse', 'HEAD');
+
+    // Commit a close-time blob for every path except other/d.ts, then supersede them all.
+    const blobs = new Map<string, string>();
+    for (const path of superPaths) {
+      writeFileSync(join(root, path), `export const v = "${path} close time";\n`);
+      blobs.set(path, run(root, 'hash-object', '-w', path));
+    }
+    run(root, 'add', '--', 'dir');
+    run(root, 'commit', '-q', '-m', 'close-time blobs');
+    writeFileSync(join(subRoot, 'src', 'file.ts'), 'export const v = "sub close time";\n');
+    blobs.set('modules/nested/src/file.ts', run(subRoot, 'hash-object', 'src/file.ts'));
+    run(subRoot, 'commit', '-q', '-am', 'submodule close time');
+    for (const path of superPaths) writeFileSync(join(root, path), `export const v = "${path} later";\n`);
+    writeFileSync(join(subRoot, 'src', 'file.ts'), 'export const v = "sub later";\n');
+    run(subRoot, 'commit', '-q', '-am', 'submodule later');
+    run(root, 'update-index', '--cacheinfo', '160000,' + run(subRoot, 'rev-parse', 'HEAD') + ',modules/nested');
+    run(root, 'add', '--', ...superPaths);
+    run(root, 'commit', '-q', '-m', 'supersede everything');
+    const emittedSha = run(root, 'rev-parse', 'HEAD');
+
+    const bin = mkdtempSync(join(tmpdir(), 'completion-history-counting-git-'));
+    TEMP_ROOTS.push(bin);
+    const log = join(bin, 'execs.log');
+    const countingGit = join(bin, 'git');
+    writeFileSync(countingGit, `#!/bin/sh\nprintf '%s\\n' "$3" >> '${log}'\nexec git "$@"\n`, { mode: 0o755 });
+    const lsTreeExecs = () => {
+      try {
+        return execFileSync('grep', ['-c', '^ls-tree$', log], { encoding: 'utf8' }).trim();
+      } catch {
+        return '0';
+      }
+    };
+    const paths = [...blobs.keys()];
+    const opts = { gitBinary: countingGit };
+
+    const unshared: unknown[] = [];
+    for (const path of paths) {
+      unshared.push(await completionBlobHistoryContains(root, closeHeadSha, emittedSha, path, blobs.get(path)!, opts));
+    }
+    // Control: other/d.ts's close-time blob never reached a commit; the rest did.
+    expect(unshared).toEqual([true, true, true, false, true]);
+    const unsharedReads = Number(lsTreeExecs());
+    rmSync(log, { force: true });
+
+    const reader = createCompletionBlobHistoryReader();
+    reader.hint(root, emittedSha, paths);
+    reader.hint(root, closeHeadSha, paths);
+    const shared = await Promise.all(
+      paths.map((path) => reader.contains(root, closeHeadSha, emittedSha, path, blobs.get(path)!, opts)),
+    );
+    expect(shared).toEqual(unshared);
+    // Unshared: one read per path per side, plus one per side at the submodule level (12).
+    // Shared: one per side in the superproject, one per side in the submodule (4).
+    expect(unsharedReads).toBe(12);
+    expect(Number(lsTreeExecs())).toBe(4);
+    expect(reader.gitlinkReads()).toBe(4);
+  });
+
+  it('a shared reader retries an unmeasured gitlink read, reuses settled ones, and shares one in flight', async () => {
+    const bin = mkdtempSync(join(tmpdir(), 'completion-history-reader-'));
+    TEMP_ROOTS.push(bin);
+    const refusingGit = join(bin, 'refusing-git');
+    writeFileSync(refusingGit, '#!/bin/sh\nexit 128\n', { mode: 0o755 });
+    const from = 'a'.repeat(40);
+    const to = 'b'.repeat(40);
+    const reads: Array<{ sha: string; prefixes: readonly string[] }> = [];
+    const reader = createCompletionBlobHistoryReader(async (_root, sha, prefixes) => {
+      reads.push({ sha, prefixes });
+      if (reads.length === 1) return 'unmeasured';
+      return new Map(prefixes.map((prefix) => [prefix, null] as const));
+    });
+    const ask = (path: string) => reader.contains(bin, from, to, path, 'c'.repeat(40), { gitBinary: refusingGit });
+
+    // The first read timed out: nothing was learned, so nothing is kept.
+    expect(await ask('dir/file.ts')).toBe('unmeasured');
+    // Retried at both commits; the refusing `git log` then makes the verdict undefined.
+    expect(await ask('dir/file.ts')).toBeUndefined();
+    expect(reads.map((read) => read.sha)).toEqual([from, from, to]);
+    // Settled answers are reused, and two concurrent asks under a new directory share a read.
+    expect(await ask('dir/again.ts')).toBeUndefined();
+    await Promise.all([ask('other/x.ts'), ask('other/y.ts')]);
+    expect(reads.map((read) => read.sha)).toEqual([from, from, to, from, to]);
+    expect(reader.gitlinkReads()).toBe(5);
   });
 });
 
