@@ -186,6 +186,7 @@ describe("work_items:list — cache wiring", () => {
     getOperatorCache().invalidateByTags("ws-wi", writeTableTag());
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+    expect(M.countWorkItems).toHaveBeenCalledTimes(4);
   });
 
   it("a per-row work-item write also busts the list (table tag rides alongside the row tag)", async () => {
@@ -193,6 +194,7 @@ describe("work_items:list — cache wiring", () => {
     getOperatorCache().invalidateByTags("ws-wi", writeTags("WI-9"));
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+    expect(M.countWorkItems).toHaveBeenCalledTimes(4);
   });
 
   it("different filter args do NOT share an entry (no cross-arg leak)", async () => {
