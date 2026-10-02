@@ -14,6 +14,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnderOwner } from './claude-sessions';
 import { findCodexRolloutPath, findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
@@ -64,19 +65,77 @@ export interface CodexContextSnapshot {
  * last_token_usage; cumulative total_token_usage is deliberately ignored. */
 const CODEX_TOKEN_TAIL_BYTES = 1024 * 1024;
 
-export function codexContextSnapshotFromRollout(pathStr: string): CodexContextSnapshot | null {
+/**
+ * WI-10005305: the compaction-compliance sweep asks for the same rollout twice
+ * (tokens, then window) and again every sweep, while most rollouts have not
+ * changed since the previous read. It used to re-read the 1 MiB tail
+ * synchronously each time (~2.25 reads/s, ~2.5% of bg-host's main thread,
+ * measured under P-017). The last parsed snapshot is kept per path and reused
+ * while (size, mtimeMs, ino) is unchanged: Codex only appends to a rollout, so
+ * any new token_count event changes `size`, and a file replaced by rename
+ * changes `ino`. Only completed reads are remembered; an error is never cached.
+ */
+const CODEX_SNAPSHOT_MEMO_MAX = 512;
+interface CodexSnapshotMemoEntry {
+  size: number;
+  mtimeMs: number;
+  ino: number;
+  snapshot: CodexContextSnapshot | null;
+}
+const codexSnapshotMemo = pinModuleState<{ byPath: Map<string, CodexSnapshotMemoEntry> }>(
+  '@papercusp/operator-core.compaction-usage.codexSnapshotMemo',
+  () => ({ byPath: new Map() }),
+);
+
+function rememberCodexSnapshot(pathStr: string, entry: CodexSnapshotMemoEntry): void {
+  const byPath = codexSnapshotMemo.byPath;
+  byPath.delete(pathStr); // re-insert at the newest position (Map keeps insertion order)
+  byPath.set(pathStr, entry);
+  while (byPath.size > CODEX_SNAPSHOT_MEMO_MAX) {
+    const oldest = byPath.keys().next().value;
+    if (oldest === undefined) break;
+    byPath.delete(oldest);
+  }
+}
+
+export async function codexContextSnapshotFromRollout(
+  pathStr: string,
+  fileOps: Pick<typeof fs.promises, 'stat' | 'open'> = fs.promises,
+): Promise<CodexContextSnapshot | null> {
   try {
-    const size = fs.statSync(pathStr).size;
-    const start = Math.max(0, size - CODEX_TOKEN_TAIL_BYTES);
-    const fd = fs.openSync(pathStr, 'r');
-    let text: string;
-    try {
-      const buf = Buffer.alloc(size - start);
-      fs.readSync(fd, buf, 0, buf.length, start);
-      text = buf.toString('utf8');
-    } finally {
-      fs.closeSync(fd);
+    const st = await fileOps.stat(pathStr);
+    const memo = codexSnapshotMemo.byPath.get(pathStr);
+    if (memo && memo.size === st.size && memo.mtimeMs === st.mtimeMs && memo.ino === st.ino) {
+      rememberCodexSnapshot(pathStr, memo);
+      return memo.snapshot;
     }
+    const start = Math.max(0, st.size - CODEX_TOKEN_TAIL_BYTES);
+    const fh = await fileOps.open(pathStr, 'r');
+    let text: string;
+    let complete: boolean;
+    try {
+      const buf = Buffer.alloc(st.size - start);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+      complete = bytesRead === buf.length;
+      text = buf.toString('utf8', 0, bytesRead);
+    } finally {
+      await fh.close();
+    }
+    const snapshot = codexContextSnapshotFromText(text);
+    // A short read means the file shrank after the stat; the result does not
+    // describe the stat'ed contents, so it is returned but not remembered.
+    if (complete) {
+      rememberCodexSnapshot(pathStr, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, snapshot });
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+/** Newest valid token_count snapshot in a rollout tail (pure; the tail may begin mid-line). */
+export function codexContextSnapshotFromText(text: string): CodexContextSnapshot | null {
+  try {
     const lines = text.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i]?.trim();
@@ -325,7 +384,7 @@ async function codexSnapshotForRef(
   if (ref.agent !== 'codex' || ref.sessionKey == null) return null;
   try {
     const rollout = await resolveCodexRolloutPathForRef(ref, ownerId, deps);
-    return rollout ? codexContextSnapshotFromRollout(rollout) : null;
+    return rollout ? await codexContextSnapshotFromRollout(rollout) : null;
   } catch {
     return null;
   }
