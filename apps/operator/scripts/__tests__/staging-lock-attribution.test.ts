@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -101,6 +102,44 @@ function completeGenerationFixture(dir: string) {
 }
 
 describe("staging lock attribution", () => {
+  it("checks a real bundle proof through the real repo install mutex before reusing it", () => {
+    const dir = makeTempDir("staging-generation-real-proof-");
+    try {
+      const fixture = completeGenerationFixture(dir);
+      rmSync(join(fixture.binDir, "git"));
+      rmSync(join(fixture.repo, "scripts/npm-install-safe.mjs"));
+      rmSync(join(fixture.operator, "bin/bundle-host-freshness.mjs"));
+      symlinkSync(join(REPO_ROOT, "scripts/npm-install-safe.mjs"), join(fixture.repo, "scripts/npm-install-safe.mjs"));
+      symlinkSync(join(REPO_ROOT, "apps/operator/bin/bundle-host-freshness.mjs"), join(fixture.operator, "bin/bundle-host-freshness.mjs"));
+      writeFileSync(join(fixture.repo, ".gitignore"), "apps/operator/dist-host/\n");
+      // These commits belong only to the temporary fixture, as in the existing
+      // staging-isolated-bundle proof suite; the shared tree is never committed.
+      const git = (...args: string[]) => {
+        const result = spawnSync("git", ["-C", fixture.repo, "-c", "user.email=test@example.test", "-c", "user.name=test", ...args], { encoding: "utf8" });
+        expect(result.status, result.stderr).toBe(0);
+        return result.stdout.trim();
+      };
+      git("init", "-q");
+      git("add", ".gitignore", "apps", "scripts");
+      git("commit", "-q", "-m", "proof fixture");
+      writeFileSync(join(fixture.generation, ".ready"), git("rev-parse", "HEAD") + "\n");
+      const stamp = spawnSync(process.execPath, [join(fixture.operator, "bin/bundle-host-freshness.mjs"),
+        "stamp", "--repo-root", fixture.repo, "--entry", join(fixture.operator, "bin/hono-host.ts"),
+        "--outfile", join(fixture.operator, "dist-host/hono-host.mjs"),
+        "--manifest", join(fixture.operator, "dist-host/.bundle-fresh.json")], { encoding: "utf8" });
+      expect(stamp.status, stamp.stderr).toBe(0);
+      const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", join(dir, "sync.lock"), fixture.bundle], {
+        cwd: fixture.operator,
+        env: { ...process.env, PAPERCUSP_BUNDLE_REUSE_FRESH: "1", PAPERCUSP_INSTALL_MUTEX_HELD: "0" },
+        encoding: "utf8", timeout: 10_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain("NPM_INSTALL_SAFE guarding reader");
+      expect(result.stderr).toContain("lock_scope=immutable_generation");
+      expect(existsSync(fixture.rebuilt)).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("reuses a verified complete generation while another candidate holds the checkout lock", async () => {
     const dir = makeTempDir("staging-generation-reuse-");
     let holder: ReturnType<typeof spawn> | undefined;
