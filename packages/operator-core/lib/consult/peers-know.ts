@@ -35,6 +35,10 @@ export const PEERS_KNOW_ANSWER_CAP = 280;
  * "monitor" / "triage" would cosine-match half the archive at noise level). */
 export const PEERS_KNOW_MIN_INTENT_CHARS = 16;
 
+/** hnsw.ef_search for the ANN chunk leg (D-046): 40 agreed with the exact leg's
+ * top-1 on 81/90 measured queries, 100 and 200 on 90/90. */
+export const PEERS_KNOW_EF_SEARCH = 100;
+
 export interface PeersKnowHit {
   /** The settled answer's one-liner (outcome.answer, capped). */
   answer: string;
@@ -110,12 +114,16 @@ export async function peersKnowLookup(
           qVec,
           limit: 1,
           mode: 'retrieve',
-          // 'exact' (generic-rag-chunking D-040): the filter keeps a few hundred
-          // settled questions, so the chunk leg reaches their chunks through the
-          // chunk table's key index instead of scanning the whole surface and
-          // re-reading consult_state for a hash join. Same-time A/B, 30 queries x 3:
-          // p50 12.2 -> 9.3 ms, p95 14.6 -> 11.4 ms, same top hit 90/90.
+          // Parent leg 'exact' (generic-rag-chunking D-040): the filter keeps a few
+          // hundred settled questions, ranked exhaustively. Chunk leg 'ann'
+          // (D-046): the exact chunk leg probed the key index once per settled
+          // question and detoasted each chunk vector, about 8 ms at p95 against a
+          // 3.5 ms budget (D-045). It now walks the consult_questions partial HNSW
+          // index (migration 1341) with slice membership as a filter: p95 5.92 ->
+          // 5.04 ms for the whole lookup, top-1 equal to exact on 90/90 at
+          // ef_search 100 (set below).
           scan: 'exact',
+          chunkScan: 'ann',
           parentFilter: s`cs.workspace_id = ${params.workspaceId}
                           AND cs.state = 'closed_answered'
                           AND (cs.outcome->>'source' IS DISTINCT FROM 'archive')`,
@@ -132,7 +140,7 @@ export async function peersKnowLookup(
       ORDER BY b.distance, c.conversation_id
          LIMIT 1
       `;
-    })) as unknown as PeersKnowRow[];
+    }, { efSearch: PEERS_KNOW_EF_SEARCH })) as unknown as PeersKnowRow[];
     const top = rows[0];
     if (!top || Number(top.sim) < floor) return null;
     const answer = extractSettledAnswer(top.outcome);

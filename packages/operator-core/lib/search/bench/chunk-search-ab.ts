@@ -95,7 +95,7 @@ export const R33_AB_ARMS: Readonly<Record<R33AbSite, { a: string; b: string; lim
   },
   consult: {
     a: `consult_state.query_embedding exact scan, peersKnowLookup body @ ${R33_AB_PRE_CHANGE_REF}`,
-    b: "peersKnowLookup (chunk-aware leg, scan 'exact')",
+    b: "peersKnowLookup (chunk-aware leg, scan 'exact', chunkScan 'ann' over the consult_questions partial HNSW index, ef_search 100; D-046)",
     limit: 1,
   },
 };
