@@ -1109,6 +1109,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     const queryRoute = (await import('./endpoint-route/routes/zero-harness/rest-query')).default;
     expect(queryRoute.auth).toBe('loopback');
     const queryPath = '/api' + queryRoute.path;
+    const nativeDecoder = mode === 'retainers' ? process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER : undefined;
+    if (nativeDecoder) {
+      const preflight = spawnSync(nativeDecoder, ['--version'], { encoding: 'utf8', timeout: 5000 });
+      expect(preflight.status, 'Native decoder must be executable before runtime preparation').toBe(0);
+      expect(preflight.stdout.trim()).toBe('v8-heap-cli 0.1.0');
+    }
     const bundleRoot = mkdtempSync(join(tmpdir(), 'papercusp-memory-cohort-'));
     const bundle = join(bundleRoot, 'host/hono-host.mjs');
     const reportPath = join(bundleRoot, 'cohort-report.json');
@@ -1151,6 +1157,17 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         report.phase = label; report.phases.push({ label, at: new Date().toISOString() });
         console.error('P011_PHASE ' + label); publish();
       };
+      // The maintained isolated-runtime route intentionally strips PAPERCUSP_*
+      // ambient controls. Test inputs cross that boundary explicitly as TEST_*.
+      if (e.TEST_NATIVE_HEAP_DECODER) {
+        const preflight = require('node:child_process').spawnSync(e.TEST_NATIVE_HEAP_DECODER,
+          ['--version'], { encoding: 'utf8', timeout: 5000 });
+        if (preflight.status !== 0 || preflight.stdout.trim() !== 'v8-heap-cli 0.1.0')
+          throw Error('Private native decoder precondition failed');
+        report.nativeDecoderPreflight = { version: preflight.stdout.trim(),
+          sha256: createHash('sha256').update(readFileSync(e.TEST_NATIVE_HEAP_DECODER)).digest('hex') };
+        publish();
+      }
       const call = async (route, method = 'GET', body) => {
         const response = await fetch(base + route, { method,
           headers: { 'content-type': 'application/json', 'x-papercusp-workspace': e.PAPERCUSP_WORKSPACE_ID },
@@ -1348,7 +1365,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               const analysisStarted = Date.now();
               report.heapRetainers = { ...(await summarizeHeapRetainers(readFileSync(snapshotPath),
                 { top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32,
-                  decoderControl: e.PAPERCUSP_P011_NATIVE_HEAP_DECODER || undefined })),
+                  decoderControl: e.TEST_NATIVE_HEAP_DECODER || undefined })),
                 durationMs: Date.now() - analysisStarted, pid: host.pid };
               publish();
             }
@@ -1402,7 +1419,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         env: { ...process.env, TEST_BUNDLE_PATH: bundle, TEST_BUNDLE_HASH: bundleHash, TEST_BUILD_SHA: buildSha,
           TEST_COHORT_MODE: mode, TEST_SOURCE_DIRECTORY: sourceDirectory ?? '', TEST_TEST_BUILD_SHA: testBuildSha,
           TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX, TEST_QUERY_ROUTE: queryPath, TEST_REPORT_PATH: reportPath,
-          TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs') },
+          TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs'),
+          TEST_NATIVE_HEAP_DECODER: nativeDecoder ?? '' },
       });
       const report = readCohortReport(reportPath, result);
       if (destination) writeFileSync(destination, serializeIdentitySafeJson(report));
