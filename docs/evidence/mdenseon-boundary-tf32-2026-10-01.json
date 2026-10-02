@@ -2311,5 +2311,251 @@
     "priorV2PaddedV7AndR6Preserved": true,
     "next": "Diagnose the owned teardown residue and actual native global logger filtering before another large instrumented attempt, or continue independent plan bars. No blind retry, pressure/fragmentation attribution, model/index/precision/production switch or live gate action."
   },
+  "nativeCudaTeardownControls": {
+    "status": "Small native teardown reproduction and first-initializer logging control; heap root cause remains open",
+    "workItem": "WI-10005599",
+    "parent": "WI-10004540",
+    "scope": "Upstream ORT MIT mul_1.onnx, 130bytes; no embedding weights. Frozen R6 Node/ORT/provider and same qualified sanitizer API-only flags. This does not qualify embedding compatibility.",
+    "assessment": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-assessment-v1",
+      "artifact": "assessment.json",
+      "bytes": 10143,
+      "sha256": "1f79e742989c8fa86d0361865deaaae5061da9e261834df2800b034e9062bb67"
+    },
+    "captures": [
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v1",
+        "completion": {
+          "bytes": 13182,
+          "sha256": "dae288c90afc4e9fbfc711eeaa6eb5a516e45218a2412fbfc1669870cfd492aa"
+        },
+        "fixture": {
+          "bytes": 5551,
+          "sha256": "6bd69d458286a824692b291d6e64e3865f9b89c1ec412a52f4b2e7c5d939ba93"
+        }
+      },
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v2",
+        "completion": {
+          "bytes": 14272,
+          "sha256": "b30cfc30d796a66d62039573fcf4de9e473dd72c0739d64e9dee13e7b206aa67"
+        },
+        "fixture": {
+          "bytes": 6446,
+          "sha256": "94ffdab35a05de5373ea75ebad7d05fb439b4fb24317c3fb5091b5a67028e876"
+        }
+      },
+      {
+        "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-ort-teardown-control-v3",
+        "completion": {
+          "bytes": 10785,
+          "sha256": "bf844a2d74d72b9d85b04a66d535dee27a2cbaf470eacfda47198c5eff0236db"
+        },
+        "fixture": {
+          "bytes": 6597,
+          "sha256": "c8ee937b54959fee8ab87f7375595bae9baffed1081c98c77f4d1c9c50082efd"
+        }
+      }
+    ],
+    "controls": [
+      {
+        "version": 1,
+        "cell": "environment-success",
+        "processId": 3296580,
+        "outcome": "success",
+        "release": "environment",
+        "disposed": false,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 1,
+        "cell": "dispose-success",
+        "processId": 3298437,
+        "outcome": "success",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 1,
+        "cell": "environment-shape-error",
+        "processId": 3299215,
+        "outcome": "shape-error",
+        "release": "environment",
+        "disposed": false,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 1,
+        "cell": "dispose-shape-error",
+        "processId": 3299655,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 2,
+        "cell": "environment-shape-error-uncaught",
+        "processId": 3557801,
+        "outcome": "shape-error",
+        "release": "environment",
+        "disposed": false,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 2,
+        "cell": "dispose-shape-error-uncaught",
+        "processId": 3559588,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": null,
+        "targetSignal": "SIGABRT",
+        "heapCorruptionObserved": true,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 2,
+        "cell": "first-warning-success",
+        "processId": 3561576,
+        "outcome": "success",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 0,
+        "measuredArenaLimitBytes": null
+      },
+      {
+        "version": 2,
+        "cell": "first-info-success",
+        "processId": 3562669,
+        "outcome": "success",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 0,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 3,
+        "cell": "unmodified-native-uncaught",
+        "processId": 3664624,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": null,
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 3,
+        "cell": "instrumented-uncaught",
+        "processId": 3665097,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      },
+      {
+        "version": 3,
+        "cell": "instrumented-exit-code",
+        "processId": 3666057,
+        "outcome": "shape-error",
+        "release": "dispose",
+        "disposed": true,
+        "targetExitCode": 1,
+        "targetSignal": null,
+        "heapCorruptionObserved": false,
+        "sanitizerApiErrorSummary": "0",
+        "nativeCudaArenaInfoMessages": 1,
+        "measuredArenaLimitBytes": "18446744073709551615"
+      }
+    ],
+    "interpretation": {
+      "observed": "Same corrupted double-linked list SIGABRT reproduced on a 130-byte native ONNX shape-error control with sanitizer API error summary0. A subsequent same-mode control completed exit1, so the reproduction is intermittent; explicit failure exit-code is not a proven fix. First-warning parent initializer suppresses later CUDA BFCArena INFO; first-info permits it.",
+      "notEstablished": [
+        "origin of heap corruption",
+        "whether instrumentation alone causes it",
+        "why the prior full model initialized its native logger at warning",
+        "physical cause of the8192 CUDA allocation refusal",
+        "any embedding compatibility or full GPU acceptance"
+      ]
+    },
+    "verification": {
+      "testRunGroup": "a93cff6a-b248-4922-b861-364f1e5b684a",
+      "testRunIds": [
+        20554398
+      ],
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": {
+        "engine": "tsc-service",
+        "checkedFiles": 1,
+        "errors": 0,
+        "semanticCheckIncomplete": false
+      },
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs",
+          "bytes": 6597,
+          "sha256": "c8ee937b54959fee8ab87f7375595bae9baffed1081c98c77f4d1c9c50082efd"
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/native-cuda-allocation-preflight.test.ts",
+          "bytes": 12611,
+          "sha256": "bacc05a7d6c72071b6f5b2bc3559107ae3fa3b9aa3a38cf3e5ff3eee07a55e57"
+        }
+      ]
+    },
+    "embeddingModelInferencePerformed": false,
+    "heapCorruptionRootCauseConfirmed": false,
+    "heapCorruptionFixed": false,
+    "fullGpuPopulationComplete": false,
+    "loggingLimit": "First-initializer effect is measured on the small fixture, not retroactively attributed to the full model. Its measured arena limit is not the uninstrumented/full model arena configuration.",
+    "next": "Keep WI-10005599 open. Diagnose intermittent host heap corruption from the small reproduction; trace actual first initializer before enabling arena logs on a future model capture. No blind large retry or acceptance promotion."
+  },
   "separateOpenDefect": "EI-24795092971119894 is DONE/COMMITTED for the independent-reference/failure-receipt detector repair. Actual8192 allocation compatibility remains owned by WI-10004540; no successful GPU8192 inference is claimed."
 }
