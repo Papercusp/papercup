@@ -22,6 +22,7 @@
  * federated.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 import {
   setCarryNote,
@@ -103,27 +104,32 @@ export function workItemCheckpointScope(harness: string | null | undefined, work
  *  look like a fresh re-claim and destroyed the meaning of `takenAt`. */
 async function bumpCheckpointProgressAnchor(ref: WorkItemCheckpointRef, ws: string): Promise<void> {
   try {
-    const { sql } = getOrgPg();
     // Issue ids are workspace-unique, while feature ids are harness-scoped. One
     // base-table write therefore handles both families without touching the
     // `engineer_issues` view (whose assigned_at aliases the claim-time taken_at).
     // Credit only a currently-held row, matching markFeatureProgress/
     // markIssueProgress and keeping holderless historical checkpoints out of the
     // live progress signal.
-    await sql`
-      UPDATE harness_shared.work_items
-         SET last_progress_at = now()
-       WHERE workspace_id = ${ws}
-         AND feature_id = ${ref.workItemId}
-         AND taken_by IS NOT NULL
-         AND taken_by <> ''
-         AND (
-           item_kind IN ('bug', 'change', 'task')
-           OR (
-             ${ref.harness !== null && ref.harness !== undefined && ref.harness !== CHECKPOINT_WILDCARD_HARNESS}
-             AND harness_slug = ${ref.harness}
-           )
-         )`;
+    // The carry-note transaction has already committed. Keep this best-effort
+    // follow-up bounded too: an unbounded pool/row-lock wait here kept the MCP
+    // request open after the checkpoint was durable, so the caller saw a timeout
+    // and a concurrent loop checkpoint could remain queued behind it.
+    await boundedOrgTxn(async (tx) => {
+      await tx`
+        UPDATE harness_shared.work_items
+           SET last_progress_at = now()
+         WHERE workspace_id = ${ws}
+           AND feature_id = ${ref.workItemId}
+           AND taken_by IS NOT NULL
+           AND taken_by <> ''
+           AND (
+             item_kind IN ('bug', 'change', 'task')
+             OR (
+               ${ref.harness !== null && ref.harness !== undefined && ref.harness !== CHECKPOINT_WILDCARD_HARNESS}
+               AND harness_slug = ${ref.harness}
+             )
+           )`;
+    });
   } catch {
     /* best-effort */
   }

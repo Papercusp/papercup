@@ -397,6 +397,69 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect(after.last_progress_at.getTime()).toBeGreaterThan(before.last_progress_at.getTime());
   });
 
+  it('returns a committed checkpoint when the best-effort progress anchor is row-locked', async () => {
+    const item = 'WI-PROGRESS-ANCHOR-CONTENTION';
+    const checkpoint = 'carry note committed while progress update is blocked';
+    const ref = { harness: HARNESS, workItemId: item, workspaceId: 'default' };
+    const oldProgress = new Date('2000-01-01T00:00:00.000Z');
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, status, item_kind, taken_by, taken_at, last_progress_at)
+      VALUES
+        ('default', ${HARNESS}, ${item}, 'open', 'bug', 'su-holder', now(), ${oldProgress})`;
+
+    let release!: () => void;
+    let lockedResolve!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const locked = new Promise<void>((resolve) => { lockedResolve = resolve; });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`
+        SELECT feature_id
+          FROM harness_shared.work_items
+         WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${item}
+         FOR UPDATE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    const startedAt = Date.now();
+    const write = setWorkItemCheckpointWithPrior(ref, checkpoint);
+    const settled = write.then(
+      (value) => ({ status: 'settled' as const, value }),
+      (error: unknown) => ({ status: 'error' as const, error }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let outcome: Awaited<typeof settled> | { status: 'pending' } = { status: 'pending' };
+    let noteWhileLocked: string | null = null;
+    let progressWhileLocked: Date | null = null;
+    try {
+      outcome = await Promise.race([
+        settled,
+        new Promise<{ status: 'pending' }>((resolve) => {
+          timer = setTimeout(() => resolve({ status: 'pending' }), 3_500);
+        }),
+      ]);
+      noteWhileLocked = await getWorkItemCheckpoint(ref);
+      const [progress] = await db.sql<{ last_progress_at: Date }[]>`
+        SELECT last_progress_at FROM harness_shared.work_items
+         WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${item}`;
+      progressWhileLocked = progress?.last_progress_at ?? null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      release();
+      await blocker;
+      await settled;
+    }
+
+    expect(noteWhileLocked).toBe(checkpoint);
+    expect(progressWhileLocked?.getTime()).toBe(oldProgress.getTime());
+    expect(outcome.status).toBe('settled');
+    if (outcome.status === 'settled') expect(outcome.value.stored).toBe(checkpoint);
+    expect(Date.now() - startedAt).toBeLessThan(3_500);
+    expect(await getWorkItemCheckpoint(ref)).toBe(checkpoint);
+  });
+
   it('checkpoint keeps feature progress harness-scoped and preserves its claim time', async () => {
     await db.sql`
       INSERT INTO harness_shared.work_items
