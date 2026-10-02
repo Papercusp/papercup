@@ -88,6 +88,24 @@ owner on a nonzero exit before the certificate expires. A LAN-only status does
 not imply any hosted certificate was checked (`turnCertificateVerified: false`);
 frontend WSS renewal still requires its own public preflight and deployment
 proof. This check does not renew certificates or prove public media.
+On a converged Phone deployment, `papercusp-phone-ops-alert.timer` runs the
+read-only `phone-ops-alert.mjs` check every 15 minutes. It combines that status,
+the stored usage-policy status and a private backup-integrity/freshness status,
+then calls the existing `notifications:send_owner` delivery rail (durable owner
+inbox plus audited desktop/mobile attempts). Failures send actionable,
+non-secret conditions to Phone operations; a standing fault reminds daily,
+and a recovered fault sends one stand-down. A notification delivery error
+keeps the check failed and retriable. The timer and service are pinned in the
+same artifact manifest as the Phone media binaries; `--render-only` never
+installs or starts them. Configure a private `PHONE_CONFIG_DIR/ops-alert.env`
+with `PHONE_BACKUP_ARCHIVE=/absolute/private/phone.dump` and
+`PHONE_BACKUP_MAX_AGE_HOURS=24` (choose the age from an approved recovery
+objective, not this example). An absent or invalid choice raises a
+`backup:config-missing` alert rather than asserting backup health. Inspect
+`systemctl --user status papercusp-phone-ops-alert.timer` and the service
+journal if owner delivery fails. This is local-source operational alerting,
+not a verified public certificate renewal, PSTN, recovery-time or provider
+spend result; public renewal remains P-002/P-013/P-015 acceptance.
 The sidecar unit supervises the HTTP process directly and restarts it on failure.
 After changing the out-of-repo sidecar source, converge through `deploy.sh`;
 the unit does not use Node's watcher, which can stay active after its child dies.
