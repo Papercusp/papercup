@@ -81,13 +81,15 @@ beforeAll(async () => {
         SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':stub';
       $hlc_stub$;
 
-    -- Verbatim body of mig 517 (fix-stamp-local-federated-write-mask): the
-    -- work_items-scoped extra exclusion of updated_ts/ts, kept table-scoped
-    -- because other federated tables sharing this function (e.g. coord_event_log)
-    -- have a genuine-content ts column that must NOT be masked globally.
+    -- Preserve migration 517's table-scoped bookkeeping mask and migration 681's
+    -- generated-column mask: NEW generated values are not computed until AFTER
+    -- BEFORE triggers. Comparing them to OLD turns a same-op replay into a local edit.
     CREATE OR REPLACE FUNCTION harness_shared.stamp_local_federated_write() RETURNS trigger
         LANGUAGE plpgsql
         AS $fn$
+    DECLARE
+      mask text[] := ARRAY['fed_ts', 'fed_hlc', 'origin', 'author_pubkey', 'updated_at', '_search', 'version', 'local_disposition'];
+      generated_columns text[];
     BEGIN
       IF TG_OP = 'UPDATE' AND NEW.fed_ts IS DISTINCT FROM OLD.fed_ts THEN
         RETURN NEW;
@@ -98,20 +100,11 @@ beforeAll(async () => {
         END IF;
         RETURN NEW;
       END IF;
-      IF TG_TABLE_NAME = 'work_items' THEN
-        IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'updated_ts' - 'ts')
-           IS DISTINCT FROM
-           (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition' - 'updated_ts' - 'ts')
-        THEN
-          NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
-          NEW.fed_hlc := harness_shared.hlc_now();
-          NEW.origin := 'local';
-        END IF;
-        RETURN NEW;
-      END IF;
-      IF (to_jsonb(NEW) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
-         IS DISTINCT FROM
-         (to_jsonb(OLD) - 'fed_ts' - 'fed_hlc' - 'origin' - 'author_pubkey' - 'updated_at' - '_search' - 'version' - 'local_disposition')
+      SELECT array_agg(attname::text) INTO generated_columns FROM pg_attribute
+        WHERE attrelid = TG_RELID AND attnum > 0 AND NOT attisdropped AND attgenerated <> '';
+      mask := mask || COALESCE(generated_columns, ARRAY[]::text[]);
+      IF TG_TABLE_NAME = 'work_items' THEN mask := mask || ARRAY['updated_ts', 'ts']; END IF;
+      IF (to_jsonb(NEW) - mask) IS DISTINCT FROM (to_jsonb(OLD) - mask)
       THEN
         NEW.fed_ts := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
         NEW.fed_hlc := harness_shared.hlc_now();
@@ -1021,6 +1014,8 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(first?.fed_ts).toBe(500);
     const [before] = await db.sql<{ row: Record<string, unknown> }[]>`
       SELECT to_jsonb(w) AS row FROM harness_shared.work_items w WHERE feature_id = 'EI-183'`;
+    // A non-null generated value calibrates the historical false-diff direction.
+    expect(before!.row.severity_projection).toBe('minor');
 
     // Re-fold the IDENTICAL op a second time (a retry/backfill re-applying the same
     // wire op) — must be a no-op on origin/fed_ts, never flip to 'local' nor advance
@@ -1036,6 +1031,21 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(second?.origin).toBe('remote'); // must NOT flip to 'local'
     expect(second?.fed_ts).toBe(500); // must NOT advance
     expect(second?.title).toBe('stable content');
+  });
+
+  it('masking generated columns still stamps a genuine local payload edit', async () => {
+    const p = proj();
+    await p.writeToPg(issueRow({ issue_id: 'EI-generated-local' }), {
+      ts: 500, fedHlc: '500:00000:peer', origin: 'remote', authorPubkey: 'peer',
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_ei,severity}', '"major"'::jsonb)
+      WHERE feature_id = 'EI-generated-local'`;
+    const [row] = await db.sql<{ origin: string; fed_ts: string; severity_projection: string }[]>`
+      SELECT origin, fed_ts, severity_projection FROM harness_shared.work_items WHERE feature_id = 'EI-generated-local'`;
+    expect(row!.origin).toBe('local');
+    expect(Number(row!.fed_ts)).toBeGreaterThan(500);
+    expect(row!.severity_projection).toBe('major');
   });
 });
 

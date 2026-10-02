@@ -15,7 +15,12 @@ vi.mock("./workspace-registry", async (importOriginal) => ({
   activeWorkspaceId: M.activeWorkspaceId,
 }));
 
-import { getLatestActivationAudit, getLatestPlanAudit, getPlanItemStatuses } from "./plan-audits";
+import {
+  getLatestActivationAudit,
+  getLatestPlanAudit,
+  getPlanItemStatuses,
+  resolvePlanItemHomeHarness,
+} from "./plan-audits";
 
 const row = {
   plan_slug: "scoped-plan",
@@ -163,5 +168,56 @@ describe("getPlanItemStatuses harness scope", () => {
     expect(items).toHaveLength(2);
     expect(M.sql.mock.calls[0]?.[1]).toEqual("ambient-workspace");
     expect(M.sql.mock.calls[0]?.[3]).toBeNull();
+  });
+});
+
+// WI-10005174: callers that hold only a CANDIDATE harness (an explicit arg, a
+// slug-recovered or ambient ctx harness) resolve the plan's home from harness_plans
+// before scoping the item read. A wrong candidate must never become the scope.
+describe("resolvePlanItemHomeHarness", () => {
+  beforeEach(() => {
+    M.sql.mockReset();
+    M.activeWorkspaceId.mockClear();
+  });
+
+  const plans = [
+    { workspace_id: "ambient-workspace", plan_slug: "shared-slug", harness_slug: "email" },
+    { workspace_id: "ambient-workspace", plan_slug: "shared-slug", harness_slug: "papercusp" },
+    { workspace_id: "ambient-workspace", plan_slug: "solo-slug", harness_slug: "papercusp" },
+    { workspace_id: "other-workspace", plan_slug: "solo-slug", harness_slug: "email" },
+  ];
+  // Applies the real (workspace, slug) predicate to the fixture, so a dropped
+  // workspace or slug filter changes the answer, not just the bound values.
+  const applyPredicate = (_strings: TemplateStringsArray, ...values: unknown[]) =>
+    Promise.resolve(plans.filter((r) => r.workspace_id === values[0] && r.plan_slug === values[1]));
+
+  it("returns the candidate when the candidate owns the slug", async () => {
+    M.sql.mockImplementation(applyPredicate);
+    await expect(resolvePlanItemHomeHarness("shared-slug", "email")).resolves.toBe("email");
+    await expect(resolvePlanItemHomeHarness("shared-slug", " papercusp ")).resolves.toBe("papercusp");
+  });
+
+  it("returns the unique owner when the candidate does not own the slug", async () => {
+    M.sql.mockImplementation(applyPredicate);
+    // other-workspace's email row is out of scope, so papercusp is the only owner.
+    await expect(resolvePlanItemHomeHarness("solo-slug", "email")).resolves.toBe("papercusp");
+    await expect(resolvePlanItemHomeHarness("solo-slug", null)).resolves.toBe("papercusp");
+    await expect(resolvePlanItemHomeHarness("solo-slug")).resolves.toBe("papercusp");
+  });
+
+  it("returns null (unscoped) when two harnesses own the slug and the candidate is neither", async () => {
+    M.sql.mockImplementation(applyPredicate);
+    await expect(resolvePlanItemHomeHarness("shared-slug", "calendar")).resolves.toBeNull();
+    await expect(resolvePlanItemHomeHarness("shared-slug", null)).resolves.toBeNull();
+  });
+
+  it("returns null when no harness owns the slug", async () => {
+    M.sql.mockImplementation(applyPredicate);
+    await expect(resolvePlanItemHomeHarness("missing-slug", "papercusp")).resolves.toBeNull();
+  });
+
+  it("returns null on a read failure rather than trusting the candidate", async () => {
+    M.sql.mockRejectedValue(new Error("connection reset"));
+    await expect(resolvePlanItemHomeHarness("shared-slug", "email")).resolves.toBeNull();
   });
 });

@@ -42,6 +42,14 @@ import {
   type LoopCarryNoteWithMeta,
   type WallEntry,
 } from './carry-note';
+import {
+  extractClaimMentions,
+  normalizeClaimId,
+  readClaimStandings,
+  renderRetractedMarker,
+  isRetracted,
+  type ClaimStanding,
+} from './claim-retractions';
 import { harnessOfScope } from './work-item-scope';
 import { renderOwnerDirectivesBlock, type OwnerDirectiveRow } from './owner-directives';
 import type { QueryHandle } from './ambient-push';
@@ -198,6 +206,11 @@ export interface CarryBrief {
    *  probes, parsed out of the note's `## Checks` section — same structured
    *  delivery as walls so a capped/stale-collapsed note can't dissolve them. */
   checks?: CheckEntry[];
+  /** EI-23765337478012299: claims (check-row ids / `claim:<id>` mentions found in the
+   *  loop note + held checkpoints) whose CURRENT standing is RETRACTED in the claim
+   *  event log. Assigned only when non-empty, so absence means "none retracted or the
+   *  read degraded" — never a confirmed all-clear. Rendered as `⛔ RETRACTED`. */
+  retractedClaims?: ClaimStanding[];
   /** Owner-scoped standing facts — the softer standing-context carrier (structured
    *  walls live in `walls` since P-006; facts remain for everything else).
    *  `sourceRef`/`sourceProvenance` ride along (when the store has them) both
