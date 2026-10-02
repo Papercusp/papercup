@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Best-effort, attempt-correlated diagnostics for the staging API and sync
-# flock. Every record goes to stderr, which systemd captures in the unit
-# journal. Collection failures must never alter lock or readiness behavior.
+# Attempt-correlated diagnostics for the staging API and sync flock, plus
+# proof-bound reuse of a complete immutable generation at API startup.
+# Collection failures never change readiness; failed reuse checks retain the
+# ordinary shared-lock rebuild path.
 
 staging_lock_log() {
   printf '%s\n' "[staging-lock-attribution] $*" >&2
@@ -124,6 +125,35 @@ staging_lock_api_pre_held() {
   exec "$bundle" "$@"
 }
 
+# A candidate build touches a different physical checkout. A restarted API
+# already inside a complete generation can therefore reuse its verified bytes
+# without waiting for that candidate's global checkout lock. Bind the proof to
+# the actual systemd working directory, not the movable staging.current alias.
+# Keep the existing install mutex around the source/dist proof read. Generation
+# pruning already retains every root referenced by a process's physical cwd.
+staging_lock_reuse_complete_generation() {
+  local bundle="$1" operator_root repo_root generation_root source_sha ready_sha
+  [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == 1 ]] || return 1
+  operator_root="$(pwd -P)" || return 1
+  [[ "$operator_root" == */apps/operator ]] || return 1
+  repo_root="$(cd "$operator_root/../.." && pwd -P)" || return 1
+  generation_root="$(dirname "$repo_root")"
+  [[ "$(basename "$repo_root")" == checkout &&
+     "$(basename "$generation_root")" == .candidate-* &&
+     "$(basename "$(dirname "$generation_root")")" == papercusp-staging.generations ]] || return 1
+  [[ "$(realpath -e "$bundle" 2>/dev/null)" == "$operator_root/bin/bundle-host.sh" ]] || return 1
+  source_sha="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null)" || return 1
+  [[ "$source_sha" =~ ^[[:xdigit:]]{40}$ || "$source_sha" =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  ready_sha="$(cat "$generation_root/.ready" 2>/dev/null)" || return 1
+  [[ "$ready_sha" == "$source_sha" && ! -e "$operator_root/dist-host/.bundle-stale.json" ]] || return 1
+  [[ -f "$repo_root/scripts/npm-install-safe.mjs" &&
+     -f "$operator_root/bin/bundle-host-freshness.mjs" ]] || return 1
+  node "$repo_root/scripts/npm-install-safe.mjs" --repo-root "$repo_root" --exec-under-lock -- \
+    node "$operator_root/bin/bundle-host-freshness.mjs" check \
+    --repo-root "$repo_root" --entry bin/hono-host.ts --outfile dist-host/hono-host.mjs \
+    --manifest dist-host/.bundle-fresh.json >/dev/null
+}
+
 staging_lock_api_pre() {
   local lock_path="$1" bundle="$2"
   shift 2
@@ -132,6 +162,13 @@ staging_lock_api_pre() {
   wait_start="$(staging_lock_now_ms)"
   PAPERCUSP_STAGING_LOCK_PATH="$lock_path"
   export PAPERCUSP_STAGING_LOCK_PATH
+  # Custom bundle arguments still use the locked builder; the proof below is
+  # specifically for the unit's default entry and output paths.
+  if [[ $# == 0 ]] && staging_lock_reuse_complete_generation "$bundle"; then
+    unit_fields="$(staging_lock_unit_fields papercup-staging-api.service)"
+    staging_lock_log "event=end surface=start-pre attempt_id=$attempt_id state=complete lock_scope=immutable_generation wait_start_ms=$wait_start wait_elapsed_ms=$(staging_lock_elapsed_ms "$wait_start" "$(staging_lock_now_ms)") acquisition_outcome=not_required bundle_outcome=proof_reused readiness_phase=before-execstart $unit_fields"
+    return 0
+  fi
   staging_lock_log "event=start surface=start-pre attempt_id=$attempt_id state=wait_start lock_path=$lock_path lock_mode=shared wait_start_ms=$wait_start readiness_policy=Type-notify"
 
   (

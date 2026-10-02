@@ -11,7 +11,7 @@ vi.mock('@huggingface/transformers', () => ({
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
-  validateNativeBoundaryRequest, nativeBoundaryPopulation, nativeInferenceTraceVerified, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
+  validateNativeBoundaryRequest, nativeBoundaryPopulation, nativeInferenceTraceVerified, nativeRunTraceVerified, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
   type NativeBoundaryRequest, type NativeBoundaryRow, type NativeBoundaryBatchRow, type CandidateVectors } from './candidate-embedders';
 import { nativeBenchmarkOutputPaths } from './candidate-embedders';
 import { moduleRepoRoot } from '../../module-repo-root';
@@ -244,6 +244,34 @@ describe('native mDenseOn boundary evidence', () => {
       row.inputTraces = [input]; row.inferenceTraces = events;
       expect(summarizeNativeBoundaries(request, [row], 'cpu', 'single-short-query')).toMatchObject({
         workerInferenceTraceVerified: failure === 'valid', diagnosticCompatible: failure === 'valid',
+      });
+    });
+  it.each(['valid', 'missing', 'request', 'tag', 'index', 'outside', 'overlap', 'failed'])
+    ('checks %s synchronous native calls against the retained request graph', (failure) => {
+      const { request, rows } = fixture(), row = rows[0];
+      const identity = { requestId: 0, attempt: 1, processId: 123, workerThreadId: 1, nativeThreadId: 456 };
+      const input = { model: request.export, device: 'cpu' as const, observedAt: '2026-10-02T00:00:00Z',
+        inputShape: [1, row.inputIds.length], inputIds: row.inputIds, attentionMask: row.inputIds.map(() => 1), request: identity };
+      const base = { ...identity, model: request.export, device: 'cpu' as const, observedAt: input.observedAt, clock: 'node-hrtime' as const };
+      const graph = [{ ...base, monotonicNs: '100', phase: 'start' as const },
+        { ...base, monotonicNs: '500', phase: 'end' as const, outcome: 'success' as const }];
+      const native: any[] = [
+        { ...base, runIndex: 1, runTag: 'pc-embed:123:1:0:1:1', monotonicNs: '200', phase: 'start' },
+        { ...base, runIndex: 1, runTag: 'pc-embed:123:1:0:1:1', monotonicNs: '300', phase: 'end', outcome: 'success' },
+        { ...base, runIndex: 2, runTag: 'pc-embed:123:1:0:1:2', monotonicNs: '350', phase: 'start' },
+        { ...base, runIndex: 2, runTag: 'pc-embed:123:1:0:1:2', monotonicNs: '450', phase: 'end', outcome: 'success' },
+      ];
+      if (failure === 'missing') native.pop();
+      if (failure === 'request') native[1].requestId++;
+      if (failure === 'tag') native[1].runTag = 'another-request';
+      if (failure === 'index') native[2].runIndex++;
+      if (failure === 'outside') native[0].monotonicNs = '99';
+      if (failure === 'overlap') native[2].monotonicNs = '299';
+      if (failure === 'failed') native[1].outcome = 'error';
+      expect(nativeRunTraceVerified([input], graph, native, request.export, row.referenceInputIds, 'cpu')).toBe(failure === 'valid');
+      row.inputTraces = [input]; row.inferenceTraces = graph; row.nativeInferenceTraces = native;
+      expect(summarizeNativeBoundaries(request, [row], 'cpu', 'single-short-query')).toMatchObject({
+        nativeRunTraceVerified: failure === 'valid', diagnosticCompatible: failure === 'valid',
       });
     });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
