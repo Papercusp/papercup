@@ -316,11 +316,11 @@
     "reused": "installStartupStorageProbe shared MutationObserver, buildStartupStorageProbeScript and canonical perf-report.node-test.ts suite; no new service or probe lifecycle",
     "sourceObservation": "LeftSidebar defaults to accounts with lsb=true, renders the active tab only under presentedOpen, and wraps its lazy AccountsTab in Suspense. The footer is static outside AccountsTab loading/list conditional. Suite collects startup Web Vitals before the popup interaction.",
     "frozenObservation": "Exact r166 LeftSidebar-2bf966fe.js retains accounts default, expanded accounts host attributes and Suspense fallback. Its lazy AccountsTab-d66f6c68.js shim imports src-a219fb19.js, which contains accounts.pool and the static footer. This checks selected compiled edges, not original complete source/build provenance or duration.",
-    "change": "Track first DOM observations of operator shell, expanded accounts sidebar, Suspense fallback and Accounts container. Retain each first node and join its containment at candidate discovery as true/false/null. No layout or text reads in mutation callbacks; four selectors,1000 reads each,60s deadline, cleanup and work accounting reuse existing lifecycle.",
-    "regression": "Pre-fix canonical61PASS2FAIL0skip, both missing milestone fields. Final canonical63PASS0FAIL0skip and package tscPASS. Exact bundled chronological test separates early sidebar from later Accounts container/footer; replaced host, unavailable containment, unobserved mount, read cap/deadline/unavailable observer and cleanup guarded.",
+    "change": "Track first DOM observations of operator shell, expanded accounts sidebar, Suspense fallback and Accounts container. Retain each first node and join its containment at candidate discovery as true/false/null. No layout or text reads in mutation callbacks; four selectors,1000 reads each,60s deadline, cleanup and work accounting reuse existing lifecycle. Shared attribute filter includes data-tab/data-collapsed so host activation without child insertion is observed.",
+    "regression": "Initial red61PASS2FAIL0skip (missing milestone fields), then63PASS. Final attribute-only host activation guard63PASS1FAIL0skip exposed omitted data-collapsed/data-tab observation. Final canonical64PASS0FAIL0skip and package tscPASS. Bundled chronological host tests separate early sidebar/late Accounts/footer, first-node replacement and unavailable containment; existing caps/deadline/unavailable/cleanup guards also cover milestones.",
     "sourceSha256": {
-      "tools/perf-test/wdio/startup-storage-probe.ts": "d5f1ca30978420da533b91f4388cd5e5e52b02ca60e87fa3d1696fd6a25a365b",
-      "tools/perf-test/wdio/perf-report.node-test.ts": "4183d995593a17ce411ae7219606959f1621a5b2ab38bb7f31367b7e59e4508c",
+      "tools/perf-test/wdio/startup-storage-probe.ts": "b6c5c845582f95d1bc9f1e5fc49a4da5cae840efec5b5b6a8be545c5fc1aaf8b",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "5e73d9800597ab350de6c873b632911272d9ef58a1df53708ef94d6060bb8466",
       "apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx": "b69b98c0d1102c29d222b9c06d032a2d844a4b74f9ce6a434dfcfbb3595738c5",
       "apps/operator-vite/src/components/left-sidebar/AccountsTab.tsx": "a6e8dbff573a1e702ddbd3469ebdb67d011d96fcc88d309531d11d49d7412ecc",
       "packages/operator-ui/src/accounts/AccountsTab.tsx": "abf7723ee34ef0416ac58070682fe44ba8af69f5b54ac8ab36399884a024d61d",
@@ -333,8 +333,9 @@
     },
     "logs": {
       "/tmp/p007-fire131-milestones-red.log": "c4ee92dedd24674682ad4e698435ae41c44207b0d22af54b64a6e0892cd6b368",
-      "/tmp/p007-fire131-milestones-unit.log": "2a383d2d093a2949efc967119b49f8cbc5e3f0bec3f9600864b0c1dbd004871f",
-      "/tmp/p007-fire131-milestones-type.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+      "/tmp/p007-fire131-milestones-unit.log": "44ac4718c1c1e0d21a75f0ea5902c519549bc348170667c2c6ced7a5819c8edd",
+      "/tmp/p007-fire131-milestones-type.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+      "/tmp/p007-fire131-milestones-attribute-red.log": "b95e89b77a68915ebc02c7151847704c0846e9ff930ce60d348b87b66cd425fd"
     },
     "predictions": {
       "beforeHost": "Matched shell/sidebar first observed near the actual candidate => investigate before-host work; callback time does not establish insertion.",
