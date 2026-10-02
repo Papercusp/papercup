@@ -346,28 +346,65 @@ export function latestRespawnNativeSession(
   try {
     const startedAt = hostStartedAt(ownerId, dir);
     if (startedAt == null && !opts.allowWithoutHost) return null;
-    // Scan backwards: the newest respawn wins.
-    const events = readHostEventTail(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES);
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i] as { kind?: unknown; mode?: unknown; nativeId?: unknown; ts?: unknown };
-      // Drill respawns rotate the native id exactly like a real one.
-      if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
-      // With no discovery file, the ONLY trustworthy producer is the Claude
-      // recovery hook: it writes owner-scoped mode=self-relaunch after deriving
-      // the new coord identity and native id together. A carry/drill row without
-      // current-host metadata could belong to an older host incarnation, which
-      // is exactly what the normal startedAt fence prevents us from trusting.
-      if (startedAt == null && ev.mode !== 'self-relaunch') return null;
-      // A respawn from a PREVIOUS host (and everything before it) is history.
-      const ts = typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
-      if (!Number.isFinite(ts) || (startedAt != null && ts < startedAt)) return null;
-      const nativeId = typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
-      return nativeId ? { nativeId, atMs: ts } : null;
-    }
-    return null;
+    return pickLatestRespawn(readHostEventTail(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES), startedAt);
   } catch {
     return null;
   }
+}
+
+/**
+ * {@link latestRespawnNativeSession} without blocking the event loop (WI-10005220).
+ *
+ * The sync form stats and reads two files in the shared psu-pty directory. While the
+ * ext4 journal is slow, each of those can wait in D-state behind another host's
+ * create/rename there (the WI-10004559 mechanism), and on bg-host's main thread that
+ * froze the whole process for 0.6-2.0 s per call (measured 2026-10-02: six such stalls,
+ * 6.3 s of a 30 s profile, all in this read via resolveSessionRefReconciled). Any
+ * caller that runs per owner or on a sweep must use this form; both share
+ * {@link pickLatestRespawn}, so they cannot disagree on the answer.
+ */
+export async function latestRespawnNativeSessionAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: LatestRespawnNativeIdOptions = {},
+): Promise<LatestRespawnNativeSession | null> {
+  try {
+    const startedAt = await hostStartedAtAsync(ownerId, dir);
+    if (startedAt == null && !opts.allowWithoutHost) return null;
+    return pickLatestRespawn(
+      await readHostEventTailAsync(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES),
+      startedAt,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** The rung-3 decision over an already-read event tail, shared by the sync and async
+ *  readers. `startedAt` is the CURRENT host's start (null = no discovery file, which
+ *  the caller only lets through for `allowWithoutHost`). */
+function pickLatestRespawn(
+  events: PtyHostEvent[],
+  startedAt: number | null,
+): LatestRespawnNativeSession | null {
+  // Scan backwards: the newest respawn wins.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i] as { kind?: unknown; mode?: unknown; nativeId?: unknown; ts?: unknown };
+    // Drill respawns rotate the native id exactly like a real one.
+    if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
+    // With no discovery file, the ONLY trustworthy producer is the Claude
+    // recovery hook: it writes owner-scoped mode=self-relaunch after deriving
+    // the new coord identity and native id together. A carry/drill row without
+    // current-host metadata could belong to an older host incarnation, which
+    // is exactly what the normal startedAt fence prevents us from trusting.
+    if (startedAt == null && ev.mode !== 'self-relaunch') return null;
+    // A respawn from a PREVIOUS host (and everything before it) is history.
+    const ts = typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
+    if (!Number.isFinite(ts) || (startedAt != null && ts < startedAt)) return null;
+    const nativeId = typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
+    return nativeId ? { nativeId, atMs: ts } : null;
+  }
+  return null;
 }
 
 /** WI-5075 compatibility wrapper: return only the native id while the
@@ -395,17 +432,34 @@ export function latestRespawnNativeId(
  */
 export function hostStartedAt(ownerId: string, dir: string = PSU_PTY_DIR): number | null {
   try {
-    const meta = JSON.parse(
-      readFileSync(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'),
-    ) as { ownerId?: unknown; startedAt?: unknown };
-    // EI-151: the same cross-owner misroute guard findLiveHost applies.
-    if (typeof meta.ownerId === 'string' && meta.ownerId !== ownerId) return null;
-    return typeof meta.startedAt === 'number' && Number.isFinite(meta.startedAt)
-      ? meta.startedAt
-      : null;
+    return parseHostStartedAt(ownerId, readFileSync(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'));
   } catch {
     return null;
   }
+}
+
+/** {@link hostStartedAt} off the event loop (WI-10005220) — same contract, same parse. */
+export async function hostStartedAtAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+): Promise<number | null> {
+  try {
+    return parseHostStartedAt(
+      ownerId,
+      await fsp.readFile(join(dir, `${sanitizeKey(ownerId)}.json`), 'utf8'),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function parseHostStartedAt(ownerId: string, raw: string): number | null {
+  const meta = JSON.parse(raw) as { ownerId?: unknown; startedAt?: unknown };
+  // EI-151: the same cross-owner misroute guard findLiveHost applies.
+  if (typeof meta.ownerId === 'string' && meta.ownerId !== ownerId) return null;
+  return typeof meta.startedAt === 'number' && Number.isFinite(meta.startedAt)
+    ? meta.startedAt
+    : null;
 }
 
 function pidAlive(pid: number): boolean {

@@ -416,6 +416,10 @@ describe('resolveDeployedSqlDir', () => {
   // Guard against an ambient PAPERCUSP_RELEASE_ROOT in the test-runner's own env
   // (set on a real :3070/:3170 host) shadowing the fixture sibling these tests rely on.
   const savedReleaseRootEnv = process.env.PAPERCUSP_RELEASE_ROOT;
+  // WI-10005161: the shared release-root resolver also anchors on
+  // PAPERCUSP_CANONICAL_TREE (set on :3170), so an inherited one would shadow the
+  // fixture sibling the same way.
+  const savedCanonicalTreeEnv = process.env.PAPERCUSP_CANONICAL_TREE;
   function makeTree(name: string, hasFile: boolean): string {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-test-'));
     tmpRoots.push(parent);

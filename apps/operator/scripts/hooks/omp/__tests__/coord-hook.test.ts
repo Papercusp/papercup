@@ -153,6 +153,7 @@ import {
   setDeclarationRegeneratorForTests,
   _resetDegradedNotifiedForTests,
   _resetActivityReportDedupeForTests,
+  _resetNativeSessionIdForTests,
   extractOmpMessageText,
   readLastOmpAssistantText,
   looksLikeUnstructuredOwnerAsk,
@@ -5257,6 +5258,99 @@ describe('reportLifecycle (OMP session lifecycle → activity bridge)', () => {
   it('reports a "■ session ended" lifecycle row on shutdown', async () => {
     const p = await capture('shutdown');
     expect(p?.arguments).toMatchObject({ kind: 'lifecycle', summary: '■ session ended' });
+  });
+});
+
+describe('activity:report verified native session query context (EI-24818103845663728)', () => {
+  const originalFetch = global.fetch;
+  const envKeys = [
+    'PAPERCUSP_BUNDLE_URL',
+    'PAPERCUSP_BUNDLE_ACCESS_TOKEN',
+    'PAPERCUSP_NATIVE_SESSION_ID',
+    'PAPERCUSP_ADV_SESSION_ID',
+  ] as const;
+  const previousEnv = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    previousEnv.clear();
+    for (const key of envKeys) previousEnv.set(key, process.env[key]);
+    _resetHookOwnerIdForTests();
+    _resetActivityReportDedupeForTests();
+    _resetNativeSessionIdForTests();
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
+    delete process.env.PAPERCUSP_NATIVE_SESSION_ID;
+    delete process.env.PAPERCUSP_ADV_SESSION_ID;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    for (const key of envKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    _resetActivityReportDedupeForTests();
+    _resetNativeSessionIdForTests();
+    _resetHookOwnerIdForTests();
+  });
+
+  it('binds pre, post, and lifecycle report requests to the session_start native id', async () => {
+    const nativeSessionId = 'native session/+1';
+    const calls: Array<{
+      url: string;
+      params: { name: string; arguments: Record<string, unknown> };
+    }> = [];
+    global.fetch = (async (input: unknown, init?: { body?: string }) => {
+      if (!init?.body) return { ok: true };
+      const request = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      calls.push({ url: String(input), params: request.params });
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: '{"ok":true}' }] },
+          }),
+      };
+    }) as unknown as typeof fetch;
+
+    await onSessionStart({ sessionManager: { getSessionId: () => nativeSessionId } });
+    await reportActivity({
+      type: 'tool_call',
+      toolName: 'read',
+      toolCallId: 'pre-1',
+      input: { path: 'a.ts' },
+    });
+    stageActivityReport({
+      type: 'tool_call',
+      toolName: 'read',
+      toolCallId: 'post-1',
+      input: { path: 'b.ts' },
+    });
+    await reportActivityResult({ type: 'tool_result', toolCallId: 'post-1' });
+    await reportLifecycle('shutdown');
+
+    const reports = calls.filter((call) => call.params.name === 'activity:report');
+    expect(reports).toHaveLength(4); // session start, pre-tool, post-tool, and shutdown
+    expect(reports.map((call) => call.params.arguments.tool_use_id)).toContain('pre-1');
+    expect(reports.map((call) => call.params.arguments.tool_use_id)).toContain('post-1');
+    expect(reports.map((call) => call.params.arguments.summary)).toContain('▶ session started');
+    expect(reports.map((call) => call.params.arguments.summary)).toContain('■ session ended');
+    for (const call of reports) {
+      const url = new URL(call.url);
+      expect(url.searchParams.getAll('native_session')).toEqual([nativeSessionId]);
+      expect(url.searchParams.get('origin')).toBe('hook');
+      expect(url.searchParams.get('client')).toMatch(/^omp-/);
+      expect(call.params.arguments).not.toHaveProperty('native_session');
+    }
+
+    const declaration = calls.find((call) => call.params.name === 'coord:declare-intent');
+    expect(declaration).toBeDefined();
+    expect(new URL(declaration!.url).searchParams.has('native_session')).toBe(false);
   });
 });
 

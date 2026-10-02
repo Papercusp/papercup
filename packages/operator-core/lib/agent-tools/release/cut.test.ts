@@ -465,6 +465,33 @@ describe('release:cut — explicit registered root routing', () => {
     expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
   });
 
+  it('routes status through a registered root and reads that root\'s status files', async () => {
+    useRegisteredRoot();
+    statusM.mockReturnValue({
+      state: 'done',
+      running: false,
+      exitCode: 0,
+      logTail: 'root-scoped log',
+      logPath: '/tmp/root-scoped.log',
+      donePath: '/tmp/root-scoped.done',
+      operation: { operationId: 'op-root', taskId: 'taskroot001', startedAtSec: 1_700_000_000 },
+    });
+    const args = { op: 'status', root: 'isolated' };
+    expect(tool.args.safeParse(args).success).toBe(true);
+
+    const b = body(await tool.handler(args as never, { role: 'cup' } as never));
+
+    expect(b).toMatchObject({
+      ok: true,
+      op: 'status',
+      root: desktopRoot,
+      rootSelector: 'isolated',
+      worktreeRoot,
+      state: 'done',
+    });
+    expect(statusM).toHaveBeenCalledWith({ platform: undefined, root: desktopRoot });
+  });
+
   it('passes carried release context to preflight so it checks the exact release tag (EI-24611322499942803)', async () => {
     useRegisteredRoot();
     const args = {

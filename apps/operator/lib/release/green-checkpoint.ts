@@ -126,6 +126,7 @@ import {
   isCheckpointCandidateSource,
   type CheckpointCandidateSource,
 } from "@papercusp/operator-core/lib/release/checkpoint-candidate-source";
+import { assessFrozenRepairQueuePreflight } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
 // returned drafts) stays here, deliberately, for the same reason green-stall-watchdog's
@@ -3276,6 +3277,45 @@ export async function scheduledAttemptPinnedCandidate(
   if (!stored || stored.status !== 'present') return null;
   if (stored.transaction.attemptId !== input.attemptId) return null;
   return stored.transaction.candidate?.trim() || null;
+}
+
+/**
+ * Select the candidate a joined scheduled run should prepare. A frozen repair queue can advance
+ * from its original candidate to a runnable repairHead while a scheduled qualification attempt
+ * remains pinned to that older candidate. Reuse the server's queue policy before dependency
+ * prewarm so the generation and the candidate the CLI will judge stay aligned.
+ */
+export async function scheduledAttemptPrewarmTarget(
+  pinnedCandidateInput: string | null,
+  deps: {
+    assess?: typeof assessFrozenRepairQueuePreflight;
+    root?: string;
+  } = {},
+): Promise<{
+  candidate: string;
+  candidateSource: CheckpointCandidateSource;
+} | null> {
+  const pinnedCandidate = pinnedCandidateInput?.trim() || null;
+  if (!pinnedCandidate) return null;
+
+  const assess = deps.assess ?? assessFrozenRepairQueuePreflight;
+  const queuePreflight = await assess(pinnedCandidate, deps.root);
+  if (queuePreflight.reason === "queue-unreadable") {
+    throw new Error(
+      `scheduled checkpoint cannot select a prewarm candidate from the unreadable frozen repair queue${queuePreflight.detail ? `: ${queuePreflight.detail}` : ""}`,
+    );
+  }
+
+  const policyCandidate =
+    queuePreflight.proceed && queuePreflight.candidate?.trim()
+      ? queuePreflight.candidate.trim()
+      : null;
+  const candidate = policyCandidate ?? pinnedCandidate;
+  const candidateSource =
+    policyCandidate && queuePreflight.candidateSource !== "unresolved"
+      ? queuePreflight.candidateSource
+      : "pinned";
+  return { candidate, candidateSource };
 }
 
 export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint: () => string = randomUUID): string {
@@ -9017,8 +9057,28 @@ export function buildGreenCheckpointEnv(
    *  omitted ⇒ the reporter falls back to its own `git rev-parse HEAD`, which is the
    *  pre-WI-1702898 behaviour and can silently resolve to NULL. */
   judgedCandidate?: string | null,
+  /** WI-10005212: the frozen repair queue's openedAtMs when this run judges a frozen
+   *  candidate. The candidate suite (scripts/affected-tests.mjs) attaches
+   *  lint:migration-forward-compat as an AFFECTED_GUARD task leg, and that guard judges
+   *  sidecar `reviewBy` dates against this clock. Without it the guard leg used the wall
+   *  clock, so a sidecar that lapsed AFTER the queue froze turned a frozen candidate red
+   *  (EI-24490866645335225 class, via the guard-leg path instead of the post-suite one). */
+  frozenCandidateOpenedAtMs?: number,
 ): NodeJS.ProcessEnv {
   const env = canonicalGreenCheckpointSourceEnv(source);
+  // WI-10005212: deleted first so a host-leaked value can never back-date a non-frozen run.
+  delete env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS;
+  if (frozenCandidateOpenedAtMs !== undefined) {
+    if (
+      !Number.isSafeInteger(frozenCandidateOpenedAtMs) ||
+      frozenCandidateOpenedAtMs <= 0
+    ) {
+      throw new Error(
+        "frozen candidate openedAtMs is not a valid epoch-millisecond timestamp",
+      );
+    }
+    env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS = String(frozenCandidateOpenedAtMs);
+  }
   // EI-19307211919650123 — MUST be set AFTER the strip above (these are the gate
   // declaring its OWN identity, which is exactly what the strip is protecting; cf.
   // GREEN_CHECKPOINT / PC_HEAVY_RELEASE_GATE below).
@@ -19604,6 +19664,9 @@ export function realCheckpointDeps(
         // below judge no candidate, so stamping them would attribute lint/perf rows to
         // a sha they did not measure.
         execution?.candidate,
+        // WI-10005212: the affected-task guard legs (lint:migration-forward-compat) must
+        // judge sidecar reviewBy by the frozen queue's clock, like the post-suite leg does.
+        execution?.frozenCandidateOpenedAtMs,
       );
       log(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),
@@ -21490,12 +21553,12 @@ if (require.main === module) {
   };
 
   const candidateArg = arg("--candidate");
-  const candidateSource = checkpointCandidateSourceFromCli(
+  let candidateSource = checkpointCandidateSourceFromCli(
     candidateArg,
     arg("--candidate-source"),
     gateVerdictTargetFromEnv() !== null,
   );
-  const { diagnostic } = checkpointCandidateProvenance({ candidateSource });
+  let { diagnostic } = checkpointCandidateProvenance({ candidateSource });
   // WI-4957: ONE runId for this whole process, shared by the normal verdict path
   // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
   // own event payload independently) — so every event this process could possibly emit
@@ -21549,16 +21612,32 @@ if (require.main === module) {
         target: gateVerdictTargetFromEnv(),
         attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
       });
+      // If prewarm fails before the run candidate is resolved, the terminal result must still
+      // identify the qualification attempt that this fire joined, not the moving branch tip.
+      resolvedCandidateForRun = pinnedCandidate;
+      const scheduledPrewarmTarget = await scheduledAttemptPrewarmTarget(
+        pinnedCandidate,
+        { root: cfg.integrationRoot },
+      );
+      if (scheduledPrewarmTarget) {
+        candidateSource = scheduledPrewarmTarget.candidateSource;
+        diagnostic = checkpointCandidateProvenance({ candidateSource }).diagnostic;
+      }
       if (pinnedCandidate) {
+        const selectedCandidate = scheduledPrewarmTarget?.candidate ?? pinnedCandidate;
+        const changedByQueue = selectedCandidate !== pinnedCandidate;
         console.log(
           `${orchestratorStdoutTag()} scheduled fire joined logical attempt ` +
-            `${process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim()}; judging its pinned candidate ` +
-            `${pinnedCandidate.slice(0, 12)} instead of ${cfg.integrationBranch} tip (WI-10002602)`,
+            `${process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim()}; ` +
+            (changedByQueue
+              ? `frozen repair policy selected ${selectedCandidate.slice(0, 12)} instead of stored candidate ${pinnedCandidate.slice(0, 12)}`
+              : `using its pinned candidate ${selectedCandidate.slice(0, 12)}`) +
+            ` for prewarm and suite selection (WI-10004180)`,
         );
       }
       const preflight = await beginCheckpointPreflight(
         cfg,
-        candidateArg ?? pinnedCandidate ?? cfg.integrationBranch,
+        candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? cfg.integrationBranch,
       );
       if (preflight.kind === "not-applicable") {
         await emitResult({

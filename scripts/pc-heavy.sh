@@ -3055,8 +3055,8 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # caller's own command, and the trap aborts partway through its cleanup
       # list rather than running all of it (WI-38277, observed live).
       trap '
-        if [ -n "${_c_out_tee_pid:-}" ]; then kill "${_c_out_tee_pid}" 2>/dev/null || true; fi
-        if [ -n "${_c_err_tee_pid:-}" ]; then kill "${_c_err_tee_pid}" 2>/dev/null || true; fi
+        if [ -n "${_c_out_tee_pid:-}" ]; then kill "${_c_out_tee_pid:-}" 2>/dev/null || true; fi
+        if [ -n "${_c_err_tee_pid:-}" ]; then kill "${_c_err_tee_pid:-}" 2>/dev/null || true; fi
         rm -rf "$_c_lockdir" 2>/dev/null
         rm -f "${_c_out_tmp:-}" "${_c_err_tmp:-}" "${_c_out_fifo:-}" "${_c_err_fifo:-}" 2>/dev/null
       ' EXIT

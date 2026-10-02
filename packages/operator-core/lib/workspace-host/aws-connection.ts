@@ -85,6 +85,11 @@ export const AWS_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'ec2:DeleteVolume',
   'ec2:CreateSnapshot',
   'ec2:DeleteSnapshot',
+  // aws-byoc-gcp-parity D-009: the client already makes these calls as the customer role
+  // (security-group inbound check, console output, launch-template discovery).
+  'ec2:DescribeSecurityGroups',
+  'ec2:DescribeLaunchTemplates',
+  'ec2:GetConsoleOutput',
   'ssm:DescribeInstanceInformation',
   'ssm:GetConnectionStatus',
   'ssm:StartSession',
@@ -92,10 +97,13 @@ export const AWS_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'iam:GetRole',
   'iam:GetInstanceProfile',
   'iam:PassRole',
+  'iam:SimulatePrincipalPolicy',
   'kms:DescribeKey',
   'kms:CreateGrant',
   'servicequotas:GetServiceQuota',
   'servicequotas:ListServiceQuotas',
+  'servicequotas:GetAWSDefaultServiceQuota',
+  'pricing:GetProducts',
 ] as const;
 export type AwsWorkspaceHostPermissionAction = (typeof AWS_WORKSPACE_HOST_PERMISSION_ACTIONS)[number];
 

@@ -1087,6 +1087,37 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out.indexOf('CARRIED TRANSIENT EXEC HANDLE')).toBeLessThan(out.indexOf('You HELD'));
   });
 
+  it('detects device-auth exec handle lists in a held work-item body and avoids relaunch advice', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [{
+        id: 'EI-24725415810702425',
+        title: 'pending native Codex device-login process',
+        body: 'Launched codex login --device-auth via exec_command; saved exec handles 12345/23456/34567 are process-local.',
+        harness: 'papercusp',
+        checkpoint: null,
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    const warning = out.slice(out.indexOf('CARRIED DEVICE-AUTH EXEC HANDLE'), out.indexOf('You HELD'));
+
+    expect(warning).toContain('prior code has expired');
+    expect(warning).toContain('capability:bash` tracked-task flow');
+    expect(warning).toContain('capability:bash_output');
+    expect(warning).not.toContain('fresh exec');
+    expect(warning).not.toContain('12345');
+  });
+
   it('P-029: renders NEVER-DROP fact keys, ahead of the owner-scoped standing-facts block', () => {
     const brief: CarryBrief = {
       ownerId: 'x',

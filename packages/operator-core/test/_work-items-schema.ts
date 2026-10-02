@@ -1130,6 +1130,12 @@ export const COORD_REF_HOLDERS_DDL = `
  * vitest-fail-on-console turns into a red test (measured on work-items-admission,
  * 2026-10-02: first event_awaits, then coord_entity_subscriptions).
  *
+ * `predicate_watches` (541, 871, 1250) rides here too: settling a work-item retires its
+ * lifecycle-bound watches in BOTH event_awaits and predicate_watches in one statement
+ * (`retireLifecycleBoundWatches`, lib/events/await/store.ts), so resolving an issue
+ * blocker errored "predicate_watches does not exist" (work-items-claim-readiness,
+ * work-items-claim-issue-scope-reread, 2026-10-02).
+ *
  * Columns are the full live set. CHECK constraints are omitted, as elsewhere in this
  * file. The three partial UNIQUE indexes on event_awaits are kept on purpose: they are
  * ON CONFLICT targets of the await writers, and without them those INSERTs error.
@@ -1255,7 +1261,30 @@ export const EVENT_AWAITS_MIN_DDL = `
     status text NOT NULL DEFAULT 'fired',
     error_message text,
     fired_at timestamptz NOT NULL DEFAULT now(),
-    contributor text);`;
+    contributor text);
+  CREATE TABLE IF NOT EXISTS harness_shared.predicate_watches (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id text NOT NULL DEFAULT 'default',
+    owner_id text NOT NULL,
+    role text NOT NULL DEFAULT 'su',
+    harness_slug text,
+    event_key text NOT NULL,
+    tool text NOT NULL,
+    args jsonb NOT NULL DEFAULT '{}'::jsonb,
+    path text NOT NULL,
+    op text NOT NULL,
+    value jsonb,
+    interval_sec integer NOT NULL DEFAULT 60,
+    once boolean NOT NULL DEFAULT true,
+    last_eval boolean,
+    last_value jsonb,
+    last_polled_at timestamptz,
+    last_error text,
+    consecutive_errors integer NOT NULL DEFAULT 0,
+    active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    bound_to jsonb,
+    evaluator_baselines jsonb NOT NULL DEFAULT '{}'::jsonb);`;
 
 /**
  * The Scout idea ledger, read by the agent-review claim door (`readLedgerGrade` in

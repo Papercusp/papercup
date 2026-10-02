@@ -2067,11 +2067,29 @@ export function renderCarryBriefColdExtras(
   // the same warning used by cold-loop notes before the checkpoint excerpt so
   // the successor reconciles durable evidence instead of blindly polling or
   // launching a duplicate command.
-  const transientExecHandleItems = brief.heldItems.filter(
-    (item) => item.checkpoint != null && transientExecHandleWarning(item.checkpoint) != null,
+  const transientExecHandleItems = brief.heldItems.flatMap((item) => {
+    const carriedText = [item.title, item.body, item.checkpoint].filter(Boolean).join('\n');
+    const warning = transientExecHandleWarning(carriedText);
+    return warning ? [{ id: item.id, warning }] : [];
+  });
+  const deviceAuthExecHandleItems = transientExecHandleItems.filter((item) =>
+    item.warning.includes('CARRIED DEVICE-AUTH EXEC HANDLE'),
   );
-  if (transientExecHandleItems.length > 0) {
-    const ids = transientExecHandleItems.map((item) => item.id).join(', ');
+  if (deviceAuthExecHandleItems.length > 0) {
+    const ids = deviceAuthExecHandleItems.map((item) => item.id).join(', ');
+    sections.push(
+      `⚠ CARRIED DEVICE-AUTH EXEC HANDLE(S) — held work-item(s) ${ids} contain a predecessor-local ` +
+        '`codex login --device-auth` handle. Do NOT call `write_stdin` with it or start another ' +
+        'device login until you verify current process/task state and the prior code has expired. ' +
+        'For future logins that must survive a carry, use the durable `capability:bash` tracked-task ' +
+        'flow, persist its `task_id` + log pointer, and resume via `capability:bash_output`.',
+    );
+  }
+  const genericExecHandleItems = transientExecHandleItems.filter(
+    (item) => !item.warning.includes('CARRIED DEVICE-AUTH EXEC HANDLE'),
+  );
+  if (genericExecHandleItems.length > 0) {
+    const ids = genericExecHandleItems.map((item) => item.id).join(', ');
     sections.push(
       `⚠ CARRIED TRANSIENT EXEC HANDLE(S) — held-item checkpoint(s) ${ids} contain a numeric ` +
         '`exec_command`/`write_stdin` session or process handle from the predecessor. ' +

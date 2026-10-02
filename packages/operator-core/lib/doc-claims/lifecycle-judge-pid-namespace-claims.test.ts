@@ -41,7 +41,9 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
     expect(text).toContain('live.degraded=false');
     expect(text).toContain('live.ownedTruncated=false');
     expect(text).toContain('live.foreignTruncated=false');
-    expect(text).toContain('live.unaccountedPids');
+    expect(text).toContain('live.unaccountedCount');
+    expect(text).toContain('live.unaccountedPidCount');
+    expect(text).toContain('live.unaccountedGroups.length');
     expect(text).toContain('readlink /proc/self/ns/pid');
     expect(text).toContain('visible numeric /proc PID count');
     expect(text).toMatch(/[\x60]?\$\$[\x60]? in the same call/);

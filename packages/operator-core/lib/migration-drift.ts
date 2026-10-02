@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { normalizeMigrationSql } from './migration-sql-normalize';
+import { resolveReleaseRoot } from './release/release-root';
 import { selectNewContentDrift } from './migration-content-drift-acknowledged';
 import {
   recoverAppliedMigrationText,
@@ -111,8 +112,9 @@ function treeRootFromSqlDir(sqlDir: string): string {
 export function resolveDeployedSqlDir(currentSqlDir: string | null): string | null {
   if (!currentSqlDir) return null;
   const treeRoot = treeRootFromSqlDir(currentSqlDir);
-  const parent = path.dirname(treeRoot);
-  const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
+  // WI-10005161: shared resolver — on :3170 the serving tree is the physical staging
+  // generation, whose sibling is not the release checkout.
+  const releaseRoot = resolveReleaseRoot({ integrationRoot: treeRoot });
   const releaseSqlDir = path.join(releaseRoot, ...SQL_DIR_REL_SEGMENTS);
   return fs.existsSync(releaseSqlDir) ? releaseSqlDir : null;
 }

@@ -163,7 +163,9 @@ function headedInteractiveScript(): string {
  */
 function headedPsuCommand(): string {
   const script = headedInteractiveScript();
-  const m = /^\(eval (.+?)\); __papercusp_greeting_rc=/s.exec(script);
+  // Decode exactly the shell-escaped command word. Diagnostic stderr capture
+  // follows the eval group before the keep-open status sentinel.
+  const m = /^\(eval ('(?:[^']|'\\'')*')\)/s.exec(script);
   if (!m) throw new Error(`headed rcfile script does not eval psu: ${script}`);
   return decodeShellWord(m[1]!);
 }
@@ -392,7 +394,8 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     // (2) the separators are `;`, never `&&` — with `&&` a non-zero psu exit
     //     short-circuits past the banner AND the trailing shell, which is
     //     precisely the failure case the window is being held open FOR.
-    expect(script).toContain("'); __papercusp_greeting_rc=$?;");
+    expect(script).toContain('__papercusp_boot_rc=$?;');
+    expect(script).toContain('(exit "$__papercusp_boot_rc"); __papercusp_greeting_rc=$?;');
     expect(script).not.toMatch(/&&\s*exec/);
 
     // (3) a trailing interactive login shell is what actually holds it open.

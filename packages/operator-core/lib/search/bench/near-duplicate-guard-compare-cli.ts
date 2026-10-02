@@ -21,12 +21,18 @@
  * filing was created (the guard screens against open items only).
  *
  * POOL (per filing, reconstructed as the guard would have seen it at creation):
- * same workspace + harness + embedding mode, created before the filing, not in
- * a terminal status by then (closed_ts, falling back to updated_ts), and not in
- * the observation lane (D-005).
- * Both the previous unfiltered pool and the current observation-free pool are
- * read in one SQL statement per filing, so the guard's before/after comparison
- * uses the same labelled sample and the same live database snapshot per pair.
+ * same workspace + harness + embedding mode, created before the filing, and not
+ * in a terminal status by then (closed_ts, falling back to updated_ts).
+ * Two arms are read from that ONE pool in one SQL statement per filing, so the
+ * guard's before/after comparison uses the same labelled sample and the same
+ * live database snapshot per pair:
+ *  - current: the shipped guard, which excludes observation-lane rows before
+ *    top-k (WI-10004338). Every approach (current, library, hybrid) runs here.
+ *  - previous: the same pool WITHOUT the observation filter, i.e. the guard as
+ *    it ran before WI-10004338. Only the current guard is scored on it.
+ * The observation filter must be applied per arm, never in the shared pool CTE:
+ * filtering the pool made both arms identical and the run reported a vacuous
+ * delta of 0 (WI-10005217). pairedArmDivergence() now refuses such a run.
  * Cosines are exact (no ANN index), over the vectors stored today.
  */
 import { execFileSync } from 'node:child_process';
@@ -42,6 +48,7 @@ import {
   classifyWithLibrary,
   GUARD_CANDIDATE_LIMIT,
   HYBRID_TITLE_FLOOR,
+  pairedArmDivergence,
   summarizeComparison,
   type FilingObservation,
   type PairLabel,
@@ -188,7 +195,8 @@ async function observe(row: PairRow): Promise<PairedPoolObservation | null> {
          AND p.embedding_mode = f.embedding_mode
          AND p.feature_id <> f.feature_id
          AND p.created_ts < f.created_ts
-         AND p.lane IS DISTINCT FROM 'observation'
+         -- NO lane filter here: the previous arm reads this pool unfiltered, and the
+         -- current arm applies observationLaneExclusionSql itself (WI-10005217).
          AND NOT (COALESCE(p.status, '') = ANY(${terminal}::text[])
                   AND COALESCE(p.closed_ts, p.updated_ts) <= f.created_ts)
     ), top AS (
@@ -269,6 +277,7 @@ async function main(): Promise<void> {
   const thresholds = dupeThresholds();
   const scored: ScoredObservation[] = [];
   const previousPoolScored: ScoredObservation[] = [];
+  const pairedObservations: PairedPoolObservation[] = [];
   const skipped: Array<{ filingId: string; reason: string }> = [];
   for (const [i, row] of pairs.entries()) {
     const paired = await observe(row);
@@ -276,6 +285,7 @@ async function main(): Promise<void> {
       skipped.push({ filingId: row.filing_id, reason: 'filing-not-found-or-unembedded' });
       continue;
     }
+    pairedObservations.push(paired);
     const current = await classifyWithCurrentGuard(paired.current, row.filing_title, HARNESS);
     const previousCurrent = await classifyWithCurrentGuard(paired.previous, row.filing_title, HARNESS);
     const library = await classifyWithLibrary(paired.current);
@@ -291,6 +301,7 @@ async function main(): Promise<void> {
     });
     if ((i + 1) % 50 === 0) console.error(`R8_PROGRESS ${i + 1}/${pairs.length} ${Math.round((Date.now() - started) / 1000)}s`);
   }
+  const divergence = pairedArmDivergence(pairedObservations);
   const summary = summarizeComparison(scored);
   const previousPoolCurrent = summarizeComparison(previousPoolScored).find((s) => s.approach === 'current')!;
   const currentSummary = summary.find((s) => s.approach === 'current')!;
@@ -308,6 +319,7 @@ async function main(): Promise<void> {
       guard: { path: 'packages/operator-core/lib/agent-tools/work_items/semantic-dupe-guard.ts', blob: gitBlob('packages/operator-core/lib/agent-tools/work_items/semantic-dupe-guard.ts') },
       library: { path: 'libs/generic/search/src/near-duplicate.ts', blob: gitBlob('libs/generic/search/src/near-duplicate.ts') },
       comparison: { path: 'packages/operator-core/lib/search/bench/near-duplicate-guard-compare.ts', blob: gitBlob('packages/operator-core/lib/search/bench/near-duplicate-guard-compare.ts') },
+      cli: { path: 'packages/operator-core/lib/search/bench/near-duplicate-guard-compare-cli.ts', blob: gitBlob('packages/operator-core/lib/search/bench/near-duplicate-guard-compare-cli.ts') },
     },
     approaches: {
       current: `production semantic-dupe-guard, run through findSemanticDupes with the historical top-${GUARD_CANDIDATE_LIMIT}: refuse when cosine >= ${thresholds.hard} or (cosine >= 0.86 and pg_trgm title similarity >= 0.45)`,
@@ -334,6 +346,7 @@ async function main(): Promise<void> {
     candidatePoolFilterComparison: {
       method: 'paired current/unfiltered candidate pools read from the same SQL statement for every filing',
       pairs: pairs.length,
+      divergence,
       previousUnfiltered: previousPoolCurrent,
       currentObservationExcluded: currentSummary,
       delta: {
@@ -342,11 +355,16 @@ async function main(): Promise<void> {
       },
     },
     summary,
-    rows: scored.map(({ obs, verdicts }) => ({
+    rows: scored.map(({ obs, verdicts }, i) => ({
       filing: obs.filingId,
       partner: obs.partnerId,
       label: obs.label,
       poolSize: obs.poolSize,
+      previous: {
+        poolSize: previousPoolScored[i]!.obs.poolSize,
+        top: previousPoolScored[i]!.obs.top.map((n) => n.id),
+        flaggedCurrent: previousPoolScored[i]!.verdicts.current.noVerdict ? null : previousPoolScored[i]!.verdicts.current.flagged,
+      },
       partnerCosine: obs.partner ? round(obs.partner.cosine) : null,
       partnerTitleSimilarity: obs.partner ? round(obs.partner.titleSimilarity) : null,
       partnerRank: obs.partner?.rank ?? null,
@@ -360,6 +378,16 @@ async function main(): Promise<void> {
     })),
     elapsedMs: Date.now() - started,
   };
+  if (divergence.vacuous) {
+    // WI-10005217: identical arms mean the observation filter leaked into the shared
+    // pool (or the corpus has no observation rows at all). Either way the paired
+    // delta is not a measurement, so refuse rather than publish "0 regressions".
+    console.error(
+      `R8_VACUOUS_PAIRED_COMPARISON ${JSON.stringify(divergence)} — the previous and current arms saw identical pools for every filing; nothing was written to ${out}`,
+    );
+    process.exitCode = 2;
+    return;
+  }
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
   console.log(

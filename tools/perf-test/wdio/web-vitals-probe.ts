@@ -231,6 +231,7 @@ export function buildWebVitalsBundle(): string {
                     testId: element && element.getAttribute ? element.getAttribute('data-testid')?.slice(0, 80) || null : null,
                     className: element && typeof element.className === 'string' ? element.className.slice(0, 160) : null,
                     startupCandidateMatches: window.__pcStartupStorageProbe?.renderCandidateMatches?.(element) ?? null,
+                    startupCandidates: window.__pcStartupStorageProbe?.renderCandidateMatchesBySelector?.(element) ?? null,
                     text: element && element.textContent ? element.textContent.trim().slice(0, 160) : null,
                     url: entry.url ? String(entry.url).slice(0, 240) : null,
                   } : null;

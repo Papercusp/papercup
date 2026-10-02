@@ -2521,19 +2521,43 @@ export async function emitScorecard(
     // far-end completion gate notices. Refuse the ambiguous form before any
     // scorecard write and teach the only form that settles the pending stamp.
     if (args.subject) {
-      const pendingSubject = (
+      const pendingSameSubject = (
         await listScorecards({
           rubricRef: args.rubricRef,
           subjectRef: args.subject.ref,
           limit: 100,
         })
-      ).find(
+      ).filter(
         (card) =>
           card.gradingAudit?.state === 'pending' &&
           card.subject?.ref === args.subject?.ref &&
           (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
           card.supersededBy == null &&
           card.issueId !== args.supersedes,
+      );
+      // WI-10005211: a grading-integrity revision re-opens every settled audit
+      // (reservePendingGradingAudit), so a windowed grader's whole back-catalogue
+      // turns pending at once and each old card blocked the author's next card
+      // until it was re-audited, one at a time. A RE-OPENED audit is not the
+      // P-013 case: the card already carries an independent verdict, and its
+      // own author can never be the auditor. So the author's new card is not
+      // blocked by its own re-opened cards. A never-audited pending card still
+      // blocks everyone, and a non-author is still taught the audit shape.
+      const ownPending = pendingSameSubject.filter((card) => card.createdBy === input.createdBy);
+      const previouslyAudited = new Set<string>();
+      if (ownPending.length > 0) {
+        for (const audit of await listScorecards({
+          rubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          subjectRefs: ownPending.map((card) => card.issueId),
+          limit: 500,
+        })) {
+          if (audit.subject?.kind === 'scorecard' && audit.subject.ref && !audit.retracted) {
+            previouslyAudited.add(audit.subject.ref);
+          }
+        }
+      }
+      const pendingSubject = pendingSameSubject.find(
+        (card) => !(card.createdBy === input.createdBy && previouslyAudited.has(card.issueId)),
       );
       if (pendingSubject) {
         return {

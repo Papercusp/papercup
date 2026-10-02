@@ -58,12 +58,10 @@
 import { spawnSync } from "node:child_process";
 import {
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -72,6 +70,7 @@ import {
   withFsMutexRead,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
+import { installLockNameForRoot } from "./lib/install-lock-name.mjs";
 import {
   findIncompleteWorkspacePackagesWithRetry,
   findInvalidWorkspacePackageVersionsWithRetry,
@@ -694,12 +693,10 @@ export async function verifyDepsExtracted({
 }
 
 export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {
-  // realpath so the `papercup` -> `papercusp` symlink and the canonical path
-  // both resolve to the identical lock; a genuinely different checkout
-  // (different real path) gets its own lock instead of blocking on this one.
-  const real = realpathSync(resolve(repoRoot));
-  const digest = createHash("sha1").update(real).digest("hex").slice(0, 12);
-  return `npm-install-${digest}`;
+  // The derivation lives in scripts/lib/install-lock-name.mjs so runtime code
+  // (headless agent launches, WI-10005137) can wait on the SAME lock without
+  // importing this CLI module.
+  return installLockNameForRoot(repoRoot);
 }
 
 /**

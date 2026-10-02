@@ -59,6 +59,11 @@ const m = vi.hoisted(() => ({
     { id: 'WI-3', kind: 'bug', family: 'issue', harness: 'papercup', title: 'open bug', summary: '', state: 'open', assignee: null, assignedBy: null, severity: 'major', parent: null, payload: null, createdAt: '', updatedAt: '' },
     { id: 'WI-4', kind: 'task', family: 'issue', harness: 'papercup', title: 'delegated task', summary: '', state: 'open', assignee: 'op', assignedBy: 'op', severity: null, parent: null, payload: null, createdAt: '', updatedAt: '' },
   ]),
+  releaseGateTile: vi.fn(async () => ({ gate: 'green', deploy: 'current', red: false, checkedAtMs: 1 })),
+  poolTile: vi.fn(async () => ({
+    exhausted: false, healthyCount: 1, walledCount: 0, totalCount: 1,
+    accounts: [{ id: 'test-account', provider: 'openai', available: true, usageWalled: false }],
+  })),
   dispatchProjectedTool: vi.fn(async (_tool: unknown, name: string) => {
     if (name === 'plans:attention') {
       return { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [{ planSlug: 'p1', items: [] }] }) }] } };
@@ -100,6 +105,11 @@ vi.mock('../../harness/operator-home-harness', async (orig) => ({
   operatorHomeHarnessSlug: () => 'papercup',
 }));
 vi.mock('../../work-items', () => ({ listWorkItems: m.listWorkItems }));
+vi.mock('../../device-monitoring', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../device-monitoring')>()),
+  releaseGateTile: m.releaseGateTile,
+  poolTile: m.poolTile,
+}));
 // Side-effect tool-registry import in the routes — no-op for the unit test.
 vi.mock('../../agent-tools/index', () => ({}));
 // Override the in-process dispatch + lookup; keep the rest of agent-mcp real
@@ -298,9 +308,16 @@ describe('device/attention', () => {
     // WI-1 (needs-human feature) + WI-3 (open bug) qualify; WI-2 (todo) and
     // WI-4 (delegated task) are filtered out.
     expect(body.workItems.map((w) => w.id).sort()).toEqual(['WI-1', 'WI-3']);
-    // P-007: system-health producers are fail-soft — with no account-pool / pipeline
-    // in this unit ctx they yield no alerts, so the feed stays clean (0).
+    // Explicitly measured healthy snapshots produce an empty alert section.
     expect(body.systemAlerts).toEqual([]);
     expect(body.counts).toEqual({ groups: 1, workItems: 2, systemAlerts: 0 });
+  });
+
+  it.each(['releaseGateTile', 'poolTile'] as const)('returns unavailable when %s is unmeasured', async (source) => {
+    m[source].mockResolvedValueOnce(null as never);
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'attention_unavailable' });
   });
 });

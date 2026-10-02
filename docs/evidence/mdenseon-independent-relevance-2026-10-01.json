@@ -1754,7 +1754,16 @@
       "logPath": ".papercusp/scratch/bash-3a8aaefa-f8b.log",
       "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v4",
       "deadline": "2026-10-02T13:39:32.525Z",
-      "lastObservation": "Corrected launch queued through pc-heavy; no relevance cell or source comparison has completed. The original launch exited without executing its stdin program and is retained below.",
+      "lastObservation": "Corrected V4 task admitted at 2026-10-02T01:47:15.828Z and reported document progress at 250/512 before SIGTERM at 2026-10-02T01:49:04.884Z. No cell completed and no raw scoring receipt exists. Its driver, claim and log remain preserved. The service scope was verified empty after cancellation; the earlier before-inference cancellation description was incorrect.",
+      "nextLaunch": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/launch-relevance-v5-after-v6.sh",
+        "sha256": "4558be4d7544cc316699940d3063a7dcb054aaac7ebc5a5e68062dbf90900079",
+        "bytes": 8231,
+        "prerequisite": "V6 driver completed, fifteen cells present, and its final summary bound to the expected manifest.",
+        "completionGuard": "Require the relevance evaluator's nonempty completion receipt after pc-heavy returns.",
+        "verification": "bash syntax passed; executing the recipe while V6 was incomplete refused before scheduling a child and left the V5 output root absent. The existing partial V4 files were retained.",
+        "qualification": "The prerequisite prevents overlap with V6. P-005 must separately assess the observed partial-V4 workload during its Gemma cell before treating V6 timings as controlled acceptance evidence."
+      },
       "verificationContract": "Six fresh processes must emit manifest-bound CPU receipts and complete retained document/query vectors. Compare each incumbent with mDenseOn on identical held-out queries using the existing source-target component bootstrap; retain query-level comparisons as secondary diagnostics. Calibration is separate, the fixed MRR margin remains 0.03, and a completed run does not by itself prove population exhaustion."
     },
     "launcherRepair": {
@@ -1772,6 +1781,36 @@
         "afterRunId": "ba249bbb-f8c3-44c9-8ffe-4038866b1800",
         "afterTestRunIds": [20462065, 20462066, 20462067],
         "after": "Both stdin guards and neighboring preemption-probe/retry-output suites pass: 19 passed, 0 failed, 0 skipped."
+      },
+      "ordinaryRouteVerification": {
+        "runId": "2f6b435b-1a06-4f3b-9026-de246848948e",
+        "testRunId": 20462635,
+        "result": "3 passed, 0 failed, 0 skipped, including a program supplied on stdin through the ordinary admission and preemption route in a private slot fixture."
+      }
+    },
+    "measurementManifestV5": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v5.json",
+      "sha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+      "bytes": 118479,
+      "status": "qualified, not launched; only runId and frozenAt differ from V4"
+    },
+    "freezeAuditV5": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/relevance-v5-freeze-audit.json",
+      "sha256": "6b7402f63725c0f112c1526da4cca58f194d6ff77a5ddd0b35da0e84be8988d4",
+      "bytes": 1406
+    },
+    "cancellationRace": {
+      "issue": "EI-24830817000496473",
+      "rootCause": "An earlier queued observation was treated as current execution state when cancelling the task; the evaluator had already been admitted.",
+      "prevention": "Enforce the prior matrix's completed driver and fifteen bound summary artifacts before scheduling the next model matrix; use a new immutable attempt ID after an incomplete cell.",
+      "performanceOverlap": {
+        "start": "2026-10-02T01:47:15.828Z",
+        "end": "2026-10-02T01:49:04.884Z",
+        "cell": "performance-b2-gemma",
+        "overlappingSampleCount": 225,
+        "sequenceRange": [158, 382],
+        "procedure": "Join each retained performance sample's startedAt and latencyMs interval against the actual relevance driver start and durable task termination marker.",
+        "limitation": "This establishes concurrent model work; it does not measure its latency effect. Controlled performance qualification remains open."
       }
     },
     "targetsPerPartition": 32,

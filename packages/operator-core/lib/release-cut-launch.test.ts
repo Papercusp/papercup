@@ -37,6 +37,7 @@ import {
   CUT_STARTED,
   PLATFORMS,
   cutUnitFor,
+  cutUnitForTask,
   cutLogFor,
   cutDoneFor,
   cutStartedFor,
@@ -180,8 +181,12 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
 
 describe('buildCutArgv', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  const root = '/root/papercusp-desktop';
+  const rootLog = cutLogFor(undefined, root);
+  const rootDone = cutDoneFor(undefined, root);
+  const rootStarted = cutStartedFor(undefined, root);
   const argv = buildCutArgv(
-    '/root/papercusp-desktop',
+    root,
     '0.0.8',
     'alpha',
     { mac: true },
@@ -199,8 +204,11 @@ describe('buildCutArgv', () => {
     expect(argv).toContain('--setenv=PATH=/usr/bin:/bin');
   });
   it('runs the cutter LOCAL-only, clears the stale sentinel, records the exit code', () => {
-    expect(inner).toContain(`rm -f ${CUT_DONE}`);
-    expect(inner).toContain(`> ${CUT_STARTED}`);
+    expect(inner).toContain(`rm -f ${rootDone}`);
+    expect(inner).toContain(`> ${rootStarted}`);
+    expect(inner).toContain(`ln -sfn '${rootLog}' '${CUT_LOG}'`);
+    expect(inner).toContain(`ln -sfn '${rootDone}' '${CUT_DONE}'`);
+    expect(inner).toContain(`ln -sfn '${rootStarted}' '${CUT_STARTED}'`);
     expect(inner).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
     expect(inner).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(inner).toContain(`PAPERCUSP_RELEASE_OWNER_NAME='Avi O'\"'\"'Neil'`);
@@ -211,8 +219,8 @@ describe('buildCutArgv', () => {
     expect(inner).toContain(`bash -c 'source "$1" "$2" "$3"'`);
     expect(inner).toContain("'/root/papercusp-desktop/bin/release-local.sh'");
     expect(inner).toContain("'/current/papercusp-desktop/bin/release-local.sh' '0.0.8' 'alpha'");
-    expect(inner).toContain(`> ${CUT_LOG} 2>&1`);
-    expect(inner).toContain(`echo "DONE:$?" > ${CUT_DONE}`);
+    expect(inner).toContain(`> ${rootLog} 2>&1`);
+    expect(inner).toContain(`echo "DONE:$?" > ${rootDone}`);
   });
   it('never pushes a tag or creates a GitHub release', () => {
     expect(inner).not.toMatch(/gh release/);
@@ -754,6 +762,15 @@ describe('cutUnitFor / cutLogFor / cutDoneFor', () => {
       seen.add(unit);
     }
   });
+  it('keeps explicit roots in distinct stable status paths while rootless helpers remain host-wide', () => {
+    const rootA = '/mnt/data/offload/root-a/papercusp-desktop';
+    const rootB = '/mnt/data/offload/root-b/papercusp-desktop';
+    expect(cutLogFor(undefined, rootA)).toMatch(/^\/tmp\/papercup-release-cut-[a-f0-9]{24}\.log$/);
+    expect(cutDoneFor('mac', rootA)).not.toBe(cutDoneFor('mac', rootB));
+    expect(cutStartedFor(undefined, rootA)).not.toBe(cutStartedFor(undefined, rootB));
+    expect(cutLogFor()).toBe(CUT_LOG);
+    expect(cutDoneFor()).toBe(CUT_DONE);
+  });
 });
 
 describe('legsForPlatform', () => {
@@ -797,8 +814,8 @@ describe('buildCutArgv — a staging-checkout orchestrator holds the staging-syn
     expect(inner).toContain(
       `flock --shared --close --verbose --timeout 1200 --conflict-exit-code ${STAGING_SYNC_LOCK_TIMEOUT_EXIT} '${STAGING_SYNC_LOCK}' bash -c 'source "$1" "$2" "$3"'`,
     );
-    // The DONE sentinel still records the wrapped cutter's exit code.
-    expect(inner).toContain(`echo "DONE:$?" > ${CUT_DONE}`);
+    // The root-scoped DONE sentinel still records the wrapped cutter's exit code.
+    expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor(undefined, '/ws/papercusp-relcut-0022/papercusp-desktop')}`);
   });
 
   it('omits the staging-sync wrapper but retains the logical cut-slot lock for other orchestrators', () => {
@@ -900,8 +917,9 @@ describe.skipIf(process.platform !== 'linux')('wrapWithStagingSyncLock — real 
 
 describe('buildCutArgv with a platform', () => {
   it('targets the per-leg unit + log + done, not the whole-cut ones', () => {
+    const root = '/root/papercusp-desktop';
     const argv = buildCutArgv(
-      '/root/papercusp-desktop',
+      root,
       '0.0.8',
       'alpha',
       { mac: true },
@@ -914,9 +932,9 @@ describe('buildCutArgv with a platform', () => {
     const inner = argv[argv.length - 1]!;
     const unit = cutUnitFor('mac');
     expect(argv).toContain(`--unit=${unit}`);
-    expect(inner).toContain(`rm -f ${cutDoneFor('mac')}`);
-    expect(inner).toContain(`> ${cutLogFor('mac')} 2>&1`);
-    expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor('mac')}`);
+    expect(inner).toContain(`rm -f ${cutDoneFor('mac', root)}`);
+    expect(inner).toContain(`> ${cutLogFor('mac', root)} 2>&1`);
+    expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor('mac', root)}`);
     expect(inner).not.toContain(CUT_DONE); // sanity: not the bare whole-cut done-file path
   });
 
@@ -975,6 +993,32 @@ describe('readCutStatus with a platform', () => {
     });
     expect(mac.state).toBe('done');
     expect(windows.state).toBe('running');
+  });
+  it('reads distinct root-scoped markers so one root cannot report another root\'s active cut', () => {
+    const rootA = '/mnt/data/offload/root-a/papercusp-desktop';
+    const rootB = '/mnt/data/offload/root-b/papercusp-desktop';
+    const startedA = cutStartedFor('linux', rootA);
+    const doneA = cutDoneFor('linux', rootA);
+    const logA = cutLogFor('linux', rootA);
+    const startedB = cutStartedFor('linux', rootB);
+    const logB = cutLogFor('linux', rootB);
+    const files = new Map<string, string>([
+      [startedA, 'STARTED:1\nOPERATION:op-a\nTASK:taska001\n'],
+      [doneA, 'DONE:0'],
+      [logA, 'root A finished'],
+      [startedB, 'STARTED:2\nOPERATION:op-b\nTASK:taskb001\n'],
+      [logB, 'root B running'],
+    ]);
+    const read = (root: string) => readCutStatus({
+      root,
+      platform: 'linux',
+      existsSync: (p) => files.has(p),
+      readFileSync: (p) => files.get(p) ?? '',
+      isUnitActive: (unit) => unit === cutUnitForTask('taskb001'),
+    });
+
+    expect(read(rootA)).toMatchObject({ state: 'done', logPath: logA, donePath: doneA });
+    expect(read(rootB)).toMatchObject({ state: 'running', logPath: logB, donePath: cutDoneFor('linux', rootB) });
   });
 });
 
@@ -1457,7 +1501,7 @@ describe('buildCutArgv — the started marker carries the operation identity', (
     expect(cmd).toContain("printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n'");
     expect(cmd).toContain("'op-1'");
     expect(cmd).toContain("'task1'");
-    expect(cmd).toContain(`> ${CUT_STARTED}`);
+    expect(cmd).toContain(`> ${cutStartedFor(undefined, '/root/papercusp-desktop')}`);
   });
 
   it('writes the plain timestamp-only marker for an unmanaged cut', () => {

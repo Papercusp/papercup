@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import test from "node:test";
-import { buildStartupStorageProbeScript, evaluateRequiredPageLoad, installStartupStorageProbe, readPageStartupTrace, writeStartupStorageDiagnosticIndex, type WebVitalsReading } from "./web-vitals-probe";
+import { runInNewContext } from "node:vm";
+import { buildStartupStorageProbeScript, buildWebVitalsBundle, evaluateRequiredPageLoad, installStartupStorageProbe, readPageStartupTrace, writeStartupStorageDiagnosticIndex, type WebVitalsReading } from "./web-vitals-probe";
 import type { Browser } from "webdriverio";
 import { captureOwnedNativeStacks, collectOwnedWebKitSample, NativeSampleBuffer, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
@@ -794,6 +795,51 @@ test('replaced or unreadable subtitle fails closed without cancelling the footer
   } finally { f.restore(); }
 });
 
+test('bundled Web Vitals preserves per-candidate identity for actual LCP entries and absent elements', async () => {
+  const f = startupRenderFixture();
+  try {
+    Function(buildStartupStorageProbeScript())();
+    f.insertSubtitle(); f.insert();
+    const observers = new Map<string, (list: { getEntries: () => unknown[] }) => void>();
+    const page = f.fakeWindow as typeof f.fakeWindow & { __wv_ready?: boolean; __wv_lcp_error?: unknown;
+      __wv_lcp?: { startupCandidateMatches: boolean | null; startupCandidates: Array<{ selector: string; matches: boolean | null }> } };
+    runInNewContext(buildWebVitalsBundle(), {
+      window: page, self: page,
+      document: { readyState: 'complete', visibilityState: 'visible', prerendering: false },
+      performance: { now: () => 10_000, getEntriesByType: () => [] },
+      addEventListener() {}, removeEventListener() {},
+      requestAnimationFrame() {}, setTimeout() {}, queueMicrotask,
+      PerformanceObserver: class {
+        static supportedEntryTypes = ['largest-contentful-paint'];
+        constructor(private callback: (list: { getEntries: () => unknown[] }) => void) {}
+        observe({ type }: { type: string }) { observers.set(type, this.callback); }
+        takeRecords() { return []; }
+        disconnect() {}
+      },
+    });
+    assert.equal(page.__wv_ready, true);
+    const publish = async (element: unknown, startTime: number) => {
+      const callback = observers.get('largest-contentful-paint');
+      assert(callback, 'the real bundled LCP observer must register');
+      callback({ getEntries: () => [{ startTime, renderTime: startTime, loadTime: 0, size: 100, element }] });
+      await Promise.resolve();
+      assert.equal(page.__wv_lcp_error, null);
+      return JSON.parse(JSON.stringify(page.__wv_lcp));
+    };
+    const subtitle = await publish(f.subtitle, 1000);
+    assert.equal(subtitle.startupCandidateMatches, false);
+    assert.deepEqual(subtitle.startupCandidates, [
+      { selector: '.pclsb-acct__foot', matches: false },
+      { selector: '.plans-pane__masthead-subtitle', matches: true },
+    ]);
+    const footer = await publish(f.element, 2000);
+    assert.equal(footer.startupCandidateMatches, true);
+    assert.deepEqual(footer.startupCandidates.map((row: { matches: boolean }) => row.matches), [true, false]);
+    assert.deepEqual((await publish(null, 3000)).startupCandidates.map((row: { matches: null }) => row.matches), [null, null]);
+    (page as unknown as { __pcStartupStorageProbe: ReturnType<typeof installStartupStorageProbe> }).__pcStartupStorageProbe.stop();
+  } finally { f.restore(); }
+});
+
 test('startup render observation bounds mutations, cancels frames and distinguishes missing from unavailable', () => {
   const f = startupRenderFixture();
   try {
@@ -803,6 +849,7 @@ test('startup render observation bounds mutations, cancels frames and distinguis
     assert.equal(capped.stopReason, 'mutation-cap');
     assert.equal(capped.firstObservedAtMs, null);
     assert.equal(capped.mutationCallbacks, 1000);
+    assert(capped.candidates.every((row) => row.stopReason === 'mutation-cap' && row.mutationCallbacks === 1000));
     const expired = installStartupStorageProbe();
     f.tick(60_001); f.expire();
     assert.equal(expired.stop().render.stopReason, 'deadline');
@@ -813,6 +860,7 @@ test('startup render observation bounds mutations, cancels frames and distinguis
     const missing = installStartupStorageProbe().stop().render;
     assert.equal(missing.stopReason, 'unavailable');
     assert(missing.unavailable.includes('MutationObserver'));
+    assert(missing.candidates.every((row) => row.stopReason === 'unavailable' && row.unavailable.includes('MutationObserver')));
   } finally { f.restore(); }
 });
 

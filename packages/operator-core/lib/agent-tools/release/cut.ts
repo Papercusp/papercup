@@ -102,7 +102,7 @@ const cutRootArg = z
   .string()
   .min(1)
   .describe(
-    'Optional registered, clean Git worktree selector. Accepts a registered project slug, the linked worktree path, or that worktree\'s papercusp-desktop path.',
+    'Optional registered Git worktree selector. Write operations require a clean worktree; read-only handoff/status can inspect a dirty root. Accepts a project slug, linked worktree path, or its papercusp-desktop path.',
   );
 
 const cutOwnerNameArg = z
@@ -828,7 +828,7 @@ export default defineTool({
   name: 'release:cut',
   profile: 'engineer',
   description:
-    'Cut a LOCAL Papercusp desktop release for owner upload; never publish a GitHub Release. Run/run-leg need the exact 40-char superproject sourceSha and refuse drift before writes. For new versions, prepare-tag creates only the missing remote tag (dry-run unless confirm:true; never overwrites a mismatch). preflight checks go/no-go; operator-gated run launches the full cut detached; run-leg launches one platform leg on its own unit. Both are dry-run unless confirm:true. Non-Linux legs require completed same-version Linux artifacts in the selected Cargo target slot; missing artifacts fail before gates. abort-leg stops a leg; status polls; gate-status reads/establishes the shared version/channel BUILD_SHA; handoff collects signed artifacts and hashes; reclaim lists/removes stale cut worktrees (dry-run unless confirm:true with targets).',
+    'Cut a LOCAL Papercusp desktop release for owner upload; never publish a GitHub Release. Run/run-leg need the exact 40-char superproject sourceSha and refuse drift before writes. For new versions, prepare-tag creates only the missing remote tag (dry-run unless confirm:true; never overwrites a mismatch). preflight checks go/no-go; operator-gated run launches the full cut detached; run-leg launches one platform leg on its own unit. Both are dry-run unless confirm:true. Non-Linux legs require completed same-version Linux artifacts in the selected Cargo target slot; missing artifacts fail before gates. abort-leg stops a leg; status polls the latest host-wide cut by default or a selected registered root when root is supplied; gate-status reads/establishes the shared version/channel BUILD_SHA; handoff collects signed artifacts and hashes; reclaim lists/removes stale cut worktrees (dry-run unless confirm:true with targets).',
   guidance: {
     when: 'Cutting a desktop release. New version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → status → verify → handoff. Fleet-split: prepare the tag once, build and verify Linux first, then each non-Linux agent gate-status to agree on one buildSha before run-leg{platform,sourceSha,confirm:true}; poll each leg and hand off after all finish. Single-platform cuts use run with the requested platform enabled.',
     notWhen:
@@ -923,14 +923,13 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('status'),
+      root: cutRootArg.optional(),
       platform: z
         .enum(PLATFORMS as [Platform, ...Platform[]])
         .optional()
         .describe('Poll ONE leg (WI-4233) instead of the legacy whole-cut unit.'),
-      // Keep the status poll compatible with release-cut callers that carry the
-      // version/channel context through every operation. Status remains host-wide
-      // (and therefore does not use these values to select a unit), but rejecting
-      // them contradicts the tool's published union-level accepted-args contract.
+      // Keep the status poll compatible with release-cut callers that carry version/
+      // channel context through every operation. `root` selects root-scoped status.
       version: z
         .string()
         .min(1)
@@ -1231,11 +1230,21 @@ export default defineTool({
       });
     }
 
-    // ── status: read-only poll (whole-cut, or one leg with `platform`) ──
+    // ── status: read-only poll (latest host-wide cut, or one registered root) ──
     if (args.op === 'status') {
-      const status = readCutStatus({ platform: args.platform });
+      const selected = args.root === undefined
+        ? undefined
+        : await resolveCutRoot(args.root, undefined, { readOnly: true });
+      if (selected && !selected.ok) {
+        return json({ ok: false, op: 'status', refused: true, reason: selected.reason });
+      }
+      const status = readCutStatus({
+        platform: args.platform,
+        ...(selected ? { root: selected.desktopRoot } : {}),
+      });
       const unit = status.operation?.taskId ? cutUnitForTask(status.operation.taskId) : cutUnitFor(args.platform);
       const legNote = args.platform ? `leg '${args.platform}' (unit ${unit})` : `unit ${unit}`;
+      const scopeNote = selected ? `for root ${selected.desktopRoot}` : 'on this host';
       const note =
         status.state === 'running'
           ? `A cut is in flight (${legNote}). Poll again; the log tail is above. Do NOT start a second cut${args.platform ? ' for this leg' : ''}.`
@@ -1249,10 +1258,14 @@ export default defineTool({
                       ? `It ran under managed operation ${status.operation.operationId}, so its committed phase receipts survive — a re-run resumes from the last one rather than rebuilding.`
                       : 'It ran UNMANAGED (no operation id on the started marker), so there are no phase receipts to resume from — a re-run rebuilds from the start.'
                   } Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
-                : `No cut in flight and no recent result for ${legNote} on this host.`;
+              : `No cut in flight and no recent result for ${legNote} ${scopeNote}.`;
       return json({
         ok: true,
         op: 'status',
+        ...(selected ? {
+          root: selected.desktopRoot,
+          ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
+        } : {}),
         ...(args.platform ? { platform: args.platform } : {}),
         ...status,
         unit,

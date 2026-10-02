@@ -195,7 +195,9 @@ describe('reconcileWakeability (EI-6077)', () => {
     expect(out.alive).toBe(false);
   });
 
-  it('WI-40871: a current recorded-live successor outranks stale ended evidence', async () => {
+  it('positive newest-session death evidence wins a contradictory recorded-live set', async () => {
+    // Both store readers select the newest session. Overlapping results can
+    // occur across reads, but an explicit death must not resurrect that owner.
     const agent = baseAgent({ alive: false });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: false } });
     const [out] = await reconcileWakeability(
@@ -205,8 +207,8 @@ describe('reconcileWakeability (EI-6077)', () => {
       async () => new Map(),
       async () => new Set(['su-agent-1']),
     );
-    expect(out.sessionState).toBe('recorded');
-    expect(out.alive).toBe(true);
+    expect(out.sessionState).toBe('ended');
+    expect(out.alive).toBe(false);
   });
 
   it('heartbeat-alive AND wakeable with a running turn → sessionState live, alive stays true', async () => {

@@ -91,32 +91,39 @@ export function installStartupStorageProbe() {
   }
   if (speechOwner) wrap(speechOwner, 'speechSynthesis', 'get:speechSynthesis', 'speechSynthesis', true, true);
   else unavailable.push('get:speechSynthesis');
-  // r164's text LCP had no insertion/visibility evidence. Observe the known
-  // candidate in the same early payload, independently of Storage's row cap.
+  // The actual LCP can be the Plans subtitle or the account footer. Keep each
+  // candidate's lifetime and timings separate in this same early payload.
   // Mutation callbacks never read layout; bounded frame reads are reported as
   // observer work, not attributed to the application or equated with paint.
-  const render = {
-    selector: '.pclsb-acct__foot', clock: 'performance.now' as const, unit: 'ms' as const,
+  const renderCandidates = ['.pclsb-acct__foot', '.plans-pane__masthead-subtitle'].map((selector) => ({
+    selector, clock: 'performance.now' as const, unit: 'ms' as const,
     scope: 'first DOM observation and frame geometry/ancestor styles; not paint, clipping or occlusion',
     firstObservedAtMs: null as number | null, firstFrameAtMs: null as number | null,
     firstEligibleFrameAtMs: null as number | null,
     mutationCallbacks: 0, frameReads: 0, maxMutationCallbacks: 1000, maxFrameReads: 32,
     totalObserverWorkMs: 0, stopReason: 'collecting', unavailable: [] as string[],
-    fonts: { initialStatus: null as string | null, readyAtMs: null as number | null,
-      events: [] as Array<{ event: string; atMs: number; status: string }>, dropped: 0 },
-  };
+  }));
+  const render = renderCandidates[0]!; // Preserve the existing footer report.
+  const fontsReport = { initialStatus: null as string | null, readyAtMs: null as number | null,
+    events: [] as Array<{ event: string; atMs: number; status: string }>, dropped: 0 };
+  const candidates = renderCandidates.map((report) => ({ report,
+    element: null as HTMLElement | null, frame: null as number | null }));
+  type Candidate = typeof candidates[number];
   let renderActive = true;
-  let renderCandidate: HTMLElement | null = null;
   let renderObserver: MutationObserver | null = null;
-  let renderFrame: number | null = null;
   let renderDeadline: number | null = null;
   const fontRestores: Array<() => void> = [];
+  const stopCandidate = (candidate: Candidate, reason: string) => {
+    if (candidate.report.stopReason === 'collecting') candidate.report.stopReason = reason;
+    if (candidate.frame !== null) window.cancelAnimationFrame(candidate.frame);
+    candidate.frame = null;
+    if (candidates.every(({ report }) => report.stopReason !== 'collecting')) {
+      renderObserver?.disconnect();
+      renderObserver = null;
+    }
+  };
   const stopRenderDom = (reason: string) => {
-    if (render.stopReason === 'collecting') render.stopReason = reason;
-    renderObserver?.disconnect();
-    renderObserver = null;
-    if (renderFrame !== null) window.cancelAnimationFrame(renderFrame);
-    renderFrame = null;
+    for (const candidate of candidates) stopCandidate(candidate, reason);
   };
   const stopRender = () => {
     renderActive = false;
@@ -125,22 +132,26 @@ export function installStartupStorageProbe() {
     renderDeadline = null;
     for (const restore of fontRestores.splice(0)) restore();
   };
-  const findRenderCandidate = () => {
+  const findRenderCandidate = (candidate: Candidate) => {
+    const render = candidate.report;
     if (!renderActive || render.stopReason !== 'collecting') return;
     if (performance.now() - startedAtMs >= 60_000) { stopRenderDom('deadline'); return; }
     const began = performance.now();
     try {
       const element = document.querySelector<HTMLElement>(render.selector);
       if (!element) return;
-      if (renderCandidate && renderCandidate !== element) { stopRenderDom('candidate-replaced'); return; }
-      renderCandidate = element;
+      if (candidate.element && candidate.element !== element) {
+        candidate.element = null;
+        stopCandidate(candidate, 'candidate-replaced'); return;
+      }
+      candidate.element = element;
       render.firstObservedAtMs ??= performance.now();
-      if (renderFrame !== null) return;
-      renderFrame = window.requestAnimationFrame(() => {
-        renderFrame = null;
+      if (candidate.frame !== null) return;
+      candidate.frame = window.requestAnimationFrame(() => {
+        candidate.frame = null;
         if (!renderActive || render.stopReason !== 'collecting') return;
         if (performance.now() - startedAtMs >= 60_000) { stopRenderDom('deadline'); return; }
-        if (render.frameReads >= render.maxFrameReads) { stopRenderDom('frame-cap'); return; }
+        if (render.frameReads >= render.maxFrameReads) { stopCandidate(candidate, 'frame-cap'); return; }
         const beganFrame = performance.now();
         render.frameReads++;
         render.firstFrameAtMs ??= beganFrame;
@@ -152,59 +163,72 @@ export function installStartupStorageProbe() {
             if (style.display === 'none' || style.visibility === 'hidden' ||
                 style.visibility === 'collapse' || Number(style.opacity) === 0) return;
           }
-          if (ancestor) { render.unavailable.push('ancestor-depth'); stopRenderDom('unavailable'); return; }
+          if (ancestor) { render.unavailable.push('ancestor-depth'); stopCandidate(candidate, 'unavailable'); return; }
           const rect = element.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
               rect.top >= window.innerHeight || rect.left >= window.innerWidth) return;
           render.firstEligibleFrameAtMs = performance.now();
-          stopRenderDom('eligible-frame');
+          stopCandidate(candidate, 'eligible-frame');
         } catch {
-          render.unavailable.push('frame-read'); stopRenderDom('unavailable');
+          render.unavailable.push('frame-read'); stopCandidate(candidate, 'unavailable');
         } finally { render.totalObserverWorkMs += performance.now() - beganFrame; }
       });
-    } catch { render.unavailable.push('candidate-read'); stopRenderDom('unavailable'); }
+    } catch { render.unavailable.push('candidate-read'); stopCandidate(candidate, 'unavailable'); }
     finally { render.totalObserverWorkMs += performance.now() - began; }
   };
-  if (typeof document === 'undefined' || !document.documentElement) render.unavailable.push('document');
-  if (typeof window.MutationObserver !== 'function') render.unavailable.push('MutationObserver');
+  const findRenderCandidates = () => { for (const candidate of candidates) findRenderCandidate(candidate); };
+  const renderUnavailable = (reason: string) => {
+    for (const { report } of candidates) report.unavailable.push(reason);
+  };
+  if (typeof document === 'undefined' || !document.documentElement) renderUnavailable('document');
+  if (typeof window.MutationObserver !== 'function') renderUnavailable('MutationObserver');
   if (typeof window.requestAnimationFrame !== 'function' || typeof window.cancelAnimationFrame !== 'function') {
-    render.unavailable.push('animation-frame');
+    renderUnavailable('animation-frame');
   }
   if (render.unavailable.length) stopRenderDom('unavailable');
   else {
     try {
       renderObserver = new window.MutationObserver(() => {
-        if (render.mutationCallbacks >= render.maxMutationCallbacks) { stopRenderDom('mutation-cap'); return; }
-        render.mutationCallbacks++;
-        findRenderCandidate();
+        for (const candidate of candidates) {
+          const render = candidate.report;
+          if (render.stopReason !== 'collecting') continue;
+          if (render.mutationCallbacks >= render.maxMutationCallbacks) { stopCandidate(candidate, 'mutation-cap'); continue; }
+          render.mutationCallbacks++;
+          findRenderCandidate(candidate);
+        }
       });
       renderObserver.observe(document.documentElement, { subtree: true, childList: true, attributes: true,
         attributeFilter: ['class', 'style', 'hidden'] });
-      findRenderCandidate();
+      findRenderCandidates();
       const fonts = document.fonts;
       if (fonts) {
-        render.fonts.initialStatus = fonts.status;
+        fontsReport.initialStatus = fonts.status;
         for (const event of ['loading', 'loadingdone', 'loadingerror']) {
           const listener = () => {
             if (!renderActive) return;
-            if (render.fonts.events.length >= 8) { render.fonts.dropped++; return; }
-            render.fonts.events.push({ event, atMs: performance.now(), status: fonts.status });
-            findRenderCandidate();
+            if (fontsReport.events.length >= 8) { fontsReport.dropped++; return; }
+            fontsReport.events.push({ event, atMs: performance.now(), status: fonts.status });
+            findRenderCandidates();
           };
           fonts.addEventListener(event, listener);
           fontRestores.push(() => fonts.removeEventListener(event, listener));
         }
         void fonts.ready.then(() => {
-          if (renderActive) { render.fonts.readyAtMs = performance.now(); findRenderCandidate(); }
-        }, () => { if (renderActive) render.unavailable.push('fonts-ready'); });
-      } else render.unavailable.push('fonts');
+          if (renderActive) { fontsReport.readyAtMs = performance.now(); findRenderCandidates(); }
+        }, () => { if (renderActive) renderUnavailable('fonts-ready'); });
+      } else renderUnavailable('fonts');
       renderDeadline = window.setTimeout(() => { stopRenderDom('deadline'); stopRender(); }, 60_000);
-    } catch { render.unavailable.push('observer-install'); stopRenderDom('unavailable'); stopRender(); }
+    } catch { renderUnavailable('observer-install'); stopRenderDom('unavailable'); stopRender(); }
   }
   const probe = {
     // Compare identities while the LCP entry still holds its DOM node. Returning
     // null means unobserved; a selector match alone cannot join these timings.
-    renderCandidateMatches: (element: unknown) => renderCandidate === null ? null : element === renderCandidate,
+    renderCandidateMatches: (element: unknown) => element == null || candidates[0]!.element === null
+      ? null : element === candidates[0]!.element,
+    renderCandidateMatchesBySelector: (element: unknown) => candidates.map((candidate) => ({
+      selector: candidate.report.selector,
+      matches: element == null || candidate.element === null ? null : element === candidate.element,
+    })),
     stop: () => {
     if (active) {
       active = false;
@@ -217,8 +241,9 @@ export function installStartupStorageProbe() {
       stoppedAtMs: performance.now(), maxRows: 200, maxDurationMs: 60_000,
       installed, unavailable, rows: rows.slice(), dropped, totalObserverWorkMs,
       nativeStartup: { rows: nativeStartupRows.slice(), dropped: nativeStartupDropped, maxRows: 20 },
-      render: { ...render, fonts: { ...render.fonts, events: render.fonts.events.slice() },
-        unavailable: render.unavailable.slice() } };
+      render: { ...render, fonts: { ...fontsReport, events: fontsReport.events.slice() },
+        unavailable: render.unavailable.slice(),
+        candidates: renderCandidates.map((report) => ({ ...report, unavailable: report.unavailable.slice() })) } };
   } };
   (window as unknown as { __pcStartupStorageProbe: typeof probe }).__pcStartupStorageProbe = probe;
   return probe;

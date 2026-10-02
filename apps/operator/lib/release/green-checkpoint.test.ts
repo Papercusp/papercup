@@ -100,6 +100,7 @@ import {
   checkpointRunLockSkipSummary,
   activateScheduledCheckpointRunner,
   scheduledAttemptPinnedCandidate,
+  scheduledAttemptPrewarmTarget,
   startScheduledQualificationProgress,
   checkpointRunIdFromScheduledEnv,
   createCheckpointTerminalEventBuffer,
@@ -3333,6 +3334,31 @@ describe("acquireCheckpointRunLock", () => {
     expect(unread).not.toHaveBeenCalled();
     expect(await scheduledAttemptPinnedCandidate(base, vi.fn(async () => ({ status: 'none' as const })))).toBeNull();
     expect(await scheduledAttemptPinnedCandidate(base, vi.fn(async () => { throw new Error('pg down'); }))).toBeNull();
+  });
+  it("a joined scheduled attempt prewarms the runnable frozen repair candidate", async () => {
+    const assess = vi.fn(async () => ({
+      proceed: true as const,
+      reason: 'clear' as const,
+      candidate: 'repair-head-sha',
+      candidateSource: 'frozen-repair-queue' as const,
+      repairQueue: null,
+      frozenLineageIdentity: null,
+      queueDecision: 'verify-repair' as const,
+      nextAttempt: null,
+      fixerSpawnId: null,
+      fixerAlive: null,
+    }));
+
+    const selected = await scheduledAttemptPrewarmTarget('frozen-candidate-sha', {
+      assess,
+      root: '/checkpoint',
+    });
+
+    expect(assess).toHaveBeenCalledWith('frozen-candidate-sha', '/checkpoint');
+    expect(selected).toEqual({
+      candidate: 'repair-head-sha',
+      candidateSource: 'frozen-repair-queue',
+    });
   });
   it("blocks a second live checkpoint process from mutating the same checkpoint tree", () => {
     const lockDir = join(
@@ -9627,6 +9653,32 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
       "verifier-run",
     );
     expect(noProof.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBeUndefined();
+  });
+
+  it("WI-10005212: carries the frozen review clock into the candidate-suite env (affected guard legs)", () => {
+    const openedAtMs = Date.parse("2026-10-01T10:39:52.720Z");
+    const frozen = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({}),
+      "run",
+      "shared",
+      null,
+      "cand",
+      openedAtMs,
+    );
+    expect(frozen.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS).toBe(
+      String(openedAtMs),
+    );
+    // A non-frozen run must not inherit a host-leaked clock.
+    const notFrozen = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({ PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS: "1" }),
+      "run",
+    );
+    expect(notFrozen.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS).toBeUndefined();
+    expect(() =>
+      buildGreenCheckpointEnv("b", partialEnv({}), "run", "shared", null, "c", -5),
+    ).toThrow(/openedAtMs/);
   });
 
   it("sets GREEN_CHECKPOINT=1 and AFFECTED_BASE only when a base is given", () => {

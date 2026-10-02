@@ -2504,7 +2504,7 @@ export function readCodexTuiLogTail(codexHome, {
 }
 
 /** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
- * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail }} [options]
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail, startupOutput?: string }} [options]
  */
 export function collectCodexStartingStuckSnapshot({
   rootPid,
@@ -2514,6 +2514,8 @@ export function collectCodexStartingStuckSnapshot({
   readDir = readdirSync,
   readLink = readlinkSync,
   readTail = readFileTail,
+  // WI-10005178: the pty output the `Starting` verdict was read from.
+  startupOutput,
 } = {}) {
   try {
     const tree = platform === 'linux'
@@ -2524,6 +2526,7 @@ export function collectCodexStartingStuckSnapshot({
       procs: tree.procs,
       procsTruncated: tree.truncated,
       log: readCodexTuiLogTail(codexHome, { readTail }),
+      footer: codexStartingFooterEvidence(startupOutput),
     };
   } catch (error) {
     return { rootPid: Number.isInteger(rootPid) ? rootPid : null, error: hostErrorEvidence(error) };
@@ -5774,6 +5777,47 @@ function codexReadyStatusFooterObserved(visible) {
   // its `Starting` form is painted while MCP startup is still in flight.
   return codexStatusFooterState(visible) === 'ready';
 }
+
+/** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
+ * from. Measured 2026-10-02T01:40-01:44Z (su-6a2603be, codex home session-32862):
+ * the dropped child's own codex-tui.log shows session init, MCP resolution and the
+ * model websocket warmup all complete within ~6s of spawn, yet the host judged its
+ * footer `Starting` for 3m16s. Two readings fit that (WI-10004943 H1/H2): Codex
+ * genuinely kept painting `Starting` (an MCP server still booting, e.g. the
+ * OAuth-only `tsenta`), or a partial repaint wrote only the new status word so the
+ * last COMPLETE footer the regex can match is a stale `Starting`. This evidence
+ * separates them: `readyAfterLastFooter` true with state `starting` is the stale-read
+ * signature; `mcpLines` names a server Codex was still waiting on. Bounded and
+ * redacted, because host events reach a shared store. */
+export function codexStartingFooterEvidence(output, { maxMatches = 4, tailChars = 600, maxLineChars = 160 } = {}) {
+  if (typeof output !== 'string') return null;
+  const visible = stripAnsi(output);
+  const matches = [...visible.matchAll(CODEX_STATUS_FOOTER_RE)];
+  const last = matches.at(-1) ?? null;
+  const afterLast = last ? visible.slice(last.index + last[0].length) : visible;
+  const line = (text) => redactSnapshotText(String(text).replace(/\s+/g, ' ').trim(), maxLineChars);
+  // Control bytes made visible so a cursor-positioned partial repaint can be read.
+  const visibleControls = (text) => Array.from(text, (ch) => {
+    const code = ch.charCodeAt(0);
+    if (code === 0x1b) return '⎋';
+    if (code === 0x0a) return '\n';
+    return code < 0x20 || code === 0x7f ? `^${String.fromCharCode(code ^ 0x40)}` : ch;
+  }).join('');
+  return {
+    state: codexStatusFooterState(visible),
+    footerMatchCount: matches.length,
+    lastMatches: matches.slice(-maxMatches).map((m) => ({
+      status: m[1],
+      fromEnd: visible.length - m.index,
+      text: line(m[0]),
+    })),
+    readyAfterLastFooter: /ready/i.test(afterLast),
+    startingAfterLastFooter: /starting/i.test(afterLast),
+    mcpLines: visible.split(/\r\n|\r|\n/).filter((l) => /\bMCP\b/i.test(l)).slice(-3).map(line),
+    visibleChars: visible.length,
+    rawTail: redactSnapshotText(visibleControls(output.slice(-tailChars)), tailChars * 2),
+  };
+}
 export function headlessClaudeKickoffReadiness({
   enabled = false,
   requireInitialOutput = false,
@@ -8899,6 +8943,7 @@ export function hostThroughPty(o) {
         const snapshot = collectCodexStartingStuckSnapshot({
           rootPid: child?.pid,
           codexHome: env.CODEX_HOME,
+          startupOutput: childStartupOutput,
         });
         appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', { label, ...snapshot });
       } catch {

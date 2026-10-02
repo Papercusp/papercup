@@ -67,6 +67,11 @@ import { killTask } from './task-manager/control';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
 import {
+  acquireInstallBoundaryLease,
+  installBoundaryRoot,
+  type InstallBoundaryLease,
+} from './install-boundary-lease';
+import {
   agentSpawnScopeMemoryMaxG,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
   userManagerBusReachable,
@@ -2316,6 +2321,12 @@ export interface SpawnHeadlessOpts {
     windowMs?: number;
   };
   /**
+   * WI-10005137: injectable seam for the install-boundary read lease taken
+   * before the fork. Tests pass a fake; production uses
+   * acquireInstallBoundaryLease against the checkout psu boots from.
+   */
+  installBoundary?: (root: string | null) => Promise<InstallBoundaryLease>;
+  /**
    * Opt into a parent-visible proof that the detached launch kickoff reached
    * the backend's native transcript. The receipt env is carried through the
    * shell/psu launcher boundary; ordinary headless launches do not create or
@@ -2659,6 +2670,12 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     logFd = null; // last resort: inherit-nothing (stdio ignore) below
   }
 
+  // WI-10005137: a launch while install:safe is reifying the checkout psu boots
+  // from dies at boot with ERR_MODULE_NOT_FOUND. Wait for the install's verified
+  // boundary, and hold the read lease through the boot window below so an
+  // install cannot start tearing node_modules down mid-resolution. Taken BEFORE
+  // the task enrolment so a long wait never leaves a half-enrolled task.
+  let installLease: InstallBoundaryLease | null = null;
   try {
     // EI-9748 Route (A): escape the operator service's own cgroup via
     // systemd-run --user --scope when available, so a headless member
@@ -2669,6 +2686,9 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // being created for EI-9748; this only gives it our slice + a joinable name,
     // and mints the ledger row that makes the member visible in /admin/tasks with
     // its fleet, its log, and its live cost.
+    installLease = await (opts.installBoundary ?? ((root) => acquireInstallBoundaryLease(root)))(
+      installBoundaryRoot({ ...process.env, ...launchEnv }),
+    );
     const memoryMaxBytes = agentSpawnScopeMemoryMaxG() * 1024 ** 3;
     const enrolment = beginSyncEnrolment({ class: 'agent-session', memoryMaxBytes });
     const taskScope = enrolment.confined
@@ -2759,7 +2779,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     if (earlyExit) {
       let logTail = '';
       try {
-        logTail = readFileSync(logPath, 'utf8').trim().slice(-800);
+        logTail = bootDeathLogExcerpt(readFileSync(logPath, 'utf8'));
       } catch {
         logTail = '';
       }
@@ -2768,6 +2788,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
         status: 'error',
         error:
           `headless psu died at boot (${earlyExit.signal ? `signal ${earlyExit.signal}` : `exit ${earlyExit.code ?? 0}`}) within ${EARLY_EXIT_PROBE_MS}ms` +
+          installBoundaryNote(installLease) +
           `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
         code: 502,
         logPath,
@@ -2802,14 +2823,15 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     for (;;) {
       const failed = HEADLESS_GREETING_FAILURE_RE.exec(readLog(logPath));
       if (failed) {
-        const tail = readLog(logPath).trim().slice(-800);
+        const tail = bootDeathLogExcerpt(readLog(logPath));
         cleanupKickoffProofRequest(kickoffProofRequest);
         return {
           status: 'error',
           error:
             `headless member launched but its agent command died at boot (exit ${failed[1]})` +
             ` — the shell stays open holding a DEAD session, so this never surfaced as a` +
-            ` process exit (EI-19311623077693508)${tail ? ` — log tail: ${tail}` : ` — see ${logPath}`}`,
+            ` process exit (EI-19311623077693508)${installBoundaryNote(installLease)}` +
+            `${tail ? ` — log tail: ${tail}` : ` — see ${logPath}`}`,
           code: 502,
           logPath,
         };
@@ -2817,6 +2839,9 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       if (Date.now() >= bootDeadline) break;
       await bootSleep(250);
     }
+    // The boot window is over: module resolution is done, so let a queued
+    // install proceed instead of holding it for the kickoff-proof wait.
+    installLease?.release();
 
     const kickoffProof = kickoffProofRequest
       ? await waitForKickoffProof(kickoffProofRequest, opts.kickoffProofProbes)
@@ -2868,5 +2893,30 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       } catch { /* already closed */ }
     }
     return { status: 'error', error: `headless spawn failed: ${e?.message}`, code: 500, logPath };
+  } finally {
+    // Idempotent; covers every early-return and throw path above.
+    installLease?.release();
   }
+}
+
+/**
+ * WI-10005137: the boot-death error used to carry only the last 800 chars of
+ * the log, which for a Node resolution failure is the bottom of the stack
+ * (package_json_reader / esm resolve) — the line naming the missing package was
+ * cut. Keep that head line in front of the tail when the tail lost it.
+ */
+export function bootDeathLogExcerpt(log: string, tailChars = 800): string {
+  const trimmed = log.trim();
+  const tail = trimmed.slice(-tailChars);
+  const head = trimmed
+    .match(/^.*(?:Cannot find (?:package|module) .*|Error \[ERR_[A-Z0-9_]+\]: .*)$/m)?.[0]
+    ?.trim();
+  if (!head || tail.includes(head)) return tail;
+  return `${head.slice(0, 400)} … ${tail}`;
+}
+
+/** Names a boot that ran WITHOUT the install boundary (empty when it held). */
+export function installBoundaryNote(lease: InstallBoundaryLease | null): string {
+  if (!lease || (lease.outcome !== 'timed-out' && lease.outcome !== 'error')) return '';
+  return ` (launched without the install:safe boundary: ${lease.outcome}${lease.detail ? ` — ${lease.detail}` : ''}; an npm install may have been reifying node_modules)`;
 }

@@ -41,8 +41,12 @@ vi.mock('../../harness/routines/loop', () => ({
   getLoopStatus: vi.fn(async () => ({ harnessSlug: 'papercusp', ownerId: 'su-caller-own-id', active: true })),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
+// WI-10005199: the control-anchor projection loop:end attests. Default (see beforeEach) is a
+// FAITHFUL anchor — the stop projected `loop.active:false` — so every pre-existing test sees an
+// agreeing read and no `controlConsumerView`; the diverging fixtures below override it per-test.
+const controlAnchorH = vi.hoisted(() => ({ refresh: vi.fn() }));
 vi.mock('../coordination/control-anchor', () => ({
-  refreshControlAnchorAfterMutation: vi.fn(async () => ({ generation: 8 })),
+  refreshControlAnchorAfterMutation: controlAnchorH.refresh,
 }));
 vi.mock('../orders/open-directives-guard', () => ({
   checkOpenDirectivesGuard: vi.fn(async () => null),
@@ -143,6 +147,8 @@ const run = (args: Record<string, unknown> = {}) =>
     .then((r) => ({ ...JSON.parse(r.content[0].text), isError: r.isError === true }));
 
 beforeEach(() => {
+  controlAnchorH.refresh.mockReset();
+  controlAnchorH.refresh.mockResolvedValue({ generation: 8, state: { loop: { active: false, intervalSec: null } } });
   deactivateLoopMock.mockClear();
   deactivateLoopMock.mockResolvedValue(true);
   getLoopStatusMock.mockClear();
@@ -675,6 +681,43 @@ describe('the habitual `harness` argument (EI-21769332722376884)', () => {
     // still pass if `harness` ever began redirecting the write somewhere else.
     expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
     expect(deactivateLoopMock.mock.calls[0][0]).toBe('su-caller-own-id');
+  });
+});
+
+describe('loop:end — consumerView on the control-anchor projection (WI-10005199)', () => {
+  it('stays silent when the projected loop agrees the stop landed', async () => {
+    const got = await run({});
+    expect(got.ended).toBe(true);
+    expect(got.controlGeneration).toBe(8);
+    expect(got).not.toHaveProperty('controlConsumerView');
+  });
+
+  it('DIVERGES — and says so on the payload — when the fail-soft refresh returned null', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce(null);
+    const got = await run({});
+    // The stop itself still succeeded; the exception-only field tells the caller the consumer's
+    // read (control_state->loop) cannot be shown to reflect it.
+    expect(got.ended).toBe(true);
+    expect(got.controlGeneration).toBeNull();
+    expect(got.controlConsumerView).toMatchObject({
+      readPath: 'harness_shared.session_briefs.control_state->loop',
+      value: { active: null, intervalSec: null },
+      divergedFromWrite: true,
+    });
+  });
+
+  it('DIVERGES when the projection still shows the loop ACTIVE (the stale wake-source direction)', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 5, state: { loop: { active: true, intervalSec: 300 } } });
+    const got = await run({});
+    expect(got.controlConsumerView).toMatchObject({ value: { active: true, intervalSec: 300 }, divergedFromWrite: true });
+  });
+
+  it('does not attest (and does not refresh) when no active loop was ended', async () => {
+    deactivateLoopMock.mockResolvedValue(false);
+    const got = await run({});
+    expect(got.ended).toBe(false);
+    expect(got).not.toHaveProperty('controlConsumerView');
+    expect(controlAnchorH.refresh).not.toHaveBeenCalled();
   });
 });
 

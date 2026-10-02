@@ -4,6 +4,7 @@ import {
   deriveRecipeAuthority,
   findVolatileCoordinationOwnerId,
   findVolatileRunArtifactLiteral,
+  findVolatileSessionIdLiteral,
   findVolatileTaskIdLiteral,
   recipeRevision,
   recipeAuthorityMatches,
@@ -315,6 +316,40 @@ describe('recipe recommendation authority (P-008)', () => {
     expect(findVolatileTaskIdLiteral(`const word = 'abcdefghijklmnopqrs';`)).toBeNull();
     expect(findVolatileTaskIdLiteral(`const digits = '0123456789012345678';`)).toBeNull();
     expect(findVolatileTaskIdLiteral('const id = `${currentTaskId}`;')).toBeNull();
+  });
+
+  it('fails closed for a hardcoded native session UUID in a session id slot', async () => {
+    const sessionId = '01a046b1-3b6c-7013-baeb-b1e0a260b785';
+    const script = `const sessionId = '${sessionId}';
+      return await tools.activity.toolLog({ session_id: sessionId });`;
+
+    expect(findVolatileSessionIdLiteral(script)).toBe(sessionId);
+    expect(findVolatileSessionIdLiteral("return await tools.activity.toolLog({ session_id: 'claude:ca072a58-85aa-47ae-9b99-1c91675822cf' });"))
+      .toBe('claude:ca072a58-85aa-47ae-9b99-1c91675822cf');
+    await expect(deriveRecipeAuthority(script)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: { kind: 'volatile-session-id-literal', sessionId },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script,
+      updatedAt: '2026-09-08T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+
+    const verdict = await validateRecipeAuthorityProof({ script, updatedAt: '2026-09-08T00:00:00.000Z' });
+    expect(verdict).toMatchObject({ ok: false, error: 'authority_unresolved' });
+    expect((verdict as { reason: string }).reason).toContain('native session id');
+  });
+
+  it('keeps runtime or binding supplied session ids reusable and ignores unrelated UUIDs', async () => {
+    const sessionId = '01a046b1-3b6c-7013-baeb-b1e0a260b785';
+    const runtimeScript = `const sessionId = inputs.sessionId;
+      return await tools.activity.toolLog({ session_id: sessionId });`;
+    expect(findVolatileSessionIdLiteral(runtimeScript)).toBeNull();
+    await expect(deriveRecipeAuthority(runtimeScript)).resolves.toMatchObject({ unresolved: false });
+
+    expect(findVolatileSessionIdLiteral(`const planId = '${sessionId}';`)).toBeNull();
+    expect(findVolatileSessionIdLiteral(`const id = '${sessionId}';`)).toBeNull();
   });
 
   it('fails closed for a pinned capability:bash scratch log without rejecting runtime-derived paths', async () => {

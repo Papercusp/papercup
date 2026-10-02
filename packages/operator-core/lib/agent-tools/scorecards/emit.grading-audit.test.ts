@@ -593,6 +593,101 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  describe('a RE-OPENED audit (WI-10005211)', () => {
+    // A grading-integrity revision re-opens every settled audit, so a windowed
+    // grader's earlier cards all read pending again at once. The card already
+    // carries an independent verdict; it must not block its own author's next card.
+    const reopenedCard = {
+      issueId: 'EI-REOPENED',
+      createdAt: '2026-10-01T12:38:00.000Z',
+      createdBy: 'su-subject-author',
+      subject: { kind: 'plan', ref: 'plan-x' },
+      rubricRef: 'goal-mode-e2e',
+      ratings: RATINGS,
+      nKeys: 1,
+      missingKeys: [],
+      extraKeys: [],
+      rubricResolved: true,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        rubricRevision: 10,
+        stampedAt: '2026-10-02T01:38:32.000Z',
+      },
+      synthesized: false,
+      score10: 10,
+      linkedItems: [],
+    };
+    const priorAudit = (retracted?: object) => ({
+      issueId: 'EI-PRIOR-AUDIT',
+      createdAt: '2026-10-01T14:19:00.000Z',
+      createdBy: 'su-auditor',
+      subject: { kind: 'scorecard', ref: 'EI-REOPENED' },
+      rubricRef: 'grading-integrity',
+      ratings: RATINGS,
+      nKeys: 1,
+      missingKeys: [],
+      extraKeys: [],
+      rubricResolved: true,
+      synthesized: false,
+      score10: 10,
+      linkedItems: [],
+      ...(retracted ? { retracted } : {}),
+    });
+    const withAudits = (audits: object[]) =>
+      listScorecards.mockImplementation(async (filter: { rubricRef?: string }) =>
+        filter.rubricRef === 'grading-integrity' ? audits : [reopenedCard],
+      );
+    const emitNext = (createdBy: string) =>
+      emitScorecard(
+        {
+          rubricRef: 'goal-mode-e2e',
+          ratings: RATINGS,
+          terminal: true,
+          force: true,
+          subject: { kind: 'plan', ref: 'plan-x' },
+        },
+        { createdBy, ctxHarness: 'papercusp' },
+      );
+
+    beforeEach(() => {
+      getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+      getIssue.mockResolvedValue(null);
+    });
+
+    it("files the author's next same-subject card instead of refusing on its own re-opened card", async () => {
+      withAudits([priorAudit()]);
+
+      const res = await emitNext('su-subject-author');
+
+      expect(res.ok).toBe(true);
+      expect(captureImprovement).toHaveBeenCalledOnce();
+      expect(listScorecards).toHaveBeenCalledWith(
+        expect.objectContaining({ rubricRef: 'grading-integrity', subjectRefs: ['EI-REOPENED'] }),
+      );
+    });
+
+    it('control: a RETRACTED prior audit is not a verdict, so the card still blocks', async () => {
+      withAudits([priorAudit({ reason: 'withdrawn', at: '2026-10-01T15:00:00.000Z' })]);
+
+      const res = await emitNext('su-subject-author');
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_required' });
+      expect((res as { error?: string }).error).toContain('EI-REOPENED');
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
+
+    it('control: a NON-AUTHOR is still taught the audit shape on a re-opened card', async () => {
+      withAudits([priorAudit()]);
+
+      const res = await emitNext('su-other-grader');
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_required' });
+      expect((res as { error?: string }).error).toContain("subject:{ kind:'scorecard', ref:'EI-REOPENED' }");
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
+  });
+
   it('control (THE mirror rule): a SELF-audit is refused and nothing is filed or settled', async () => {
     const res = await emitScorecard(auditArgs, {
       createdBy: 'su-grader-author', // the graded card's own author

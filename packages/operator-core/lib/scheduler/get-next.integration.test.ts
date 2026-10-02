@@ -784,8 +784,11 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-exact');
   });
 
+  // enterprise-data-sources-2026-10-01 D-022 point 2: chunks are excluded by the STATUS
+  // floors, not by a kind case, and every live chunk row is terminal (done/passed/dropped).
+  // So a retired chunk is seeded terminal; an open chunk is a state that no longer occurs.
   it('retired chunks remain outside tier 2 after a feature-narrowed miss', async () => {
-    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk' });
+    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk', status: 'done' });
     const s = spec({
       specVersion: '1.0',
       specId: 'kind-feature-widen',
@@ -797,8 +800,8 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
   });
 
   it('a co-existing tags narrowing cannot re-admit retired chunks', async () => {
-    await seedFeature('RT-sync', { createdTs: 100, kind: 'chunk', tags: ['sync'] });
-    await seedFeature('RT-docs', { createdTs: 10, kind: 'chunk', tags: ['docs'] }); // older, wrong tag
+    await seedFeature('RT-sync', { createdTs: 100, kind: 'chunk', tags: ['sync'], status: 'passed' });
+    await seedFeature('RT-docs', { createdTs: 10, kind: 'chunk', tags: ['docs'], status: 'dropped' }); // older, wrong tag
     const s = spec({
       specVersion: '1.0',
       specId: 'kind-and-tag',
@@ -818,7 +821,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
 
   it('retired chunks stay excluded after a historical blocker settles', async () => {
     await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'wip' });
-    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk' });
+    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk', status: 'dropped' });
     await blockByFeature('CH-blocked', 'CH-blocker');
     const s = spec({
       specVersion: '1.0',

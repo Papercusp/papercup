@@ -21,6 +21,7 @@
 
 import { spawn } from 'node:child_process';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
@@ -70,13 +71,21 @@ export function cutUnitFor(platform?: Platform): string {
 export function cutUnitForTask(taskId: string): string {
   return serviceUnitForTask(taskId);
 }
-export function cutLogFor(platform?: Platform): string {
+function rootScopedCutPath(extension: 'log' | 'done' | 'started', platform: Platform | undefined, root: string): string {
+  const rootKey = createHash('sha256').update(path.resolve(root)).digest('hex').slice(0, 24);
+  const unit = platform ? `${CUT_UNIT}-${platform}` : CUT_UNIT;
+  return `/tmp/${unit}-${rootKey}.${extension}`;
+}
+export function cutLogFor(platform?: Platform, root?: string): string {
+  if (root !== undefined) return rootScopedCutPath('log', platform, root);
   return platform ? `/tmp/${CUT_UNIT}-${platform}.log` : CUT_LOG;
 }
-export function cutDoneFor(platform?: Platform): string {
+export function cutDoneFor(platform?: Platform, root?: string): string {
+  if (root !== undefined) return rootScopedCutPath('done', platform, root);
   return platform ? `/tmp/${CUT_UNIT}-${platform}.done` : CUT_DONE;
 }
-export function cutStartedFor(platform?: Platform): string {
+export function cutStartedFor(platform?: Platform, root?: string): string {
+  if (root !== undefined) return rootScopedCutPath('started', platform, root);
   return platform ? `/tmp/${CUT_UNIT}-${platform}.started` : CUT_STARTED;
 }
 /** Stable lock for the logical whole-cut/platform slot, independent of task unit id. */
@@ -362,8 +371,8 @@ export function wrapWithStagingSyncLock(
 /** Pure: the full `systemd-run` argv for the detached LOCAL cut. Mirrors
  *  release-deploy-launch.buildSystemdRunArgv (PATH passthrough so the transient unit
  *  doesn't depend on the systemd-manager env). The inner command clears a stale DONE
- *  sentinel, runs the cut logging to CUT_LOG, then records the real exit code in
- *  CUT_DONE. Exported for unit testing the command construction. */
+ *  sentinel, writes root-scoped status files and updates the host-wide pointers, then
+ *  records the real exit code. Exported for unit testing the command construction. */
 export function buildCutArgv(
   root: string,
   version: string,
@@ -381,9 +390,18 @@ export function buildCutArgv(
     .join(' ');
   const taskId = runtime.releaseTaskId?.trim();
   const unit = taskId ? cutUnitForTask(taskId) : cutUnitFor(platform);
-  const log = cutLogFor(platform);
-  const done = cutDoneFor(platform);
-  const started = cutStartedFor(platform);
+  const log = cutLogFor(platform, root);
+  const done = cutDoneFor(platform, root);
+  const started = cutStartedFor(platform, root);
+  // Rootless status and preflight keep their host-wide view of the latest cut;
+  // an explicit root reads its own independent markers/log/done files.
+  const currentStatusPointers = [
+    [log, cutLogFor(platform)],
+    [done, cutDoneFor(platform)],
+    [started, cutStartedFor(platform)],
+  ]
+    .map(([target, pointer]) => `ln -sfn ${shellSingleQuote(target!)} ${shellSingleQuote(pointer!)}`)
+    .join('; ') + '; ';
   const lock = cutLockFor(platform);
   // A first pass writes these version fields before cutting the seed. A retry
   // validates that exact residue in release:cut, then restores only those files
@@ -424,7 +442,7 @@ export function buildCutArgv(
       : `printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; `;
   const inner =
     `exec 9>${shellSingleQuote(lock)}; flock -n 9 || { echo 'release_cut_slot_busy' >&2; exit 73; }; ` +
-    `rm -f ${done}; ${startedMarker}systemd-notify --ready || exit $?; ` +
+    `rm -f ${done}; ${currentStatusPointers}${startedMarker}systemd-notify --ready || exit $?; ` +
     `${resumeReset}${envPrefix} ${cutterInvocation} > ${log} 2>&1; echo "DONE:$?" > ${done}`;
   return [
     '--user',
@@ -609,6 +627,8 @@ export interface ReadCutStatusDeps {
   isUnitActive?: (unit: string) => boolean;
   /** Read ONE platform leg's status (WI-4233) instead of the legacy whole-cut unit. */
   platform?: Platform;
+  /** Select one registered cut root's status files instead of the latest host-wide cut. */
+  root?: string;
 }
 
 /** Default: `systemctl --user is-active <unit>` → true only on exit 0 ("active"). */
@@ -690,7 +710,7 @@ interface CutStatusProbe {
 function cutStatusProbe(deps: Omit<ReadCutStatusDeps, 'isUnitActive'>): CutStatusProbe {
   const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
   const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
-  const startedPath = cutStartedFor(deps.platform);
+  const startedPath = cutStartedFor(deps.platform, deps.root);
 
   const startedSeen = exists(startedPath);
   let operation: CutOperationMarker | null = null;
@@ -705,8 +725,8 @@ function cutStatusProbe(deps: Omit<ReadCutStatusDeps, 'isUnitActive'>): CutStatu
   return {
     exists,
     read,
-    logPath: cutLogFor(deps.platform),
-    donePath: cutDoneFor(deps.platform),
+    logPath: cutLogFor(deps.platform, deps.root),
+    donePath: cutDoneFor(deps.platform, deps.root),
     startedSeen,
     operation,
     unit,

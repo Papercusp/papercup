@@ -903,8 +903,11 @@ export async function resolveSessionRefReconciled(
             return nativeId ? { nativeId, atMs: null } : null;
           })()
         : await (async () => {
-            const { latestRespawnNativeSession } = await import('./events/await/psu-pty-discovery');
-            return latestRespawnNativeSession(ownerId, undefined, { allowWithoutHost: !ref });
+            // ASYNC on purpose (WI-10005220): this runs per owner on bg-host's sweeps, and the
+            // sync form's stat/read in the shared psu-pty dir froze the event loop 0.6-2.0 s
+            // per call whenever the ext4 journal stalled.
+            const { latestRespawnNativeSessionAsync } = await import('./events/await/psu-pty-discovery');
+            return latestRespawnNativeSessionAsync(ownerId, undefined, { allowWithoutHost: !ref });
           })();
     const respawnNewerThanRef =
       hostRespawn?.atMs == null ||

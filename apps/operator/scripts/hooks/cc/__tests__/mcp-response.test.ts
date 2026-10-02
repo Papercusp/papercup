@@ -42,9 +42,9 @@ function parse(raw: string, env: Record<string, string> = {}): { inner: unknown;
 function withNativeSession(url: string, sessionId: string): string {
   const script = [
     'import sys',
-    'sys.path.insert(0, sys.argv[0])',
+    'sys.path.insert(0, sys.argv[1])',
     'from mcp_response import with_native_session',
-    'print(with_native_session(sys.argv[1], sys.argv[2]))',
+    'print(with_native_session(sys.argv[2], sys.argv[3]))',
   ].join('\n');
   return execFileSync('python3', ['-c', script, HOOK_DIR, url, sessionId], { encoding: 'utf8' }).trim();
 }

@@ -24,6 +24,9 @@ import {
   shutdownViaPty,
   latestRespawnNativeId,
   latestRespawnNativeSession,
+  latestRespawnNativeSessionAsync,
+  hostStartedAt,
+  hostStartedAtAsync,
   mcpReconnectViaPty,
   injectIntoHost,
   injectIntoHostWithConfirmation,
@@ -1039,6 +1042,80 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
     // The newest respawn rotated to an id the host did not record; claiming the
     // superseded 'old-1' would re-pin the estimate to a dead predecessor.
     expect(latestRespawnNativeId(owner, dir)).toBeNull();
+  });
+
+  // WI-10005220: per-owner sweeps must read the ledger off the event loop. The async
+  // form shares the decision with the sync one; this pins that they agree on EVERY
+  // fixture shape above (a divergence would silently re-pin a session on bg-host only).
+  it('latestRespawnNativeSessionAsync agrees with the sync form on every fixture shape', async () => {
+    type Case = {
+      name: string;
+      lines: unknown[] | string | null;
+      startedAt: number | null;
+      meta?: Record<string, unknown>;
+      allowWithoutHost?: boolean;
+    };
+    const cases: Case[] = [
+      { name: 'newest wins', lines: [
+        { ts: at(1), kind: 'respawned', nativeId: 'old-1' },
+        { ts: at(3), kind: 'respawned', nativeId: 'newest-2' },
+      ], startedAt: HOST_START },
+      { name: 'drill', lines: [{ ts: at(1), kind: 'carry-drill-respawned', nativeId: 'drill-1' }], startedAt: HOST_START },
+      { name: 'never respawned', lines: [{ ts: at(1), kind: 'compact-submitted' }], startedAt: HOST_START },
+      { name: 'no log', lines: null, startedAt: HOST_START },
+      { name: 'partial first line', lines:
+        'ativeId":"garbage"}\n' + JSON.stringify({ ts: at(2), kind: 'respawned', nativeId: 'good-2' }) + '\n',
+        startedAt: HOST_START },
+      { name: 'previous host', lines: [{ ts: at(-30), kind: 'respawned', nativeId: 'prev' }], startedAt: HOST_START },
+      { name: 'no discovery file', lines: [{ ts: at(1), kind: 'respawned', nativeId: 'orphan' }], startedAt: null },
+      { name: 'hostless self-relaunch allowed', lines: [
+        { ts: at(1), kind: 'respawned', mode: 'self-relaunch', nativeId: 'recovered' },
+      ], startedAt: null, allowWithoutHost: true },
+      { name: 'hostless carry rejected', lines: [
+        { ts: at(1), kind: 'respawned', mode: 'carry-respawn', nativeId: 'stale' },
+      ], startedAt: null, allowWithoutHost: true },
+      { name: 'foreign discovery file', lines: [{ ts: at(1), kind: 'respawned', nativeId: 'x-1' }],
+        startedAt: null, meta: { ownerId: 'su-someone-else', startedAt: HOST_START } },
+      { name: 'unparseable ts', lines: [{ ts: 'not-a-date', kind: 'respawned', nativeId: 'u' }], startedAt: HOST_START },
+      { name: 'recycle without id', lines: [
+        { ts: at(1), kind: 'respawned', nativeId: 'old-1' },
+        { ts: at(2), kind: 'respawned', mode: 'recycle', nativeId: null },
+      ], startedAt: HOST_START },
+    ];
+    let nonNull = 0;
+    for (const c of cases) {
+      const dir = tmpDir();
+      if (c.lines !== null) {
+        writeFileSync(
+          join(dir, `${sanitizeKey(owner)}.events.jsonl`),
+          typeof c.lines === 'string' ? c.lines : c.lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
+        );
+      }
+      if (c.startedAt !== null) writeMeta(dir, owner, { startedAt: c.startedAt });
+      if (c.meta) writeFileSync(join(dir, `${sanitizeKey(owner)}.json`), JSON.stringify(c.meta));
+      const opts = c.allowWithoutHost ? { allowWithoutHost: true } : {};
+      const sync = latestRespawnNativeSession(owner, dir, opts);
+      expect({ name: c.name, got: await latestRespawnNativeSessionAsync(owner, dir, opts) }).toEqual({
+        name: c.name,
+        got: sync,
+      });
+      expect({ name: c.name, got: await hostStartedAtAsync(owner, dir) }).toEqual({
+        name: c.name,
+        got: hostStartedAt(owner, dir),
+      });
+      if (sync) nonNull++;
+    }
+    // Calibration: the table must exercise BOTH outcomes, or "they agree" is vacuous.
+    expect(nonNull).toBeGreaterThanOrEqual(4);
+    expect(nonNull).toBeLessThan(cases.length);
+  });
+
+  // WI-10005220 recurrence guard: resolveSessionRefReconciled runs per owner on bg-host
+  // sweeps, so its DEFAULT rung-3 read must stay on the async form.
+  it('resolveSessionRefReconciled reads the respawn ledger with the ASYNC form', () => {
+    const src = readFileSync(resolve(__dirname, '../../compaction-usage.ts'), 'utf8');
+    expect(src).toMatch(/\blatestRespawnNativeSessionAsync\(ownerId\b/);
+    expect(src).not.toMatch(/\blatestRespawnNativeSession\(ownerId\b/);
   });
 });
 

@@ -4301,6 +4301,65 @@ describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
     expect(failing).toEqual({ rootPid: 100, error: { errorName: 'TypeError', errorCode: 'EIO' } });
   });
 
+  describe('footer evidence (WI-10005178)', () => {
+    const footer = (status: string) => `${status} · gpt-6-luna max · Context 100% left`;
+
+    it('a genuine Starting footer: state starting, no Ready after it, the booting MCP server named', () => {
+      const out = `\u001b[2J banner\r\n Starting MCP servers (1/2): tsenta\r\n\u001b[40;1H${footer('Starting')}`;
+      const ev = realHost.codexStartingFooterEvidence(out);
+      expect(ev).toMatchObject({
+        state: 'starting',
+        footerMatchCount: 1,
+        readyAfterLastFooter: false,
+        mcpLines: ['Starting MCP servers (1/2): tsenta'],
+      });
+      expect(ev?.lastMatches[0]).toMatchObject({ status: 'Starting', text: footer('Starting') });
+    });
+
+    it('a partial repaint: the verdict reads a stale Starting while Ready was painted after it', () => {
+      // Codex rewrote only the status word with cursor positioning; stripAnsi joins it
+      // onto the old footer, so the last COMPLETE footer is still the Starting one.
+      const out = `${footer('Starting')}\u001b[40;2HReady`;
+      // The host's own readiness check agrees: not ready.
+      expect(realHost.startupOutputReady('codex', out)).toBe(false);
+      const ev = realHost.codexStartingFooterEvidence(out);
+      expect(ev).toMatchObject({ state: 'starting', readyAfterLastFooter: true });
+      expect(ev?.rawTail).toContain('⎋[40;2HReady');
+      expect(ev?.rawTail).not.toContain('\u001b');
+    });
+
+    it('a full Ready repaint wins: state ready, matches in order', () => {
+      const ev = realHost.codexStartingFooterEvidence(`${footer('Starting')}\r\n${footer('Ready')}`);
+      expect(ev?.state).toBe('ready');
+      expect(ev?.lastMatches.map((m) => m.status)).toEqual(['Starting', 'Ready']);
+      expect(ev?.lastMatches[1].fromEnd).toBeLessThan(ev?.lastMatches[0].fromEnd ?? 0);
+    });
+
+    it('is bounded and redacted', () => {
+      const many = Array.from({ length: 10 }, () => footer('Starting')).join('\n');
+      const secretValue = ['abcdefghij', 'klmnopqrst', 'uvwxyz0123456789'].join('');
+      const ev = realHost.codexStartingFooterEvidence(
+        `${many}\nMCP Authorization: Bearer ${secretValue}\n${'x'.repeat(5_000)}`,
+        { tailChars: 100 },
+      );
+      expect(ev?.lastMatches).toHaveLength(4);
+      expect(ev?.rawTail.length).toBeLessThanOrEqual(201);
+      expect(JSON.stringify(ev)).not.toContain(secretValue);
+      expect(realHost.codexStartingFooterEvidence(undefined)).toBeNull();
+      expect(realHost.codexStartingFooterEvidence('no footer yet')).toMatchObject({ state: null, footerMatchCount: 0 });
+    });
+
+    it('rides on the snapshot: present when the pty output is passed, null otherwise', () => {
+      const readTail = () => null;
+      const withOutput = collectCodexStartingStuckSnapshot({
+        rootPid: 100, codexHome: '/h', platform: 'darwin', readFile, readDir, readTail, startupOutput: footer('Starting'),
+      });
+      expect(withOutput).toMatchObject({ footer: { state: 'starting', footerMatchCount: 1 } });
+      const without = collectCodexStartingStuckSnapshot({ rootPid: 100, codexHome: '/h', platform: 'darwin', readFile, readDir, readTail });
+      expect(without).toMatchObject({ footer: null });
+    });
+  });
+
   it('redacts credential-shaped text and bounds argv', () => {
     expect(redactSnapshotText('access_token=abc ghp_ABCDEFGHIJKLMNOPQRSTUV ok')).toBe('access_token=<redacted> <redacted> ok');
     expect(redactSnapshotText('x'.repeat(300), 10)).toBe(`${'x'.repeat(10)}…`);

@@ -34,7 +34,12 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import {
+  applyClaimPathReadDeps,
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { WORK_SELECTION_CENSUS, WORK_SELECTION_SEED_ROWS, type WorkSelectionSeedRow } from '../work-selection-census';
 import { isAgentWork } from './agent-work-predicate';
@@ -224,6 +229,10 @@ beforeAll(async () => {
     .simple();
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'agent-work-recurrence-guard.integration.test.ts' });
   await ensureCoordCapabilityTables(db.sql);
+  // The shared claim-path read dependencies (WI-10005130). LAST on purpose: every statement
+  // is IF NOT EXISTS, so it fills only what the hand-built tables and the event-substrate
+  // migrations above did not create; run first, those would fail with "already exists".
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
 }, 180_000);
 
 afterAll(async () => {

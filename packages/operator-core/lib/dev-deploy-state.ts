@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 import { type CellUnknown, cellUnknown, formatCellUnknown } from './cell-contract';
+import { resolveReleaseRoot } from './release/release-root';
 
 const pexec = promisify(execFile);
 
@@ -214,8 +215,9 @@ function resolveConfig(): Pick<
   // PAPERCUSP_INTEGRATION_ROOT is exported into the :3070 operator's unit env
   // (the release-gate cutover). Off that env, derive from cwd's git toplevel.
   const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT || gitToplevel();
-  const parent = path.dirname(integrationRoot);
-  const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
+  // WI-10005161: never `dirname(integrationRoot)` directly — on :3170 the integration
+  // root is the physical staging generation, whose sibling is not the release checkout.
+  const releaseRoot = resolveReleaseRoot({ integrationRoot });
   // staging→main model (staging-branch-pipeline-2026-06-06): the integration
   // branch (agent firehose) is `staging`; the green pin is the `main` BRANCH.
   // Field names below predate the rename and read generically: `stagingHead` = the

@@ -46,4 +46,28 @@ describe('pc-heavy preserves caller stdin across asynchronous supervision (EI-24
     expect(wrapped.status, wrapped.stderr).toBe(0);
     expect(wrapped.stdout).toBe(payload);
   });
+
+  it('executes stdin through the ordinary admission and preemption route', () => {
+    const wrapped = spawnSync('bash', [SCRIPT, '--', process.execPath, '--input-type=module'], {
+      ...pcHeavyFixtureOptions(dir, {
+        PATH: process.env.PATH ?? '',
+        PC_HEAVY_NO_SELF_COPY: '1',
+        PC_HEAVY_DIR: dir,
+        PC_HEAVY_SLOTS: '1',
+        PC_HEAVY_IONICE: '',
+        PC_HEAVY_PREEMPTIBLE: '1',
+        PC_HEAVY_PREEMPT_EXCLUSIVE: '0',
+        PC_HEAVY_PREEMPT_POLL_SEC: '0.02',
+        PC_HEAVY_PSI_ADMISSION: '0',
+        PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+        PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '4096',
+        PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: 'max',
+        PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '100',
+      }),
+      input: "process.stdout.write('ADMITTED_EVALUATOR_STARTED\\n');\n",
+      encoding: 'utf8', timeout: 10_000,
+    });
+    expect(wrapped.status, wrapped.stderr).toBe(0);
+    expect(wrapped.stdout).toBe('ADMITTED_EVALUATOR_STARTED\n');
+  });
 });

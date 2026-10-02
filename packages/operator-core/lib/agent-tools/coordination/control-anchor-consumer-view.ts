@@ -51,3 +51,41 @@ export function attestModeControlConsumerView(
     consumed: { modeId: intent.modeId, present: Array.isArray(modes) ? modes.includes(intent.modeId) : null },
   });
 }
+
+/** The path the consumer reads for the loop leg — NOT the `routines` row, the write target. */
+export const LOOP_CONSUMER_READ_PATH = 'harness_shared.session_briefs.control_state->loop';
+
+/** The loop slice of a refreshed `ControlAnchor` (every field optional, like `RefreshedModesView`). */
+export interface RefreshedLoopView {
+  state?: { loop?: { active?: boolean; intervalSec?: number | null } | null } | null;
+}
+
+export interface LoopConsumerObservation {
+  /** `null` = the consumer read returned nothing readable (refresh failed/timed out). */
+  active: boolean | null;
+  intervalSec: number | null;
+}
+
+/**
+ * `loop:arm` / `loop:end` commit to the `routines` loop row, then PROJECT `{ active,
+ * intervalSec }` into `control_state->loop` through the same fail-soft refresh as
+ * `mode:set`. A reader of the projection (the control anchor / wake-source verdict) sees
+ * the OLD loop when that refresh timed out while the arm reported `ok`. `written` is what
+ * the row now holds (for an arm: `{ active: true, intervalSec: <persisted> }`; for an end:
+ * `{ active: false, intervalSec: null }`).
+ */
+export function attestLoopControlConsumerView(
+  written: { active: boolean; intervalSec: number | null },
+  refreshed: RefreshedLoopView | null,
+): ConsumerView<LoopConsumerObservation> {
+  const loop = refreshed?.state?.loop;
+  const readable = loop != null && typeof loop.active === 'boolean';
+  return buildConsumerView<LoopConsumerObservation>({
+    readPath: LOOP_CONSUMER_READ_PATH,
+    written: { active: written.active, intervalSec: written.active ? written.intervalSec : null },
+    consumed: {
+      active: readable ? loop.active! : null,
+      intervalSec: readable && loop.active ? (loop.intervalSec ?? null) : null,
+    },
+  });
+}

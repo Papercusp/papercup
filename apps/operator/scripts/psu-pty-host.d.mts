@@ -785,9 +785,9 @@ export function readCodexTuiLogTail(codexHome: string | undefined, { readTail, m
     maxBytes?: number;
 }): CodexTuiLogTail | null;
 /** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
- * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail }} [options]
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail, startupOutput?: string }} [options]
  */
-export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readLink, readTail, }?: {
+export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readLink, readTail, startupOutput, }?: {
     rootPid?: number;
     codexHome?: string;
     platform?: string;
@@ -795,11 +795,26 @@ export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform
     readDir?: SnapshotReadDir;
     readLink?: (path: string) => unknown;
     readTail?: SnapshotReadTail;
+    startupOutput?: string;
 }): {
     rootPid: number | null | undefined;
     procs: any[];
     procsTruncated: boolean;
     log: CodexTuiLogTail | null;
+    footer: {
+        state: string | null;
+        footerMatchCount: number;
+        lastMatches: {
+            status: string;
+            fromEnd: number;
+            text: string;
+        }[];
+        readyAfterLastFooter: boolean;
+        startingAfterLastFooter: boolean;
+        mcpLines: string[];
+        visibleChars: number;
+        rawTail: string;
+    } | null;
     error?: undefined;
 } | {
     rootPid: number | null | undefined;
@@ -810,6 +825,7 @@ export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform
     procs?: undefined;
     procsTruncated?: undefined;
     log?: undefined;
+    footer?: undefined;
 };
 /** Small, non-secret error identity for durable host events. Exception messages can
  * contain command arguments or credentials; the local stderr keeps the full
@@ -2111,6 +2127,35 @@ export function makeScrollbackGuard(): {
     /** Flush whatever is held (child exit / teardown) so nothing is swallowed. */
     flush(): string;
 };
+/** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
+ * from. Measured 2026-10-02T01:40-01:44Z (su-6a2603be, codex home session-32862):
+ * the dropped child's own codex-tui.log shows session init, MCP resolution and the
+ * model websocket warmup all complete within ~6s of spawn, yet the host judged its
+ * footer `Starting` for 3m16s. Two readings fit that (WI-10004943 H1/H2): Codex
+ * genuinely kept painting `Starting` (an MCP server still booting, e.g. the
+ * OAuth-only `tsenta`), or a partial repaint wrote only the new status word so the
+ * last COMPLETE footer the regex can match is a stale `Starting`. This evidence
+ * separates them: `readyAfterLastFooter` true with state `starting` is the stale-read
+ * signature; `mcpLines` names a server Codex was still waiting on. Bounded and
+ * redacted, because host events reach a shared store. */
+export function codexStartingFooterEvidence(output: any, { maxMatches, tailChars, maxLineChars }?: {
+    maxMatches?: number | undefined;
+    tailChars?: number | undefined;
+    maxLineChars?: number | undefined;
+}): {
+    state: string | null;
+    footerMatchCount: number;
+    lastMatches: {
+        status: string;
+        fromEnd: number;
+        text: string;
+    }[];
+    readyAfterLastFooter: boolean;
+    startingAfterLastFooter: boolean;
+    mcpLines: string[];
+    visibleChars: number;
+    rawTail: string;
+} | null;
 export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, promptReady, }?: {
     enabled?: boolean | undefined;
     requireInitialOutput?: boolean | undefined;

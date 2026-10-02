@@ -45,6 +45,8 @@ export const LABEL_EPHEMERAL = 'papercusp-ephemeral';
 export const LABEL_RUN = 'papercusp-run';
 export const LABEL_MAXCOST = 'papercusp-maxcost-cents';
 export const LABEL_PROVISIONING = 'papercusp-provisioning';
+/** 'delete' (the default rail) or 'stop' (P-007 reclaim drills): what GCP does at reclaim and at the max-run deadline. */
+export const LABEL_ON_RECLAIM = 'papercusp-on-reclaim';
 
 /** USD, us-central1 on-demand, Cloud Billing Catalog API read 2026-09-30. */
 export const PRICES_2026_09_30 = {
@@ -189,6 +191,14 @@ export interface CreateSpec {
    * so a reclaim and the max-run-duration timer both delete it; it is priced at the measured spot rate.
    */
   spot?: boolean;
+  /**
+   * 'stop' (spot only, P-007 reclaim drills): GCP STOPS the VM at reclaim instead of deleting it, so its
+   * disk and saved agent state survive and the drill can measure the restart. GCP has one termination
+   * action for both reclaim and the max-run deadline, so the deadline then stops the VM too: it no longer
+   * self-deletes, its boot disk keeps costing (~0.10 USD per GB-month), and it stays in the census (status
+   * TERMINATED) until `teardown --run` deletes it. Default 'delete'.
+   */
+  onReclaim?: 'delete' | 'stop';
 }
 
 const LABEL_VALUE = /^[a-z0-9_-]{1,63}$/;
@@ -211,6 +221,10 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
   if (spec.maxHours > MAX_RUN_HOURS_CEILING) {
     throw new Error(`maxHours ${spec.maxHours} exceeds the ${MAX_RUN_HOURS_CEILING}h ceiling`);
   }
+  const onReclaim = spec.onReclaim ?? 'delete';
+  if (onReclaim === 'stop' && !spec.spot) {
+    throw new Error("onReclaim 'stop' needs a spot VM: an on-demand VM is never reclaimed, and 'stop' only removes its self-delete");
+  }
   const diskGb = spec.diskGb ?? DEFAULT_DISK_GB;
   const labels: Record<string, string> = {
     ...(spec.extraLabels ?? {}),
@@ -219,6 +233,7 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
     [LABEL_RUN]: spec.runId,
     [LABEL_MAXCOST]: String(worstCaseCents(spec.machineType, spec.maxHours, diskGb, { spot: spec.spot })),
     [LABEL_PROVISIONING]: spec.spot ? 'spot' : 'standard',
+    [LABEL_ON_RECLAIM]: onReclaim,
   };
   for (const [k, v] of Object.entries(labels)) assertLabelValue(k, v);
   const minutes = Math.round(spec.maxHours * 60);
@@ -239,7 +254,7 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
       : []),
     '--boot-disk-auto-delete',
     `--max-run-duration=${minutes}m`,
-    '--instance-termination-action=DELETE',
+    `--instance-termination-action=${onReclaim === 'stop' ? 'STOP' : 'DELETE'}`,
     `--labels=${Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(',')}`,
     '--format=json',
   ];
@@ -433,6 +448,11 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (cmd === 'create') {
+    const reclaimFlag = flag(argv, 'on-reclaim');
+    if (reclaimFlag !== undefined && reclaimFlag !== 'stop' && reclaimFlag !== 'delete') {
+      console.error(`--on-reclaim must be 'stop' or 'delete', got '${reclaimFlag}'`);
+      return 2;
+    }
     const spec: CreateSpec = {
       runId: flag(argv, 'run') ?? '',
       name: flag(argv, 'name') ?? '',
@@ -444,6 +464,7 @@ async function main(argv: string[]): Promise<number> {
       imageFamily: flag(argv, 'image-family'),
       imageProject: flag(argv, 'image-project'),
       spot: argv.includes('--spot'),
+      onReclaim: reclaimFlag as CreateSpec['onReclaim'],
     };
     const result = await createInstance(spec);
     console.log(JSON.stringify(result, null, 2));
@@ -454,7 +475,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(JSON.stringify(result, null, 2));
     return result.verified ? 0 : 4;
   }
-  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project= --spot] | teardown --run=');
+  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project= --spot [--on-reclaim=stop]] | teardown --run=');
   return 2;
 }
 

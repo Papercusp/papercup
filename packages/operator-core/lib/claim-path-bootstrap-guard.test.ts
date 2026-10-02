@@ -37,13 +37,7 @@ const SCHEMA_FIXTURE_IMPORT_RE = /from\s+['"][^'"]*test\/_work-items-schema['"]/
  * claim-path read dependency. Each entry needs a reason; remove it once the file calls
  * applyClaimPathReadDeps.
  */
-const ALLOW: ReadonlyMap<string, string> = new Map([
-  [
-    'work-nature/agent-work-recurrence-guard.integration.test.ts',
-    'in-flight file of WI-10005048 (another agent); its event-substrate migrations must ' +
-      'run before the helper, so its owner adds the call',
-  ],
-]);
+const ALLOW: ReadonlyMap<string, string> = new Map<string, string>([]);
 
 export type Classification =
   | { kind: 'not-claim-path' }

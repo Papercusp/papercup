@@ -5,6 +5,7 @@ import {
   committedWorstCaseCents,
   hourlyPriceUsd,
   LABEL_MAXCOST,
+  LABEL_ON_RECLAIM,
   LABEL_PROVISIONING,
   LABEL_RUN,
   MAX_CONCURRENT_WORST_CASE_USD,
@@ -71,6 +72,24 @@ describe('buildCreateArgs', () => {
     expect(labels[LABEL_PROVISIONING]).toBe('spot');
     expect(labels[LABEL_MAXCOST]).toBe(String(worstCaseCents('e2-standard-4', 4, undefined, { spot: true })));
     expect(Number(labels[LABEL_MAXCOST])).toBeLessThan(worstCaseCents('e2-standard-4', 4));
+  });
+
+  it('starts a P-007 drill VM that GCP stops (not deletes) at reclaim, and labels it so the census can tell', () => {
+    const args = buildCreateArgs({ ...spec, spot: true, onReclaim: 'stop' });
+    expect(args).toContain('--provisioning-model=SPOT');
+    expect(flagValue(args, 'instance-termination-action')).toBe('STOP');
+    expect(flagValue(args, 'max-run-duration')).toBe('240m');
+    const labels = Object.fromEntries(flagValue(args, 'labels')!.split(',').map((kv) => kv.split('=')));
+    expect(labels[LABEL_ON_RECLAIM]).toBe('stop');
+    expect(labels[LABEL_RUN]).toBe('cal-1');
+    // Every other VM keeps the self-delete rail, and says so on its label.
+    const plain = buildCreateArgs({ ...spec, spot: true });
+    expect(flagValue(plain, 'instance-termination-action')).toBe('DELETE');
+    expect(Object.fromEntries(flagValue(plain, 'labels')!.split(',').map((kv) => kv.split('=')))[LABEL_ON_RECLAIM]).toBe('delete');
+  });
+
+  it('refuses stop-on-reclaim for an on-demand VM, where it would only remove the self-delete rail', () => {
+    expect(() => buildCreateArgs({ ...spec, onReclaim: 'stop' })).toThrow(/needs a spot VM/);
   });
 
   it('starts an on-demand VM without the SPOT model', () => {

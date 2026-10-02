@@ -27,6 +27,7 @@ export {
   deriveRecipeAuthority,
   findVolatileCoordinationOwnerId,
   findVolatileRunArtifactLiteral,
+  findVolatileSessionIdLiteral,
   findVolatileTaskIdLiteral,
 } from './recipe-authority-derive';
 export type {
@@ -478,6 +479,13 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'control an unrelated/ended task while appearing to audit the current lane. Declare the task handle as a ' +
         'runtime binding or resolve it from live process authority each run; no authority proof can make a frozen ' +
         'task id reusable.'
+      );
+    case 'volatile-session-id-literal':
+      return (
+        `the recipe script embeds the native session id \`${cause.sessionId}\` as a fixed session value, ` +
+        'which names one reporter rather than the current caller. Reusing the recipe can return a plausible empty ' +
+        'log for the wrong session; declare the id as a validated runtime binding or resolve the current session ' +
+        'from live context each run.'
       );
     case 'volatile-coordination-owner-id':
       return (

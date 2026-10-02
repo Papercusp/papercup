@@ -141,6 +141,8 @@ describe('scenario registry', () => {
       'su-S35-completion-clean',
       'su-S35-completion-proof-missing',
       'su-S35-completion-residue',
+      // S36 drain claims only agent work (enterprise-data-sources-2026-10-01 P-012, R-6)
+      'su-S36-drain-claims-only-agent-work',
       // pui-loop — the owned loop's su-derived prompt profile (D-034)
       'pui-loop-P01-owned-door-read',
       // onboarding-tutor scenario suite (onboarding-tutor target)

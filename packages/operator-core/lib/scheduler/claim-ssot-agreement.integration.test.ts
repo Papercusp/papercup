@@ -972,7 +972,10 @@ describe('work_items:claimable primitives — the survivors COUNT === the row LI
     // 3. both equal what the REAL inline claim path drains (no rig/own-node/lease divergence here).
     expect(await drainInlineClaimIds()).toEqual(expected);
     // the floors genuinely removed rows (matched pre-floor strictly exceeds the survivors)…
-    expect(breakdown.matchedByFilter).toBe(9);
+    // 8, not 9: WI-OBS2 (lane=observation) is no longer a FLOORED row. Since P-009
+    // (enterprise-data-sources-2026-10-01 D-022) the work predicate removes it in baseWhere,
+    // BEFORE the pre-floor census; the absence loop below still proves it never survives.
+    expect(breakdown.matchedByFilter).toBe(8);
     expect(breakdown.matchedByFilter).toBeGreaterThan(breakdown.claimable);
     // …and every floored row is absent from the survivors list.
     for (const floored of ['WI-TAKEN2', 'WI-HOLD2', 'WI-NH2', 'WI-OBS2', 'WI-DONE2', 'WI-ACTIVE2']) {
