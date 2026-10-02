@@ -78,6 +78,16 @@ vi.mock('../../carry-note', () => ({
     readFailed: false,
   })),
 }));
+// EI-24899961156406639: the cold-carry host check. Defaults to an AVAILABLE host so every
+// pre-existing cold-carry test sees no unexpected coldCarryNoHostWarning; per-test override
+// simulates a hostless session. importOriginal keeps psu-pty-discovery's other exports intact.
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../events/await/psu-pty-discovery')>();
+  return {
+    ...actual,
+    selfCompactionAvailability: vi.fn(() => ({ available: true, reason: null, host: {} as never })),
+  };
+});
 vi.mock('../../harness/routines/loop', () => ({
   LOOP_INTERVAL_FLOOR_SEC: 60,
   buildLoopWakePrompt: vi.fn(() => 'kickoff-prompt'),
@@ -187,6 +197,7 @@ import {
 import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 import { mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
+import { selfCompactionAvailability } from '../../events/await/psu-pty-discovery';
 import {
   mockRejectedTyped,
   mockResolvedOnceTyped,
@@ -218,6 +229,7 @@ const eventReachabilityM = vi.mocked(readEventConditionReachability);
 // (non-async) describe callback, and this file's describes are synchronous.
 const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
 const carryNoteM = vi.mocked(getLoopCarryNoteWithMeta);
+const selfCompactionM = vi.mocked(selfCompactionAvailability);
 const wakeModeM = vi.mocked((await import('../coordination/wake-mode')).resolveWakeMode);
 const tool = (await import('./arm')).default;
 
@@ -1625,6 +1637,49 @@ describe('loop:arm — EI-21542193720279374 part (b): cold-with-no-carry-note wa
     expect(b.ok).toBe(true);
     expect(b.coldNoCarryNoteWarning).toBeNull();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[loop:arm] cold-carry-note check failed'));
+  });
+});
+
+describe('loop:arm — EI-24899961156406639: cold carry on a session with no carry-respawn host warns (additive, no refusal)', () => {
+  it('carry cold + NO live psu-pty host ⇒ warning in the note AND the structured field, reason named, loop still arms', async () => {
+    selfCompactionM.mockReturnValueOnce({ available: false, reason: 'no_live_pty_host', host: null });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.ok).toBe(true); // warn-only — headless fleet members arm cold by design
+    expect(b.coldCarryNoHostWarning).toContain('no live psu-pty host');
+    expect(b.coldCarryNoHostWarning).toContain('no_live_pty_host');
+    expect(b.coldCarryNoHostWarning).toContain('NOT guaranteed to start on a fresh context');
+    expect(b.note).toContain('no live psu-pty host able to carry-respawn');
+    expect(selfCompactionM).toHaveBeenCalledWith('su-caller-own-id');
+  });
+
+  it('a live host that PREDATES carry-respawn is the same hole — the warning names that reason', async () => {
+    selfCompactionM.mockReturnValueOnce({ available: false, reason: 'host_predates_carry_respawn', host: {} as never });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.coldCarryNoHostWarning).toContain('host_predates_carry_respawn');
+  });
+
+  it('POSITIVE CONTROL: carry cold + a carry-respawn-capable host ⇒ no warning', async () => {
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.coldCarryNoHostWarning).toBeNull();
+    expect(b.note).not.toContain('no live psu-pty host able to carry-respawn');
+    expect(selfCompactionM).toHaveBeenCalledTimes(1);
+  });
+
+  it('carry warm ⇒ the host predicate is never consulted (the check is cold-only)', async () => {
+    const b = body(await call({ carry: 'warm' }));
+    expect(b.coldCarryNoHostWarning).toBeNull();
+    expect(selfCompactionM).not.toHaveBeenCalled();
+  });
+
+  it('a throw from the host predicate is fail-soft — the loop still arms with no warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    selfCompactionM.mockImplementationOnce(() => {
+      throw new Error('psu-pty dir unreadable');
+    });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.ok).toBe(true);
+    expect(b.coldCarryNoHostWarning).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[loop:arm] cold-carry host check failed'));
   });
 });
 
