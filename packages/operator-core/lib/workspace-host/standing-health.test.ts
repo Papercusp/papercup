@@ -4,7 +4,9 @@ import type { WorkspaceHostAgentCredentialExpiryReading } from './agent-credenti
 import type { WorkspaceHostSoakInstanceReading, WorkspaceHostSoakReachOutcome, WorkspaceHostSoakSubject } from './soak';
 import {
   probeWorkspaceHostStandingHealth,
+  runWorkspaceHostSpotReclaimSweep,
   runWorkspaceHostStandingHealthPass,
+  type WorkspaceHostSpotReclaimSweepRuntime,
   workspaceHostReclaimOperationId,
   workspaceHostSpotReclaimed,
   workspaceHostStandingHealthIsFresh,
@@ -448,5 +450,100 @@ describe('spot reclaim recovery (WI-10005210)', () => {
     expect(steps).toEqual(['standing-health-list', `standing-health-host:${WS}:h`]);
     expect(result.outcomes[0]).toMatchObject({ kind: 'attested', status: 'unreachable' });
     expect(result.outcomes[0]).not.toHaveProperty('recovery');
+  });
+
+  describe('the 2-minute spot-reclaim sweep (D-028)', () => {
+    function sweep(spotHosts: string[], hosts: Record<string, HostScript>) {
+      const base = fakeRuntime([], hosts);
+      const reclaim = reclaimSeams({ kind: 'restart', operationId: 'op-sweep', input: { action: 'start' } });
+      const runtime: WorkspaceHostSpotReclaimSweepRuntime = {
+        step: base.runtime.step,
+        controllerId: CONTROLLER,
+        listSpotTargets: async (controllerId) => {
+          expect(controllerId).toBe(CONTROLLER);
+          return spotHosts.map((hostId) => ({ workspaceId: WS, hostId }));
+        },
+        resolveSeams: base.runtime.resolveSeams,
+        recordHealth: base.runtime.recordHealth,
+        now: base.runtime.now,
+        reclaim: reclaim.seams,
+      };
+      return { ...base, runtime, prepared: reclaim.prepared, enqueued: reclaim.enqueued };
+    }
+
+    it('costs one provider read for a spot host that is up: no IAP reach, no health write, no restart', async () => {
+      const { runtime, steps, recorded, reachSubjects, prepared } = sweep(['up'], { up: { reading: spot('RUNNING') } });
+      const result = await runWorkspaceHostSpotReclaimSweep(runtime);
+      expect(steps).toEqual(['spot-reclaim-list', `spot-reclaim-read:${WS}:up`]);
+      expect(recorded).toEqual([]);
+      expect(reachSubjects).toEqual([]);
+      expect(prepared).toEqual([]);
+      expect(result).toEqual({
+        controllerId: CONTROLLER,
+        outcomes: [{ kind: 'not-reclaimed', workspaceId: WS, hostId: 'up', status: 'RUNNING' }],
+      });
+    });
+
+    it('attests and restarts a reclaimed host through the standing pass steps and operation id, without an IAP reach', async () => {
+      const { runtime, steps, recorded, reachSubjects, prepared, enqueued } = sweep(['down', 'up'], {
+        down: { reading: spot('TERMINATED') },
+        up: { reading: spot('RUNNING') },
+      });
+      const result = await runWorkspaceHostSpotReclaimSweep(runtime);
+      expect(steps).toEqual([
+        'spot-reclaim-list',
+        `spot-reclaim-read:${WS}:down`,
+        `standing-health-host:${WS}:down`,
+        `standing-health-reclaim:${WS}:down`,
+        `spot-reclaim-read:${WS}:up`,
+      ]);
+      expect(reachSubjects).toEqual([]);
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]!.attestation).toMatchObject({ hostId: 'down', status: 'unreachable' });
+      expect(recorded[0]!.attestation.checks).toContainEqual(
+        expect.objectContaining({ name: WORKSPACE_HOST_SPOT_RECLAIMED_CHECK, ok: false }),
+      );
+      expect(prepared).toEqual([
+        { hostId: 'down', operationId: workspaceHostReclaimOperationId({ workspaceId: WS, hostId: 'down' }, NOW.getTime()) },
+      ]);
+      expect(enqueued).toEqual([{ operationId: 'op-sweep', input: { action: 'start' } }]);
+      expect(result.outcomes[0]).toMatchObject({
+        kind: 'attested',
+        hostId: 'down',
+        recovery: { kind: 'restart-enqueued', operationId: 'op-sweep' },
+      });
+    });
+
+    it('leaves an absent or unreadable spot host to the standing pass instead of attesting it every 2 minutes', async () => {
+      const { runtime, recorded, prepared } = sweep(['gone', 'blind', 'unresolved'], {
+        gone: { reading: { kind: 'absent' } },
+        blind: { reading: new Error('403 compute.instances.get denied') },
+        unresolved: { seamsError: new Error('gcp_workspace_host_hosted_connection_missing') },
+      });
+      const result = await runWorkspaceHostSpotReclaimSweep(runtime);
+      expect(recorded).toEqual([]);
+      expect(prepared).toEqual([]);
+      expect(result.outcomes).toEqual([
+        { kind: 'not-reclaimed', workspaceId: WS, hostId: 'gone', status: 'absent' },
+        { kind: 'unread', workspaceId: WS, hostId: 'blind', detail: '403 compute.instances.get denied' },
+        { kind: 'unread', workspaceId: WS, hostId: 'unresolved', detail: 'gcp_workspace_host_hosted_connection_missing' },
+      ]);
+    });
+
+    it("the sweep's attestation is fresh at the next standing pass, so the pass does not attest or restart the host again", async () => {
+      const { runtime, recorded } = sweep(['down'], { down: { reading: spot('TERMINATED') } });
+      await runWorkspaceHostSpotReclaimSweep(runtime);
+      const attestedAt = recorded[0]!.attestation.observedAt;
+      // The next standing pass, at most one sweep interval later, lists the host with that timestamp.
+      const nextPassMs = NOW.getTime() + 2 * 60_000;
+      expect(workspaceHostStandingHealthIsFresh(target('down', attestedAt), nextPassMs)).toBe(true);
+      const standing = fakeRuntime([target('down', attestedAt)], { down: { reading: spot('TERMINATED') } });
+      standing.runtime.now = () => new Date(nextPassMs);
+      const reclaim = reclaimSeams({ kind: 'restart', operationId: 'op-standing', input: {} });
+      standing.runtime.reclaim = reclaim.seams;
+      const result = await runWorkspaceHostStandingHealthPass(standing.runtime);
+      expect(result.outcomes).toEqual([{ kind: 'skipped-fresh', workspaceId: WS, hostId: 'down', attestedAt }]);
+      expect(reclaim.prepared).toEqual([]);
+    });
   });
 });

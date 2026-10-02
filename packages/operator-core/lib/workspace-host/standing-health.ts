@@ -49,6 +49,12 @@ import {
 export const WORKSPACE_HOST_STANDING_HEALTH_CRONTAB = '*/15 * * * *';
 /** A host attested more recently than this is skipped (an active soak owns its health). */
 export const WORKSPACE_HOST_STANDING_HEALTH_FRESH_MS = 10 * 60_000;
+/**
+ * Cadence of the spot-reclaim sweep (WI-10005210, D-028). A reclaimed spot host stays down until
+ * something restarts it, so at the standing cadence it could sit down for up to 15 minutes. The
+ * sweep costs one provider read per live SPOT host and nothing else while those hosts are up.
+ */
+export const WORKSPACE_HOST_SPOT_RECLAIM_CRONTAB = '*/2 * * * *';
 /** The `soakId` slot of the reach subject; the standing pass is not a soak and stores no samples. */
 export const WORKSPACE_HOST_STANDING_HEALTH_SUBJECT_ID = 'standing-health';
 
@@ -302,26 +308,108 @@ export async function runWorkspaceHostStandingHealthPass(
       outcomes.push({ kind: 'skipped-fresh', workspaceId, hostId, attestedAt: target.healthAttestedAt! });
       continue;
     }
-    const outcome = await runtime.step(
-      `standing-health-host:${workspaceId}:${hostId}`,
-      async (): Promise<WorkspaceHostStandingHealthOutcome> => {
-        const attestation = await probeWorkspaceHostStandingHealth({ workspaceId, hostId }, runtime);
-        try {
-          await runtime.recordHealth(workspaceId, attestation);
-        } catch (error) {
-          return { kind: 'record-failed', workspaceId, hostId, error: errorDetail(error) };
-        }
-        return { kind: 'attested', workspaceId, hostId, status: attestation.status, checks: attestation.checks };
-      },
+    outcomes.push(await attestAndRecoverHost(runtime, { workspaceId, hostId }, listed.nowMs));
+  }
+  return { controllerId: runtime.controllerId, outcomes };
+}
+
+/** A host that was probed: attested (with any reclaim recovery) or not recorded. */
+type WorkspaceHostProbedOutcome = Exclude<WorkspaceHostStandingHealthOutcome, { kind: 'skipped-fresh' }>;
+
+/**
+ * Probe and attest one host in its own step, then restart it if the attestation shows a spot
+ * reclaim. Shared by the standing pass and the spot-reclaim sweep, so a reclaim is written and
+ * restarted the same way whichever of them saw it first.
+ */
+async function attestAndRecoverHost(
+  runtime: Pick<WorkspaceHostStandingHealthRuntime, 'step' | 'resolveSeams' | 'recordHealth' | 'now' | 'reclaim'>,
+  target: { workspaceId: string; hostId: string },
+  passNowMs: number,
+): Promise<WorkspaceHostProbedOutcome> {
+  const { workspaceId, hostId } = target;
+  const outcome = await runtime.step(
+    `standing-health-host:${workspaceId}:${hostId}`,
+    async (): Promise<WorkspaceHostProbedOutcome> => {
+      const attestation = await probeWorkspaceHostStandingHealth(target, runtime);
+      try {
+        await runtime.recordHealth(workspaceId, attestation);
+      } catch (error) {
+        return { kind: 'record-failed', workspaceId, hostId, error: errorDetail(error) };
+      }
+      return { kind: 'attested', workspaceId, hostId, status: attestation.status, checks: attestation.checks };
+    },
+  );
+  const reclaimed =
+    outcome.kind === 'attested' &&
+    outcome.checks.some((check) => check.name === WORKSPACE_HOST_SPOT_RECLAIMED_CHECK && check.ok === false);
+  if (reclaimed && runtime.reclaim) {
+    return { ...outcome, recovery: await recoverReclaimedHost(runtime, runtime.reclaim, target, passNowMs) };
+  }
+  return outcome;
+}
+
+export interface WorkspaceHostSpotReclaimSweepRuntime
+  extends Pick<WorkspaceHostStandingHealthRuntime, 'step' | 'controllerId' | 'resolveSeams' | 'recordHealth' | 'now'> {
+  /** Live SPOT hosts this controller holds authority for (`listWorkspaceHostSpotReclaimTargets`). */
+  listSpotTargets(controllerId: string): Promise<{ workspaceId: string; hostId: string }[]>;
+  reclaim: WorkspaceHostReclaimRestartSeams;
+}
+
+/**
+ * What the sweep saw for one spot host. Only a reclaimed host is attested, so a spot host that is
+ * up (or absent, or could not be read) leaves its health to the standing pass, which attests it
+ * with full reach and says why it is unknown.
+ */
+export type WorkspaceHostSpotReclaimSweepOutcome =
+  | { kind: 'not-reclaimed'; workspaceId: string; hostId: string; status: string }
+  | { kind: 'unread'; workspaceId: string; hostId: string; detail: string }
+  | WorkspaceHostProbedOutcome;
+
+export interface WorkspaceHostSpotReclaimSweepResult {
+  controllerId: string;
+  outcomes: WorkspaceHostSpotReclaimSweepOutcome[];
+}
+
+type SpotReclaimReading = { kind: 'reclaimed' } | { kind: 'not-reclaimed'; status: string } | { kind: 'unread'; detail: string };
+
+async function readSpotReclaim(
+  runtime: Pick<WorkspaceHostSpotReclaimSweepRuntime, 'resolveSeams'>,
+  target: { workspaceId: string; hostId: string },
+): Promise<SpotReclaimReading> {
+  let reading: WorkspaceHostSoakInstanceReading;
+  try {
+    reading = await (await runtime.resolveSeams(target)).readInstance();
+  } catch (error) {
+    return { kind: 'unread', detail: errorDetail(error) };
+  }
+  if (reading.kind === 'unreadable') return { kind: 'unread', detail: reading.detail };
+  if (workspaceHostSpotReclaimed(reading)) return { kind: 'reclaimed' };
+  return { kind: 'not-reclaimed', status: reading.kind === 'absent' ? 'absent' : reading.status };
+}
+
+/**
+ * The spot-reclaim sweep (WI-10005210, D-028): read each live spot host's instance from the
+ * provider, in its own step. A host that is up costs that one read: no IAP reach and no health
+ * write. A reclaimed host is attested and restarted exactly as the standing pass would do it, and
+ * that fresh attestation makes the next standing pass skip the host instead of acting twice.
+ */
+export async function runWorkspaceHostSpotReclaimSweep(
+  runtime: WorkspaceHostSpotReclaimSweepRuntime,
+): Promise<WorkspaceHostSpotReclaimSweepResult> {
+  const listed = await runtime.step('spot-reclaim-list', async () => ({
+    targets: await runtime.listSpotTargets(runtime.controllerId),
+    nowMs: runtime.now().getTime(),
+  }));
+  const outcomes: WorkspaceHostSpotReclaimSweepOutcome[] = [];
+  for (const { workspaceId, hostId } of listed.targets) {
+    const target = { workspaceId, hostId };
+    const reading = await runtime.step(`spot-reclaim-read:${workspaceId}:${hostId}`, () =>
+      readSpotReclaim(runtime, target),
     );
-    const reclaimed =
-      outcome.kind === 'attested' &&
-      outcome.checks.some((check) => check.name === WORKSPACE_HOST_SPOT_RECLAIMED_CHECK && check.ok === false);
-    if (reclaimed && runtime.reclaim) {
-      const recovery = await recoverReclaimedHost(runtime, runtime.reclaim, { workspaceId, hostId }, listed.nowMs);
-      outcomes.push({ ...outcome, recovery });
+    if (reading.kind === 'reclaimed') {
+      outcomes.push(await attestAndRecoverHost(runtime, target, listed.nowMs));
     } else {
-      outcomes.push(outcome);
+      outcomes.push({ ...reading, workspaceId, hostId });
     }
   }
   return { controllerId: runtime.controllerId, outcomes };
@@ -335,7 +423,7 @@ type PreparedReclaim = WorkspaceHostReclaimRestartPlan | { kind: 'error'; error:
  * beside a stop, repair or destroy another operation already holds.
  */
 async function recoverReclaimedHost(
-  runtime: WorkspaceHostStandingHealthRuntime,
+  runtime: Pick<WorkspaceHostStandingHealthRuntime, 'step'>,
   reclaim: WorkspaceHostReclaimRestartSeams,
   target: { workspaceId: string; hostId: string },
   passNowMs: number,

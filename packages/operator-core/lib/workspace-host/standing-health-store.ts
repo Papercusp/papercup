@@ -122,3 +122,32 @@ export async function listWorkspaceHostStandingHealthTargets(
     healthAttestedAt: isoOrNull(row.health_attested_at),
   }));
 }
+
+/**
+ * The `desired_spec.provider.provisioningModel` value of a spot host (gcp-provider.ts
+ * `GCP_WORKSPACE_HOST_PROVISIONING_MODELS`; an absent value means `standard`). Only GCP provisions
+ * spot hosts today.
+ */
+export const WORKSPACE_HOST_SPOT_PROVISIONING_MODEL = 'spot';
+
+/**
+ * Every live SPOT host whose controller authority is `controllerId`, for the spot-reclaim sweep
+ * (WI-10005210). The same authority and liveness rules as the standing list, narrowed to spot, so
+ * the 2-minute sweep never reads an on-demand host the cloud cannot reclaim.
+ */
+export async function listWorkspaceHostSpotReclaimTargets(
+  controllerId: string,
+  sql?: Sql,
+): Promise<{ workspaceId: string; hostId: string }[]> {
+  const db = sql ?? getOrgPg().sql;
+  const rows = await db<Array<{ workspace_id: string; id: string }>>`
+    SELECT workspace_id, id
+      FROM harness_shared.workspace_hosts
+     WHERE controller_id = ${controllerId}
+       AND target = 'gcp'
+       AND desired_state = ANY(${[...WORKSPACE_HOST_STANDING_HEALTH_DESIRED_STATES] as string[]}::text[])
+       AND desired_spec -> 'provider' ->> 'provisioningModel' = ${WORKSPACE_HOST_SPOT_PROVISIONING_MODEL}
+     ORDER BY workspace_id, id
+  `;
+  return rows.map((row) => ({ workspaceId: row.workspace_id, hostId: row.id }));
+}

@@ -12,8 +12,13 @@ vi.mock('@dbos-inc/dbos-sdk', () => ({
   },
 }));
 
-import { WORKSPACE_HOST_STANDING_HEALTH_CRONTAB } from '../workspace-host/standing-health';
-import { WORKSPACE_HOST_HEALTH_WORKFLOW_NAME, workspaceHostStandingHealthSummary } from './workspace-host-health-workflow';
+import { WORKSPACE_HOST_SPOT_RECLAIM_CRONTAB, WORKSPACE_HOST_STANDING_HEALTH_CRONTAB } from '../workspace-host/standing-health';
+import {
+  WORKSPACE_HOST_HEALTH_WORKFLOW_NAME,
+  WORKSPACE_HOST_SPOT_RECLAIM_WORKFLOW_NAME,
+  workspaceHostSpotReclaimSweepSummary,
+  workspaceHostStandingHealthSummary,
+} from './workspace-host-health-workflow';
 
 describe('workspace-host standing health workflow', () => {
   it('is registered as a 15-minute DBOS schedule under its workflow name', () => {
@@ -64,6 +69,53 @@ describe('workspace-host standing health workflow', () => {
         ' | w/a=unreachable (spot reclaimed, restart enqueued op-1)' +
         ' | w/b=unreachable (spot reclaimed, restart skipped: another lifecycle operation holds the host)' +
         ' | w/c=unreachable (spot reclaimed, restart FAILED: quota)',
+    );
+  });
+});
+
+describe('workspace-host spot-reclaim sweep workflow (WI-10005210, D-028)', () => {
+  it('is registered as a 2-minute DBOS schedule under its own workflow name', () => {
+    expect(WORKSPACE_HOST_SPOT_RECLAIM_CRONTAB).toBe('*/2 * * * *');
+    expect(WORKSPACE_HOST_SPOT_RECLAIM_WORKFLOW_NAME).not.toBe(WORKSPACE_HOST_HEALTH_WORKFLOW_NAME);
+    expect(scheduled).toContainEqual({
+      name: WORKSPACE_HOST_SPOT_RECLAIM_WORKFLOW_NAME,
+      crontab: WORKSPACE_HOST_SPOT_RECLAIM_CRONTAB,
+    });
+  });
+
+  it('stays quiet every 2 minutes while no spot host was reclaimed, even if one could not be read', () => {
+    expect(
+      workspaceHostSpotReclaimSweepSummary({
+        controllerId: 'c',
+        outcomes: [
+          { kind: 'not-reclaimed', workspaceId: 'w', hostId: 'up', status: 'RUNNING' },
+          { kind: 'unread', workspaceId: 'w', hostId: 'blind', detail: '403' },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it('names each reclaimed host with what was done about it, and any attestation that was not recorded', () => {
+    expect(
+      workspaceHostSpotReclaimSweepSummary({
+        controllerId: 'c',
+        outcomes: [
+          { kind: 'not-reclaimed', workspaceId: 'w', hostId: 'up', status: 'RUNNING' },
+          {
+            kind: 'attested',
+            workspaceId: 'w',
+            hostId: 'down',
+            status: 'unreachable',
+            checks: [],
+            recovery: { kind: 'restart-enqueued', operationId: 'op-1' },
+          },
+          { kind: 'record-failed', workspaceId: 'w', hostId: 'down2', error: 'connection closed' },
+        ],
+      }),
+    ).toBe(
+      '[workspace-host-spot-reclaim] c: 3 spot host(s) read' +
+        ' | w/down=unreachable (spot reclaimed, restart enqueued op-1)' +
+        ' | w/down2 record failed: connection closed',
     );
   });
 });
