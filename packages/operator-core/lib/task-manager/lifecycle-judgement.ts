@@ -888,7 +888,10 @@ export async function runLifecycleJudgementSweep(
   // `spawnAgentInHarness` accepts a pre-minted spawnId, so the child owns exactly
   // the same claims when it starts and can idempotently claim them again in its brief.
   const spawnId = `s-${nowMs}-${randomUUID().slice(0, 8)}`;
-  const claimed = await deps.claimOpenCandidateItems(open, spawnId);
+  // The spawned operator's work-item caller identity is role-qualified. Store
+  // that exact owner id so the judge can complete the candidate it was assigned.
+  const judgeOwnerId = `system:${LIFECYCLE_JUDGE_ROLE}/${spawnId}`;
+  const claimed = await deps.claimOpenCandidateItems(open, judgeOwnerId);
   if (claimed.length === 0) {
     return {
       rowsInspected: rows.length,
@@ -915,7 +918,7 @@ export async function runLifecycleJudgementSweep(
   // preclaim to a child. Compare-and-release only our own claims; a concurrent
   // holder can never be cleared by this recovery path.
   if (!spawned.ok || spawned.deduped || spawned.spawnId !== spawnId) {
-    await deps.releaseCandidateItems(claimed, spawnId);
+    await deps.releaseCandidateItems(claimed, judgeOwnerId);
   }
   return {
     rowsInspected: rows.length,
