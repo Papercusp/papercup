@@ -4168,6 +4168,104 @@ describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
     expect(truncated).toBe(true);
   });
 
+  it('decodes IPv4, v4-mapped IPv6 and plain IPv6 /proc/net addresses (little-endian words)', () => {
+    expect(decodeProcNetAddress('0100007F:23D3')).toBe('127.0.0.1:9171');
+    expect(decodeProcNetAddress('22D8B85D:01BB')).toBe('93.184.216.34:443');
+    expect(decodeProcNetAddress('0000000000000000FFFF00000100007F:236F')).toBe('127.0.0.1:9071');
+    expect(decodeProcNetAddress('00000000000000000000000001000000:0050')).toBe('[0:0:0:0:0:0:0:1]:80');
+  });
+
+  describe('WI-10005178: socket inventory of a stuck process', () => {
+    const tcpHeader = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+    const tcpRow = (sl: number, rem: string, st: string, inode: number) =>
+      `   ${sl}: 0100007F:A1B${sl} ${rem} ${st} 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0`;
+    const files: Record<string, string> = {
+      '/proc/200/net/tcp': [
+        tcpHeader,
+        tcpRow(0, '0100007F:23D3', '01', 5001),
+        tcpRow(1, '0100007F:23D3', '01', 5002),
+        tcpRow(2, '22D8B85D:01BB', '02', 5003),
+        tcpRow(3, '0100007F:0050', '01', 9999), // another process's socket
+      ].join('\n'),
+      '/proc/200/net/tcp6': [
+        tcpHeader,
+        '   0: 00000000000000000000000000000000:A1B6 0000000000000000FFFF00000100007F:236F 01 00000000:00000000 00:00000000 00000000  1000        0 5004 1 0',
+      ].join('\n'),
+      '/proc/200/net/unix': [
+        'Num       RefCount Protocol Flags    Type St Inode Path',
+        '0000000000000000: 00000002 00000000 00010000 0001 01 5005 /run/x.sock',
+      ].join('\n'),
+    };
+    const fdLinks: Record<string, string> = {
+      '/proc/200/fd/0': '/dev/pts/3',
+      '/proc/200/fd/1': 'pipe:[77]',
+      '/proc/200/fd/2': 'socket:[6000]',
+      '/proc/200/fd/10': 'socket:[5001]',
+      '/proc/200/fd/11': 'socket:[5002]',
+      '/proc/200/fd/12': 'socket:[5003]',
+      '/proc/200/fd/13': 'socket:[5004]',
+      '/proc/200/fd/14': 'socket:[5005]',
+      '/proc/200/ns/net': 'net:[4026531840]',
+      '/proc/300/fd/5': 'socket:[5003]',
+      '/proc/300/ns/net': 'net:[4026531840]',
+    };
+    const fdDirs: Record<string, string[]> = {
+      '/proc/200/fd': ['0', '1', '2', '10', '11', '12', '13', '14'],
+      '/proc/300/fd': ['5'],
+    };
+    const reads: string[] = [];
+    const sockReadFile = ((path: string) => {
+      reads.push(path);
+      const value = files[path];
+      if (value === undefined) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
+      return value;
+    }) as unknown as FakeReadFile;
+    const sockReadDir = ((path: string) => {
+      const value = fdDirs[path];
+      if (!value) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
+      return value;
+    }) as unknown as FakeReadDir;
+    const readLink = (path: string) => {
+      const value = fdLinks[path];
+      if (value === undefined) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
+      return value;
+    };
+
+    it('groups TCP peers by remote and state, counts unix sockets, and ignores other processes\' rows', () => {
+      reads.length = 0;
+      const netCache = new Map();
+      const sockets = collectProcSockets(200, { readFile: sockReadFile, readDir: sockReadDir, readLink, netCache });
+      expect(sockets).toEqual({
+        total: 6,
+        tcp: [
+          { remote: '127.0.0.1:9171', state: 'ESTABLISHED', count: 2 },
+          { remote: '93.184.216.34:443', state: 'SYN_SENT', count: 1 },
+          { remote: '127.0.0.1:9071', state: 'ESTABLISHED', count: 1 },
+        ],
+        unix: 1,
+        other: 1,
+      });
+      // A second process in the same namespace reuses the parsed tables.
+      const sibling = collectProcSockets(300, { readFile: sockReadFile, readDir: sockReadDir, readLink, netCache });
+      expect(sibling?.tcp).toEqual([{ remote: '93.184.216.34:443', state: 'SYN_SENT', count: 1 }]);
+      expect(reads.filter((p) => p.startsWith('/proc/300/net/'))).toEqual([]);
+    });
+
+    it('bounds the peer list and reports how many were cut', () => {
+      const sockets = collectProcSockets(200, { readFile: sockReadFile, readDir: sockReadDir, readLink, maxTcp: 1 });
+      expect(sockets?.tcp).toEqual([{ remote: '127.0.0.1:9171', state: 'ESTABLISHED', count: 2 }]);
+      expect(sockets?.tcpTruncated).toBe(2);
+    });
+
+    it('returns null when the fd list is unreadable, and an empty inventory when no fd is a socket', () => {
+      expect(collectProcSockets(999, { readFile: sockReadFile, readDir: sockReadDir, readLink })).toBeNull();
+      const noSockets = ((path: string) => (path === '/proc/400/fd' ? ['0'] : [])) as unknown as FakeReadDir;
+      const pts = (path: string) => (path === '/proc/400/fd/0' ? '/dev/pts/1' : 'x');
+      expect(collectProcSockets(400, { readFile: sockReadFile, readDir: noSockets, readLink: pts }))
+        .toEqual({ total: 0, tcp: [], unix: 0, other: 0 });
+    });
+  });
+
   it('tails the current codex-tui.log: drops the partial head line, strips ANSI, redacts, keeps the last timestamp', () => {
     const text = [
       'ial line cut by the tail read',
