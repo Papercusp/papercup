@@ -609,8 +609,119 @@ describe('end-to-end — submodule content is materialised, not silently empty (
         killSignal: 'SIGKILL',
       });
       expect(status).toBe('');
+      // WI-10005625: metadata and ignored runtime exports are prerequisites too.
+      const snapshottedMain = run.stdout.match(/main snapshot: ([0-9a-f]{40})/);
+      expect(snapshottedMain).not.toBeNull();
+      expect(execFileSync('git', ['rev-parse', 'main^{commit}'], { cwd: workRoot, encoding: 'utf8' }).trim()).toBe(snapshottedMain![1]);
+      expect(run.stdout).toContain('building pinned runtime exports: @papercusp/sse');
+      const requireClone = createRequire(join(workRoot, 'package.json'));
+      expect(requireClone('@papercusp/sse').sseResponse).toBeTypeOf('function');
+      expect(realpathSync(requireClone.resolve('@papercusp/sse'))).toBe(realpathSync(join(workRoot, 'libs/generic/sse/dist/index.js')));
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }
   }, 180_000);
+});
+
+describe('end-to-end — independent main and pinned runtime prerequisites (WI-10005625)', () => {
+  const gitFixture = (cwd: string, args: string[], input?: string) => execFileSync('git', args, {
+    cwd, input, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL', stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
+
+  // Real git history with plumbing: no mocks, install, network, or shared-tree writes.
+  function snapshot(root: string, files: Record<string, string>, parent?: string): string {
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, name)), { recursive: true });
+      writeFileSync(join(root, name), content);
+      const blob = gitFixture(root, ['hash-object', '-w', '--stdin'], content);
+      gitFixture(root, ['update-index', '--add', '--cacheinfo', '100644', blob, name]);
+    }
+    const tree = gitFixture(root, ['write-tree']);
+    const sha = gitFixture(root, ['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit-tree', tree, ...(parent ? ['-p', parent] : []), '-m', 'runner fixture']);
+    gitFixture(root, ['update-ref', 'refs/heads/staging', sha]);
+    return sha;
+  }
+
+  function fixture(build?: string, withMain = true) {
+    const root = mkdtempSync(join(tmpdir(), 'lac-prerequisites-'));
+    gitFixture(root, ['init', '--quiet', '--initial-branch=staging']);
+    const files = {
+      '.gitignore': 'node_modules/\nlibs/runtime/dist/\n',
+      'package.json': JSON.stringify({ private: true, scripts: { 'lint:probe': 'node probe.cjs' } }),
+      'probe.cjs': 'console.log("initial fixture");\n',
+      'libs/runtime/package.json': JSON.stringify({ name: '@fixture/runtime', type: 'module',
+        exports: { '.': { types: './source.d.ts', import: './source.mjs', require: './dist/index.cjs', default: './dist/index.cjs' } },
+        scripts: build === undefined ? {} : { build } }),
+      'libs/runtime/source.cjs': 'module.exports = "pinned-source";\n',
+      'libs/runtime/build.cjs': "const fs = require('node:fs'); fs.mkdirSync('dist', { recursive: true }); fs.writeFileSync('dist/index.cjs', 'module.exports = ' + JSON.stringify(require('./source.cjs')) + ';\\n');\n",
+    };
+    const main = snapshot(root, files);
+    if (withMain) gitFixture(root, ['update-ref', 'refs/heads/main', main]);
+    files['probe.cjs'] = `
+const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const { realpathSync, readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+${withMain ? `assert.equal(execFileSync('git', ['rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim(), ${JSON.stringify(main)});` : "assert.throws(() => execFileSync('git', ['rev-parse', '--verify', 'main^{commit}'], { stdio: 'pipe' }));"}
+assert.equal(require('@fixture/runtime'), 'pinned-source');
+assert.equal(realpathSync(require.resolve('@fixture/runtime')), realpathSync(resolve('libs/runtime/dist/index.cjs')));
+assert.equal(readFileSync('libs/runtime/source.cjs', 'utf8'), 'module.exports = "pinned-source";\\n');
+assert.equal(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }), '');
+console.log('CLONE_PREREQUISITES_OK');
+`;
+    const head = snapshot(root, files, main);
+    mkdirSync(join(root, 'node_modules/@fixture'), { recursive: true });
+    symlinkSync('../../libs/runtime', join(root, 'node_modules/@fixture/runtime'));
+    mkdirSync(join(root, 'libs/runtime/dist'), { recursive: true });
+    writeFileSync(join(root, 'libs/runtime/dist/index.cjs'), 'module.exports = "shared-stale-dist";\n');
+    writeFileSync(join(root, 'libs/runtime/source.cjs'), 'module.exports = "shared-dirty-source";\n');
+    return { root, main, head };
+  }
+
+  function run(root: string) {
+    return spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+      cwd: root, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+    });
+  }
+
+  it('pins main separately from HEAD and builds require exports from committed source despite dirty shared source/dist', () => {
+    const f = fixture('node build.cjs');
+    try {
+      expect(f.main).not.toBe(f.head);
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain(`main snapshot: ${f.main}`);
+      expect(result.stdout).toContain('building pinned runtime exports: @fixture/runtime');
+      expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+      expect(readFileSync(join(f.root, 'libs/runtime/source.cjs'), 'utf8')).toContain('shared-dirty-source');
+      expect(readFileSync(join(f.root, 'libs/runtime/dist/index.cjs'), 'utf8')).toContain('shared-stale-dist');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it('does not fabricate main when the source repository has no main branch', () => {
+    const f = fixture('node build.cjs', false);
+    try {
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('main snapshot:');
+      expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each([
+    { name: 'absent build', build: undefined, reason: 'no committed build script' },
+    { name: 'failed build', build: 'node -e "process.exitCode = 7"', reason: 'committed build failed' },
+    { name: 'successful build with no output', build: 'node -e "console.log(\'NO_OUTPUT\')"', reason: 'did not emit runtime export' },
+    { name: 'build mutating pinned source', build: 'node build.cjs && node -e "require(\'node:fs\').writeFileSync(\'source.cjs\', \'changed\')"', reason: 'committed build changed source' },
+  ])('refuses $name before executing the requested detector', ({ build, reason }) => {
+    const f = fixture(build);
+    try {
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+      expect(result.stderr).toContain(reason);
+      expect(result.stdout).not.toContain('─── lint:probe');
+      expect(result.stdout).not.toContain('CLONE_PREREQUISITES_OK');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
 });
