@@ -11,6 +11,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { buildSync } from 'esbuild';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -79,6 +80,33 @@ describe('findIdentityLeakError', () => {
     expect(JSON.parse(serializeIdentitySafeJson(value, []))).toEqual(value);
     expect(() => serializeIdentitySafeJson({ ['build-' + 'secret-host']: 1 }, [['build-hostname', 'secret-host']]))
       .toThrow('key contains a machine identity');
+  });
+
+  it('imports the serializer in a host bundle without running its standalone CLI', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-serializer-bundle-'));
+    const bundle = join(dir, 'host.mjs');
+    try {
+      buildSync({
+        stdin: {
+          contents: "import { serializeIdentitySafeJson } from './scripts/lib/identity-leak-patterns.mjs';\n" +
+            "process.stdout.write(serializeIdentitySafeJson({ rows: 7, hash: 'unchanged' }, []));\n",
+          resolveDir: REPO_ROOT,
+          sourcefile: 'identity-serializer-host.mjs',
+        },
+        outfile: bundle,
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' },
+        logLevel: 'silent',
+      });
+      const imported = spawnSync(process.execPath, [bundle], { encoding: 'utf8' });
+      expect(imported.status).toBe(0);
+      expect(imported.stderr).toBe('');
+      expect(JSON.parse(imported.stdout)).toEqual({ rows: 7, hash: 'unchanged' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('exports public Android evidence through the maintained serializer while preserving private provenance', async () => {
