@@ -7,7 +7,9 @@
  * answer carries no restricted document text or fields; an answer that would
  * carry restricted content is withheld, or delivered with the source
  * document's label recorded on the caller — whose outbound send to a
- * non-reader is then refused.
+ * non-reader is then refused. Since WI-10005608 / D-010 "carries no restricted
+ * content" is decided by the answer's FORM (typed: yes/no/a count/the caller's
+ * own words), because a paraphrase defeats any lexical check.
  *
  * Measured on a migrated throwaway database through the production seams:
  * `delegatedRead` with the real privacy rules, owner addresses and disclosure
@@ -21,9 +23,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { assertDisclosurePermits, DisclosureRefused } from './disclosure-ledger';
 import {
-  classifyDelegateAnswer,
   DELEGATED_READ_VIA,
   delegatedRead,
+  isTypedDelegateAnswer,
   renderDelegateDocuments,
   type DelegateSourceDocument,
   type DelegatedReadResult,
@@ -149,24 +151,27 @@ beforeEach(async () => {
   await restrictSender(SENDER);
 });
 
-describe('R-12: a content-free answer leaves the caller unlabelled', () => {
+/** A paraphrase of SECRET_SNIPPET: no 8-word run, no address, no title in common with it (WI-10005608). */
+const PARAPHRASE = 'They want the lakeside spot kept quiet until the deal is signed early next week.';
+
+describe('R-12: a typed answer leaves the caller unlabelled', () => {
   it('delivers a count drawn from a restricted email without a ledger row, and the caller may still send anywhere', async () => {
-    const { result, order } = await ask('How many emails did I get about the offsite?', [privateMail()], 'You have one email about it.');
-    expect(result).toMatchObject({ delivered: true, labelled: false, answer: 'You have one email about it.', consulted: 1 });
+    const { result, order } = await ask('How many emails did I get about the offsite?', [privateMail()], '1');
+    expect(result).toMatchObject({ delivered: true, labelled: false, answer: '1', consulted: 1 });
     expect(await ledger()).toEqual([]);
     await expect(sendTo([NON_READER])).resolves.toBeUndefined();
     // The model call runs before — never inside — the delivery transaction.
     expect(order).toEqual(['answer', 'tx']);
   });
 
-  it('does not count a value the caller supplied in its question', async () => {
-    const { result } = await ask(`Did ${SENDER} write to me this week?`, [privateMail()], `Yes, ${SENDER} wrote once.`);
+  it('delivers yes/no and words the caller’s own question already named', async () => {
+    const { result } = await ask(`Did ${SENDER} write to me this week?`, [privateMail()], `Yes, ${SENDER}.`);
     expect(result).toMatchObject({ delivered: true, labelled: false });
     expect(await ledger()).toEqual([]);
   });
 
-  it('does not count text the delegate also saw in an unrestricted document', async () => {
-    const { result } = await ask('What does the footer say?', [privateMail(), publicMail()], `It says: ${BOILERPLATE}.`);
+  it('delivers free text unlabelled when no restricted document was consulted', async () => {
+    const { result } = await ask('What does the footer say?', [publicMail()], `It says: ${BOILERPLATE}.`);
     expect(result).toMatchObject({ delivered: true, labelled: false });
     expect(await ledger()).toEqual([]);
   });
@@ -176,6 +181,27 @@ describe('R-12: a content-free answer leaves the caller unlabelled', () => {
     const { result } = await ask('What did it say?', [privateMail()], SECRET_SNIPPET);
     expect(result).toMatchObject({ delivered: true, labelled: false, answer: SECRET_SNIPPET });
     expect(await ledger()).toEqual([]);
+  });
+});
+
+describe('R-12: an untyped answer from a restricted document is presumed to carry it', () => {
+  it('withholds a PARAPHRASE that shares no words run, address or title with the restricted text', async () => {
+    const { result } = await ask('What did the venue email say?', [privateMail()], PARAPHRASE);
+    expect(result).toEqual({ delivered: false, reason: 'delegate_answer_carries_restricted', consulted: 1, carriedRestricted: 1 });
+    expect(JSON.stringify(result)).not.toContain('lakeside');
+    expect(await ledger()).toEqual([]);
+    await expect(sendTo([NON_READER])).resolves.toBeUndefined();
+  });
+
+  it('withholds a number copied from a restricted document — it is a field value, not a count', async () => {
+    const doc = privateMail('Door access', 'The side door code is 4821 for the visit next week');
+    const { result } = await ask('What is the door code?', [doc], '4821');
+    expect(result).toMatchObject({ delivered: false, reason: 'delegate_answer_carries_restricted' });
+  });
+
+  it('withholds free text once any restricted document was consulted, even if it repeats an unrestricted one', async () => {
+    const { result } = await ask('What does the footer say?', [privateMail(), publicMail()], `It says: ${BOILERPLATE}.`);
+    expect(result).toMatchObject({ delivered: false, reason: 'delegate_answer_carries_restricted', carriedRestricted: 1 });
   });
 });
 
@@ -226,23 +252,29 @@ describe('R-12: an accepted label binds the caller like a direct read', () => {
     await expect(sendTo([READER])).resolves.toBeUndefined();
   });
 
-  it('labels only the restricted documents the answer carries, not every one the delegate read', async () => {
+  it('labels every restricted document consulted — an untyped answer’s sources cannot be attributed', async () => {
     const quoted = privateMail();
     const merelyRead = mail(SENDER, [OWNER, 'carol@private.example'], 'Quarterly numbers', 'Revenue figures attached for your review before the board meeting');
     const { result } = await ask('What did the venue email say?', [quoted, merelyRead], `It said: ${SECRET_SNIPPET}.`, { acceptLabel: true });
     expect(result).toMatchObject({ delivered: true, labelled: true });
-    expect((await ledger()).map((row) => row.documentId)).toEqual([quoted.id]);
+    expect((await ledger()).map((row) => row.documentId).sort()).toEqual([quoted.id, merelyRead.id].sort());
   });
 
-  it('a content-free answer with acceptLabel still leaves the caller unlabelled', async () => {
-    const { result } = await ask('How many?', [privateMail()], 'One.', { acceptLabel: true });
+  it('delivers a paraphrase with acceptLabel only with the label, which then refuses a send to a non-reader', async () => {
+    const { result } = await ask('What did the venue email say?', [privateMail()], PARAPHRASE, { acceptLabel: true });
+    expect(result).toMatchObject({ delivered: true, labelled: true, answer: PARAPHRASE });
+    await expectRefused(sendTo([NON_READER]), 'disclosure_reader_set_violation');
+  });
+
+  it('a typed answer with acceptLabel still leaves the caller unlabelled', async () => {
+    const { result } = await ask('How many?', [privateMail()], '1', { acceptLabel: true });
     expect(result).toMatchObject({ delivered: true, labelled: false });
     expect(await ledger()).toEqual([]);
   });
 });
 
-describe('R-12: the classifier checks exactly what the delegate was shown', () => {
-  it('shows the delegate normalized addresses, title and text — the same fields it classifies', () => {
+describe('R-12: what counts as a typed answer', () => {
+  it('shows the delegate normalized addresses, title and text, and no answer repeating them is typed', () => {
     const doc = mail('Alice Example <ALICE@private.example>', [OWNER, 'Bob <bob@private.example>'], SECRET_TITLE, SECRET_SNIPPET);
     const shown = renderDelegateDocuments([doc]);
     expect(shown).toContain(`from: ${SENDER}`);
@@ -251,21 +283,26 @@ describe('R-12: the classifier checks exactly what the delegate was shown', () =
     expect(shown).not.toContain('Bob <');
     expect(shown).toContain(SECRET_TITLE);
     expect(shown).toContain(SECRET_SNIPPET);
-    for (const leak of [SENDER, READER, SECRET_TITLE, SECRET_SNIPPET.split(' ').slice(3, 11).join(' ')]) {
-      expect(classifyDelegateAnswer({ answer: leak, question: '', restricted: [doc], unrestricted: [], ownerAddresses: [OWNER] }).carriesRestricted).toBe(true);
+    for (const leak of [SENDER, READER, SECRET_TITLE, SECRET_SNIPPET.split(' ').slice(3, 6).join(' '), PARAPHRASE]) {
+      expect(isTypedDelegateAnswer({ answer: leak, question: '', restricted: [doc] })).toBe(false);
     }
   });
 
-  it('ignores the owner\'s own address and a run shorter than the shingle', () => {
-    const doc = privateMail();
-    const seven = SECRET_SNIPPET.split(' ').slice(0, 7).join(' ');
-    const verdict = classifyDelegateAnswer({ answer: `${OWNER}: ${seven}`, question: '', restricted: [doc], unrestricted: [], ownerAddresses: [OWNER] });
-    expect(verdict).toEqual({ carriesRestricted: false, carried: [] });
+  it.each([
+    ['yes', true], ['No.', true], ['unknown', true], ['none', true], ['3', true], ['', true],
+    ['three', false], ['3 4', false], ['12345', false], ['Yes, three of them.', false],
+  ])('%j → typed %s', (answer, typed) => {
+    expect(isTypedDelegateAnswer({ answer, question: 'How many?', restricted: [privateMail()] })).toBe(typed);
+  });
+
+  it('accepts a choice among options the question itself named', () => {
+    const question = 'Is the offsite at the Lakeside Lodge or the Hilltop Inn?';
+    expect(isTypedDelegateAnswer({ answer: 'The Lakeside Lodge.', question, restricted: [privateMail()] })).toBe(true);
   });
 
   it('hands the delegate the rendered documents', async () => {
     const doc = privateMail();
-    const { shown } = await ask('How many?', [doc], 'One.');
+    const { shown } = await ask('How many?', [doc], '1');
     expect(shown).toEqual([renderDelegateDocuments([doc])]);
   });
 });

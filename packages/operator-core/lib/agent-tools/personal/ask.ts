@@ -35,11 +35,11 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],
   description:
-    'Ask a question of the owner-local Personal Vault through a hidden delegate that reads the matching documents and answers. The answer reaches you without a privacy label only when it carries no restricted text or names; otherwise it is withheld unless you pass acceptLabel. DEFAULT DENY, as personal:search.',
+    'Ask a question of the owner-local Personal Vault through a hidden delegate that reads the matching documents and answers. When restricted documents were consulted, the answer reaches you unlabelled only if it is typed (yes/no/unknown, a count, or words from your own question); otherwise it is withheld unless you pass acceptLabel. DEFAULT DENY, as personal:search.',
   guidance: {
-    when: 'You need a fact FROM personal data (a count, a yes/no, a date) and do not need the documents themselves — the answer leaves your sending unrestricted when it carries no restricted content.',
+    when: 'You need a fact FROM personal data (a count, a yes/no) and do not need the documents themselves — a typed answer leaves your sending unrestricted.',
     notWhen: 'You need the documents or their wording — use personal:search, which labels you for every restricted result it returns.',
-    chaining: 'withheld:true means the answer would carry restricted content. Re-ask more narrowly, or pass acceptLabel:true to receive it and be limited to those documents\' readers (privacy.readerSet) until the owner releases them.',
+    chaining: 'withheld:true means a free-text answer drew on restricted documents. Re-ask as a yes/no or counting question, or pass acceptLabel:true to receive it and be limited to the readers of every restricted document consulted until the owner releases them.',
   },
   args: z.object({
     question: z.string().min(1).max(500),
@@ -116,7 +116,7 @@ export default defineTool({
           hint:
             result.reason === 'disclosure_identity_unresolved'
               ? 'This call has no attributable agent identity, so it cannot carry a privacy label; restricted content cannot be delivered to it.'
-              : 'The answer would carry restricted text or names. Ask more narrowly, or pass acceptLabel:true to receive it and be limited to those documents\' readers.',
+              : 'The answer is free text drawn from restricted documents. Ask a yes/no or counting question, or pass acceptLabel:true to receive it and be limited to those documents\' readers.',
         },
       };
     }
