@@ -1273,6 +1273,12 @@ export function compileGoalPlanPlacement(args: {
     state = 'blocked';
     action = 'resolve-plan-blockers';
     reason = 'The plan has non-terminal work but no dependency-free todo item.';
+  } else if (!fleet && activeLane?.ownerFleet && !goalHolderOwnerIds.includes(activeLane.ownerId)) {
+    state = 'blocked';
+    action = 'reconcile-plan-lane-holder';
+    reason =
+      `The ${activeLane.itemId} lease is held by ${activeLane.ownerId} in fleet ${activeLane.ownerFleet}, ` +
+      `which is not a plan-scoped fleet for ${args.plan.slug}; reconcile that lease and do not launch a duplicate fleet.`;
   } else if (!activeLane && !fleet) {
     state = 'unplaced';
     action = 'launch-plan-fleet';

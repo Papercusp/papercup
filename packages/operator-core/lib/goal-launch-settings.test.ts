@@ -1731,11 +1731,27 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         },
       },
     });
-    expect(compileGoalPlanPlacement({ ...base, source: { claims: [lane] } })).toMatchObject({
+    expect(compileGoalPlanPlacement({ ...base, source: { claims: [lane], goalHolderOwnerIds: ['su-plan'] } })).toMatchObject({
       state: 'admitting',
       reconciliation: {
         action: 'launch-spawned-leader',
         toolCall: { tool: 'fleet:launch-on-plan' },
+      },
+    });
+    expect(compileGoalPlanPlacement({
+      ...base,
+      source: {
+        claims: [{ ...lane, ownerId: 'su-member', fleetSlug: 'other-alpha-fleet', workItemId: 'WI-alpha-member' }],
+        goalHolderOwnerIds: ['su-goal'],
+      },
+    })).toMatchObject({
+      state: 'blocked',
+      activeLane: { ownerId: 'su-member', ownerFleet: 'other-alpha-fleet', workItemId: 'WI-alpha-member' },
+      reconciliation: {
+        consistent: false,
+        action: 'reconcile-plan-lane-holder',
+        reason: expect.stringContaining('other-alpha-fleet'),
+        toolCall: null,
       },
     });
     expect(
