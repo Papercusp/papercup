@@ -1,8 +1,11 @@
 /**
- * WI-10005713 — the raw test router's restricted-write preflight. The census and reach walk are
- * restricted-hold-fence.ts (tested there); this suite pins the PROCESS contract: the router fails
- * CLOSED on every result that is not an explicit, exit-coded admit, and skips only the two
- * documented duplicate-check cases.
+ * WI-10005713 — the raw test router's restricted-write preflight (scripts/lib/restricted-hold-preflight.mjs).
+ * The census and reach walk are restricted-hold-fence.ts (tested there); this suite pins the PROCESS
+ * contract: the router fails CLOSED on every result that is not an explicit, exit-coded admit, and
+ * skips only the two documented duplicate-check cases.
+ *
+ * Lives in operator-core (like test-file-router.test.ts) so the gate's test:lane-pure selects it;
+ * a test beside the module under scripts/lib runs only under the root config, which no gate task runs.
  */
 import { existsSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
@@ -16,7 +19,7 @@ import {
   interpretRestrictedHoldPreflight,
   restrictedHoldPreflightSkipReason,
   runRestrictedHoldPreflight,
-} from './restricted-hold-preflight.mjs';
+} from '../../../../scripts/lib/restricted-hold-preflight.mjs';
 
 const line = (payload: unknown) => `${RESTRICTED_HOLD_PREFLIGHT_MARKER} ${JSON.stringify(payload)}\n`;
 const UNRESTRICTED_ENV = { PATH: '/usr/bin' };

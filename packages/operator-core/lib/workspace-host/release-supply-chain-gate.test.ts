@@ -60,7 +60,16 @@ const nonKernelNvdFinding = {
 
 const tempDirs: string[] = [];
 
-function runGate(matches: unknown[], opts: { secretScanExit?: number } = {}) {
+interface GateOptions {
+  secretScanExit?: number;
+  /** syft-json written in place of the default 50 empty artifacts (D-027 RPM ownership). */
+  sbom?: { artifacts: unknown[] };
+  /** stdout of the in-image `dnf check-update` container (D-027 vendor check). */
+  vendorCheckOutput?: string;
+  vendorCheckExit?: number;
+}
+
+function runGate(matches: unknown[], opts: GateOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'release-supply-chain-gate-'));
   tempDirs.push(dir);
   const bin = join(dir, 'bin');
@@ -73,6 +82,8 @@ function runGate(matches: unknown[], opts: { secretScanExit?: number } = {}) {
   writeFileSync(key, 'fixture key\n');
   writeFileSync(pubkey, 'fixture pubkey\n');
   writeFileSync(fixture, JSON.stringify({ matches }));
+  const sbomFixture = join(dir, 'sbom.syft.json');
+  if (opts.sbom) writeFileSync(sbomFixture, JSON.stringify(opts.sbom));
 
   writeFileSync(
     join(bin, 'sudo'),
@@ -94,6 +105,10 @@ function runGate(matches: unknown[], opts: { secretScanExit?: number } = {}) {
       'if [[ " $* " == *" skopeo "* ]]; then',
       "  printf '%s\\n' '__DIGEST__'",
       '  exit 0',
+      'fi',
+      'if [[ " $* " == *"check-update"* ]]; then',
+      '  printf "%s" "$PODMAN_VENDOR_CHECK_OUTPUT"',
+      '  exit "$PODMAN_VENDOR_CHECK_EXIT"',
       'fi',
       'exit 0',
       '',
@@ -120,6 +135,7 @@ function runGate(matches: unknown[], opts: { secretScanExit?: number } = {}) {
       'set -euo pipefail',
       'write_sbom() {',
       '  out="\${1#*=}"',
+      '  if [ -n "\${SYFT_FIXTURE:-}" ]; then cp "$SYFT_FIXTURE" "$out"; return; fi',
       `  printf '%s' '{"artifacts":[{}' > "$out"`,
       '  for _ in $(seq 1 49); do printf ",{}" >> "$out"; done',
       `  printf '%s\\n' ']}' >> "$out"`,
@@ -176,6 +192,9 @@ function runGate(matches: unknown[], opts: { secretScanExit?: number } = {}) {
         // its argv in the same call log so ordering against cosign is observable.
         SECRET_SCAN_BIN: join(bin, 'secret-scan'),
         SECRET_SCAN_EXIT: String(opts.secretScanExit ?? 0),
+        SYFT_FIXTURE: opts.sbom ? sbomFixture : '',
+        PODMAN_VENDOR_CHECK_OUTPUT: opts.vendorCheckOutput ?? '',
+        PODMAN_VENDOR_CHECK_EXIT: String(opts.vendorCheckExit ?? 0),
       },
       encoding: 'utf8',
       timeout: 30_000,
@@ -299,5 +318,104 @@ describe('release supply-chain vulnerability gate', () => {
     expect(result.output).toContain('GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=0');
     expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
     expect(result.output).toContain('SUPPLY_CHAIN_RESULT=VULN_GATE_REFUSED');
+  });
+});
+
+// D-027 (WI-10005719). Shapes measured on the P-012 AWS bake: syft records an INSTALLED rpm at the
+// rpmdb with the files it owns in metadata.files; grype reports a Go module inside an RPM-owned
+// binary as a go-module located at that binary; base-layer copies sit in /sysroot/ostree objects.
+const RPMDB = '/usr/share/rpm/rpmdb.sqlite';
+const installedSkopeo = {
+  name: 'skopeo',
+  type: 'rpm',
+  version: '3:1.22.2-4.el9',
+  locations: [{ path: RPMDB }],
+  metadata: { files: [{ path: '/usr/bin/skopeo' }, { path: '/usr/share/man/man1/skopeo.1.gz' }] },
+};
+// An .rpm ARCHIVE lying in the image is catalogued as type rpm too, but it is not installed: the
+// files it lists are not on disk because of it, so it must never vouch for one.
+const rpmArchiveOnDisk = {
+  name: 'smuggled',
+  type: 'rpm',
+  version: '1.0-1.el9',
+  locations: [{ path: '/opt/papercusp/cache/smuggled-1.0-1.el9.x86_64.rpm' }],
+  metadata: { files: [{ path: '/usr/bin/smuggled' }] },
+};
+const vendorSbom = { artifacts: [installedSkopeo, rpmArchiveOnDisk, ...Array.from({ length: 50 }, () => ({}))] };
+
+function goFinding(path: string, id: string) {
+  return {
+    artifact: { name: 'stdlib', type: 'go-module', version: 'go1.26.5', locations: [{ path }] },
+    vulnerability: { id, namespace: 'govulndb:language:go', severity: 'High', fix: { state: 'fixed', versions: ['1.26.6'] } },
+  };
+}
+const goInRpmBinary = goFinding('/usr/bin/skopeo', 'GO-2026-0001');
+const goInOstreeObject = goFinding('/sysroot/ostree/repo/objects/9e/eca1cb.file', 'GO-2026-0002');
+const goInPapercuspBinary = goFinding('/opt/papercusp/bin/connector', 'GO-2026-0003');
+const goInArchiveClaimedPath = goFinding('/usr/bin/smuggled', 'GO-2026-0004');
+const installedRpmFinding = {
+  artifact: { name: 'openssl-libs', type: 'rpm', version: '1:3.5.8-1.el9', locations: [{ path: RPMDB }] },
+  vulnerability: { id: 'RHSA-2026:9001', namespace: 'redhat:distro:redhat:9', severity: 'High', fix: { state: 'fixed', versions: ['1:3.5.9-1.el9'] } },
+};
+
+const NOTHING_NEWER = 'VENDOR_CHECK_UPDATE_EXIT=0\nVENDOR_ENABLED_REPOS=5\nVENDOR_AVAILABLE_PACKAGES=65756\n';
+
+function readOut(result: ReturnType<typeof runGate>, name: string) {
+  return JSON.parse(readFileSync(join(result.out, name), 'utf8'));
+}
+
+describe('release supply-chain vendor-pending classification (D-027, WI-10005719)', () => {
+  it('moves only RPM-owned findings out of the gate when the image repos ship nothing newer, and lists them', () => {
+    const result = runGate(
+      [goInRpmBinary, installedRpmFinding, goInOstreeObject, goInPapercuspBinary, goInArchiveClaimedPath],
+      { sbom: vendorSbom, vendorCheckOutput: NOTHING_NEWER },
+    );
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('GRYPE_VENDOR_PENDING=2   (of 2 RPM-owned; vendor check: no-updates');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=3');
+    const pending = readOut(result, 'vendor-pending.json') as Array<{ id: string; paths: string[] }>;
+    expect(pending.map((p) => p.id).sort()).toEqual(['GO-2026-0001', 'RHSA-2026:9001']);
+    const updates = readOut(result, 'vendor-updates.json');
+    expect(updates).toMatchObject({ digest: DIGEST, verdict: 'no-updates', checkUpdateExit: 0, enabledRepos: 5, availablePackages: 65756 });
+    const summary = readOut(result, 'supply-chain-summary.json');
+    expect(summary).toMatchObject({ actionableCriticalHighWithFix: '3', vendorPending: '2', vendorCheck: 'no-updates' });
+    // The question is asked of the image at the released DIGEST, not a tag.
+    const check = result.podmanCalls.find((call) => call.includes('check-update'));
+    expect(check).toContain(`@${DIGEST}`);
+  });
+
+  it('passes an image whose only fixed findings are vendor-pending', () => {
+    const result = runGate([goInRpmBinary, installedRpmFinding], { sbom: vendorSbom, vendorCheckOutput: NOTHING_NEWER });
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=0');
+    expect(result.output).toContain('SUPPLY_CHAIN_RESULT=PASS');
+  });
+
+  it.each([
+    ['an update the vendor already ships (exit 100)', 'VENDOR_CHECK_UPDATE_EXIT=100\nVENDOR_ENABLED_REPOS=5\nVENDOR_AVAILABLE_PACKAGES=65756\n', 0, 'updates-available'],
+    ['a dnf that saw no enabled repo', 'VENDOR_CHECK_UPDATE_EXIT=0\nVENDOR_ENABLED_REPOS=0\nVENDOR_AVAILABLE_PACKAGES=0\n', 0, 'error'],
+    ['a dnf that read too little metadata', 'VENDOR_CHECK_UPDATE_EXIT=0\nVENDOR_ENABLED_REPOS=1\nVENDOR_AVAILABLE_PACKAGES=12\n', 0, 'error'],
+    ['a dnf error (exit 1)', 'VENDOR_CHECK_UPDATE_EXIT=1\nVENDOR_ENABLED_REPOS=5\nVENDOR_AVAILABLE_PACKAGES=65756\n', 0, 'error'],
+    ['a container that never ran', '', 125, 'error'],
+    ['a container that failed after reporting exit 0', NOTHING_NEWER, 1, 'error'],
+  ])('keeps every RPM-owned finding actionable on %s', (_label, output, exit, verdict) => {
+    const result = runGate([goInRpmBinary, installedRpmFinding], { sbom: vendorSbom, vendorCheckOutput: output, vendorCheckExit: exit });
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain(`GRYPE_VENDOR_PENDING=0   (of 2 RPM-owned; vendor check: ${verdict}`);
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=2');
+    expect(readOut(result, 'vendor-pending.json')).toEqual([]);
+    expect(readOut(result, 'vendor-updates.json').verdict).toBe(verdict);
+  });
+
+  it('does not run the vendor check when no finding is RPM-owned', () => {
+    const result = runGate([goInOstreeObject, goInPapercuspBinary], { sbom: vendorSbom, vendorCheckOutput: NOTHING_NEWER });
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('vendor check: not-needed');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=2');
+    expect(result.podmanCalls.some((call) => call.includes('check-update'))).toBe(false);
   });
 });

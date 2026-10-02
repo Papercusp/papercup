@@ -20,7 +20,7 @@ import {
 /** The real papercusp checkout this suite lives in (the raw router's own REPO_ROOT). */
 const REPO = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..'));
 /** A real repo test file the raw-router falsifier marks as a restricted write. */
-const HELD_REPO_TEST = 'scripts/lib/restricted-hold-preflight.test.ts';
+const HELD_REPO_TEST = 'packages/operator-core/lib/__tests__/restricted-hold-preflight.test.ts';
 
 const holder = vi.hoisted(() => ({ sql: null as postgres.Sql | null }));
 

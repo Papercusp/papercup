@@ -45,6 +45,11 @@
 #                        which is indistinguishable from a clean image. 50 suits a full OS image;
 #                        lower it deliberately for a genuinely minimal target, never to get past
 #                        a refusal you have not explained.
+#   --min-available-packages N
+#                        D-027 positive control (default 1000, env VENDOR_MIN_AVAILABLE_PACKAGES):
+#                        the in-image `dnf check-update` only counts as "the vendor ships nothing
+#                        newer" when dnf could see at least N available packages. A dnf with no
+#                        repos also exits 0, and must never make a finding vendor-pending.
 #
 # Exit: 0 all steps succeeded AND verified back; 1 a step or its verification failed;
 #       2 usage/setup error; 3 the vulnerability gate refused the image (--fail-on-vulns);

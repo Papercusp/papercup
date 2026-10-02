@@ -252,21 +252,100 @@ function isGenericEl9KernelCpe(match: Record<string, unknown>): boolean {
 }
 
 /**
+ * D-027 (WI-10005719). syft locates an INSTALLED rpm at the rpm database; an `.rpm` archive lying
+ * in the image is catalogued as type rpm too but located at its own file, and is not installed.
+ * Mirrors release-supply-chain.sh's rpmdb_path / installed_rpm.
+ */
+const RPMDB_PATH = /\/rpm\/(rpmdb\.sqlite|Packages(\.db)?)$/;
+
+function locationPaths(artifact: Record<string, unknown>): string[] {
+  const locations = Array.isArray(artifact.locations) ? artifact.locations : [];
+  return locations.map((location) => (isRecord(location) && typeof location.path === "string" ? location.path : ""));
+}
+
+function isInstalledRpm(artifact: Record<string, unknown>): boolean {
+  const type = typeof artifact.type === "string" ? artifact.type.toLowerCase() : "";
+  const paths = locationPaths(artifact);
+  return type === "rpm" && paths.length > 0 && paths.every((path) => RPMDB_PATH.test(path));
+}
+
+/** Every path an INSTALLED rpm owns, read from the syft SBOM grype scanned (its metadata.files). */
+export function rpmOwnedPaths(sbom: unknown): Set<string> {
+  const owned = new Set<string>();
+  const artifacts = isRecord(sbom) && Array.isArray(sbom.artifacts) ? sbom.artifacts : [];
+  for (const artifact of artifacts) {
+    if (!isRecord(artifact) || !isInstalledRpm(artifact)) continue;
+    const metadata = isRecord(artifact.metadata) ? artifact.metadata : {};
+    for (const file of Array.isArray(metadata.files) ? metadata.files : []) {
+      if (isRecord(file) && typeof file.path === "string") owned.add(file.path);
+    }
+  }
+  return owned;
+}
+
+/** The finding IS an installed rpm, or every file it sits in is owned by one. Mirrors vendor_owned. */
+function isVendorOwned(match: Record<string, unknown>, owned: ReadonlySet<string>): boolean {
+  const artifact = isRecord(match.artifact) ? match.artifact : {};
+  if (isInstalledRpm(artifact)) return true;
+  const paths = locationPaths(artifact);
+  return paths.length > 0 && paths.every((path) => owned.has(path));
+}
+
+/**
+ * The release gate's own floor for "dnf really read its metadata". Independent of the floor the
+ * bake recorded, so lowering the bake's --min-available-packages can never widen what the release
+ * accepts as vendor-pending.
+ */
+export const VENDOR_MIN_AVAILABLE_PACKAGES = 1000;
+
+/**
+ * Read release-supply-chain.sh's vendor-updates.json (D-027 (b)). Only a record bound to THIS
+ * digest that saw `dnf --refresh check-update` exit 0 from a container that itself exited 0, with
+ * at least one enabled repo and the metadata floor met, proves the vendor ships nothing newer.
+ * Every other shape proves nothing, so nothing becomes vendor-pending. A record for a different
+ * image is corrupt evidence and refuses outright.
+ */
+export function vendorShipsNothingNewer(record: unknown, digest: string): boolean {
+  const doc = requiredRecord(record, "vendor-updates record");
+  if (doc.digest !== digest) fail(`vendor-updates record is for ${String(doc.digest)}, not ${digest}`);
+  const count = (value: unknown) => (typeof value === "number" && Number.isInteger(value) ? value : -1);
+  return (
+    doc.verdict === "no-updates" &&
+    doc.containerExit === 0 &&
+    doc.checkUpdateExit === 0 &&
+    count(doc.enabledRepos) >= 1 &&
+    count(doc.availablePackages) >= VENDOR_MIN_AVAILABLE_PACKAGES
+  );
+}
+
+/** What the vendor-pending rule needs: who owns which file, and whether the vendor ships newer. */
+export interface VendorPendingEvidence {
+  ownedPaths: ReadonlySet<string>;
+  vendorShipsNothingNewer: boolean;
+}
+
+/**
  * Narrow a grype report to the population a release can act on — D-289, applied exactly as
  * release-supply-chain.sh applies it: findings WITH A FIX, minus EL9 kernel RPMs matched only by
  * a generic upstream NVD CPE (a vendor kernel's fix may already be backported, so that match
  * cannot show the package is vulnerable). Unfixed findings are not a verdict a rebase can change.
- * The excluded counts are returned so the caller reports them; they are never silently dropped.
+ * D-027: with `vendor` evidence, a fixed Critical/High finding the vendor owns (isVendorOwned) is
+ * vendor-pending when the image's own repos ship nothing newer — a fix no rebuild here can reach.
+ * Without that proof nothing is pending. The excluded counts, and the pending findings' ids, are
+ * returned so the caller reports them; they are never silently dropped.
  */
-export function actionableGrypeReport(report: unknown): {
+export function actionableGrypeReport(report: unknown, vendor?: VendorPendingEvidence): {
   report: Record<string, unknown>;
   excludedUnfixed: number;
   excludedGenericKernelCpe: number;
+  excludedVendorPending: number;
+  vendorPendingIds: string[];
 } {
   const doc = requiredRecord(report, "grype report");
   if (!Array.isArray(doc.matches)) fail("grype report must record a matches array");
   let excludedUnfixed = 0;
   let excludedGenericKernelCpe = 0;
+  const vendorPendingIds: string[] = [];
   const matches = doc.matches.filter((match) => {
     if (!isRecord(match) || !isRecord(match.vulnerability)) return true; // parseVulnerabilityFacts refuses it
     const fix = isRecord(match.vulnerability.fix) ? match.vulnerability.fix : {};
@@ -278,9 +357,24 @@ export function actionableGrypeReport(report: unknown): {
       excludedGenericKernelCpe += 1;
       return false;
     }
+    const severity = match.vulnerability.severity;
+    if (
+      vendor?.vendorShipsNothingNewer === true &&
+      (severity === "Critical" || severity === "High") &&
+      isVendorOwned(match, vendor.ownedPaths)
+    ) {
+      vendorPendingIds.push(typeof match.vulnerability.id === "string" ? match.vulnerability.id : "(no id)");
+      return false;
+    }
     return true;
   });
-  return { report: { ...doc, matches }, excludedUnfixed, excludedGenericKernelCpe };
+  return {
+    report: { ...doc, matches },
+    excludedUnfixed,
+    excludedGenericKernelCpe,
+    excludedVendorPending: vendorPendingIds.length,
+    vendorPendingIds,
+  };
 }
 
 /**
