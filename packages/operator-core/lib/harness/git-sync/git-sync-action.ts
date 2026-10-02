@@ -3420,6 +3420,15 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
     // maps these superproject-root-relative paths into each submodule before add.
     let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
+    // WI-10005576 / R-10: the census also reads THIS tree, so a write made inside an
+    // active personal-disclosure window without a native edit tool is held too.
+    const readCensus = () =>
+      readGitSyncCensusStrict({
+        window: {
+          repoPath,
+          runGit: (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args), { signal: liveness.signal }),
+        },
+      });
     try {
       // EI-21876778499591361: ride out a TRANSIENT pg contention timeout on this read instead of
       // skipping the tick. Failing CLOSED below is right for an UNREADABLE lock plane — staging a
@@ -3433,9 +3442,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // (EI-1720); this read was simply never wrapped. The retry sits INSIDE `guarded` so it sees
       // the RAW error, before the liveness wrapper. Non-contention faults still fail closed on the
       // first attempt, unchanged. ~6s of backoff against a 600s (LOCK_TTL_SEC) idle deadline.
-      liveLockHoldingRows = await guarded('read-live-file-locks', () =>
-        acquireWithContentionRetry(() => readGitSyncCensusStrict()),
-      );
+      liveLockHoldingRows = await guarded('read-live-file-locks', () => acquireWithContentionRetry(readCensus));
     } catch (error) {
       if (liveness.timedOut) throw liveness.timeoutError;
       // This read is a safety gate: treating an unreadable lock plane as [] lets
@@ -3575,7 +3582,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // initial census above protects setup, while this guarded callback closes
         // the longer submodule/guard window where a peer can acquire a lock.
         refreshLiveLockHoldings: () =>
-          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(() => readGitSyncCensusStrict())).then(
+          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(readCensus)).then(
             (rows) => toRepoLockCoordinates(rows, false),
           ),
         loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,

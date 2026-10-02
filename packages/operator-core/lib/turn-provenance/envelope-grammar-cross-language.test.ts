@@ -59,7 +59,9 @@ const ROOT = repoRoot();
 
 const LAUNCHER = join(ROOT, 'apps/operator/scripts/psu-launcher.mjs');
 const HOOK = join(ROOT, 'apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh');
-const PTY_HOST = join(ROOT, 'apps/operator/scripts/psu-pty-host.mjs');
+// Overridable so scripts/mutation-probe.sh can point the guard at a frozen copy
+// (copy-out / historical mode) without mutating the shared tree.
+const PTY_HOST = process.env.ENVELOPE_GRAMMAR_PTY_HOST || join(ROOT, 'apps/operator/scripts/psu-pty-host.mjs');
 
 /**
  * The shared corpus. Every copy of the grammar, in every language, must agree
@@ -213,6 +215,28 @@ describe('turn-origin envelope grammar — one definition across four languages'
       '⟦turn-origin:wake-pump nonce:acc293aaced4a1d8⟧ trailing body',
     ];
     expect(lines.map((line) => host.test(line))).toEqual(lines.map((line) => canonicalLine.test(line)));
+  });
+
+  it('3c. WI-10005628: psu-pty-host.mjs unwraps the same whole-prompt paste block before its first-line marker check', () => {
+    // The pty host reads a kickoff's marker off the FIRST line of the native user
+    // row. Claude Code stores a long PTY-typed prompt inside a paste block, so a
+    // host copy without this unwrap reads an empty first line, declares the kickoff
+    // unverified and kills the working child. 3b alone could not see that: it
+    // checks the marker grammar, not what the host does before applying it.
+    const literal = extractJsLiteral(read(PTY_HOST), 'PASTE_WRAPPER_RE', 'psu-pty-host.mjs');
+    const host = new RegExp(literal);
+    expect(host.source).toBe(PASTE_WRAPPER_RE.source);
+    expect(pasteVectorFor((s) => host.test(s))).toEqual(CANONICAL_PASTE_VECTOR);
+    expect(
+      [...PASTE_ACCEPT, ...PASTE_REJECT].map((s) => host.exec(s)?.[2] ?? null),
+    ).toEqual(
+      [...PASTE_ACCEPT, ...PASTE_REJECT].map((s) => (PASTE_WRAPPER_RE.test(s) ? unwrapWholePaste(s) : null)),
+    );
+    // Wiring, not just a declared constant: the first-line check must call the unwrap.
+    const src = read(PTY_HOST);
+    const fn = /export function leadingTurnOriginMarker\(text\) \{([\s\S]*?)\n\}/.exec(src);
+    expect(fn, 'psu-pty-host.mjs: leadingTurnOriginMarker(text) not found; update this guard').not.toBeNull();
+    expect(fn![1]).toContain('unwrapWholePaste(');
   });
 
   it('4. the python-in-shell hook agrees — run through REAL python3, not re-simulated in JS', () => {

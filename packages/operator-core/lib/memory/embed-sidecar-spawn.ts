@@ -48,10 +48,29 @@ import {
   EMBED_SIDECAR_PORT_ENV,
   EMBED_SIDECAR_READY_LINE,
   EMBED_SIDECAR_IDLE_EXIT_LINE,
+  EMBED_SIDECAR_IDLE_EXIT_ENV,
 } from './embed-sidecar-server';
 
-/** Per-host opt-in switch (v1 rollout control, like PAPERCUSP_SPAWNER_SIDECAR). */
+/** Per-host switch. '1' = on; any other SET value ('0', '') = off; unset = the
+ *  P-532 default (on inside a sidecar-capable bundle, see embedSidecarEnabled). */
 export const EMBED_SIDECAR_ENABLE_ENV = 'PAPERCUSP_EMBED_SIDECAR';
+
+/**
+ * P-532 (plan agent-capacity-and-cost-gcp-2026-09-30, WI-10005523): the built
+ * entries whose own boot diverts PAPERCUSP_EMBED_SIDECAR_MODE=1 to
+ * runEmbedSidecarServer, so re-exec'ing them yields a sidecar and not a second
+ * full host. serve.mjs = the packaged / hosted Server and the desktop app;
+ * hono-host.mjs = the operator host bundle. embed-sidecar-default-on.test.ts
+ * pins each name to an entry source that still carries the divert.
+ */
+export const EMBED_SIDECAR_REEXEC_ENTRIES: readonly string[] = ['serve.mjs', 'hono-host.mjs'];
+
+/**
+ * P-532: idle window after which a sidecar THIS Server spawned exits, returning
+ * the model's memory (~1 GB) to the host. The next embed re-spawns it (model
+ * load ~2 s, inside the 15 s embed budget).
+ */
+export const EMBED_SIDECAR_DEFAULT_IDLE_EXIT_MS = 5 * 60_000;
 
 // ESM (type:module) — derive the module dir from import.meta (EI-1612 shape).
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -73,13 +92,48 @@ let respawnAttempts: number[] = []; // timestamps (ms) of recent auto-respawn sc
 let respawnTimer: ReturnType<typeof setTimeout> | null = null;
 let gaveUp = false;
 
-/** Is the embed sidecar enabled on THIS host? (env opt-in, evaluated per call
- *  so tests / late exports can flip it). */
-export function embedSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+/** P-532: is this module running inside a built entry that can re-exec itself as the sidecar? */
+export function runningFromSidecarCapableBundle(selfPath: string = fileURLToPath(import.meta.url)): boolean {
+  return EMBED_SIDECAR_REEXEC_ENTRIES.includes(path.basename(selfPath));
+}
+
+/**
+ * Is the embed sidecar enabled on THIS host? Evaluated per call so tests and
+ * late exports can flip it.
+ *
+ * P-532: an explicit PAPERCUSP_EMBED_SIDECAR always wins ('1' on, anything else
+ * off). Unset, it defaults ON inside a sidecar-capable bundle (packaged / hosted
+ * Server, desktop, operator host) and OFF when running from source (tsx dev
+ * processes, scripts, tests), which would otherwise re-exec a .ts entry per
+ * process. An explicit PAPERCUSP_EMBED_SIDECAR_URL still takes precedence over
+ * either in every consumer (resolveProcessSidecarUrl's order).
+ */
+export function embedSidecarEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+  selfPath: string = fileURLToPath(import.meta.url),
+): boolean {
   // Never inside a sidecar process itself (any *_SIDECAR_MODE) — a sidecar
   // spawning sidecars is the recursion the mode-divert exists to prevent.
   if (env.PAPERCUSP_EMBED_SIDECAR_MODE === '1') return false;
-  return env[EMBED_SIDECAR_ENABLE_ENV] === '1';
+  const raw = env[EMBED_SIDECAR_ENABLE_ENV];
+  if (raw !== undefined) return raw.trim() === '1';
+  return runningFromSidecarCapableBundle(selfPath);
+}
+
+/**
+ * P-532: the idle-exit setting for a sidecar THIS Server spawns. An explicit
+ * PAPERCUSP_EMBED_SIDECAR_IDLE_EXIT_MS on the parent (0 = never) is inherited
+ * unchanged. A fixed shared port keeps never-exit: another process may hold
+ * that URL with no ensure hook to bring it back. Otherwise the child exits after
+ * EMBED_SIDECAR_DEFAULT_IDLE_EXIT_MS idle and the spawner re-launches it lazily.
+ */
+export function spawnedSidecarIdleExitEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  fixedPort: number | null,
+): NodeJS.ProcessEnv {
+  if (parentEnv[EMBED_SIDECAR_IDLE_EXIT_ENV] !== undefined) return {};
+  if (fixedPort !== null) return {};
+  return { [EMBED_SIDECAR_IDLE_EXIT_ENV]: String(EMBED_SIDECAR_DEFAULT_IDLE_EXIT_MS) };
 }
 
 function loopbackUrl(port: number): string {
@@ -454,6 +508,8 @@ export async function spawnEmbedSidecar(): Promise<void> {
       ...plan.env,
       // P-530: no explicit port → bind an ephemeral one; the READY line says which.
       ...(fixedPort === null ? { [EMBED_SIDECAR_PORT_ENV]: '0' } : {}),
+      // P-532: a per-tenant child exits when idle unless the parent says otherwise.
+      ...spawnedSidecarIdleExitEnv(process.env, fixedPort),
       // EI-8810 belt: the sidecar serves its OWN loopback port only — never the
       // parent's HTTP port or the background-worker role. A mode-divert miss in
       // the re-exec'd entry otherwise boots a full host on the PARENT's port
@@ -632,7 +688,8 @@ export async function ensureEmbedSidecar(
       loggedNoSidecarConfigured = true;
       console.warn(
         '[embed-sidecar] no sidecar configured for this process ' +
-          `(${EMBED_SIDECAR_ENABLE_ENV} unset, no explicit URL) — using pure in-process embedding. ` +
+          `(${EMBED_SIDECAR_ENABLE_ENV} not '1' and not running from a sidecar-capable bundle, ` +
+          'no explicit URL) — using pure in-process embedding. ' +
           'This is expected for hosts with no sidecar story. If you meant to exercise the sidecar ' +
           'path (e.g. verifying production embedding behavior from a standalone driver), export ' +
           'PAPERCUSP_EMBED_SIDECAR_URL — the systemd units\' value: ' +

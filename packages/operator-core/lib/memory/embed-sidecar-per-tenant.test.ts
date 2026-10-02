@@ -292,4 +292,28 @@ describe.skipIf(process.platform !== 'linux')('P-530: two tenants on one host ge
     expect(r).toEqual({ url: sidecarA.url, spawned: false });
     expect(existsSync(path.join(root, 'f', 'run', 'embed-sidecar.json'))).toBe(false);
   });
+
+  it('P-532: a per-tenant child is told to exit when idle; an explicit parent value passes through', async () => {
+    const IDLE = 'PAPERCUSP_EMBED_SIDECAR_IDLE_EXIT_MS';
+    const savedIdle = process.env[IDLE];
+    try {
+      delete process.env[IDLE];
+      const tenantG = await server(path.join(root, 'g'));
+      await ensureAnswering(tenantG, sidecarB.port);
+      expect(fake.envs).toHaveLength(1);
+      expect(fake.envs[0][IDLE]).toBe(String(tenantG.EMBED_SIDECAR_DEFAULT_IDLE_EXIT_MS));
+      expect(tenantG.EMBED_SIDECAR_DEFAULT_IDLE_EXIT_MS).toBeGreaterThan(0);
+      tenantG._resetEmbedSidecarSpawnStateForTests();
+
+      process.env[IDLE] = '0'; // operator chose never-exit
+      const tenantH = await server(path.join(root, 'h'));
+      await ensureAnswering(tenantH, sidecarA.port);
+      expect(fake.envs).toHaveLength(2);
+      expect(fake.envs[1][IDLE]).toBe('0');
+      tenantH._resetEmbedSidecarSpawnStateForTests();
+    } finally {
+      if (savedIdle === undefined) delete process.env[IDLE];
+      else process.env[IDLE] = savedIdle;
+    }
+  });
 });

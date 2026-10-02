@@ -8,20 +8,28 @@
  * contract, and the end-to-end effect on a real git repository via runGitSync.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   RESTRICTED_HOLD_INTENT,
+  RESTRICTED_WINDOW_INTENT,
+  RESTRICTED_WINDOW_OWNER,
   isRestrictedHoldIntent,
+  listDirtyFilesRecursive,
   ownerHasActiveDisclosure,
   readGitSyncCensusStrict,
   readRestrictedEditHoldings,
+  readRestrictedWindowHoldings,
   recordRestrictedEditBeforeRelease,
   restrictedHoldingsFromRows,
+  type HoldRunGit,
   type RestrictedEditRow,
 } from './git-sync-hold';
+
+const execFileAsync = promisify(execFile);
 import { DisclosureRefused } from './disclosure-ledger';
 import { runGitSync } from '../harness/git-sync/run-git-sync';
 
@@ -264,4 +272,102 @@ describe('git-sync holds a restricted session’s file until its disclosure is r
     expect(['synced', 'skipped-locked']).toContain(out.status);
     expect(committed()).not.toContain('secret.md');
   });
+
+  // WI-10005576: a write with NO ledger row (Bash redirect, sed -i, a script).
+  describe('writes made without a native edit tool (window hold)', () => {
+    const realGit: HoldRunGit = async (args, cwd) => {
+      try {
+        const { stdout, stderr } = await execFileAsync('git', args, { cwd, encoding: 'utf8' });
+        return { code: 0, stdout, stderr };
+      } catch (error) {
+        const e = error as { code?: number; stdout?: string; stderr?: string };
+        return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout ?? '', stderr: e.stderr ?? String(error) };
+      }
+    };
+    /** The ledger as seen while one disclosure is active since `sinceMs`. */
+    const ledgerWith = (sinceMs: number, edits: Array<{ file: string; agent: string; tsMs: number }>) =>
+      sequenceSql([
+        [{ since: new Date(sinceMs), restricted: ['su-restricted'] }],
+        edits.map((e) => ({ repo_root: repo, file: e.file, agent_id: e.agent, ts: new Date(e.tsMs) })),
+      ]);
+
+    it('holds a file written inside the window with no ledger row, and commits the attributed and pre-window ones', async () => {
+      writeFileSync(join(repo, 'old.md'), 'changed before the disclosure\n');
+      const past = new Date(Date.now() - 3_600_000);
+      utimesSync(join(repo, 'old.md'), past, past);
+      const sinceMs = Date.now() - 60_000;
+      writeFileSync(join(repo, 'bash-secret.md'), 'echo "quoted from a private email" > bash-secret.md\n');
+      writeFileSync(join(repo, 'peer-native.md'), 'a peer’s native edit\n');
+      const peerMtime = statSync(join(repo, 'peer-native.md')).mtimeMs;
+
+      const holds = await readRestrictedWindowHoldings({
+        sql: ledgerWith(sinceMs, [{ file: 'peer-native.md', agent: 'su-peer', tsMs: peerMtime + 50 }]),
+        listDirtyFiles: () => listDirtyFilesRecursive(realGit, repo),
+      });
+      expect(holds).toEqual([
+        { path: 'bash-secret.md', owner: RESTRICTED_WINDOW_OWNER, intent: RESTRICTED_WINDOW_INTENT, coordinationDomain: repo },
+      ]);
+      expect(isRestrictedHoldIntent(RESTRICTED_WINDOW_INTENT)).toBe(true);
+
+      const out = await runGitSync('test', { repoPath: repo, config: cfg, liveLockHoldings: holds, refreshLiveLockHoldings: async () => holds });
+      expect(out.status).toBe('synced');
+      expect(committed()).toEqual(expect.arrayContaining(['old.md', 'peer-native.md']));
+      expect(committed()).not.toContain('bash-secret.md');
+      expect(git(repo, 'status', '--porcelain', '--', 'bash-secret.md')).toMatch(/bash-secret\.md/);
+    });
+
+    it('holds a file whose latest native edit is by a restricted session, or predates the write', async () => {
+      const sinceMs = Date.now() - 60_000;
+      writeFileSync(join(repo, 'restricted-native.md'), 'x\n');
+      writeFileSync(join(repo, 'stale-attribution.md'), 'y\n');
+      const holds = await readRestrictedWindowHoldings({
+        sql: ledgerWith(sinceMs, [
+          { file: 'restricted-native.md', agent: 'su-restricted', tsMs: Date.now() },
+          { file: 'stale-attribution.md', agent: 'su-peer', tsMs: sinceMs + 1 }, // edited natively, then rewritten later
+        ]),
+        listDirtyFiles: () => listDirtyFilesRecursive(realGit, repo),
+      });
+      expect(holds.map((h) => h.path).sort()).toEqual(['restricted-native.md', 'stale-attribution.md']);
+    });
+
+    it('lists files changed inside a submodule under the submodule’s own root', async () => {
+      const subOrigin = join(root, 'sub.git');
+      git(root, 'init', '--bare', '-b', 'main', subOrigin);
+      const subSeed = join(root, 'sub-seed');
+      git(root, 'clone', subOrigin, subSeed);
+      configUser(subSeed);
+      writeFileSync(join(subSeed, 'a.md'), 'a\n');
+      git(subSeed, 'add', '-A');
+      git(subSeed, 'commit', '--no-verify', '-m', 'sub init');
+      git(subSeed, 'push', '-u', 'origin', 'main');
+      git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', subOrigin, 'sub');
+      git(repo, 'commit', '--no-verify', '-m', 'add sub');
+      writeFileSync(join(repo, 'sub', 'secret.md'), 'private\n');
+      rmSync(join(repo, 'sub', 'a.md'));
+
+      const dirty = await listDirtyFilesRecursive(realGit, repo);
+      expect(dirty).toContainEqual({ root: join(repo, 'sub'), path: 'secret.md' });
+      expect(dirty.some((d) => d.path === 'a.md')).toBe(false); // a deletion is never held
+    });
+
+    it('costs one query and reads no tree when no disclosure is active', async () => {
+      const listDirtyFiles = vi.fn(async () => [{ root: repo, path: 'x.md' }]);
+      const sql = sequenceSql([[{ since: null, restricted: null }]]);
+      expect(await readRestrictedWindowHoldings({ sql, listDirtyFiles })).toEqual([]);
+      expect(listDirtyFiles).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the tree cannot be listed while a disclosure is active', async () => {
+      const sql = sequenceSql([[{ since: new Date(), restricted: ['su-restricted'] }]]);
+      const listDirtyFiles = async () => Promise.reject(new Error('git status failed'));
+      await expect(readRestrictedWindowHoldings({ sql, listDirtyFiles })).rejects.toMatchObject({ code: 'disclosure_ledger_unavailable' });
+    });
+  });
 });
+
+/** A tagged-template fake that answers successive statements from `answers`. */
+function sequenceSql(answers: unknown[][]): FakeSql {
+  let i = 0;
+  const fn = () => Promise.resolve(answers[Math.min(i++, answers.length - 1)] ?? []);
+  return fn as unknown as FakeSql;
+}

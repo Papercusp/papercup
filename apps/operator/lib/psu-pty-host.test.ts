@@ -3122,6 +3122,51 @@ describe('findNativeTranscriptMarker (fresh row provenance)', () => {
     })).toBe(transcript);
   });
 
+  // WI-10005628: Claude Code 2.1.284 stores a long PTY-typed kickoff wrapped in a
+  // paste block (measured row: "\n\n<pasted_content id=\"3e9a\">\n⟦turn-origin:…⟧\n…
+  // \n</pasted_content id=\"3e9a\">\n", 51603 chars). The first line is empty, so the
+  // proof never matched and the host killed a child that had been working for 90s.
+  it('certifies a fresh Claude kickoff that the CLI wrapped in a whole-prompt paste block', () => {
+    const claudeConfig = pathJoin(scratch, 'claude-paste-home');
+    const dir = pathJoin(claudeConfig, 'projects', '-home-repo');
+    const transcript = pathJoin(dir, 'c1ef27f4-native.jsonl');
+    nodeFs.mkdirSync(dir, { recursive: true });
+    const marker = '⟦turn-origin:fleet-kickoff nonce:83be0e4d1f16a9a0⟧';
+    const body = `${marker}\nYou are in GOAL mode on goal \`g\`.\n${'context line\n'.repeat(400)}Then begin.`;
+    const wrapped = `\n\n<pasted_content id="3e9a">\n${body}\n</pasted_content id="3e9a">\n`;
+    const sinceMs = Date.now() - 1_000;
+    const row = (content: string) => JSON.stringify({
+      type: 'user',
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content },
+    });
+    const find = () => findNativeTranscriptMarker({
+      agent: 'claude',
+      env: { CLAUDE_CONFIG_DIR: claudeConfig },
+      marker,
+      sinceMs,
+      nativeId: 'c1ef27f4',
+      home: scratch,
+    });
+
+    expect(leadingTurnOriginMarker(wrapped)).toBe(marker);
+    expect(unwrapWholePaste(wrapped)).toBe(body);
+    nodeFs.writeFileSync(transcript, `${row(wrapped)}\n`);
+    expect(find()).toBe(transcript);
+
+    // Whole-prompt only: owner words outside the paste keep it unwrapped, so a
+    // quoted kickoff can never certify an injection (directive #153's shape).
+    const quoted = `why did this fire?\n<pasted_content id="3e9a">\n${body}\n</pasted_content id="3e9a">`;
+    expect(unwrapWholePaste(quoted)).toBe(quoted);
+    expect(leadingTurnOriginMarker(quoted)).toBeNull();
+    nodeFs.writeFileSync(transcript, `${row(quoted)}\n`);
+    expect(find()).toBeNull();
+
+    // Mismatched closing id is not one paste block either.
+    const mismatched = `<pasted_content id="3e9a">\n${body}\n</pasted_content id="9999">`;
+    expect(leadingTurnOriginMarker(mismatched)).toBeNull();
+  });
+
   it('requires the marker on the first fresh task user prompt, not a later prompt or assistant echo', () => {
     const codexHome = pathJoin(scratch, 'codex-home');
     const sessions = pathJoin(codexHome, 'sessions');

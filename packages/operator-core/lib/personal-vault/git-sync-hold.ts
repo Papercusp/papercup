@@ -305,14 +305,12 @@ export async function readGitSyncCensusStrict(
     window?: { repoPath: string; runGit: HoldRunGit } | (() => Promise<RestrictedEditHolding[]>);
   } = {},
 ): Promise<LiveLockHolding[]> {
-  const readWindow =
-    typeof deps.window === 'function'
-      ? deps.window
-      : deps.window
-        ? (() => {
-            const { repoPath, runGit } = deps.window;
-            return () => readRestrictedWindowHoldings({ listDirtyFiles: () => listDirtyFilesRecursive(runGit, repoPath) });
-          })()
+  const tree = deps.window;
+  const readWindow: () => Promise<RestrictedEditHolding[]> =
+    typeof tree === 'function'
+      ? tree
+      : tree
+        ? () => readRestrictedWindowHoldings({ listDirtyFiles: () => listDirtyFilesRecursive(tree.runGit, tree.repoPath) })
         : async () => [];
   const [locks, restricted, windowHolds] = await Promise.all([
     (deps.locks ?? liveLockHoldingsStrict)(),
