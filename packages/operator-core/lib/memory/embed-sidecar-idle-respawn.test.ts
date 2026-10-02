@@ -43,6 +43,9 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { EMBED_SIDECAR_IDLE_EXIT_LINE, EMBED_SIDECAR_READY_LINE } from './embed-sidecar-server';
 import {
   _resetEmbedSidecarSpawnStateForTests,
@@ -60,26 +63,40 @@ function say(child: FakeChild, line: string): void {
 
 describe('ensureEmbedSidecar during an announced idle exit (P-531)', () => {
   const savedEnable = process.env[EMBED_SIDECAR_ENABLE_ENV];
+  const savedPort = process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+  const savedHome = process.env.PAPERCUSP_HOME;
+  let home: string;
 
   beforeEach(() => {
     fake.children.length = 0;
     vi.mocked(spawn).mockClear();
     _resetEmbedSidecarSpawnStateForTests();
     process.env[EMBED_SIDECAR_ENABLE_ENV] = '1';
+    // P-530 ephemeral-port mode, with a private data dir so no real record is read.
+    delete process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+    home = mkdtempSync(path.join(tmpdir(), 'p531-idle-'));
+    process.env.PAPERCUSP_HOME = home;
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
     _resetEmbedSidecarSpawnStateForTests();
-    if (savedEnable === undefined) delete process.env[EMBED_SIDECAR_ENABLE_ENV];
-    else process.env[EMBED_SIDECAR_ENABLE_ENV] = savedEnable;
+    for (const [k, v] of [
+      [EMBED_SIDECAR_ENABLE_ENV, savedEnable],
+      ['PAPERCUSP_EMBED_SIDECAR_PORT', savedPort],
+      ['PAPERCUSP_HOME', savedHome],
+    ] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(home, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
 
   it('waits for the re-launched child instead of returning the closing one', async () => {
     const first = spawnEmbedSidecar();
     expect(fake.children).toHaveLength(1);
-    say(fake.children[0], EMBED_SIDECAR_READY_LINE);
+    say(fake.children[0], `${EMBED_SIDECAR_READY_LINE} port=41001`);
     await first;
     expect(isEmbedSidecarReady()).toBe(true);
 
@@ -102,30 +119,34 @@ describe('ensureEmbedSidecar during an announced idle exit (P-531)', () => {
     expect(fake.children).toHaveLength(2);
     expect(resolved).toBeUndefined();
 
-    say(fake.children[1], EMBED_SIDECAR_READY_LINE);
-    await expect(pending).resolves.toBe(embedSidecarLocalUrl());
+    // P-530: the re-launched child binds a NEW ephemeral port; the caller is
+    // handed that one, never the closed child's.
+    say(fake.children[1], `${EMBED_SIDECAR_READY_LINE} port=41002`);
+    await expect(pending).resolves.toBe('http://127.0.0.1:41002');
+    expect(embedSidecarLocalUrl()).toBe('http://127.0.0.1:41002');
     expect(isEmbedSidecarReady()).toBe(true);
     expect(vi.mocked(spawn)).toHaveBeenCalledTimes(2);
   });
 
   it('an idle exit with nobody waiting does not re-launch; the next ensure does', async () => {
     const first = spawnEmbedSidecar();
-    say(fake.children[0], EMBED_SIDECAR_READY_LINE);
+    say(fake.children[0], `${EMBED_SIDECAR_READY_LINE} port=41001`);
     await first;
     say(fake.children[0], EMBED_SIDECAR_IDLE_EXIT_LINE);
     fake.children[0].emit('exit', 0);
     await new Promise((r) => setTimeout(r, 10));
     expect(fake.children).toHaveLength(1); // stays down: that is the memory saving
+    expect(embedSidecarLocalUrl()).toBeNull(); // P-530: no address while it is down
 
-    // The sidecar is gone, so a running check fails and ensure would probe the
-    // port before spawning. Make the probe answer "nothing listening" so this
-    // test never touches a real sidecar on the shared port.
+    // The sidecar is gone, so a running check fails. P-530: with no explicit
+    // port there is no shared port to probe and no record (PAPERCUSP_HOME is a
+    // fresh temp dir), so ensure spawns without touching any real sidecar.
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('connect ECONNREFUSED'));
     const pending = ensureEmbedSidecar(['embed']);
     await vi.waitFor(() => expect(fake.children).toHaveLength(2));
-    say(fake.children[1], EMBED_SIDECAR_READY_LINE);
-    await expect(pending).resolves.toBe(embedSidecarLocalUrl());
-    expect(fetchSpy).toHaveBeenCalled();
+    say(fake.children[1], `${EMBED_SIDECAR_READY_LINE} port=41003`);
+    await expect(pending).resolves.toBe('http://127.0.0.1:41003');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
