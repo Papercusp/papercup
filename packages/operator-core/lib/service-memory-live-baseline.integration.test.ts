@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readlinkSync, readdirSync, statSync, writeFil
 import { dirname, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { closeInspector, createCdpClient, readPinnedState, readProcessMemory } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, readProcessMemory, validatePinnedStateOptions } from '../../../scripts/cdp-inspector.mjs';
 import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-patterns.mjs';
 
 const root = resolve(__dirname, '../../..');
@@ -26,7 +26,10 @@ function parsePinnedLimits(raw?: string): PinnedLimits | undefined {
           !Number.isInteger(value[key]) || value[key] < (key === 'cacheEntryOffset' ? 0 : 1)))) {
     throw Error('Pinned limits must contain only positive integer reader limits');
   }
-  // The maintained reader enforces its upper bounds before evaluating the target.
+  // Reuse the reader's exact bounds before acquiring/opening a target inspector.
+  // Selection is structurally checked here; the caller's actual opt-in is checked
+  // with the full options below before any process observation.
+  validatePinnedStateOptions({ ...value, expectedPid: 1, operatorCacheEntries: true });
   return value;
 }
 function processSample(pid: number) {
@@ -77,6 +80,20 @@ describe('actual current-build operator memory baseline', () => {
     }
   });
 
+  it('rejects reader caps and incompatible selection in preflight before any target interaction', () => {
+    const caps = { maxSlots: 512, maxObjects: 16384, maxEntries: 32768, maxFields: 64,
+      maxDepth: 8, budgetMs: 200, maxCacheEntries: 256, maxEntryEntries: 32768,
+      maxEntryObjects: 16384, maxKeyCodeUnits: 65536, cacheEntryOffset: 32768 };
+    for (const [name, cap] of Object.entries(caps)) {
+      expect(() => parsePinnedLimits(JSON.stringify({ [name]: cap }))).not.toThrow();
+      expect(() => parsePinnedLimits(JSON.stringify({ [name]: cap + 1 }))).toThrow('invalid pinned-state');
+    }
+    expect(() => parsePinnedLimits(JSON.stringify({ maxFields: 256 }))).toThrow('invalid pinned-state');
+    expect(() => validatePinnedStateOptions({ expectedPid: 7, cacheEntryOffset: 1 })).toThrow('invalid pinned-state');
+    expect(() => parsePinnedLimits(JSON.stringify({ cacheKeyDigests: ['a'.repeat(64)], cacheEntryOffset: 1 })))
+      .toThrow('invalid pinned-state');
+  });
+
   it('rejects PID reuse and changed executable before accepting a resource comparison', () => {
     const before = { pid: 7, startTicks: '12', executableSha256: 'a' };
     expect(() => assertIdentity(before, { ...before, startTicks: '13' })).toThrow('identity changed');
@@ -98,6 +115,9 @@ describe('actual current-build operator memory baseline', () => {
     }
     if (pinnedOwners !== undefined && (!Array.isArray(pinnedOwners) || pinnedOwners.length < 1 ||
         pinnedOwners.some(owner => typeof owner !== 'string'))) throw Error('Exact pinned owners must be a nonempty string array');
+    if (process.env.PAPERCUSP_P011_PINNED_STATE) validatePinnedStateOptions({
+      ...pinnedLimits, expectedPid: pid, owners: pinnedOwners, operatorCacheEntries,
+    });
     expect(Number.isInteger(pid) && pid > 0).toBe(true);
     expect(base).toBe('http://127.0.0.1:3170');
     expect(expectedBuild).toMatch(/^[a-f0-9]{7,40}$/);
