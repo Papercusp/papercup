@@ -6,8 +6,10 @@
  * run here; only the WebSocket, PTY, desktop, and local HTTP peers are fakes.
  * The wire tap is on the control-plane side of each socket, before its JSON parser.
  *
- * The desired assertion is deliberately it.fails while the relays are plaintext.
- * P-004/P-005 must turn it into an ordinary test once sealed BYOC content ships.
+ * The original plaintext relay leaked markers on every content plane. Current
+ * BYOC sessions use sealed packets, so the negative control deliberately adds
+ * plaintext frames to the captured surface and proves the same leak oracle
+ * would catch a regression without weakening the sealed-path assertion.
  */
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -441,9 +443,12 @@ describe('hosted BYOC content marker negative control (P-003)', () => {
     expect(PLANES.filter((plane) => run.delivered[plane])).toEqual(PLANES);
   });
 
-  it('detects plaintext, base64, hex, and URL encoding on the capture surface', () => {
-    for (const [index, encoded] of encodings(marker('file')).entries()) {
-      expect(recoverable([{ surface: 'positive-control-' + index, bytes: encoded }], marker('file'))).toHaveLength(1);
+  it('detects a deliberately leaked marker from every assembled content plane', () => {
+    for (const plane of PLANES) {
+      for (const [index, encoded] of encodings(marker(plane)).entries()) {
+        const leaked = { surface: `${plane}-plaintext-negative-control-${index}`, bytes: encoded };
+        expect(recoverable([...run.captures, leaked], marker(plane))).toContainEqual(leaked);
+      }
     }
   });
 
