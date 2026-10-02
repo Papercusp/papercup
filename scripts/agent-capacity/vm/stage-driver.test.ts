@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -26,25 +27,39 @@ describe('vm/stage-driver.sh (fake repo via STAGE_ROOT, faked gcloud)', () => {
     put('scripts/agent-capacity/vm/sample.py', '\n');
     put('packages/operator-core/lib/child-output.ts', "import { StringDecoder } from 'node:string_decoder';\nimport type { ChildProcess } from 'node:child_process';\n");
     put('packages/operator-core/lib/util/cli-entry.ts', "import { realpathSync } from 'node:fs';\n");
-    put('bin/gcloud', `#!/usr/bin/env bash\necho "$*" >> "${gcloudLog()}"\n`);
+    // Logs every call; with FAKE_VM_HOME set it is also a fake VM: ssh runs --command under
+    // HOME=FAKE_VM_HOME, scp copies the sources to FAKE_VM_HOME/<dest>.
+    put(
+      'bin/gcloud',
+      `#!/usr/bin/env bash
+echo "$*" >> "${gcloudLog()}"
+[ -n "\${FAKE_VM_HOME:-}" ] || exit 0
+verb="$1 $2"; shift 2
+case "$verb" in
+  "compute ssh") for a in "$@"; do case "$a" in --command=*) HOME="$FAKE_VM_HOME" bash -c "\${a#--command=}" || exit $?;; esac; done ;;
+  "compute scp") srcs=(); for a in "$@"; do case "$a" in --*) ;; *) srcs+=("$a");; esac; done
+    dest="\${srcs[-1]#*:}"; unset 'srcs[-1]'; cp "\${srcs[@]}" "$FAKE_VM_HOME/$dest" ;;
+esac
+`,
+    );
     chmodSync(path.join(root, 'bin', 'gcloud'), 0o755);
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  const run = () =>
+  const run = (env: Record<string, string> = {}) =>
     spawnSync('bash', [SCRIPT, 'cap-x', 'proj', 'zone-a'], {
       encoding: 'utf8',
       timeout: 30_000,
-      env: { ...process.env, STAGE_ROOT: root, PATH: `${path.join(root, 'bin')}:${process.env.PATH}` },
+      env: { ...process.env, STAGE_ROOT: root, PATH: `${path.join(root, 'bin')}:${process.env.PATH}`, ...env },
     });
 
-  it('copies the driver, corpus, vm scripts and every imported operator-core leaf module into the VM node_modules', () => {
+  it('copies the driver, corpus, vm scripts and every imported operator-core leaf module into the VM scripts/node_modules', () => {
     const r = run();
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).toMatch(/^STAGE_OK vm=cap-x scripts=2 operatorCore=2 \(lib\/child-output lib\/util\/cli-entry\)$/m);
     const calls = readFileSync(gcloudLog(), 'utf8').trim().split('\n');
-    const nm = 'cap-x:capacity/node_modules/@papercusp/operator-core';
-    expect(calls[0]).toMatch(/^compute ssh cap-x --project=proj --zone=zone-a --command=mkdir -p .*~\/capacity\/node_modules\/@papercusp\/operator-core\/lib\/util /);
+    const nm = 'cap-x:capacity/scripts/node_modules/@papercusp/operator-core';
+    expect(calls[0]).toMatch(/^compute ssh cap-x --project=proj --zone=zone-a --command=mkdir -p .*~\/capacity\/scripts\/node_modules\/@papercusp\/operator-core\/lib\/util /);
     expect(calls[0]).toContain('"name":"@papercusp/operator-core"');
     expect(calls).toContain(`compute scp --project=proj --zone=zone-a --quiet scripts/agent-capacity/driver.ts scripts/agent-capacity/sibling.ts cap-x:capacity/scripts/agent-capacity/`);
     expect(calls).toContain(`compute scp --project=proj --zone=zone-a --quiet scripts/agent-capacity/corpus/tasks.json cap-x:capacity/scripts/agent-capacity/corpus/`);
@@ -52,6 +67,26 @@ describe('vm/stage-driver.sh (fake repo via STAGE_ROOT, faked gcloud)', () => {
     expect(calls).toContain(`compute scp --project=proj --zone=zone-a --quiet packages/operator-core/lib/child-output.ts ${nm}/lib/child-output.ts`);
     expect(calls).toContain(`compute scp --project=proj --zone=zone-a --quiet packages/operator-core/lib/util/cli-entry.ts ${nm}/lib/util/cli-entry.ts`);
     expect(calls.join('\n')).not.toContain('test-only');
+  });
+
+  it('stages operator-core where a later npm install in ~/capacity cannot prune it, and the driver still resolves it', () => {
+    // WI-10005355: the bring-up runs `npm init -y && npm install tsx@4` in ~/capacity AFTER staging, and
+    // npm prunes an undeclared package from ~/capacity/node_modules (measured; two ramp preflights failed).
+    const vm = path.join(root, 'vmhome');
+    mkdirSync(vm);
+    const r = run({ FAKE_VM_HOME: vm });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    const home = realpathSync(vm);
+    // npm's reach is ~/capacity/node_modules, so deleting all of it is the worst case of that prune.
+    rmSync(path.join(home, 'capacity', 'node_modules'), { recursive: true, force: true });
+    const driver = path.join(home, 'capacity/scripts/agent-capacity/driver.ts');
+    expect(existsSync(driver)).toBe(true);
+    const req = createRequire(driver);
+    for (const m of ['lib/child-output', 'lib/util/cli-entry']) {
+      expect(req.resolve(`@papercusp/operator-core/${m}.ts`)).toBe(
+        path.join(home, `capacity/scripts/node_modules/@papercusp/operator-core/${m}.ts`),
+      );
+    }
   });
 
   it('refuses, before touching the VM, an imported module that is not a leaf', () => {

@@ -10,7 +10,11 @@
 # resolve, then the corpus/ dir (the driver's default tasks.json) was missing. This copies:
 #   - scripts/agent-capacity/*.ts (not tests), corpus/, vm/*.sh and vm/*.py
 #   - every `@papercusp/operator-core/<path>` module those scripts import, as
-#     ~/capacity/node_modules/@papercusp/operator-core/<path>.ts (tsx resolves the bare specifier)
+#     ~/capacity/scripts/node_modules/@papercusp/operator-core/<path>.ts (tsx resolves the bare
+#     specifier by walking up from scripts/agent-capacity/). NOT ~/capacity/node_modules: npm owns
+#     that dir, and the bring-up's `npm init -y && npm install tsx@4` there prunes an undeclared
+#     package, which failed two ramp preflights (WI-10005355). npm never touches scripts/node_modules,
+#     so staging order no longer matters.
 # and refuses an imported module that itself imports anything but node:* (its own closure would be
 # missing on the VM). p005-ramp.sh's `load-driver.ts --check` preflight is the backstop on the VM.
 # STAGE_ROOT overrides the repo root (tests). Lines to grep: STAGE_*.
@@ -38,7 +42,7 @@ done
 
 ssh_vm() { gcloud compute ssh "$VM" --project="$PROJECT" --zone="$ZONE" --command="$1"; }
 scp_vm() { gcloud compute scp --project="$PROJECT" --zone="$ZONE" --quiet "$@"; }
-NM=capacity/node_modules/@papercusp/operator-core
+NM=capacity/scripts/node_modules/@papercusp/operator-core
 dirs="~/capacity/scripts/agent-capacity/vm ~/capacity/scripts/agent-capacity/corpus ~/capacity/p529 ~/capacity/fp"
 for m in "${mods[@]}"; do dirs="$dirs ~/$NM/$(dirname "$m")"; done
 ssh_vm "mkdir -p $dirs && printf '{\"name\":\"@papercusp/operator-core\",\"version\":\"0.0.0-vm\"}\n' > ~/$NM/package.json" \

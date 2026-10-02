@@ -47,7 +47,9 @@ RAMP_ERROR_SEC=${RAMP_ERROR_SEC:-120}
 # versions) with nothing driven. A driver that cannot start must fail here with its real error,
 # not read as a saturated first step.
 if ! npx tsx "$S/load-driver.ts" --check "${sel[@]}" "${tasks[@]}" --workdir "$WORKDIR" >"$FP/p005-$LABEL.check.log" 2>&1; then
-  why=$(grep -m1 -E 'Error|Cannot find' "$FP/p005-$LABEL.check.log" | cut -c1-300)
+  # The error's own line, not the first line that merely mentions "Error": node/tsx print a source
+  # excerpt (`  const err = new Error(message);`) above it, which hid the real cause (WI-10005355).
+  why=$(grep -m1 -E '^[[:space:]]*[A-Za-z]*Error( \[[A-Z_]+\])?: |Cannot find' "$FP/p005-$LABEL.check.log" | cut -c1-300)
   echo "RAMP_PREFLIGHT_FAILED $LABEL ${why:-see $FP/p005-$LABEL.check.log} $(ts)"
   exit 3
 fi

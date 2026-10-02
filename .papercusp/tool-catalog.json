@@ -2037,7 +2037,7 @@
           "POST"
         ]
       },
-      "description": "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer learning: fractional win credit in lens weights + critique primed into later ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.",
+      "description": "Grade a routed Blender idea 1–5 with optional feedback (≤16,000 chars; longer input is rejected). Grades steer learning: fractional win credit in lens weights + critique primed into later ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.",
       "capabilities": [
         "harness:write"
       ],
@@ -2054,7 +2054,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the triage path: grade each ungraded routed draft).",
+        "when": "You want to score a routed Blender idea 1–5 with optional critique or detailed reviewer feedback (up to 16,000 characters) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the triage path: grade each ungraded routed draft).",
         "notWhen": "Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller identity (resolved agent ownerId, or the human owner surface).",
         "chaining": "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. The originator auto-notify is reported as revisionWake (thresholds in the description). applied:false + reason 'owner-grade-sovereign' (an agent regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade."
       }
@@ -7670,7 +7670,7 @@
           "POST"
         ]
       },
-      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the required one-line inbox headline, `body` optional detail. Distinct messages: items:[…]. `to` takes ownerIds, [\"*\"], or [\"human\"]. `expects` required: ack|answer|action|none. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; authored refs go in `body[].premises`. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).",
+      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the required inbox headline; `body` optional detail. Distinct messages: items:[…]. `to` takes ownerIds, [\"*\"], or [\"human\"]. `expects` required: ack|answer|action|none. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects. `wake` re-invokes sleeping recipients; `optimistic` needs `backstop`.",
       "capabilities": [
         "coord:write"
       ],

@@ -2578,7 +2578,7 @@ export default defineTool({
   // Budget is recovered by tightening prose instead; response/refusal detail lives in the
   // free `returns` below (EI-22083648545226771 / EI-18742337097445085).
   description:
-    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the required one-line inbox headline, `body` optional detail. Distinct messages: items:[…]. `to` takes ownerIds, ["*"], or ["human"]. `expects` required: ack|answer|action|none. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; authored refs go in `body[].premises`. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
+    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the required inbox headline; `body` optional detail. Distinct messages: items:[…]. `to` takes ownerIds, ["*"], or ["human"]. `expects` required: ack|answer|action|none. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects. `wake` re-invokes sleeping recipients; `optimistic` needs `backstop`.',
   guidance: {
     when:
       'Share context or ask. `summary` is the required inbox headline; `body` is detail. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most ' +

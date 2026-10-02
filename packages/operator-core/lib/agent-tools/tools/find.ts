@@ -446,6 +446,16 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   // fields are contract-bearing, so reserve their names/shapes before optional
   // evidence metadata while retaining source order for everything else.
   const contractPriority = (name: string): number => {
+    // `improvements:capture.observation.subject` is a typed discriminator + ref
+    // used to bind a captured observation to its subject. It was late in this
+    // wide object and disappeared behind the compact segment's tail marker,
+    // leaving callers to discover its required object shape from invalid_args.
+    const isObservationCapture =
+      properties.some(([field]) => field === 'linkTo') &&
+      properties.some(([field]) => field === 'sourceHive') &&
+      properties.some(([field]) => field === 'subject') &&
+      properties.some(([field]) => field === 'confidence');
+    if (isObservationCapture && name === 'subject') return 110;
     if (name === 'rootCauseVerification') return 100;
     // plans:set-specs has a wide clause shape; its required discriminator was
     // elided behind optional fields in both `spec` and `items` discovery.

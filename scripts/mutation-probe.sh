@@ -1845,7 +1845,7 @@ verify_mutation_bytes() {
   if cmp -s "$SCRATCH/mutant.non-whitespace" "$BASE_NON_WHITESPACE"; then
     die "the --mutate expression changed ONLY WHITESPACE (non-whitespace content is unchanged).
       A whitespace-only mutation can leave behavior unchanged and make any guard
-      look weak. Inspect the mutation diff above, then fix the expression so it
+      look weak. Inspect the mutation expression, then fix it so it
       changes the intended non-whitespace token and re-run."
   fi
 }

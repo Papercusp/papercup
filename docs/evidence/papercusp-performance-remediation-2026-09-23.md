@@ -4,6 +4,37 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## R171 boot failure recovery — 2026-10-02, Fire160
+
+The newer Fire159 record supersedes the old unlaunched preparation note. R171
+launched once with rebound manifest `c8473370b035`. The maintained verifier's
+official result is **FAIL at boot**, with assertions blocked. WDIO never started;
+there is no new popup, FCP, LCP, operation-partition or isolated-collection result.
+
+The owned API's boot proof reported pending migration
+`1339-session-gate-suppressed-ask-kind.sql` against backup-locked
+`session_pending_gates`. Its request-only migration preflight timed out after
+20 seconds and refused to serve. A native-addon abort followed that refusal;
+the abort's independent mechanism remains unproven. Preparation had already
+spent 324855 ms, followed by 269454 ms in the failed boot phase.
+
+Current scoped cleanup checks recovered the exact per-launch nonce and found no
+remaining processes bearing it. Both recorded API PIDs are absent; the owned
+source snapshot and SPA copy are removed, while small logs remain. The assertion's
+identity/result/native files, profiles, HOME and tmpfs root were never created.
+This is exact-run cleanup evidence, not global process or port absence.
+
+Before another expensive attempt, extend the existing PG probe and verifier
+preflight to establish the selected shared target schema's readiness before
+copy/build work. Reuse the migration runner's selection rules and ledger;
+preserve its backup guard, ordinary launcher fallback and isolated-DB path.
+This detector repair is pending. No unchanged R171 replay is justified.
+
+Exact result, manifest, log and cleanup references are under
+`r171BootFailureRecoveredFire160` in the native source/output audit JSON.
+P-007 cause, product repair, R-7 and the frozen cold/warm cohort remain open;
+P-006/P-008 acceptance remains separate.
+
 ## First-frame observer operation guards — 2026-10-02, Fire154
 
 The existing startup probe now records separate first-frame intervals for the
@@ -40,8 +71,9 @@ The manifest binds the 87-pass suite, separate typecheck, exact index and derive
 assertion. Single early script, independent baseline identity, initially absent
 private roots and Bash syntax checks passed. The assertion recovers only the
 logged unique launcher collection and records whether it remains available;
-it cannot adopt the former shared file. No native r171 run has launched.
-Exact fingerprints are under `r171PreparationFire154` in the audit JSON.
+it cannot adopt the former shared file. At Fire154 preparation time, r171 had
+not launched. Its later failed boot is recorded above; exact preparation
+fingerprints remain under `r171PreparationFire154` in the audit JSON.
 
 ## Isolated WDIO measure persistence — 2026-10-02, Fire152
 

@@ -39,8 +39,11 @@ import {
   type AgentReviewGradePreflight,
   type AgentReviewReconcileOutcome,
 } from '../../harness/improvements/agent-review';
-import { softText, clampText, LIMITS } from '../limits';
+import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+
+/** Reviewer feedback is a brief, and over-limit input must fail instead of being clipped. */
+export const GRADE_IDEA_FEEDBACK_MAX_CHARS = LIMITS.BRIEF;
 
 /** Grader attribution vocabulary (C-1 / D-004) — the seam's input type is the pin. */
 export type GradedBy = GradeRoutedIdeaInput['gradedBy'];
@@ -152,8 +155,10 @@ export const gradeIdeaArgs = z
     routedRef: z.string().min(1).max(512).optional(),
     /** 1–5 integer (D-001): 5 = clear win, 3 = neutral, 1 = clear loss. */
     grade: z.number().int().min(1).max(5),
-    /** Free-text critique shown to next cycles' ideators (C-4). Omitting it on a regrade clears the stored feedback. */
-    feedback: softText(LIMITS.ANNOTATION).optional(),
+    /** Full reviewer feedback shown to the author and next cycles' ideators (C-4). */
+    feedback: hardText(GRADE_IDEA_FEEDBACK_MAX_CHARS)
+      .optional()
+      .describe('Reviewer feedback up to 16,000 characters; longer input is rejected before grading.'),
   })
   .refine((a) => (a.ideaId == null) !== (a.routedRef == null), {
     message: 'Pass exactly one of ideaId or routedRef.',
@@ -592,8 +597,11 @@ export async function runGradeIdea(
   ctx: { role?: string; ownerId?: string | null } | undefined,
   deps: GradeIdeaDeps = defaultDeps,
 ): Promise<GradeIdeaOutcome> {
+  // Internal callers can bypass the tool dispatcher, so enforce the same hard cap
+  // here before any ledger mutation or revision delivery.
+  args = gradeIdeaArgs.parse(args);
   const gradedBy = deriveGradedBy(ctx);
-  const feedback = clampText(args.feedback, LIMITS.ANNOTATION);
+  const feedback = args.feedback;
 
   // A pending review owns the canonical ledger id in its work-item payload. If a
   // bare work-item key is already routed as a different historical idea, do not
@@ -783,10 +791,10 @@ function resolveCallerOwnerId(ctx: ResolveIdentityCtx | undefined): string | nul
 export default defineTool({
   name: 'blender:grade-idea',
   description:
-    'Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer learning: fractional win credit in lens weights + critique primed into later ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.',
+    'Grade a routed Blender idea 1–5 with optional feedback (≤16,000 chars; longer input is rejected). Grades steer learning: fractional win credit in lens weights + critique primed into later ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.',
   capability: 'harness:write',
   guidance: {
-    when: "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the triage path: grade each ungraded routed draft).",
+    when: "You want to score a routed Blender idea 1–5 with optional critique or detailed reviewer feedback (up to 16,000 characters) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the triage path: grade each ungraded routed draft).",
     notWhen:
       'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller identity (resolved agent ownerId, or the human owner surface).',
     chaining:

@@ -8,6 +8,7 @@
  * the selected-customer-workspace binding, tenant transaction, exact-origin
  * write check, and the query allowlist.
  */
+import { randomUUID } from 'node:crypto';
 import { defineTool, type RouteContext, type RouteDefinition } from '@papercusp/agent-mcp';
 import { withTenantContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
@@ -40,13 +41,17 @@ import {
   type WorkspaceHostActionRouteDependencies,
 } from './routes/workspace-hosts/action';
 import {
+  isWorkspaceHostProvisioningDedupConflict,
   startWorkspaceHostDestroyWorkflow,
   startWorkspaceHostLifecycleWorkflow,
   startWorkspaceHostProvisioningWorkflow,
+  WorkspaceHostProvisioningConflictError,
   type StartWorkspaceHostDestroyInput,
   type StartWorkspaceHostLifecycleInput,
   type StartWorkspaceHostProvisioningInput,
 } from '../dbos/workspace-host-provision-workflow';
+import type { WorkspaceHostProvisioningEnqueuer } from '../dbos/workspace-host-provision-client';
+import type { WorkspaceHostOperationAcceptance } from '../workspace-host/admission-window';
 import { dbosStarted } from '../dbos/bootstrap';
 import { PAPERCUSP_HOSTED_BRING_UP_AGENTS, type WorkspaceHostBringUp } from '../workspace-host/hosted-bring-up';
 import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
@@ -121,6 +126,14 @@ export interface HostedBrowserRouteDependencies {
     tx?: Sql,
   ) => Promise<StoredWorkspaceHostDestroyTarget | null>;
   readonly provisioningAvailable?: () => boolean;
+  /**
+   * The DBOS-client enqueuer for a process that does not run DBOS (the hosted control plane).
+   * Present ⇒ provisioning is available here by construction and is ENQUEUED onto the
+   * executor's queue with the server-derived fields (actor, D-015 bring-up) intact. Without it
+   * the route forwards the raw request body to the controller's loopback route, which cannot
+   * know the selected workspace, so a hosted retry silently loses its bring-up.
+   */
+  readonly provisioning?: WorkspaceHostProvisioningEnqueuer;
   /** The host the selected customer workspace is bound to, read under tenant RLS. */
   readonly readBoundHostId?: (
     controlPlaneWorkspaceId: string,
@@ -351,6 +364,27 @@ export async function hostedProvisionBringUp(
   return { customerWorkspaceId, requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS };
 }
 
+/**
+ * Provisioning through the DBOS-client enqueuer, answered as an acceptance: the workflow runs on
+ * the executor, so this process can only report that it is queued. The operation id is fixed
+ * before enqueueing so the acceptance names the exact workflow, and a duplicate enqueue maps to
+ * the same typed conflict the in-process start raises.
+ */
+function enqueuedProvisioning(enqueuer: WorkspaceHostProvisioningEnqueuer) {
+  return async (input: StartWorkspaceHostProvisioningInput): Promise<WorkspaceHostOperationAcceptance> => {
+    const operationId = input.operationId ?? randomUUID();
+    try {
+      await enqueuer.enqueue({ ...input, operationId });
+    } catch (error) {
+      if (isWorkspaceHostProvisioningDedupConflict(error)) {
+        throw new WorkspaceHostProvisioningConflictError(input.desired.hostId);
+      }
+      throw error;
+    }
+    return { status: 'accepted', operationId, hostId: input.desired.hostId };
+  };
+}
+
 function localProvisionRoute(
   config: HostedBrowserRouteConfiguration,
   principal: HostedPrincipal,
@@ -364,7 +398,7 @@ function localProvisionRoute(
     // selected tenant is enforced by the transaction/RLS context, not by
     // trusting a browser-supplied workspace id.
     activeWorkspaceId: () => config.controlPlaneWorkspaceId,
-    provisioningAvailable: deps.provisioningAvailable ?? dbosStarted,
+    provisioningAvailable: deps.provisioningAvailable ?? (deps.provisioning ? () => true : dbosStarted),
     // One workspace, one host (D-397): a customer may (re)provision only the host its
     // selected workspace is bound to — never mint another, never name someone else's.
     authorizeHost: async (hostId) => {
@@ -385,7 +419,9 @@ function localProvisionRoute(
       const readState = deps.readBoundWorkspaceState ?? readCustomerWorkspaceState;
       const bringUp = await hostedProvisionBringUp(input, principal.selectedWorkspaceId ?? undefined, (customerWorkspaceId) =>
         wrapTenantRead(principal, runTenant, (tx) => readState(config.controlPlaneWorkspaceId, customerWorkspaceId, tx)));
-      return (deps.startProvisioning ?? startWorkspaceHostProvisioningWorkflow)({
+      const start = deps.startProvisioning
+        ?? (deps.provisioning ? enqueuedProvisioning(deps.provisioning) : startWorkspaceHostProvisioningWorkflow);
+      return start({
         ...input,
         actorId: principal.userId,
         ...(bringUp ? { bringUp } : {}),

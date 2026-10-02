@@ -452,7 +452,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
-  it('REFUSES a mutation that changes only whitespace and does not run the mutant guard', () => {
+  it('REFUSES a whitespace-only mutation before any guard runs', () => {
     const phases = join(dir, 'phases.log');
     const { code, out } = runProbeIO([
       '--file',
@@ -465,12 +465,10 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${phases}"; grep -q beta {}`,
     ]);
     expect(code).toBe(2);
-    expect(out).toMatch(/mutation diff/i);
+    expect(out).not.toContain('running baseline guard');
     expect(out).toMatch(/ONLY WHITESPACE/i);
-    // The baseline establishes the harness, and copy-baseline proves the
-    // relocation is sound; the semantic-no-op refusal must happen before the
-    // mutant guard is launched (mutation is applied only after both).
-    expect(readFileSync(phases, 'utf8')).toBe('baseline\ncopy-baseline\n');
+    // Semantic-no-op validation needs no guard or relocation evidence.
+    expect(existsSync(phases)).toBe(false);
     expect(read()).toBe(ORIGINAL);
   });
 

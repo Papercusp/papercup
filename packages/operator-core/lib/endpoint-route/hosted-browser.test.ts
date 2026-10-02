@@ -349,6 +349,80 @@ describe('hosted browser route boundary', () => {
       await expect(hostedProvisionBringUp(gcpInput, undefined, readState)).resolves.toBeUndefined();
       expect(readState).not.toHaveBeenCalled();
     });
+
+    // The hosted control plane never runs DBOS. Without the enqueuer the route forwarded the RAW
+    // body to the controller, which cannot know the selected workspace, so the actor and the
+    // bring-up never reached the workflow (measured: canary retries r2..r6, 2026-10-02).
+    function hostedRetry(provisioning: { enqueue: ReturnType<typeof vi.fn> }) {
+      return routeHandler(createHostedBrowserRoutes({
+        publicOrigin: ORIGIN,
+        controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+        dependencies: {
+          runTenant: tenantRunner([]),
+          readBoundHostId: async () => 'host-bound',
+          readBoundWorkspaceState: async () => 'provisioning',
+          readConnection: async () => ({
+            id: 'gcp:connection',
+            target: 'gcp',
+            status: 'connected' as const,
+            connection: {
+              target: 'gcp',
+              cloudCredentialRef: { kind: 'cloud' as const, ref: 'delegation://tenant-a/gcp:connection' },
+              provider: { projectId: 'p', serviceAccountEmail: 'papercusp-host-operator@p.iam.gserviceaccount.com' },
+            },
+          }) as never,
+          listLiveHostIds: async () => [],
+          provisioning: provisioning as never,
+        },
+      }).routes, '/hosted/browser/workspace-hosts/provision')(
+        new Request(`${ORIGIN}/api/hosted/browser/workspace-hosts/provision`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: ORIGIN },
+          body: JSON.stringify({
+            connectionId: 'gcp:connection',
+            name: 'My workspace',
+            operationId: 'prov-host-bound-r6',
+            desired: {
+              hostId: 'host-bound',
+              target: 'gcp',
+              scope: { kind: 'project', id: 'p' },
+              region: 'us-central1',
+              zone: 'us-central1-c',
+              size: 'e2-standard-4',
+              image: { id: 'projects/ubuntu-os-cloud/global/images/ubuntu-2404' },
+              data: { volumeGiB: 100, encrypted: true },
+            },
+          }),
+        }),
+        context(),
+      );
+    }
+
+    it('enqueues a hosted retry with its actor and bring-up instead of forwarding the bare body', async () => {
+      const enqueue = vi.fn(async () => ({ workflowId: 'wf' }));
+      const response = await hostedRetry({ enqueue });
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toMatchObject({
+        status: 'accepted',
+        operationId: 'prov-host-bound-r6',
+        hostId: 'host-bound',
+      });
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(enqueue.mock.calls[0]?.[0]).toMatchObject({
+        workspaceId: CONTROL_PLANE_WORKSPACE,
+        operationId: 'prov-host-bound-r6',
+        actorId: 'user-1',
+        bringUp: { customerWorkspaceId: SELECTED_WORKSPACE, requestedAgents: ['omp'] },
+      });
+    });
+
+    it('answers a duplicate enqueue with the same 409 conflict as an in-process start', async () => {
+      const enqueue = vi.fn(async () => {
+        throw Object.assign(new Error('duplicate'), { dbosErrorCode: 28 });
+      });
+      const response = await hostedRetry({ enqueue });
+      expect(response.status).toBe(409);
+    });
   });
 
   it('forwards only tenant-safe invalidations over SSE and strips row payloads', async () => {

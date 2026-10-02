@@ -5080,7 +5080,11 @@ describe("runGreenCheckpoint", () => {
       if (state === null) throw new Error("Grandchild process state is unknown");
       return state !== "Z" && state !== "X";
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      // The task can exit between the kill(pid, 0) probe and the /proc read. Linux
+      // reports that as ENOENT on open, or as ESRCH on read() when the stat file was
+      // opened while the task was still being torn down. Both mean "gone".
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ESRCH") return false;
       throw error;
     }
   }
@@ -5099,6 +5103,9 @@ describe("runGreenCheckpoint", () => {
     })).toBe(false);
     expect(grandchildStillRunning(123, "linux", probe, () => {
       throw Object.assign(new Error("reaped after probe"), { code: "ENOENT" });
+    })).toBe(false);
+    expect(grandchildStillRunning(123, "linux", probe, () => {
+      throw Object.assign(new Error("ESRCH: no such process, read"), { code: "ESRCH" });
     })).toBe(false);
     expect(() => grandchildStillRunning(123, "linux", probe, () => "malformed")).toThrow("state is unknown");
     expect(() => grandchildStillRunning(123, "linux", probe, () => {

@@ -30,13 +30,18 @@
  *
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/coordination/tools/send-arg-shape.test.ts
  */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 
 import sendTool, { itemSpec } from './send';
 import { compactSchemaForResult } from '../../tools/find';
-import { BODY_MUST_BE_ARRAY_MESSAGE, SECTION_ONLY_FIELDS } from '../message-fields';
+import {
+  BODY_MUST_BE_ARRAY_MESSAGE,
+  messageBodyArg,
+  messageSectionSchema,
+  SECTION_ONLY_FIELDS,
+} from '../message-fields';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 
 type JsonSchemaNode = {
@@ -347,6 +352,31 @@ describe('EI-23083567306363709 — `body` schema matches its runtime refusal', (
     expect(
       sendTool.args.safeParse({ items: [{ to: ['peer'], summary: 'hi', expects: 'none', body: [{ text: 'x' }] }] }).success,
     ).toBe(true);
+  });
+});
+
+describe('EI-23790900634867970 — coord:send section inputs stay typed', () => {
+  type SectionInput = z.input<typeof messageSectionSchema>;
+  type BodyInput = NonNullable<z.input<typeof messageBodyArg>>;
+  type ItemBodyInput = NonNullable<z.input<typeof itemSpec>['body']>;
+
+  it('keeps premises as ref strings and the neighboring knowledge fields as object arrays', () => {
+    expectTypeOf<BodyInput>().toMatchTypeOf<Array<{ text: string; premises?: string[] }>>();
+    expectTypeOf<ItemBodyInput>().toMatchTypeOf<Array<{ text: string; premises?: string[] }>>();
+    expectTypeOf<SectionInput['premises']>().toEqualTypeOf<string[] | undefined>();
+    expectTypeOf<SectionInput['youMayNotKnow']>().toEqualTypeOf<
+      Array<{ ref: string; provenance: 'computed' | 'authored' }> | undefined
+    >();
+    expectTypeOf<SectionInput['couldNotDetermine']>().toEqualTypeOf<
+      Array<{ what: string; note?: string }> | undefined
+    >();
+  });
+
+  it('states the distinct authored shapes on the short callable description', () => {
+    const description = String((sendTool as { description?: unknown }).description ?? '');
+
+    expect(description).toMatch(/body\[\]\.premises` are ref strings/i);
+    expect(description).toMatch(/body\[\]\.youMayNotKnow` uses \{ref, provenance\} objects/i);
   });
 });
 

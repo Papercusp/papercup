@@ -424,6 +424,17 @@ export async function createHostedRuntime(
   // The first-workspace door (D-384) is the one browser leaf that runs OUTSIDE the tenant
   // runner: it is the bootstrap that creates the tenant's first binding. Its gate defaults
   // closed — an empty organization set admits nobody.
+  // ONE enqueuer for every hosted provision this process starts: the first-workspace door AND
+  // the browser provision route (a retry of a failed first build). This process never runs DBOS,
+  // so without it the browser route forwards the raw body to the controller and loses the
+  // server-derived actor and D-015 bring-up (measured: canary host-0f9b1ba8db30d143becc130a
+  // retries r2..r6 all reached the workflow with neither).
+  const provisioning = dependencies.hostedBrowser?.provisioning ?? (configuration.provisioningDbosAppVersion
+    ? createWorkspaceHostProvisioningClient({
+        systemDatabaseUrl: getHarnessAdminUrlWithSource().url,
+        appVersion: configuration.provisioningDbosAppVersion,
+      })
+    : undefined);
   const firstWorkspace = dependencies.hostedBrowser?.firstWorkspace ?? createHostedFirstWorkspace(
     createHostedFirstWorkspaceDependencies({
       controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
@@ -431,14 +442,7 @@ export async function createHostedRuntime(
       delegationAdapters,
       delegationOrganization,
       enabledOrganizations: configuration.firstWorkspaceOrganizations ?? new Set(),
-      ...(configuration.provisioningDbosAppVersion
-        ? {
-            provisioning: createWorkspaceHostProvisioningClient({
-              systemDatabaseUrl: getHarnessAdminUrlWithSource().url,
-              appVersion: configuration.provisioningDbosAppVersion,
-            }),
-          }
-        : {}),
+      ...(provisioning ? { provisioning } : {}),
       ...(dependencies.hostedBrowser?.provisioningAvailable
         ? { provisioningAvailable: dependencies.hostedBrowser.provisioningAvailable }
         : {}),
@@ -456,6 +460,7 @@ export async function createHostedRuntime(
       ...(dependencies.hostedBrowser ?? {}),
       runTenant: dependencies.hostedBrowser?.runTenant ?? runTenant,
       firstWorkspace,
+      ...(provisioning ? { provisioning } : {}),
       issueSessionCookie:
         dependencies.hostedBrowser?.issueSessionCookie ??
         ((sessionId, expiresAt) => sessionCookies.serialize(sessionId, expiresAt, new Date())),

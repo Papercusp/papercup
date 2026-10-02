@@ -74,6 +74,50 @@ describe('scorecards:get evidence-first projection', () => {
     resetResultDoorAggregatesForTests();
   });
 
+  it('declares optional result roots with concrete scorecard and paging fields', () => {
+    const missingCard = getTool.result.safeParse({
+      ok: false,
+      error: "scorecard 'EI-missing' not found",
+    });
+    expect(missingCard.success).toBe(true);
+
+    const index = getTool.result.safeParse({
+      ok: true,
+      scorecard: { ...scorecard, criteria: [] },
+      evidenceRead: {
+        complete: false,
+        reason: 'card-exceeds-inline-budget',
+        criteria: [{
+          key: 'traceability',
+          rating: 'pass',
+          evidenceChars: 120,
+          read: {
+            tool: 'scorecards:get',
+            args: { issueId: scorecard.issueId, criterionKey: 'traceability', evidenceOffset: 0 },
+          },
+        }],
+      },
+    });
+    expect(index.success).toBe(true);
+
+    const page = getTool.result.safeParse({
+      ok: true,
+      scorecard: { ...scorecard, criteria: [{ ...scorecard.criteria[0], evidence: 'evidence page' }] },
+      evidenceRead: {
+        complete: false,
+        scope: 'selected-criterion',
+        offset: 0,
+        totalChars: 120,
+        next: {
+          tool: 'scorecards:get',
+          args: { issueId: scorecard.issueId, criterionKey: 'traceability', evidenceOffset: 13 },
+        },
+      },
+    });
+    expect(page.success).toBe(true);
+    expect(getTool.result.safeParse({ ok: true, scorecard: {} }).success).toBe(false);
+  });
+
   it('keeps a complete criterion page inside the outer model-facing result door', async () => {
     const evidence = 'e'.repeat(6093);
     const card = {

@@ -7,6 +7,7 @@ import gradeIdeaTool, {
   toToolResult,
   revisionNoticeMode,
   REVISION_WAKE_MAX_GRADE,
+  GRADE_IDEA_FEEDBACK_MAX_CHARS,
   type GradeIdeaDeps,
   type GradedIdeaSummary,
   type WorkItemExistenceProbeResult,
@@ -98,13 +99,14 @@ describe('gradeIdeaArgs validation', () => {
     }
   });
 
-  it('rejects empty ideaId; accepts any-length feedback (softText — clamped in the handler, EI-3693)', () => {
+  it('rejects empty ideaId and feedback above its hard cap while accepting the cap boundary', () => {
     expect(gradeIdeaArgs.safeParse({ ideaId: '', grade: 3 }).success).toBe(false);
-    // feedback is now softText(LIMITS.ANNOTATION): the SCHEMA never bounces on length —
-    // an over-long value parses fine and runGradeIdea truncates it to 2000 (clampText),
-    // rather than rejecting the whole tool call at arg-parse.
-    expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(2001) }).success).toBe(true);
-    expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(2000) }).success).toBe(true);
+    expect(
+      gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(GRADE_IDEA_FEEDBACK_MAX_CHARS) }).success,
+    ).toBe(true);
+    expect(
+      gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(GRADE_IDEA_FEEDBACK_MAX_CHARS + 1) }).success,
+    ).toBe(false);
   });
 });
 
@@ -185,11 +187,25 @@ describe('runGradeIdea', () => {
     expect('feedback' in input).toBe(false);
   });
 
-  it('clamps over-long feedback to 2000 chars before the C-2 write (softText handler clamp, EI-3693)', async () => {
-    const deps = fakeDeps();
-    await runGradeIdea({ ideaId: 'idea-1', grade: 3, feedback: 'x'.repeat(2500) }, undefined, deps);
+  it('preserves 2,185-character feedback in both the ledger write and revision notice', async () => {
+    const feedback = 'x'.repeat(2185);
+    const deps = fakeDeps({
+      readIdeaSummary: vi.fn(async () => summary({ origin: 'su-ideate', createdBy: 'su-originator-1' })),
+    });
+    const args = gradeIdeaArgs.parse({ ideaId: 'idea-1', grade: 2, feedback });
+    await runGradeIdea(args, undefined, deps);
     const input = vi.mocked(deps.gradeRoutedIdea).mock.calls[0][0] as { feedback?: string };
-    expect(input.feedback).toHaveLength(2000);
+    expect(input.feedback).toBe(feedback);
+    const notice = vi.mocked(deps.sendRevisionNotice).mock.calls[0][0];
+    expect(notice.body).toContain('Critique: ' + feedback);
+  });
+
+  it('rejects over-cap feedback before the ledger write or revision notice', async () => {
+    const deps = fakeDeps();
+    const feedback = 'x'.repeat(GRADE_IDEA_FEEDBACK_MAX_CHARS + 1);
+    await expect(runGradeIdea({ ideaId: 'idea-1', grade: 3, feedback }, undefined, deps)).rejects.toThrow();
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
   });
 
   it('resolves routedRef → ideaId before the write (D-007)', async () => {

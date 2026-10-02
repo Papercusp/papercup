@@ -588,6 +588,31 @@ export interface BriefCandidate {
   evidence: Array<{ session_id: string; turn_idx: number; sim: number; lexicalRank?: number }>;
 }
 
+/**
+ * EI-24833606853730057: tell "refused before any model was tried" apart from "every
+ * model was walled" using the consult's persisted dispatch walks. A walk that
+ * records `dispatched:false` with an EMPTY `attempts` list never reached the rank
+ * loop (source ownership, transcript availability, cool-down…), so no account reset
+ * will fix it, and the requester's hint must not claim one will.
+ */
+export function summarizePreLaunchRefusals(walks: unknown): { total: number; refused: number; details: string[] } {
+  const list = Array.isArray(walks) ? walks : [];
+  let total = 0;
+  let refused = 0;
+  const details: string[] = [];
+  for (const walk of list) {
+    if (!walk || typeof walk !== 'object') continue;
+    const w = walk as { dispatched?: unknown; attempts?: unknown; detail?: unknown };
+    if (w.dispatched !== false) continue;
+    total += 1;
+    if (!Array.isArray(w.attempts) || w.attempts.length > 0) continue;
+    refused += 1;
+    const detail = typeof w.detail === 'string' ? w.detail.trim() : '';
+    if (detail && !details.includes(detail) && details.length < 3) details.push(detail.slice(0, 240));
+  }
+  return { total, refused, details };
+}
+
 /** Compact why-you-were-chosen evidence for the wake body (D-008 §5) — refs
  * resolvable via sessions:read, so relevance validation is a cheap check. */
 function evidenceLine(c: Pick<BriefCandidate, 'evidence'>): string {
@@ -1230,6 +1255,8 @@ export async function getFeedbackCore(
   // below_floor. The third case — an expert was selected but no allowed model
   // could be launched from their transcript — is only knowable AFTER the
   // dispatch walk, and is recorded there as `no_available_responder`.
+  // Set only on the exhausted-menu terminal (7c); drives the honest hint there.
+  let preLaunchRefusals: ReturnType<typeof summarizePreLaunchRefusals> | null = null;
   let reason: GetFeedbackResult['reason'] = finalChosen
     ? undefined
     : route.snapshot.degraded === 'embed-unavailable'
@@ -1409,6 +1436,14 @@ export async function getFeedbackCore(
       // the hint all derive from this, and each is only honest once it is null.
       finalChosen = null;
       finalChosenVia = null;
+      try {
+        const walkRows = await sql<{ walks: unknown }[]>`
+          SELECT dispatch_attempts AS walks FROM harness_shared.consult_state
+           WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}`;
+        preLaunchRefusals = summarizePreLaunchRefusals(walkRows[0]?.walks);
+      } catch {
+        /* the hint falls back to the generic wording; the verdict is unaffected */
+      }
       await sql`
         UPDATE harness_shared.consult_state
            SET state = 'no_qualified_responder',
@@ -1461,6 +1496,9 @@ export async function getFeedbackCore(
       : `Routed + ${wakeNote}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next expert is dispatched with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
+      : reason === 'no_available_responder' && preLaunchRefusals && preLaunchRefusals.total > 0 &&
+          preLaunchRefusals.refused === preLaunchRefusals.total
+        ? `Matching experts were selected, but every dispatch walk (${preLaunchRefusals.total}) was refused BEFORE any model was tried, so no account wall is involved and retrying after a reset will not help: ${preLaunchRefusals.details.join(' | ')}. Nothing is coming, so do not park: remaining_candidates lists the experts; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.`
       : reason === 'no_available_responder'
         ? `Matching experts were selected, but NO allowed model could be launched from any of their transcripts — every ranked model was walled, unreachable for that backend, or failed to launch. Nothing is coming, so do not park: remaining_candidates lists the experts; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed. Retrying once a walled account resets is reasonable.`
         : `No transcript cleared this question's relevance floor (and no minimum-fill applied — either min 0 was requested or nothing matched at all): there is no best-available reviewer to route to. Proceed on your own judgment (first-class honest verdict, not an error).`;

@@ -1,6 +1,44 @@
 {
+  "r171BootFailureRecoveredFire160": {
+    "scope": "Terminal verifier boot failure recovered from Fire159. WDIO never started; no popup, FCP, LCP, new operation-row or isolated-collection adoption result.",
+    "runId": "20261002T064622Z-474152",
+    "manifestRef": "$HOME/.papercusp/perf/p007-native-current/r171-instrument-manifest.json",
+    "manifestSha256": "c8473370b0355a213195aef46688012f82dab3a93829d34dcb59763790ac8947",
+    "rebind": "Fire159 reviewed the stable per-user display/port reservation-root change and passed the maintained two-test guard. This manifest supersedes the Fire154 preparation fingerprint for the launched attempt.",
+    "resultRef": "$HOME/.local/state/verification-harness/verify-tauri-headless/20261002T064622Z-474152/result.json",
+    "resultSha256": "267e62bb52bb1bce5fd74d5a30f82bc80d651e41848d7eec2b3bcaa11284c66a",
+    "verifierLogRef": "/tmp/p007-r171-verifier-fire159.log",
+    "verifierLogSha256": "1697019b30a7dcb9a1cf7597c2450f2cc4e7506ca758f046be6897efa5b8d5f1",
+    "verdict": "fail",
+    "firstFailure": { "phase": "boot", "step": "launch-attempt-1", "reasonCode": "exit-1" },
+    "assertionStatus": "blocked",
+    "measuredPhaseDurationsMs": { "prepare": 324855, "boot": 269454, "assert": 0 },
+    "failureEvidence": {
+      "pendingMigration": "1339-session-gate-suppressed-ask-kind.sql",
+      "backupLockedRelationReportedByBootProof": "session_pending_gates",
+      "requestOnlyPreflightTimeoutMs": 20000,
+      "nativeAddonAbort": "Code134 follows the request-serving startup refusal in the log. The abort's independent native mechanism is unproven; it is not a renderer or LCP result."
+    },
+    "cleanupVerification": {
+      "receiptLog": ".papercusp/scratch/bash-44edaee9-e2b.log",
+      "procedure": "Read the official result, retained verifier log and exact per-launch nonce from /tmp/verify-tauri-headless.UBS4x4/launch.sh; reduce current procfs checks to identities bearing that exact nonce. Never signal or remove another runtime.",
+      "launchMarkerRecovered": true,
+      "remainingExactLaunchMarkedPids": [],
+      "recordedAbortedPid1237725Absent": true,
+      "recordedLastNodePid1275726Absent": true,
+      "sourceSnapshotRemoved": ".papercusp/tmp/verify-tauri-headless.qsYO8n",
+      "workSpaRemoved": "/tmp/verify-tauri-headless.UBS4x4/spa",
+      "smallWorkLogsRetained": "/tmp/verify-tauri-headless.UBS4x4",
+      "unstartedAssertionFilesAbsent": ["r171-owned-runtime-identity.json", "run-171-diagnostic-result.json", "run-171-popup-native-timing.log", "r171-native-process.jsonl", "r171-private-home", "r171-profile-data", "r171-profile-cache", "r171-profile-config"],
+      "diagnosticTmpfsRootAbsent": "/dev/shm/p007-r171-d1608f11-20261002T062500Z",
+      "proofHold": "Selected Fire159 hold67995ef3-ff96-4300-a154-cb164366bbfc released/read back with held_before0. No global port-absence claim."
+    },
+    "detectorAudit": "The shared-DB verifier spent its prepare phase copying dependencies and building the owned API before boot discovered the pending migration/backup conflict. Existing install, syntax, ownership and isolated-PG guards do not establish shared target-schema readiness. Do not repeat this failed expensive attempt unchanged.",
+    "reuseCandidate": "Extend the existing papercusp-desktop/bin/dev-operator-pg-probe.mjs and maintained verifier preflight, reusing the migration runner's eligible-file rules and read-only migration ledger. Preserve normal default launcher fallback and the opt-in isolated-DB route; never bypass the backup rendezvous or apply shared DDL in a read-only preflight.",
+    "next": "Implement and test bounded shared target-schema readiness before heavy verifier preparation, with exact DB/env binding and an explicit unavailable/pending outcome. Re-read applicable plan decisions and locks before editing. Keep the retained boot failure distinct from an eventual changed runtime attempt. P007 cause/product/R7/cohort and separate P006/P008 acceptance remain open."
+  },
   "r171PreparationFire154": {
-    "scope": "Fresh preparation only. Native r171 has NOT launched; no performance result, adoption, product cause or R7 acceptance.",
+    "scope": "Dated Fire154 preparation only. Later Fire159 launched with rebound manifestc8473370b035 and failed before assertions; see r171BootFailureRecoveredFire160. No performance result, adoption, product cause or R7 acceptance.",
     "manifest": "$HOME/.papercusp/perf/p007-native-current/r171-instrument-manifest.json",
     "manifestSha256": "a68625cb4100caf0b5a4d509489bd7984042896eba461cbb33a7a3af5cc4a466",
     "assertionSha256": "9afef2369afc4f300d45959fd2ec1163e401b77794203ec43d5c65cb99821a74",

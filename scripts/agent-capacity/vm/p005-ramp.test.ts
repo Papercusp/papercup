@@ -33,7 +33,8 @@ describe('vm/p005-ramp.sh (faked systemd-run/systemctl/npx and the sampler)', ()
       'npx',
       `case " $* " in *" --check "*)
   echo "$@" >> "${home}/check.log"
-  [ -n "\${FAKE_CHECK_FAIL:-}" ] && { echo "Error: Cannot find module '@papercusp/operator-core/lib/child-output'" >&2; exit 1; }
+  # The shape tsx really prints (measured, WI-10005355): a source excerpt naming Error comes FIRST.
+  [ -n "\${FAKE_CHECK_FAIL:-}" ] && { printf '%s\\n' 'node:internal/modules/cjs/loader:1475' '  const err = new Error(message);' '              ^' '' "Error: Cannot find module '@papercusp/operator-core/lib/child-output'" >&2; exit 1; }
   echo "DRIVER_CHECK_OK sessions=6 corpus=x tasks=6"; exit 0 ;;
 esac
 echo "$@" >> "${home}/npx.log"

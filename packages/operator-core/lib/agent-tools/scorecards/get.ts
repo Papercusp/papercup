@@ -10,6 +10,10 @@ import { COORD_ROLES } from '../coordination/roles';
 import { readScorecardEvidence, type ScorecardEvidenceRow } from '../../scorecards';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import {
+  OBSERVATION_ATTRIBUTIONS,
+  OBSERVATION_UNKNOWN_REASONS,
+} from '../../harness/improvements/observation-types';
 
 export const scorecardGetArgs = z.object({
   issueId: z
@@ -37,6 +41,147 @@ const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset 
   tool: 'scorecards:get',
   args: { issueId, criterionKey, evidenceOffset },
 });
+
+const evidenceReadCallSchema = z.object({
+  tool: z.literal('scorecards:get'),
+  args: z.object({
+    issueId: z.string(),
+    criterionKey: z.string(),
+    evidenceOffset: z.number().int().nonnegative().optional(),
+  }).passthrough(),
+}).passthrough();
+
+const scorecardEvidenceCriterionSchema = z.object({
+  key: z.string(),
+  rating: z.string(),
+  evidence: z.string(),
+  evidenceRef: z.string().optional(),
+  evidenceKind: z.string().optional(),
+  positiveControlRef: z.string().optional(),
+  absenceClaim: z.boolean().optional(),
+  unknownReason: z.enum(OBSERVATION_UNKNOWN_REASONS).optional(),
+  attribution: z.enum(OBSERVATION_ATTRIBUTIONS).optional(),
+  nextEvidenceAction: z.string().optional(),
+  suggestion: z.string().optional(),
+  remediation: z.string().optional(),
+  disregard: z.string().optional(),
+}).passthrough();
+
+const scorecardSubjectRubricCurrentnessSchema = z.object({
+  state: z.enum(['current', 'stale', 'unknown']),
+  reason: z.enum([
+    'current',
+    'meaning-unchanged',
+    'subject-rubric-mismatch',
+    'recorded-identity-missing',
+    'live-identity-missing',
+    'revision-mismatch',
+    'meaning-revision-mismatch',
+    'criteria-hash-mismatch',
+  ]),
+  recordedRevision: z.number().nullable(),
+  currentRevision: z.number().nullable(),
+  recordedCriteriaHash: z.string().nullable(),
+  currentCriteriaHash: z.string().nullable(),
+}).passthrough();
+
+const scorecardEvidenceSchema = z.object({
+  issueId: z.string(),
+  createdAt: z.string(),
+  createdBy: z.string().nullable(),
+  rubricRef: z.string(),
+  rubricRevision: z.number().optional(),
+  rubricMeaningRevision: z.number().optional(),
+  criteriaHash: z.string().optional(),
+  evidenceFingerprint: z.string().optional(),
+  sourceHive: z.string().optional(),
+  subject: z.object({
+    kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
+    ref: z.string(),
+    windowStart: z.string().optional(),
+    windowEnd: z.string().optional(),
+  }).passthrough().optional(),
+  criteria: z.array(scorecardEvidenceCriterionSchema),
+  rollup: z.object({
+    verdict: z.enum(['exemplary', 'pass', 'partial', 'fail', 'severe', 'unassessable']),
+    criticalKeys: z.array(z.string()),
+    criticalFailures: z.array(z.string()),
+    criticalUnknowns: z.array(z.string()),
+    coverage: z.object({
+      rated: z.number(),
+      required: z.number(),
+      sufficient: z.boolean(),
+    }).passthrough(),
+  }).passthrough().optional(),
+  nKeys: z.number().int().nonnegative(),
+  missingKeys: z.array(z.string()),
+  extraKeys: z.array(z.string()),
+  rubricResolved: z.boolean(),
+  synthesized: z.boolean(),
+  gradingAudit: z.object({
+    state: z.enum(['pending', 'awaiting-reemit', 'passed', 'failed', 'cancelled']),
+    metaRubricRef: z.string(),
+    stampedAt: z.string(),
+    rubricRevision: z.number().optional(),
+    criteriaHash: z.string().optional(),
+    dispatchReservation: z.object({
+      key: z.string(),
+      reservedAt: z.string(),
+    }).passthrough().optional(),
+    reemitRequired: z.object({
+      code: z.literal('grading_audit_evaluator_changed'),
+      at: z.string(),
+      reason: z.string(),
+    }).passthrough().optional(),
+    auditIssueId: z.string().optional(),
+    auditor: z.string().optional(),
+    auditedAt: z.string().optional(),
+  }).passthrough().optional(),
+  provisional: z.object({
+    violatableKeys: z.array(z.string()),
+    stampedAt: z.string(),
+  }).passthrough().optional(),
+  retracted: z.object({
+    at: z.string(),
+    by: z.string(),
+    reason: z.string(),
+  }).passthrough().optional(),
+  subjectRubricCurrentness: scorecardSubjectRubricCurrentnessSchema.optional(),
+  supersededBy: z.string().optional(),
+  auditTarget: z.object({
+    current: z.boolean(),
+    superseded: z.boolean(),
+    supersededBy: z.string().nullable(),
+    retracted: z.boolean(),
+    subjectRubricCurrentness: scorecardSubjectRubricCurrentnessSchema.nullable(),
+  }).passthrough(),
+}).passthrough();
+
+const scorecardEvidenceReadSchema = z.object({
+  complete: z.boolean(),
+  reason: z.string().optional(),
+  instruction: z.string().optional(),
+  criteria: z.array(z.object({
+    key: z.string(),
+    rating: z.string(),
+    evidenceChars: z.number().int().nonnegative(),
+    read: evidenceReadCallSchema,
+  }).passthrough()).optional(),
+  scope: z.literal('selected-criterion').optional(),
+  offset: z.number().int().nonnegative().optional(),
+  totalChars: z.number().int().nonnegative().optional(),
+  next: evidenceReadCallSchema.optional(),
+}).passthrough();
+
+const scorecardGetResultSchema = z.object({
+  ok: z.boolean(),
+  scorecard: scorecardEvidenceSchema.optional(),
+  evidenceRead: scorecardEvidenceReadSchema.optional(),
+  error: z.string().optional(),
+  retryable: z.boolean().optional(),
+  pgCode: z.string().optional(),
+  message: z.string().optional(),
+}).passthrough();
 
 function boundedEvidenceRead(
   scorecard: ScorecardEvidenceRow,
@@ -129,17 +274,7 @@ export default defineTool({
   // remains active as a final safety rail.
   ignoreSessionPayloadTier: true,
   args: scorecardGetArgs,
-  result: z
-    .object({
-      ok: z.boolean(),
-      scorecard: z.unknown().optional(),
-      evidenceRead: z.unknown().optional(),
-      error: z.string().optional(),
-      retryable: z.boolean().optional(),
-      pgCode: z.string().optional(),
-      message: z.string().optional(),
-    })
-    .passthrough(),
+  result: scorecardGetResultSchema,
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {

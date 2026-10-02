@@ -102,12 +102,14 @@ describe.sequential('bundle-psu.mjs builds psu from the committed generation', (
 
     // A downloaded bundle has neither the source package.json nor a build-id
     // environment. Its version must still come from this committed generation.
-    const expectedVersion = JSON.parse(git('show', `${HEAD}:apps/operator/package.json`)).version;
+    const releaseVersion = git('show', `${HEAD}:apps/tui/Cargo.toml`)
+      .match(/^version\s*=\s*"([^"]+)"\s*$/m)?.[1];
+    if (!releaseVersion) throw new Error('committed apps/tui/Cargo.toml has no PUI release version');
     const version = spawnSync(process.execPath, [path.join(out, 'lib', 'psu', 'psu.mjs'), '--version'], {
       cwd: WORK, env: { HOME: WORK, PATH: '/usr/bin:/bin' }, encoding: 'utf8', timeout: 5_000,
     });
     expect(version.status, output(version)).toBe(0);
-    expect(version.stdout).toBe(`psu ${expectedVersion}\n`);
+    expect(version.stdout).toBe(`psu ${releaseVersion}\n`);
 
     const summary = JSON.parse(readFileSync(path.join(out, 'summary.json'), 'utf8')) as {
       sourcePins: Record<string, string>;

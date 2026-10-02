@@ -146,9 +146,55 @@ export function rankConsultEvidenceSources(
     const bestB = Math.max(...b.map(score));
     return bestB - bestA || b.length - a.length || sessionA.localeCompare(sessionB);
   });
-  const [sessionId, evidence] = ranked[0] ?? [];
-  if (!sessionId || !evidence) return null;
-  return { sessionId, evidence: [...evidence].sort((a, b) => a.turn_idx - b.turn_idx) };
+  return ranked.map(([sessionId, evidence]) => ({
+    sessionId,
+    evidence: [...evidence].sort((a, b) => a.turn_idx - b.turn_idx),
+  }));
+}
+
+type ResolvedResumeTarget = Extract<Awaited<ReturnType<typeof resolveResumeTarget>>, { ok: true }>;
+
+/**
+ * Resolve the session a consult dispatch launches from (EI-24833606853730057).
+ *
+ * With evidence, each ranked evidence session is resolved in turn and the first one
+ * whose native session and coord owner both match the candidate wins. A foreign seed
+ * copy that merely tied on the measured hit is skipped instead of refusing the expert.
+ * Only when NO evidence session belongs to the candidate is the walk refused, and the
+ * refusal names every session tried so the walk record shows why.
+ */
+async function resolveDispatchSource(
+  opts: { sourceOwnerId: string; evidence?: readonly ConsultDispatchEvidenceRef[] },
+  d: Pick<ConsultDispatchDeps, 'resolveResumeTarget'>,
+): Promise<{ target: ResolvedResumeTarget; evidenceSource: ConsultEvidenceSource | null } | { refusal: string }> {
+  const sources = rankConsultEvidenceSources(opts.evidence);
+  if (sources.length === 0) {
+    const target = await d.resolveResumeTarget({ agentId: opts.sourceOwnerId });
+    return target.ok ? { target, evidenceSource: null } : { refusal: `source session unresolvable: ${target.detail}` };
+  }
+  const rejected: string[] = [];
+  for (const source of sources) {
+    const target = await d.resolveResumeTarget({ sessionId: source.sessionId });
+    if (!target.ok) {
+      rejected.push(`source session unresolvable: ${target.detail}`);
+    } else if (target.sessionId !== source.sessionId) {
+      rejected.push(
+        `evidence session mismatch: requested ${source.sessionId}, resolved ${target.sessionId ?? 'no native session'}`,
+      );
+    } else if (target.ownerId !== opts.sourceOwnerId) {
+      rejected.push(
+        `evidence session ownership changed: ${source.sessionId} resolves to ${target.ownerId ?? 'no owner'}, ` +
+          `expected ${opts.sourceOwnerId}`,
+      );
+    } else {
+      return { target, evidenceSource: source };
+    }
+  }
+  return {
+    refusal: rejected.length === 1
+      ? rejected[0]!
+      : `no evidence session resolves to ${opts.sourceOwnerId} (${rejected.length} tried): ${rejected.join('; ')}`,
+  };
 }
 
 /**
@@ -950,17 +996,9 @@ async function walkConsultDispatch(
       );
     }
 
-    const evidenceSource = selectConsultEvidenceSource(opts.evidence);
-    const target = await d.resolveResumeTarget(
-      evidenceSource ? { sessionId: evidenceSource.sessionId } : { agentId: opts.sourceOwnerId },
-    );
-    if (!target.ok) return give(`source session unresolvable: ${target.detail}`);
-    if (evidenceSource && target.sessionId !== evidenceSource.sessionId) {
-      return give(`evidence session mismatch: requested ${evidenceSource.sessionId}, resolved ${target.sessionId ?? 'no native session'}`);
-    }
-    if (evidenceSource && target.ownerId !== opts.sourceOwnerId) {
-      return give(`evidence session ownership changed: ${evidenceSource.sessionId} resolves to ${target.ownerId ?? 'no owner'}, expected ${opts.sourceOwnerId}`);
-    }
+    const source = await resolveDispatchSource(opts, d);
+    if ('refusal' in source) return give(source.refusal);
+    const { target, evidenceSource } = source;
 
     let transcript: { available: boolean; detail: string; transcriptPath?: string };
     try {

@@ -361,6 +361,15 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(captureTool.args.safeParse({ lane: 'observation', body: 'body-only capture' }).success).toBe(true);
   });
 
+  it('keeps the structured observation subject shape visible in improvements:capture discovery (EI-24759188330677893)', async () => {
+    const { schemaByTool } = buildCorpus();
+    const subjectShape = 'subject?:object{kind?:enum(agent-run|session|work-item|plan|pot),ref:string';
+    expect(compactSchemaForResult(schemaByTool.get('improvements:capture'))).toContain(subjectShape);
+
+    const result = await callHandler({ query: 'improvements:capture', limit: 1 });
+    expect(result.hits.find((entry) => entry.tool === 'improvements:capture')?.argSchema).toContain(subjectShape);
+  });
+
   it('uses the raw discovery schema for a release:trace-style path-or-sha union', () => {
     const name = 'test:release-trace-discovery-schema';
     defineTool({
