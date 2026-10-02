@@ -110,8 +110,9 @@ describe('verify-payment-receipt CLI', () => {
         env: { ...process.env, VH_EVIDENCE_ROOT_BASE: root, VH_GUARD_RAIL_SOURCE: '' },
         timeout: 30_000,
       }, (error, stdout, stderr) => {
-        if (error && typeof error.code !== 'number') return reject(error);
-        resolve({ code: error?.code ?? 0, stdout, stderr });
+        const code = error ? error.code : 0;
+        if (typeof code !== 'number') return reject(error);
+        resolve({ code, stdout, stderr });
       });
     });
     const evidence = async () => JSON.parse(await readFile(path.join(root, 'payment-receipt/latest/result.json'), 'utf8'));

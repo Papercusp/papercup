@@ -59,6 +59,8 @@ const m = vi.hoisted(() => ({
     { id: 'WI-3', kind: 'bug', family: 'issue', harness: 'papercup', title: 'open bug', summary: '', state: 'open', assignee: null, assignedBy: null, severity: 'major', parent: null, payload: null, createdAt: '', updatedAt: '' },
     { id: 'WI-4', kind: 'task', family: 'issue', harness: 'papercup', title: 'delegated task', summary: '', state: 'open', assignee: 'op', assignedBy: 'op', severity: null, parent: null, payload: null, createdAt: '', updatedAt: '' },
   ]),
+  readWorkItemsPageFromStore: vi.fn(),
+  withWorkspace: vi.fn(async (_workspace: string, fn: (sql: unknown) => unknown) => fn({})),
   releaseGateTile: vi.fn(async () => ({ gate: 'green', deploy: 'current', red: false, checkedAtMs: 1 })),
   poolTile: vi.fn(async () => ({
     exhausted: false, healthyCount: 1, walledCount: 0, totalCount: 1,
@@ -105,6 +107,14 @@ vi.mock('../../harness/operator-home-harness', async (orig) => ({
   operatorHomeHarnessSlug: () => 'papercup',
 }));
 vi.mock('../../work-items', () => ({ listWorkItems: m.listWorkItems }));
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  withWorkspace: m.withWorkspace,
+}));
+vi.mock('../../sync-resolver/work-items-list-query', async (original) => ({
+  ...(await original<typeof import('../../sync-resolver/work-items-list-query')>()),
+  readWorkItemsPageFromStore: m.readWorkItemsPageFromStore,
+}));
 vi.mock('../../device-monitoring', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../device-monitoring')>()),
   releaseGateTile: m.releaseGateTile,
@@ -156,7 +166,10 @@ function routeByPath(routes: RouteDefinition<any>[], method: string, path: strin
   return def;
 }
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  m.readWorkItemsPageFromStore.mockReset();
+});
 
 describe('device/push/register', () => {
   it('declares device auth + cors', () => {
@@ -288,6 +301,29 @@ describe('device/plans', () => {
 });
 
 describe('device/attention', () => {
+  it('keeps older actionable work beyond 200 recent non-attention rows and drains source pages', async () => {
+    const recent = Array.from({ length: 200 }, (_, i) => ({
+      id: `recent-${i}`, kind: 'task', family: 'issue', state: 'open', title: 'Delegated task',
+    }));
+    const actionable = Array.from({ length: 203 }, (_, i) => ({
+      id: `action-${i}`, kind: 'bug', family: 'issue', state: 'open', title: 'Needs triage',
+      harness: 'papercup', summary: 'Keep the existing mobile description',
+    }));
+    m.listWorkItems.mockResolvedValueOnce(recent as never);
+    m.readWorkItemsPageFromStore
+      .mockResolvedValueOnce({ rows: [...recent, ...actionable.slice(0, 100)], hasMore: true, nextCursor: 'page-2' })
+      .mockResolvedValueOnce({ rows: actionable.slice(100), hasMore: false, nextCursor: null });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.workItems.map((w: { id: string }) => w.id)).toEqual(actionable.map(w => w.id));
+    expect(body.counts.workItems).toBe(203);
+    expect(m.withWorkspace).toHaveBeenCalledWith('ws-e4', expect.any(Function));
+    expect(m.readWorkItemsPageFromStore).toHaveBeenCalledTimes(2);
+    expect(m.readWorkItemsPageFromStore.mock.calls[1]?.[2].args.cursor).toEqual(JSON.parse('"page-2"'));
+  });
+
   it('declares device auth + cors', () => {
     const def = (deviceAttention as RouteDefinition<any>[])[0];
     expect((def.auth as { kind: string[] }).kind).toContain('device');

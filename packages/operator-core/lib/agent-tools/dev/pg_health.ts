@@ -33,9 +33,13 @@ export default defineTool({
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     localOnly: z.boolean().optional().describe('Return only process-local diagnostics; skip the database health query.'),
+    resultLimitPerPool: z.number().int().min(1).max(32).optional().describe(
+      'Completed records per pool (default 4, maximum 32, the existing ring capacity). '
+      + 'Use a wider window for transaction diagnostics; evicted records remain unavailable.',
+    ),
   }),
   async handler(args) {
-    const resultLimitPerPool = 4;
+    const resultLimitPerPool = args.resultLimitPerPool ?? 4;
     const processDiagnostics = {
       source: 'current-process' as const,
       pid: process.pid,

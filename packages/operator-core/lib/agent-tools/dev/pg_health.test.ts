@@ -31,7 +31,7 @@ const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp
 
 // Via `unknown`: the tool's declared arg/event generics do not overlap this narrowed shape,
 // and TS2352 correctly refuses the direct assertion.
-const run = (args: { localOnly?: boolean } = {}) =>
+const run = (args: { localOnly?: boolean; resultLimitPerPool?: number } = {}) =>
   (pgHealthTool as unknown as {
     handler: (a: unknown) => Promise<{ data: Record<string, any> }>;
   }).handler(args);
@@ -126,6 +126,43 @@ describe('dev:pg_health completed-result delivery', () => {
       observed: true,
     });
     expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual([37, 38, 39, 40]);
+  });
+
+  it('can expose the complete retained ring without confusing eviction with omission', async () => {
+    for (let queryId = 1; queryId <= 40; queryId += 1) recordResult('org-admin', queryId);
+
+    const { data } = await run({ localOnly: true, resultLimitPerPool: 32 });
+    const diagnostic = data.processDiagnostics;
+    const pool = diagnostic.pools[1];
+
+    expect(pgHealth).not.toHaveBeenCalled();
+    expect(diagnostic.resultLimitPerPool).toBe(32);
+    expect(pool).toMatchObject({ totalRecorded: 40, dropped: 8, retained: 32, omittedRetained: 0 });
+    expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual(
+      Array.from({ length: 32 }, (_, i) => i + 9),
+    );
+    expect(JSON.stringify(diagnostic)).not.toMatch(/never-retain-secret|SELECT id|WHERE token/);
+  });
+
+  it('returns the requested bounded window across pools', async () => {
+    for (const pool of ['org-app', 'org-admin', 'org-admin-lossless-bigint']) {
+      for (let queryId = 1; queryId <= 6; queryId += 1) recordResult(pool, queryId);
+    }
+
+    const { data } = await run({ localOnly: true, resultLimitPerPool: 2 });
+
+    expect(data.processDiagnostics.resultLimitPerPool).toBe(2);
+    for (const pool of data.processDiagnostics.pools) {
+      expect(pool).toMatchObject({ retained: 6, omittedRetained: 4 });
+      expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual([5, 6]);
+    }
+  });
+
+  it('rejects invalid presentation limits at the public argument boundary', () => {
+    for (const resultLimitPerPool of [0, 33, 1.5, NaN]) {
+      expect(pgHealthTool.args.safeParse({ localOnly: true, resultLimitPerPool }).success).toBe(false);
+    }
+    expect(pgHealthTool.args.safeParse({ localOnly: true, resultLimitPerPool: 32 }).success).toBe(true);
   });
 
   it('labels empty and partial coverage without implying idleness or connectivity', async () => {

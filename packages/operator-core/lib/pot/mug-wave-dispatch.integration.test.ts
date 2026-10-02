@@ -154,7 +154,9 @@ describe('mug wave dispatch — wave ordering through cup placement (real PG, P-
   beforeEach(async () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked, harness_shared.coord_links, harness_shared.adv_sessions `;
+    // work_item_spec_revision_edges (and spec_evidence_bindings) carry an FK to work_items,
+    // so they must be truncated with it — same list as placement-watchdog's fixture.
+    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.spec_evidence_bindings, harness_shared.work_item_spec_revision_edges, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked, harness_shared.coord_links, harness_shared.adv_sessions `;
     await seedMugSession();
   });
 

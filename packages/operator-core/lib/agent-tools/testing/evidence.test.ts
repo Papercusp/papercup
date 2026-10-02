@@ -478,6 +478,37 @@ describe('test-time evidence continuity', () => {
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
   });
 
+  it('uses only the remaining recovery budget for a file-level row published after a passing terminal snapshot', async () => {
+    const lateRow = { id: 42, file_path: binding.testPath, status: 'pass' as const,
+      finished_at: '2026-09-09T00:00:00Z', execution_details: measured };
+    let detachedReads = 0;
+    const { d, bundle, sleptMs } = await waitingRecovery((d) => {
+      d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'pass', 0));
+      d.ledger.mockImplementation(async options => {
+        if (options.runGroupId === detached && ++detachedReads > 1) return [lateRow];
+        return [];
+      });
+    }, 1_000);
+
+    expect(sleptMs).toBe(1_000);
+    expect(bundle.recoveryWait).toMatchObject({ outcome: 'terminal', limitMs: 1_000,
+      waitedMs: 1_000, ledgerWaitedMs: 1_000 });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(bundle.pendingRetirement).toMatchObject({ status: 'complete', retiredCount: 1 });
+  });
+
+  it('stops looking for a passing run ledger row at the remaining recovery bound', async () => {
+    const { d, bundle, sleptMs } = await waitingRecovery((d) => {
+      d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'pass', 0));
+    }, 1_000);
+
+    expect(sleptMs).toBe(1_000);
+    expect(bundle.recoveryWait).toMatchObject({ outcome: 'terminal', limitMs: 1_000,
+      waitedMs: 1_000, ledgerWaitedMs: 1_000 });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'terminal-no-result', outcome: 'unknown', bindingStatus: 'not-bound' });
+    expect(bundle.pendingRetirement).toMatchObject({ status: 'complete', retiredCount: 1 });
+  });
+
   it('stops exactly at the wait bound and says to repeat recovery rather than poll run-status', async () => {
     const { d, bundle, sleptMs } = await waitingRecovery((d) => { d.runStatus.mockResolvedValue(running()); }, 5_000);
 

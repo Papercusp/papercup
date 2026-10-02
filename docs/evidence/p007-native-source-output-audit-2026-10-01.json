@@ -1,6 +1,20 @@
 {
   "scope": "Cheap source and saved-output topology audit of P007 r163; diagnostic hypothesis, not root-cause verification or R7 acceptance",
   "workItem": "WI-10002829",
+  "r167HostMilestonePreparationFire134": {
+    "scope": "Fresh canonical host milestone payload on an independent saved diagnostic SPA; native outcome pending, no product repair or R7 acceptance",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r167-instrument-manifest.json",
+    "manifestSha256": "89fe6978a5523383a741fac473e5fcde6ec656958b14e6d0a9d37266bd6098ab",
+    "assertion": "$HOME/.papercusp/perf/p007-native-current/r167-run-assertion.sh",
+    "assertionSha256": "94f18cab134b8473733223c42b9522cf317d2b94d5a108055d21f5c837d33e0d",
+    "spaIndexSha256": "073d94f1b008670550f54fb236a6f489002f257048670b1704f0de8dfd9042ff",
+    "earlyPayloadSha256": "f8ac89ac15a7f2829e4f5c36468f8dfc81e9c8079bd49d2f8ecff74d0c834a1a",
+    "webVitalsPayloadSha256": "58b2528bc893a3529c64cbc49be4c70b4fce9cb3a4d5d63a7c76f940a8bb6a7a",
+    "verification": "Exact Fire131 FINAL current source/test/log hashes matched without a redundant test replay. Fresh buildStartupStorageProbeScript/buildWebVitalsBundle and writeStartupStorageDiagnosticIndex produced a singleton early script in an independent index; bash syntax and source/shell/preflight/manifest containment guards passed.",
+    "recovery": "Post-carry partial r167 assertion existed without manifest/payload/SPA/runtime. Corrected stale operatorShell containment needle to the actual compiled milestoneMatchesAtFirstObservation field before launching.",
+    "predictions": "True first-host containment plus actual LCP candidate identity can distinguish before-host observation from delay within Accounts branch. False/null joins forbid attribution; callback time is not insertion/import completion/paint, and unobserved fallback is not proof of no suspension.",
+    "limits": "Saved baseline complete original source/build graph remains unknown. Empty discovery is a diagnostic media restriction; native observer work, current prepared API and separate clocks remain confounds. P006/P008 acceptance is separate."
+  },
   "r166DiagnosticRecoveredFire129": {
     "scope": "Recovered terminal r166 two-candidate native diagnostic; fail and identity-checked cleanup, no new runtime launched on fire129",
     "summary": "$HOME/.papercusp/perf/p007-native-current/r166-native-summary.json",
