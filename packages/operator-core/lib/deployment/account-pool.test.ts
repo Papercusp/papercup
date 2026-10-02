@@ -31,6 +31,7 @@ import {
   effectiveDrainUtil,
   accountFull,
   usageWalledUntil,
+  accountBurnVerdict,
   AccountPoolError,
   DEFAULT_SCALE_POLICY,
   DRAIN_UTIL_STALE_MS,
@@ -41,6 +42,35 @@ import { ROLLING_WINDOW_REPROBE_MAX_MS } from '@papercusp/papercusp-shared/resil
 
 const T0 = 1_000_000_000_000; // a fixed epoch-ms base
 const MIN = 60_000;
+
+describe('Codex credit-backed allowance exhaustion', () => {
+  const creditedPool = (available: boolean) => recordAccountWindow(
+    registerAccount(emptyPool(), { id: 'credited', provider: 'codex', credentialRef: 'codex-cli:/tmp/credited' }, T0),
+    'credited',
+    { utilization7d: 1, windowResetAt7d: T0 + 10_080 * MIN, usageCreditsAvailable: available },
+    T0,
+  );
+
+  it('persists credits and keeps a full included meter serviceable after rehydration', () => {
+    const account = normalizeAccount(JSON.parse(JSON.stringify(getAccount(creditedPool(true), 'credited'))));
+    expect(account.rate.utilization7d).toBe(1);
+    expect(account.rate.usageCreditsAvailable).toBe(true);
+    expect(accountFull(account, T0)).toBe(false);
+    expect(usageWalledUntil(account, T0)).toBe(0);
+    expect(accountBurnVerdict(account.rate, T0).action).toBe('none');
+  });
+
+  it('reinstates the allowance wall when credits are no longer available', () => {
+    const p = recordAccountWindow(creditedPool(true), 'credited', { usageCreditsAvailable: false }, T0 + MIN);
+    expect(accountFull(getAccount(p, 'credited')!, T0 + MIN)).toBe(true);
+    expect(usageWalledUntil(getAccount(p, 'credited')!, T0 + MIN)).toBe(T0 + 10_080 * MIN);
+  });
+
+  it('does not bypass an actual account pause', () => {
+    const p = recordAccountPenalty(creditedPool(true), 'credited', T0, { pausedUntil: T0 + 10 * MIN });
+    expect(accountFull(getAccount(p, 'credited')!, T0)).toBe(true);
+  });
+});
 
 function poolOf(...ids: string[]): AccountPool {
   let p = emptyPool();

@@ -2143,6 +2143,32 @@ describe('proxyOpenAi — ChatGPT OAuth initial account selection (D-010 catcher
 });
 
 describe('proxyOpenAi — health and self-heal control-plane parity', () => {
+  it('routes automatically through a credit-backed full allowance and permits psu launch', async () => {
+    await bootCodex(ok, [codexAcct('credited'), codexAcct('depleted')]);
+    gw!.setAccountRateHints([
+      { accountId: 'credited', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000, usageCreditsAvailable: true },
+      { accountId: 'depleted', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000, usageCreditsAvailable: false },
+    ]);
+    const stats = gw!.stats();
+    expect(stats.codexHealthyAccounts).toBe(1);
+    expect(stats.codexEarliestRecoveryAt).toBe(0);
+    const { codexAutoPoolVerdict } = await import('../../../../apps/operator/scripts/psu-launcher.mjs');
+    expect(codexAutoPoolVerdict({ agent: 'codex', account: 'auto', stats }).kind).toBe('proceed');
+    const response = await postResponses({ model: 'gpt-6.1-sol', input: 'credit-backed automatic routing' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('credited');
+    await response.text();
+  });
+
+  it('preserves real pauses and never-metered exclusions despite available credits', async () => {
+    await bootCodex(ok, [codexAcct('paused'), { ...codexAcct('never-metered'), meteredPolicy: 'never' }]);
+    gw!.setAccountRateHints([
+      { accountId: 'paused', utilization7d: 1, pausedUntil: Date.now() + 60_000, usageCreditsAvailable: true },
+      { accountId: 'never-metered', utilization7d: 1, usageCreditsAvailable: true },
+    ]);
+    expect(gw!.stats().codexHealthyAccounts).toBe(0);
+  });
+
   it('surfaces the Codex pool denominator and earliest recovery horizon for launch preflight', () => {
     const now = Date.UTC(2026, 8, 5, 20, 0, 0);
     vi.useFakeTimers();

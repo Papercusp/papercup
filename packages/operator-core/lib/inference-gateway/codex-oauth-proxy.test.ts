@@ -800,3 +800,38 @@ describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027
     expect(r.transient).toBe(true);
   });
 });
+
+describe('Codex usage-credit capacity', () => {
+  it('retains available credits alongside an exhausted included allowance', () => {
+    expect(parseCodexRateLimitHeaders({
+      'x-codex-active-limit': 'premium',
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-credits-has-credits': 'True',
+      'x-codex-credits-unlimited': 'False',
+      'x-codex-credits-balance': '50321.8471577500',
+    })).toMatchObject({ utilization7d: 1, bucket: 'premium', usageCreditsAvailable: true });
+  });
+
+  it.each([
+    ['False', 'False', '0', false],
+    ['True', 'False', '0', false],
+    ['True', 'False', 'invalid', false],
+    ['False', 'True', '0', true],
+  ])('interprets credit flags %s/%s with balance %s', (hasCredits, unlimited, balance, available) => {
+    expect(parseCodexRateLimitHeaders({
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-credits-has-credits': hasCredits as string,
+      'x-codex-credits-unlimited': unlimited as string,
+      'x-codex-credits-balance': balance as string,
+    }).usageCreditsAvailable).toBe(available);
+  });
+
+  it('does not invent credit eligibility when no credit headers were observed', () => {
+    expect(parseCodexRateLimitHeaders({
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+    }).usageCreditsAvailable).toBeUndefined();
+  });
+});

@@ -14424,7 +14424,7 @@
           "POST"
         ]
       },
-      "description": "Open a GOAL and spawn the GOAL-mode agent that owns it. The goal row and agent_modes stamp are committed before spawn; handled launch failures are compensated. { title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent's ownerId. Kill criterion and ceiling are REQUIRED: GOAL mode mandates both at creation, and this is the surface that enforces it.",
+      "description": "Open a GOAL and spawn the GOAL-mode agent that owns it. The goal row and agent_modes stamp are committed before spawn; handled launch failures are compensated. { requestKey?, title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent's ownerId. For retry-safe calls, reuse requestKey for the same arguments and scope; use a new key when they change. Kill criterion and ceiling are REQUIRED: GOAL mode mandates both at creation, and this is the surface that enforces it.",
       "capabilities": [
         "goals:write"
       ],
