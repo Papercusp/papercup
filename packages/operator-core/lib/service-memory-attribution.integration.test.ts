@@ -189,6 +189,211 @@ async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
 }
 
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
+  it.skipIf(process.env.PAPERCUSP_P011_SPAWNER_PAIR !== '1')('compares full-host and standalone spawner boot with equivalent private IPC and cleanup', () => {
+    const destination = evidenceDestination(process.env.PAPERCUSP_P011_SPAWNER_PAIR_REPORT);
+    if (!destination) throw Error('Spawner pair evidence destination is required before building');
+    const directory = mkdtempSync(join(tmpdir(), 'papercusp-spawner-pair-'));
+    const full = join(directory, 'full', 'hono-host.mjs');
+    const standalone = join(directory, 'standalone', 'spawner-sidecar.mjs');
+    const raw = join(directory, 'report.json');
+    const paths = ['apps/operator/bin/hono-host.ts', 'apps/operator/bin/spawner-sidecar.ts',
+      'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
+      'packages/operator-core/lib/fleet/spawner-sidecar-server.ts',
+      'packages/operator-core/lib/fleet/sidecar-exec-process.ts',
+      'packages/operator-core/lib/fleet/sidecar-exec-lifetime.ts',
+      'packages/operator-core/lib/flag-override-store-boot-effect.ts',
+      'scripts/cdp-inspector.mjs', 'scripts/with-test-pg.mjs'];
+    const sources = () => paths.map(path => ({ path,
+      sha256: createHash('sha256').update(readFileSync(join(root, path))).digest('hex') }));
+    const before = sources();
+    const builds: any[] = [];
+    const probe = String.raw`
+      const fs = require('node:fs'), path = require('node:path'), net = require('node:net');
+      const { spawn } = require('node:child_process');
+      const { pathToFileURL } = require('node:url');
+      const { createHash } = require('node:crypto');
+      const { performance } = require('node:perf_hooks');
+      const e = process.env, wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const report = { schemaVersion: 'p011-spawner-boot-pair-v1', incomplete: true, cohorts: [],
+        scope: 'Private emitted artifacts, same maintained spawner server, harmless process:exec only; no production routing or agent launch.',
+        limitations: ['Unforced PSS/heap includes transient state; no GC events or retained-owner proof.',
+          'V8 cumulative allocation is not a native allocation estimate. Full transitive source identity is unknown.'] };
+      const publish = () => fs.writeFileSync(e.TEST_REPORT_PATH, JSON.stringify(report, null, 2));
+      const fields = pid => { const value = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+        return value.slice(value.lastIndexOf(')') + 2).trim().split(/\s+/); };
+      const identity = pid => ({ pid, ppid: Number(fields(pid)[1]), startTicks: fields(pid)[19] });
+      const alive = row => { try { return fields(row.pid)[19] === row.startTicks; } catch { return false; } };
+      const osMemory = pid => { const text = fs.readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8');
+        const pss = text.match(/^Pss:\s+(\d+) kB$/m); if (!pss) throw Error('PSS unavailable');
+        return { ...identity(pid), pssBytes: Number(pss[1]) * 1024 }; };
+      (async () => {
+        if (!e.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-') || !e.TMPDIR ||
+            e.TMPDIR === require('node:os').tmpdir() && !e.TMPDIR.includes('papercusp-test-runtime-')) {
+          throw Error('Disposable runtime identity/temp preflight failed');
+        }
+        const { createCdpClient, readProcessMemory } = await import(pathToFileURL(e.TEST_INSPECTOR_PATH).href);
+        // Reverse the order in the second pair to expose a simple order effect.
+        for (const [arm, mode] of ['full', 'standalone', 'standalone', 'full'].entries()) {
+          const entry = mode === 'full' ? e.TEST_FULL_PATH : e.TEST_STANDALONE_PATH;
+          const socketPath = path.join(e.TMPDIR, 'papercusp-spawner-' + process.pid + '.sock');
+          const cohort = { arm, mode, bundleSha256: createHash('sha256').update(fs.readFileSync(entry)).digest('hex'),
+            samples: [], windows: [], descendants: [], reaped: false, forcedCleanup: false, socketRemoved: false };
+          report.cohorts.push(cohort); publish();
+          let host, cdp, socket, startup = '', tail = '', pending = new Map();
+          const observed = new Map();
+          let nextId = 1, buffer = '';
+          try {
+            const started = performance.now();
+            host = spawn(process.execPath, ['--inspect=127.0.0.1:0', entry], {
+              cwd: path.join(process.cwd(), 'apps/operator'),
+              env: { ...e, VITEST: '', MALLOC_ARENA_MAX: e.TEST_MALLOC_ARENA_MAX,
+                PAPERCUSP_SPAWNER_SIDECAR_MODE: '1', PAPERCUSP_SPAWNER_IPC_SOCKET: socketPath,
+                PAPERCUSP_HONO_PORT: '0', PORT: '0', PAPERCUSP_BACKGROUND_WORKERS: '0',
+                PAPERCUSP_DB_POOL_MAX: '2' }, stdio: ['ignore', 'pipe', 'pipe'] });
+            cohort.identity = identity(host.pid);
+            for (const stream of [host.stdout, host.stderr]) stream.setEncoding('utf8').on('data', value => {
+              startup += value; tail = (tail + value).slice(-2500); });
+            const deadline = Date.now() + 90000;
+            while (!startup.includes('PAPERCUSP_SPAWNER_READY socket=' + socketPath)) {
+              if (host.exitCode !== null || host.signalCode !== null) throw Error('Spawner exited before ready: ' + tail);
+              if (Date.now() >= deadline) throw Error('Spawner readiness timed out: ' + tail);
+              await wait(100);
+            }
+            cohort.readyMs = performance.now() - started;
+            const endpoint = [...startup.matchAll(/^Debugger listening on (ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+)\r?$/gm)].at(-1)?.[1];
+            if (!endpoint) throw Error('Private inspector endpoint unavailable');
+            cdp = createCdpClient(endpoint); await cdp.connect();
+            const bound = (await cdp.evaluate('({pid:process.pid,entry:process.argv[1],arena:process.env.MALLOC_ARENA_MAX})',
+              { returnByValue: true })).result.value;
+            if (bound.pid !== host.pid || bound.entry !== entry || bound.arena !== e.TEST_MALLOC_ARENA_MAX)
+              throw Error('Spawner inspector executable/allocator mismatch');
+            cohort.bound = bound;
+            socket = net.createConnection(socketPath);
+            await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+            socket.setEncoding('utf8');
+            socket.on('data', data => {
+              buffer += data;
+              for (;;) { const newline = buffer.indexOf('\n'); if (newline < 0) break;
+                const message = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+                if (message.method === 'spawn:pid') {
+                  const row = identity(message.params.pid);
+                  if (row.ppid !== host.pid) throw Error('IPC child is not owned by private spawner');
+                  observed.set(row.pid + ':' + row.startTicks, { ...row, requestId: message.params.requestId });
+                } else if (message.id != null && pending.has(message.id)) {
+                  const callback = pending.get(message.id); pending.delete(message.id);
+                  message.error ? callback.reject(Error(JSON.stringify(message.error))) : callback.resolve(message.result);
+                }
+              }
+            });
+            socket.on('error', error => { for (const callback of pending.values()) callback.reject(error); pending.clear(); });
+            const rpc = (method, params) => new Promise((resolve, reject) => {
+              const id = nextId++, timer = setTimeout(() => { pending.delete(id); reject(Error('Private IPC deadline')); }, 20000);
+              pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value); },
+                reject: error => { clearTimeout(timer); reject(error); } });
+              socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+            });
+            const fence = await rpc('spawn:cancel', {});
+            if (!fence.serverGeneration || !fence.connectionId) throw Error('Execution fence missing');
+            cohort.fenceVerified = true;
+            const run = async token => {
+              const source = 'const start=Date.now();setTimeout(()=>process.stdout.write(JSON.stringify({token:' +
+                JSON.stringify(token) + ',start,end:Date.now()})),350);';
+              const result = await rpc('process:exec', { command: process.execPath, args: ['-e', source],
+                cwd: e.TMPDIR, timeoutMs: 15000, workspaceId: e.PAPERCUSP_WORKSPACE_ID, ownerId: 'p011-private-spawner', fence });
+              if (result.code !== 0 || result.stderr !== '') throw Error('Harmless command failed: ' + JSON.stringify(result));
+              const value = JSON.parse(result.stdout);
+              if (value.token !== token || value.end - value.start < 300) throw Error('Harmless output mismatch');
+              return value;
+            };
+            // Warm IPC/governor before the idle/workload comparison, separately from boot.
+            const sample = async phase => {
+              const memory = await readProcessMemory(cdp, { expectedPid: host.pid, hostFacts: true, allocationDetails: true });
+              const os = osMemory(host.pid);
+              if (os.startTicks !== cohort.identity.startTicks) throw Error('Spawner PID identity changed');
+              cohort.samples.push({ phase, ...memory, os }); publish();
+            };
+            await sample('ready'); await run('warm'); await sample('warm');
+            for (let window = 0; window < 3; window++) {
+              await sample('idle-' + window + '-start'); await wait(1000); await sample('idle-' + window + '-end');
+              const started = performance.now();
+              const outcomes = await Promise.all(Array.from({ length: 4 }, (_, i) => run('window-' + window + '-' + i)));
+              const concurrent = Math.max(...outcomes.map(row => row.start)) < Math.min(...outcomes.map(row => row.end));
+              if (!concurrent) throw Error('Four-command concurrency was not preserved');
+              cohort.windows.push({ window, wallMs: performance.now() - started, concurrent, outcomes });
+              await sample('workload-' + window + '-end');
+            }
+            await wait(1000); await sample('completion-idle');
+          } finally {
+            if (cdp) await cdp.close();
+            if (socket) socket.destroy();
+            for (const callback of pending.values()) callback.reject(Error('Cohort cleanup')); pending.clear();
+            if (host && host.exitCode === null && host.signalCode === null) {
+              const exited = new Promise(resolve => host.once('exit', resolve)); host.kill('SIGTERM');
+              await Promise.race([exited, wait(5000)]);
+              if (host.exitCode === null && host.signalCode === null) {
+                cohort.forcedCleanup = true; host.kill('SIGKILL'); await exited;
+              }
+            }
+            cohort.reaped = Boolean(host && (host.exitCode !== null || host.signalCode !== null));
+            cohort.socketRemoved = !fs.existsSync(socketPath);
+            cohort.descendants = [...observed.values()];
+            cohort.unreaped = cohort.descendants.filter(alive);
+            cohort.startupTail = tail;
+            publish();
+            if (!cohort.reaped || cohort.forcedCleanup || !cohort.socketRemoved || cohort.unreaped.length)
+              throw Error('Spawner/descendant/socket cleanup failed');
+          }
+        }
+        report.incomplete = false;
+      })().catch(error => { report.error = String(error.stack || error); process.exitCode = 1; }).finally(publish);
+    `;
+    let phase = 'bundle-preflight';
+    try {
+      expect(() => new Function(probe)).not.toThrow();
+      symlinkSync(resolve(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
+      for (const [entry, output] of [['bin/hono-host.ts', full], ['bin/spawner-sidecar.ts', standalone]]) {
+        const built = runCohortWithLog([resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
+          '--exec-under-lock', '--', resolve(root, 'apps/operator/bin/bundle-host.sh'), entry, output],
+        { cwd: root, env: process.env, timeout: 180000 }, join(directory, entry.includes('hono') ? 'full-build.log' : 'standalone-build.log'));
+        builds.push({ entry, output, ...built.log, status: built.status, tail: built.stderr });
+        expect(built.status, built.stderr).toBe(0);
+      }
+      phase = 'runtime-cohorts';
+      const result = runCohortWithLog([resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--',
+        process.execPath, '-e', probe], { cwd: root, timeout: 360000, env: { ...process.env,
+          TEST_FULL_PATH: full, TEST_STANDALONE_PATH: standalone, TEST_REPORT_PATH: raw,
+          TEST_INSPECTOR_PATH: resolve(root, 'scripts/cdp-inspector.mjs'), TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX } },
+      join(directory, 'runtime.log'));
+      const report = readCohortReport(raw, result);
+      report.builds = builds; report.sources = { before, after: sources(), fullGraph: 'unknown' };
+      report.runtimeLog = result.log;
+      writeFileSync(destination, serializeIdentitySafeJson(report));
+      phase = 'report-verification';
+      expect(result.status, report.error ?? result.stderr).toBe(0);
+      expect(report.incomplete).toBe(false); expect(report.cohorts).toHaveLength(4);
+      expect(report.sources.before).toEqual(report.sources.after);
+      for (const cohort of report.cohorts) {
+        expect(cohort.fenceVerified).toBe(true); expect(cohort.reaped).toBe(true);
+        expect(cohort.forcedCleanup).toBe(false); expect(cohort.socketRemoved).toBe(true);
+        expect(cohort.unreaped).toEqual([]); expect(cohort.descendants).toHaveLength(13);
+        expect(cohort.samples).toHaveLength(12); expect(cohort.windows).toHaveLength(3);
+        for (const sample of cohort.samples) {
+          expect(sample.os.pssBytes).toBeGreaterThan(0);
+          expect(sample.heap.total_allocated_bytes).toBeGreaterThan(0);
+          expect(sample.hostFacts.sidecarFlags.spawner).toBe(true);
+          expect(sample.hostFacts.backgroundWorkersOverride).toBe('disabled');
+        }
+        expect(cohort.windows.flatMap((window: any) => window.outcomes.map((row: any) => row.token)))
+          .toEqual(Array.from({ length: 3 }, (_, w) => Array.from({ length: 4 }, (_, i) => 'window-' + w + '-' + i)).flat());
+      }
+    } catch (error) {
+      const report = existsSync(destination) ? JSON.parse(readFileSync(destination, 'utf8')) :
+        { incomplete: true, phase, error: String(error), builds, sources: { before, after: sources(), fullGraph: 'unknown' } };
+      report.verificationError = String(error); writeFileSync(destination, serializeIdentitySafeJson(report));
+      throw error;
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 750000);
+
   it('refuses absent or ambiguous full-key counterfactuals before preparing a runtime', () => {
     const key = '...boundedInbox ? { limit, ambient: includeAmbient, intents: !!args.include_intents } : {}';
     const restored = restoreFullInboxKey('prefix ' + key + ' suffix');
