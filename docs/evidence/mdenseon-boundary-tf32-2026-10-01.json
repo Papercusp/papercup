@@ -1224,5 +1224,94 @@
     "modelGpuCapacityBindingVerified": false,
     "fullGpuPopulationComplete": false
   },
+  "nativeMappedObjectPreparation": {
+    "status": "Generated glibc object/namespace-to-fingerprinted pre-Run map joins verified; complete model DLL closure and GPU acceptance remain open",
+    "workItem": "WI-10004540",
+    "reuse": "Extend the existing native runtime sample, measurement-manifest guard and conventional Vitest suites. Retain all mapped segments for selected executable/ELF/addon files; no new tool, service, configuration key, production policy or native addon.",
+    "mechanism": "bindNativeLoaderMappedObjects binds the earliest request's valid pre-Run observation to its exact PID/Linux TID/runTag/clock, then joins each still-active generated glibc object and namespace by both actual dynamic-section and program-header addresses to one non-overlapping fingerprinted mapped file. It retains load bias and mapped size without interpreting base as a mapped address; missing/unsupported details, ambiguous mappings, repeated identities, mismatched addresses, malformed fingerprints and late observations are refused.",
+    "glibcWriter": {
+      "url": "https://github.com/bminor/glibc/blob/master/elf/dl-load.c",
+      "fields": {
+        "dynamic": "l->l_ld",
+        "base": "l->l_addr (load bias)",
+        "size": "maplength",
+        "phdr": "l->l_phdr"
+      },
+      "qualification": "Addresses need not be representable as safe JavaScript numbers; parse and compare exact BigInt values. A zero load bias is valid. A heap-allocated program-header table is outside the supported file-map join and fails qualification."
+    },
+    "verification": {
+      "testRunIds": [
+        20541275,
+        20541296,
+        20541298
+      ],
+      "runGroup": "p006-loader-address-regression-20261002 (worker-input/candidate suites only; manifest suite has its exact independent test-run receipt)",
+      "passed": 186,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "tests": [
+        "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts"
+      ],
+      "actualGlibcControl": "Canonical manifest test retains real glibc stderr in its child result and hashes the child's pre-Run mapped files. It compiles one model-free no-dependency shared object and loads the same file into two real dlmopen namespaces. Both namespaces independently join the same inode/fingerprint at different ELF addresses; ordinary libc objects also join. Complete closure remains false and unjoined program/interpreter files are explicit.",
+      "actualNativeWorker": "Canonical worker suite retains all selected file segments, including non-executable executable-header segments, with exact file fingerprints. Real130-byte upstream CPU ORT fixture verifies queued successes/error, sampler clocks and matching stderr markers; no pretrained model or CUDA-model replay.",
+      "compatibility": "86 existing candidate tests pass, including legacy maps observations without address ranges. Such older observations remain readable and cannot qualify the new address-join guard.",
+      "typecheck": "Requested core source/test and reported14-file service scope clean; generic-memory worker source/input test and loaded imports clean; compiler exits0. Plain ESM node --check and scoped diff checks pass. These are current-build local checks, not a release-gate or shipped-main claim.",
+      "earlierTestRunIds": [
+        20541247,
+        20541248
+      ],
+      "provenance": "Final manifest run stamped7439ab7f1d with named test clean. Regression run stamped7439ab7f1d; auto-sync advanced the memory submodule during execution. The six source/test fingerprints below were re-read unchanged after all checks; do not infer source currentness merely from the moving superproject/submodule pin."
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 26855,
+        "sha256": "66aed3fd2e58a575473be3b5a729dba6f3b8165ea751aa3ccb96f3c7aba9d582"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 56354,
+        "sha256": "c968717869c2c456466a3cd524a8dad9016fdd9eee0c56f0f3026a5ce5c45309"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 45018,
+        "sha256": "acc7f6d285ec80553f2987422911558f7884ee3422bf5c211f25b573f358b7cd"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 28839,
+        "sha256": "8f6dccb44720246c13f2ba5abc705d2c8be9309581976bea4b6d223e3fb566dc"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 25075,
+        "sha256": "ee5ba1a18203f9e0019dae007f37843bac7b96d18e3417b7178877e616a85b5b"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      }
+    ],
+    "supersedesCurrentPins": "These six pins are current for this preparation. All four nativeLoaderActivityPreparation pins and the prior resource/clock worker+manifest source/test pins are retained as historical proof. R4/V6/V7/V5, CPU2427/reference/export, and model-free Nsight calibration captures remain immutable.",
+    "limitations": [
+      "This proves the generated glibc object population represented in stderr before the earliest native Run. It does not independently establish an exec-to-EOF complete stderr population or its fingerprint/terminal receipt.",
+      "The returned unjoinedMappedFiles population includes interpreter/executable objects not necessarily emitted as generated link maps; initialization-only path resolution, executable/interpreter/vDSO census and scope must still be reconciled before full DLL closure can qualify.",
+      "Destruction that cannot be joined to the exact generated object/name/namespace is refused. Unsupported/prelinked layout details or program headers outside file maps fail qualification.",
+      "Transient loader activity during the selected native-call population remains separately reported by inspectNativeLoaderActivity; no-activity is not complete closure.",
+      "Fresh model capture still requires all current tested overlays, source/dependency/Node/Python pins, FILE-parent worker boot, matched CUDA/clock preflight, full kernel/request joins and actual device UUID/PCI capacity binding."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
