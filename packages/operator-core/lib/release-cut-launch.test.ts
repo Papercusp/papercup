@@ -206,7 +206,12 @@ describe('buildCutArgv', () => {
   it.each([undefined, ...PLATFORMS])('accepts the readiness child for platform %s', (platform) => {
     for (const releaseTaskId of [undefined, 'readinesstask']) {
       const readinessArgv = buildCutArgv(
-        root, '0.0.8', 'alpha', {}, sourceSha, '/usr/bin:/bin',
+        root,
+        '0.0.8',
+        'alpha',
+        {},
+        sourceSha,
+        '/usr/bin:/bin',
         {
           ownerName: 'Avi',
           releaseTaskId,
