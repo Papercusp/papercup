@@ -703,6 +703,19 @@ const checkpointBodySchema = checkpointBodySpec().meta({ id: 'work-items-checkpo
  */
 const rootCarryAliasField = z.string().max(CHECKPOINT_CAP).nullish();
 
+/**
+ * WI-10005640: `items[]` entries take the SAME carry vocabulary as the single
+ * shorthand. Measured 2026-10-02: ~40 `items.N: Unrecognized keys: "did","left",
+ * "insight","next"` refusals/48h across ~15 owners — the natural batch shape is
+ * the loop carry-note shape, and rejecting it at the entry level made callers
+ * discover the `checkpoint:{…}` nesting by failing. Folded per entry with the SAME
+ * `checkpointFromRootAliases` as the root (explicit `checkpoint` wins). One
+ * `$defs` id keeps the published argSchema (PINNED shrink-only) from growing 7×.
+ */
+const itemCarryAliasField = rootCarryAliasField
+  .describe('carry alias folded into this entry\'s checkpoint (explicit `checkpoint` wins)')
+  .meta({ id: 'work-items-checkpoint-carry-alias-v1' });
+
 function checkpointFromRootAliases(args: {
   checkpoint?: string | null;
   note?: string | null;
@@ -1079,6 +1092,13 @@ const itemSpec = z.object({
   checkpoint: checkpointBodySchema.describe(
     'compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks`, `dependsOn`, `learned`, or `learnedLevel` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
   ),
+  did: itemCarryAliasField,
+  left: itemCarryAliasField,
+  insight: itemCarryAliasField,
+  next: itemCarryAliasField,
+  keyInsight: itemCarryAliasField,
+  nextAction: itemCarryAliasField,
+  goal: itemCarryAliasField,
   clear: looseBoolean().describe(
     'explicitly clear the checkpoint body. Equivalent to checkpoint:null and rejected with a non-blank checkpoint.',
   ),
@@ -1091,16 +1111,11 @@ const itemSpec = z.object({
     .optional()
     .describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
-      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
-      'of replacing it. By default supplied `checks` are UNIONED onto the carried set rather than replacing it ' +
-      '(EI-19944669306930709); explicit `rowsMode:\'replace\'` still replaces the check rows while append controls ' +
-      'only the body. Reads the current checkpoint first via the same path a ' +
-      'future pickup uses. A missing `checkpoint` is allowed with `checks` as an additive, body-preserving patch. ' +
-      'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
-      'treated as a clear). Bounded to the 32000-char cap: the superseded tail of the prior content is trimmed first if the join would ' +
-      `overflow it, preserving the oldest baseline and newest addendum whenever they fit. A body-bearing checks union that exceeds the ${CARRY_NOTE_MAX_CHECKS}-row cap still stores the body and carried ` +
-      'rows, and reports supplied rows that did not fit; an unconfirmed checks-only overflow refuses, while `confirmRetire:true` permits and reports the cap eviction. Retire stale rows with a ' +
-      'plain replace first or omit `checks`.',
+      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with `---`) instead of replacing it; ' +
+      'supplied `checks` are UNIONED onto the carried set (EI-19944669306930709; `rowsMode:\'replace\'` replaces check rows only). ' +
+      'No `checkpoint` + `checks` = additive body-preserving patch; otherwise a non-blank `checkpoint` is required ' +
+      '(append + clear is rejected). Bounded to the 32000-char cap (superseded prior tail is trimmed first). ' +
+      `Checks beyond the ${CARRY_NOTE_MAX_CHECKS}-row cap are reported; an unconfirmed checks-only overflow refuses, \`confirmRetire:true\` permits it.`,
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
@@ -1117,15 +1132,11 @@ const itemSpec = z.object({
   learned: learnedSpec(),
   learnedLevel: learnedLevelSpec(),
   unchanged: looseBoolean().describe(
-    'P-007/R-06: ATTEST that the stored checkpoint is still current instead of rewriting it. Refreshes the ' +
-      'checkpoint\'s freshness — clearing the flush gate\'s stale-checkpoint tripwire — while leaving the body ' +
-      'byte-identical, so a parked or blocked agent stops paying a prose rewrite for state that has not moved. ' +
-      'REQUIRES `contentHash` (the hash this tool returned on the write you are attesting to; work_items:get ' +
-      'also carries it). Mutually exclusive with checkpoint/clear/append/checks/dependsOn — an attestation writes ' +
-      'no text by construction. It is BOUNDED and cannot conceal changed state: it refuses if the hash does not ' +
-      'match what is stored (attestation_hash_mismatch), if the work-item row itself moved after the body was ' +
-      'written (attestation_state_changed), or once the chain/age budget is spent (attestation_exhausted) — at ' +
-      'which point a real checkpoint is required. A genuine write resets the budget.',
+    'P-007/R-06: ATTEST the stored checkpoint is still current instead of rewriting it (refreshes freshness, ' +
+      'body byte-identical). REQUIRES `contentHash` (from a prior write\'s result or work_items:get); mutually ' +
+      'exclusive with checkpoint/clear/append/checks/dependsOn. BOUNDED: refuses with attestation_hash_mismatch, ' +
+      'attestation_state_changed (item row moved after the body) or attestation_exhausted (chain/age budget spent) ' +
+      '— then write a real checkpoint; a genuine write resets the budget.',
   ),
   contentHash: contentHashSpec().describe(
       'The stored checkpoint hash you are attesting to (the `contentHash` a prior write returned). Required with ' +
@@ -1306,7 +1317,8 @@ export default defineTool({
           (value) => value === undefined,
         ),
       {
-        message: 'loop carry aliases apply only to the single shorthand; put checkpoint on each items[] entry',
+        message:
+          'root-level loop carry aliases apply only to the single shorthand; with items[] put checkpoint (or did/left/insight/next) on each entry',
         path: ['items'],
       },
     ),
@@ -1322,7 +1334,8 @@ export default defineTool({
     const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null; spawnId?: string | null };
     const inlineCheckpoint = checkpointFromRootAliases(args);
     const items = args.items?.length
-      ? args.items
+      ? // WI-10005640: fold each entry's own carry aliases (explicit `checkpoint` wins).
+        args.items.map((entry) => ({ ...entry, checkpoint: checkpointFromRootAliases(entry) }))
       : [
           {
             id: (args.id ?? args.workItem) as string,
