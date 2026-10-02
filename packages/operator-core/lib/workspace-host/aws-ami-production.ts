@@ -266,6 +266,110 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     }
   }
 
+  /**
+   * coldsnap-upload a verified disk and register it, unencrypted, as one AMI, then wait until it
+   * is available. A failed register or wait removes what it created: no residue is the contract.
+   */
+  private async uploadAndRegister(input: {
+    region: string;
+    diskPath: string;
+    name: string;
+    description: string;
+    architecture: string;
+    tags: Readonly<Record<string, string>>;
+  }): Promise<{ imageId: string; snapshotId: string }> {
+    const upload = await this.commands.run({
+      command: this.executables.coldsnap,
+      args: ['upload', '--wait', input.diskPath],
+      env: await this.childEnv(input.region),
+      timeoutMs: UPLOAD_TIMEOUT_MS,
+    });
+    const snapshotId = assertSuccess(upload, 'coldsnap upload').trim().split(/\s+/).find((token) => SNAPSHOT_ID.test(token));
+    if (!snapshotId) fail('coldsnap upload did not report a snapshot id');
+
+    const ec2 = this.deps.ec2(input.region);
+    let imageId: string | undefined;
+    try {
+      const registered = (await ec2.send(
+        new RegisterImageCommand({
+          Name: input.name,
+          Description: input.description,
+          Architecture: input.architecture as never,
+          RootDeviceName: '/dev/xvda',
+          BlockDeviceMappings: [{ DeviceName: '/dev/xvda', Ebs: { SnapshotId: snapshotId, VolumeType: 'gp3', DeleteOnTermination: true } }],
+          VirtualizationType: 'hvm',
+          EnaSupport: true,
+          BootMode: 'uefi-preferred',
+          ImdsSupport: 'v2.0',
+          TagSpecifications: [{ ResourceType: 'image', Tags: tagList(input.tags) }],
+        }),
+      )) as RegisterImageResult;
+      imageId = registered.ImageId;
+      if (!imageId || !AMI_ID.test(imageId)) fail('RegisterImage did not return an AMI id');
+      await this.waitForImageAvailable(input.region, imageId);
+      return { imageId, snapshotId };
+    } catch (error) {
+      await this.removeImageAndSnapshot(input.region, imageId, snapshotId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async removeImageAndSnapshot(region: string, imageId: string | undefined, snapshotId: string): Promise<void> {
+    const ec2 = this.deps.ec2(region);
+    if (imageId) await ignoreNotFound(() => ec2.send(new DeregisterImageCommand({ ImageId: imageId })));
+    await ignoreNotFound(() => ec2.send(new DeleteSnapshotCommand({ SnapshotId: snapshotId })));
+  }
+
+  /**
+   * Stage the bake's AWS disk as the clean room's subject (WI-10005633): a transient, unencrypted
+   * AMI in the publisher account, shared with ONLY the clean account. Same upload and register as
+   * `buildCandidate`, so the clean room boots what the release will boot; no KMS copy, because the
+   * image is discarded when the clean-room run ends.
+   */
+  async stageCleanRoomImage(input: AwsBootcCleanRoomStageInput): Promise<{ imageId: string; snapshotId: string }> {
+    const diskPath = await verifyBootcAmiArtifact(input.bootcArtifact, this.repositoryRoot);
+    const staged = await this.uploadAndRegister({
+      region: input.region,
+      diskPath,
+      name: input.imageName,
+      description: input.description,
+      architecture: input.architecture,
+      tags: input.tags,
+    });
+    try {
+      // coldsnap cannot tag; tag the snapshot so an orphan is findable by run id.
+      await this.deps.ec2(input.region).send(new CreateTagsCommand({ Resources: [staged.snapshotId], Tags: tagList(input.tags) }));
+      await this.publishPermissions({
+        region: input.region,
+        imageId: staged.imageId,
+        launchAccountIds: [input.shareWithAccountId],
+        snapshotCreateVolumeAccountIds: [input.shareWithAccountId],
+      });
+    } catch (error) {
+      await this.removeImageAndSnapshot(input.region, staged.imageId, staged.snapshotId).catch(() => undefined);
+      throw error;
+    }
+    return staged;
+  }
+
+  /** Deregister the transient image, delete its snapshot, then census both; residue is reported, never assumed away. */
+  async discardCleanRoomImage(input: AwsBootcCleanRoomDiscardInput): Promise<{ residualResourceIds: string[] }> {
+    await this.removeImageAndSnapshot(input.region, input.imageId, input.snapshotId);
+    const ec2 = this.deps.ec2(input.region);
+    const residue: string[] = [];
+    const images = (await notFoundAs(() => ec2.send(new DescribeImagesCommand({ ImageIds: [input.imageId] })), {
+      Images: [],
+    })) as DescribeImagesResult;
+    if ((images.Images ?? []).some((image) => image.ImageId === input.imageId && image.State !== 'deregistered')) {
+      residue.push(input.imageId);
+    }
+    const snapshots = (await notFoundAs(() => ec2.send(new DescribeSnapshotsCommand({ SnapshotIds: [input.snapshotId] })), {
+      Snapshots: [],
+    })) as DescribeSnapshotsResult;
+    if ((snapshots.Snapshots ?? []).some((snapshot) => snapshot.SnapshotId === input.snapshotId)) residue.push(input.snapshotId);
+    return { residualResourceIds: residue };
+  }
+
   async buildCandidate(input: Parameters<AwsAmiReleaseAdapter['buildCandidate']>[0]): Promise<{ imageId: string }> {
     if (input.builderKind !== WORKSPACE_HOST_BOOTC_BUILDER_KIND || !input.bootcArtifact) {
       fail('AWS AMIs are produced from the bootc bake; workspace-host.pkr.hcl has no amazon-ebs source');
@@ -274,34 +378,16 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     if (missing.length > 0) fail(`guest tool versions are not pinned for: ${missing.join(', ')}`);
     const diskPath = await verifyBootcAmiArtifact(input.bootcArtifact, this.repositoryRoot);
 
-    const upload = await this.commands.run({
-      command: this.executables.coldsnap,
-      args: ['upload', '--wait', diskPath],
-      env: await this.childEnv(input.sourceRegion),
-      timeoutMs: UPLOAD_TIMEOUT_MS,
-    });
-    const snapshotId = assertSuccess(upload, 'coldsnap upload').trim().split(/\s+/).find((token) => SNAPSHOT_ID.test(token));
-    if (!snapshotId) fail('coldsnap upload did not report a snapshot id');
-
     const ec2 = this.deps.ec2(input.sourceRegion);
     const stagingTags = { ...this.imageTags(input.tags), 'papercusp:release-stage': 'unencrypted-staging' };
-    const registered = (await ec2.send(
-      new RegisterImageCommand({
-        Name: `${input.imageName}-staging`,
-        Description: input.description,
-        Architecture: input.architecture as never,
-        RootDeviceName: '/dev/xvda',
-        BlockDeviceMappings: [{ DeviceName: '/dev/xvda', Ebs: { SnapshotId: snapshotId, VolumeType: 'gp3', DeleteOnTermination: true } }],
-        VirtualizationType: 'hvm',
-        EnaSupport: true,
-        BootMode: 'uefi-preferred',
-        ImdsSupport: 'v2.0',
-        TagSpecifications: [{ ResourceType: 'image', Tags: tagList(stagingTags) }],
-      }),
-    )) as RegisterImageResult;
-    const stagingImageId = registered.ImageId;
-    if (!stagingImageId || !AMI_ID.test(stagingImageId)) fail('RegisterImage did not return an AMI id');
-    await this.waitForImageAvailable(input.sourceRegion, stagingImageId);
+    const { imageId: stagingImageId, snapshotId } = await this.uploadAndRegister({
+      region: input.sourceRegion,
+      diskPath,
+      name: `${input.imageName}-staging`,
+      description: input.description,
+      architecture: input.architecture,
+      tags: stagingTags,
+    });
 
     const copied = (await ec2.send(
       new CopyImageCommand({
