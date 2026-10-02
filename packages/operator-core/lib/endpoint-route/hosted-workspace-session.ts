@@ -682,6 +682,14 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
         return;
       }
       const type = session.sealed ? byocSealedContentType(payload) : payloadType(payload);
+      // Noise handshake fragments deliberately expose no application type. They
+      // still have to cross the blind relay before either endpoint can encrypt
+      // an application frame; only authenticated post-handshake packets carry
+      // the clear policy discriminator.
+      if (session.sealed && type === null) {
+        sendJson(connector, { type: 'relay', channelId, payload });
+        return;
+      }
       if (!type) return;
       this.touch(session);
       if (type === 'session.claim-control') {

@@ -350,7 +350,10 @@ async function runAssembledByoc() {
     );
     await settle(pending);
 
-    await operatorBrowser.sealed.send({
+    const appBrowser = browser('operator-http');
+    await settle(pending);
+    await appBrowser.sealed.opened;
+    await appBrowser.sealed.send({
         type: 'http.request',
         requestId: 'app-1',
         method: 'POST',

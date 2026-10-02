@@ -52,13 +52,13 @@ const MAX_ROWS_TO_TRY = 5;
 const PLAN_POPUP_OPEN_BUDGET_MS = 1500;
 
 /**
- * A packaged desktop can navigate to the verifier host, which serves its own
- * SPA index. For a font intervention, inspect the measured document itself:
- * hashing the package index only proves what was on disk, not what WebKit used.
+ * The packaged WebView may use papercusp://localhost rather than the verifier
+ * host's HTTP page. Inspect the measured document: package or host hashes alone
+ * do not prove which font treatment WebKit used. The accepted build uses Noto
+ * Sans; explicit plain is reserved for controlled diagnostic arms.
  */
 async function verifyBodyFontTreatment(): Promise<void> {
-  const treatment = process.env.PAPERCUSP_PERF_BODY_FONT_TREATMENT;
-  if (treatment === undefined) return;
+  const treatment = process.env.PAPERCUSP_PERF_BODY_FONT_TREATMENT ?? 'noto-sans';
   if (treatment !== 'plain' && treatment !== 'noto-sans') {
     throw new Error(`unknown PAPERCUSP_PERF_BODY_FONT_TREATMENT: ${treatment}`);
   }
