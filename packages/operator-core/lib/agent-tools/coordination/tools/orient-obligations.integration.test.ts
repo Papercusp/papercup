@@ -258,6 +258,8 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const realAgenda = obligationReader.readAgentObligationAgenda;
     type Arm = 'shared-portfolio' | 'independent-portfolio';
     let arm: Arm = 'shared-portfolio';
+    const guardOnly = process.env.PAPERCUSP_R5_ORIENT_GUARD_ONLY === '1';
+    const windowCount = guardOnly ? 0 : 10;
     // Only the supported observation clock is fixed. Every provider and store
     // remains real PostgreSQL; expected values below come from the seed contract.
     vi.spyOn(obligationReader, 'readAgentObligationAgenda')
@@ -293,9 +295,9 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const windows: Array<{ window: number; arm: Arm; samples: Array<{ phase: string; ms: number }>; complete: boolean }> = [];
     const report: Record<string, unknown> = { schemaVersion: 2, incomplete: true,
       sourceStart: hashes(), snapshots,
-      windows,
+      windows, mode: guardOnly ? 'guard-only' : 'guard-and-performance',
       workload: { plans: 8, itemsPerPlan: 128, workItems: 128, visibleFacts: 3,
-        windows: 10, warmReads: 20, concurrency: 8 },
+        windows: windowCount, warmReads: 20, concurrency: 8 },
       scope: 'Production orient handler with real GOAL providers, plan/queue sources and fact store. Orientation only; no whole R-5 or shipment claim.',
       baselineDefinition: 'Current production reader performs its own portfolio read instead of sharing orient\'s promise. This is a source-read counterfactual, not a historical checkout.',
       coldDefinition: 'Reset the operator L1 and clear this fixture workspace from durable L2. PostgreSQL buffers, connections, imports and independent source caches remain warm.',
@@ -392,7 +394,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       expect(verification.map(row => row.scope.planSlug).sort()).toEqual([...slugs].sort());
       for (const row of verification) {
         expect(row.action).toEqual({ kind: 'repair', targetRef: row.scope.planSlug,
-          summary: 'repair acceptance_bar_contract_not_ready before requesting a grader' });
+          summary: 'repair acceptance_bar_contract_not_ready before requesting a grader', continuesCurrentWork: false });
         expect(row.authority).toMatchObject({ kind: 'policy', sourceRef: 'plan-acceptance-gate' });
         expect(row.clearsWhen).toMatchObject({ evidenceKind: 'verdict', sourceRef: 'evaluatePlanAcceptanceGate' });
         expect(row.evidence.map(e => e.ref)).toEqual([`plan-acceptance:${row.scope.planSlug}:${row.sourceGeneration}`]);
@@ -421,7 +423,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
           summary: 'send MOVED / COST / OWNER-WALLED / KILLED on a canonical owner-facing rail now', tool: 'coord:send', args: { to: ['human'] } });
         expect(byRule.get('goal-owner-report')?.evidence.map(row => row.ref)).toEqual([`goal-owner-report:${GOAL}:baseline`]);
         expect(byRule.get('goal-plan-placement')?.action).toEqual({ kind: 'repair', targetRef: refs[0],
-          summary: 'run the existing plans:start promotion path after its normal review and approval gates, then recheck admission' });
+          summary: 'The plan is draft and cannot launch until its lifecycle/start gate is satisfied.' });
         expect(byRule.get('goal-planning-needed')?.action).toEqual({ kind: 'inspect', targetRef: `goal:${GOAL}`, recoveryRef: 'coord:orient',
           summary: 'Review uncovered goal outcomes; staff executable plans first, then record a supported planning disposition.' });
       } else {
@@ -462,7 +464,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
         resetOperatorCacheForTests();
         await getL2Store().clearWorkspace(WS);
       };
-      for (let window = 0; window < 10; window++) {
+      for (let window = 0; window < windowCount; window++) {
         const arms: Arm[] = window % 2 ? ['shared-portfolio', 'independent-portfolio'] : ['independent-portfolio', 'shared-portfolio'];
         for (const nextArm of arms) {
           arm = nextArm;
@@ -477,14 +479,14 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
           row.complete = true; publish();
         }
       }
-      const summary = (['shared-portfolio', 'independent-portfolio'] as Arm[]).map(value => ({ arm: value,
+      const summary = guardOnly ? [] : (['shared-portfolio', 'independent-portfolio'] as Arm[]).map(value => ({ arm: value,
         phases: Object.fromEntries(['cold', 'warm', 'warm-concurrent', 'cold-concurrent'].map(phase => {
           const times = windows.filter(row => row.arm === value).flatMap(row => row.samples).filter(s => s.phase === phase).map(s => s.ms).sort((a, b) => a - b);
           return [phase, { reads: times.length, p95Ms: times[Math.ceil(times.length * .95) - 1], maxMs: times.at(-1) }];
         })),
       }));
       report.summary = summary;
-      for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
+      if (!guardOnly) for (const result of Object.values(summary[0]!.phases)) expect(result.p95Ms).toBeLessThanOrEqual(5_000);
       await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
       arm = 'shared-portfolio';
       await read('final-fact-write-guard');
