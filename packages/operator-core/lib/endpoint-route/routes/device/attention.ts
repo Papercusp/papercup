@@ -45,7 +45,13 @@ import {
 /** Feature-family states that mean "needs a human / stuck". */
 const FEATURE_ATTENTION_STATES = new Set(['needs-human', 'blocked', 'failing']);
 
-const unavailableAttention = () => Response.json({ error: 'attention_unavailable' }, { status: 503 });
+const unavailableAttention = (reason: string, details?: Record<string, unknown>) => {
+  // Keep the public response stable, but retain the producer/contract boundary
+  // that failed. Otherwise live acceptance cannot distinguish a dispatch
+  // refusal, an incomplete page and an unmeasured monitoring source.
+  console.warn('[device/attention] unavailable:', reason, details ?? {});
+  return Response.json({ error: 'attention_unavailable' }, { status: 503 });
+};
 
 /** Is this work-item worth surfacing in the human's inbox? */
 function isAttentionWorkItem(wi: { family: string; kind: string; state: string }): boolean {
@@ -84,26 +90,32 @@ const attention = defineTool({
     };
     const groups: InboxGroup[] = [];
     const attentionTool = lookupByMcpName('plans:attention');
-    if (!attentionTool) return unavailableAttention();
+    if (!attentionTool) return unavailableAttention('canonical_tool_missing');
     try {
       let offset = 0;
       let expectedTotal: number | undefined;
       let received = 0;
       const byKey = new Map<string, InboxGroup>();
       do {
-        if (ctx.signal.aborted) return unavailableAttention();
+        if (ctx.signal.aborted) return unavailableAttention('canonical_request_aborted');
         const dispatched = await dispatchProjectedTool(attentionTool, 'plans:attention', {
           limit: 100, offset, payloadTier: 'full',
         }, toolCtx, {});
-        if (dispatched.result?.isError) return unavailableAttention();
+        if (!dispatched.ok || !dispatched.result || dispatched.result.isError) {
+          return unavailableAttention('canonical_dispatch_failed', { code: dispatched.error?.code });
+        }
         const parsed = JSON.parse((dispatched.result?.content[0] as { text?: string })?.text ?? '{}') as {
           ok?: boolean; groups?: InboxGroup[]; _projection?: { truncated?: boolean };
         };
-        if (parsed.ok === false || parsed._projection?.truncated || !Array.isArray(parsed.groups)) return unavailableAttention();
+        if (parsed.ok === false || parsed._projection?.truncated || !Array.isArray(parsed.groups)) {
+          return unavailableAttention('canonical_page_unavailable', {
+            offset, keys: Object.keys(parsed), truncated: parsed._projection?.truncated === true,
+          });
+        }
         const meta = parsed.groups.find(g => g._meta)?._meta;
         let pageItems = 0;
         for (const group of parsed.groups) {
-          if (!Array.isArray(group.items)) return unavailableAttention();
+          if (!Array.isArray(group.items)) return unavailableAttention('canonical_group_invalid', { offset });
           pageItems += group.items.length;
           const { _meta: _pageMeta, ...completeGroup } = group;
           const key = group.key ?? `${group.harnessSlug ?? ''}#${group.planSlug ?? 'alerts'}`;
@@ -115,22 +127,30 @@ const attention = defineTool({
             groups.push(copy);
           }
         }
-        if (meta?.returned !== undefined && meta.returned !== pageItems) return unavailableAttention();
+        if (meta?.returned !== undefined && meta.returned !== pageItems) {
+          return unavailableAttention('canonical_returned_mismatch', { offset, returned: meta.returned, pageItems });
+        }
         if (meta?.total !== undefined) {
-          if (expectedTotal !== undefined && expectedTotal !== meta.total) return unavailableAttention();
+          if (expectedTotal !== undefined && expectedTotal !== meta.total) {
+            return unavailableAttention('canonical_snapshot_changed', { offset, expectedTotal, total: meta.total });
+          }
           expectedTotal = meta.total;
         }
         received += pageItems;
         if (!meta?.hasMore) {
-          if (expectedTotal !== undefined && expectedTotal !== received) return unavailableAttention();
+          if (expectedTotal !== undefined && expectedTotal !== received) {
+            return unavailableAttention('canonical_total_mismatch', { expectedTotal, received });
+          }
           break;
         }
-        if (!Number.isInteger(meta.nextOffset) || meta.nextOffset! <= offset || pageItems === 0) return unavailableAttention();
+        if (!Number.isInteger(meta.nextOffset) || meta.nextOffset! <= offset || pageItems === 0) {
+          return unavailableAttention('canonical_page_cannot_advance', { offset, nextOffset: meta.nextOffset, pageItems });
+        }
         offset = meta.nextOffset!;
       } while (true);
     } catch (e) {
       console.warn('[device/attention] plans:attention failed:', (e as Error)?.message ?? e);
-      return unavailableAttention();
+      return unavailableAttention('canonical_source_failed');
     }
 
     // 2. Work-items-native layer — attention-worthy items across the workspace.
@@ -160,7 +180,7 @@ const attention = defineTool({
       });
     } catch (e) {
       console.warn('[device/attention] work-item pages failed:', (e as Error)?.message ?? e);
-      return unavailableAttention();
+      return unavailableAttention('work_item_source_failed');
     }
 
     // 3. System-health attention producers (P-007): release red-gate and
@@ -171,11 +191,11 @@ const attention = defineTool({
     let systemAlertsOut: SystemAlert[] = [];
     try {
       const [gate, pool] = await Promise.all([releaseGateTile(), poolTile(principal.workspaceId)]);
-      if (!gate || !pool) return unavailableAttention();
+      if (!gate || !pool) return unavailableAttention('system_source_unmeasured', { gateMeasured: !!gate, poolMeasured: !!pool });
       systemAlertsOut = systemAlerts({ gate, pool });
     } catch (e) {
       console.warn('[device/attention] systemAlerts failed:', (e as Error)?.message ?? e);
-      return unavailableAttention();
+      return unavailableAttention('system_source_failed');
     }
 
     return Response.json({
