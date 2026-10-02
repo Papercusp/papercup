@@ -702,18 +702,31 @@ test('native environment is captured once per PID identity, including unavailabl
 test('native stack capture requires owned identity, real frames, detach and resumed target', () => {
   const f = nativeProcFixture();
   const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
+  const validOutput = () => `NATIVE_STACK_STOP_EPOCH_MS=${Date.now()}\n` +
+    '0x1000 0x2000 0x1000 0x0 /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0\n' +
+    '#0  0x123 in poll ()\n[Inferior 1 (process 30) detached]\n';
   const result = captureOwnedNativeStacks(f.options, target, f.proc, (pid) => {
     assert.equal(pid, 30);
-    return '#0  0x123 in poll ()\n[Inferior 1 (process 30) detached]\n';
+    return validOutput();
   });
   assert.equal(result.status, 'captured');
   assert.equal(result.identity, 'linux:boot-A:100');
+  assert(result.stoppedEpochMs >= result.startedEpochMs);
+  assert.equal(result.mappingLines.length, 1);
   for (const output of ['', '#0 poll\n', 'ptrace: Operation not permitted.\n']) {
     assert.equal(captureOwnedNativeStacks(f.options, target, f.proc, () => output).status, 'unavailable');
   }
+  const noClock = captureOwnedNativeStacks(f.options, target, f.proc,
+    () => '#0 poll\n[Inferior 1 (process 30) detached]\n');
+  assert.equal(noClock.status, 'unavailable');
+  if (noClock.status === 'unavailable') assert.match(noClock.error, /post-attach clock/);
+  const noMap = captureOwnedNativeStacks(f.options, target, f.proc,
+    () => `NATIVE_STACK_STOP_EPOCH_MS=${Date.now()}\n#0 poll\n[Inferior 1 (process 30) detached]\n`);
+  assert.equal(noMap.status, 'unavailable');
+  if (noMap.status === 'unavailable') assert.match(noMap.error, /WebKit mapping/);
   const stopped = captureOwnedNativeStacks(f.options, target, f.proc, () => {
     f.files.set('/proc/30/task/30/stat', f.stat(30, 25).replace(') S ', ') T '));
-    return '#0 poll\n[Inferior 1 (process 30) detached]\n';
+    return validOutput();
   });
   assert.equal(stopped.status, 'unavailable');
 });
@@ -722,7 +735,9 @@ test('native stack attach refuses stale/peer targets and discards post-attach id
   const f = nativeProcFixture();
   const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
   let attaches = 0;
-  const run = () => { attaches++; return '#0 poll\n[Inferior 1 (process 30) detached]\n'; };
+  const run = () => { attaches++; return `NATIVE_STACK_STOP_EPOCH_MS=${Date.now()}\n` +
+    '0x1000 0x2000 0x1000 0x0 /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0\n' +
+    '#0 poll\n[Inferior 1 (process 30) detached]\n'; };
   assert.equal(captureOwnedNativeStacks(f.options, { ...target, pid: 90 }, f.proc, run).status, 'unavailable');
   f.files.set('/proc/30/stat', f.stat(30, 25, '101'));
   assert.equal(captureOwnedNativeStacks(f.options, target, f.proc, run).status, 'unavailable');
