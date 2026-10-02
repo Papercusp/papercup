@@ -183,6 +183,8 @@ import {
   coerceCarryRowShape,
   type CarryArgRepair,
   evidenceFirst,
+  FALSIFIER_MISSING_NOTE,
+  checksMissingFalsifier,
   RELATIVE_SCRATCH_ADVISORY,
   normalizeCheckEntries,
   normalizeFlattenedContinuityProbeRow,
@@ -336,6 +338,7 @@ type AppendChecksOverflowRow = {
   id?: string;
   claim: string;
   recheck?: string;
+  falsifier?: string;
   verified?: string;
   observed?: string;
   contested?: string;
@@ -436,6 +439,14 @@ function fitChecksForAppendBody(
         repairs,
       );
     }
+    if (typeof out.falsifier === 'string') {
+      out.falsifier = truncateCarryField(
+        out.falsifier,
+        CARRY_ROW_SOFT_CAPS.falsifier,
+        `carriedChecks[${i}].falsifier`,
+        repairs,
+      );
+    }
     if (typeof out.verified === 'string') {
       out.verified = truncateCarryField(
         out.verified,
@@ -499,6 +510,8 @@ function appendChecksOverflowRows(
     id?: string;
     claim: string;
     recheck?: string;
+    falsifier?: string;
+    sampleAdequate?: boolean;
     verified?: string;
     observed?: string;
     contested?: string;
@@ -519,6 +532,7 @@ function appendChecksOverflowRows(
   return evicted.slice(0, CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE).map((row) => {
     const id = sanitizeCarryRowId(row.id);
     const recheck = row.recheck?.trim();
+    const falsifier = row.falsifier?.trim();
     const verified = row.verified?.trim();
     const observed = row.observed?.trim();
     const contested = row.contested?.trim();
@@ -526,6 +540,7 @@ function appendChecksOverflowRows(
       ...(id ? { id } : {}),
       claim: row.claim.trim(),
       ...(recheck ? { recheck } : {}),
+      ...(falsifier ? { falsifier } : {}),
       ...(verified ? { verified } : {}),
       ...(observed ? { observed } : {}),
       ...(contested ? { contested } : {}),
@@ -896,6 +911,23 @@ function checksSpec() {
               CARRY_ROW_SOFT_CAPS.recheck,
               'The concrete probe that would falsify the claim.',
             ).optional(),
+            // EI-23771449112267271: same contract as loop:checkpoint's `falsifier` /
+            // `sampleAdequate` (and facts:assert `falsifier`). Persisted / write-time only
+            // respectively; the SHARED normalizer in ../../carry-note owns both semantics.
+            falsifier: carryRowTextSchema(
+              CARRY_ROW_SOFT_CAPS.falsifier,
+              'The concrete result or observation that means this claim is false and must be retracted or corrected ' +
+                '(same contract as facts:assert `falsifier`). A probe says how to LOOK; the falsifier says what would ' +
+                'mean you are WRONG — without one, any non-contradicting sample reads as confirmation.',
+            ).optional(),
+            sampleAdequate: z
+              .boolean()
+              .optional()
+              .describe(
+                'Set `false` when you probed but the sample could NOT discriminate the claim from its negation ' +
+                  '(e.g. both samples sat under the very threshold the claim is about). The evidence is kept as ' +
+                  'context and the row renders ? PREDICTED, never ✓. Omit when the sample was adequate.',
+              ),
             verified: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.verified,
               'The EVIDENCE STRING (what you actually observed). For compatibility, boolean `true`/`false` ' +
@@ -1799,6 +1831,13 @@ export default defineTool({
           out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `checks[${i}].claim`, repairs);
           if (typeof out.recheck === 'string')
             out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `checks[${i}].recheck`, repairs);
+          if (typeof out.falsifier === 'string')
+            out.falsifier = truncateCarryField(
+              out.falsifier,
+              CARRY_ROW_SOFT_CAPS.falsifier,
+              `checks[${i}].falsifier`,
+              repairs,
+            );
           if (typeof out.verified === 'string')
             out.verified = truncateCarryField(
               out.verified,
@@ -2830,6 +2869,22 @@ export default defineTool({
             }
           })(),
           /**
+           * EI-23771449112267271: warn-only — a ✓ row WRITTEN IN THIS CALL with no falsifier
+           * (same contract as facts:assert `recheckMissing` and loop:checkpoint's
+           * `falsifierMissing`). Scoped to the SUPPLIED rows so legacy carried rows never nag;
+           * `sampleAdequate:false` rows are already downgraded to ? and are skipped by the helper.
+           */
+          ...(() => {
+            try {
+              const missing = checksMissingFalsifier(suppliedChecks ?? []);
+              return missing.length > 0
+                ? { falsifierMissing: { flagged: true as const, note: FALSIFIER_MISSING_NOTE, rows: missing } }
+                : {};
+            } catch {
+              return {};
+            }
+          })(),
+          /**
            * EI-19455262557905604: `checks` carries the VERIFIED-vs-PREDICTED
            * distinction and has done since 2026-08-02 — but 8.8% of the 10,475
            * work-item carry-notes here use it, and only 6.75% of the last 14 days',
@@ -2921,6 +2976,7 @@ export default defineTool({
                     ...(id ? { id } : {}),
                     claim: row.claim.trim(),
                     ...(row.recheck?.trim() ? { recheck: row.recheck.trim() } : {}),
+                    ...(row.falsifier?.trim() ? { falsifier: row.falsifier.trim() } : {}),
                     ...(row.verified?.trim() ? { verified: row.verified.trim() } : {}),
                     ...(row.contested?.trim() ? { contested: row.contested.trim() } : {}),
                   };

@@ -50,6 +50,8 @@ import {
   rescueTaggedCarryNoteBlob,
   detectCarryNoteRescueSignals,
   CARRY_ROW_SOFT_CAPS,
+  FALSIFIER_MISSING_NOTE,
+  checksMissingFalsifier,
   CARRY_TEXT_SOFT_CAP,
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_ROW_ID_MAX,
@@ -1743,6 +1745,9 @@ export default defineTool({
     // a carried claim with no probe (the phantom-re-anchor shape). Never blocks.
     const probeText = [...checks.map(renderCheckLine), ...walls.map(renderWallLine)].join('\n');
     const uncheckedClaims = hasNoteWrite ? lintUncheckedExternalClaims(narrativeBody, probeText) : [];
+    // EI-23771449112267271: warn-only — a ✓ row WRITTEN IN THIS CALL with no falsifier (same contract
+    // as facts:assert `recheckMissing`). Scoped to supplied rows so legacy carried rows never nag.
+    const falsifierMissingRows = checksMissingFalsifier(effectiveChecks ?? []);
 
     // R-6(b): a relative `scratchpad/...` reference is unresolvable to the next wake —
     // the session scratchpad is absolute and per-session, so the successor re-derives an
@@ -2321,6 +2326,9 @@ export default defineTool({
                     lines: uncheckedClaims,
                   },
                 }
+              : {}),
+            ...(falsifierMissingRows.length > 0
+              ? { falsifierMissing: { flagged: true, note: FALSIFIER_MISSING_NOTE, rows: falsifierMissingRows } }
               : {}),
             ...(absenceClaims.length > 0
               ? {
