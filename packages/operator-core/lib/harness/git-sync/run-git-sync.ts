@@ -48,6 +48,7 @@ import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { detectQuarantineImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import { armedMigrationFilename } from '../../migration-reservation';
+import { acquireInstallBoundaryLease, type InstallBoundaryLease } from '../../install-boundary-lease';
 import {
   groupFilesForAttribution,
   attributionMapForRepo,
@@ -430,13 +431,58 @@ export interface ToolCatalogRegeneratorContext {
 
 export type ToolCatalogRegenerator = (context: ToolCatalogRegeneratorContext) => Promise<void>;
 
+export type GitSyncInstallBoundaryAcquirer = (repoPath: string) => Promise<InstallBoundaryLease>;
+export type GitSyncInstallBoundaryResult<T> =
+  | { status: 'launched'; value: T }
+  | { status: 'refused'; lease: InstallBoundaryLease };
+
+/**
+ * Keep git-sync children that import from node_modules inside the same
+ * repo-keyed read boundary used by install:safe. If the lease cannot be
+ * acquired, refuse launch instead of racing npm's dependency rewrite.
+ */
+export async function runGitSyncUnderInstallBoundary<T>(
+  repoPath: string,
+  launch: () => Promise<T>,
+  acquire: GitSyncInstallBoundaryAcquirer = acquireInstallBoundaryLease,
+): Promise<GitSyncInstallBoundaryResult<T>> {
+  const lease = await acquire(repoPath);
+  if (lease.outcome !== 'acquired' && lease.outcome !== 'nested') {
+    return { status: 'refused', lease };
+  }
+  try {
+    return { status: 'launched', value: await launch() };
+  } finally {
+    lease.release();
+  }
+}
+
+interface GitSyncGeneratorChildResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function gitSyncInstallBoundaryRefusal(
+  lease: InstallBoundaryLease,
+  generator: string,
+): GitSyncGeneratorChildResult {
+  const detail = lease.detail ? ': ' + lease.detail : '';
+  return {
+    code: -1,
+    stdout: '',
+    stderr: 'git-sync ' + generator + ' refused to start because install:safe boundary was ' + lease.outcome + detail,
+  };
+}
+
 /**
  * Run the catalog writer in a bounded child. The generator cold-imports the full
  * registry, so a peer's half-written tool module can make that import hang or
  * fail; neither condition may wedge the fleet-wide git-sync commit path.
  */
 const defaultRunToolCatalogGenerator: RunToolCatalogGenerator = (repoPath) =>
-  new Promise((resolve) => {
+  runGitSyncUnderInstallBoundary(repoPath, () =>
+    new Promise<ToolCatalogGeneratorResult>((resolve) => {
     const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_TOOL_CATALOG_TIMEOUT_MS', 60_000);
     const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_CATALOG_GENERATOR_PATH], {
       cwd: repoPath,
@@ -472,7 +518,10 @@ const defaultRunToolCatalogGenerator: RunToolCatalogGenerator = (repoPath) =>
       finish(-1);
     });
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
-  });
+    }),
+  ).then((result) => result.status === 'launched'
+    ? result.value
+    : gitSyncInstallBoundaryRefusal(result.lease, 'tool-catalog regeneration'));
 
 /**
  * Regenerate the tracked tool catalog immediately before the superproject
@@ -598,7 +647,8 @@ export type GeneratedDeclarationsRegenerator = (
  * its generated declaration is the exact torn-snapshot class this seam closes.
  */
 const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerator = (repoPath) =>
-  new Promise((resolve) => {
+  runGitSyncUnderInstallBoundary(repoPath, () =>
+    new Promise<GeneratedDeclarationsGeneratorResult>((resolve) => {
     const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_DECLARATIONS_TIMEOUT_MS', 120_000);
     const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [DECLARATIONS_GENERATOR_PATH], {
       cwd: repoPath,
@@ -632,7 +682,10 @@ const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerato
       finish(-1);
     });
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
-  });
+    }),
+  ).then((result) => result.status === 'launched'
+    ? result.value
+    : gitSyncInstallBoundaryRefusal(result.lease, 'declaration regeneration'));
 
 /** A status read is a cheap census, but it can still lose a race with the
  * sidecar/admission layer. Retry that read briefly before deciding whether the
@@ -868,7 +921,8 @@ export type ToolRoutingChecker = (context: ToolRoutingCheckerContext) => Promise
  * must be observable without allowing it to wedge the fleet-wide git-sync pass.
  */
 const defaultRunToolRoutingCheck: RunToolRoutingCheck = (repoPath) =>
-  new Promise((resolve) => {
+  runGitSyncUnderInstallBoundary(repoPath, () =>
+    new Promise<ToolRoutingCheckResult>((resolve) => {
     const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_TOOL_ROUTING_TIMEOUT_MS', 60_000);
     const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_ROUTING_GENERATOR_PATH, '--check'], {
       cwd: repoPath,
@@ -904,7 +958,10 @@ const defaultRunToolRoutingCheck: RunToolRoutingCheck = (repoPath) =>
       finish(-1);
     });
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
-  });
+    }),
+  ).then((result) => result.status === 'launched'
+    ? result.value
+    : gitSyncInstallBoundaryRefusal(result.lease, 'tool-routing check'));
 
 /**
  * Run the generated tool-routing drift check immediately before the

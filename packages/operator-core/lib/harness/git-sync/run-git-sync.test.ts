@@ -66,6 +66,11 @@ import type { FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
+// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
+import { withFsMutex, withFsMutexRead } from '../../../../../scripts/lib/fs-mutex.mjs';
+// @ts-expect-error -- buildless plain-JS module family, no declaration file.
+import { installLockNameForRoot } from '../../../../../scripts/lib/install-lock-name.mjs';
+import { acquireInstallBoundaryLease, type InstallBoundaryLease } from '../../install-boundary-lease';
 
 /** A test content detector that quarantines any matched file whose text contains BROKEN. */
 const brokenDetector: ContentDetector = {
@@ -117,6 +122,85 @@ afterAll(() => {
 });
 
 const REPO_ROOT = resolve(__dirname, '../../../../..');
+
+describe('EI-24827889655898454 git-sync TSX install boundary', () => {
+  it('waits for install:safe before starting a generator and releases the reader lease afterward', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'git-sync-install-boundary-repo-'));
+    const lockRoot = mkdtempSync(join(tmpdir(), 'git-sync-install-boundary-locks-'));
+    const savedLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockRoot;
+
+    let releaseWriter = () => {};
+    let signalWriterHeld = () => {};
+    const writerHeld = new Promise<void>((resolve) => { signalWriterHeld = resolve; });
+    const writerRelease = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    const lockName = installLockNameForRoot(repoRoot);
+    const writer = withFsMutex(lockName, async () => {
+      signalWriterHeld();
+      await writerRelease;
+    }, { retryMs: 1 });
+
+    try {
+      await writerHeld;
+      let signalReaderWaiting = () => {};
+      const readerWaiting = new Promise<void>((resolve) => { signalReaderWaiting = resolve; });
+      const acquire = (root: string) => acquireInstallBoundaryLease(root, {
+        env: {},
+        timeoutMs: 10_000,
+        readLease: (name, fn, options) => withFsMutexRead(name, fn, {
+          ...options,
+          retryMs: 1,
+          onWaiting: () => signalReaderWaiting(),
+        }),
+      });
+      let signalLaunchStarted = () => {};
+      const launchStarted = new Promise<void>((resolve) => { signalLaunchStarted = resolve; });
+      const launch = vi.fn(async () => {
+        signalLaunchStarted();
+        return 'generator finished';
+      });
+      const running = runGitSyncUnderInstallBoundary(repoRoot, launch, acquire);
+      const observed = await Promise.race([
+        readerWaiting.then(() => 'waiting-on-writer'),
+        launchStarted.then(() => 'launch-started'),
+      ]);
+
+      expect(observed).toBe('waiting-on-writer');
+      expect(launch).not.toHaveBeenCalled();
+      releaseWriter();
+      await writer;
+      await expect(running).resolves.toEqual({ status: 'launched', value: 'generator finished' });
+      expect(launch).toHaveBeenCalledOnce();
+
+      let installRan = false;
+      await withFsMutex(lockName, async () => { installRan = true; }, { retryMs: 1 });
+      expect(installRan).toBe(true);
+    } finally {
+      releaseWriter();
+      await writer;
+      if (savedLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = savedLockRoot;
+      rmSync(lockRoot, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses launch when the install boundary times out', async () => {
+    const lease: InstallBoundaryLease = {
+      outcome: 'timed-out',
+      waitedMs: 10_000,
+      lockName: 'npm-install-test',
+      detail: 'install writer remains active',
+      release: vi.fn(),
+    };
+    const launch = vi.fn(async () => 'must not run');
+
+    await expect(runGitSyncUnderInstallBoundary('/unused', launch, async () => lease))
+      .resolves.toEqual({ status: 'refused', lease });
+    expect(launch).not.toHaveBeenCalled();
+    expect(lease.release).not.toHaveBeenCalled();
+  });
+});
 
 describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', () => {
   it('expands a lock without goal attribution to every dirty path in its nearest Cargo package', async () => {
