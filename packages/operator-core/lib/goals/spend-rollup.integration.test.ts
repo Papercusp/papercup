@@ -290,6 +290,15 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
         expect(await goalMetadata()).toBeNull();
       }
 
+      const measured = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });
+      // Calibrate both dangerous wrong policies against the same real ledger.
+      // The historical fail-open policy admits each null figure; an overstrict
+      // policy refuses the observed priced-zero control. The repaired paths
+      // below must give the opposite decisions for these exact fixtures.
+      const failOpenOnNull = measured.spentCents == null || measured.spentCents < 2_000;
+      const refuseEveryBudgetedGoal = false;
+      expect(usage === 'priced-zero' ? refuseEveryBudgetedGoal : failOpenOnNull).toBe(!admitted);
+
       const launch = await resolveGoalLaunchForGoal({
         workspaceId: WS, goalId: GOAL, sql: rootSql, launcherOwnerId: 'su-budget-test',
       });
