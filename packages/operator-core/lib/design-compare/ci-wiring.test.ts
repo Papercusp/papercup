@@ -24,7 +24,7 @@
  * This is a pin, not a test of GitHub Actions. It asserts that the FACTS this
  * plan's decisions rest on are still facts.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -58,7 +58,9 @@ const REPORT_STEP = (s: WorkflowStep): boolean =>
 function browserInstallTargetsPackage(step: WorkflowStep, repoRoot: string, resolvedDir: string): boolean {
   const match = /node\s+(\S*playwright-core)\/cli\.js\s+install/.exec(step.run ?? '');
   if (match === null) return false;
-  return path.resolve(repoRoot, match[1] as string) === resolvedDir;
+  // Committed test trees reuse node_modules through a symlink. Resolve both
+  // paths to the physical package, while keeping nested browser builds distinct.
+  return realpathSync(path.resolve(repoRoot, match[1] as string)) === realpathSync(resolvedDir);
 }
 
 describe('browser installation package identity', () => {
@@ -69,9 +71,9 @@ describe('browser installation package identity', () => {
       const clone = path.join(fixture, 'clone');
       const hoisted = path.join(shared, 'node_modules/playwright-core');
       const nested = path.join(shared, 'node_modules/lost-pixel/node_modules/playwright-core');
-      for (const [directory, version] of [[hoisted, '1.59.1'], [nested, '1.47.2']]) {
-        mkdirSync(directory as string, { recursive: true });
-        writeFileSync(path.join(directory as string, 'package.json'), JSON.stringify({ name: 'playwright-core', version }));
+      for (const [directory, version] of [[hoisted, '1.59.1'], [nested, '1.47.2']] as const) {
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'playwright-core', version }));
       }
       mkdirSync(path.join(clone, 'packages/operator-core'), { recursive: true });
       symlinkSync(path.join(shared, 'node_modules'), path.join(clone, 'node_modules'), 'dir');
