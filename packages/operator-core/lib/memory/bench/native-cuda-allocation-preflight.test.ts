@@ -82,9 +82,14 @@ describe('native allocator INFO logging preload', () => {
   const program = () => {
     const root = mkdtempSync(join(tmpdir(), 'allocator-logging-worker-')); roots.push(root);
     const file = join(root, 'worker.mjs'); writeFileSync(file, 'export {};\n');
-    return `const {Worker}=require('node:worker_threads');
-const worker=new Worker(${JSON.stringify(file)},{workerData:{device:'cuda'},execArgv:['--import',${JSON.stringify(preload)}]});
-worker.on('error',error=>{console.error(error);process.exitCode=1});`;
+    return `(async()=>{
+const imported=await import(${JSON.stringify(preload)});
+const restore=imported.installNativeAllocatorLogging(${JSON.stringify(file)});
+const {Worker}=require('node:worker_threads');
+const worker=new Worker(${JSON.stringify(file)},{workerData:{device:'cuda'},execArgv:[]});
+worker.on('error',error=>{console.error(error);process.exitCode=1});
+worker.on('exit',()=>restore());
+})().catch(error=>{console.error(error);process.exitCode=1});`;
   };
   it('uses the supported logging hook without constructing a model or changing provider options', () => {
     const result = spawnSync(process.execPath, ['-e', program()], {

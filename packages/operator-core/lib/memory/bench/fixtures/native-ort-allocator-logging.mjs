@@ -3,12 +3,34 @@
  * changes diagnostics only; it constructs no session and changes no EP options.
  * The launch receipt must separately bind the configuration and dependency tree.
  */
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { isAbsolute } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { threadId, workerData } from 'node:worker_threads';
-import { readFileSync, statSync, writeSync } from 'node:fs';
+import { readFileSync, statSync, writeSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+
+/** Install after the ordinary FILE-worker boot check. The shipped worker
+ * deliberately clears execArgv; this benchmark process adds only this preload
+ * to its exact named CUDA worker. Restore before leaving the diagnostic. */
+export function installNativeAllocatorLogging(workerScript) {
+  if (!isAbsolute(workerScript)) throw new Error('allocator logging requires the exact worker path');
+  const script = realpathSync(workerScript), preload = fileURLToPath(import.meta.url);
+  const threads = createRequire(import.meta.url)('node:worker_threads');
+  const Original = threads.Worker;
+  class LoggingWorker extends Original {
+    constructor(file, options) {
+      const selected = typeof file === 'string' && realpathSync(file) === script && options?.workerData?.device === 'cuda';
+      if (selected && (!Array.isArray(options.execArgv) || options.execArgv.length !== 0)) {
+        throw new Error('allocator logging requires the shipped empty worker execArgv');
+      }
+      super(file, selected ? { ...options, execArgv: ['--import', preload] } : options);
+    }
+  }
+  threads.Worker = LoggingWorker;
+  syncBuiltinESMExports();
+  return () => { threads.Worker = Original; syncBuiltinESMExports(); };
+}
 
 // Node propagates --import to its loader workers too. Keep the parent and
 // loader threads untouched; only the shipped CUDA embed worker logs arenas.
