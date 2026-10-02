@@ -48,6 +48,20 @@ import type postgres from 'postgres';
 export const SESSION_TURNS_TABLE = 'harness_shared.session_turns';
 export const SESSION_TURN_VOCAB_TABLE = 'harness_shared.session_turn_vocab';
 export const SESSION_TURN_VOCAB_STATE_TABLE = 'harness_shared.session_turn_vocab_state';
+export const SESSION_TURN_WINDOWS_TABLE = 'harness_shared.session_turn_windows';
+export const SESSION_TURN_WINDOWS_STATE_TABLE = 'harness_shared.session_turn_windows_state';
+
+/**
+ * The window cut behind the bounded-latency exact tier (P-011, migration 1334): overlapping
+ * `LEN`-char windows of lower(text) every `STRIDE` chars. Every substring of up to OVERLAP+1 chars
+ * lies wholly inside one window, so a window-level LIKE is recall-complete for such a literal.
+ * Mirrored by migration 1334's session_turn_windows_of() and pinned equal by its integration test.
+ */
+export const SESSION_TURN_WINDOW_LEN = 512;
+export const SESSION_TURN_WINDOW_STRIDE = 448;
+export const SESSION_TURN_WINDOW_OVERLAP = SESSION_TURN_WINDOW_LEN - SESSION_TURN_WINDOW_STRIDE;
+/** Longest literal the windows route can look up whole; a longer one is filtered by this prefix. */
+export const SESSION_TURN_WINDOW_MAX_LITERAL = SESSION_TURN_WINDOW_OVERLAP + 1;
 
 /**
  * The exact-tier expression. The read path's predicate must contain this text byte-for-byte
@@ -59,7 +73,7 @@ export const SESSION_TURN_TRGM_EXPR = 'lower(text)';
 export const SESSION_TURN_VOCAB_MIN_WORD_LEN = 4;
 export const SESSION_TURN_VOCAB_MAX_WORD_LEN = 40;
 
-export type SessionSearchIndexStage = 'corpus' | 'vocab';
+export type SessionSearchIndexStage = 'corpus' | 'windows' | 'vocab';
 
 export interface SessionSearchIndexSpec {
   name: string;
@@ -83,6 +97,14 @@ export const SESSION_SEARCH_INDEXES = [
     table: SESSION_TURNS_TABLE,
     definition: '(ts DESC NULLS LAST)',
     stage: 'corpus',
+  },
+  {
+    // P-011: built only AFTER the windows backfill completes (stage 'windows'), never with the corpus
+    // indexes — a GIN over a half-filled table would be 'valid' yet recall-incomplete.
+    name: 'session_turn_windows_wtext_trgm_idx',
+    table: SESSION_TURN_WINDOWS_TABLE,
+    definition: 'USING gin (wtext gin_trgm_ops)',
+    stage: 'windows',
   },
   {
     name: 'session_turn_vocab_word_trgm_idx',
@@ -112,8 +134,16 @@ export type VocabStatus = 'absent' | 'building' | 'ready' | 'failed';
  */
 export type VocabReadiness = VocabStatus | 'empty';
 
+/** Persisted windows backfill status (`session_turn_windows_state`); `absent` also covers 'table not migrated yet'. */
+export type WindowsReadiness = VocabStatus;
+
 export interface SessionSearchReadiness {
   indexes: Record<SessionSearchIndexName, IndexReadiness>;
+  /**
+   * P-011 windows backfill status. The windows exact route needs this `ready` AND
+   * `indexes.session_turn_windows_wtext_trgm_idx` `ready`; anything less keeps the legacy route.
+   */
+  windows: WindowsReadiness;
   /** workspace_id → vocabulary readiness (a workspace with no state row but transcript rows is `absent`). */
   vocab: Record<string, VocabReadiness>;
 }
@@ -122,6 +152,8 @@ export interface TierAvailability {
   available: boolean;
   /** Present when `available` is false: why the tier must be skipped (for the policy receipt). */
   skipReason?: string;
+  /** Exact tier only, when available: which index route serves it (P-011). */
+  route?: 'windows' | 'legacy';
 }
 
 export interface SessionSearchTierAvailability {
@@ -179,7 +211,21 @@ export async function readSessionSearchReadiness(
       for (const e of empty) vocab[e.workspace_id] = 'empty';
     }
   }
-  return { indexes, vocab };
+  // The state table exists only once migration 1334 has reached this database. It is probed FIRST and read
+  // in a SEPARATE statement: a `CASE WHEN to_regclass(..) IS NULL THEN NULL ELSE (SELECT .. FROM <table>)`
+  // single statement still fails with `relation does not exist` at parse time when the table is missing,
+  // which would make the whole readiness read throw and skip BOTH tiers (D-005 wants degrade, not outage).
+  let windows: WindowsReadiness = 'absent';
+  const [wpresent] = await sql<Array<{ present: boolean }>>`
+    SELECT to_regclass(${SESSION_TURN_WINDOWS_STATE_TABLE}) IS NOT NULL AS present
+  `;
+  if (wpresent?.present) {
+    const [wstate] = await sql<Array<{ status: WindowsReadiness }>>`
+      SELECT status FROM harness_shared.session_turn_windows_state WHERE scope = 'all'
+    `;
+    windows = wstate?.status ?? 'absent';
+  }
+  return { indexes, vocab, windows };
 }
 
 /**
@@ -192,13 +238,19 @@ export function sessionSearchTierAvailability(
   workspaceIds: readonly string[],
 ): SessionSearchTierAvailability {
   const trgm = readiness.indexes.session_turns_text_trgm_idx;
-  const exact: TierAvailability =
-    trgm === 'ready'
-      ? { available: true }
+  const windowsIdx = readiness.indexes.session_turn_windows_wtext_trgm_idx;
+  // P-011: the bounded-latency windows route outranks the legacy whole-turn trigram route whenever it
+  // is fully built (backfill complete + GIN valid); either route alone keeps the exact tier available.
+  const windowsReady = readiness.windows === 'ready' && windowsIdx === 'ready';
+  const exact: TierAvailability = windowsReady
+    ? { available: true, route: 'windows' }
+    : trgm === 'ready'
+      ? { available: true, route: 'legacy' }
       : { available: false, skipReason: `exact-index-${trgm}` };
 
   let fuzzy: TierAvailability;
-  if (!exact.available) {
+  // The fuzzy tier's LIKE ANY variants still ride the legacy whole-turn trigram index.
+  if (trgm !== 'ready') {
     fuzzy = { available: false, skipReason: `exact-index-${trgm}` };
   } else if (readiness.indexes.session_turn_vocab_word_trgm_idx !== 'ready') {
     fuzzy = {
@@ -248,8 +300,10 @@ const DEFAULTS = {
 
 export interface IndexBuildEntry {
   name: string;
-  action: 'built' | 'present' | 'would-build' | 'failed' | 'deferred-budget';
+  action: 'built' | 'present' | 'would-build' | 'failed' | 'deferred-budget' | 'in-flight';
   elapsedMs: number;
+  /** Windows backfill only: turns written to session_turn_windows this pass. */
+  turns?: number;
   error?: string;
 }
 
@@ -426,9 +480,170 @@ export async function runSessionSearchIndexBuildOnce(
   };
 
   await ensureIndexes('corpus');
+  await refreshWindows(sql, o, result, overBudget, () => ensureIndexes('windows'));
   await refreshVocabularies(sql, o, result, overBudget);
   await ensureIndexes('vocab');
   return result;
+}
+
+const WINDOWS_BACKFILL_ENTRY = 'session_turn_windows_backfill';
+const WINDOWS_INDEX_NAME = 'session_turn_windows_wtext_trgm_idx';
+/** Turns per backfill batch: ~2000 x <=8000 chars => ~35k windows, a second or two of INSERT. */
+export const SESSION_TURN_WINDOWS_BACKFILL_BATCH_TURNS = 2000;
+/** A backfill lease (state.heartbeat_at, refreshed every batch) older than this is presumed dead. */
+const WINDOWS_LEASE_STALE_SEC = 600;
+
+interface WindowsKey {
+  workspace_id: string | null;
+  source_kind: string | null;
+  session_id: string | null;
+  turn_idx: number | null;
+}
+
+/**
+ * P-011: fill `session_turn_windows` for every pre-existing turn (keyset batches resumed from the
+ * state cursor; new/updated turns are kept current by the migration's trigger), then build the
+ * wtext trigram GIN CONCURRENTLY and only THEN flip the state to `ready`. Until `ready` the read path
+ * keeps the legacy whole-turn route, so a half-filled table is never consulted (D-005).
+ * Skips silently when migration 1334 has not reached this database.
+ */
+async function refreshWindows(
+  sql: postgres.Sql,
+  o: typeof DEFAULTS & SessionSearchIndexBuildOpts,
+  result: SessionSearchIndexBuildResult,
+  overBudget: () => boolean,
+  ensureWindowsIndex: () => Promise<void>,
+): Promise<void> {
+  const [present] = await sql<Array<{ t: string | null; s: string | null }>>`
+    SELECT to_regclass(${SESSION_TURN_WINDOWS_TABLE})::text AS t,
+           to_regclass(${SESSION_TURN_WINDOWS_STATE_TABLE})::text AS s
+  `;
+  if (!present?.t || !present.s) return;
+
+  if (!o.dryRun) {
+    await sql`INSERT INTO harness_shared.session_turn_windows_state (scope) VALUES ('all') ON CONFLICT (scope) DO NOTHING`;
+  }
+  const [state] = await sql<Array<{ status: WindowsReadiness }>>`
+    SELECT status FROM harness_shared.session_turn_windows_state WHERE scope = 'all'
+  `;
+  let complete = state?.status === 'ready';
+
+  if (!complete) {
+    const started = Date.now();
+    if (o.dryRun) {
+      result.indexes.push({ name: WINDOWS_BACKFILL_ENTRY, action: 'would-build', elapsedMs: 0 });
+      return;
+    }
+    if (overBudget()) {
+      result.truncated = true;
+      result.indexes.push({ name: WINDOWS_BACKFILL_ENTRY, action: 'deferred-budget', elapsedMs: 0 });
+      return;
+    }
+    const claimed = await sql<Array<{ ws: string | null; sk: string | null; sid: string | null; idx: number | null }>>`
+      UPDATE harness_shared.session_turn_windows_state
+         SET status = 'building', heartbeat_at = now(), build_started_at = COALESCE(build_started_at, now()),
+             last_error = NULL, updated_at = now()
+       WHERE scope = 'all' AND status <> 'ready'
+         AND (heartbeat_at IS NULL OR heartbeat_at < now() - make_interval(secs => ${WINDOWS_LEASE_STALE_SEC}::int))
+      RETURNING cursor_workspace_id AS ws, cursor_source_kind AS sk, cursor_session_id AS sid, cursor_turn_idx AS idx
+    `;
+    if (claimed.length === 0) {
+      result.indexes.push({ name: WINDOWS_BACKFILL_ENTRY, action: 'in-flight', elapsedMs: 0 });
+      return;
+    }
+    let cursor: WindowsKey = {
+      workspace_id: claimed[0]!.ws,
+      source_kind: claimed[0]!.sk,
+      session_id: claimed[0]!.sid,
+      turn_idx: claimed[0]!.idx,
+    };
+    let turns = 0;
+    try {
+      for (;;) {
+        if (overBudget()) {
+          result.truncated = true;
+          break;
+        }
+        const [r] = await sql<Array<{ turns: number; last: WindowsKey | null }>>`
+          WITH batch AS MATERIALIZED (
+            SELECT workspace_id, source_kind, session_id, turn_idx, text
+              FROM harness_shared.session_turns
+             WHERE ${cursor.workspace_id}::text IS NULL
+                OR (workspace_id, source_kind, session_id, turn_idx)
+                   > (${cursor.workspace_id}::text, ${cursor.source_kind}::text, ${cursor.session_id}::text, ${cursor.turn_idx}::int)
+             ORDER BY workspace_id, source_kind, session_id, turn_idx
+             LIMIT ${SESSION_TURN_WINDOWS_BACKFILL_BATCH_TURNS}
+          ), ins AS (
+            INSERT INTO harness_shared.session_turn_windows (workspace_id, source_kind, session_id, turn_idx, win_idx, wtext)
+            SELECT b.workspace_id, b.source_kind, b.session_id, b.turn_idx, f.win_idx, f.wtext
+              FROM batch b, LATERAL harness_shared.session_turn_windows_of(b.text) f
+            ON CONFLICT DO NOTHING
+            RETURNING 1
+          )
+          SELECT (SELECT count(*) FROM batch)::int AS turns,
+                 (SELECT row_to_json(l) FROM (
+                    SELECT workspace_id, source_kind, session_id, turn_idx FROM batch
+                     ORDER BY workspace_id DESC, source_kind DESC, session_id DESC, turn_idx DESC LIMIT 1) l) AS last
+        `;
+        if (!r || r.turns === 0 || !r.last) {
+          complete = true;
+          break;
+        }
+        cursor = r.last;
+        turns += r.turns;
+        await sql`
+          UPDATE harness_shared.session_turn_windows_state
+             SET cursor_workspace_id = ${cursor.workspace_id}, cursor_source_kind = ${cursor.source_kind},
+                 cursor_session_id = ${cursor.session_id}, cursor_turn_idx = ${cursor.turn_idx},
+                 turns_done = turns_done + ${r.turns}, heartbeat_at = now(), updated_at = now()
+           WHERE scope = 'all'
+        `;
+      }
+      // Release the lease so the next pass resumes immediately instead of waiting out the stale window.
+      await sql`
+        UPDATE harness_shared.session_turn_windows_state SET heartbeat_at = NULL, updated_at = now()
+         WHERE scope = 'all' AND status = 'building'
+      `;
+      result.indexes.push({
+        name: WINDOWS_BACKFILL_ENTRY,
+        action: complete ? 'built' : 'deferred-budget',
+        elapsedMs: Date.now() - started,
+        turns,
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      await sql`
+        UPDATE harness_shared.session_turn_windows_state
+           SET status = 'failed', last_error = ${message}, heartbeat_at = NULL, updated_at = now()
+         WHERE scope = 'all'
+      `.catch(() => undefined);
+      result.indexes.push({
+        name: WINDOWS_BACKFILL_ENTRY,
+        action: 'failed',
+        elapsedMs: Date.now() - started,
+        turns,
+        error: message,
+      });
+      return;
+    }
+  }
+
+  if (!complete) return; // budget cut the backfill short: no GIN yet, the next pass resumes.
+  await ensureWindowsIndex();
+  if (o.dryRun) return;
+  const [idx] = await sql<Array<{ valid: boolean }>>`
+    SELECT i.indisvalid AS valid FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'harness_shared' AND c.relname = ${WINDOWS_INDEX_NAME}
+  `;
+  if (idx?.valid) {
+    await sql`
+      UPDATE harness_shared.session_turn_windows_state
+         SET status = 'ready', build_finished_at = now(), heartbeat_at = NULL, last_error = NULL, updated_at = now()
+       WHERE scope = 'all' AND status <> 'ready'
+    `;
+  }
 }
 
 /** Build/refresh the vocabulary of every workspace that has transcript rows. */

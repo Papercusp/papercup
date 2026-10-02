@@ -28,6 +28,26 @@ ${decisions}
 `);
 
 describe('staging-first activation guard', () => {
+  it.each(['main-loop', 'main loop', 'main event loop', 'main-event-loop'])(
+    'does not classify the Node runtime %s as a main deployment prerequisite',
+    (runtimePhrase) => {
+      const parsed = plan([
+        '- **P-007** \x60todo\x60 Keep Node ' + runtimePhrase + ' responsiveness below 100ms.',
+        '- **P-009** \x60todo\x60 Implement the dependent source audit using staging. blocked-by: P-007',
+      ]);
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+      expect(
+        stagingFirstBlockerProblem({
+          itemId: 'WI-main-loop',
+          itemText: 'Implement a source audit on staging.',
+          blockerText: 'Wait for the Node ' + runtimePhrase + ' benchmark before continuing source work.',
+          kind: 'gate',
+        }),
+      ).toBeNull();
+    },
+  );
+
   it.each(['deployment ownership', 'deployment configuration', 'deployment topology', 'deployment source'])(
     'allows a source prerequisite that inventories %s',
     (metadata) => {

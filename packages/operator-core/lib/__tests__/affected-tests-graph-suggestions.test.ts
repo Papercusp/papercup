@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   GRAPH_SNAPSHOT_SCHEMA,
+  MAX_VISITED_FILES,
   buildSnapshot,
   extractSpecifiers,
   parseSnapshot,
@@ -128,6 +129,14 @@ describe('graph-dependency-suggestions — pure module', () => {
     expect(res.status).toBe('applied');
     expect(res.suggestedFiles.sort()).toEqual([IMPORTER, MID].sort());
     expect(res.rejected).toEqual([{ importer: 'packages/other/top.ts', imported: MID, reason: 'uncorroborated' }]);
+  });
+
+  it('bounds the traversal frontier including the initial changed-file seeds', () => {
+    const changed = Array.from({ length: MAX_VISITED_FILES + 1 }, (_, i) => `packages/changed/${i}.ts`);
+    const res = suggestFromSnapshot({ changed, snapshot: snapshotOf([]) as never, now: NOW, readSource: () => null });
+    expect(res.status).toBe('applied');
+    expect(res.truncated).toBe(true);
+    expect(res.suggestedFiles).toEqual([]);
   });
 
   it('status is unavailable / stale / invalid — each suggests nothing', () => {

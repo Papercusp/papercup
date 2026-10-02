@@ -27,6 +27,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { TERMINAL_CONTEXT_ENV_KEYS, scrubTerminalContextEnv } from './terminal-spawn';
 
@@ -36,34 +37,81 @@ function source(file: string): string {
   return readFileSync(join(__dirname, file), 'utf8');
 }
 
-/**
- * Matches an object literal that spreads process.env INSIDE a
- * scrubTerminalContextEnv(...) call. `[^}]*` is safe here because none of these
- * literals contain a nested brace — if one ever does, this test fails loudly
- * (the spread reads as unscrubbed) rather than silently passing, which is the
- * correct direction for a guard.
- */
-const SCRUBBED = /scrubTerminalContextEnv\(\{[^}]*\.\.\.process\.env/g;
-const ANY_SPREAD = /\.\.\.process\.env/g;
+type SpawnEnvSite = { line: number; expression: ts.Expression | undefined };
+
+function propertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  return undefined;
+}
+
+function spawnEnvSites(file: string): { sourceFile: ts.SourceFile; sites: SpawnEnvSite[] } {
+  const sourceFile = ts.createSourceFile(file, source(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sites: SpawnEnvSite[] = [];
+
+  function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'spawn') {
+      const options = node.arguments[2];
+      const envProperty = options && ts.isObjectLiteralExpression(options)
+        ? options.properties.find((property): property is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(property) && propertyName(property.name) === 'env',
+          )
+        : undefined;
+      sites.push({
+        line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+        expression: envProperty?.initializer,
+      });
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { sourceFile, sites };
+}
+
+function containsScrubCall(node: ts.Node): boolean {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === 'scrubTerminalContextEnv'
+  ) {
+    return true;
+  }
+  return node.getChildren().some(containsScrubCall);
+}
+
+function isScrubbedEnv(expression: ts.Expression, sourceFile: ts.SourceFile, visited = new Set<string>()): boolean {
+  if (containsScrubCall(expression)) return true;
+  if (!ts.isIdentifier(expression) || visited.has(expression.text)) return false;
+
+  visited.add(expression.text);
+  let initializer: ts.Expression | undefined;
+  function findInitializer(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === expression.text &&
+      node.initializer
+    ) {
+      initializer = node.initializer;
+      return;
+    }
+    ts.forEachChild(node, findInitializer);
+  }
+  findInitializer(sourceFile);
+  return initializer ? isScrubbedEnv(initializer, sourceFile, visited) : false;
+}
 
 describe('spawned-child env scrub (EI-19407722209410974)', () => {
   for (const file of FILES) {
-    it(`${file}: every ...process.env spread is wrapped in scrubTerminalContextEnv`, () => {
-      const src = source(file);
-      const total = src.match(ANY_SPREAD)?.length ?? 0;
-      const scrubbed = src.match(SCRUBBED)?.length ?? 0;
-      expect(
-        scrubbed,
-        `${file} spreads process.env ${total}× but only ${scrubbed}× through ` +
-          `scrubTerminalContextEnv. A spawned terminal must not inherit this ` +
-          `process's terminal identity — see EI-19385011811175105.`,
-      ).toBe(total);
-    });
-
-    it(`${file}: no spawn passes a bare process.env spread as its env`, () => {
-      // The specific shape the bug had, pinned separately so the failure message
-      // names the actual mistake rather than a count mismatch.
-      expect(source(file)).not.toMatch(/env:\s*\{\s*\.\.\.process\.env/);
+    it(`${file}: every child spawn passes an env scrubbed by scrubTerminalContextEnv`, () => {
+      const { sourceFile, sites } = spawnEnvSites(file);
+      expect(sites.length, `${file} should retain at least one audited child spawn`).toBeGreaterThan(0);
+      for (const site of sites) {
+        expect(
+          site.expression && isScrubbedEnv(site.expression, sourceFile),
+          `${file}:${site.line} child spawn must set env through scrubTerminalContextEnv`,
+        ).toBe(true);
+      }
     });
   }
 

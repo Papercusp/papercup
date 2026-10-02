@@ -13,6 +13,7 @@ import {
   sampleMatchesPlanePredicate,
 } from './hosted-public-ingress';
 import { HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS } from './hosted-runtime';
+import { PORTAL_MCP_OAUTH_ROUTES, matchPortalMcpOAuthRoute } from '../connected-apps/portal-mcp-oauth';
 
 const HOST = 'app.papercusp.com';
 const PLANE = 'http://localhost:3880';
@@ -69,6 +70,34 @@ describe('hosted ingress route families', () => {
   it('samples every mounted route key once', () => {
     const sources = hostedIngressSamples().map((sample) => sample.source);
     for (const key of HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS) expect(sources.filter((source) => source === key)).toHaveLength(1);
+  });
+
+  /** OAuth routes the portal router serves that the samples do not hit exactly once, at the route's own method. */
+  function oauthRoutesNotSampledOnce(samples: ReadonlyArray<{ family: string; method: string; path: string }>): string[] {
+    const oauth = samples.filter((sample) => sample.family === 'mcp-oauth');
+    return PORTAL_MCP_OAUTH_ROUTES.filter((route) => {
+      const hits = oauth.filter((sample) => matchPortalMcpOAuthRoute(sample.path)?.route === route);
+      return hits.length !== 1 || hits[0]!.method !== route.sampleMethod;
+    }).map((route) => route.template);
+  }
+
+  it('samples every MCP OAuth route the portal router serves, once each, so a new route is probed too (WI-10005092)', () => {
+    const samples = hostedIngressSamples();
+    expect(oauthRoutesNotSampledOnce(samples)).toEqual([]);
+    expect(samples.filter((sample) => sample.family === 'mcp-oauth')).toHaveLength(PORTAL_MCP_OAUTH_ROUTES.length);
+  });
+
+  it('control: a hand-listed sample set that misses a route is caught', () => {
+    const base = '/api/workspaces/ws-ingress-probe';
+    const handListed = [
+      ['GET', `/.well-known/oauth-protected-resource${base}/mcp`],
+      ['GET', `/.well-known/oauth-authorization-server${base}`],
+      ['POST', `${base}/oauth/register`],
+      ['GET', `${base}/oauth/authorize`],
+      ['GET', `${base}/oauth/consent`],
+      ['POST', `${base}/oauth/token`],
+    ].map(([method, path]) => ({ family: 'mcp-oauth', method: method!, path: path! }));
+    expect(oauthRoutesNotSampledOnce(handListed)).toEqual(['/api/workspaces/:workspaceId/.well-known/oauth-authorization-server']);
   });
 });
 

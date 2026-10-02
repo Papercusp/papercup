@@ -47,7 +47,7 @@
  * agent-tools/release/cut.ts) or move it onto a worker (release/admission-offthread.ts). Do NOT
  * add or raise a BASELINE entry to make a new call pass; that list only ever shrinks.
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,6 +58,12 @@ const WORKSPACE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 
 /** Workspace-relative roots whose code runs on the operator host's main thread. */
 export const SCAN_ROOTS = ['lib/agent-tools', 'lib/release'] as const;
+
+/**
+ * WI-10005268: single main-thread files outside SCAN_ROOTS. Each serves operator handlers
+ * (release:checkpoint-run, dev:pipeline_position, the /admin/git pipeline read).
+ */
+export const SCAN_FILES = ['lib/release-checkpoint-launch.ts', 'lib/git-pipeline-position.ts', 'lib/git-pipeline-stats.ts'] as const;
 
 const SYNC_SPAWN_NAMES: ReadonlySet<string> = new Set(['execFileSync', 'spawnSync', 'execSync']);
 
@@ -162,6 +168,7 @@ function roster(): string[] {
       if (!isOutOfScope(rel)) out.push(rel);
     }
   }
+  out.push(...SCAN_FILES);
   return out.sort();
 }
 
@@ -217,6 +224,10 @@ const BASELINE: ReadonlyMap<string, number> = new Map<string, number>([
   // (one cheap rev-parse), so both stay counted rather than scoped out.
   ['lib/release/judged-sha-containment.ts', 1],
   ['lib/release/repair-head-admission.ts', 1],
+  // WI-10005268 (SCAN_FILES). defaultExecSync is the seam default for every exec-injected
+  // checkpoint probe; main-thread callers reach it only through runCheckpointProbe's record/replay,
+  // pinned by checkpoint-probe-off-loop.test.ts. The green-checkpoint unit still uses it directly.
+  ['lib/release-checkpoint-launch.ts', 1],
 ]);
 
 describe('operator main thread — synchronous child-process calls (WI-10005242 ratchet)', () => {
@@ -287,6 +298,8 @@ describe('operator main thread — synchronous child-process calls (WI-10005242 
     // and every "no new offender" assertion below would pass vacuously.
     expect(counts.size).toBeGreaterThan(0);
     for (const root of SCAN_ROOTS) expect(files.some((f) => f.startsWith(`${root}/`))).toBe(true);
+    // A SCAN_FILES entry that moved would read as a silent 0, not as an error.
+    for (const file of SCAN_FILES) expect(existsSync(path.join(WORKSPACE_ROOT, file)), file).toBe(true);
   });
 
   it('no file gains a synchronous child-process reference on the main thread', () => {

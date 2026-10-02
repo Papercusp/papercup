@@ -79,7 +79,7 @@ export async function recordDecisionModelCall(
         outcome, inconclusive_reason, inconclusive_detail, http_status,
         attempts, latency_ms, input_tokens, output_tokens, cost_usd,
         subject_ids, state_sha256, started_at, surface,
-        loop_busy_ms, loop_utilization
+        loop_busy_ms, loop_utilization, transport_latency_ms
       ) VALUES (
         ${workspaceId}, ${e.consumer}, ${e.provider}, ${e.requestedModel}, ${e.returnedModel},
         ${sql.array([...e.questionIds])}, ${e.questionsSchemaSha256},
@@ -88,7 +88,7 @@ export async function recordDecisionModelCall(
         ${e.outcome}, ${e.inconclusiveReason}, ${e.inconclusiveDetail}, ${e.httpStatus},
         ${e.attempts}, ${e.latencyMs}, ${e.inputTokens}, ${e.outputTokens}, ${e.costUsd},
         ${sql.array([...e.subjectIds])}, ${e.stateSha256}, ${e.startedAt}, ${e.surface},
-        ${e.loopBusyMs}, ${e.loopUtilization}
+        ${e.loopBusyMs}, ${e.loopUtilization}, ${e.transportLatencyMs}
       )
     `;
     state.written += 1;

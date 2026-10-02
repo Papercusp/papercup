@@ -611,6 +611,18 @@
     "notChecked": ["full-8192", "over-limit", "padded native request group", "mixed-length native request group", "full-population rankings", "worker input tensor trace", "compute-kernel profile"]
   },
   "nativeDiagnosticSelectorGuards": { "runGroupId": "d89a6fd0-a556-4e22-85f6-bad2bc010649", "testRunIds": [20430670, 20430673], "passed": 34, "failed": 0, "skipped": 0, "collectionFailed": false, "verification": "Both requested file rows recovered from the original scoped ledger; transport timeout was not a testcase failure or a reason to rerun the suite." },
+  "nativeRequestGroupPreparation": {
+    "workItem": "WI-10004540",
+    "status": "selector and evidence guards verified; actual GPU request-group inference remains pending",
+    "reuse": "Extend the existing native boundary runner and --boundary-cell selector; no new executable or production recipe.",
+    "behavior": "Selecting padded or mixed-length runs the declared prerequisite singles followed by that request group. Retained group vectors are independently compared with both singles and frozen reference vectors; request order, single-text worker execution, finite vectors and device identity are checked. Missing groups remain in notCheckedCells, and a diagnostic never establishes full-population rankings or compatibility.",
+    "source": { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "sha256": "36f9cd0ee5a86457d7b2c9ab1215762802ac086618970bb44633378433744e83" },
+    "test": { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "sha256": "0b06e6b0591b74dc45bfc1924b6d7ab20f22e547c44c581970ff5078eaa57ce1" },
+    "verification": { "runGroupId": "392eb950-60a7-46b0-a7ee-fe7bd9e709d6", "testRunIds": [20476424], "passed": 43, "failed": 0, "skipped": 0, "typecheck": "requested files and direct type users/importers clean; compiler exit 0" },
+    "inferencePerformed": false,
+    "frozenPerformanceAndRelevanceSourcesChanged": false,
+    "gpuAcceptanceComplete": false
+  },
   "notChecked": ["successful GPU single-full-8192 vector parity", "GPU single-over-limit", "GPU mixed-length tensor", "full-population GPU rankings", "native Node GPU batches/over-limit", "native worker input/kernel traces"],
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }

@@ -26,18 +26,12 @@
  * EI-23703586803892464), where the predicate is host-written and unforgeable.
  */
 import type { IdentityGrantFailureCause } from './blueprint-envelopes';
+import type { RefusalActor, RefusalContract, RefusalObservation } from './refusal-contract-types';
 
-/** Who can make a refusal's lift condition true. */
-export type RefusalActor = 'self' | 'host' | 'owner' | 'another-agent';
-
-/** What the gate actually compared. Values are short and secret-free (revision prefixes). */
-export type RefusalObservation = Readonly<Record<string, string | null>>;
-
-export interface RefusalContract {
-  observed: RefusalObservation;
-  liftsWhen: string;
-  whoCanMakeItTrue: readonly RefusalActor[];
-}
+// The shape lives in a dependency-free leaf so light prebundled modules can use it without
+// this file's `blueprint-envelopes` import chain (see refusal-contract-types.ts). Re-exported
+// so every existing importer of these names is unchanged.
+export type { RefusalActor, RefusalContract, RefusalObservation };
 
 /**
  * One entry per refusal cause. The `Record` key type is the exhaustiveness guard: a

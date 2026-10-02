@@ -24,11 +24,27 @@
 //        [--edges-file <json> --index-commit <sha>]     (offline: edges as [{importer,imported}])
 //
 // Exit: 0 written · 2 usage · 3 graph unavailable/inconsistent (nothing written) · 4 write failure.
-import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+import {
+  buildMcpCallParams,
+  buildMcpSessionQuery,
+  buildUnreachableDiagnostic,
+  fetchWithConnectionRecovery,
+  isRecoverableAuthorityDenial,
+  MCP_CALL_CONNECTION_RETRY_WINDOW_MS,
+  parseSse,
+  resolveCandidatePorts,
+  resolveMcpCallOrigin,
+  resolveMcpClientId,
+  resolveMcpRole,
+  resolveMcpWorkspace,
+  toolResultNotOkReason,
+} from "./mcp-call.mjs";
 import { buildSnapshot } from "./lib/graph-dependency-suggestions.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -263,25 +279,59 @@ export function parseArgs(argv) {
   return { opts };
 }
 
-/** Call a papercusp MCP tool through scripts/mcp-call.mjs and return the first text block. */
-function mcpCallText(tool, args, client) {
-  const argvFile = join(ROOT, ".papercusp", "scratch", `gen-graph-snapshot-${process.pid}.json`);
-  mkdirSync(dirname(argvFile), { recursive: true });
-  writeFileSync(argvFile, JSON.stringify(args));
-  try {
-    const cliArgs = [join(HERE, "mcp-call.mjs"), tool, "--json-file", argvFile, "--raw"];
-    if (client) cliArgs.push("--client", client);
-    const res = spawnSync(process.execPath, cliArgs, { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
-    if (res.error) throw res.error;
-    const dataLine = String(res.stdout).split("\n").find((l) => l.startsWith("data: "));
-    if (!dataLine) throw new Error(`mcp-call ${tool} produced no data frame (exit ${res.status}): ${String(res.stderr).slice(0, 160)}`);
-    const frame = JSON.parse(dataLine.slice(6));
-    const text = frame?.result?.content?.find((c) => c?.type === "text")?.text;
-    if (typeof text !== "string") throw new Error(`mcp-call ${tool} returned no text block`);
-    return text;
-  } finally {
-    rmSync(argvFile, { force: true });
+/** Call a Papercusp MCP tool with the shared in-process transport helpers. */
+async function mcpCallText(tool, args, client) {
+  const token = readFileSync(join(homedir(), ".papercusp", "superuser-token"), "utf8").trim();
+  const clientId = resolveMcpClientId({ client });
+  const query = buildMcpSessionQuery({
+    client: clientId,
+    workspace: resolveMcpWorkspace(),
+    role: resolveMcpRole(),
+    origin: resolveMcpCallOrigin(clientId),
+  });
+  const { configuredPort, candidatePorts, pinned } = resolveCandidatePorts({});
+  const init = {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: buildMcpCallParams(tool, args, { outputGroupId: randomUUID() }),
+    }),
+  };
+  const attempts = [];
+
+  for (let index = 0; index < candidatePorts.length; index += 1) {
+    const port = candidatePorts[index];
+    let raw;
+    try {
+      const response = await fetchWithConnectionRecovery(
+        `http://localhost:${port}/api/mcp?${query}`,
+        init,
+        { retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0 },
+      );
+      raw = await response.text();
+    } catch (error) {
+      attempts.push({ port, error });
+      continue;
+    }
+
+    if (!pinned && index < candidatePorts.length - 1 && isRecoverableAuthorityDenial(raw)) continue;
+    const parsed = parseSse(raw, 1);
+    if (parsed.error) throw new Error(`mcp-call ${tool} failed: ${JSON.stringify(parsed.error)}`);
+    const notOk = toolResultNotOkReason(parsed.result);
+    if (notOk !== null) throw new Error(`mcp-call ${tool} answered ok:false: ${notOk}`);
+    if (typeof parsed.result === "string") return parsed.result;
+    if (parsed.result && typeof parsed.result === "object") return JSON.stringify(parsed.result);
+    throw new Error(`mcp-call ${tool} returned no usable result`);
   }
+
+  throw new Error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
 }
 
 function installedBackendVersion() {
@@ -318,7 +368,7 @@ export async function main(argv = process.argv.slice(2)) {
       result = produceSnapshotFromEdges({ edges, index: { lastCommit: opts.indexCommit, indexedAt: null, backend: "edges-file", backendVersion: null }, readSource, now });
     } else {
       const fetchIndex = async () => {
-        const text = mcpCallText("gitnexus.list_repos", { limit: 200 }, opts.client);
+        const text = await mcpCallText("gitnexus.list_repos", { limit: 200 }, opts.client);
         const repos = JSON.parse(text.split("\n\n---\n")[0]).repositories ?? [];
         const repo = repos.find((r) => r.name === opts.repo);
         if (!repo || typeof repo.lastCommit !== "string") throw new GraphReadError("backend-unavailable", `repo ${opts.repo} not in list_repos`);

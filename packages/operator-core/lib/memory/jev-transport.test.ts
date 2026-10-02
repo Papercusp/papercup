@@ -12,7 +12,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { FetchLike } from '@papercusp/decision-model';
+import { createWorkerTransport, type FetchLike } from '@papercusp/decision-model';
 import {
   __resetJevTransportForTest,
   createJevDispatcher,
@@ -21,10 +21,16 @@ import {
   JEV_SERVER_IDLE_OBSERVED_MS,
   jevDispatcher,
   jevFetch,
+  jevWorkerTransport,
 } from './jev-transport';
 
 /** Longer than undici's 4 s default idle timeout, far shorter than ours. */
 const IDLE_GAP_MS = 4_300;
+/**
+ * The worker transport uses Node's http(s) Agent, whose default idle timeout is 5 s,
+ * so its gap must exceed 5 s to prove the configured window is the one in force.
+ */
+const WORKER_IDLE_GAP_MS = 5_500;
 
 interface CountingServer {
   readonly url: string;
@@ -59,7 +65,7 @@ async function startCountingServer(): Promise<CountingServer> {
   };
 }
 
-async function twoCallsWithIdleGap(fetchImpl: FetchLike, url: string): Promise<void> {
+async function twoCallsWithIdleGap(fetchImpl: FetchLike, url: string, gapMs: number = IDLE_GAP_MS): Promise<void> {
   const call = async () => {
     const res = await fetchImpl(url, {
       method: 'POST',
@@ -71,7 +77,7 @@ async function twoCallsWithIdleGap(fetchImpl: FetchLike, url: string): Promise<v
     await res.text();
   };
   await call();
-  await new Promise((r) => setTimeout(r, IDLE_GAP_MS));
+  await new Promise((r) => setTimeout(r, gapMs));
   await call();
 }
 
@@ -114,10 +120,35 @@ describe('jev-transport', () => {
     expect(JEV_KEEPALIVE_IDLE_MS).toBeLessThan(JEV_SERVER_IDLE_OBSERVED_MS);
   });
 
-  it('shares one process-wide dispatcher and routes jevFetch through it', async () => {
+  it(
+    'the worker transport (P-008) keeps its socket across an idle gap longer than Node’s 5 s agent default',
+    async () => {
+      // CONTROL: the same transport with a 3 s idle window must reconnect, or the
+      // subject's single connection would prove nothing about JEV_KEEPALIVE_IDLE_MS.
+      const control = await startCountingServer();
+      const subject = await startCountingServer();
+      servers.push(control, subject);
+      const shortWindow = createWorkerTransport({ keepAliveIdleMs: 3_000 });
+      try {
+        await Promise.all([
+          twoCallsWithIdleGap(shortWindow.fetch, control.url, WORKER_IDLE_GAP_MS),
+          twoCallsWithIdleGap(jevWorkerTransport().fetch, subject.url, WORKER_IDLE_GAP_MS),
+        ]);
+      } finally {
+        await shortWindow.close();
+      }
+      expect(control.connections()).toBe(2);
+      expect(subject.connections()).toBe(1);
+    },
+    20_000,
+  );
+
+  it('shares one process-wide worker transport and keeps one connection across jevFetch calls', async () => {
     const server = await startCountingServer();
     servers.push(server);
     expect(jevDispatcher()).toBe(jevDispatcher());
+    expect(jevWorkerTransport()).toBe(jevWorkerTransport());
+    expect(jevWorkerTransport().mode()).toBe('worker');
     for (let i = 0; i < 3; i++) {
       // Back-to-back dispatch can race the previous socket's release and open a
       // second one; production calls are seconds apart, so space them slightly.

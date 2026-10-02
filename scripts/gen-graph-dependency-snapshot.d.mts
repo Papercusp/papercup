@@ -108,7 +108,7 @@ export function parseArgs(argv: any): {
     };
     error?: undefined;
 };
-export function main(argv?: string[]): Promise<2 | 0 | 4 | 3>;
+export function main(argv?: string[]): Promise<0 | 2 | 3 | 4>;
 export const DEFAULT_SNAPSHOT_REL: ".papercusp/graph-snapshot/dependency-snapshot.json";
 export const DEFAULT_PAGE_SIZE: 50;
 /** Typed failure so the CLI (and tests) can tell WHY a read was refused. */

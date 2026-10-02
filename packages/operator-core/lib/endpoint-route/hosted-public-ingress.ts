@@ -21,9 +21,12 @@
  * public route cannot ship without someone deciding where the tunnel sends it.
  * The app-relay and MCP OAuth samples must be accepted by the predicates the
  * control plane itself routes with (`parseAppRelayPath`, `isPortalMcpOAuthPath`).
+ * The MCP OAuth samples are one per entry of `PORTAL_MCP_OAUTH_ROUTES`, the
+ * table that router matches against, so a new OAuth route is sampled too
+ * (WI-10005092).
  */
 import { parse as parseYaml } from 'yaml';
-import { isPortalMcpOAuthPath } from '../connected-apps/portal-mcp-oauth';
+import { PORTAL_MCP_OAUTH_ROUTES, isPortalMcpOAuthPath, portalMcpOAuthRoutePath } from '../connected-apps/portal-mcp-oauth';
 import type { CloudflaredIngressRule } from '../own-tunnel/config';
 import { parseAppRelayPath } from '../workspace-host/hosted-app-relay';
 import { HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS } from './hosted-runtime';
@@ -178,16 +181,14 @@ export function hostedIngressSamples(workspaceId: string = HOSTED_INGRESS_SAMPLE
     samples.push({ family: relay.id, expect: relay.expect, method, path, source: 'parseAppRelayPath' });
   }
   const oauth = familyById('mcp-oauth');
-  for (const [method, path] of [
-    ['GET', `/.well-known/oauth-protected-resource${workspaceBase}/mcp`],
-    ['GET', `/.well-known/oauth-authorization-server${workspaceBase}`],
-    ['GET', `${workspaceBase}/.well-known/oauth-authorization-server`],
-    ['POST', `${workspaceBase}/oauth/register`],
-    ['GET', `${workspaceBase}/oauth/authorize`],
-    ['GET', `${workspaceBase}/oauth/consent`],
-    ['POST', `${workspaceBase}/oauth/token`],
-  ] as const) {
-    samples.push({ family: oauth.id, expect: oauth.expect, method, path, source: 'isPortalMcpOAuthPath' });
+  for (const route of PORTAL_MCP_OAUTH_ROUTES) {
+    samples.push({
+      family: oauth.id,
+      expect: oauth.expect,
+      method: route.sampleMethod,
+      path: portalMcpOAuthRoutePath(route, workspaceId),
+      source: route.template,
+    });
   }
   return samples;
 }

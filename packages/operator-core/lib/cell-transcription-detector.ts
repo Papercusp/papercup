@@ -158,6 +158,14 @@ const CHECKPOINT_VALUE_PREFIX = /\bcheckpoint\s*$/i;
 const CONTENT_HASH_VALUE_PREFIX = /\bcontent[- ]?hash\s*(?::|=)?\s*$/i;
 
 /**
+ * Memory-store identifiers are often rendered as their leading eight hex digits.
+ * A nearby word like "live" can satisfy the broad pipeline context window, but the
+ * immediate `memory <id>` label identifies an artifact id rather than a Git SHA.
+ */
+const MEMORY_ID_VALUE_PREFIX =
+  /\b(?:memory(?:[-\s]+(?:id|identifier))?|mem0(?:[-\s]+memory)?(?:[-\s]+(?:id|identifier))?)\s*(?:[:=#]\s*)?$/i;
+
+/**
  * Git blob object ids are hex-shaped, but a blob is an object artifact rather than
  * a commit or pipeline position. Keep this exclusion anchored to the value: the
  * reported `InboxPane staging blob <sha>` shape must stay quiet even though
@@ -183,6 +191,11 @@ function maskGeneratedCoordChunkHeaders(text: string): string {
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   return CHECKPOINT_VALUE_PREFIX.test(before) || CONTENT_HASH_VALUE_PREFIX.test(before);
+}
+
+function isExplicitMemoryIdentifier(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return MEMORY_ID_VALUE_PREFIX.test(before);
 }
 
 function isGitBlobHash(haystack: string, valueStart: number): boolean {
@@ -327,6 +340,7 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
       // that HEAD value keeps it classified as a deployment claim.
       if (
         isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
+        isExplicitMemoryIdentifier(haystack, m.index) ||
         (p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
           (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
             isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||

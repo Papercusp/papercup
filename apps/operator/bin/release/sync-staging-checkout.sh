@@ -495,12 +495,20 @@ assert_staging_unit_loopback() {
 # isolated papercusp-staging tree; builds and restarts therefore described
 # different source. Fail before touching either tree when that contract drifts.
 staging_exec_pre_uses_bundle() {
-  local exec_pre="${1:-}" expected_workdir="${2:-}" required_prefix
-  # systemctl show reports the EFFECTIVE executable in path=, which is flock
-  # after the bundle-time checkout lock was added. Pin the complete argv prefix:
-  # the same shared lock and the same isolated bundle script must both survive.
+  local exec_pre="${1:-}" expected_workdir="${2:-}" required_prefix expected_root helper_prefix
+  # systemctl show reports the EFFECTIVE executable in path=. Accept the legacy
+  # direct flock command and the guarded helper wrapper, which falls back to
+  # that same flock while papercusp-staging.current is one generation behind.
+  # Both shapes must use the exact shared lock and isolated bundle script.
   required_prefix="{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock $expected_workdir/bin/bundle-host.sh ; "
-  [[ "$exec_pre" == "$required_prefix"* ]]
+  if [[ "$exec_pre" == "$required_prefix"* ]]; then
+    return 0
+  fi
+
+  [[ "$expected_workdir" == */apps/operator ]] || return 1
+  expected_root="${expected_workdir%/apps/operator}"
+  helper_prefix="{ path=/usr/bin/bash ; argv[]=/usr/bin/bash -c root=\"$expected_root\"; helper=\"\$\$root/apps/operator/scripts/systemd/staging-lock-attribution.sh\"; if [ -f \"\$\$helper\" ]; then exec /usr/bin/bash \"\$\$helper\" api-pre /tmp/papercup-staging-sync.lock \"\$\$root/apps/operator/bin/bundle-host.sh\"; fi; echo \"[95-bundled-entry] \$\$helper is absent from this staging generation; bundling under the shared flock without attribution\" >&2; exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock \"\$\$root/apps/operator/bin/bundle-host.sh\" ; "
+  [[ "$exec_pre" == "$helper_prefix"* ]]
 }
 
 assert_staging_unit_checkout() {

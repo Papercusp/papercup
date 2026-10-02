@@ -16,8 +16,21 @@
  * The idle window is a deliberate number below the server's own idle limit: if we
  * keep a socket the server has already closed, the next POST fails (undici never
  * retries a non-idempotent request), which would turn a slow call into a lost one.
+ *
+ * P-008 (same plan, evidence D-003): the exchange now runs on a worker thread
+ * (`createWorkerTransport` in @papercusp/decision-model), which owns its own
+ * keep-alive agent with the same idle window. An in-thread fetch needs this thread's
+ * event loop to send the request and read the answer, so a busy operator thread
+ * turned fast Jev answers into timeouts: 17 of 21 newer-build timeouts had the
+ * calling thread at event-loop utilization 0.9 or more. The in-thread keep-alive
+ * dispatcher below is kept as the fallback for a worker that keeps dying.
  */
-import type { FetchLike } from '@papercusp/decision-model';
+import {
+  createWorkerTransport,
+  type FetchLike,
+  type WorkerTransport,
+  type WorkerTransportEvent,
+} from '@papercusp/decision-model';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { Agent } from 'undici';
 
@@ -48,29 +61,56 @@ export function createJevDispatcher(options: JevDispatcherOptions = {}): Agent {
 
 const state = pinModuleState('@papercusp/operator-core.jev-transport', () => ({
   dispatcher: null as Agent | null,
+  worker: null as WorkerTransport | null,
 }));
 
-/** The process-wide Jev dispatcher, created on first use. */
+/** The process-wide in-thread Jev dispatcher (the worker transport's fallback), created on first use. */
 export function jevDispatcher(): Agent {
   if (!state.dispatcher) state.dispatcher = createJevDispatcher();
   return state.dispatcher;
 }
 
 /**
- * Build a {@link FetchLike} that sends every request through `dispatcher`.
- * It calls the GLOBAL fetch, resolved per call, so anything that stubs `fetch`
- * (tests, instrumentation) still intercepts; Node's bundled undici fetch accepts an
- * npm-undici v7 Agent as its dispatcher (proved by jev-transport.test.ts).
+ * Build a {@link FetchLike} that sends every request through `dispatcher`, on the
+ * calling thread. It calls the GLOBAL fetch, resolved per call, so anything that
+ * stubs `fetch` still intercepts; Node's bundled undici fetch accepts an npm-undici
+ * v7 Agent as its dispatcher (proved by jev-transport.test.ts).
  */
 export function fetchVia(dispatcher: Agent): FetchLike {
-  return (url, init) => globalThis.fetch(url, { ...init, dispatcher } as RequestInit);
+  // `deadline` is the client's hook for off-thread transports; fetch has no use for it.
+  return (url, { deadline: _deadline, ...init }) => globalThis.fetch(url, { ...init, dispatcher } as RequestInit);
 }
 
-/** The fetch the Jev decision client uses: the shared keep-alive dispatcher. */
-export const jevFetch: FetchLike = (url, init) => fetchVia(jevDispatcher())(url, init);
+function reportTransportEvent(event: WorkerTransportEvent): void {
+  if (event.kind === 'worker-lost') {
+    console.warn(`[jev-transport] transport worker died (${event.failures} so far): ${event.error}`);
+  } else {
+    console.warn(`[jev-transport] ${event.reason}; Jev calls now run on the calling thread (P-008 fallback)`);
+  }
+}
+
+/** The process-wide Jev worker transport, started on first use. */
+export function jevWorkerTransport(): WorkerTransport {
+  if (!state.worker) {
+    state.worker = createWorkerTransport({
+      keepAliveIdleMs: JEV_KEEPALIVE_IDLE_MS,
+      fallback: (url, init) => fetchVia(jevDispatcher())(url, init),
+      onEvent: reportTransportEvent,
+    });
+  }
+  return state.worker;
+}
+
+/**
+ * The fetch the Jev decision client uses: the worker transport. A test that stubs
+ * the global fetch does NOT reach it, because the request is made on the worker.
+ */
+export const jevFetch: FetchLike = (url, init) => jevWorkerTransport().fetch(url, init);
 
 export async function __resetJevTransportForTest(): Promise<void> {
   const d = state.dispatcher;
+  const w = state.worker;
   state.dispatcher = null;
-  if (d) await d.close();
+  state.worker = null;
+  await Promise.all([d?.close(), w?.close()]);
 }

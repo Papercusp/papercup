@@ -166,6 +166,21 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(cellTranscriptionHint(text)).toBeNull();
   });
 
+  it('does not classify a labeled memory ID prefix as a deployed SHA even if it resolves to a commit', () => {
+    const text =
+      'memory 0035cbc4: specAdequacy { classRef, evidenceRefs } must list the live binding evidence_ref strings';
+    const collidingCommit = () => true;
+    expect(detectCellTranscriptions(text, { resolvesToCommit: collidingCommit })).toEqual([]);
+    expect(cellTranscriptionHint(text, { resolvesToCommit: collidingCommit })).toBeNull();
+  });
+
+  it('still detects a deployed commit when memory is not the value label', () => {
+    const text = 'the memory service commit 8badf00d is live on :3070';
+    const hits = detectCellTranscriptions(text, { resolvesToCommit: () => true });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('8badf00d');
+  });
+
   it('does not classify an explicitly labeled Git blob hash as a deployed SHA', () => {
     const text = 'InboxPane staging blob 6183d5ee';
     expect(detectCellTranscriptions(text)).toEqual([]);
@@ -243,6 +258,19 @@ describe('EI-24684014950807803 — a hex token that names no commit is not a sha
     });
     expect(calls).toBe(0);
     expect(hint).not.toBeNull();
+  });
+
+  it('the async hint does not resolve an explicitly labeled memory ID as a commit', async () => {
+    const text =
+      'memory 0035cbc4: specAdequacy { classRef, evidenceRefs } must list the live binding evidence_ref strings';
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      asked.push(token);
+      return true;
+    });
+
+    expect(asked).toEqual([]);
+    expect(hint).toBeNull();
   });
 
   it('does not treat generated coord:send chunk headers as authored commit references', async () => {

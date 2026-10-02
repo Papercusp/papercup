@@ -197,11 +197,21 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
   const acceptedImporters = new Set();
   const accepted = [];
   const rejected = [];
-  const seen = new Set(changed);
-  const queue = [...seen];
+  const seen = new Set();
+  const queue = [];
   let truncated = false;
-  while (queue.length) {
-    const file = queue.shift();
+  for (const file of changed) {
+    if (seen.has(file)) continue;
+    if (seen.size >= MAX_VISITED_FILES) {
+      truncated = true;
+      break;
+    }
+    seen.add(file);
+    queue.push(file);
+  }
+  let queueIndex = 0;
+  while (queueIndex < queue.length) {
+    const file = queue[queueIndex++];
     for (const edge of importedBy.get(file) ?? []) {
       if (acceptedImporters.has(edge.importer)) continue;
       const verdict = verifyEdge(edge, { readSource });

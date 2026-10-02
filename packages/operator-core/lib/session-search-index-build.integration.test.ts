@@ -200,7 +200,8 @@ describe('migration 1273 — replay safety + the index/EXPLAIN probe (SPEC-P002-
 
   it('spec table and migration text agree on every index name and definition (drift pin)', () => {
     const migration = readFileSync(M1273, 'utf8').replace(/\s+/g, ' ');
-    for (const spec of SESSION_SEARCH_INDEXES) {
+    // Stage 'windows' indexes live in migration 1334 (pinned in session-turn-windows.integration.test.ts).
+    for (const spec of SESSION_SEARCH_INDEXES.filter((s) => s.stage !== 'windows')) {
       expect(migration).toContain(spec.name);
       // The migration splits the DDL over string literals; compare the definition body.
       expect(migration.replace(/' \|\| '/g, '')).toContain(spec.definition);
@@ -243,8 +244,9 @@ describe('readSessionSearchReadiness / sessionSearchTierAvailability (the read p
         } as SessionSearchReadiness,
         ['w1', 'default'],
       );
+    // No windows readiness (migration 1334 not applied / backfill incomplete) => the legacy whole-turn route.
     expect(ready({}, { w1: 'ready', default: 'ready' })).toEqual({
-      exact: { available: true },
+      exact: { available: true, route: 'legacy' },
       fuzzy: { available: true },
     });
     expect(ready({ [TRGM]: 'absent' }, { w1: 'ready', default: 'ready' })).toEqual({

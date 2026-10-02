@@ -145,6 +145,7 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       surface: 'turn-start',
       subjectIds: ['mem-1', 'mem-2'],
       hostLoad: { busyMs: 143.6, utilization: 0.79 },
+      transportLatencyMs: 96.4,
     };
     await expect(
       recordDecisionModelCall(record, { pricing: { inputUsdPerMillionTokens: 2, outputUsdPerMillionTokens: 8 } }),
@@ -169,6 +170,7 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       subject_ids: ['mem-1', 'mem-2'],
       state_sha256: stateSha256(request.state),
       loop_busy_ms: 144,
+      transport_latency_ms: 96,
     });
     expect(row!.loop_utilization).toBeCloseTo(0.79, 5);
     expect(row!.answers).toMatchObject({ relevant: { choice: 'relevant', confidence: 0.8 }, urgent: { pYes: 0.2 } });
@@ -244,10 +246,11 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       surface: 'turn-start',
       subjectIds: [],
       hostLoad: null,
+      transportLatencyMs: null,
     };
     await expect(recordDecisionModelCall(record)).resolves.toBe(true);
     const [row] = await rows(1);
-    expect(row).toMatchObject({ loop_busy_ms: null, loop_utilization: null });
+    expect(row).toMatchObject({ loop_busy_ms: null, loop_utilization: null, transport_latency_ms: null });
     await expect(
       rootSql`UPDATE harness_shared.decision_model_calls SET loop_utilization = 1.5 WHERE id = ${row!.id as number}`,
     ).rejects.toThrow(/decision_model_calls_loop_busy_range/);

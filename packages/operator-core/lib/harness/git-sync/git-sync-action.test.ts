@@ -122,7 +122,7 @@ const releaseAllResourcesForOwnerMock = vi.fn(
   }),
 );
 const heldResourcesByOwner = new Map<string, string[]>();
-const releaseTrace: string[] = [];
+const releaseTrace: Array<{ owner: string; resource: string }> = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
   holders: [] as Array<Record<string, unknown>>,
   draining: false,
@@ -147,7 +147,7 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
   },
   tryReleaseResource: async (...a: unknown[]) => {
     const opts = a[1] as { owner: string; resource?: string };
-    if (opts.resource) releaseTrace.push(opts.resource);
+    if (opts.resource) releaseTrace.push({ owner: opts.owner, resource: opts.resource });
     const result = await tryReleaseResourceMock(a[0], opts);
     if (opts.resource) {
       const held = heldResourcesByOwner.get(opts.owner) ?? [];
@@ -164,7 +164,7 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
     const result = await releaseAllResourcesForOwnerMock(a[0], a[1] as string, owner);
     // A failed bulk transaction leaves every row intact; only trace the reverse
     // release order after the mocked transaction commits successfully.
-    releaseTrace.push(...[...held].reverse());
+    releaseTrace.push(...[...held].reverse().map((resource) => ({ owner, resource })));
     heldResourcesByOwner.delete(owner);
     return result;
   },
@@ -730,13 +730,39 @@ const escalationUpserts = (): Array<{ text: string; params: unknown[]; body: Rec
 const escalationClears = (): string[][] =>
   unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL')).map((c) => c.params[3] as string[]);
 
-const releasedResources = (): string[] => releaseTrace;
+// The primary lock-set assertions below describe local sync. Completion settlement
+// has its own fresh owner and a single shared restart-barrier lease, covered directly
+// by its regression test; omit that secondary lease from these older lock-set helpers.
+const primaryLockOwners = (): Set<string> => {
+  const calls = tryAcquireResourceMock.mock.calls.map(([, options]) =>
+    options as { owner: string; resource: string },
+  );
+  const ownersWithPrimaryResources = new Set(calls.filter(({ resource }) => resource !== 'git-sync').map(({ owner }) => owner));
+  return ownersWithPrimaryResources.size > 0
+    ? ownersWithPrimaryResources
+    : new Set(calls.map(({ owner }) => owner));
+};
 
-const acquiredResources = (): string[] =>
-  tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { resource: string }).resource);
+const releasedResources = (): string[] => {
+  const owners = primaryLockOwners();
+  return releaseTrace.filter(({ owner }) => owners.has(owner)).map(({ resource }) => resource);
+};
 
-const acquiredLockModes = (): string[] =>
-  tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { mode: string }).mode);
+const acquiredResources = (): string[] => {
+  const owners = primaryLockOwners();
+  return tryAcquireResourceMock.mock.calls
+    .map(([, options]) => options as { owner: string; resource: string })
+    .filter(({ owner }) => owners.has(owner))
+    .map(({ resource }) => resource);
+};
+
+const acquiredLockModes = (): string[] => {
+  const owners = primaryLockOwners();
+  return tryAcquireResourceMock.mock.calls
+    .map(([, options]) => options as { owner: string; mode: string })
+    .filter(({ owner }) => owners.has(owner))
+    .map(({ mode }) => mode);
+};
 
 /** Resource names auto-registered via the in-txn agent_resource_registry INSERT (P-006).
  *  Matched on INSERT specifically: the same txn also UPDATEs that table to declare the
@@ -749,9 +775,11 @@ const registeredResources = (): string[] =>
  *  domain (WI-562584) — the declaration an agent's `resourceLockDomain()` reads back so
  *  it acquires in the SAME domain this action holds the resource in. */
 const workspaceDomainStampedResources = (): string[] =>
-  txQueries
-    .filter((q) => /UPDATE\s+agent_resource_registry/i.test(q.text) && q.text.includes('coordination_domain_kind'))
-    .map((q) => q.values[0] as string);
+  [...new Set(
+    txQueries
+      .filter((q) => /UPDATE\s+agent_resource_registry/i.test(q.text) && q.text.includes('coordination_domain_kind'))
+      .map((q) => q.values[0] as string),
+  )];
 
 /** papercup's MIGRATED trigger_config (db mig 237): the legacy back-off names ride
  *  extra_lock_resources, so peers acquiring exclusive(git-sync) still back it off. */
@@ -1126,6 +1154,50 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         },
       }),
     );
+  });
+
+  it('reacquires the shared restart barrier while completion settlement is running', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let sharedBarrierOwnersDuringSettlement: string[] = [];
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async () => {
+      sharedBarrierOwnersDuringSettlement = [...heldResourcesByOwner.entries()]
+        .filter(([, resources]) => resources.includes('git-sync'))
+        .map(([owner]) => owner);
+      return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+    });
+
+    await action(ctx);
+
+    const sharedBarrierAcquires = tryAcquireResourceMock.mock.calls
+      .map(([, opts]) => opts as { resource: string; mode: string; owner: string })
+      .filter(({ resource, mode }) => resource === 'git-sync' && mode === 'shared');
+    expect(sharedBarrierAcquires).toHaveLength(2);
+    expect(sharedBarrierOwnersDuringSettlement).toEqual([sharedBarrierAcquires[1]?.owner]);
+    expect(sharedBarrierAcquires[1]?.owner).not.toBe(sharedBarrierAcquires[0]?.owner);
+    expect([...heldResourcesByOwner.values()].flat()).not.toContain('git-sync');
+  });
+
+  it('skips completion settlement when a restart is already queued on the shared barrier', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    let sharedBarrierAttempts = 0;
+    tryAcquireResourceMock.mockImplementation(async (_tx, rawOptions) => {
+      const options = rawOptions as { resource: string; mode: string };
+      if (options.resource === 'git-sync' && options.mode === 'shared' && ++sharedBarrierAttempts === 2) {
+        return { ok: false, reason: 'exclusive_pending', holders: [] };
+      }
+      return { ok: true };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(sharedBarrierAttempts).toBe(2);
+      expect(reconcileProposedCompletionsAtCommitMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('completion settlement skipped'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('EI-24496143892913296: the first post-leg after settlement restamps the activity marker and drops the stale N/total', async () => {
@@ -2097,7 +2169,13 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       sequence.push('release-lock-set');
       releaseAttempts += 1;
       if (releaseAttempts === 1) throw contention;
-      return { released: 3, exclusiveResources: ['git-sync:papercup'], waiters: {} };
+      const owner = (releaseAllResourcesForOwnerMock.mock.calls.at(-1)?.[2] as string | undefined) ?? '';
+      const held = heldResourcesByOwner.get(owner) ?? [];
+      return {
+        released: held.length,
+        exclusiveResources: held.includes('git-sync:papercup') ? ['git-sync:papercup'] : [],
+        waiters: {},
+      };
     });
     emitResourceReleasedEventMock.mockImplementation((resource) => {
       sequence.push(`resource-released:${resource}`);
@@ -2113,9 +2191,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       'release-lock-set',
       'resource-released:git-sync:papercup',
       'committed-event',
+      'release-lock-set',
     ]);
     expect(emitResourceReleasedEventMock).toHaveBeenCalledExactlyOnceWith('git-sync:papercup', 'ws-42');
-    expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(2);
+    expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(3);
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
   });
 
@@ -2557,8 +2636,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       finishRun();
       await running;
       expect(releasedResources()).toEqual([...initialResources].reverse());
-      // Cleanup is likewise one owner-scoped bulk transaction.
-      expect(workspaceTxnCalls).toHaveLength(5);
+      // Primary cleanup plus the settlement barrier's acquire/release transactions.
+      expect(workspaceTxnCalls).toHaveLength(7);
 
       const callsAfterRelease = tryAcquireResourceMock.mock.calls.length;
       expect(heartbeatTimer!.stopped).toBe(true);

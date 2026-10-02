@@ -21,6 +21,7 @@ import {
   type AwsSdkClientSet,
 } from './aws-sdk-client';
 import { createAwsWorkspaceHostProvider } from './aws-provider';
+import { AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC, renderAwsHostBootstrapPush } from './aws-host-bootstrap-push';
 import { planAwsSdkCredentialProvider, preflightAwsWorkspaceHostConnection } from './aws-connection';
 
 // The credential-provider factories reach the network and the operator's ~/.aws, so they are
@@ -82,8 +83,11 @@ function desired(): WorkspaceHostDesiredSpec {
   };
 }
 
+/** Provision and repair need the controller-rendered bootstrap (D-013). */
+const HOST_BOOTSTRAP = '#!/usr/bin/env bash\necho papercusp-bootstrap\n';
+
 function ctx(): WorkspaceHostProviderContext {
-  return { workspaceId: 'ws-1', requestId: 'req-1', connection: connection() };
+  return { workspaceId: 'ws-1', requestId: 'req-1', hostBootstrapScript: HOST_BOOTSTRAP, connection: connection() };
 }
 
 interface Sent {
@@ -104,6 +108,10 @@ class FakeAws {
   account = ACCOUNT;
   instanceState: string = 'running';
   ssmDenied = false;
+  /** SSM agent PingStatus for every instance (D-013 waits for Online before pushing). */
+  ssmPingStatus = 'Online';
+  /** What GetCommandInvocation reports for every pushed command. */
+  commandInvocation: Record<string, unknown> = { Status: 'Success', ResponseCode: 0 };
   readonly overrides = new Map<string, (input: any) => unknown>();
   private seq = 0;
   readonly volumes = new Map<string, { id: string; state: string; token?: string; tags: { Key: string; Value: string }[]; attachedTo?: string }>();
@@ -148,7 +156,8 @@ class FakeAws {
       case 'ec2:CreateVolumeCommand': {
         const existing = [...this.volumes.values()].find((v) => v.token === input.ClientToken);
         if (existing) return { VolumeId: existing.id };
-        const id = this.next('vol');
+        // Real EBS ids are vol- plus 17 hex digits; the bootstrap push derives the NVMe device from it.
+        const id = `vol-${String(++this.seq).padStart(17, '0')}`;
         this.volumes.set(id, { id, state: 'available', token: input.ClientToken, tags: input.TagSpecifications[0].Tags });
         return { VolumeId: id };
       }
@@ -208,7 +217,11 @@ class FakeAws {
         };
       case 'ssm:DescribeInstanceInformationCommand':
         if (this.ssmDenied) throw awsError('AccessDeniedException', 'not authorized', { $metadata: { httpStatusCode: 400 } });
-        return { InstanceInformationList: [{ InstanceId: input.Filters[0].Values[0], PingStatus: 'Online' }] };
+        return { InstanceInformationList: [{ InstanceId: input.Filters[0].Values[0], PingStatus: this.ssmPingStatus }] };
+      case 'ssm:SendCommandCommand':
+        return { Command: { CommandId: this.next('command') } };
+      case 'ssm:GetCommandInvocationCommand':
+        return { CommandId: input.CommandId, InstanceId: input.InstanceId, ...this.commandInvocation };
       case 'ec2:StartInstancesCommand':
         this.instanceState = 'running';
         return {};
@@ -867,6 +880,73 @@ describe('waits and enrichment honour their contracts', () => {
     const observed = await client.describeInstance('i-1');
     expect(observed).toBeDefined();
     expect(observed).not.toHaveProperty('ssmOnline');
+  });
+});
+
+describe('host bootstrap push through the SDK-backed client (aws-byoc-gcp-parity D-013)', () => {
+  it('a provision pushes the bootstrap to the launched instance with AWS-RunShellScript, once SSM is Online and the volume is attached', async () => {
+    const { aws, provider } = setup();
+    const resources = await provision(provider);
+    const instanceId = resources.find((r) => r.kind === 'vm')!.providerId;
+    const volumeId = resources.find((r) => r.kind === 'disk')!.providerId;
+
+    const sends = aws.commands('SendCommandCommand');
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.region).toBe(REGION);
+    expect(sends[0]!.input).toEqual({
+      InstanceIds: [instanceId],
+      DocumentName: 'AWS-RunShellScript',
+      Comment: 'Papercusp host bootstrap host-aws-sdk-1',
+      Parameters: {
+        commands: [...renderAwsHostBootstrapPush({ volumeId, hostBootstrapScript: HOST_BOOTSTRAP }).commands],
+        executionTimeout: [String(AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC)],
+      },
+    });
+
+    const sendAt = aws.sent.findIndex((s) => s.command === 'SendCommandCommand');
+    const before = aws.sent.slice(0, sendAt);
+    expect(before.some((s) => s.command === 'AttachVolumeCommand')).toBe(true);
+    expect(
+      before.some(
+        (s) => s.command === 'DescribeInstanceInformationCommand' && s.input.Filters?.[0]?.Values?.[0] === instanceId,
+      ),
+    ).toBe(true);
+    const invocations = aws.commands('GetCommandInvocationCommand');
+    expect(invocations.length).toBeGreaterThan(0);
+    expect(invocations.at(-1)!.input).toEqual({ CommandId: expect.stringMatching(/^command-/), InstanceId: instanceId });
+  });
+
+  it('a Failed invocation surfaces status, exit code and stderr, and fails the provision', async () => {
+    const { aws, client, provider } = setup();
+    aws.commandInvocation = { Status: 'Failed', ResponseCode: 2, StandardErrorContent: 'sha256sum: WARNING: 1 computed checksum did NOT match' };
+    await expect(client.waitForCommandInvocation('command-x', 'i-1')).resolves.toEqual({
+      status: 'Failed',
+      responseCode: 2,
+      stderr: 'sha256sum: WARNING: 1 computed checksum did NOT match',
+    });
+    await expect(provision(provider)).rejects.toThrow(
+      'aws_workspace_host_bootstrap_push_failed: Failed exit=2: sha256sum: WARNING: 1 computed checksum did NOT match',
+    );
+  });
+
+  it('waitForSsmOnline polls within its budget and reports false when the agent never comes Online', async () => {
+    const { aws, client } = setup();
+    aws.ssmPingStatus = 'ConnectionLost';
+    await expect(client.waitForSsmOnline('i-1')).resolves.toBe(false);
+    expect(aws.commands('DescribeInstanceInformationCommand').length).toBeGreaterThan(1);
+    aws.ssmPingStatus = 'Online';
+    await expect(client.waitForSsmOnline('i-1')).resolves.toBe(true);
+  });
+
+  it('sendShellCommand clips the comment to the 100-character SSM limit and refuses a foreign account before sending', async () => {
+    const { aws, client } = setup();
+    const input = { instanceId: 'i-1', commands: ['true'], comment: 'x'.repeat(140), executionTimeoutSec: 60 };
+    await client.sendShellCommand(input);
+    expect(aws.commands('SendCommandCommand')[0]!.input.Comment).toHaveLength(100);
+
+    aws.account = '999999999999';
+    await expect(client.sendShellCommand(input)).rejects.toThrow();
+    expect(aws.commands('SendCommandCommand')).toHaveLength(1);
   });
 });
 

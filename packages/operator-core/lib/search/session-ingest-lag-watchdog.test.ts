@@ -13,13 +13,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   evaluateIngestLag,
-  evaluateInteractiveUsageFreshness,
   sessionIngestLagSweep,
   remainderIsConsumableWork,
   INGEST_LAG_MIN_BACKLOG_BYTES,
   type AdapterLagObservation,
   type IngestLagSweepDeps,
 } from './session-ingest-lag-watchdog';
+import { evaluateInteractiveUsageFreshness } from '../interactive-usage/freshness';
 
 const HOUR = 3_600_000;
 const obs = (over: Partial<AdapterLagObservation> = {}): AdapterLagObservation => ({
@@ -143,7 +143,10 @@ describe('sessionIngestLagSweep', () => {
   it('records a fire and opens ONE escalation for a wedged adapter', async () => {
     const d = deps([obs({ behindFiles: 2, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR })]);
     const res = await sessionIngestLagSweep({}, d);
-    expect(res).toEqual([expect.objectContaining({ sourceKind: 'codex', outcome: 'alerted' })]);
+    expect(res).toEqual([
+      expect.objectContaining({ sourceKind: 'codex', outcome: 'alerted' }),
+      expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'healthy' }),
+    ]);
     expect(d.recordFire).toHaveBeenCalledTimes(1);
     expect(d.openEscalation).toHaveBeenCalledTimes(1);
   });

@@ -248,6 +248,14 @@ describe('resource governor enforcement lint', () => {
     expect(declaration).toContain('sites: readonly');
   });
 
+  it('keeps graph-snapshot MCP calls in process and the bounded traversal disposition path-specific', () => {
+    const generator = readFileSync(ROOT + 'scripts/gen-graph-dependency-snapshot.mjs', 'utf8');
+    expect(inspectGovernorSource(generator)).not.toContain('resource-start-outside-admission');
+    const key = 'scripts/lib/graph-dependency-suggestions.mjs::unbounded-resident-queue';
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('semantic');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('MAX_VISITED_FILES');
+  });
+
   it('can audit a pending migration and applies only centrally registered dispositions', () => {
     const files: Array<[string, string]> = [
       [

@@ -1637,8 +1637,12 @@ export async function gitPipelineSnapshot(
         });
       }
       if (resolvedActiveRunRoot) {
-        const probe = opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
-        activeRun = mapActiveRun(probe(resolvedActiveRunRoot));
+        // WI-10005268: the real probe runs off the event loop (checkActiveCheckpointRunAsync).
+        activeRun = mapActiveRun(
+          opts.probeActiveRun
+            ? opts.probeActiveRun(resolvedActiveRunRoot)
+            : await (await import('./release-checkpoint-launch')).checkActiveCheckpointRunAsync(resolvedActiveRunRoot),
+        );
         const authorityProbe =
           opts.probeProcessAuthority ??
           (opts.probeActiveRun

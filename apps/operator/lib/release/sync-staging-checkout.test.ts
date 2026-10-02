@@ -293,7 +293,7 @@ describe('sync-staging-checkout.sh migration restart preflight (EI-2418043703889
 describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599)', () => {
   it('checks review dates before checkout equality can take the no-op path', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const lockIdx = script.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
+    const lockIdx = script.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
     const warningCallIdx = script.indexOf('\nforward_compat_review_warnings\n');
     const targetIdx = script.indexOf('target="$(git -C');
     expect(lockIdx).toBeGreaterThan(-1);
@@ -524,9 +524,14 @@ describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347
 
 describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
   const effective = '{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock /isolated/apps/operator/bin/bundle-host.sh ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
+  const guarded = '{ path=/usr/bin/bash ; argv[]=/usr/bin/bash -c root="/isolated"; helper="$$root/apps/operator/scripts/systemd/staging-lock-attribution.sh"; if [ -f "$$helper" ]; then exec /usr/bin/bash "$$helper" api-pre /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"; fi; echo "[95-bundled-entry] $$helper is absent from this staging generation; bundling under the shared flock without attribution" >&2; exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh" ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
 
   it('accepts the loaded shared-flock ExecStartPre from the isolated checkout', () => {
     expect(execPreUsesBundle(effective)).toBe(true);
+  });
+
+  it('accepts the guarded attribution helper and its one-generation fallback', () => {
+    expect(execPreUsesBundle(guarded)).toBe(true);
   });
 
   it('rejects the wrong checkout, wrong lock, exclusive lock, and direct bundle execution', () => {
@@ -536,6 +541,16 @@ describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
     expect(execPreUsesBundle(effective.replace(
       'path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock ',
       'path=/isolated/apps/operator/bin/bundle-host.sh ; argv[]=',
+    ))).toBe(false);
+  });
+
+  it('rejects guarded wrappers that change the checkout or weaken either lock path', () => {
+    expect(execPreUsesBundle(guarded.replace('root="/isolated"', 'root="/canonical"'))).toBe(false);
+    expect(execPreUsesBundle(guarded.replaceAll('papercup-staging-sync.lock', 'other.lock'))).toBe(false);
+    expect(execPreUsesBundle(guarded.replace('flock -s', 'flock -x'))).toBe(false);
+    expect(execPreUsesBundle(guarded.replace(
+      'exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock',
+      'exec /usr/bin/true',
     ))).toBe(false);
   });
 });
@@ -653,7 +668,8 @@ describe('sync-staging-checkout.sh staging unit generation contract (WI-10003262
     expect(checkout).toContain('WorkingDirectory=%h/papercupai-workspace/papercusp-staging.current/apps/operator');
     expect(checkout).toContain('Environment=PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp-staging.current');
     expect(checkout).toContain('Environment=PAPERCUSP_SPA_DIST=%h/papercupai-workspace/papercusp-staging.current/apps/operator-vite/dist');
-    expect(bundle).toContain('%h/papercupai-workspace/papercusp-staging.current/apps/operator/bin/bundle-host.sh');
+    expect(bundle).toContain('root="%h/papercupai-workspace/papercusp-staging.current"');
+    expect(bundle).toContain('"$$root/apps/operator/bin/bundle-host.sh"');
     expect(bundle).toContain('PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"');
   });
 });
@@ -1073,9 +1089,11 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     const downgrade = script.lastIndexOf('flock -s 9');
     const restart = script.indexOf('"$PTOOL_BIN" dev:restart --url=');
     const assignment = script.lastIndexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
+    const downgradeEnd = script.indexOf('\n# The ptool result may be lost', downgrade);
     expect(downgrade).toBeGreaterThan(assignment);
     expect(restart).toBeGreaterThan(downgrade);
-    expect(script.slice(downgrade, downgrade + 200)).toContain('could not downgrade');
+    expect(downgradeEnd).toBeGreaterThan(downgrade);
+    expect(script.slice(downgrade, downgradeEnd)).toContain('could not downgrade');
   });
 
   it('accepts a lost self-restart receipt only after a new MainPID serves the exact target SHA', () => {

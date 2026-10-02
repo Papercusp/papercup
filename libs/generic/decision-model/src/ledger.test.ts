@@ -55,6 +55,7 @@ function record(outcome: DecisionOutcome, over: Partial<DecisionCallRecord> = {}
     surface: null,
     subjectIds: ['mem-1', 'mem-2'],
     hostLoad: { busyMs: 37.4, utilization: 0.18 },
+    transportLatencyMs: 21.6,
     ...over,
   };
 }
@@ -177,6 +178,10 @@ describe('toDecisionLedgerEntry', () => {
 
   it('records the host load as rounded busy ms and utilization (P-001: attribute a timeout to host or provider)', () => {
     expect(toDecisionLedgerEntry(record(answered))).toMatchObject({ loopBusyMs: 37, loopUtilization: 0.18 });
+    // The worker-measured provider time rides along, rounded; an impossible value is not measured.
+    expect(toDecisionLedgerEntry(record(answered)).transportLatencyMs).toBe(22);
+    expect(toDecisionLedgerEntry(record(answered, { transportLatencyMs: -3 })).transportLatencyMs).toBeNull();
+    expect(toDecisionLedgerEntry(record(answered, { transportLatencyMs: null })).transportLatencyMs).toBeNull();
   });
 
   it('host load not measured is NULL, never a fake zero', () => {

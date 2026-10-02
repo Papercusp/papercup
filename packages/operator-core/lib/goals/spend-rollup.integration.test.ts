@@ -508,6 +508,7 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
 
   it('a goal with no attributed samples snapshots null instead of fabricating a measured zero', async () => {
     await seedGoal();
+    await sample({ usd: 0, ts: Date.now(), ingestedAt: Date.now() }); // fresh workspace watermark, no goal attribution
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res.written).toBe(1);
     const md = await goalMetadata();
@@ -525,6 +526,7 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
   it('an attached but unused pot is still unmeasured', async () => {
     await seedGoal();
     await pot('hive-a');
+    await sample({ usd: 0, ts: Date.now(), ingestedAt: Date.now() }); // fresh workspace watermark, no goal attribution
 
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res.written).toBe(1);

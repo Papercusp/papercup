@@ -150,7 +150,7 @@ export function resolveContextTier({ contextTier, env }?: {
  *   'inline' — a normal `--json '<...>'` / `--args '<...>'` value.
  *   null     — no JSON source given; caller should prompt interactively.
  */
-export function jsonSourceKind(args: any): "file" | "inline" | "stdin" | null;
+export function jsonSourceKind(args: any): "file" | "stdin" | "inline" | null;
 /**
  * Escape literal JSON control characters that occur inside quoted strings.
  * JSON requires those characters to be represented as escapes, but a heredoc
@@ -177,7 +177,7 @@ export function formatJsonInputError(jsonKind: any, error: any): string;
  *   'inline' — a normal `--script '<source>'` value.
  *   null     — no direct script source was given.
  */
-export function scriptSourceKind(args: any): "file" | "inline" | "stdin" | null;
+export function scriptSourceKind(args: any): "file" | "stdin" | "inline" | null;
 /**
  * Decide whether the human-readable invocation line belongs on stderr.
  * Scripted JSON mode must leave stdout/stderr suitable for machine capture;

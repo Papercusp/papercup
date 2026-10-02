@@ -3756,7 +3756,29 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // selecting manifests so a Portal commit can settle Papercusp-owned rows.
       const repositoryRoot = repoPath ? await realpath(repoPath).catch(() => resolve(repoPath)) : null;
       if (!repositoryRoot) return undefined;
-      {
+      // The local-sync lock set is released before post-legs so network work does not
+      // hold a restart drain open. Completion settlement is a separate bounded DB pass;
+      // reacquire only the shared restart barrier around it so dev:restart cannot kill
+      // bg-host halfway through a close. The fresh owner gives this lease an independent
+      // lifetime from the already-cleaned-up local-sync owner.
+      const settlementLockOwner = newGitSyncLockOwner();
+      const settlementResources: GitSyncLockRequest[] = [
+        { resource: GIT_SYNC_RESTART_BARRIER_RESOURCE, mode: 'shared' },
+      ];
+      const settlementAcquired: GitSyncLockRequest[] = [];
+      const settlementLock = await acquireLocks(cd, slug, settlementResources, settlementAcquired, settlementLockOwner);
+      if (settlementLock.state !== 'acquired') {
+        const reason =
+          settlementLock.blockedReason ??
+          (settlementLock.state === 'contended' ? 'lock_contended' : 'lock_infra_unavailable');
+        console.warn(
+          `[git-sync] ${slug}: completion settlement skipped because the shared restart barrier was unavailable (${reason}); ` +
+            'remaining candidates will be retried on a later fire',
+        );
+        return undefined;
+      }
+      const stopSettlementLockHeartbeat = startLockHeartbeat(cd, slug, settlementAcquired, settlementLockOwner);
+      try {
         let lastSettlementProgressAt = 0;
         let settlementProgressWrite = Promise.resolve();
         let settlementTimeout: GitSyncActionTimeoutError | undefined;
@@ -3854,6 +3876,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           await settlementProgressWrite.catch(() => {});
         }
         return settlementTimeout;
+      } finally {
+        await stopSettlementLockHeartbeat();
+        await releaseAll(cd, settlementLockOwner, settlementAcquired);
       }
     };
 

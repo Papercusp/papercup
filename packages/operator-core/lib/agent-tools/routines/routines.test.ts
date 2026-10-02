@@ -65,7 +65,8 @@ vi.mock('../../coord/gate-ownership', async (orig) => ({
   })),
 }));
 vi.mock('../../release-checkpoint-launch', () => ({
-  checkActiveCheckpointRun: vi.fn(() => ({
+  // WI-10005268: routines:set probes through the off-loop async form.
+  checkActiveCheckpointRunAsync: vi.fn(async () => ({
     active: false,
     unit: 'papercusp-green-checkpoint',
     systemd: { scope: 'user' as const, argv: [], load_state: 'loaded', known: true, invocation_id: null },
@@ -78,13 +79,13 @@ vi.mock('../../harness/routines/release-actions', () => ({
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { readQualificationAdmission } from '../../release-checkpoint-config';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
-import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
+import { checkActiveCheckpointRunAsync } from '../../release-checkpoint-launch';
 import { resolveIntegrationRoot } from '../../harness/routines/release-actions';
 import { readGateOwnership } from '../../coord/gate-ownership';
 const cronM = vi.mocked(computeNextFireAt);
 const admissionM = vi.mocked(readQualificationAdmission);
 const serializerM = vi.mocked(readCheckpointSerializerAuthority);
-const activeRunM = vi.mocked(checkActiveCheckpointRun);
+const activeRunM = vi.mocked(checkActiveCheckpointRunAsync);
 const rootM = vi.mocked(resolveIntegrationRoot);
 const gateOwnershipM = vi.mocked(readGateOwnership);
 
@@ -127,7 +128,7 @@ beforeEach(() => {
     duplicates: [],
     thread: { status: 'not-applicable', reason: 'no owner' },
   } as never);
-  activeRunM.mockReturnValue({
+  activeRunM.mockResolvedValue({
     active: false,
     unit: 'papercusp-green-checkpoint',
     systemd: { scope: 'user', argv: [], load_state: 'loaded', known: true, invocation_id: null },

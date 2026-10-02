@@ -1806,6 +1806,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for scripts/check-tracked-ignored.mjs: this CI lint script runs awaited spawnSync(git ls-files / check-ignore) metadata reads per repository with a 256 MiB output bound. Each exits immediately, and it creates no detached worker or resident queue.",
   },
+  {
+    path: "scripts/lib/graph-dependency-suggestions.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/lib/graph-dependency-suggestions.mjs: this is a call-local traversal frontier, not queued background work. Both initial changed-path seeds and discovered importers are deduplicated in `seen` and limited by the existing MAX_VISITED_FILES bound; excess seeds set `truncated` and are omitted from suggestions, while the baseline selection remains untouched. The cursor-index walk retains at most that same bound and is discarded when the suggestion call returns.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [

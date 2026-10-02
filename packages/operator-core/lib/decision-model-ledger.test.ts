@@ -28,6 +28,7 @@ const record: DecisionCallRecord = {
   surface: 'turn-start',
   subjectIds: ['mem-1'],
   hostLoad: { busyMs: 311, utilization: 0.78 },
+  transportLatencyMs: null,
 };
 
 function fakeSql(impl: () => Promise<unknown>) {

@@ -39,14 +39,14 @@ export interface StagingFirstBlockerProblem {
 // actual main/deployed-host prerequisite elsewhere in the same text must still
 // be recognized.
 const DEPLOYED_ENV_RE =
-  /(?:\bmain\b(?!(?:\s+|-)\b(?:bundle|chunk|entry|thread)\b)|:3070\b|\bgreen[- ]checkpoint\b|\b(?:deploy(?:ed|ing)?|deployment(?!(?:\s+|-)\b(?:ownership|configuration|topology|source|model)\b))\b)/i;
+  /(?:\bmain\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|\bgreen[- ]checkpoint\b|\b(?:deploy(?:ed|ing)?|deployment(?!(?:\s+|-)\b(?:ownership|configuration|topology|source|model)\b))\b)/i;
 const STRONG_GATE_RE =
   /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b.{0,40}\b(?:on|until|before|by)\b|\bprerequisite\b|\bonly\s+after\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
 // A bare `until` is ordinary ordering prose. It is a strong gate only when
 // its object is itself a release-plane token. This prevents e.g. `main bundle
 // ... cannot begin until: parse` from pairing unrelated words.
 const RELEASE_PLANE_UNTIL_RE =
-  /\buntil\b\s*:?[\s,-]*(?:(?:the\s+)?main\b(?!(?:\s+|-)\b(?:bundle|chunk|entry|thread)\b)|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
+  /\buntil\b\s*:?[\s,-]*(?:(?:the\s+)?main\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const NEGATED_OR_META_GATE_RE =
   /(?:\b(?:reject|refus|forbid|prevent|detect|flag|exclud)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bno\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnot\s+(?:an?\s+)?(?:\w+[- ]){0,3}(?:prerequisite|wait|block(?:er|ing)?|gate)\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnever\s+(?:an?\s+)?(?:block|wait|require|prerequisite)\w*\b|\bwithout\s+wait(?:ing)?\s+(?:for|on)\b|\binstead\s+of\s+wait(?:ing)?\s+(?:for|on)\b)/i;
 const FINAL_LIFECYCLE_RE =
@@ -59,7 +59,7 @@ const CONCRETE_REASON_RE =
   /(?:\bbecause\b|\bdue to\b|\bsince\b|\breason\b|\brollback\b|\brelease\s+packag(?:e|ing)\b|\bmigration\s+order(?:ing)?\b|\bproduction[- ]only\b|\bdeployed[- ]host\b)/i;
 const ACCEPTANCE_SECTION_RE = /^(?:acceptance|requirements?|validation|verification)\b/i;
 const MAIN_RELEASE_BLOCKER_RE =
-  /(?:\bmain\b|:3070\b|green[- ]checkpoint|greenCheckpoint|\bgreen[- ]pin\b|\bproduction\b)/i;
+  /(?:\bmain\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|green[- ]checkpoint|greenCheckpoint|\bgreen[- ]pin\b|\bproduction\b)/i;
 const GENERIC_DEPLOY_BLOCKER_RE = /(?:\brelease\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const EXPLICIT_STAGING_ENV_RE = /(?:\bstaging\b|\bcurrent[- ]build\b)/i;
 const LIVE_GATE_OPERATION_RE =

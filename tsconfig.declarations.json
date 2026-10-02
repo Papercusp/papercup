@@ -69,6 +69,10 @@
   // An explicit list is also the honest surface: a glob would silently start
   // emitting declarations for every future script in the repo.
   "files": [
+    // EI-24834079439388393: ptool's SDK-install race regression imports the
+    // maintained mutex and install boundary directly; keep their types generated.
+    "scripts/lib/fs-mutex.mjs",
+    "scripts/npm-install-safe.mjs",
     "scripts/lib/not-checked.mjs",
     "scripts/lib/git-index-fault.mjs",
     "scripts/lib/task-exit-class.mjs",

@@ -34,6 +34,7 @@ import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 import {
   readSessionSearchReadiness,
   sessionSearchTierAvailability,
+  SESSION_TURN_WINDOW_MAX_LITERAL,
   type SessionSearchReadiness,
 } from '../../session-search-index-build';
 import { parseTurnRef } from '../sessions/_shared';
@@ -236,6 +237,25 @@ const isStatementTimeout = (err: unknown): boolean =>
   (err as { code?: string } | null)?.code === '57014';
 
 /**
+ * The windows-route lookup for one lowered literal (P-011). `windowPattern` is the escaped
+ * `%prefix%` matched against `session_turn_windows.wtext`; the prefix is the literal's first
+ * `SESSION_TURN_WINDOW_MAX_LITERAL` characters (counted in code points, as PostgreSQL counts them) so
+ * the lookup stays recall-complete for any literal length. `verify` = the literal was longer than the
+ * prefix, so the parent turn must still be checked against the FULL literal.
+ */
+export interface WindowsLookup {
+  windowPattern: string;
+  verify: boolean;
+}
+
+export function windowsLookupFor(loweredLiteral: string): WindowsLookup {
+  const chars = Array.from(loweredLiteral);
+  const verify = chars.length > SESSION_TURN_WINDOW_MAX_LITERAL;
+  const prefix = verify ? chars.slice(0, SESSION_TURN_WINDOW_MAX_LITERAL).join('') : loweredLiteral;
+  return { windowPattern: `%${escapeLikeLiteral(prefix)}%`, verify };
+}
+
+/**
  * ONE index-served literal branch: scope + filter predicates INSIDE the branch, a MATERIALIZED
  * candidate cap, then newest-first. `likePatterns` are already-escaped, already-lowercased
  * `%literal%` patterns; one pattern is a plain LIKE (the exact tier), several is LIKE ANY (the
@@ -249,6 +269,7 @@ async function runLiteralBranch(
   limit: number,
   deadlineMs: number,
   policy: SessionTurnLiteralPolicy,
+  windows?: WindowsLookup,
 ): Promise<{ rows: LiteralRow[]; deadline: boolean }> {
   const f = q.filters ?? {};
   const owners = f.owners && f.owners.length ? f.owners : null;
@@ -256,14 +277,36 @@ async function runLiteralBranch(
   try {
     const rows = await sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(deadlineMs))}`);
-      const match =
-        likePatterns.length === 1
+      // Legacy route: the whole-turn trigram predicate. Windows route (P-011): the window GIN already
+      // proved the literal's (<= 65-char) prefix occurs in the turn, so the parent-turn predicate is only
+      // re-checked when the literal was longer than one window overlap (prefix-filtered).
+      const match = windows
+        ? windows.verify
+          ? tx`lower(text) LIKE ${likePatterns[0]!}`
+          : tx`TRUE`
+        : likePatterns.length === 1
           ? tx`lower(text) LIKE ${likePatterns[0]!}`
           : tx`lower(text) LIKE ANY (${likePatterns as unknown as string[]}::text[])`;
+      // The windows candidate set: turns having ANY window that contains the literal, resolved BEFORE the
+      // parent-turn predicates. Per-window recheck is the lever: a 512-char window costs ~8 us to recheck
+      // where a whole turn (up to 8000 chars) costs ~80 us, and a window trigram match is ~20x rarer.
+      const hitCte = windows
+        ? tx`hit AS MATERIALIZED (
+          SELECT DISTINCT w.workspace_id, w.source_kind, w.session_id, w.turn_idx
+            FROM harness_shared.session_turn_windows w
+           WHERE (w.workspace_id = ${q.workspaceId} OR w.workspace_id = 'default')
+             AND (${f.sessionId ?? null}::text IS NULL OR w.session_id = ${f.sessionId ?? null})
+             AND (${f.sourceKind ?? null}::text IS NULL OR w.source_kind = ${f.sourceKind ?? null})
+             AND w.wtext LIKE ${windows.windowPattern}
+        ),`
+        : tx``;
+      const fromTurns = windows
+        ? tx`harness_shared.session_turns JOIN hit USING (workspace_id, source_kind, session_id, turn_idx)`
+        : tx`harness_shared.session_turns`;
       return (await tx`
-        WITH cand AS MATERIALIZED (
+        WITH ${hitCte} cand AS MATERIALIZED (
           SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, ingested_at, text
-            FROM harness_shared.session_turns
+            FROM ${fromTurns}
            WHERE (workspace_id = ${q.workspaceId} OR workspace_id = 'default')
              AND (${q.scopeFilter ?? null}::text IS NULL OR harness_slug = ${q.scopeFilter ?? null})
              AND (${owners}::text[] IS NULL OR owner = ANY(${owners}::text[]))
@@ -323,16 +366,23 @@ function toHit(
   };
 }
 
-/** The exact tier. Caller has already established readiness; this never checks it. */
+/**
+ * The exact tier. Caller has already established readiness; this never checks it. `route` is the
+ * route readiness chose (`sessionSearchTierAvailability(...).exact.route`): `windows` resolves the
+ * literal through the per-window trigram index (bounded latency for common literals), `legacy` (the
+ * default) through the whole-turn trigram index.
+ */
 export async function retrieveSessionTurnExact(
   sql: Sql,
   q: SessionTurnLiteralQuery,
   policy: SessionTurnLiteralPolicy = SESSION_TURN_LITERAL_POLICY,
+  route: 'windows' | 'legacy' = 'legacy',
 ): Promise<{ hits: SessionTurnLiteralHit[]; deadline: boolean }> {
   const literal = q.query.trim();
   const lowered = literal.toLowerCase();
   const { rows, deadline } = await runLiteralBranch(
     sql, q, [`%${escapeLikeLiteral(lowered)}%`], [lowered], policy.exactReserve + policy.fuzzyReserve, policy.exactDeadlineMs, policy,
+    route === 'windows' ? windowsLookupFor(lowered) : undefined,
   );
   return { hits: rows.map((r) => toHit(r, 'exact')), deadline };
 }
@@ -495,7 +545,7 @@ export async function retrieveSessionTurnLiteralTiers(
     if (!availability.exact.available) return { hits: [], receipt: skipped(availability.exact.skipReason ?? 'exact-unavailable') };
     const t0 = Date.now();
     try {
-      const { hits, deadline } = await retrieveSessionTurnExact(sql, q, policy);
+      const { hits, deadline } = await retrieveSessionTurnExact(sql, q, policy, availability.exact.route ?? 'legacy');
       return { hits, receipt: { status: deadline ? 'deadline' : 'ran', returned: hits.length, elapsedMs: Date.now() - t0 } };
     } catch (err) {
       return { hits: [], receipt: { status: 'error', returned: 0, elapsedMs: Date.now() - t0, error: (err as Error).message } };

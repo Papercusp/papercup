@@ -33,8 +33,16 @@ export {
   type DecisionClient,
   type DecisionClientOptions,
   type DecideOptions,
+  type DeadlineHook,
   type FetchLike,
 } from './client.js';
+export {
+  createWorkerTransport,
+  WORKER_TRANSPORT_MAX_FAILURES,
+  type WorkerTransport,
+  type WorkerTransportEvent,
+  type WorkerTransportOptions,
+} from './worker-transport.js';
 export {
   toDecisionLedgerEntry,
   canonicalJson,
