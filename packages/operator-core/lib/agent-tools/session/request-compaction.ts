@@ -64,6 +64,7 @@ import { addressContinuationToOwner } from '../../carry-respawn-addressing';
 import {
   readLiveNativeBgTasks,
   renderNativeBgTaskWarning,
+  type NativeBgTaskReport,
 } from '../../native-bg-task-ledger';
 import {
   evaluateFrozenLineageCarryText,
@@ -938,14 +939,16 @@ export default defineTool({
     // idle-gated and fires after this turn ends, so the agent reading this still
     // has time to wait for the job or re-launch it under capability:bash. The
     // liveness claim is an OS-level fd scan, not an inference from the record's
-    // age. Fail-soft — bookkeeping must never block a cut.
-    let nativeBgTasks: ReturnType<typeof readLiveNativeBgTasks> = {
+    // age. Fail-soft — bookkeeping must never block a cut. The scan is async and
+    // deadline-bounded (WI-10005283): it walks all of /proc, so a synchronous
+    // read here stalled this handler's event loop for seconds.
+    let nativeBgTasks: NativeBgTaskReport = {
       live: [],
       unattributed: [],
       degraded: false,
     };
     try {
-      nativeBgTasks = readLiveNativeBgTasks({ sid: identity.ownerId });
+      nativeBgTasks = await readLiveNativeBgTasks({ sid: identity.ownerId });
     } catch {
       /* never block the cut on bg bookkeeping */
     }

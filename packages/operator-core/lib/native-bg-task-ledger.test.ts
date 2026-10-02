@@ -14,23 +14,37 @@
  *      liveness decision must come from an open-fd observation, so a finished
  *      job is never reported as about to be killed.
  *
- * `hasOpenWriter` is injected throughout: the rule under test is the SELECTION,
- * not /proc. The one test that does touch the real scanner asserts only its
- * fail-soft contract, never a live pid.
+ * `hasOpenWriter` is injected for the SELECTION tests: the rule under test there
+ * is the selection, not /proc. The scanner itself is exercised against a FAKE
+ * proc root (`<pid>/fd/<n>` symlinks in a tmpdir) — WI-10005283 — and the real
+ * /proc is touched only for the fail-soft contract, never a live pid.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseNativeBgLedger,
   selectLiveNativeBgTasks,
+  candidateNativeBgRecords,
   readLiveNativeBgTasks,
   renderNativeBgTaskWarning,
-  openWriterPids,
+  openWriterPidsMany,
   NATIVE_BG_TRACK_MAX_AGE_MS,
   type NativeBgTaskRecord,
 } from './native-bg-task-ledger';
+
+/** A fake /proc: `holders` maps pid -> the paths its fds point at. */
+function fakeProc(holders: Record<string, string[]>, extraEntries: string[] = []): string {
+  const root = mkdtempSync(join(tmpdir(), 'wi10005283-proc-'));
+  for (const [pid, targets] of Object.entries(holders)) {
+    const fdDir = join(root, pid, 'fd');
+    mkdirSync(fdDir, { recursive: true });
+    targets.forEach((t, i) => symlinkSync(t, join(fdDir, String(i))));
+  }
+  for (const e of extraEntries) mkdirSync(join(root, e), { recursive: true });
+  return root;
+}
 
 const SID = 'su-2bbbd89b-0208-4b79-8d3b-79cb354c4f61';
 const NOW = 1_786_573_000_000;
@@ -159,8 +173,8 @@ describe('selectLiveNativeBgTasks', () => {
 });
 
 describe('readLiveNativeBgTasks', () => {
-  it('a MISSING ledger is a clean empty, not degraded (no bg job was ever launched)', () => {
-    const r = readLiveNativeBgTasks({
+  it('a MISSING ledger is a clean empty, not degraded (no bg job was ever launched)', async () => {
+    const r = await readLiveNativeBgTasks({
       sid: SID,
       nowMs: NOW,
       ledgerPath: join(tmpdir(), 'wi5936-does-not-exist-' + Math.random() + '.json'),
@@ -169,12 +183,12 @@ describe('readLiveNativeBgTasks', () => {
     expect(r).toEqual({ live: [], unattributed: [], degraded: false });
   });
 
-  it('an UNPARSEABLE ledger reports degraded — "not measured" must not read as "nothing live"', () => {
+  it('an UNPARSEABLE ledger reports degraded — "not measured" must not read as "nothing live"', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wi5936-'));
     try {
       const p = join(dir, 'ledger.json');
       writeFileSync(p, '{ this is not json');
-      const r = readLiveNativeBgTasks({ sid: SID, nowMs: NOW, ledgerPath: p, hasOpenWriter: alive });
+      const r = await readLiveNativeBgTasks({ sid: SID, nowMs: NOW, ledgerPath: p, hasOpenWriter: alive });
       expect(r.degraded).toBe(true);
       expect(r.live).toEqual([]);
     } finally {
@@ -182,7 +196,52 @@ describe('readLiveNativeBgTasks', () => {
     }
   });
 
-  it('reads a real on-disk ledger in the exact shape the python hook writes', () => {
+  it('without an injected seam, decides liveness from ONE /proc scan of the candidate paths (WI-10005283)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wi10005283-'));
+    const proc = fakeProc({ '11': ['/tmp/mine.log'], '12': ['/tmp/anon.log', '/dev/null'] }, ['self']);
+    try {
+      const p = join(dir, 'ledger.json');
+      writeFileSync(
+        p,
+        JSON.stringify({
+          '/tmp/mine.log': { started_at: NOW / 1000 - 30, sid: SID },
+          '/tmp/anon.log': { started_at: NOW / 1000 - 40 },
+          '/tmp/done.log': { started_at: NOW / 1000 - 50, sid: SID }, // nobody holds it
+          '/tmp/theirs.log': { started_at: NOW / 1000 - 60, sid: 'su-someone-else' },
+        }),
+      );
+      const r = await readLiveNativeBgTasks({ sid: SID, nowMs: NOW, ledgerPath: p, procRoot: proc });
+      expect(r.degraded).toBe(false);
+      expect(r.live.map((t) => [t.path, t.pids])).toEqual([['/tmp/mine.log', ['11']]]);
+      expect(r.unattributed.map((t) => [t.path, t.pids])).toEqual([['/tmp/anon.log', ['12']]]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(proc, { recursive: true, force: true });
+    }
+  });
+
+  it('reports degraded when the scan deadline cuts the walk short — a partial scan is not an all-clear', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wi10005283-'));
+    const proc = fakeProc({ '21': ['/tmp/mine.log'] });
+    try {
+      const p = join(dir, 'ledger.json');
+      writeFileSync(p, JSON.stringify({ '/tmp/mine.log': { started_at: NOW / 1000 - 30, sid: SID } }));
+      const r = await readLiveNativeBgTasks({
+        sid: SID,
+        nowMs: NOW,
+        ledgerPath: p,
+        procRoot: proc,
+        scanDeadlineMs: -1, // already expired: no pid gets visited
+      });
+      expect(r.degraded).toBe(true);
+      expect(r.live).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(proc, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a real on-disk ledger in the exact shape the python hook writes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wi5936-'));
     try {
       const p = join(dir, 'ledger.json');
@@ -196,7 +255,7 @@ describe('readLiveNativeBgTasks', () => {
           },
         }),
       );
-      const r = readLiveNativeBgTasks({ sid: SID, nowMs: NOW, ledgerPath: p, hasOpenWriter: alive });
+      const r = await readLiveNativeBgTasks({ sid: SID, nowMs: NOW, ledgerPath: p, hasOpenWriter: alive });
       expect(r.degraded).toBe(false);
       expect(r.live).toHaveLength(1);
       expect(r.live[0].ageSec).toBe(120);
@@ -235,12 +294,81 @@ describe('renderNativeBgTaskWarning', () => {
   });
 });
 
-describe('openWriterPids (real scanner — fail-soft contract only)', () => {
-  it('returns [] for a path nothing can hold open, and never throws', () => {
-    expect(openWriterPids('/tmp/wi5936-nothing-holds-this-' + Math.random())).toEqual([]);
+describe('candidateNativeBgRecords', () => {
+  it('keeps young records that are this session’s or unstamped; drops aged and foreign ones', () => {
+    const out = candidateNativeBgRecords({
+      sid: SID,
+      nowMs: NOW,
+      records: [
+        rec({ path: '/tmp/mine.log' }),
+        rec({ path: '/tmp/anon.log', sid: undefined }),
+        rec({ path: '/tmp/old.log', startedAtMs: NOW - NATIVE_BG_TRACK_MAX_AGE_MS }),
+        rec({ path: '/tmp/theirs.log', sid: 'su-someone-else' }),
+      ],
+    });
+    expect(out.map((r) => r.path)).toEqual(['/tmp/mine.log', '/tmp/anon.log']);
+  });
+});
+
+describe('openWriterPidsMany (WI-10005283)', () => {
+  it('answers every path from ONE pass: all holders per path, sorted, skipping non-pid entries', async () => {
+    const proc = fakeProc(
+      {
+        '300': ['/tmp/a.log', '/tmp/b.log', '/tmp/a.log'], // a duplicate fd must not double-count
+        '20': ['/tmp/a.log'],
+        '7': ['/dev/null'],
+        '8': [], // a process with no fds
+      },
+      ['self', 'sys'],
+    );
+    try {
+      const scan = await openWriterPidsMany(['/tmp/a.log', '/tmp/b.log', '/tmp/c.log'], { procRoot: proc });
+      expect(scan.complete).toBe(true);
+      expect(scan.byPath.get('/tmp/a.log')).toEqual(['20', '300']);
+      expect(scan.byPath.get('/tmp/b.log')).toEqual(['300']);
+      expect(scan.byPath.has('/tmp/c.log')).toBe(false);
+    } finally {
+      rmSync(proc, { recursive: true, force: true });
+    }
   });
 
-  it('returns [] rather than throwing when the proc root does not exist', () => {
-    expect(openWriterPids('/tmp/x', '/nonexistent-proc-root')).toEqual([]);
+  it('does not walk /proc at all when there are no candidate paths', async () => {
+    const scan = await openWriterPidsMany([], { procRoot: '/nonexistent-proc-root' });
+    expect(scan).toEqual({ byPath: new Map(), complete: true });
+  });
+
+  it('is an empty, complete answer when the proc root does not exist (non-Linux), never a throw', async () => {
+    const scan = await openWriterPidsMany(['/tmp/x'], { procRoot: '/nonexistent-proc-root' });
+    expect(scan.byPath.size).toBe(0);
+    expect(scan.complete).toBe(true);
+  });
+
+  it('never throws on the real /proc for a path nothing can hold open', async () => {
+    const scan = await openWriterPidsMany(['/tmp/wi5936-nothing-holds-this-' + Math.random()]);
+    expect(scan.byPath.size).toBe(0);
+  });
+
+  it('keeps the event loop turning while it walks — the regression this item fixed was a SYNC walk', async () => {
+    // A synchronous scanner resolves with ZERO interleaved macrotasks; that is
+    // exactly the multi-second main-thread stall seen in session:request-compaction.
+    const holders: Record<string, string[]> = {};
+    for (let pid = 1000; pid < 1200; pid++) holders[String(pid)] = ['/dev/null', '/dev/zero', '/tmp/x'];
+    const proc = fakeProc(holders);
+    try {
+      let ticks = 0;
+      let running = true;
+      const spin = (): void => {
+        if (!running) return;
+        ticks++;
+        setImmediate(spin);
+      };
+      setImmediate(spin);
+      const scan = await openWriterPidsMany(['/tmp/wanted.log'], { procRoot: proc });
+      running = false;
+      expect(scan.complete).toBe(true);
+      expect(ticks).toBeGreaterThan(0);
+    } finally {
+      rmSync(proc, { recursive: true, force: true });
+    }
   });
 });
