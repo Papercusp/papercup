@@ -50,7 +50,8 @@
  * tmpdir. `--local --shared` means the clone borrows the source object store via
  * alternates instead of copying it, so this costs ~3s and almost no disk beyond the
  * checked-out files, and it touches the shared checkout only for reads. node_modules
- * is symlinked in (never copied) so nothing is installed and nothing is mutated.
+ * is linked in (never copied or installed); missing workspace runtime exports are
+ * built with each package's committed build command inside the disposable tree.
  *
  * The alternates borrow is safe for a run of this length but is a borrow: if the
  * source repo pruned the ref's objects mid-run the clone would break. It cannot
@@ -297,7 +298,7 @@ export function cloneWorkspaceTarget(realTarget, repoRoot, workRoot) {
  * visible rather than silent. Scope directories (`@x`) are mirrored one level down.
  * Returns `{ entries, remapped, fallback }`.
  */
-export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot) {
+export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, workspacePaths = new Set()) {
   const stats = { entries: 0, remapped: 0, fallback: 0 };
   const linkEntry = (sharedPath, clonePath) => {
     let real = null;
@@ -310,6 +311,7 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot) {
     if (remap && existsSync(join(remap, 'package.json'))) {
       symlinkSync(remap, clonePath, 'dir');
       stats.remapped += 1;
+      workspacePaths.add(remap);
     } else {
       if (remap) stats.fallback += 1;
       symlinkSync(sharedPath, clonePath);
@@ -328,6 +330,53 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot) {
     }
   }
   return stats;
+}
+
+/** Runtime export prerequisites belong to the pinned package, never the shared dist. */
+export function prepareWorkspaceExports(workRoot, workspacePaths) {
+  for (const packageRoot of workspacePaths) {
+    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+    const targets = new Set();
+    const visit = (value, runtime = false) => {
+      if (typeof value === 'string') {
+        if (runtime) targets.add(value);
+      } else if (Array.isArray(value)) {
+        for (const item of value) visit(item, runtime);
+      } else if (value && typeof value === 'object') {
+        for (const [condition, item] of Object.entries(value)) {
+          if (condition !== 'types') visit(item, runtime || condition === 'require' || condition === 'default');
+        }
+      }
+    };
+    if (manifest.exports) visit(manifest.exports, typeof manifest.exports === 'string');
+    else if (manifest.main) targets.add(manifest.main);
+    const concrete = [...targets].filter((target) => !target.includes('*'));
+    for (const target of concrete) {
+      const rel = relative(packageRoot, join(packageRoot, target));
+      if (isAbsolute(target) || rel === '..' || rel.startsWith(`..${sep}`)) {
+        throw new Error(`${manifest.name}: runtime export escapes its pinned package: ${target}`);
+      }
+    }
+    const missing = () => concrete.filter((target) => !existsSync(join(packageRoot, target)));
+    if (missing().length === 0) continue;
+    if (!manifest.scripts?.build) {
+      throw new Error(`${manifest.name}: missing runtime export(s) ${missing().join(', ')} and no committed build script`);
+    }
+    console.log(`  building pinned runtime exports: ${manifest.name} (${relative(workRoot, packageRoot)})`);
+    const build = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {
+      cwd: packageRoot,
+      stdio: 'inherit',
+      env: { ...process.env, npm_config_workspaces: undefined },
+    });
+    if (build.error || build.status !== 0) {
+      throw new Error(`${manifest.name}: committed build failed (${build.error?.message ?? `exit ${build.status}, signal ${build.signal}`})`);
+    }
+    if (missing().length > 0) {
+      throw new Error(`${manifest.name}: committed build did not emit runtime export(s): ${missing().join(', ')}`);
+    }
+    const dirty = git(['status', '--porcelain', '--untracked-files=all'], packageRoot);
+    if (dirty) throw new Error(`${manifest.name}: committed build changed source or emitted unignored files:\n${dirty}`);
+  }
 }
 
 /**
@@ -479,6 +528,14 @@ function main() {
   }
 
   const short = sha.slice(0, 10);
+  // main is an independent source snapshot: clone normally leaves it under origin/.
+  // Resolve before cloning, and never substitute the candidate when main is absent.
+  let mainSnapshot = null;
+  try {
+    mainSnapshot = git(['rev-parse', '--verify', 'refs/heads/main^{commit}'], repoRoot);
+  } catch {
+    /* A repository without main must remain without a fabricated main. */
+  }
   console.log(`lint-as-committed: ref ${args.ref} = ${short}`);
   console.log(`  repo: ${repoRoot}`);
 
@@ -517,6 +574,10 @@ function main() {
     if (checkout.status !== 0) {
       console.error(`lint-as-committed: failed to check out ${short}:\n${checkout.stderr || checkout.stdout}`);
       process.exit(2);
+    }
+    if (mainSnapshot) {
+      git(['update-ref', 'refs/heads/main', mainSnapshot], workRoot);
+      console.log(`  main snapshot: ${mainSnapshot} (independent of tested HEAD ${sha})`);
     }
     console.log(`  materialised committed tree in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${workRoot}`);
 
@@ -613,6 +674,7 @@ function main() {
     let linked = 0;
     const linkedPaths = [];
     const shadow = { remapped: 0, fallback: 0 };
+    const workspacePaths = new Set();
     const nmDirs = spawnSync(
       'bash',
       ['-c', `find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*' 2>/dev/null`],
@@ -629,7 +691,7 @@ function main() {
       }
       try {
         // Entry-by-entry, so workspace packages resolve INTO this tree (EI-24790229053787032).
-        const s = linkNodeModulesShadow(target, linkPath, repoRoot, workRoot);
+        const s = linkNodeModulesShadow(target, linkPath, repoRoot, workRoot, workspacePaths);
         shadow.remapped += s.remapped;
         shadow.fallback += s.fallback;
       } catch (err) {
@@ -662,6 +724,13 @@ function main() {
         `${shadow.remapped} workspace package link(s) resolve into this tree` +
         (shadow.fallback ? `, ${shadow.fallback} fell back to the SHARED tree (package absent here)` : ''),
     );
+    try {
+      prepareWorkspaceExports(workRoot, workspacePaths);
+    } catch (err) {
+      console.error(`lint-as-committed: workspace runtime prerequisites failed: ${err.message}`);
+      process.exitCode = 2;
+      return;
+    }
 
     // ── read the COMMITTED package.json: the script DEFINITION is versioned too ──
     let refScripts = {};
