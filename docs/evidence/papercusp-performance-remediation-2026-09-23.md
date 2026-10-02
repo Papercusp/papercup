@@ -5182,3 +5182,48 @@ changed 3,873 turns. `dev:pipeline_position` for `session-ingest.ts` with
 adoption of the October 2 fork-owner fix. D-006 still governs shared-host
 adoption; the loaded-source identity and historical wait/app-impact evidence
 remain open for R-8.
+
+### Partial Claude owner-map repair guard — October 2, 17:19Z
+
+A bounded `logs:read` of `papercusp-bg-host.service` selected natural
+`sessionOwners` receipts with nonzero updates over the preceding three hours.
+It returned 12 matching, untruncated journal entries. The 15:47:34.867Z
+sweep scanned 153 files, requested 153 Claude owners, updated 3,997 turns,
+and spent 165,562.8 ms in that repair. The 15:49:47.649Z sweep scanned
+7,673 files, requested 3,631 owners, updated 3,997 turns, and spent
+65,703.8 ms in the repair. Both reported zero sweep errors. Their bound-input
+fingerprints are respectively `afe412a62b886df9ab065f0f4c2bbb1f71ee687424d162cb1f6019a9d61453dc`
+and `be795e2dbb510a33954c5c96ee11c41a8981dc65788532fcaf4ccf4daaa944a8`.
+The next 15:50:41.170Z sweep requested 3,631 owners but updated zero turns
+in 109.5 ms; its input hash also differs. The 153-file sweep's 4,000-turn
+budget is consistent with its short scan, but the receipts do not retain row
+identities or owner values. The equal 3,997 update counts do **not** establish
+that the same rows changed twice, or why their two durations differ.
+
+Source inspection showed that the existing `ownerBackfill` map was filled
+inside the file loop, which stops at the turn/file budget, while the Claude
+candidate discovery and birth-index lookup already cover the complete set.
+The existing private integration fixture ingests 4,099 Claude turns over two
+sweeps. A new assertion requiring the first sweep's owner map to include all
+179 candidate sessions failed in both isolated child cases before the fix.
+The source now fills that map in the existing complete Claude candidate pass,
+retaining the birth-index override and the prior duplicate-ID order, and
+does not refill it from the budget-limited loop. The regression also requires
+the partial and continuation sweeps to bind the same ordered owner-map hash.
+The final current-build integration run passed **2/2**, zero skips, exit 0
+at 17:17:56Z; private HOME/datadir removal and port closure remained checked.
+Scoped `lint:tsc` checked both edited files and reported zero errors at
+17:18:32Z; scoped `git diff --check` passed. Final source/test SHA-256s are
+`017d2fc2c7ba534d7d56b672fc978a95dcae7108be278b06989147831a346719`
+and `84f07e35f88ed540c246cc2a3abc21da13bd772ddc9502a8a3810a8766258b61`.
+
+The coordinated D-006 runtime owner loaded a bg-host bundle at 17:12:07Z
+from the earlier fork-owner source (`b1dc08570e06…1f18f`). PID 1373881's
+command/cwd point at `apps/operator/dist-host/hono-host.mjs`; that bundle
+contains the birth-index lookup and still fills the owner map inside the
+budget-limited loop. It predates the partial-map edit above. Therefore the
+fork-owner fix has a loaded-source marker, while this new guard remains
+current-build only. No shared restart, live-gate operation, acceptance binding
+or shipment is claimed. The source-level budget defect is fixed and guarded;
+the historical 1,123,628 ms UPDATE's full wait decomposition and application
+impact remain unproved, so **P-008/R-8 remains open**.
