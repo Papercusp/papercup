@@ -13,6 +13,19 @@ import { serializeIdentitySafeJson } from '../../../scripts/lib/identity-leak-pa
 const root = resolve(__dirname, '../../..');
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const executableHashes = new Map<string, string>();
+type PinnedLimits = Omit<Parameters<typeof readPinnedState>[1], 'expectedPid' | 'owners'>;
+function parsePinnedLimits(raw?: string): PinnedLimits | undefined {
+  if (!raw) return undefined;
+  const value = JSON.parse(raw);
+  const allowed = ['maxSlots', 'maxObjects', 'maxEntries', 'maxFields', 'maxDepth', 'budgetMs'];
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some(key => !allowed.includes(key) ||
+        !Number.isInteger(value[key]) || value[key] < 1)) {
+    throw Error('Pinned limits must contain only positive integer reader limits');
+  }
+  // The maintained reader enforces its upper bounds before evaluating the target.
+  return value;
+}
 function processSample(pid: number) {
   const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
   const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
@@ -49,6 +62,15 @@ function listenerPorts(pid: number) {
 }
 
 describe('actual current-build operator memory baseline', () => {
+  it('keeps PID and exact owner selection outside configurable traversal limits', () => {
+    expect(parsePinnedLimits('{"maxDepth":8,"maxEntries":32768,"budgetMs":200}'))
+      .toEqual({ maxDepth: 8, maxEntries: 32768, budgetMs: 200 });
+    for (const raw of ['{"expectedPid":7}', '{"owners":["other"]}', '[]', 'null',
+      '{"maxDepth":0}', '{"budgetMs":"200"}']) {
+      expect(() => parsePinnedLimits(raw)).toThrow('only positive integer reader limits');
+    }
+  });
+
   it('rejects PID reuse and changed executable before accepting a resource comparison', () => {
     const before = { pid: 7, startTicks: '12', executableSha256: 'a' };
     expect(() => assertIdentity(before, { ...before, startTicks: '13' })).toThrow('identity changed');
@@ -62,6 +84,7 @@ describe('actual current-build operator memory baseline', () => {
     const destination = process.env.PAPERCUSP_P011_REPORT;
     const pinnedOwners = process.env.PAPERCUSP_P011_PINNED_OWNERS
       ? JSON.parse(process.env.PAPERCUSP_P011_PINNED_OWNERS) : undefined;
+    const pinnedLimits = parsePinnedLimits(process.env.PAPERCUSP_P011_PINNED_LIMITS);
     if (pinnedOwners !== undefined && (!Array.isArray(pinnedOwners) || pinnedOwners.length < 1 ||
         pinnedOwners.some(owner => typeof owner !== 'string'))) throw Error('Exact pinned owners must be a nonempty string array');
     expect(Number.isInteger(pid) && pid > 0).toBe(true);
@@ -78,7 +101,7 @@ describe('actual current-build operator memory baseline', () => {
         pinnedState: 'Reachable logical payloads under named roots; not total retained heap/native bytes',
         observerMs: 'wall time for inspector counter read and proc descendant census' },
       limits: { windows: 3, idleMs: 2000, requestsPerWindow: 8, concurrency: 2, descendantsPerSample: 64 },
-      pinnedOwners,
+      pinnedOwners, pinnedLimits,
       limitations: ['Main service PID only; HTTP requests may be served by sibling workers.',
         'Ambient workload is uncontrolled; idle means no probe HTTP requests.',
         'No paired intervention, allocation profiler, retainer graph or physical-savings claim.',
@@ -142,6 +165,7 @@ describe('actual current-build operator memory baseline', () => {
         const started = performance.now();
         const memory = await readProcessMemory(client!, { expectedPid: pid });
         const pinnedState = process.env.PAPERCUSP_P011_PINNED_STATE ? await readPinnedState(client!, {
+          ...pinnedLimits,
           expectedPid: pid, owners: pinnedOwners,
         }) : undefined;
         const os = processSample(pid); assertIdentity(before, os);
