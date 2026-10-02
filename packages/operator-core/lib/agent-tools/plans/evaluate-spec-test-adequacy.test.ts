@@ -28,6 +28,7 @@ vi.mock('../../build-info', () => ({
 }));
 
 import tool from './evaluate-spec-test-adequacy';
+import { replaySpecTestAdequacyForHistoricalAudit } from './evaluate-spec-test-adequacy';
 import { listSpecClauses } from './spec-clauses-store';
 import { listSpecEvidence } from './spec-evidence-store';
 
@@ -89,6 +90,106 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('replays only the legacy supersession cohort as of card creation and labels freshness audit-only', async () => {
+    const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
+    const historicalBinding = {
+      id: 19999,
+      workItemId: 'WI-10005377',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      currentRevision: 2,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'test-run 20455199',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      details: {},
+      testRunId: 20455199,
+      observedAt: '2026-10-01T23:00:00.000Z',
+      createdAt: '2026-10-01T23:00:00.000Z',
+      withdrawal: {
+        at: '2026-10-02T01:00:00.000Z',
+        by: 'su-reviewer',
+        reason: 'superseded by binding 21019',
+      },
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        dimensions: { spec: 'current', source: 'current', test: 'current' },
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    };
+    const laterReplacement = {
+      ...historicalBinding,
+      id: 21019,
+      evidenceRef: 'test-run 20455231 replacement',
+      createdAt: '2026-10-02T01:02:00.000Z',
+      withdrawal: null,
+    };
+    listEvidence.mockResolvedValue([historicalBinding] as never);
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await replaySpecTestAdequacyForHistoricalAudit({
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        evidenceRefs: ['test-run 20455199'],
+        includeDraft: true,
+        limit: 25,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+      },
+      workspaceId: 'workspace-test',
+      auditAsOf,
+    });
+
+    expect(listEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'workspace-test',
+        planSlugs: ['plan-a'],
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidenceRefs: ['test-run 20455199'],
+        includeRetracted: true,
+        auditAsOf,
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      historicalAuditOnly: {
+        provenance: 'historical-audit-only',
+        asOf: auditAsOf.toISOString(),
+        freshness: 'audit-only',
+        bindings: [
+          {
+            id: 19999,
+            withdrawal: { reason: 'superseded by binding 21019' },
+          },
+        ],
+      },
+    });
+    expect((result as { rows: Array<{ ratings: Record<string, { rating: string }> }> }).rows[0].ratings.freshness.rating).toBe('unknown');
+    expect(laterReplacement.createdAt > auditAsOf.toISOString()).toBe(true);
+  });
+
   it('preserves every criterion rating through a trimmed MCP dispatch', async () => {
     listClauses.mockResolvedValue([clause('active')]);
     const args = {
