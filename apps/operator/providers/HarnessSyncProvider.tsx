@@ -150,6 +150,7 @@ async function readIpcClient(): Promise<string | null> {
     // final gap: the invoke continuation can precede an overdue timer.
     const rendererIntervalMs = 50;
     finish.startRenderer(rendererIntervalMs);
+    // timer-classification: must-sample — renderer event-loop lateness probe; it reads no store, and no push event can stand in for measuring timer drift
     const rendererTimer = setInterval(() => finish.observeRenderer('timer'), rendererIntervalMs);
     const rendererDeadline = setTimeout(() => {
       clearInterval(rendererTimer);

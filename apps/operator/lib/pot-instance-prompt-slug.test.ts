@@ -64,6 +64,7 @@ describe('Papercusp su override uses the generated workspace map', () => {
     const prompt = readFileSync(join(POT_INSTANCES_DIR, 'papercup-pot.su.md'), 'utf8');
 
     expect(prompt).toContain('generated workspace map earlier in the base prompt');
+    // vacuous-negative-ok: deliberate regression pin — the hardcoded "**The workspace map**" heading was removed when the map became generated, and this keeps it from coming back
     expect(prompt).not.toContain('**The workspace map**');
     expect(prompt).not.toMatch(/\/home\/[^/\s]+\/papercupai-workspace\//);
   });
