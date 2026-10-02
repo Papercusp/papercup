@@ -128,6 +128,155 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
   }
 });
 
+type HistoricalAuditSelection = {
+  planSlug: string;
+  specId: string;
+  specRevision: number;
+  specFingerprint: string;
+  evidence: Array<{ evidenceKind: string; evidenceRef: string }>;
+  bindingIds?: number[];
+};
+
+/**
+ * Internal-only replay for an already-issued legacy scorecard whose recipe predates
+ * exact bindingIds. The normal tool deliberately stays current-only; this path is
+ * called by the grading auditor only after that tool returns selection_empty.
+ */
+export async function replaySpecTestAdequacyForHistoricalAudit(input: {
+  args: z.infer<typeof argsSchema>;
+  selection: HistoricalAuditSelection;
+  workspaceId: string;
+  auditAsOf: Date;
+}): Promise<Record<string, unknown>> {
+  const { args, selection, workspaceId, auditAsOf } = input;
+  const evidenceRefs = [...new Set(selection.evidence.map((entry) => entry.evidenceRef))].sort();
+  const recipeEvidenceRefs = [...new Set(args.evidenceRefs ?? [])].sort();
+  const selectedEvidence = selection.evidence.map((entry) => JSON.stringify([entry.evidenceKind, entry.evidenceRef]));
+  const exactEvidence = new Set(selectedEvidence);
+  const validCutoff = Number.isFinite(auditAsOf.getTime());
+  if (
+    !validCutoff ||
+    !workspaceId ||
+    args.bindingIds !== undefined ||
+    selection.bindingIds !== undefined ||
+    args.replaySnapshot !== true ||
+    args.slug !== selection.planSlug ||
+    args.specRevision !== selection.specRevision ||
+    args.specFingerprint !== selection.specFingerprint ||
+    !args.specIds?.includes(selection.specId) ||
+    evidenceRefs.length === 0 ||
+    JSON.stringify(evidenceRefs) !== JSON.stringify(recipeEvidenceRefs)
+  ) {
+    return { ok: false, error: 'historical_audit_recipe_not_exact' };
+  }
+
+  const current =
+    args.current === undefined
+      ? undefined
+      : Array.isArray(args.current)
+        ? args.current
+        : args.current.supplied
+          ? args.current.fingerprints
+          : undefined;
+  const evidenceLimit = args.limit ?? 1000;
+  const loaded = await listSpecEvidence({
+    harnessSlug: args.harness,
+    workspaceId,
+    planSlugs: [selection.planSlug],
+    workItemIds: args.workItemIds,
+    specIds: [selection.specId],
+    specRevision: selection.specRevision,
+    specFingerprint: selection.specFingerprint,
+    replaySnapshot: true,
+    ...(args.current !== undefined ? { currentProvenance: 'replayed-snapshot' as const } : {}),
+    evidenceRefs,
+    current,
+    includeRetracted: true,
+    auditAsOf,
+    limit: evidenceLimit,
+  });
+  if (loaded.length >= evidenceLimit) {
+    return { ok: false, error: 'historical_evidence_selection_hit_limit', count: loaded.length, limit: evidenceLimit };
+  }
+  const evidence = loaded.filter(
+    (row) =>
+      row.planSlug === selection.planSlug &&
+      row.specId === selection.specId &&
+      row.specRevision === selection.specRevision &&
+      row.specFingerprint === selection.specFingerprint &&
+      exactEvidence.has(JSON.stringify([row.evidenceKind, row.evidenceRef])),
+  );
+  if (evidence.length === 0) return { ok: false, error: 'historical_selection_empty', count: 0 };
+
+  const clauses = await listSpecClauses({
+    harnessSlug: args.harness,
+    workspaceId,
+    planSlug: selection.planSlug,
+    specIds: [selection.specId],
+    revision: selection.specRevision,
+    limit: 1,
+  });
+  const clause = clauses.find(
+    (candidate) =>
+      candidate.specId === selection.specId &&
+      candidate.revision === selection.specRevision &&
+      candidate.contentHash === selection.specFingerprint,
+  );
+  if (!clause || (args.includeDraft !== true && clause.lifecycleStatus !== 'active' && clause.lifecycleStatus !== 'accepted')) {
+    return { ok: false, error: 'historical_clause_snapshot_unavailable' };
+  }
+
+  const historicalEvidence = evidence.map((row) => ({
+    ...row,
+    currentness: {
+      ...row.currentness,
+      overall: 'unknown' as const,
+      provenance: 'replayed-snapshot' as const,
+      staleReasons: [],
+      unknownReasons: [...new Set([...row.currentness.unknownReasons, 'historical-audit-only'])],
+    },
+  }));
+  const evaluated = evaluateSpecTestAdequacy({
+    clause,
+    evidence: historicalEvidence,
+    classRef: args.classRef,
+    harness: args.harness,
+    current,
+    rerunSelection: {
+      workItemIds: args.workItemIds,
+      evidenceRefs,
+      planItemIds: args.planItemIds,
+    },
+    now: auditAsOf,
+  });
+  const recordedEvaluatorBuild = args.evaluatorBuild;
+  const liveEvaluatorBuild = getBuildInfo();
+  const evaluatorBuildDrift =
+    recordedEvaluatorBuild && evaluatorBuildDiff(recordedEvaluatorBuild, liveEvaluatorBuild)
+      ? { recorded: recordedEvaluatorBuild, live: liveEvaluatorBuild }
+      : undefined;
+
+  return {
+    ok: true,
+    evaluatorBuild: liveEvaluatorBuild,
+    ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
+    rows: [summaryRow(evaluated)],
+    count: 1,
+    historicalAuditOnly: {
+      provenance: 'historical-audit-only',
+      asOf: auditAsOf.toISOString(),
+      freshness: 'audit-only',
+      bindings: evidence.map((row) => ({
+        id: row.id,
+        evidenceKind: row.evidenceKind,
+        evidenceRef: row.evidenceRef,
+        createdAt: row.createdAt,
+        withdrawal: row.withdrawal ?? null,
+      })),
+    },
+  };
+}
+
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
