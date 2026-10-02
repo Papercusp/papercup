@@ -399,6 +399,8 @@ describe('actual current-build operator memory baseline', () => {
       samples: [], windows: [], requests: [], operations: [], cleanup: {},
       metricDefinitions: { pssBytes: 'smaps_rollup Pss kernel kB times 1024',
         heapAndNative: 'V8/Node counters, overlapping with PSS; no additive native-residual estimate',
+        heapSpaces: 'V8 getHeapSpaceStatistics per-space bytes; space membership can change across GC',
+        heapCode: 'V8 getHeapCodeStatistics bytes; code/source counters overlap heap/external and do not identify retainers',
         pinnedState: 'Reachable logical payloads under named roots; not total retained heap/native bytes',
         observerMs: 'wall time for inspector counter read and proc descendant census' },
       limits: { windows: 3, idleMs: 2000, requestsPerWindow: 8, concurrency: 2, descendantsPerSample: 64 },
@@ -505,7 +507,7 @@ describe('actual current-build operator memory baseline', () => {
       };
       const sample = async (label: string) => {
         const started = performance.now();
-        const memory = await readProcessMemory(client!, { expectedPid: counterPid, hostFacts: true });
+        const memory = await readProcessMemory(client!, { expectedPid: counterPid, hostFacts: true, allocationDetails: true });
         const pinnedState = process.env.PAPERCUSP_P011_PINNED_STATE ? await readPinnedState(client!, {
           ...effectivePinnedLimits,
           expectedPid: counterPid, owners: pinnedOwners, operatorCacheEntries,
@@ -523,6 +525,10 @@ describe('actual current-build operator memory baseline', () => {
         report.samples.push({ label, at: new Date().toISOString(), ...memory, os, counterOs,
           configuredHostRole: configuredHostRole(memory.hostFacts), pinnedState,
           descendants: childRows, inventory, observerMs: performance.now() - started }); publish();
+        expect(memory.heapSpaces.length).toBeGreaterThan(0);
+        expect(memory.heapSpaces.every((space: any) => typeof space.space_name === 'string' &&
+          Number.isFinite(space.space_used_size) && space.space_used_size >= 0)).toBe(true);
+        expect(Number.isFinite(memory.heapCode.code_and_metadata_size)).toBe(true);
       };
       const query = '/api/zero-harness/rest-query?name=workItems.byHarness&args=' +
         encodeURIComponent(JSON.stringify({ harnessSlug: 'papercusp', limit: 32 }));
