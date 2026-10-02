@@ -700,10 +700,11 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
       }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonError('invalid_request', 400);
       const fields = body as Record<string, unknown>;
-      // Only display text, the attempt key, the hosting choice and (bring-your-own-cloud only)
-      // the delegation configuration are read from the body. Tenant and identifier fields
+      // Only display text, the attempt key, the hosting choice, which of Papercusp's clouds
+      // (Papercusp hosting only, aws-byoc-gcp-parity D-017) and (bring-your-own-cloud only) the
+      // delegation configuration are read from the body. Tenant and identifier fields
       // (organization, workspace, host, connection, credential reference) come from the
-      // verified session or are server-derived.
+      // verified session or are server-derived; first-workspace validates `provider`.
       const result = await deps.firstWorkspace.run({
         organizationId: principal.activeOrganizationId,
         userId: principal.userId,
@@ -713,6 +714,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
         displayName: fields.displayName as string,
         label: fields.label as string,
         hosting: fields.hosting as never,
+        ...(fields.provider !== undefined ? { provider: fields.provider as never } : {}),
         configuration: fields.configuration as never,
       });
       if (!result.ok) {

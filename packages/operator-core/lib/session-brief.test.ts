@@ -26,13 +26,19 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 import {
   attestLifecycleConsumerView,
   clearSessionBriefReleasedForFleet,
+  clearPendingCarryRespawn,
+  consumePendingCarryRespawn,
   getSessionBriefAmbientExcludedRefs,
   getSessionBrief,
   getSessionBriefLifecycle,
   markSessionBriefPoisoned,
   markSessionBriefReleased,
+  PENDING_CARRY_RESPAWN_TTL_MS,
+  restorePendingCarryRespawn,
+  savePendingCarryRespawn,
   writeSessionBrief,
 } from './session-brief';
+import type { PendingCarryRespawn } from './session-brief';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 const identity: AgentIdentity = {
@@ -46,11 +52,13 @@ const identity: AgentIdentity = {
 /** A fake `sql` that records each call's interpolated values and returns `rows`. */
 function recordingSql(rows: unknown[] = []) {
   const calls: unknown[][] = [];
+  const statements: string[] = [];
   const sql = (_s: TemplateStringsArray, ...vals: unknown[]) => {
     calls.push(vals);
+    statements.push(_s.join(' ? '));
     return Promise.resolve(rows);
   };
-  return { sql, calls };
+  return { sql, calls, statements };
 }
 
 afterEach(() => {
@@ -411,5 +419,87 @@ describe('fleet release lifecycle helpers (EI-203843)', () => {
       markSessionBriefReleased('su-member', 'ws-1', { fleet: 'backend', at: 'now', by: 'leader' }),
     ).resolves.toBe(false);
     await expect(clearSessionBriefReleasedForFleet('ws-1', 'backend')).resolves.toBe(0);
+  });
+});
+
+describe('pending carry-respawn session-brief helpers', () => {
+  const slot: PendingCarryRespawn = {
+    nonce: 'carry-nonce-1',
+    createdAtMs: 1_000,
+    expiresAtMs: 1_000 + PENDING_CARRY_RESPAWN_TTL_MS,
+    firstPrompt: 'continue the current work',
+    systemPromptAddendum: 'persisted carry document',
+  };
+
+  it('saves a bounded one-shot payload without replacing the existing brief fields', async () => {
+    const rec = recordingSql([{ pending_carry_respawn: slot }]);
+    fakeSql = rec.sql;
+
+    await expect(
+      savePendingCarryRespawn(
+        identity,
+        { firstPrompt: slot.firstPrompt, systemPromptAddendum: slot.systemPromptAddendum },
+        { nowMs: slot.createdAtMs, nonce: slot.nonce },
+      ),
+    ).resolves.toEqual(slot);
+
+    expect(rec.calls).toHaveLength(1);
+    expect(rec.calls[0]).toEqual(expect.arrayContaining([
+      identity.ownerId,
+      identity.workspaceId,
+      JSON.stringify(slot),
+    ]));
+    expect(rec.statements[0]).toContain('pending_carry_respawn = EXCLUDED.pending_carry_respawn');
+    expect(rec.statements[0]).not.toContain('control_state = EXCLUDED.control_state');
+  });
+
+  it('refuses to create an empty payload without touching Postgres', async () => {
+    const rec = recordingSql([]);
+    fakeSql = rec.sql;
+
+    await expect(
+      savePendingCarryRespawn(identity, { firstPrompt: ' ', systemPromptAddendum: 'carry' }),
+    ).resolves.toBeNull();
+    expect(rec.calls).toHaveLength(0);
+  });
+
+  it('atomically consumes and validates a current payload', async () => {
+    const rec = recordingSql([{ pending_carry_respawn: slot }]);
+    fakeSql = rec.sql;
+
+    await expect(consumePendingCarryRespawn(identity.ownerId, { nowMs: slot.createdAtMs })).resolves.toEqual(slot);
+    expect(rec.statements[0]).toContain('UPDATE harness_shared.session_briefs');
+    expect(rec.statements[0]).toContain('pending_carry_respawn IS NOT NULL');
+    expect(rec.statements[0]).toContain('RETURNING pending_carry_respawn');
+    expect(rec.calls[0]).toContain(identity.ownerId);
+  });
+
+  it('drops an expired consumed payload instead of returning it to a later launch', async () => {
+    fakeSql = recordingSql([{ pending_carry_respawn: slot }]).sql;
+    await expect(
+      consumePendingCarryRespawn(identity.ownerId, { nowMs: slot.expiresAtMs }),
+    ).resolves.toBeNull();
+  });
+
+  it('restores a failed bootstrap slot only when no newer request has replaced it', async () => {
+    const newer = { ...slot, nonce: 'carry-nonce-2' };
+    const rec = recordingSql([{ pending_carry_respawn: newer }]);
+    fakeSql = rec.sql;
+
+    await expect(
+      restorePendingCarryRespawn(identity.ownerId, identity.workspaceId, slot, { nowMs: slot.createdAtMs }),
+    ).resolves.toBe(false);
+    expect(rec.calls[0]).toContain(JSON.stringify(slot));
+    expect(rec.statements[0]).toContain('COALESCE(');
+    expect(rec.statements[0]).toContain('harness_shared.session_briefs.pending_carry_respawn');
+  });
+
+  it('clears only the request whose host delivery was refused', async () => {
+    const rec = recordingSql([{ owner_id: identity.ownerId }]);
+    fakeSql = rec.sql;
+
+    await expect(clearPendingCarryRespawn(identity.ownerId, slot.nonce)).resolves.toBe(true);
+    expect(rec.calls[0]).toEqual(expect.arrayContaining([identity.ownerId, slot.nonce]));
+    expect(rec.statements[0]).toContain("pending_carry_respawn->>'nonce'");
   });
 });

@@ -33764,7 +33764,7 @@
           "POST"
         ]
       },
-      "description": "Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`\"none\"` or fact keys); deliberate record-only calls pass `recordOnly:true`. Check `finish.complete`/`stateWarning`.",
+      "description": "Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`\"none\"` or fact keys); deliberate record-only calls pass `recordOnly:true`.",
       "capabilities": [
         "work_items:write"
       ],
@@ -33790,8 +33790,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Pass `completion`, terminal `state`, and required `assumptions`. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted); read `results[].workItem.payload.out` from `work_items:get` (`payloadTier:\"full\"`). Universal claims require `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `[\"none\"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Keep `verification.tests`, `verification.typecheck`, `verification.diff` out of `completion.verification`. Removals: `filesDeleted`; duplicates: `completion.duplicateOf`.",
-        "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.",
+        "when": "Pass `completion`, terminal `state`, required `assumptions`. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted); read `results[].workItem.payload.out` from `work_items:get` (`payloadTier:\"full\"`). Universal claims require `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `[\"none\"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Keep `verification.tests`, `verification.typecheck`, `verification.diff` out of `completion.verification`. Removals: `filesDeleted`; dupes: `completion.duplicateOf`.",
+        "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize; never non-work/human-audience rows.",
         "chaining": "work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits."
       }
     },
@@ -34838,7 +34838,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with ids:[…] or items[]. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:\"blocks\" }; bare blocked is refused. Plan-linked feature blocks use plans:set-status. Before `force:true`, read terminalOwner/ref. If work_items:complete times out, first re-read work_items:get; if the item is still open, retry the exact same completion payload (including assumptions). If you use work_items:set_state as the fallback, carry the same assumptions declaration and pass completionRef too. Shape: an ARRAY of facts:assert keys — assumptions: [\"my-fact-key\"] (note the brackets, even for a single key) — or the bare literal assumptions: \"none\".",
+        "when": "Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:\"blocks\" }; bare blocked is refused. Before `force:true`, read terminalOwner/ref. If work_items:complete times out, first re-read work_items:get; if the item is still open, retry the exact same completion payload (including assumptions). If you use work_items:set_state as the fallback, carry the same assumptions declaration and pass completionRef too. Shape: an ARRAY of facts:assert keys — assumptions: [\"my-fact-key\"] (note the brackets, even for a single key) — or the bare literal assumptions: \"none\".",
+        "notWhen": "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
         "chaining": "work_items:claim → work_items:set_blocker or work_items:link → work_items:set_state; terminal writes use completionRef + assumptions."
       }
     },

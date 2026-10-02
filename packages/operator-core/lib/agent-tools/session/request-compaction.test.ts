@@ -187,6 +187,17 @@ vi.mock('../../compaction-usage', async () => {
   };
 });
 
+const savePendingCarryRespawn = vi.hoisted(() => vi.fn());
+const clearPendingCarryRespawn = vi.hoisted(() => vi.fn());
+vi.mock('../../session-brief', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../session-brief')>();
+  return {
+    ...actual,
+    savePendingCarryRespawn: (...a: unknown[]) => savePendingCarryRespawn(...a),
+    clearPendingCarryRespawn: (...a: unknown[]) => clearPendingCarryRespawn(...a),
+  };
+});
+
 const tool = (await import('./request-compaction')).default;
 
 it('opts out of the ambient workspace transaction because the handler never reads ctx.tx', () => {
@@ -261,6 +272,14 @@ beforeEach(async () => {
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   delete process.env.PAPERCUSP_FLUSH_GATE;
   injectIntoHost.mockResolvedValue(true);
+  savePendingCarryRespawn.mockResolvedValue({
+    nonce: 'pending-carry-nonce',
+    createdAtMs: 1,
+    expiresAtMs: 900_001,
+    firstPrompt: 'saved successor prompt',
+    systemPromptAddendum: 'saved carry addendum',
+  });
+  clearPendingCarryRespawn.mockResolvedValue(true);
   resolveSelfSession.mockResolvedValue(null);
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   detectRespawnStorm.mockResolvedValue(NO_STORM);
@@ -424,6 +443,40 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
       budgetChars: 24_000,
       firstPromptSource: 'continuation-note',
     });
+  });
+
+  it('persists the exact first prompt and addendum before asking the host to respawn', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const order: string[] = [];
+    savePendingCarryRespawn.mockImplementation(async (_identity: unknown, payload: unknown) => {
+      order.push('persist');
+      return { nonce: 'pending-carry-nonce', ...(payload as Record<string, unknown>) };
+    });
+    injectIntoHost.mockImplementation(async () => {
+      order.push('inject');
+      return true;
+    });
+
+    const result = body(await call({ focus: 'continue the preserved unit' }));
+    const msg = injected();
+
+    expect(order).toEqual(['persist', 'inject']);
+    expect(savePendingCarryRespawn).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-caller' }),
+      { firstPrompt: msg.data, systemPromptAddendum: 'CARRY-DOC-ADDENDUM' },
+    );
+    expect(result).toMatchObject({ ok: true, requested: true, respawn: 'queued' });
+  });
+
+  it('does not send a carry-respawn when the durable save returns no slot', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    savePendingCarryRespawn.mockResolvedValue(null);
+
+    const out = await call({ focus: 'continue the preserved unit' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'carry_persist_failed' });
+    expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
   it('refuses the historical staging-candidate focus before any host or fallback persistence', async () => {
@@ -833,6 +886,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     injectIntoHost.mockResolvedValue(false);
     const b = body(await call({ focus: 'x' }));
     expect(b).toMatchObject({ ok: false, requested: false, respawn: false });
+    expect(clearPendingCarryRespawn).toHaveBeenCalledWith('su-caller', 'pending-carry-nonce');
   });
 
   // EI-18686525818431054: the default injectIntoHost socket timeout (2000ms) is

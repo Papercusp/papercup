@@ -279,12 +279,14 @@ async function runOne(o: {
   workdir: WorkdirMode;
   pathMode: PathMode;
   pathPrepend?: string;
+  agentEnv?: Record<string, string>;
 }): Promise<AgentRun> {
   const { meta, slot, iteration, runId } = o;
   const instance = `${runId}-s${slot}-i${iteration}`;
-  const workDir = path.join(o.cacheDir, 'replay-work', runId, `s${slot}-i${iteration}`);
-  const home = path.join(o.cacheDir, 'replay-home', runId, `s${slot}-i${iteration}`);
   const prepared = path.join(o.cacheDir, 'prepared', meta.repo.name);
+  // `shared`: every session works in the prepared checkout itself, as hosted sessions share one tree.
+  const workDir = o.workdir === 'shared' ? prepared : path.join(o.cacheDir, 'replay-work', runId, `s${slot}-i${iteration}`);
+  const home = path.join(o.cacheDir, 'replay-home', runId, `s${slot}-i${iteration}`);
   if (!existsSync(prepared)) throw new Error(`prepared checkout missing: ${prepared}`);
   const setupT0 = Date.now();
   const checkout = await prepareWorkdir(o.workdir, prepared, workDir);
@@ -299,6 +301,9 @@ async function runOne(o: {
     writeFileSync(path.join(home, 'config.toml'), codexConfigToml(base));
     env = { ...cleanEnv(process.env), CODEX_HOME: home };
   }
+  // cleanEnv drops every PAPERCUSP_* variable, so a host-provided agent variable (hostedFixedEnv's
+  // tsc-service template, for one) must be passed explicitly to reach the session.
+  if (o.agentEnv) env = { ...env, ...o.agentEnv };
   const PATH = replayPath(o.pathMode, env.PATH, meta, o.pathPrepend);
   if (PATH !== undefined) env.PATH = PATH;
   const argv = [meta.cli, ...cliArgs(meta.cli, promptFor(o.corpus, meta.task), workDir, meta.claudeModel ?? 'sonnet')];
@@ -388,7 +393,26 @@ export interface DriverOptions {
   pathMode?: PathMode;
   /** A directory put first on every session's PATH (a pinned CLI build). */
   pathPrepend?: string;
+  /** Variables added to every session's env after the CLI env is built; see parseAgentEnv. */
+  agentEnv?: Record<string, string>;
   onRun?: (r: AgentRun) => void;
+}
+
+/**
+ * `--agent-env 'KEY=VALUE;KEY2=VALUE2'` → the variables added to every session's env. Keys must be
+ * shell variable names; a value may contain `=` but not `;`. Absent or empty → none.
+ */
+export function parseAgentEnv(spec: string | undefined): Record<string, string> | undefined {
+  if (!spec?.trim()) return undefined;
+  const env: Record<string, string> = {};
+  for (const pair of spec.split(';')) {
+    if (!pair.trim()) continue;
+    const eq = pair.indexOf('=');
+    const key = eq < 0 ? '' : pair.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`--agent-env: expected KEY=VALUE, got "${pair}"`);
+    env[key] = pair.slice(eq + 1);
+  }
+  return env;
 }
 
 export async function drive(o: DriverOptions): Promise<AgentRun[]> {
@@ -408,7 +432,7 @@ export async function drive(o: DriverOptions): Promise<AgentRun[]> {
     for (let it = 0; ; it++) {
       const meta = pick(s, it);
       if (!meta) break;
-      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork, workdir: o.workdir ?? 'copy', pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend });
+      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork, workdir: o.workdir ?? 'copy', pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend, agentEnv: o.agentEnv });
       runs.push(r);
       appendFileSync(path.join(o.outDir, 'agents.jsonl'), JSON.stringify(r) + '\n');
       o.onRun?.(r);
@@ -489,7 +513,8 @@ async function main(): Promise<void> {
   const isolation = arg('isolation', 'systemd');
   if (isolation !== 'systemd' && isolation !== 'none') throw new Error('--isolation systemd|none');
   const workdir = arg('workdir', 'copy');
-  if (workdir !== 'copy' && workdir !== 'overlay') throw new Error('--workdir copy|overlay');
+  if (workdir !== 'copy' && workdir !== 'overlay' && workdir !== 'shared') throw new Error('--workdir copy|overlay|shared');
+  const agentEnv = parseAgentEnv(arg('agent-env'));
   // --check: everything above (the whole import graph, tasks file, corpus, selection, CLI versions)
   // validated, nothing driven. Ramp scripts run this before their first step so a broken driver
   // fails in seconds with its real error instead of reading as a saturated step (P-529, 2026-10-01:
@@ -517,6 +542,7 @@ async function main(): Promise<void> {
     sweep: process.argv.includes('--sweep'),
     pathMode,
     pathPrepend,
+    agentEnv,
     onRun: (r) =>
       console.log(
         `RUN ${r.instance} ${r.sessionId} exit=${r.exitCode} timedOut=${r.timedOut} wallMs=${r.wallMs}/${r.recordedWallMs} peakMiB=${r.memPeakBytes === null ? '?' : (r.memPeakBytes / 2 ** 20).toFixed(0)} cpuS=${r.cpuUsec === null ? '?' : (r.cpuUsec / 1e6).toFixed(1)} served=${JSON.stringify(r.served)} tools=${r.toolOutcomes.replayed.results}/${r.toolOutcomes.recorded?.results ?? '?'} toolErrors=${r.toolOutcomes.replayed.errors}/${r.toolOutcomes.recorded?.errors ?? '?'}${r.diverged ? ' DIVERGED' : ''}${r.toolDiverged ? ' TOOL_DIVERGED' : ''}`,

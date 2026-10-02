@@ -123,6 +123,22 @@ printf '{"runs":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"a
     expect(() => readFileSync(path.join(home, 'npx.log'), 'utf8')).toThrow();
   });
 
+  it('AGENT_ENV reaches every step as --agent-env, and a shared tree reports its drift per step', () => {
+    const r = run({ AGENT_ENV: 'PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE=papercusp-tsc-service', WORKDIR: 'shared' }, 'p529-b', 'all', '12');
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(path.join(home, 'npx.log'), 'utf8')).toContain(
+      '--run-id p005-p529-b-n12 --isolation systemd --workdir shared --agent-env PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE=papercusp-tsc-service',
+    );
+    expect(r.stdout).toMatch(/^RAMP_SHARED_TREE run=p005-p529-b-n12 dirty=\d+$/m);
+  });
+
+  it('without AGENT_ENV no --agent-env is passed, and a private workdir prints no shared-tree line', () => {
+    const r = run({}, 'p529-a', 'all', '12');
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(path.join(home, 'npx.log'), 'utf8')).not.toContain('--agent-env');
+    expect(r.stdout).not.toContain('RAMP_SHARED_TREE');
+  });
+
   it('TASKS_FILE reaches the preflight and every step as --tasks-file', () => {
     const r = run({ TASKS_FILE: '/corpus/tasks.json' }, 'p529-a', 'all', '12');
     expect(r.status, r.stderr).toBe(0);

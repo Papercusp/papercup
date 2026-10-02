@@ -73,8 +73,19 @@ export type HostedProviderDelegationConfiguration =
   /**
    * `region` is where the customer's stack builds the host's network (D-009); a hosted
    * customer role defaults it to {@link HOSTED_AWS_DEFAULT_REGION}.
+   *
+   * `papercuspHosted` marks "Use Papercusp's cloud" on AWS (aws-byoc-gcp-parity P-015, D-017):
+   * the same customer-role chain, with Papercusp's hosting account standing in for the customer's
+   * and the organization's hosting role confined by AWS to `hostId`. Server-derived only: it binds
+   * through {@link bindPapercuspHostedDelegation}, never from a request.
    */
-  | { provider: 'aws'; accountId: string; region?: string; source: HostedAwsCredentialSource }
+  | {
+      provider: 'aws';
+      accountId: string;
+      region?: string;
+      source: HostedAwsCredentialSource;
+      papercuspHosted?: { hostId: string };
+    }
   | { provider: 'azure'; cloud?: AzureCloudEnvironment; source: HostedAzureCredentialSource };
 
 export interface HostedProviderDelegationOnboardingInput {
@@ -163,7 +174,22 @@ export interface HostedDelegationOrganization {
    * trusts exactly this principal, with exactly this ExternalId.
    */
   awsTrustedPrincipal(): Promise<{ principalArn: string; externalIdRef: string }>;
+  /**
+   * "Use Papercusp's cloud" on AWS (P-015, D-017): create or converge the organization's hosting
+   * role in Papercusp's hosting account, confined by AWS to `hostId`, and return the customer-role
+   * chain that reaches it.
+   */
+  awsPapercuspHosting(hostId: string): Promise<{
+    accountId: string;
+    region: string;
+    roleArn: string;
+    trustedPrincipalArn: string;
+    externalIdRef: string;
+  }>;
 }
+
+/** Which cloud "Use Papercusp's cloud" places a host in (D-017 rule 6). */
+export type PapercuspHostedProvider = 'gcp' | 'aws';
 
 /**
  * Stamp an onboarding input with its organization and, for GCP, the organization's own
@@ -184,6 +210,10 @@ export async function bindDelegationToOrganization<
     const source = configuration.source as { environment?: unknown; method?: unknown } | undefined;
     if (source?.environment !== 'hosted' || source.method !== 'customer-role') {
       throw new Error('hosted_provider_delegation_aws_method_not_organization_bound');
+    }
+    // A Papercusp-hosted AWS host must be server-derived (D-017), exactly as GCP's (D-399).
+    if ((configuration as { papercuspHosted?: unknown }).papercuspHosted !== undefined) {
+      throw new Error('hosted_provider_delegation_aws_papercusp_hosted_not_organization_bound');
     }
     const { principalArn, externalIdRef } = await organization.awsTrustedPrincipal();
     return {
@@ -220,9 +250,32 @@ export async function bindPapercuspHostedDelegation<
   input: T,
   organization: HostedDelegationOrganization,
   hostId: string,
+  provider: PapercuspHostedProvider = 'gcp',
 ): Promise<T & { organizationId: string; configuration: HostedProviderDelegationConfiguration }> {
   const organizationId = requirePattern(organization.organizationId, SAFE_ID, 'organizationId');
   const reserved = requirePattern(hostId, SAFE_ID, 'hostId');
+  if (provider === 'aws') {
+    // D-017: the hosted customer-role chain with Papercusp's hosting account as the customer.
+    const hosting = await organization.awsPapercuspHosting(reserved);
+    return {
+      ...input,
+      organizationId,
+      configuration: {
+        provider: 'aws',
+        accountId: hosting.accountId,
+        region: hosting.region,
+        source: {
+          environment: 'hosted',
+          method: 'customer-role',
+          roleArn: hosting.roleArn,
+          trustedPrincipalArn: hosting.trustedPrincipalArn,
+          externalIdRef: hosting.externalIdRef,
+        },
+        papercuspHosted: { hostId: reserved },
+      },
+    };
+  }
+  if (provider !== 'gcp') throw new Error('hosted_provider_delegation_papercusp_hosted_provider_unsupported');
   const hosting = await organization.gcpPapercuspHosting(reserved);
   return {
     ...input,
@@ -422,7 +475,21 @@ function normalizeConfiguration(
       const region = value.source.method === 'customer-role'
         ? requirePattern(value.region ?? HOSTED_AWS_DEFAULT_REGION, HOSTED_AWS_REGION, 'region')
         : value.region === undefined ? undefined : requirePattern(value.region, HOSTED_AWS_REGION, 'region');
-      return { provider: value.provider, accountId, ...(region ? { region } : {}), source: value.source };
+      let papercuspHosted: { hostId: string } | undefined;
+      if (value.papercuspHosted !== undefined) {
+        // D-017: Papercusp hosting is the customer-role chain; no other method can carry it.
+        if (value.source.method !== 'customer-role') {
+          throw new Error('AWS Papercusp hosting requires the customer-role method');
+        }
+        papercuspHosted = { hostId: requirePattern(value.papercuspHosted?.hostId, SAFE_ID, 'papercuspHosted.hostId') };
+      }
+      return {
+        provider: value.provider,
+        accountId,
+        ...(region ? { region } : {}),
+        source: value.source,
+        ...(papercuspHosted ? { papercuspHosted } : {}),
+      };
     }
     case 'azure':
       if (value.source.environment !== 'hosted') throw new Error('Azure hosted onboarding requires a hosted source');
@@ -489,7 +556,24 @@ function awsTemplate(
   accountId: string,
   source: HostedAwsCredentialSource,
   region: string | undefined,
+  papercuspHosted?: { hostId: string },
 ): HostedProviderDelegationTemplate {
+  if (papercuspHosted && source.method === 'customer-role') {
+    // D-017: nothing for the customer to apply; Papercusp writes the hosting role in its own
+    // account. The document records WHAT that role is scoped to, so the digest changes if the
+    // reservation does (the twin of the GCP papercusp-hosted template).
+    return {
+      format: 'aws-cloudformation-json',
+      document: {
+        managedBy: 'papercusp',
+        accountId,
+        region: region ?? HOSTED_AWS_DEFAULT_REGION,
+        roleArn: source.roleArn,
+        trustedPrincipalArn: source.trustedPrincipalArn,
+        hostId: papercuspHosted.hostId,
+      },
+    };
+  }
   // D-009: a customer role's stack also builds the host's network, instance profile, KMS key
   // and launch template in `region`, the AWS twin of the GCP managed network.
   const host = source.method === 'customer-role' && region ? hostedAwsHostStackFragment(accountId, region) : null;
@@ -605,7 +689,7 @@ export function buildHostedProviderDelegationOnboarding(
   const template = configuration.provider === 'gcp'
     ? gcpTemplate(configuration.source)
     : configuration.provider === 'aws'
-      ? awsTemplate(configuration.accountId, configuration.source, configuration.region)
+      ? awsTemplate(configuration.accountId, configuration.source, configuration.region, configuration.papercuspHosted)
       : azureTemplate(configuration.source);
   assertWorkspaceHostSecretIsolation(template, 'hostedProviderDelegation.template');
   const timestamp = now(input.now);
@@ -671,9 +755,10 @@ export class HostedProviderDelegationManager {
   async onboardPapercuspHosted(
     input: Omit<HostedProviderDelegationOnboardingInput, 'organizationId' | 'configuration'>,
     hostId: string,
+    provider: PapercuspHostedProvider = 'gcp',
   ): Promise<HostedProviderDelegationOnboarding> {
     const onboarding = buildHostedProviderDelegationOnboarding(
-      await bindPapercuspHostedDelegation(input, this.organization, hostId),
+      await bindPapercuspHostedDelegation(input, this.organization, hostId, provider),
     );
     await this.store.save(onboarding.record);
     return onboarding;

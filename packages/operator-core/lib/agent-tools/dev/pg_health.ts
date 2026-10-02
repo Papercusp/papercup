@@ -46,6 +46,7 @@ export default defineTool({
       capturedAt: new Date().toISOString(),
       coverage: 'completed-results-in-selected-pools-only' as const,
       timing: 'query-build-to-terminal-not-acquisition' as const,
+      preBuildTiming: 'first-query-handle-to-build-excludes-lazy-time' as const,
       queryIdentity: ['source.processInstanceId', 'source.poolInstanceId', 'connectionId', 'queryId'],
       resultLimitPerPool,
       limitations:
@@ -55,7 +56,9 @@ export default defineTool({
         'Evicted result linkage is unavailable. correlationState=unobserved means no captured attempt, ' +
         'unknown means its context could not be read safely; neither means no business work occurred. ' +
         'Correlation records query creation, not current attempt liveness. elapsedMs spans build to terminal ' +
-        'ReadyForQuery, not acquisition, CPU, GC or root cause. Non-ReadyForQuery failures are not covered.',
+        'ReadyForQuery, not acquisition, CPU, GC or root cause. preBuildMs spans first Query.handle to build, ' +
+        'including queue/connect/preparation but excluding caller-controlled lazy time; it is not pure acquisition ' +
+        'or CPU, and null means unmeasured. Non-ReadyForQuery failures are not covered.',
       pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint'].map((pool) => {
         const snapshot = pgResultDiagnosticSnapshot(pool, resultLimitPerPool);
         const retained = snapshot.totalRecorded - snapshot.dropped;

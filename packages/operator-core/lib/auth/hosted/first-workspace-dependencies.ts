@@ -115,8 +115,8 @@ export function createHostedFirstWorkspaceDependencies(
 
     readDelegation: (workspaceId, connectionId) => store.read(workspaceId, connectionId),
     onboardDelegation: (input) => manager(input.organizationId).onboard(input),
-    onboardPapercuspHostedDelegation: (organizationId, input, hostId) =>
-      manager(organizationId).onboardPapercuspHosted(input, hostId),
+    onboardPapercuspHostedDelegation: (organizationId, input, hostId, provider) =>
+      manager(organizationId).onboardPapercuspHosted(input, hostId, provider),
     verifyDelegation: (organizationId, workspaceId, connectionId) =>
       manager(organizationId).verify(workspaceId, connectionId),
     discoverAwsHostInfrastructure: (record) => discoverHostedAwsHostInfrastructure(record, options.awsHostDiscovery),

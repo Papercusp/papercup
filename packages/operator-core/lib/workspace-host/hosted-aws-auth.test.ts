@@ -15,8 +15,17 @@ import {
   awsDelegationOrganization,
   awsProviderDelegationAdapter,
   ensureOrganizationDelegationRole,
+  ensurePapercuspAwsHostingRole,
   type HostedAwsSender,
 } from './hosted-aws-auth';
+import {
+  HOSTED_AWS_HOSTING_ADMIN_ROLE_ENV,
+  HOSTED_AWS_WORKSPACE_ACCOUNT_ENV,
+  HostedAwsNotReadyError,
+  PAPERCUSP_HOSTED_AWS_HOST_POLICY,
+  papercuspHostingRoleArn,
+  papercuspHostingRoleName,
+} from './hosted-aws-hosting';
 import {
   HOSTED_AWS_CONTROL_PLANE_ACCOUNT_ENV,
   HOSTED_AWS_CONTROL_PLANE_PRINCIPAL_ENV,
@@ -342,5 +351,179 @@ describe('awsProviderDelegationAdapter.verify — the real role chain', () => {
 
   it('records a revocation as delegation evidence', async () => {
     await expect(adapter().revoke(record())).resolves.toEqual({ evidenceRef: 'delegation://workspace-1/connection-1/3/revoked' });
+  });
+});
+
+// ── "Use Papercusp's cloud" on AWS (aws-byoc-gcp-parity P-015, D-017) ──────────────────────────
+const HOSTING_ACCOUNT = '888888888888';
+const HOSTING_ROLE = papercuspHostingRoleArn('org-a', HOSTING_ACCOUNT);
+const HOSTED_ENV = { ...ENV, [HOSTED_AWS_WORKSPACE_ACCOUNT_ENV]: HOSTING_ACCOUNT };
+
+function invalidPrincipal(): Error {
+  return Object.assign(new Error(`Invalid principal in policy: "AWS":"${ORG_ROLE}"`), {
+    name: 'MalformedPolicyDocumentException',
+  });
+}
+
+function commandNames(sender: { sent: unknown[] }): string[] {
+  return sender.sent.map((command) => (command as object).constructor.name);
+}
+
+describe('ensurePapercuspAwsHostingRole (D-017)', () => {
+  const input = (iam: HostedAwsSender, hostId = 'host-a') => ({
+    organizationId: 'org-a',
+    hostId,
+    accountId: HOSTING_ACCOUNT,
+    organizationRoleArn: ORG_ROLE,
+    iam,
+  });
+
+  it("creates the hosting role trusting only the org's own role with the org's ExternalId, then confines it to the host", async () => {
+    const iam = recorder();
+    await expect(ensurePapercuspAwsHostingRole(input(iam))).resolves.toBe(HOSTING_ROLE);
+    expect(commandNames(iam)).toEqual(['CreateRoleCommand', 'PutRolePolicyCommand']);
+    const create = (iam.sent[0] as CreateRoleCommand).input;
+    expect(create.RoleName).toBe(papercuspHostingRoleName('org-a'));
+    // The customer-role prefix at the root path: the per-org chain policy already covers it.
+    expect(create.RoleName?.startsWith('PapercuspWorkspaceHost-')).toBe(true);
+    expect(create.Path).toBeUndefined();
+    expect(JSON.parse(create.AssumeRolePolicyDocument ?? '{}').Statement).toEqual([{
+      Effect: 'Allow',
+      Principal: { AWS: ORG_ROLE },
+      Action: 'sts:AssumeRole',
+      Condition: { StringEquals: { 'sts:ExternalId': ORG_EXTERNAL_ID } },
+    }]);
+    const put = (iam.sent[1] as PutRolePolicyCommand).input;
+    expect(put.RoleName).toBe(papercuspHostingRoleName('org-a'));
+    expect(put.PolicyName).toBe(PAPERCUSP_HOSTED_AWS_HOST_POLICY);
+    const statements = JSON.parse(put.PolicyDocument ?? '{}').Statement as Array<{ Sid: string; Condition?: unknown }>;
+    expect(statements.find((statement) => statement.Sid === 'HostInstance')?.Condition)
+      .toEqual({ StringEquals: { 'aws:ResourceTag/papercusp:host-id': 'host-a' } });
+  });
+
+  it('re-asserts the trust of an existing role and rewrites its host confinement for the host now reserved', async () => {
+    const iam = recorder((command) => {
+      if (command instanceof CreateRoleCommand) throw awsError('EntityAlreadyExistsException');
+      return {};
+    });
+    await ensurePapercuspAwsHostingRole(input(iam, 'host-b'));
+    expect(commandNames(iam)).toEqual(['CreateRoleCommand', 'UpdateAssumeRolePolicyCommand', 'PutRolePolicyCommand']);
+    const update = (iam.sent[1] as UpdateAssumeRolePolicyCommand).input;
+    expect(JSON.parse(update.PolicyDocument ?? '{}').Statement[0].Principal).toEqual({ AWS: ORG_ROLE });
+    expect((iam.sent[2] as PutRolePolicyCommand).input.PolicyDocument).toContain('"host-b"');
+  });
+
+  it("reports an org role IAM cannot see yet as not-ready, and attaches nothing", async () => {
+    const onCreate = recorder((command) => {
+      if (command instanceof CreateRoleCommand) throw invalidPrincipal();
+      return {};
+    });
+    await expect(ensurePapercuspAwsHostingRole(input(onCreate))).rejects.toBeInstanceOf(HostedAwsNotReadyError);
+    expect(commandNames(onCreate)).toEqual(['CreateRoleCommand']);
+
+    const onUpdate = recorder((command) => {
+      if (command instanceof CreateRoleCommand) throw awsError('EntityAlreadyExistsException');
+      if (command instanceof UpdateAssumeRolePolicyCommand) throw invalidPrincipal();
+      return {};
+    });
+    await expect(ensurePapercuspAwsHostingRole(input(onUpdate))).rejects.toBeInstanceOf(HostedAwsNotReadyError);
+    expect(commandNames(onUpdate)).toEqual(['CreateRoleCommand', 'UpdateAssumeRolePolicyCommand']);
+  });
+
+  it('fails as-is on any other IAM refusal, and writes nothing for an invalid host', async () => {
+    const denied = recorder((command) => {
+      if (command instanceof CreateRoleCommand) throw awsError('AccessDenied');
+      return {};
+    });
+    await expect(ensurePapercuspAwsHostingRole(input(denied))).rejects.toThrow('AccessDenied');
+    expect(denied.sent).toHaveLength(1);
+    const iam = recorder();
+    await expect(ensurePapercuspAwsHostingRole(input(iam, 'host a; *'))).rejects.toThrow('aws_workspace_host_papercusp_hosting_host_invalid');
+    expect(iam.sent).toEqual([]);
+  });
+});
+
+describe('awsDelegationOrganization.awsPapercuspHosting (D-017)', () => {
+  it("ensures the org role in the control-plane account, then the hosting role in the hosting account, and returns the chain", async () => {
+    const iam = recorder();
+    const hostingIam = recorder();
+    const hosting = await awsDelegationOrganization('org-a', { env: HOSTED_ENV, iam, hostingIam }).awsPapercuspHosting('host-a');
+    expect(hosting).toEqual({
+      accountId: HOSTING_ACCOUNT,
+      region: 'us-east-1',
+      roleArn: HOSTING_ROLE,
+      trustedPrincipalArn: ORG_ROLE,
+      externalIdRef: organizationExternalIdRef('org-a'),
+    });
+    expect(commandNames(iam)).toEqual(['CreateRoleCommand', 'PutRolePolicyCommand']);
+    expect((iam.sent[0] as CreateRoleCommand).input.RoleName).toBe(organizationDelegationRoleName('org-a'));
+    expect(commandNames(hostingIam)).toEqual(['CreateRoleCommand', 'PutRolePolicyCommand']);
+    expect((hostingIam.sent[0] as CreateRoleCommand).input.RoleName).toBe(papercuspHostingRoleName('org-a'));
+  });
+
+  it('writes the hosting role with control-plane IAM only when the hosting account IS the control-plane account', async () => {
+    const iam = recorder();
+    const env = { ...ENV, [HOSTED_AWS_WORKSPACE_ACCOUNT_ENV]: CONTROL_ACCOUNT };
+    const hosting = await awsDelegationOrganization('org-a', { env, iam }).awsPapercuspHosting('host-a');
+    expect(hosting.roleArn).toBe(papercuspHostingRoleArn('org-a', CONTROL_ACCOUNT));
+    expect(commandNames(iam)).toEqual(['CreateRoleCommand', 'PutRolePolicyCommand', 'CreateRoleCommand', 'PutRolePolicyCommand']);
+  });
+
+  it('refuses, before writing anything, a hosting account it cannot reach or that is not configured', async () => {
+    const iam = recorder();
+    // Another account and no hosting-admin role: control-plane IAM would write into the WRONG account.
+    await expect(awsDelegationOrganization('org-a', { env: HOSTED_ENV, iam }).awsPapercuspHosting('host-a'))
+      .rejects.toThrow('aws_workspace_host_papercusp_hosting_admin_role_required');
+    const elsewhere = { ...HOSTED_ENV, [HOSTED_AWS_HOSTING_ADMIN_ROLE_ENV]: 'arn:aws:iam::777777777777:role/PapercuspHostingAdmin' };
+    await expect(awsDelegationOrganization('org-a', { env: elsewhere, iam }).awsPapercuspHosting('host-a'))
+      .rejects.toThrow('aws_workspace_host_papercusp_hosting_admin_role_account_mismatch');
+    await expect(awsDelegationOrganization('org-a', { env: ENV, iam }).awsPapercuspHosting('host-a'))
+      .rejects.toThrow('aws_workspace_host_papercusp_hosting_account_unconfigured');
+    expect(iam.sent).toEqual([]);
+  });
+});
+
+describe('awsProviderDelegationAdapter.verify — a Papercusp-hosted record (D-017)', () => {
+  function hostedRecord(overrides: { accountId?: string; roleArn?: string } = {}): HostedProviderDelegationRecord {
+    const base = record();
+    const accountId = overrides.accountId ?? HOSTING_ACCOUNT;
+    return {
+      ...base,
+      configuration: {
+        provider: 'aws',
+        accountId,
+        region: 'us-east-1',
+        source: {
+          environment: 'hosted',
+          method: 'customer-role',
+          roleArn: overrides.roleArn ?? HOSTING_ROLE,
+          trustedPrincipalArn: ORG_ROLE,
+          externalIdRef: organizationExternalIdRef('org-a'),
+        },
+        papercuspHosted: { hostId: 'host-a' },
+      },
+    };
+  }
+  const hostedAdapter = () =>
+    awsProviderDelegationAdapter({ env: HOSTED_ENV, controlPlaneCredentials: ROOT as never, sts: stsFake() as never });
+
+  it("walks the same chain into the organization's hosting role, ExternalId enforcement included", async () => {
+    sim.trust = (roleArn, caller, externalId) => {
+      if (roleArn === ORG_ROLE) return caller === CONTROL_PRINCIPAL;
+      return roleArn === HOSTING_ROLE && caller === ORG_ROLE && externalId === ORG_EXTERNAL_ID;
+    };
+    const result = await hostedAdapter().verify(hostedRecord());
+    expect(result.identity).toBe(`arn:aws:sts::${HOSTING_ACCOUNT}:assumed-role/${papercuspHostingRoleName('org-a')}/papercusp-workspace-host`);
+    expect(sim.hops.at(-1)).toEqual({ roleArn: HOSTING_ROLE, externalId: undefined, as: ORG_ROLE });
+  });
+
+  it("refuses, before calling AWS, a hosted record outside Papercusp's hosting account or naming another organization's role", async () => {
+    await expect(hostedAdapter().verify(hostedRecord({
+      accountId: CUSTOMER_ACCOUNT,
+      roleArn: papercuspHostingRoleArn('org-a', CUSTOMER_ACCOUNT),
+    }))).rejects.toThrow('hosted_provider_delegation_aws_papercusp_hosted_account_mismatch');
+    await expect(hostedAdapter().verify(hostedRecord({ roleArn: papercuspHostingRoleArn('org-b', HOSTING_ACCOUNT) })))
+      .rejects.toThrow('hosted_provider_delegation_aws_papercusp_hosted_role_not_organization');
+    expect(sim.hops).toEqual([]);
   });
 });

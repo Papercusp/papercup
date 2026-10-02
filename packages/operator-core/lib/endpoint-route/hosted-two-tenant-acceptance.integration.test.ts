@@ -224,6 +224,9 @@ function delegationOrganization(organizationId: string): HostedDelegationOrganiz
       principalArn: `arn:aws:iam::999999999999:role/papercusp/orgs/pco-${organizationId}`,
       externalIdRef: `resolver://aws-external-id/${organizationId}`,
     }),
+    awsPapercuspHosting: async () => {
+      throw new Error('aws_papercusp_hosting_not_exercised_by_this_acceptance');
+    },
   };
 }
 

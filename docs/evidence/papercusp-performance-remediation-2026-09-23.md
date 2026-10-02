@@ -25,7 +25,11 @@ Separately, P006 clean committed tests at `920030a3b939` passed all 41 tests
 across three files with zero skips. Exact terminal rows 20499866, 20500782 and
 20500781 record clean execution. Source hashes and the retained clone are in
 [p006-current-clean-contracts-2026-10-02.json](p006-current-clean-contracts-2026-10-02.json).
-Negative controls, fresh evidence bindings and governing acceptance remain open.
+Five maintained lifecycle fault controls each caught the named fault while the
+independent calibration passed. Fresh one-to-one evidence was bound and selected
+before twelve stale bindings were withdrawn; historical runs and the baseline
+were preserved. The governing evaluator now passes BLOCKER@3 and TERMINAL@3.
+Other P006 clauses, rubric ratification, scorecard reuse and shipment remain open.
 
 ## Shared target-schema readiness — 2026-10-02, Fire161
 

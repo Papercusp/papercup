@@ -227,6 +227,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'the caller identity has no authored grant for this tool; expected kernel refusal, not a structural tool defect',
   },
+  {
+    n: 3, errorCode: 'handler_error', status: 'error',
+    message: 'missing_capability: Principal "system:judge" lacks capability "intel:read" (tool: dev:pg_query) — This is a judge-scoped MCP session; this principal lacks intel:read for dev:pg_query. `tools:invoke` preserves the same judge principal, so do not retry it in this session: it will be denied identically. Use a separate authorized su/operator session through the papercusp-su MCP server to invoke the tool.',
+    expectedClass: 'caller',
+    note: 'tools:invoke preserves the judge principal and wraps this expected missing_capability refusal as handler_error; the preserved code prefix must route to caller, not the structural bug lane',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

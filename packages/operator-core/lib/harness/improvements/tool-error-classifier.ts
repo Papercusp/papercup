@@ -75,7 +75,8 @@ export interface ToolErrorRule {
  *  ("exceeded timeout … handler returned but signal had aborted"). */
 export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
 
-/** Caller-side arg/scope error in the MESSAGE: an `invalid_args:` prefix
+/** Caller-side auth/arg/scope error in the MESSAGE: a retained
+ *  `missing_capability:` prefix from a nested `tools:invoke` refusal, or an `invalid_args:` prefix
  *  (regardless of the row's error_code — this is the bit the old TS fn missed),
  *  including the `invalid_input: invalid_args:` wrapper from a nested
  *  `tools:invoke` refusal,
@@ -90,7 +91,7 @@ export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^invalid_input: *invalid_args:|^invalid_args:|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a

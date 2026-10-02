@@ -178,7 +178,8 @@ export default defineTool({
   description:
     'Set lifecycle state for one or many work-items. Unified states: open|wip|blocked|needs-human|done|dropped; legacy aliases preserve terminal_reason. Terminal states require completionRef + assumptions ("none" or facts:assert keys). Blocked writes require an active typed external blocker via work_items:set_blocker; link internal dependencies with work_items:link { rel:"blocks" }. Plan-linked feature blocks use plans:set-status. Reopening a terminal item requires force:true. Supports inline, ids:[…], or items[]; inspect appliedState.',
   guidance: {
-    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with ids:[…] or items[]. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Plan-linked feature blocks use plans:set-status. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
+    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
+    notWhen: "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
     chaining: 'work_items:claim → work_items:set_blocker or work_items:link → work_items:set_state; terminal writes use completionRef + assumptions.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',

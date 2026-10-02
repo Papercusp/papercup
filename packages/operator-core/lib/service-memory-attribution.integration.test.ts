@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { HOST_MALLOC_ARENA_MAX } from '../../../apps/operator/bin/malloc-arena-reexec';
 import { createCdpClient, readProcessMemory, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import type { PgResultDiagnostic } from '@papercusp/db-org';
 
 const root = resolve(__dirname, '../../..');
 
@@ -21,6 +22,20 @@ function evidenceDestination(destination: string | undefined) {
   const path = resolve(root, destination);
   if (!existsSync(dirname(path))) throw new Error('Evidence destination parent must exist: ' + dirname(path));
   return path;
+}
+
+// Preserve the writer's bounded attribution tuple when available. A SQL family
+// only names the first relation; it cannot substitute for operation context.
+// This function is serialized into the inspector expression, so keep it closed.
+function completedQuerySamples(rows: readonly PgResultDiagnostic[]) {
+  return rows.map(row => ({
+    source: { ...row.source }, queryFamily: row.queryFamily,
+    connectionId: row.connectionId, queryId: row.queryId, backendPid: row.backendPid,
+    command: row.command, rowCount: row.rowCount, wireBytes: row.wireBytes,
+    elapsedMs: row.elapsedMs, status: row.status, errorCode: row.errorCode,
+    recordedAt: row.recordedAt, correlationState: row.correlationState ?? 'unknown',
+    ...(row.correlation ? { correlation: { ...row.correlation } } : {}),
+  }));
 }
 
 // Buffer complete startup lines: stderr chunks can split an endpoint, and an
@@ -135,6 +150,31 @@ async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
 }
 
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
+  it.each(['linked', 'unobserved', 'unknown'] as const)('preserves completed query correlation %s across the inspector boundary', state => {
+    const source = { processInstanceId: 'query-process', buildSha: 'abcdef123', poolInstanceId: 'query-pool' };
+    const correlation = { processInstanceId: 'operation-process', buildSha: 'abcdef123', rowId: 'row-1',
+      attemptId: 'attempt-1', hopId: 2, stage: 'scope-query', boundary: 'await' as const };
+    const row = { pool: 'org-admin', source, connectionId: 5, queryId: 7, backendPid: 1234,
+      queryFamily: 'select:harness_shared.spawned_agents', command: 'select', rowCount: 129,
+      wireBytes: 21360, elapsedMs: 31, status: 'error' as const, errorCode: '57014', recordedAt: 123456,
+      correlationState: state, ...(state === 'linked' ? { correlation } : {}),
+      query: 'SELECT private_payload', parameters: ['private-value'], rows: [{ payload: 'private-body' }] };
+    // Run the exact serialized helper without its lexical scope, as CDP does.
+    const project = new Function('return (' + completedQuerySamples.toString() + ')')();
+    const sampled = project([row]);
+    source.poolInstanceId = 'later-pool'; correlation.attemptId = 'later-attempt';
+    const result = JSON.parse(JSON.stringify(sampled))[0];
+    expect(result.source).toEqual({ processInstanceId: 'query-process', buildSha: 'abcdef123', poolInstanceId: 'query-pool' });
+    expect(result.correlationState).toBe(state);
+    expect(result.backendPid).toBe(1234); expect(result.errorCode).toBe('57014');
+    expect(result.rowCount).toBe(129); expect(result.wireBytes).toBe(21360);
+    if (state === 'linked') expect(result.correlation).toEqual({ processInstanceId: 'operation-process',
+      buildSha: 'abcdef123', rowId: 'row-1', attemptId: 'attempt-1', hopId: 2, stage: 'scope-query', boundary: 'await' });
+    else expect(result).not.toHaveProperty('correlation');
+    expect(result).not.toHaveProperty('query'); expect(result).not.toHaveProperty('parameters');
+    expect(result).not.toHaveProperty('rows');
+  });
+
   it('resolves evidence destinations before runtime preparation independently of runner cwd', () => {
     expect(evidenceDestination('docs/evidence/p011-relative-report.json')).toBe(join(root, 'docs/evidence/p011-relative-report.json'));
     expect(evidenceDestination(join(tmpdir(), 'p011-absolute-report.json'))).toBe(join(tmpdir(), 'p011-absolute-report.json'));
@@ -785,6 +825,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const path = require('node:path');
       const postgres = require('postgres');
       const inspectorEndpoints = ${inspectorEndpoints.toString()};
+      const completedQuerySamples = ${completedQuerySamples.toString()};
       const retainedContainerCensus = ${retainedContainerCensus.toString()};
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const e = process.env, base = e.PAPERCUSP_OPERATOR_URL;
@@ -854,7 +895,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       };
       const sample = async label => {
         const started = Date.now();
-        const result = await cdp.evaluate('(' + function inspectorSample() {
+        const result = await cdp.evaluate('(' + function inspectorSample(projectResults) {
           const slots = globalThis[Symbol.for('@papercusp/module-singleton.slots')];
           const state = slots?.get('@papercusp/db-org.acquire-registry')?.value;
           if (!state) throw new Error('Completed-query registry is unobserved');
@@ -862,11 +903,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             heap: process.getBuiltinModule('v8').getHeapStatistics(),
             pools: [...state.pools].map(([pool, value]) => ({ pool,
               totalRecorded: value.totalPgResults ?? 0,
-              results: (value.pgResults ?? []).map(row => ({ source: row.source,
-                queryFamily: row.queryFamily, connectionId: row.connectionId, queryId: row.queryId,
-                rowCount: row.rowCount, wireBytes: row.wireBytes, elapsedMs: row.elapsedMs,
-                status: row.status, recordedAt: row.recordedAt })) })) };
-        }.toString() + ')()', { returnByValue: true });
+              results: projectResults(value.pgResults ?? []) })) };
+        }.toString() + ')(' + completedQuerySamples.toString() + ')', { returnByValue: true });
         const value = result.result.value;
         if (value.pid !== host.pid) throw new Error('Inspector PID mismatch');
         const pids = [host.pid, ...descendants(host.pid)];

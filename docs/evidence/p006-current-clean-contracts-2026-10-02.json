@@ -2,7 +2,7 @@
   "workItem": "WI-1074216",
   "plan": "work-on-everything-stewardship-remediation-2026-08-30",
   "recordedAt": "2026-10-02T08:21:56.155942+00:00",
-  "scope": "Clean committed positive unit/real-PG tests only. Failure controls/bindings/governing acceptance/rubric regrade/shipment remain open.",
+  "scope": "Clean committed positive unit/real-PG tests and five maintained calibrated failure controls; governing BLOCKER@3 and TERMINAL@3 PASS. Broader P006 acceptance/rubric regrade/shipment remain open.",
   "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
   "cloneRoot": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
   "cloneGitStatusEmpty": true,
@@ -60,6 +60,108 @@
   ],
   "log": "/tmp/p006-current-clean-contracts-920030a3.log",
   "logSha256": "cde5d4b08b32dab5240754b501a339339d2e6870f4095b39711c85c8d5979b16",
+  "controlsVerifiedAt": "2026-10-02T08:36:55Z",
+  "controlCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_LIFECYCLE_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts -t 'placement calibration:|repaired placement contract: <scenario>'",
+  "controlOracle": "Existing permanent literal assertions, with independent unresolved-plan calibration. Only the maintained fault adapter changes inputs; production source and test bytes remain unchanged.",
+  "controlEvidence": [
+    {
+      "scenario": "draft-refusal",
+      "testRunId": 20501213,
+      "log": "/tmp/p006-lifecycle-draft-refusal-20261002-current.log",
+      "logSha256": "b99b8f2de2091d0e6ce3aa33145f35f00e51b08ddcfcd3182c326e1825b315c6",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "dependency-blocker",
+      "testRunId": 20501220,
+      "log": "/tmp/p006-lifecycle-dependency-blocker-20261002-current.log",
+      "logSha256": "fe5bcbfa3f7ceac8f9480da4065c55a597d9790f42d0f0756cab5819c4e90999",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "eligible-control",
+      "testRunId": 20501221,
+      "log": "/tmp/p006-lifecycle-eligible-control-20261002-current.log",
+      "logSha256": "fe2bed3a8e0ed4dd45d5452e2d9490691a4e74b53ac4caa12b5f51381da32c58",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "shipped-without-closure",
+      "testRunId": 20501223,
+      "log": "/tmp/p006-lifecycle-shipped-without-closure-20261002-current.log",
+      "logSha256": "79f65f79320ff56d38404b1f1176e0a1cac747d23fab09d53e36a816b0034440",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    },
+    {
+      "scenario": "satisfied-closure",
+      "testRunId": 20501226,
+      "log": "/tmp/p006-lifecycle-satisfied-closure-20261002-current.log",
+      "logSha256": "99f61e1f8ec228de6809156b3906c9d62a478b6aa4c93a156716f8de33bf08ad",
+      "source": "mutation-probe",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "intendedAssertionFailed": true,
+      "calibrationPassed": true,
+      "failed": 1,
+      "passed": 1,
+      "filteredSkipped": 13,
+      "exit": 1
+    }
+  ],
+  "bindingProgress": {
+    "integration": [
+      {
+        "bindingId": 21402,
+        "testRunId": 20500782,
+        "specId": "WOE-P001-BLOCKER"
+      },
+      {
+        "bindingId": 21403,
+        "testRunId": 20500781,
+        "specId": "WOE-P001-TERMINAL"
+      }
+    ],
+    "operatorRoute": "Attribution-preserving ptool to staging :3170; release f52b2457ba lacks current clone mapper. Staging 247b9ed162 contains it.",
+    "negativeAndRecurrence": "08:43Z ptool attempt timed out during connection; authoritative read confirmed no new rows. Attributed mcp-call --port3170 then bound all10 successfully, receipt /tmp/p006-lifecycle-bindings-mcp3170-20261002.json. Five counterexamples21406/08/10/12/14 pair one-to-one with unit recurrences21407/09/11/13/15. Scenario targeting follows each clause's requiredScenarios, not the own-specId fallback.",
+    "terminalUniqueScenarioBinding": 21419,
+    "selectedReplacement": "BLOCKER@3 PASS and TERMINAL@3 PASS on twelve exact replacement references; governing=false diagnostic before any withdrawal.",
+    "withdrawnStaleBindings": [19176, 19177, 19178, 19179, 19180, 19303, 19304, 19305, 19306, 19307, 19308, 19396],
+    "withdrawalVerification": "Exact WI-1074216 ownership, spec revisions and stale source/test currentness read before binding-only withdrawal; 12/12 receipts ok. Historical test runs and immutable D003 baseline preserved.",
+    "governingReplacement": "Without workItemIds/evidenceRefs, governing=true: BLOCKER@3 PASS and TERMINAL@3 PASS, both wouldBlock=[]. No broader acceptance or shipment claim.",
+    "acceptance": "This two-clause proof unit verified; P006 remains partial."
+  },
   "criteria": "Read current BLOCKER@3 integration/unit dependency-blocker,draft-refusal,eligible-control and TERMINAL@3 integration/unit satisfied-closure,shipped-without-closure. Governing read before new tests failed solelyfreshness; no accepted criteria lowered.",
   "previous29Pass": {
     "unitIds": [
@@ -70,5 +172,405 @@
     "logHashVerified": true,
     "sourceDrift": "goal-launch-settings changed; no current acceptance reuse"
   },
-  "next": "At fresh context verify live claims/current writer/test hashes. Run maintained lifecycle negative controls on the clean pinned subject under unchanged oracle, bind fresh positive unit/integration plus current negatives/scenarios through existing evidence surface, re-read selected then governing adequacy before any obsolete binding disposition. Independent rubric ratification, real-goal card reuse and other clauses/shipment remain open."
+  "governingCensus": {
+  "observedAt": "2026-10-02T08:49:35Z",
+  "query": "plans:evaluate-spec-test-adequacy slug work-on-everything-stewardship-remediation-2026-08-30 classRef plan-class-feature-ship, without workItemIds/evidenceRefs",
+  "scope": "Dated whole accepted-clause read; not a shipment verdict.",
+  "governing": true,
+  "rows": [
+    {
+      "specId": "WOE-P001-BLOCKER",
+      "verdict": "pass",
+      "wouldBlock": []
+    },
+    {
+      "specId": "WOE-P001-CLAIM",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          19029,
+          19030,
+          19031,
+          19032,
+          19033,
+          19034,
+          19035,
+          19036,
+          19037
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-EXCLUSIONS",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          18996,
+          18998,
+          18999,
+          19000,
+          19006,
+          19007,
+          19008
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-IDEMPOTENCE",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          19022,
+          19023,
+          19024,
+          19025,
+          19026,
+          19027,
+          19028
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-ORDER",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          19050,
+          19051,
+          19052,
+          19053,
+          19054
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P001-TERMINAL",
+      "verdict": "pass",
+      "wouldBlock": []
+    },
+    {
+      "specId": "WOE-P002-AUTHORITY",
+      "verdict": "pass",
+      "wouldBlock": []
+    },
+    {
+      "specId": "WOE-P002-ELECTION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17547
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-HANDOFF",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17548
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-RESPAWN",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17549,
+          17578,
+          17957,
+          17958
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-STALE-RESPAWN",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17550
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P002-UNKNOWN",
+      "verdict": "fail",
+      "wouldBlock": [
+        "freshness"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17522,
+          17540
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-BREACH",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17382
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-MEASURED-ADMISSION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17377
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-NUMERATOR",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17379
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-UNMEASURED",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17380
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-UNMEASURED-ADMISSION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17378
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P003-WINDOW",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17381
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-CUSTODY",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17386
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-REAL-CALL",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17389
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-SCHEDULER-DIAGNOSIS",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17388
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-SLOW-BOOT",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17390
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P004-WAKE",
+      "verdict": "fail",
+      "wouldBlock": [
+        "falsifiability",
+        "correct-layer",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ],
+      "draggingBindingIds": {
+        "freshness": [
+          17387
+        ]
+      }
+    },
+    {
+      "specId": "WOE-P005-HAND-DISPATCH",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P005-MATERIALIZATION",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P005-SOVEREIGNTY",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P006-REAL-CARD",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    },
+    {
+      "specId": "WOE-P006-SHIPMENT",
+      "verdict": "fail",
+      "wouldBlock": [
+        "traceability",
+        "falsifiability",
+        "correct-layer",
+        "oracle-independence",
+        "execution-integrity",
+        "freshness",
+        "plan-class-risk-floor"
+      ]
+    }
+  ]
+},
+  "next": "At fresh context verify claims/source and continue CLAIM@3 freshness using current clean20499866/20500782 positives plus maintained claim negative controls. Reuse existing proof, do not repeat positive41. Remaining accepted-clause census is dated here. Rubric ratification, D013 real-goal card reuse and shipment remain separate; preserve D003 baseline and D016 history."
 }

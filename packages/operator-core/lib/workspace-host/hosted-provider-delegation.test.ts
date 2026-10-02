@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   HostedProviderDelegationManager,
   PostgresHostedProviderDelegationStore,
+  bindDelegationToOrganization,
   bindPapercuspHostedDelegation,
   buildHostedProviderDelegationOnboarding,
   type HostedDelegationOrganization,
@@ -34,10 +35,24 @@ function organization(organizationId: string, principal: string): HostedDelegati
       principalArn: awsOrgPrincipal(organizationId),
       externalIdRef: `resolver://aws-external-id/${organizationId}`,
     }),
+    awsPapercuspHosting: async (hostId) => {
+      reserved.push(hostId);
+      return {
+        accountId: AWS_HOSTING_ACCOUNT,
+        region: 'us-east-1',
+        roleArn: awsHostingRole(organizationId),
+        trustedPrincipalArn: awsOrgPrincipal(organizationId),
+        externalIdRef: `resolver://aws-external-id/${organizationId}`,
+      };
+    },
   };
 }
 function awsOrgPrincipal(organizationId: string): string {
   return `arn:aws:iam::999999999999:role/papercusp/orgs/pco-${organizationId}`;
+}
+const AWS_HOSTING_ACCOUNT = '888888888888';
+function awsHostingRole(organizationId: string): string {
+  return `arn:aws:iam::${AWS_HOSTING_ACCOUNT}:role/PapercuspWorkspaceHost-pco-${organizationId}`;
 }
 const ORGANIZATION = organization('org-a', ORG_PRINCIPAL);
 
@@ -419,6 +434,97 @@ describe("Papercusp-hosted delegations (D-399)", () => {
     const { organizationId: _ignored, ...base } = common;
     await expect(bindPapercuspHostedDelegation(base, org, "x' || true || '")).rejects.toThrow();
     expect(org.reserved).toEqual([]);
+  });
+});
+
+describe("Papercusp-hosted AWS delegations (aws-byoc-gcp-parity P-015, D-017)", () => {
+  const { organizationId: _ignored, ...base } = common;
+
+  it("binds the customer-role chain into Papercusp's hosting account for the server-given host, with nothing to apply", async () => {
+    const org = organization('org-a', ORG_PRINCIPAL);
+    const input = await bindPapercuspHostedDelegation(base, org, 'host-derived-1', 'aws');
+    expect(org.reserved).toEqual(['host-derived-1']);
+    const { record, template } = buildHostedProviderDelegationOnboarding(input);
+    expect(record.provider).toBe('aws');
+    expect(record.configuration).toEqual({
+      provider: 'aws',
+      accountId: AWS_HOSTING_ACCOUNT,
+      region: 'us-east-1',
+      source: {
+        environment: 'hosted',
+        method: 'customer-role',
+        roleArn: awsHostingRole('org-a'),
+        trustedPrincipalArn: awsOrgPrincipal('org-a'),
+        externalIdRef: 'resolver://aws-external-id/org-a',
+      },
+      papercuspHosted: { hostId: 'host-derived-1' },
+    });
+    // No CloudFormation for the customer: the document records what the hosting role is scoped to.
+    expect(template.format).toBe('aws-cloudformation-json');
+    expect(template.document).toEqual({
+      managedBy: 'papercusp',
+      accountId: AWS_HOSTING_ACCOUNT,
+      region: 'us-east-1',
+      roleArn: awsHostingRole('org-a'),
+      trustedPrincipalArn: awsOrgPrincipal('org-a'),
+      hostId: 'host-derived-1',
+    });
+    const other = buildHostedProviderDelegationOnboarding(await bindPapercuspHostedDelegation(base, org, 'host-derived-2', 'aws'));
+    expect(other.record.templateDigest).not.toBe(record.templateDigest);
+  });
+
+  it('records it through the manager, and leaves the GCP default untouched', async () => {
+    const records = new Map<string, HostedProviderDelegationRecord>();
+    const store: HostedProviderDelegationStore = {
+      read: async (workspaceId, connectionId) => records.get(`${workspaceId}/${connectionId}`) ?? null,
+      save: async (next) => void records.set(`${next.workspaceId}/${next.connectionId}`, next),
+    };
+    const adapter: HostedProviderDelegationAdapter = {
+      verify: async () => ({ identity: 'x', evidenceRef: 'audit://x', checkedAt: NOW }),
+      revoke: async () => ({ evidenceRef: 'audit://x', revokedAt: NOW }),
+    };
+    const org = organization('org-a', ORG_PRINCIPAL);
+    const manager = new HostedProviderDelegationManager(store, { gcp: adapter, aws: adapter, azure: adapter }, org);
+    const aws = await manager.onboardPapercuspHosted(base, 'host-derived-1', 'aws');
+    expect(aws.record.configuration).toMatchObject({ provider: 'aws', papercuspHosted: { hostId: 'host-derived-1' } });
+    const gcp = await manager.onboardPapercuspHosted({ ...base, connectionId: 'connection-2' }, 'host-derived-2');
+    expect(gcp.record.configuration).toMatchObject({ provider: 'gcp', source: { method: 'papercusp-hosted' } });
+  });
+
+  it('cannot be selected by a caller-supplied configuration, or carried on any method but the customer role', async () => {
+    const org = organization('org-a', ORG_PRINCIPAL);
+    const browserSupplied = {
+      provider: 'aws' as const,
+      accountId: AWS_HOSTING_ACCOUNT,
+      source: {
+        environment: 'hosted' as const,
+        method: 'customer-role' as const,
+        roleArn: awsHostingRole('org-b'),
+        trustedPrincipalArn: '',
+        externalIdRef: '',
+      },
+      papercuspHosted: { hostId: 'host-of-another-organization' },
+    };
+    await expect(bindDelegationToOrganization({ configuration: browserSupplied }, org))
+      .rejects.toThrow('hosted_provider_delegation_aws_papercusp_hosted_not_organization_bound');
+    expect(org.reserved).toEqual([]);
+    expect(() => buildHostedProviderDelegationOnboarding({
+      ...common,
+      configuration: {
+        provider: 'aws',
+        accountId: AWS_HOSTING_ACCOUNT,
+        source: {
+          environment: 'hosted',
+          method: 'oidc',
+          roleArn: awsHostingRole('org-a'),
+          providerArn: `arn:aws:iam::${AWS_HOSTING_ACCOUNT}:oidc-provider/app.papercusp.com`,
+          issuer: 'https://app.papercusp.com/oidc',
+          audience: 'sts.amazonaws.com',
+          subject: 'workspace:workspace-1',
+        },
+        papercuspHosted: { hostId: 'host-derived-1' },
+      },
+    })).toThrow('AWS Papercusp hosting requires the customer-role method');
   });
 });
 

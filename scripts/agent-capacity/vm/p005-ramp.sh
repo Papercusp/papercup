@@ -27,6 +27,9 @@ DUR=${4:-600}
 SAT_SLOWDOWN=${SAT_SLOWDOWN:-1.5}
 MIN_DRIVEN=${MIN_DRIVEN:-0.75}
 WORKDIR=${WORKDIR:-overlay}
+# AGENT_ENV='KEY=VALUE;...' is load-driver.ts --agent-env: variables every session gets (the driver's
+# env scrub drops PAPERCUSP_*, so e.g. the hosted tsc-service template must be passed here).
+AGENT_ENV=${AGENT_ENV:-}
 S="scripts/agent-capacity"
 uid=$(id -u)
 SLICE=${CAPDRV_SLICE_DIR:-/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/capdrv.slice}
@@ -65,8 +68,10 @@ for n in $STEPS; do
   echo "RAMP_STEP_START $run n=$n $(ts)"
   t0=$(date +%s)
   npx tsx "$S/load-driver.ts" --agents "$n" --duration-sec "$DUR" --stagger-ms 1000 "${sel[@]}" "${tasks[@]}" \
-    --run-id "$run" --isolation systemd --workdir "$WORKDIR" >"$FP/$run.driver.log" 2>&1
+    --run-id "$run" --isolation systemd --workdir "$WORKDIR" ${AGENT_ENV:+--agent-env "$AGENT_ENV"} >"$FP/$run.driver.log" 2>&1
   rc=$?
+  # A shared tree keeps every session's edits; record how far it has drifted from its checkout.
+  [ "$WORKDIR" != shared ] || echo "RAMP_SHARED_TREE run=$run dirty=$(git -C "$CACHE/prepared/papercusp" status --porcelain 2>/dev/null | wc -l)"
   elapsed=$(($(date +%s) - t0))
   kill "$sampler" 2>/dev/null || true
   systemctl --user stop "hold-capdrv-$run" 2>/dev/null || true

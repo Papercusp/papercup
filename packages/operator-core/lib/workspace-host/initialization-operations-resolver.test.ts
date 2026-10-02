@@ -30,6 +30,7 @@ import {
   WorkspaceHostHostKeyPublicationTimeoutError,
   WorkspaceHostInitializationHostKeyError,
   WorkspaceHostInstanceUnavailableError,
+  awsCliResolvesConnectionIdentity,
   enrollAwsSsmHostKeys,
   enrollGcpIapHostKeys,
   ec2ConsoleBootstrapStatusSource,
@@ -1593,19 +1594,57 @@ describe('resolveWorkspaceHostInitializationOperationsForHost (AWS)', () => {
     expect(resolved.transport).toMatchObject({ kind: 'aws-ssm-ssh', awsExecutable: '/opt/aws-cli/bin/aws' });
   });
 
-  it('omits the CLI profile for a connection that is not a shared profile', async () => {
+  const hostedRoleConnection = {
+    connection: { target: 'aws', provider: { credentialSource: { environment: 'hosted', method: 'customer-role' } } },
+  };
+
+  // EI-24854807241461317: a role chain is something the AWS CLI cannot resolve on its own, so the
+  // tunnel must carry the connection's credentials — never the controller's ambient identity.
+  it("hands a role-chain connection's tunnel the connection's own credentials instead of a CLI profile", async () => {
+    const tunnelCredentials = vi.fn(async () => ({
+      accessKeyId: 'fake-tunnel-key-id',
+      secretAccessKey: 'fake-tunnel-secret',
+      sessionToken: 'fake-tunnel-session',
+    }));
     const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
       workspaceId: 'ws-1',
       hostId: 'host-alpha',
       controller,
       readDesiredSpec: async () => ({ desired: awsDesired(), connectionId: 'connection-aws' }),
-      readConnection: (async () => ({
-        connection: { target: 'aws', provider: { credentialSource: { environment: 'hosted', method: 'customer-role' } } },
-      })) as never,
+      readConnection: (async () => hostedRoleConnection) as never,
       readAwsInstanceId: async () => AWS_INSTANCE_ID,
       awsClient: { getConsoleOutput: async () => consoleKeyBlock() },
+      awsTunnelCredentials: tunnelCredentials,
       enrollAwsHostKeys: async () => undefined,
     });
     expect(resolved.transport).not.toHaveProperty('awsProfile');
+    expect(resolved.transport).toMatchObject({ kind: 'aws-ssm-ssh', awsCredentials: tunnelCredentials });
+    // Resolved lazily, per tunnel, never at resolution time.
+    expect(tunnelCredentials).not.toHaveBeenCalled();
+  });
+
+  it('refuses a role-chain connection it cannot hand credentials to, before any cloud call', async () => {
+    const getConsoleOutput = vi.fn(async () => consoleKeyBlock());
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: awsDesired(), connectionId: 'connection-aws' }),
+        readConnection: (async () => hostedRoleConnection) as never,
+        readAwsInstanceId: async () => AWS_INSTANCE_ID,
+        awsClient: { getConsoleOutput },
+      }),
+    ).rejects.toThrow('aws_workspace_host_tunnel_credentials_unavailable');
+    expect(getConsoleOutput).not.toHaveBeenCalled();
+  });
+
+  it('lets the CLI resolve only the default chain and a named profile', () => {
+    expect(awsCliResolvesConnectionIdentity({ method: 'default-chain' })).toBe(true);
+    expect(awsCliResolvesConnectionIdentity({ method: 'shared-profile' })).toBe(true);
+    for (const method of ['assume-role', 'customer-role', 'oidc', undefined, 'something-new']) {
+      expect(awsCliResolvesConnectionIdentity({ method })).toBe(false);
+    }
+    expect(awsCliResolvesConnectionIdentity(undefined)).toBe(false);
   });
 });

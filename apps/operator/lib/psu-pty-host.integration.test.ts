@@ -2950,10 +2950,22 @@ describe('P-020 carry-respawn drill correlation', () => {
         'setTimeout(()=>process.exit(0),15000);';
       const nativeId = 'ddddabcd-1234-5678-9abc-def012345678';
       const carryPath = '/safe/carry-drill-d-1.md';
+      // The fresh claude-su path checks /mcp readiness before writing the carry.
+      // Give that precondition a deterministic healthy response in this fake CLI.
+      const mcpAwareChildCode = childCode.replace(
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.setEncoding('utf8');let mcpBuffer='',mcpReady=false;process.stdin.on('data',d=>{mcpBuffer+=d;if(!mcpReady&&(mcpBuffer.includes('/mcp\\r')||mcpBuffer.includes('/mcp\\n'))){mcpReady=true;process.stdout.write('MCP_DIALOG\\n❯ 1. papercusp-su connected\\n');}});",
+      );
+      // The readiness macro closes its dialog with escape keys. Echo the carry
+      // marker when the fake CLI receives it, without treating those keys as text.
+      const carryAwareChildCode = mcpAwareChildCode.replace(
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.setEncoding('utf8');let carryBuffer='',carryEchoed=false;process.stdin.on('data',d=>{carryBuffer+=d;if(!carryEchoed&&carryBuffer.includes('⟦carry-drill:d-1⟧')){carryEchoed=true;process.stdout.write('ECHO:⟦carry-drill:d-1⟧\\n');}});",
+      );
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', childCode],
+        args: ['-e', carryAwareChildCode],
         cwd: '/tmp',
         env: {
           ...process.env,
@@ -2988,6 +3000,8 @@ describe('P-020 carry-respawn drill correlation', () => {
           await sleep(25);
         }
         expect(captured()).toContain('ECHO:⟦carry-drill:d-1⟧');
+        expect(captured()).toContain('MCP_DIALOG');
+        expect(captured().indexOf('MCP_DIALOG')).toBeLessThan(captured().indexOf('ECHO:⟦carry-drill:d-1⟧'));
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'carry-drill-respawned',
@@ -2995,6 +3009,11 @@ describe('P-020 carry-respawn drill correlation', () => {
           sessionClass: 'claude-su',
           nativeId,
           launchContextPath: carryPath,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-ready',
+          serverName: 'papercusp-su',
+          attempts: 1,
         }));
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'carry-drill-carry-delivered',

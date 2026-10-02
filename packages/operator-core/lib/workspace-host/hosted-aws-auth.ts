@@ -16,12 +16,24 @@ import { fromNodeProviderChain, fromTemporaryCredentials } from '@aws-sdk/creden
 import { planAwsSdkCredentialProvider } from './aws-connection';
 import { createAwsSdkCredentialProvider } from './aws-sdk-client';
 import {
+  HostedAwsNotReadyError,
+  PAPERCUSP_HOSTED_AWS_HOST_POLICY,
+  PAPERCUSP_HOSTED_AWS_LOCATION,
+  hostedAwsHostingAdminRole,
+  hostedAwsWorkspaceAccount,
+  papercuspHostingPolicy,
+  papercuspHostingRoleArn,
+  papercuspHostingRoleName,
+  papercuspHostingTrustPolicy,
+} from './hosted-aws-hosting';
+import {
   HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX,
   HOSTED_AWS_ORGANIZATION_ROLE_PATH,
   hostedAwsControlPlaneAccount,
   hostedAwsControlPlanePrincipal,
   organizationDelegationRoleArn,
   organizationDelegationRoleName,
+  organizationExternalId,
   organizationExternalIdRef,
   resolveOrganizationExternalIdRef,
 } from './hosted-aws-identity';
@@ -45,6 +57,11 @@ export interface HostedAwsAuthDependencies {
   controlPlaneCredentials?: AwsCredentials;
   /** IAM client acting AS the control plane in its own account. */
   iam?: HostedAwsSender;
+  /**
+   * IAM client acting in Papercusp's AWS hosting account (P-015, D-017): the hosting-admin role
+   * when one is configured, else the control plane itself.
+   */
+  hostingIam?: HostedAwsSender;
   /** STS client acting as the given credentials. */
   sts?: (credentials: AwsCredentials) => HostedAwsSender;
   /** STS is global; any commercial region serves it. */
@@ -130,21 +147,147 @@ export async function ensureOrganizationDelegationRole(input: EnsureOrganization
   return organizationDelegationRoleArn(input.organizationId, input.accountId, partition);
 }
 
+export interface EnsurePapercuspAwsHostingRoleInput {
+  organizationId: string;
+  hostId: string;
+  /** Papercusp's AWS hosting account ({@link hostedAwsWorkspaceAccount}). */
+  accountId: string;
+  /** The organization's own control-plane role: the only principal the hosting role trusts. */
+  organizationRoleArn: string;
+  /** IAM acting in the hosting account. */
+  iam: HostedAwsSender;
+  region?: string;
+}
+
+/**
+ * IAM refuses a trust policy naming a role it cannot see yet. A brand-new organization role is
+ * eventually consistent across IAM, so this is "retry shortly", not a failure.
+ */
+function isInvalidPrincipal(error: unknown): boolean {
+  if (errorName(error) !== 'MalformedPolicyDocumentException') return false;
+  const message = error instanceof Error ? error.message : String((error as { message?: unknown })?.message ?? '');
+  return /invalid principal/i.test(message);
+}
+
+/**
+ * "Use Papercusp's cloud" on AWS (P-015, D-017): create or converge the organization's hosting
+ * role in Papercusp's hosting account, trusted only by the organization's own control-plane role
+ * with the organization's ExternalId, and confine it to `hostId` (the AWS twin of
+ * ensurePapercuspHostingGrant). Idempotent: an existing role has its trust re-asserted and its
+ * policy rewritten for the host now reserved.
+ */
+export async function ensurePapercuspAwsHostingRole(input: EnsurePapercuspAwsHostingRoleInput): Promise<string> {
+  const roleName = papercuspHostingRoleName(input.organizationId);
+  const partition = partitionOf(input.organizationRoleArn);
+  const trust = JSON.stringify(papercuspHostingTrustPolicy({
+    organizationRoleArn: input.organizationRoleArn,
+    externalId: organizationExternalId(input.organizationId),
+  }));
+  // Build the policy before touching IAM, so an invalid host id writes nothing.
+  const policy = JSON.stringify(papercuspHostingPolicy({
+    organizationId: input.organizationId,
+    accountId: input.accountId,
+    hostId: input.hostId,
+    region: input.region,
+    partition,
+  }));
+  const notReady = (error: unknown): never => {
+    if (isInvalidPrincipal(error)) {
+      throw new HostedAwsNotReadyError('aws_workspace_host_papercusp_hosting_principal_not_visible');
+    }
+    throw error;
+  };
+  try {
+    await input.iam.send(new CreateRoleCommand({
+      RoleName: roleName,
+      AssumeRolePolicyDocument: trust,
+      Description: 'Papercusp-hosted workspace host for one organization (P-015, D-017).',
+      MaxSessionDuration: 3600,
+      Tags: [
+        { Key: 'papercusp:managed', Value: 'true' },
+        { Key: 'papercusp:role', Value: 'papercusp-hosting' },
+      ],
+    }));
+  } catch (error) {
+    if (errorName(error) !== 'EntityAlreadyExistsException') notReady(error);
+    await input.iam.send(new UpdateAssumeRolePolicyCommand({ RoleName: roleName, PolicyDocument: trust })).catch(notReady);
+  }
+  await input.iam.send(new PutRolePolicyCommand({
+    RoleName: roleName,
+    PolicyName: PAPERCUSP_HOSTED_AWS_HOST_POLICY,
+    PolicyDocument: policy,
+  }));
+  return papercuspHostingRoleArn(input.organizationId, input.accountId, partition);
+}
+
+function accountOfArn(arn: string): string {
+  return arn.split(':')[4] ?? '';
+}
+
+/**
+ * IAM in the hosting account. IAM is per account, so control-plane credentials can write the
+ * hosting role only when the hosting account IS the control-plane account; otherwise a
+ * hosting-admin role in the hosting account is required, never silently skipped.
+ */
+function hostingIamFor(deps: HostedAwsAuthDependencies, env: Env, hostingAccount: string): HostedAwsSender {
+  if (deps.hostingIam) return deps.hostingIam;
+  const region = deps.region ?? DEFAULT_REGION;
+  const admin = hostedAwsHostingAdminRole(env);
+  if (!admin) {
+    if (hostingAccount !== hostedAwsControlPlaneAccount(env)) {
+      throw new Error('aws_workspace_host_papercusp_hosting_admin_role_required');
+    }
+    return deps.iam ?? new IAMClient({ region, credentials: controlPlane(deps) });
+  }
+  if (accountOfArn(admin) !== hostingAccount) {
+    throw new Error('aws_workspace_host_papercusp_hosting_admin_role_account_mismatch');
+  }
+  return new IAMClient({
+    region,
+    credentials: fromTemporaryCredentials({
+      params: { RoleArn: admin, RoleSessionName: 'papercusp-hosting-admin' },
+      masterCredentials: controlPlane(deps),
+      clientConfig: { region },
+    }),
+  });
+}
+
 /** The AWS half of an organization's delegation binding: its role, created on first use. */
 export function awsDelegationOrganization(
   organizationId: string,
   deps: HostedAwsAuthDependencies = {},
-): Pick<HostedDelegationOrganization, 'awsTrustedPrincipal'> {
+): Pick<HostedDelegationOrganization, 'awsTrustedPrincipal' | 'awsPapercuspHosting'> {
+  const env = () => deps.env ?? process.env;
+  const ensureOrganizationRole = () => {
+    const current = env();
+    return ensureOrganizationDelegationRole({
+      organizationId,
+      accountId: hostedAwsControlPlaneAccount(current),
+      controlPlanePrincipalArn: hostedAwsControlPlanePrincipal(current),
+      iam: deps.iam ?? new IAMClient({ region: deps.region ?? DEFAULT_REGION, credentials: controlPlane(deps) }),
+    });
+  };
   return {
     async awsTrustedPrincipal() {
-      const env = deps.env ?? process.env;
-      const principalArn = await ensureOrganizationDelegationRole({
-        organizationId,
-        accountId: hostedAwsControlPlaneAccount(env),
-        controlPlanePrincipalArn: hostedAwsControlPlanePrincipal(env),
-        iam: deps.iam ?? new IAMClient({ region: deps.region ?? DEFAULT_REGION, credentials: controlPlane(deps) }),
-      });
+      const principalArn = await ensureOrganizationRole();
       return { principalArn, externalIdRef: organizationExternalIdRef(organizationId) };
+    },
+    async awsPapercuspHosting(hostId) {
+      const current = env();
+      // Resolve the hosting configuration first: a misconfigured server writes nothing.
+      const accountId = hostedAwsWorkspaceAccount(current);
+      const hostingIam = hostingIamFor(deps, current, accountId);
+      const region = PAPERCUSP_HOSTED_AWS_LOCATION.region;
+      const trustedPrincipalArn = await ensureOrganizationRole();
+      const roleArn = await ensurePapercuspAwsHostingRole({
+        organizationId,
+        hostId,
+        accountId,
+        organizationRoleArn: trustedPrincipalArn,
+        iam: hostingIam,
+        region,
+      });
+      return { accountId, region, roleArn, trustedPrincipalArn, externalIdRef: organizationExternalIdRef(organizationId) };
     },
   };
 }
@@ -157,7 +300,12 @@ function customerRoleSource(record: HostedProviderDelegationRecord) {
     throw new Error('hosted_provider_delegation_aws_method_not_organization_bound');
   }
   if (!record.organizationId) throw new Error('hosted_provider_delegation_organization_required');
-  return { accountId: configuration.accountId, source, organizationId: record.organizationId };
+  return {
+    accountId: configuration.accountId,
+    source,
+    organizationId: record.organizationId,
+    papercuspHosted: configuration.papercuspHosted,
+  };
 }
 
 /**
@@ -172,7 +320,7 @@ function customerRoleSource(record: HostedProviderDelegationRecord) {
 export function awsProviderDelegationAdapter(deps: HostedAwsAuthDependencies = {}): HostedProviderDelegationAdapter {
   return {
     async verify(record) {
-      const { accountId, source, organizationId } = customerRoleSource(record);
+      const { accountId, source, organizationId, papercuspHosted } = customerRoleSource(record);
       const env = deps.env ?? process.env;
       const partition = partitionOf(source.roleArn);
       const expectedPrincipal = organizationDelegationRoleArn(organizationId, hostedAwsControlPlaneAccount(env), partition);
@@ -181,6 +329,16 @@ export function awsProviderDelegationAdapter(deps: HostedAwsAuthDependencies = {
       }
       if (source.externalIdRef !== organizationExternalIdRef(organizationId)) {
         throw new Error('hosted_provider_delegation_aws_external_id_not_organization');
+      }
+      if (papercuspHosted) {
+        // D-017: a Papercusp-hosted record must name Papercusp's hosting account and THIS
+        // organization's hosting role there, never another organization's or a customer's.
+        if (accountId !== hostedAwsWorkspaceAccount(env)) {
+          throw new Error('hosted_provider_delegation_aws_papercusp_hosted_account_mismatch');
+        }
+        if (source.roleArn !== papercuspHostingRoleArn(organizationId, accountId, partition)) {
+          throw new Error('hosted_provider_delegation_aws_papercusp_hosted_role_not_organization');
+        }
       }
       const region = deps.region ?? DEFAULT_REGION;
       const root = controlPlane(deps);
