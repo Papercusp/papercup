@@ -93,6 +93,14 @@ export const FLAGS = {
   // and unflagged; with this OFF the hosted billing runtime refuses an sk_live_/rk_live_
   // key and reports `live_mode_not_allowed`, so OFF withholds ONLY real charging.
   HOSTED_BILLING_LIVE_MODE: "papercusp-hosted-billing-live-mode",
+  // enterprise-data-sources-2026-10-01 P-016: the Slack ORGANIZATION connector
+  // (the customer's own internal Slack app as the credential model — connect,
+  // channel-membership sync into permission lists, paced history backfill).
+  // DEFAULT OFF in DARK_FLAGS (owner-authority): the plan's GATE requires a legal
+  // read of Slack's 2025 API terms for the customer-internal-app model to be on
+  // record before the connector touches any customer workspace. With it OFF every
+  // entry point in data-sources/slack-org-connector.ts refuses before any Slack call.
+  SLACK_ORG_CONNECTOR: "papercusp-slack-org-connector",
   // RES — the workspace-scoped Resources section (top-level nav CTA next to OPS
   // + the /res allocation board): hand account pools + local GPUs to the fleets
   // inside the workspace hive tree, each with a share %. Default ON (derived
@@ -3247,6 +3255,14 @@ export const DARK_FLAGS: ReadonlyMap<
       case: "owner-authority",
       reason:
         "stripe-subscription-signup-2026-10-01 / papercusp-monetization-2026-09-04 D-004+D-010: live-mode Stripe charging of hosted organizations is an outward-facing money movement the owner authorizes, after P-003 pricing and the P-009 pilot-readiness gate. Test-mode signup ships ON and unflagged; OFF refuses only a live key.",
+    },
+  ],
+  [
+    FLAGS.SLACK_ORG_CONNECTOR,
+    {
+      case: "owner-authority",
+      reason:
+        "enterprise-data-sources-2026-10-01 P-016 GATE: ingesting a customer's Slack workspace through the customer-owned internal-app credential model needs a legal read of Slack's 2025 API terms on record before it runs against any customer workspace. The connector (connect, membership sync, paced backfill) is built and tested against a recorded fake Slack API; OFF makes every entry point refuse before any Slack call, so flipping ON is one owner decision after that read.",
     },
   ],
   [

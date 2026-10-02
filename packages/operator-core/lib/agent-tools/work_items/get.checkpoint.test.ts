@@ -69,7 +69,7 @@ vi.mock('./deployment-position', () => ({
   deploymentPositionForEvidence: (...a: unknown[]) => deploymentPositionForEvidence(...a),
 }));
 
-import get from './get';
+import get, { workItemsGetSourceReadOptions } from './get';
 import { shapeWorkItemsGet } from './get-shape';
 import {
   CARRY_NOTE_MAX_CHECKS,
@@ -287,8 +287,58 @@ describe('work_items:get — checkpoint field', () => {
 
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'legacy checkpoint', updatedAtMs: 123 });
     const unknownRead = await one({ id: item.id, checksOnly: true });
-    expect(unknownRead.checkpointSubjectFingerprint).toEqual({ status: 'unknown', current });
+    expect(unknownRead.checkpointSubjectFingerprint).toEqual({ status: 'unknown' });
     expect(unknownRead).not.toHaveProperty('checkpoint');
+  });
+
+  it('does not compare a bodyless issue subject against the stored full-subject fingerprint', async () => {
+    const item = {
+      id: 'WI-checks-only-subject',
+      harness: 'papercusp',
+      family: 'issue',
+      kind: 'bug',
+      title: 'bodyless issue subject',
+      summary: 'The authoritative issue body.',
+      state: 'open',
+    };
+    const current = computeWorkItemSubjectFingerprint(item);
+    const checkpoint = 'checkpoint body';
+    getWorkItem.mockImplementation(async (_id, _harness, options) =>
+      options?.includeBody === false ? { ...item, summary: '' } : item,
+    );
+    getWorkItemCheckpointWithMeta.mockResolvedValue({
+      checkpoint,
+      updatedAtMs: 123,
+      subjectFingerprint: current,
+    });
+
+    const fullRead = await one({ id: item.id });
+    const checksOnlyRead = await one({ id: item.id, checksOnly: true });
+
+    expect(fullRead.checkpointSubjectFingerprint).toEqual({ status: 'current', current, stored: current });
+    expect(checksOnlyRead.checkpointSubjectFingerprint).toEqual({ status: 'unknown', stored: current });
+    expect(checksOnlyRead.checkpointContentHash).toBe(fullRead.checkpointContentHash);
+    expect(checksOnlyRead.checkpointUpdatedAtMs).toBe(fullRead.checkpointUpdatedAtMs);
+    expect(getWorkItem).toHaveBeenNthCalledWith(1, item.id, undefined);
+    expect(getWorkItem).toHaveBeenNthCalledWith(2, item.id, undefined, {
+      includeBody: false,
+      payloadProjection: 'none',
+    });
+  });
+
+  it('includes the issue body when a result projection requests the subject fingerprint', () => {
+    expect(workItemsGetSourceReadOptions({ pick: ['results[].checkpointSubjectFingerprint'] }, false)).toEqual({
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(workItemsGetSourceReadOptions({ pick: ['results[0].checkpointSubjectFingerprint.current.sha256'] }, false)).toEqual({
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(workItemsGetSourceReadOptions({ pick: ['results[].checkpointContentHash'] }, false)).toEqual({
+      includeBody: false,
+      payloadProjection: 'none',
+    });
   });
 
   it('checksOnly reads only the stored row identities and skips the full enrichment ladder', async () => {

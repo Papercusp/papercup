@@ -1072,4 +1072,36 @@ describe("provider-cause classification (WI-2144034)", () => {
     expect(outcome.exitCode).toBe(1);
     expect(outcome.failureHint).toBeUndefined();
   });
+
+  it("publishes only a capped stderr byte count for an unclassified OMP failure", async () => {
+    const privateKeyText = [
+      ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" "),
+      "synthetic-test-key-material",
+      ["-----END RSA", "PRIVATE KEY-----"].join(" "),
+    ].join("\n");
+    const childScript =
+      "process.stderr.write(" +
+      JSON.stringify(privateKeyText) +
+      " + 'x'.repeat(70 * 1024), () => process.exit(1));";
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: {
+        ...DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.omp[0],
+        command: process.execPath,
+        args: ["-e", childScript],
+      },
+      runner: new NodeWorkspaceHostAgentProbeRunner(),
+      now: NOW,
+    });
+    const serialized = JSON.stringify(evidence);
+
+    expect(evidence).toMatchObject({
+      ready: false,
+      exitStatus: 1,
+      failure: "non-zero-exit",
+      stderrByteCount: 64 * 1024,
+      stderrByteCountTruncated: true,
+    });
+    expect(serialized).not.toContain("PRIVATE KEY");
+    expect(serialized).not.toContain("not-a-real-key");
+  });
 });

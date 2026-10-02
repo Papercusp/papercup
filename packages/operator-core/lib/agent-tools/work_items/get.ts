@@ -23,7 +23,11 @@ import {
 import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from "../../work-item-checkpoint";
-import { compareWorkItemSubjectFingerprint, type WorkItemSubjectFingerprintComparison } from "../../carry-note";
+import {
+  compareWorkItemSubjectFingerprint,
+  normalizeWorkItemSubjectFingerprint,
+  type WorkItemSubjectFingerprintComparison,
+} from "../../carry-note";
 import { scanCheckpointRetractions } from "./retraction-advisory";
 import { getClaimTimePriorWorkHint, priorWorkWarning } from "../../work-item-prior-work";
 import { computeCheckpointStaleness } from "../../checkpoint-staleness";
@@ -390,8 +394,8 @@ function checkpointCheckIdentities(checks: readonly CheckEntry[]): {
 }
 
 /** Compare the newest checkpoint journal subject with the authoritative item row.
- * A failed or empty metadata read deliberately remains `unknown`; the current
- * fingerprint is still useful context when the item row itself was available. */
+ * A failed or incomplete read deliberately remains `unknown`; a partial source
+ * projection must not manufacture a fingerprint for a different subject. */
 function checkpointSubjectFingerprintForRead(
   workItem: {
     id: string;
@@ -403,7 +407,16 @@ function checkpointSubjectFingerprintForRead(
   },
   readFailed: boolean,
   stored: unknown,
+  subjectComplete = true,
 ): WorkItemSubjectFingerprintComparison {
+  // A bodyless issue projection maps SQL NULL to summary="" so the WorkItem
+  // shape stays total. That value is not the subject's real summary and cannot
+  // participate in an equality check. Preserve the stored side, but report the
+  // comparison as unknown until a read includes the body.
+  if (!subjectComplete) {
+    const normalized = normalizeWorkItemSubjectFingerprint(readFailed ? undefined : stored);
+    return { status: 'unknown', ...(normalized ? { stored: normalized } : {}) };
+  }
   return compareWorkItemSubjectFingerprint(workItem, readFailed ? undefined : stored);
 }
 
@@ -459,6 +472,13 @@ export function workItemsGetSourceReadOptions(
     if (path === null || path === '') continue;
 
     if (path === 'workItem.summary') {
+      includeBody = true;
+      continue;
+    }
+    if (path === 'checkpointSubjectFingerprint' || path.startsWith('checkpointSubjectFingerprint.')) {
+      // The current subject hash includes issue.body (mapped as WorkItem.summary).
+      // A caller selecting this field needs that source column even if it did not
+      // also request the summary in its result projection.
       includeBody = true;
       continue;
     }
@@ -938,6 +958,9 @@ export default defineTool({
           stage.enrichmentMs = Date.now() - started;
           return { ok: true as const, id, availability: 'available' as const, resume };
         }
+        // Feature summaries remain present in bodyless reads. Issue summaries are
+        // projected from the body column, so includeBody:false leaves them unknown.
+        const subjectComplete = workItem.family === 'feature' || sourceReadOptions?.includeBody !== false;
         // `checksOnly` is the retire-id recovery path. Read the item only far enough
         // to resolve its canonical harness, then read the checkpoint ledger and stop:
         // the narrative, payload, thread, holder, plan, and prior-work enrichments
@@ -968,7 +991,7 @@ export default defineTool({
               checkpointAgeMs: null,
               checkpointUpdatedAtMs: null,
               checkpointContentHash: null,
-              checkpointSubjectFingerprint: checkpointSubjectFingerprintForRead(workItem, true, undefined),
+              checkpointSubjectFingerprint: checkpointSubjectFingerprintForRead(workItem, true, undefined, subjectComplete),
               checkpointReadFailed: true as const,
             };
           }
@@ -995,6 +1018,7 @@ export default defineTool({
               workItem,
               false,
               checkpointRead.subjectFingerprint,
+              subjectComplete,
             ),
           };
         }
@@ -1131,6 +1155,7 @@ export default defineTool({
           workItem,
           checkpointReadFailed,
           storedSubjectFingerprint,
+          subjectComplete,
         );
         const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
         // EI-15184: RELATIVE checkpoint staleness. `checkpointAgeMs` above is

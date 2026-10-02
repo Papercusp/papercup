@@ -307,6 +307,13 @@ describe('staging-first activation guard', () => {
     ]);
   });
 
+  it('does not mistake a legal precondition for a deployment-model wait', () => {
+    const parsed = plan([
+      "- **P-016** `todo` GATE: a legal read of Slack's 2025 API terms for this deployment model must be on record before this ships.",
+    ]);
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
   it.each(['done', 'dropped'])('does not re-report a terminal %s item', (status) => {
     expect(
       stagingFirstActivationProblems(

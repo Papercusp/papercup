@@ -425,6 +425,13 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // and fully tested with this OFF. Owner-authority does not consume a
   // parking-watermark slot. Count 35 → 36.
   "papercusp-hosted-billing-live-mode",
+  // 2026-10-01 (enterprise-data-sources-2026-10-01 P-016, WI-10005052) — deliberate
+  // owner-authority dark flag: the Slack organization connector refuses every entry
+  // point until a legal read of Slack's 2025 API terms for the customer-owned
+  // internal-app model is on record (the plan's GATE). The connector ships built and
+  // tested against a recorded fake Slack API. Owner-authority does not consume a
+  // parking-watermark slot. Count 36 → 37.
+  "papercusp-slack-org-connector",
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
