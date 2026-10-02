@@ -20,13 +20,14 @@ export function summarizeHeapSnapshot(snap: any, { top }?: {
  * Returned names contain only constructor/function labels, never string values
  * or edge/property names. Class retained sizes overlap and must not be added.
  * @param {Uint8Array} input
- * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number }} [options]
+ * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number, decoderControl?: string }} [options]
  */
-export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, retainerDepth, maxRetainers }?: {
+export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, retainerDepth, maxRetainers, decoderControl }?: {
     top?: number;
     perClass?: number;
     retainerDepth?: number;
     maxRetainers?: number;
+    decoderControl?: string;
 }): Promise<{
     parser: string;
     rootIndex: number;
@@ -67,6 +68,27 @@ export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, retai
     definition: string;
     privacy: string;
 }>;
+/** Compare the SAME bytes with the pinned upstream native v8-heap executable.
+ * This is a decoder discriminator, not retainer attribution. --top 0 prevents
+ * private names from reaching stdout; even failures persist only fixed/numeric
+ * fields, never subprocess stderr or input. No snapshot file is created.
+ * @param {Uint8Array} input
+ * @param {string} executable
+ */
+export function checkNativeHeapDecode(input: Uint8Array, executable: string): {
+    parser: string;
+    executableSha256: string;
+    inputBytes: number;
+    inputSha256: string;
+    elapsedMs: number;
+    status: number | null;
+    signal: NodeJS.Signals | null;
+    decoded: boolean;
+    stdoutBytes: number;
+    stderrBytes: number;
+    errorCode: any;
+    definition: string;
+};
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
  * @param {import('node:stream').Readable} input
  * @param {{ top?: number }} [options] top=0 keeps all classes for multi-snapshot aggregation.

@@ -29,7 +29,8 @@
 //   nodes[]                    — flat array: node_count × node_fields.length
 //   strings[]                  — string table indexed by the 'name' field value
 
-import { readdirSync, createReadStream } from 'node:fs';
+import { readdirSync, createReadStream, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -87,9 +88,9 @@ export function summarizeHeapSnapshot(snap, { top = 30 } = {}) {
  * Returned names contain only constructor/function labels, never string values
  * or edge/property names. Class retained sizes overlap and must not be added.
  * @param {Uint8Array} input
- * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number }} [options]
+ * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number, decoderControl?: string }} [options]
  */
-export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, retainerDepth = 2, maxRetainers = 32 } = {}) {
+export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, retainerDepth = 2, maxRetainers = 32, decoderControl } = {}) {
   if (!(input instanceof Uint8Array) || !input.byteLength) throw new TypeError('Heap graph requires snapshot bytes');
   for (const [name, value, maximum] of [['top', top, 30], ['perClass', perClass, 10],
     ['retainerDepth', retainerDepth, 3], ['maxRetainers', maxRetainers, 100]]) {
@@ -175,9 +176,30 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
       .slice(0, 16).map(match => ({ functionIndex: Number(match[1]), offset: match[2] })) : [];
     throw Object.assign(new Error('Heap retainer analysis failed at ' + phase + ' (' +
       (cause instanceof Error ? cause.name : 'unknown') + ')'), {
-      diagnostic: { phase, inputBytes: input.byteLength, wasmMemoryBytes: wasm?.memory?.buffer?.byteLength ?? null, panic, wasmFrames },
+      diagnostic: { phase, inputBytes: input.byteLength, wasmMemoryBytes: wasm?.memory?.buffer?.byteLength ?? null, panic, wasmFrames,
+        ...(decoderControl && phase === 'decode-bytes' ? { nativeControl: checkNativeHeapDecode(input, decoderControl) } : {}) },
     });
   } finally { console.error = consoleError; graph?.free(); }
+}
+
+/** Compare the SAME bytes with the pinned upstream native v8-heap executable.
+ * This is a decoder discriminator, not retainer attribution. --top 0 prevents
+ * private names from reaching stdout; even failures persist only fixed/numeric
+ * fields, never subprocess stderr or input. No snapshot file is created.
+ * @param {Uint8Array} input
+ * @param {string} executable
+ */
+export function checkNativeHeapDecode(input, executable) {
+  const started = Date.now();
+  const executableSha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
+  const result = spawnSync(executable, ['-', '--no-retained', '--top', '0', '--format', 'json'],
+    { input, encoding: 'utf8', timeout: 60_000, maxBuffer: 16 * 1024 });
+  return { parser: 'microsoft/vscode-v8-heap-tools native decoder', executableSha256,
+    inputBytes: input.byteLength, inputSha256: createHash('sha256').update(input).digest('hex'),
+    elapsedMs: Date.now() - started, status: result.status, signal: result.signal,
+    decoded: result.status === 0 && result.stdout.trim() === '[]',
+    stdoutBytes: Buffer.byteLength(result.stdout ?? ''), stderrBytes: Buffer.byteLength(result.stderr ?? ''),
+    errorCode: result.error?.code ?? null, definition: 'Native decode and class enumeration only; no dominators or retaining-owner proof.' };
 }
 
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
