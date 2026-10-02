@@ -4722,11 +4722,21 @@ export async function buildTurnStartOrientationBlock(input: {
     // A completed plan can leave no new orientation rows. Still settle its
     // previously emitted receipt; an empty next block must not erase evidence.
     if (progressReceipts && ack?.committed?.[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY]) {
-      void trackDetached(progressReceipts.confirmGoalPlacementDelivery({
-        ownerId, workspaceId, confirmedToken: input.confirmedDeliveryToken,
-        candidate: ack.committed[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY],
-        brief: state.obligations,
-      }, input.progressReceiptDeps)).catch(() => {});
+      const candidate = ack.committed[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY];
+      // A confirm that records nothing must say why (WI-10005636): a discarded
+      // reason made a dropped receipt indistinguishable from no opportunity.
+      void trackDetached((async () => {
+        const outcome = await progressReceipts.confirmGoalPlacementDelivery({
+          ownerId, workspaceId, confirmedToken: input.confirmedDeliveryToken,
+          candidate, brief: state.obligations,
+        }, input.progressReceiptDeps).catch((error: unknown) => ({
+          recorded: 0, reason: `confirm-threw:${error instanceof Error ? error.message : String(error)}`,
+        }));
+        if (outcome.recorded > 0) return;
+        await progressReceipts.recordGoalPlacementDeliveryOutcome({
+          ownerId, workspaceId, stage: 'confirm', reason: outcome.reason, candidate,
+        }, input.progressReceiptDeps);
+      })()).catch(() => {});
     }
     if (isEmptyOrientation(state)) return NO_ORIENTATION;
     const composed = composeOrientationBlockWithRows({
@@ -4845,9 +4855,26 @@ export async function buildTurnStartOrientationBlock(input: {
           fallback: null, timeoutMs: input.placementBackgroundTimeoutMs ?? 8_000,
           label: 'goal-placement-delivery-background',
         });
-        if (!late.value) return;
+        if (!late.value) {
+          const reason = late.degraded
+            ? `late-prepare-${late.reason ?? 'degraded'}${late.errorMessage ? `:${late.errorMessage}` : ''}`
+            : 'late-prepare-null';
+          await progressReceipts.recordGoalPlacementDeliveryOutcome({
+            ownerId, workspaceId, stage: 'late-upgrade', reason,
+            candidate: deliveredFingerprint[placementKey],
+          }, input.progressReceiptDeps);
+          return;
+        }
         const { annotateReadCursorByToken } = await import('./agent-tools/coordination/read-cursors');
-        await annotateReadCursorByToken(ownerId, ORIENTATION_CURSOR_SURFACE, placementKey, deliveryToken, late.value);
+        const annotated = await annotateReadCursorByToken(
+          ownerId, ORIENTATION_CURSOR_SURFACE, placementKey, deliveryToken, late.value,
+        );
+        if (annotated === false) {
+          await progressReceipts.recordGoalPlacementDeliveryOutcome({
+            ownerId, workspaceId, stage: 'late-upgrade', reason: 'late-annotate-not-applied',
+            candidate: late.value,
+          }, input.progressReceiptDeps);
+        }
       })()).catch(() => {});
     }
     // A token whose stage failed names no pending, so confirming it could never
