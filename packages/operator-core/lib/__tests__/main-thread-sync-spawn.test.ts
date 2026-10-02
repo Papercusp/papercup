@@ -63,7 +63,12 @@ export const SCAN_ROOTS = ['lib/agent-tools', 'lib/release'] as const;
  * WI-10005268: single main-thread files outside SCAN_ROOTS. Each serves operator handlers
  * (release:checkpoint-run, dev:pipeline_position, the /admin/git pipeline read).
  */
-export const SCAN_FILES = ['lib/release-checkpoint-launch.ts', 'lib/git-pipeline-position.ts', 'lib/git-pipeline-stats.ts'] as const;
+export const SCAN_FILES = [
+  'lib/release-checkpoint-launch.ts',
+  'lib/git-pipeline-position.ts',
+  'lib/git-pipeline-stats.ts',
+  'lib/git-trackedness.ts',
+] as const;
 
 const SYNC_SPAWN_NAMES: ReadonlySet<string> = new Set(['execFileSync', 'spawnSync', 'execSync']);
 
