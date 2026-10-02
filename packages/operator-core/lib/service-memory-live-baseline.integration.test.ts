@@ -55,6 +55,41 @@ function assertIdentity(before: { pid: number; startTicks: string; executableSha
       before.executableSha256 !== after.executableSha256) throw Error('Serving process identity changed');
 }
 
+function parseDiscoveryNamespace(raw?: string, limits?: PinnedLimits): string | undefined {
+  if (raw === undefined) return undefined;
+  if (raw.length > 120 || raw.startsWith('jev-memory:') || !/^[a-z][a-z0-9_.-]*:[a-z][a-z0-9_.-]*$/.test(raw) ||
+      limits?.cacheKeyDigests !== undefined || (limits?.cacheEntryOffset ?? 0) !== 0) {
+    throw Error('Cache discovery requires one exact tool namespace and no prior selection');
+  }
+  return raw;
+}
+
+function selectDiscoveredDigests(pages: any[], namespace: string): string[] {
+  if (pages.length < 1 || pages.length > 2 || pages.some(page => page.status !== 'map' ||
+      page.selection.selectedNotChecked !== 0 || page.undigestibleKeys !== 0) ||
+      pages.at(-1).selection.nextOffset !== null) throw Error('Incomplete bounded cache discovery');
+  const candidates = new Map<string, number>();
+  for (const page of pages) for (const value of page.values) {
+    if (value.toolNamespace !== namespace) continue;
+    if (!/^[a-f0-9]{64}$/.test(value.keyDigest)) throw Error('Undigestible cache discovery candidate');
+    candidates.set(value.keyDigest, Math.max(candidates.get(value.keyDigest) ?? 0, value.stringCodeUnits));
+  }
+  // This ranks visited logical strings, including partially traversed values.
+  // It neither ranks physical memory nor proves a single atomic cache census.
+  const selected = [...candidates].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 2).map(([key]) => key);
+  if (selected.length === 0) throw Error('No matching current cache discovery values');
+  return selected;
+}
+
+function assertCacheSelection(cache: any, digests: string[]) {
+  if (cache.status !== 'map' || cache.checked !== digests.length ||
+      cache.selection.selectedNotChecked !== 0 || cache.selection.unresolvedKeyDigests.length !== 0 ||
+      new Set(cache.values.map((value: any) => value.keyDigest)).size !== digests.length ||
+      cache.values.some((value: any) => !digests.includes(value.keyDigest))) {
+    throw Error('Current cache digest selection did not match exactly');
+  }
+}
+
 function listenerPorts(pid: number) {
   const inodes = new Set(readdirSync(`/proc/${pid}/fd`).flatMap(fd => {
     try { return [readlinkSync(`/proc/${pid}/fd/${fd}`).match(/^socket:\[(\d+)\]$/)?.[1]]; }
@@ -100,6 +135,33 @@ describe('actual current-build operator memory baseline', () => {
     expect(() => assertIdentity(before, { ...before, executableSha256: 'b' })).toThrow('identity changed');
   });
 
+  it('rejects stale, incomplete and private discovery selections before claiming payload coverage', () => {
+    const a = 'a'.repeat(64), b = 'b'.repeat(64), other = 'c'.repeat(64);
+    const page = { status: 'map', undigestibleKeys: 0,
+      selection: { selectedNotChecked: 0, nextOffset: null },
+      values: [{ toolNamespace: 'coord:inbox', keyDigest: a, stringCodeUnits: 20 },
+        { toolNamespace: 'coord:inbox', keyDigest: b, stringCodeUnits: 30 },
+        { toolNamespace: 'plans:get', keyDigest: other, stringCodeUnits: 100 }] };
+    expect(parseDiscoveryNamespace('coord:inbox')).toBe('coord:inbox');
+    for (const raw of ['private|argument', '', 'jev-memory:' + a]) {
+      expect(() => parseDiscoveryNamespace(raw)).toThrow('exact tool namespace');
+    }
+    expect(() => parseDiscoveryNamespace('coord:inbox', { cacheKeyDigests: [a] })).toThrow('no prior selection');
+    expect(selectDiscoveredDigests([page], 'coord:inbox')).toEqual([b, a]);
+    expect(() => selectDiscoveredDigests([page], 'work_items:list')).toThrow('No matching');
+    expect(() => selectDiscoveredDigests([{ ...page, undigestibleKeys: 1 }], 'coord:inbox')).toThrow('Incomplete');
+    expect(() => selectDiscoveredDigests([{ ...page, selection: { ...page.selection, nextOffset: 256 } }],
+      'coord:inbox')).toThrow('Incomplete');
+    expect(() => selectDiscoveredDigests([{ ...page, values: [{ ...page.values[0], keyDigest: 'private' }] }],
+      'coord:inbox')).toThrow('Undigestible');
+    const matched = { status: 'map', checked: 2,
+      selection: { selectedNotChecked: 0, unresolvedKeyDigests: [] }, values: [{ keyDigest: a }, { keyDigest: b }] };
+    expect(() => assertCacheSelection(matched, [a, b])).not.toThrow();
+    expect(() => assertCacheSelection({ ...matched, checked: 0, values: [] }, [a, b])).toThrow('match exactly');
+    expect(() => assertCacheSelection({ ...matched, values: [{ keyDigest: a }, { keyDigest: other }] },
+      [a, b])).toThrow('match exactly');
+  });
+
   it.runIf(Boolean(process.env.PAPERCUSP_P011_LIVE_PID))('measures unforced live idle and ordinary HTTP windows on the named staging process', async () => {
     const pid = Number(process.env.PAPERCUSP_P011_LIVE_PID);
     const base = process.env.PAPERCUSP_P011_LIVE_URL;
@@ -108,7 +170,9 @@ describe('actual current-build operator memory baseline', () => {
     const pinnedOwners = process.env.PAPERCUSP_P011_PINNED_OWNERS
       ? JSON.parse(process.env.PAPERCUSP_P011_PINNED_OWNERS) : undefined;
     const pinnedLimits = parsePinnedLimits(process.env.PAPERCUSP_P011_PINNED_LIMITS);
+    const discoveryNamespace = parseDiscoveryNamespace(process.env.PAPERCUSP_P011_CACHE_DISCOVERY_NAMESPACE, pinnedLimits);
     const operatorCacheEntries = process.env.PAPERCUSP_P011_CACHE_ENTRIES === '1';
+    if (discoveryNamespace && !operatorCacheEntries) throw Error('Cache discovery requires cache-entry attribution');
     if (operatorCacheEntries && (!process.env.PAPERCUSP_P011_PINNED_STATE ||
         pinnedOwners?.length !== 1 || pinnedOwners[0] !== '@papercusp/operator-core.operatorCache')) {
       throw Error('Cache-entry attribution requires the exact operator-cache owner');
@@ -182,6 +246,30 @@ describe('actual current-build operator memory baseline', () => {
       }
       if (!client || !port) throw Error('PID-bound inspector unavailable');
       report.inspector = { pid, port, openedByProbe: opened };
+      let effectivePinnedLimits = pinnedLimits;
+      if (discoveryNamespace) {
+        const pages: any[] = [];
+        let offset = 0;
+        for (let page = 0; page < 2; page++) {
+          const discovery = await readPinnedState(client, { ...pinnedLimits, expectedPid: pid,
+            owners: pinnedOwners, operatorCacheEntries, maxCacheEntries: 256,
+            maxEntryEntries: 128, maxEntryObjects: 64, cacheEntryOffset: offset });
+          assertIdentity(before, processSample(pid));
+          const cache = discovery.roots[0]?.cacheEntries;
+          if (!cache) throw Error('Cache discovery root unavailable');
+          pages.push(cache);
+          report.cacheDiscovery = { namespace: discoveryNamespace, pages,
+            definition: 'At most two bounded insertion-order pages on the same PID; membership can change between pages. Ranking uses visited logical strings, not physical bytes.' };
+          publish();
+          if (cache.selection.nextOffset === null) break;
+          offset = cache.selection.nextOffset;
+        }
+        const selectedKeyDigests = selectDiscoveredDigests(pages, discoveryNamespace);
+        effectivePinnedLimits = { ...pinnedLimits, maxCacheEntries: selectedKeyDigests.length, cacheKeyDigests: selectedKeyDigests };
+        report.cacheDiscovery.selectedKeyDigests = selectedKeyDigests;
+        report.effectivePinnedLimits = effectivePinnedLimits;
+        publish();
+      }
       let remainingDescendants = 64;
       const descendants = (parent: number): ReturnType<typeof processSample>[] => {
         const children = readFileSync(`/proc/${parent}/task/${parent}/children`, 'utf8').trim();
@@ -196,9 +284,11 @@ describe('actual current-build operator memory baseline', () => {
         const started = performance.now();
         const memory = await readProcessMemory(client!, { expectedPid: pid });
         const pinnedState = process.env.PAPERCUSP_P011_PINNED_STATE ? await readPinnedState(client!, {
-          ...pinnedLimits,
+          ...effectivePinnedLimits,
           expectedPid: pid, owners: pinnedOwners, operatorCacheEntries,
         }) : undefined;
+        if (effectivePinnedLimits?.cacheKeyDigests) assertCacheSelection(pinnedState!.roots[0].cacheEntries,
+          effectivePinnedLimits!.cacheKeyDigests!);
         const os = processSample(pid); assertIdentity(before, os);
         remainingDescendants = 64;
         report.samples.push({ label, at: new Date().toISOString(), ...memory, os, pinnedState,
