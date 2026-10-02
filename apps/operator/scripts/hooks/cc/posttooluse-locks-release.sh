@@ -252,6 +252,14 @@ def call_tool(name, arguments):
                 inner, rpc_error, phase = parse_mcp_response(raw_response)
                 if rpc_error is not None:
                     return None, 'rpc: ' + str(rpc_error)[:200]
+                if phase in ('no-result', 'no-text'):
+                    # HTTP 200 is not a usable release verdict. Advance to the
+                    # stable authority when this endpoint returned no parseable
+                    # tool result; a repeated locks:release is safe because the
+                    # verb confirms an already-absent path as held_before=0.
+                    last_exc = RuntimeError('response: ' + str(phase))
+                    all_conn_refused = False
+                    continue
                 if phase != 'ok' or not isinstance(inner, dict):
                     return None, 'response: ' + str(phase)
                 return inner, None

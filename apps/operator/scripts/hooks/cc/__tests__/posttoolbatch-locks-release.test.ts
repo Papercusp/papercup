@@ -24,6 +24,7 @@ let server: Server;
 let operatorUrl: string;
 let releaseRequests: Array<Record<string, any>> = [];
 let releaseObservedAfterRegen: boolean[] = [];
+let primaryNoText = false;
 
 beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), 'posttoolbatch-home-'));
@@ -66,7 +67,9 @@ beforeAll(async () => {
         JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
-          result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
+          result: {
+            content: primaryNoText ? [] : [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+          },
         }),
       );
     });
@@ -79,6 +82,7 @@ beforeAll(async () => {
 afterEach(() => {
   releaseRequests = [];
   releaseObservedAfterRegen = [];
+  primaryNoText = false;
   fs.rmSync(regenMarker, { force: true });
   for (const name of fs.readdirSync(cache)) fs.rmSync(join(cache, name), { force: true });
 });
@@ -394,6 +398,71 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
     expect(JSON.parse(fs.readFileSync(regenMarker, 'utf8'))).toEqual([
       '--files=scripts/input.mjs',
     ]);
+  });
+
+  it('uses the stable release authority when the primary MCP response has no text result', async () => {
+    const toolUseId = 'tu-empty-primary';
+    const fallbackRequests: Array<Record<string, any>> = [];
+    const fallbackServer = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        fallbackRequests.push(JSON.parse(body) as Record<string, any>);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ ok: true, released: ['src/first.ts'] }),
+            }],
+          },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => fallbackServer.listen(0, '127.0.0.1', resolve));
+    const address = fallbackServer.address();
+    if (!address || typeof address === 'string') throw new Error('fallback server did not bind');
+
+    primaryNoText = true;
+    fs.writeFileSync(join(cache, toolUseId + '.lock'), 'primary-lock');
+    fs.writeFileSync(join(cache, toolUseId + '.paths'), JSON.stringify(['src/first.ts']));
+    fs.writeFileSync(join(cache, toolUseId + '.domain'), '/repo');
+
+    try {
+      const out = await runHook(POST_HOOK, {
+        tool_name: 'apply_patch',
+        tool_use_id: toolUseId,
+        session_id: 'codex-owner',
+        tool_response: { success: true },
+      }, {
+        PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: 'http://127.0.0.1:' + address.port,
+      });
+
+      expect(out.status).toBe(0);
+      expect(releaseRequests).toHaveLength(1);
+      expect(fallbackRequests).toHaveLength(1);
+      expect(fallbackRequests[0]?.params?.arguments).toMatchObject({
+        lock_id: 'primary-lock',
+        paths: ['src/first.ts'],
+        coordination_domain: '/repo',
+        native_edit_proof: {
+          success: true,
+          source: 'codex',
+          tool: 'apply_patch',
+          paths: ['src/first.ts'],
+        },
+      });
+      expect(fs.existsSync(join(cache, toolUseId + '.lock'))).toBe(false);
+      expect(fs.existsSync(join(cache, toolUseId + '.paths'))).toBe(false);
+      expect(fs.existsSync(join(cache, toolUseId + '.domain'))).toBe(false);
+      expect(fs.existsSync(join(cache, 'owner-codex-owner-last-success.json'))).toBe(true);
+      expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
+    } finally {
+      primaryNoText = false;
+      await new Promise<void>((resolve) => fallbackServer.close(() => resolve()));
+    }
   });
 
   it('keeps PostToolBatch attribution Claude-only when a Codex edit appears', async () => {

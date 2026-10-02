@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isPublicAddress, publicHostname, publicMediaUrl, publicAddresses, loadTestReceipt, localProbeHealthUrl } from "../../../../infra/phone-app/media-config.mjs";
+import { isPublicAddress, publicHostname, publicMediaUrl, publicAddresses, loadTestReceipt, localProbeHealthUrl, localPhoneReadiness } from "../../../../infra/phone-app/media-config.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../../../..");
 const deployPath = resolve(repoRoot, "infra/phone-app/deploy.sh");
+const sidecarUnitPath = resolve(repoRoot, "infra/phone-app/systemd/papercusp-phone-sidecar.service.tmpl");
 
 describe("Phone hosted media deployment contract", () => {
   it("keeps the deploy script syntactically valid", () => {
@@ -96,5 +97,49 @@ describe('Phone audio receive verdict', () => {
       'ws://localhost:7890', 'ws://127.0.0.1:7890?key=secret', 'ws://secret@127.0.0.1:7890']) {
       expect(() => localProbeHealthUrl(url)).toThrow();
     }
+  });
+});
+
+describe('Phone local readiness is fail-closed and scoped', () => {
+  const coordinates = { PHONE_LIVEKIT_URL: 'ws://127.0.0.1:7890',
+    PHONE_SIDECAR_URL: 'ws://127.0.0.1:8793' };
+  it('observes four service units and two HTTP endpoints without asserting public calls', async () => {
+    const units: string[] = [], urls: string[] = [];
+    const result = await localPhoneReadiness(coordinates, {
+      unitState: async (unit: string) => { units.push(unit); return true; },
+      httpReady: async (url: string) => { urls.push(url); return true; },
+    });
+    expect(result).toMatchObject({ ok: true, scope: 'local-process-and-http-only',
+      publicPhoneVerified: false, bidirectionalAudioVerified: false,
+      recoveryVerified: false, costPolicyVerified: false });
+    expect(units).toEqual([
+      'papercusp-phone-livekit.service', 'papercusp-phone-sip.service',
+      'papercusp-phone-worker.service', 'papercusp-phone-sidecar.service',
+    ]);
+    expect(urls).toEqual(['http://127.0.0.1:7890/', 'http://127.0.0.1:8793/api/health']);
+  });
+  it('refuses inactive/crashed units, HTTP faults and unknown probes', async () => {
+    const base = { unitState: async () => true, httpReady: async () => true };
+    expect((await localPhoneReadiness(coordinates, {
+      ...base, unitState: async (unit: string) => unit !== 'papercusp-phone-sip.service',
+    })).ok).toBe(false);
+    expect((await localPhoneReadiness(coordinates, {
+      ...base, httpReady: async (url: string) => !url.includes('8793'),
+    })).ok).toBe(false);
+    expect((await localPhoneReadiness(coordinates, {
+      ...base, unitState: async () => { throw new Error('systemctl failed'); },
+    })).ok).toBe(false);
+    expect((await localPhoneReadiness({ ...coordinates, PHONE_SIDECAR_URL: 'wss://example.com' }, base)).ok).toBe(false);
+    expect((await localPhoneReadiness({ PHONE_LIVEKIT_URL: '' }, base)).ok).toBe(false);
+  });
+});
+
+describe('Phone sidecar supervision', () => {
+  it('lets systemd observe the sidecar child exit and retry failed startup', () => {
+    const unit = readFileSync(sidecarUnitPath, 'utf8');
+    expect(unit).toMatch(/^ExecStart=\$\{PHONE_NODE_BIN\} --import tsx src\/index\.ts$/m);
+    expect(unit).toMatch(/^Restart=on-failure$/m);
+    expect(unit).not.toMatch(/^ExecStart=.*--watch/m);
+    expect(readFileSync(deployPath, 'utf8')).toContain('systemctl --user restart "$u"');
   });
 });

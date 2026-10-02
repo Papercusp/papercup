@@ -132,6 +132,13 @@ describe("dev:service_health handler", () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it("declares the optional systemd query fields in its machine-readable result schema", () => {
+    const shape = (tool as unknown as { result: { shape: Record<string, unknown> } }).result.shape;
+    expect(shape).toHaveProperty("unitStates");
+    expect(shape).toHaveProperty("unitsUnknown");
+    expect(shape).toHaveProperty("scopesUnavailable");
+  });
+
   it("keeps ptool JSON responses parseable when the service snapshot exceeds the result door", () => {
     expect((tool as { skipResultDoor?: string }).skipResultDoor).toBe("programmatic-caller");
   });

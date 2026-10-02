@@ -5,6 +5,8 @@ import { connect } from 'node:tls';
 import { X509Certificate, createPrivateKey, createPublicKey } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const blocked = new BlockList();
 for (const [ip, prefix] of [
@@ -193,12 +195,63 @@ export function localProbeHealthUrl(value) {
   return url.href;
 }
 
+const PHONE_UNITS = [
+  ['media', 'papercusp-phone-livekit.service'],
+  ['sip', 'papercusp-phone-sip.service'],
+  ['worker', 'papercusp-phone-worker.service'],
+  ['sidecar', 'papercusp-phone-sidecar.service'],
+];
+const execFileAsync = promisify(execFile);
+
+/** Local process/HTTP readiness is deliberately narrower than public calling:
+ * it does not assert PSTN, bidirectional media, price policy or recovery drills.
+ * Return false on an unknown probe or a missing unit, never a false green. */
+export async function localPhoneReadiness(env, probes = {}) {
+  const unitState = probes.unitState ?? (async unit => {
+    const { stdout } = await execFileAsync('systemctl', ['--user', 'is-active', unit], { timeout: 3000 });
+    return stdout.trim() === 'active';
+  });
+  const httpReady = probes.httpReady ?? (async url => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    return response.ok;
+  });
+  const checks = await Promise.all(PHONE_UNITS.map(async ([component, unit]) => {
+    try { return { component, ready: (await unitState(unit)) === true }; }
+    catch { return { component, ready: false }; }
+  }));
+  for (const [component, value] of [
+    ['media-http', env.PHONE_LIVEKIT_URL],
+    ['sidecar-http', env.PHONE_SIDECAR_URL],
+  ]) {
+    try {
+      const url = component === 'sidecar-http'
+        ? new URL('api/health', localProbeHealthUrl(value)).href
+        : localProbeHealthUrl(value);
+      checks.push({ component, ready: (await httpReady(url)) === true });
+    } catch { checks.push({ component, ready: false }); }
+  }
+  return {
+    ok: checks.every(check => check.ready),
+    checks,
+    scope: 'local-process-and-http-only',
+    publicPhoneVerified: false,
+    bidirectionalAudioVerified: false,
+    recoveryVerified: false,
+    costPolicyVerified: false,
+  };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const action = process.argv[2];
     if (action === 'preflight') console.log(JSON.stringify(await remotePreflight(process.env)));
     else if (action === 'load-test-receipt') console.log(JSON.stringify(loadTestReceipt(readFileSync(process.argv[3], 'utf8'))));
     else if (action === 'local-probe-health') console.log(localProbeHealthUrl(process.argv[3]));
+    else if (action === 'local-readiness') {
+      const result = await localPhoneReadiness(process.env);
+      console.log(JSON.stringify(result));
+      if (!result.ok) process.exitCode = 1;
+    }
     else if (action === 'public-dns') {
       const config = mediaConfig(process.env, true);
       for (const hostname of [new URL(config.publicUrl).hostname, config.turnDomain]) {

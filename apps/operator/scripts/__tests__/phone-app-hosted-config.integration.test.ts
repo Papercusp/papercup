@@ -142,3 +142,44 @@ describe('Phone existing deployer public media preparation', () => {
     } finally { await new Promise<void>(r => server.close(() => r())); }
   });
 });
+
+describe('Phone deployer read-only local status', () => {
+  it('reports source-scoped readiness, fails on an inactive worker and never prints secrets', async () => {
+    const conf = join(root, 'readiness-status'); mkdirSync(conf);
+    const media = createHttpServer((_req, res) => res.end('ready'));
+    const sidecar = createHttpServer((req, res) => {
+      res.statusCode = req.url === '/api/health' ? 200 : 404; res.end('ready');
+    });
+    await Promise.all([
+      new Promise<void>(resolve => media.listen(0, '127.0.0.1', resolve)),
+      new Promise<void>(resolve => sidecar.listen(0, '127.0.0.1', resolve)),
+    ]);
+    const mediaAddr = media.address(), sidecarAddr = sidecar.address();
+    if (!mediaAddr || typeof mediaAddr === 'string' || !sidecarAddr || typeof sidecarAddr === 'string') {
+      throw new Error('fixture listeners unavailable');
+    }
+    writeFileSync(join(conf, 'livekit.env'), `PHONE_LIVEKIT_URL=ws://127.0.0.1:${mediaAddr.port}\nPHONE_LIVEKIT_API_SECRET=private-fixture-secret\n`, { mode: 0o600 });
+    writeFileSync(join(conf, 'systemctl'), '#!/bin/sh\ncase "$3" in papercusp-phone-worker.service) [ "$PHONE_WORKER_DOWN" != 1 ] || exit 3;; esac\nprintf "active\\n"\n', { mode: 0o700 });
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PHONE_'))),
+      PHONE_CONFIG_DIR: conf, PHONE_NODE_BIN: process.execPath,
+      PHONE_SIDECAR_URL: `ws://127.0.0.1:${sidecarAddr.port}`,
+      PATH: `${conf}:${process.env.PATH ?? ''}`,
+    };
+    try {
+      const runStatus = (input: NodeJS.ProcessEnv) => promisify(execFile)('bash', [deploy, '--status'], {
+        env: input, timeout: 15_000,
+      }).then(({ stdout, stderr }) => ({ status: 0, stdout, stderr }),
+        error => ({ status: error.code, stdout: error.stdout, stderr: error.stderr }));
+      const ready = await runStatus(env);
+      expect(ready.status, JSON.stringify(ready)).toBe(0);
+      expect(JSON.parse(ready.stdout)).toMatchObject({ ok: true, publicPhoneVerified: false });
+      const stopped = await runStatus({ ...env, PHONE_WORKER_DOWN: '1' });
+      expect(stopped.status).toBe(1);
+      expect(JSON.parse(stopped.stdout).checks).toContainEqual({ component: 'worker', ready: false });
+      expect(ready.stdout + ready.stderr + stopped.stdout + stopped.stderr).not.toContain('private-fixture-secret');
+    } finally {
+      await Promise.all([media, sidecar].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+    }
+  });
+});

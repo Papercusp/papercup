@@ -595,6 +595,11 @@ function main() {
           );
           process.exit(2);
         }
+        // A standalone clone has the bytes but does not enroll the submodule in its
+        // parent's recursive Git enumeration. Whole-tree guards would silently omit
+        // those bytes despite a successful materialisation. Mark only this verified,
+        // locally cloned pin active; no URL or network transport is enabled.
+        git(['config', '--local', `submodule.${sub.name}.active`, 'true'], workRoot);
       }
       console.log(
         `  initialised ${submodules.length} submodule(s) from local checkouts in ${((Date.now() - t1) / 1000).toFixed(1)}s (no network)`,

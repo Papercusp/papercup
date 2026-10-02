@@ -590,7 +590,7 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       expect(extracted).toBe(committed);
       // Populating a standalone clone is not enough: the parent repository must mark
       // the submodule active or recursive Git scanners silently omit its real files.
-      const tracked = execFileSync('git', ['ls-files', '-z', '--recurse-submodules'], {
+      const tracked = execFileSync('git', ['ls-files', '-z', '--recurse-submodules', '--', subFile], {
         cwd: workRoot,
         encoding: 'utf8',
         timeout: 30_000,

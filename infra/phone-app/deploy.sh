@@ -85,16 +85,13 @@ upsert_env_var() {
 }
 
 report_status() {
-  step "Status"
-  for u in "${UNITS[@]}"; do
-    printf '  %-38s %s\n' "$u" "$(systemctl --user is-active "$u" 2>/dev/null || echo inactive)"
-  done
-  if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
-    say "health $HEALTH_URL → OK"
-  else
-    say "health $HEALTH_URL → UNREACHABLE"
-  fi
-  say "sip signalling :5070 → $(ss -lun 2>/dev/null | grep -c ':5070' || true) udp listener(s)"
+  # A green LiveKit HTTP endpoint alone is NOT Phone readiness: SIP, the
+  # worker and the portal sidecar may independently be down. This path is
+  # read-only, fails closed, and deliberately does not imply public calling.
+  [[ -f "$ENV_FILE" ]] && { set -a; source "$ENV_FILE"; set +a; }
+  export PHONE_LIVEKIT_URL="${PHONE_LIVEKIT_URL:-ws://127.0.0.1:7890}"
+  export PHONE_SIDECAR_URL="${PHONE_SIDECAR_URL:-ws://127.0.0.1:8793}"
+  "$NODE_BIN" "$HERE/media-config.mjs" local-readiness
 }
 
 if [[ $STATUS_ONLY == 1 ]]; then report_status; exit 0; fi

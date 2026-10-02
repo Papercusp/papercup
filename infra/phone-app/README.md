@@ -68,6 +68,19 @@ journalctl --user -u papercusp-phone-livekit -f
 
 `deploy.sh --rotate-secret` mints a fresh API secret (restarts both units).
 
+For a **local-only** process and HTTP readiness verdict, run
+`PHONE_LIVEKIT_URL=ws://127.0.0.1:7890 PHONE_SIDECAR_URL=ws://127.0.0.1:8793 node infra/phone-app/media-config.mjs local-readiness`.
+It fails closed if a Phone media, SIP, worker or sidecar unit is inactive, or
+either loopback HTTP probe fails. It does **not** prove public PSTN calling,
+media in either direction, cost-policy enforcement, backup/recovery, or
+certificate renewal; those remain separate operational acceptance checks.
+`infra/phone-app/deploy.sh --status` reads the existing external configuration
+and returns that same JSON verdict with a nonzero exit status when not ready;
+it installs nothing, restarts nothing, and never prints credential values.
+The sidecar unit supervises the HTTP process directly and restarts it on failure.
+After changing the out-of-repo sidecar source, converge through `deploy.sh`;
+the unit does not use Node's watcher, which can stay active after its child dies.
+
 The smoke test requires a positive received-audio packet row and a complete,
 error-free subscriber summary from `lk` 2.16. It refuses unknown output formats,
 missing tracks and zero traffic even when `lk` exits zero. It does not prove public,
