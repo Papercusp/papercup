@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,8 +79,15 @@ describe('model-free CUDA allocator diagnostic control', () => {
 
 describe('native allocator INFO logging preload', () => {
   const preload = fileURLToPath(new URL('./fixtures/native-ort-allocator-logging.mjs', import.meta.url));
+  const program = () => {
+    const root = mkdtempSync(join(tmpdir(), 'allocator-logging-worker-')); roots.push(root);
+    const file = join(root, 'worker.mjs'); writeFileSync(file, 'export {};\n');
+    return `const {Worker}=require('node:worker_threads');
+const worker=new Worker(${JSON.stringify(file)},{workerData:{device:'cuda'},execArgv:['--import',${JSON.stringify(preload)}]});
+worker.on('error',error=>{console.error(error);process.exitCode=1});`;
+  };
   it('uses the supported logging hook without constructing a model or changing provider options', () => {
-    const result = spawnSync(process.execPath, ['--import', preload, '-e', ''], {
+    const result = spawnSync(process.execPath, ['-e', program()], {
       env: { ...process.env, TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../tsconfig.json', import.meta.url)) },
       encoding: 'utf8', timeout: 10000,
     });
@@ -88,14 +95,22 @@ describe('native allocator INFO logging preload', () => {
     const line = result.stderr.split('\n').find(line => line.startsWith('PC_ORT_ALLOCATOR_LOGGING\t'));
     expect(line).toBeDefined();
     expect(JSON.parse(line!.split('\t')[1])).toMatchObject({ onnxLogLevel: 'info', transformersLogLevel: 20,
-      modelInferencePerformed: false, providerOptionsChanged: false, workerThreadId: 0 });
+      modelInferencePerformed: false, providerOptionsChanged: false });
+    expect(JSON.parse(line!.split('\t')[1]).workerThreadId).toBeGreaterThan(0);
   });
 
   it('refuses an absent runtime configuration before importing native dependencies', () => {
     const env = { ...process.env }; delete env.TSX_TSCONFIG_PATH;
-    const result = spawnSync(process.execPath, ['--import', preload, '-e', ''], { env, encoding: 'utf8', timeout: 10000 });
+    const result = spawnSync(process.execPath, ['-e', program()], { env, encoding: 'utf8', timeout: 10000 });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('allocator logging requires the bound runtime configuration path');
+    expect(result.stderr).not.toContain('PC_ORT_ALLOCATOR_LOGGING\t');
+  });
+
+  it('leaves the parent and loader contexts silent without importing native dependencies', () => {
+    const env = { ...process.env }; delete env.TSX_TSCONFIG_PATH;
+    const result = spawnSync(process.execPath, ['--import', preload, '-e', ''], { env, encoding: 'utf8', timeout: 10000 });
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).not.toContain('PC_ORT_ALLOCATOR_LOGGING\t');
   });
 });
