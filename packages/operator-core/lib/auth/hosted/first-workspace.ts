@@ -64,6 +64,7 @@ import {
 import { HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX } from '../../workspace-host/hosted-aws-identity';
 import {
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
+  hostedBringUpSupportsProvider,
   type WorkspaceHostBringUp,
 } from '../../workspace-host/hosted-bring-up';
 import { admissionIdentity, HostedWorkspaceAdmissionError } from './workspace-admission';
@@ -122,8 +123,8 @@ export interface HostedFirstWorkspaceDependencies {
   discoverAwsHostInfrastructure(record: HostedProviderDelegationRecord): Promise<HostedAwsHostInfrastructure>;
   /**
    * Builds the admission port around a spec resolver bound to THIS verified delegation. A
-   * `bringUp` sets the machine up once it is built (D-401); passed for every GCP host, whoever's
-   * project it runs in (aws-byoc-gcp-parity D-015).
+   * `bringUp` sets the machine up once it is built (D-401); passed for every GCP and AWS host,
+   * whoever's project/account it runs in (aws-byoc-gcp-parity D-015).
    */
   createAdmission(
     resolveDesiredSpec: ResolveFirstWorkspaceSpec,
@@ -542,13 +543,16 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         resolveSpec = async (spec) => gcpFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified });
       }
 
-      // D-401 + aws-byoc-gcp-parity D-015: every GCP machine this door admits is set up right after
-      // it is built, Papercusp-hosted or in the customer's own project. A portal customer has no
-      // controller of their own and no initialize route, so without the bring-up their workspace
-      // would stay 'provisioning' forever. AWS bring-up (over SSM) is not built yet (D-015 rule 3).
+      // D-401 + aws-byoc-gcp-parity D-015: every GCP and AWS machine this door admits is set up
+      // right after it is built, Papercusp-hosted or in the customer's own project/account. A portal
+      // customer has no controller of their own and no initialize route, so without the bring-up
+      // their workspace would stay 'provisioning' forever. AWS is reached over SSM as the
+      // connection's own role (D-015 rule 3, WI-10005354).
       const admission = deps.createAdmission(
         resolveSpec,
-        provider === 'gcp' ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } } : {},
+        hostedBringUpSupportsProvider(provider)
+          ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } }
+          : {},
       );
       let admitted: { workspaceId: string; provisionOperationId: string };
       try {

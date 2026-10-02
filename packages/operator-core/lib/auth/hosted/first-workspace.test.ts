@@ -603,11 +603,11 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
     expect((await createHostedFirstWorkspace(byoc.deps).run(REQUEST)).ok).toBe(true);
     expect(byoc.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
 
-    // AWS bring-up (over SSM) is not built yet (D-015 rule 3): an AWS host is admitted without one
-    // rather than with a bring-up that would fail.
+    // D-015 rule 3 (WI-10005354): an AWS host is set up the same way, over SSM as the connection's
+    // own role; before it, an AWS portal workspace stayed 'provisioning' forever.
     const aws = harness();
     expect((await createHostedFirstWorkspace(aws.deps).run(AWS_REQUEST)).ok).toBe(true);
-    expect(aws.admissionOptions).toEqual([{}]);
+    expect(aws.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
   });
 
   it("ignores any configuration the browser sends: no request can steer Papercusp's cloud", async () => {
