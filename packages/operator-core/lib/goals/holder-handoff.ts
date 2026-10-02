@@ -287,9 +287,13 @@ export async function cancelFormerGoalHolderAwaits(
        AND a.policy <> 'announce'
        AND a.fired_at IS NULL AND a.cancelled_at IS NULL
        AND EXISTS (
+         -- Either side of a GOAL transition proves the owner held this goal: a
+         -- holder whose ENABLE row predates the subject column is still found by
+         -- the retire row that cleared it (migration 1346 + setMode's disable audit).
          SELECT 1 FROM harness_shared.agent_mode_changes c
           WHERE c.workspace_id = ${workspaceId} AND c.owner_id = a.subscriber_id
-            AND c.new_mode = ${GOAL_MODE} AND c.subject = ${goalId})
+            AND (c.new_mode = ${GOAL_MODE} OR c.old_mode = ${GOAL_MODE})
+            AND c.subject = ${goalId})
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.agent_modes m
           WHERE m.workspace_id = ${workspaceId} AND m.owner_id = a.subscriber_id

@@ -952,6 +952,11 @@ export const CC_HOOK_FILES = [
   // installer (dead code whose own header claimed it was "the hard backstop").
   // Moved here and wired below.
   'pretooluse-secrets-guard.mjs',
+  // P-007 / BAR R-11 (plan personal-data-reader-set-labels-2026-10-01): PreToolUse
+  // (matcher "Bash|WebFetch") hard DENY when a session that has read restricted personal
+  // data names a mail/chat/calendar/social provider host, a sidecar, or the sidecars'
+  // secrets in a client-native tool call. capability:bash is gated server-side.
+  'pretooluse-restricted-egress-guard.mjs',
   // EI-18896033546676518: PreToolUse (matcher "Edit|MultiEdit") hard DENY on any file
   // that already contains a raw NUL byte — the Edit tool has a confirmed round-trip
   // corruption bug on such files (silently writes a different byte than requested
@@ -3280,6 +3285,13 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-secrets-guard.mjs'), {
       matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-secrets-guard.mjs'),
+    });
+  // merge_restricted_egress_guard_hook — PreToolUse, matcher 'Bash|WebFetch' (P-007 / BAR R-11).
+  // The client-native tools never pass through capability:bash's server-side egress check.
+  if (has('pretooluse-restricted-egress-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-restricted-egress-guard.mjs'), {
+      matcher: 'Bash|WebFetch',
+      hooks: cmd('pretooluse-restricted-egress-guard.mjs'),
     });
   // merge_nul_byte_edit_guard_hook — PreToolUse, matcher 'Edit|MultiEdit' (EI-18896033546676518).
   // Write is deliberately NOT in the matcher — see the script header for why.

@@ -2533,7 +2533,14 @@ describe('runGoalHolderRespawnOnce — loss confirmation window (WI-10005559)', 
     expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, lossUnconfirmed: 0 });
     expect(launch).toHaveBeenCalledOnce();
     // The reason trail: each loss episode is logged once, when it starts.
-    expect(info.mock.calls.filter((c: unknown[]) => String(c[0]).includes('judged lost'))).toHaveLength(2);
+    const lostLines = info.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .filter((line: string) => line.includes('judged lost'));
+    expect(lostLines).toHaveLength(2);
+    // WI-10005579: each line names the verdict inputs, so a relaunch gap
+    // (`ended`) reads differently from a parked holder with no wake source.
+    expect(lostLines[lostLines.length - 1]).toContain('sessionState=ended');
+    expect(lostLines[lostLines.length - 1]).toMatch(/selfWake=\S+/);
   });
 
   it('restarts the window when a different holder is elected', async () => {

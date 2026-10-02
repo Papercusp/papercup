@@ -835,6 +835,10 @@ async function setModeCore(opts: SetModeOpts, control: { deferNotify?: boolean }
     await audit(sql, {
       workspaceId: opts.workspaceId, ownerId: opts.ownerId, axisKey,
       oldMode: incumbent.mode, newMode: null, reason: opts.reason, setBy: opts.setBy, ownerDirected,
+      // WI-10005573: the cleared row's subject. Without it a GOAL retire row cannot
+      // say WHICH goal its owner stopped holding, and former-holder selection by
+      // subject (holder-handoff.ts) silently misses every pre-subject holder.
+      subject: incumbent.subject,
     });
     // WI-6974: a mode CLEAR changes what this agent was told, so push the Orders
     // panel for this owner. Reached only past the `noop` guard above, so the push

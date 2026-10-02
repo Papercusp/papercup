@@ -2480,9 +2480,16 @@ export async function runGoalHolderRespawnOnce(
         observed && observed.ownerId === lostOwnerId ? observed : { ownerId: lostOwnerId, sinceMs: nowMs };
       if (episode !== observed) {
         lossObservations.set(key, episode);
+        // WI-10005579: name the verdict INPUTS. `ended` during a holder's own CLI
+        // relaunch gap (measured 2026-10-02: host-teardown/self-relaunch at the
+        // exact ticks two 'lost' lines fired) and `parked` with no wake source are
+        // different stories, and the bare liveness label could tell neither.
+        const inputs = fold.elected
+          ? `sessionState=${fold.elected.sessionState ?? 'unknown'} selfWake=${fold.elected.selfWake ?? 'unknown'}`
+          : 'no elected row';
         console.info(
           `[goal-holder-respawner] ${goal.goalId}: holder ${lostOwnerId ?? '(none elected)'} judged lost ` +
-            `(${fold.liveness}); confirming for ${Math.round(lossConfirmMs / 1000)}s before recovery`,
+            `(${fold.liveness}; ${inputs}); confirming for ${Math.round(lossConfirmMs / 1000)}s before recovery`,
         );
       }
       if (nowMs - episode.sinceMs < lossConfirmMs) {

@@ -1201,6 +1201,40 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
     expect(elected?.cancelled_at, 'the elected holder keeps its wake source').toBeNull();
   }, 60_000);
 
+  it('finds a former holder whose GOAL entry predates the subject column, via its retire row', async () => {
+    // Measured 2026-10-02 on 60d3a8: su-2e6fb313 entered GOAL before migration 1331,
+    // so its only enable row has a NULL subject, and the 18:12Z retire row was ALSO
+    // written without one. Its pending plan:acceptance await was unattributable.
+    const goalId = 'goal-pre-subject-holder';
+    const placementKey = `goal:plan-placement:${goalId}`;
+    await rootSql`DELETE FROM harness_shared.event_awaits WHERE event_key = ${placementKey}`;
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-legacy', goalId);
+    await attachHolder('su-current', goalId, 'su-legacy');
+    await rootSql`
+      UPDATE harness_shared.agent_mode_changes SET subject = NULL
+       WHERE workspace_id = ${WS} AND owner_id = 'su-legacy' AND new_mode = ${GOAL_MODE}`;
+    const [legacyAwait] = await rootSql<{ id: number }[]>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, policy, once)
+      VALUES ('default', 'su-legacy', ${placementKey}, 'wake', true) RETURNING id`;
+
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: ['su-legacy'],
+      leftArmed: [],
+      awaitsCancelled: 1,
+    });
+    // The retire row names the goal it cleared (setMode's disable audit carries the subject).
+    const retireRows = await rootSql<{ subject: string | null }[]>`
+      SELECT subject FROM harness_shared.agent_mode_changes
+       WHERE workspace_id = ${WS} AND owner_id = 'su-legacy'
+         AND old_mode = ${GOAL_MODE} AND new_mode IS NULL`;
+    expect(retireRows.map((row) => row.subject)).toEqual([goalId]);
+    const [after] = await rootSql<{ cancelled_at: Date | null }[]>`
+      SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${Number(legacyAwait!.id)}`;
+    expect(after?.cancelled_at).not.toBeNull();
+  }, 60_000);
+
   it('the respawner sweep retires superseded rows on a healthy goal without launching', async () => {
     const goalId = 'goal-superseded-sweep';
     await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
