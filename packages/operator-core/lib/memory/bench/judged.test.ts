@@ -140,7 +140,61 @@ describe('blind label collection through the injected stateless transport', () =
       expect(raw.promptSha256).toBe(hashJson({ system: raw.system, messages: raw.messages, model: raw.model }));
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
-  it.each(['invalid-json', 'missing-votes', 'out-of-range', 'truncated'])
+  it('retries malformed votes without inferring ambiguity, preserves failed raw and resumes valid calls', async () => {
+    const f = fixture();
+    try {
+      const donor = path.join(f.root, 'donor'), out = path.join(f.root, 'recovered');
+      let first = true;
+      const malformed: LlmCallFn = async (opts) => {
+        const result = await f.llm(opts);
+        if (JSON.parse(opts.messages[0].content).questions && first) {
+          first = false;
+          const payload = result.json as { votes: Array<{ q: number; d: number[]; a?: boolean }> };
+          delete payload.votes[2].a;
+          return { ...result, json: undefined, text: `\`\`\`json\n${JSON.stringify(payload)}\n\`\`\`` };
+        }
+        if (!first) throw new Error('fixture interruption after malformed reply');
+        return result;
+      };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: donor, llm: malformed, targetsPerPartition: 1 }))
+        .rejects.toThrow('fixture interruption');
+      const failed = path.join(donor, 'memory-judge-1-0-attempt-1.json'), pin = await fingerprintFile(failed);
+      expect(JSON.parse(fs.readFileSync(failed, 'utf8')).result.text).toContain('"q":2');
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out, llm: f.llm,
+        targetsPerPartition: 1, reuseCallsFrom: donor });
+      expect(f.calls).toBe(9); // Four authors + four valid judges + one retained malformed judge.
+      expect(await fingerprintFile(failed)).toEqual(pin);
+      const chosen = JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0.json'), 'utf8'));
+      expect(chosen.kind).toBe('selected-call');
+      expect(chosen.origin.path).toBe(path.join(out, 'memory-judge-1-0-attempt-2.json'));
+      expect(JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8')).memory).toHaveLength(8);
+      const noCalls: LlmCallFn = vi.fn(async () => { throw new Error('unexpected paid replay'); });
+      await collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'final'), llm: noCalls,
+        targetsPerPartition: 1, reuseCallsFrom: out });
+      expect(noCalls).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('bounds malformed response attempts across same-output interruption recovery', async () => {
+    const f = fixture();
+    try {
+      const out = path.join(f.root, 'bounded');
+      const bad: LlmCallFn = async (opts) => {
+        const result = await f.llm(opts);
+        if (JSON.parse(opts.messages[0].content).questions) return { ...result, json: { votes: [] } };
+        return result;
+      };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: bad, targetsPerPartition: 1 }))
+        .rejects.toThrow(/invalid blind.*3 attempts/);
+      expect(f.calls).toBe(5);
+      const noCalls: LlmCallFn = vi.fn(bad);
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: noCalls, targetsPerPartition: 1 }))
+        .rejects.toThrow(/invalid blind.*3 attempts/);
+      expect(noCalls).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(false);
+      expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['invalid-json', 'missing-votes', 'out-of-range', 'missing-ambiguity', 'truncated'])
     ('does not accept %s as a fenced transport repair', async (failure) => {
       const f = fixture();
       try {
@@ -151,12 +205,13 @@ describe('blind label collection through the injected stateless transport', () =
           const payload = result.json as { votes: Array<{ q: number; d: number[]; a: boolean }> };
           if (failure === 'missing-votes') payload.votes.pop();
           if (failure === 'out-of-range') payload.votes[0].q = 999;
+          if (failure === 'missing-ambiguity') Reflect.deleteProperty(payload.votes[0], 'a');
           return { ...result, json: undefined, stopReason: failure === 'truncated' ? 'max_tokens' : 'end_turn',
             text: `\`\`\`json\n${failure === 'invalid-json' ? '{broken' : JSON.stringify(payload)}\n\`\`\`` };
         };
         await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 }))
           .rejects.toThrow(/invalid blind|incomplete blind|outside|incomplete\/unpriced/);
-        expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(true);
+        expect(fs.existsSync(path.join(out, 'memory-judge-1-0-attempt-1.json'))).toBe(true);
         expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
         expect(fs.existsSync(path.join(out, 'judgments.json'))).toBe(false);
       } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
