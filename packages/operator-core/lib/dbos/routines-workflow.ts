@@ -701,9 +701,13 @@ async function routineFireImpl(
             );
             return;
           }
+          const softError = actionResult?.softError;
           await DBOS.runStep(
             async () => {
-              await sql`
+              // WI-10005164: same step name and count either way, so replay is unchanged.
+              if (softError) await recordRunnerLastError(sql, routineId, softError);
+              else
+                await sql`
                 UPDATE harness_shared.routines
                    SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
                        updated_at = now()
@@ -742,7 +746,10 @@ async function routineFireImpl(
             const { sql } = getOrgPg();
             try {
               const result = await fn(systemActionCtx);
-              await sql`
+              // WI-10005164: a fail-soft sub-pass failure is recorded, not cleared.
+              if (result?.softError) await recordRunnerLastError(sql, routineId, result.softError);
+              else
+                await sql`
                 UPDATE harness_shared.routines
                    SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
                        updated_at = now()
@@ -858,6 +865,25 @@ export const routineFireWorkflow = idempotentRegisterWorkflow(ROUTINE_FIRE_WORKF
  * `next_fire_at = infinity` while its turn runs; skipping this pass strands it until the next
  * non-shed tick (the 20–70 minute gaps measured in EI-21859486764076047).
  */
+/**
+ * WI-10005164: record a system action's fail-soft `softError` as the routine's
+ * runner-sourced `last_error` (the same keys a throw writes), so the next clean
+ * fire's source-scoped clear removes it. Best-effort, like the other writes here.
+ */
+async function recordRunnerLastError(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  routineId: string,
+  softError: string,
+): Promise<void> {
+  const msg = softError.slice(0, 600);
+  await sql`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb)
+             || jsonb_build_object('last_error', ${msg}::text, 'last_error_at', now()::text, 'last_error_source', 'runner'),
+           updated_at = now()
+     WHERE id = ${routineId}`.catch(() => {});
+}
+
 async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
   await DBOS.runStep(
     async () => {
@@ -1964,7 +1990,7 @@ async function routinesTickImpl(): Promise<void> {
 
   // platform-to-app-data-producer-2026-08-30 P-005 (D-001): the app data
   // producer's reconcile sweep. For each configured (owner, app) mapping it
-  // asks the APP where its cursor is (D-002), reads canonical personal_documents
+  // asks the APP where its cursor is (D-002), reads canonical documents
   // rows after it (D-004), and POSTs them through the SAME mapper the live push
   // sink uses, so push and reconcile cannot produce divergent app rows.
   //
