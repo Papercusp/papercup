@@ -21,7 +21,13 @@
  */
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
-import { HOSTED_AWS_HOST_TAG_KEY, HOSTED_AWS_REGION, hostedAwsHostStackFragment } from './hosted-aws-host-stack';
+import {
+  HOSTED_AWS_HOST_TAG_KEY,
+  HOSTED_AWS_REGION,
+  awsSpotServiceLinkedRoleStatement,
+  hostedAwsHostStackFragment,
+  type AwsSpotServiceLinkedRoleStatement,
+} from './hosted-aws-host-stack';
 
 export const AWS_CUSTOMER_SETUP_TEMPLATE_VERSION = 'aws-customer-setup-template-v1';
 export const AWS_CUSTOMER_OPERATOR_ROLE_NAME_PREFIX = 'PapercuspWorkspaceHostOperator-';
@@ -75,10 +81,18 @@ export interface AwsCustomerSetupTemplate {
   document: Record<string, unknown>;
 }
 
-/** The least-privilege policy alone, for a customer who attaches it to an existing role or user. */
+/**
+ * The least-privilege policy alone, for a customer who attaches it to an existing role or user.
+ * The second statement lets a spot host's first launch create EC2's Spot service-linked role
+ * (WI-10005389) and no other role; an identity policy only reaches its own account, so the
+ * account segment is a wildcard and the same document works standalone and in the stack.
+ */
 export function awsWorkspaceHostLeastPrivilegePolicy(): {
   Version: '2012-10-17';
-  Statement: Array<{ Sid: string; Effect: 'Allow'; Action: string[]; Resource: '*' }>;
+  Statement: [
+    { Sid: string; Effect: 'Allow'; Action: string[]; Resource: '*' },
+    AwsSpotServiceLinkedRoleStatement,
+  ];
 } {
   return {
     Version: '2012-10-17',
@@ -89,6 +103,7 @@ export function awsWorkspaceHostLeastPrivilegePolicy(): {
         Action: [...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS],
         Resource: '*',
       },
+      awsSpotServiceLinkedRoleStatement('*'),
     ],
   };
 }

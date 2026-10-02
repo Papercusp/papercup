@@ -28,6 +28,37 @@ export const AWS_SPOT_SERVICE_LINKED_ROLE = `aws-service-role/${AWS_SPOT_SERVICE
 export function awsSpotServiceLinkedRoleArn(accountId: string, partition = 'aws'): string {
   return `arn:${partition}:iam::${accountId}:role/${AWS_SPOT_SERVICE_LINKED_ROLE}`;
 }
+
+/**
+ * The one permission a spot launch needs that the workspace-host client never sends itself: EC2
+ * calls CreateServiceLinkedRole with the CALLER's permission the first time an account launches a
+ * spot instance through the API. It is deliberately not in AWS_WORKSPACE_HOST_PERMISSION_ACTIONS
+ * (the client's own SDK calls, which the BYOC template grants on every resource); every policy
+ * grants it through {@link awsSpotServiceLinkedRoleStatement}, scoped to that one role.
+ */
+export const AWS_SPOT_SERVICE_LINKED_ROLE_ACTION = 'iam:CreateServiceLinkedRole';
+
+export interface AwsSpotServiceLinkedRoleStatement {
+  Sid: 'SpotServiceLinkedRole';
+  Effect: 'Allow';
+  Action: typeof AWS_SPOT_SERVICE_LINKED_ROLE_ACTION;
+  Resource: string;
+  Condition: { StringEquals: { 'iam:AWSServiceName': typeof AWS_SPOT_SERVICE_NAME } };
+}
+
+/**
+ * Lets the caller create EC2's Spot service-linked role and nothing else: that one role ARN, for
+ * that one service. `accountId` may be a CloudFormation `${AWS::AccountId}` reference.
+ */
+export function awsSpotServiceLinkedRoleStatement(accountId: string, partition = 'aws'): AwsSpotServiceLinkedRoleStatement {
+  return {
+    Sid: 'SpotServiceLinkedRole',
+    Effect: 'Allow',
+    Action: AWS_SPOT_SERVICE_LINKED_ROLE_ACTION,
+    Resource: awsSpotServiceLinkedRoleArn(accountId, partition),
+    Condition: { StringEquals: { 'iam:AWSServiceName': AWS_SPOT_SERVICE_NAME } },
+  };
+}
 export const HOSTED_AWS_DEFAULT_REGION = 'us-east-1';
 /** Commercial-partition regions only: GovCloud and China have other partitions and AMI owners. */
 export const HOSTED_AWS_REGION = /^(?!us-gov-|cn-)[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/;

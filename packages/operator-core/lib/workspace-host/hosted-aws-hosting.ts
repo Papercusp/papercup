@@ -30,12 +30,7 @@
  */
 import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS, type AwsWorkspaceHostPermissionAction } from './aws-connection';
 import { AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS } from './aws-safety';
-import {
-  AWS_SPOT_SERVICE_NAME,
-  HOSTED_AWS_HOST_KMS_ALIAS,
-  awsSpotServiceLinkedRoleArn,
-  hostedAwsHostNames,
-} from './hosted-aws-host-stack';
+import { HOSTED_AWS_HOST_KMS_ALIAS, awsSpotServiceLinkedRoleStatement, hostedAwsHostNames } from './hosted-aws-host-stack';
 import { HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX, organizationDelegationRoleName } from './hosted-aws-identity';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -262,15 +257,9 @@ export function papercuspHostingPolicy(input: PapercuspHostingPolicyInput): Reco
         Resource: ec2('spot-instances-request/*'),
         Condition: onHost,
       },
-      {
-        // An API spot launch needs EC2's Spot service-linked role to exist; EC2 creates it on the
-        // first launch with the caller's permission. Only that one role, for that one service.
-        Sid: 'SpotServiceLinkedRole',
-        Effect: 'Allow',
-        Action: 'iam:CreateServiceLinkedRole',
-        Resource: awsSpotServiceLinkedRoleArn(account, partition),
-        Condition: { StringEquals: { 'iam:AWSServiceName': AWS_SPOT_SERVICE_NAME } },
-      },
+      // An API spot launch needs EC2's Spot service-linked role to exist; EC2 creates it on the
+      // first launch with the caller's permission. Only that one role, for that one service.
+      awsSpotServiceLinkedRoleStatement(account, partition),
       {
         Sid: 'CreateSnapshotForHost',
         Effect: 'Allow',

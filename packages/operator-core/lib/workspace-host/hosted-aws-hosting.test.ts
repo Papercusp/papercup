@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
 import { AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS } from './aws-safety';
 import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS } from './gcp-safety';
+import { AWS_SPOT_SERVICE_LINKED_ROLE_ACTION, awsSpotServiceLinkedRoleStatement } from './hosted-aws-host-stack';
 import {
   HostedAwsHostingUnconfiguredError,
   hostedAwsHostingAdminRole,
@@ -51,8 +52,18 @@ describe('Papercusp-hosted AWS hosting role (aws-byoc-gcp-parity D-017)', () => 
       expect(granted, action).toContain(action);
       expect(PAPERCUSP_HOSTING_ACTION_CLASSES[action], action).toBeDefined();
     }
-    // Nothing beyond the client's own list.
-    for (const action of granted) expect(AWS_WORKSPACE_HOST_PERMISSION_ACTIONS as readonly string[]).toContain(action);
+    // Nothing beyond the client's own list, except the Spot service-linked role EC2 creates with
+    // the caller's permission (pinned to that one role by the next test).
+    const allowed: readonly string[] = [...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS, AWS_SPOT_SERVICE_LINKED_ROLE_ACTION];
+    for (const action of granted) expect(allowed, action).toContain(action);
+  });
+
+  it('lets the role create only EC2\'s Spot service-linked role, no other role or service (WI-10005389)', () => {
+    const slr = statements().filter((s) => list(s.Action).includes(AWS_SPOT_SERVICE_LINKED_ROLE_ACTION));
+    expect(slr).toEqual([awsSpotServiceLinkedRoleStatement(ACCOUNT)]);
+    expect(slr[0].Resource).toBe(`arn:aws:iam::${ACCOUNT}:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot`);
+    expect(slr[0].Condition?.StringEquals?.['iam:AWSServiceName']).toBe('spot.amazonaws.com');
+    expect(list(slr[0].Action)).toEqual([AWS_SPOT_SERVICE_LINKED_ROLE_ACTION]);
   });
 
   it('confines every mutation of an existing instance, disk or snapshot to the reserved host', () => {
