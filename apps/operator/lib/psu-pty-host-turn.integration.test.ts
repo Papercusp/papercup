@@ -339,6 +339,143 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
   );
 });
 
+describe('host-code-adopted carry with a late Codex native id (WI-10004791)', () => {
+  it.each([true, false] as const)(
+    'reports and emits only after exact first-turn proof when mapping confirmation is %s',
+    async (mappingConfirmed) => {
+      const root = mkdtempSync(join(tmpdir(), 'codex-adopted-carry-proof-'));
+      const ownerId = uniqueOwner('ADOPTED-CARRY-LATE-ID');
+      const nativeId = '12345678-1234-4234-8234-123456789abc';
+      const nativePath = join(
+        root,
+        'sessions',
+        '2026',
+        '09',
+        '12',
+        'rollout-2026-09-12T00-00-00-' + nativeId + '.jsonl',
+      );
+      mkdirSync(join(root, 'sessions', '2026', '09', '12'), { recursive: true });
+      const marker = '⟦turn-origin:self-compaction nonce:0011223344556677⟧';
+      const kickoff = marker + '\nContinue the adopted carry';
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const order: string[] = [];
+      const reportedIds: string[] = [];
+      const emitted: Array<{ ownerId: string; focus: string; nativeId: string | null }> = [];
+      const childCode = [
+        "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "process.stdout.write('FRESH-BOOT\\n');",
+        "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
+        "if(c==='\\u0004')process.exit(0);",
+        "if(c==='\\r'){if(line){",
+        "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');",
+        "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'adopted-carry'}})+'\\n');",
+        "line='';process.stdout.write('SUBMITTED\\n');",
+        "}}else{line+=c;echo+=c;}}if(echo)process.stdout.write(echo);});",
+        'setTimeout(()=>process.exit(0),8000);',
+      ].join('');
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: hermeticEnv({
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_SID: ownerId,
+          CODEX_HOME: root,
+          CARRY_NATIVE_PATH: nativePath,
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_RESPAWN_REPORT_TIMEOUT_MS: '80',
+        }),
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff,
+        adoptedCarryRespawn: { nativeId: null },
+        nativePersistenceTimeoutMs: 1_000,
+        onRespawn: async (freshId: string) => {
+          order.push('reanchor');
+          reportedIds.push(freshId);
+          expect(existsSync(nativePath)).toBe(true);
+          expect(readFileSync(nativePath, 'utf8')).toContain(marker);
+          return mappingConfirmed;
+        },
+        emitCompacted: (emittedOwner: string, focus: string, options: { nativeId?: string | null }) => {
+          order.push('emit');
+          emitted.push({ ownerId: emittedOwner, focus, nativeId: options.nativeId ?? null });
+          return null;
+        },
+        onExit: () => {},
+      });
+
+      try {
+        expect(await waitForOutput(captured, 'FRESH-BOOT', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+        expect(await waitForOutput(captured, 'SUBMITTED', 5_000)).toBe(true);
+        const proofDeadline = Date.now() + 2_000;
+        while (!existsSync(nativePath) && Date.now() < proofDeadline) await sleep(20);
+        expect(existsSync(nativePath)).toBe(true);
+
+        const terminalDeadline = Date.now() + 2_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < terminalDeadline) {
+          if (existsSync(eventLog)) {
+            events = readFileSync(eventLog, 'utf8')
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => JSON.parse(line));
+            if (events.some((event) =>
+              event.kind === 'respawn-carry-delivered' ||
+              event.kind === 'respawn-compaction-unannounced')) break;
+          }
+          await sleep(20);
+        }
+
+        expect(reportedIds).toEqual([nativeId]);
+        if (mappingConfirmed) {
+          expect(order).toEqual(['reanchor', 'emit']);
+          expect(emitted).toEqual([{ ownerId, focus: 'carry-respawn', nativeId }]);
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'respawn-carry-delivered',
+            nativeId,
+            turnStartVerified: true,
+            adopted: true,
+          }));
+          expect(events).not.toContainEqual(expect.objectContaining({
+            kind: 'respawn-compaction-unannounced',
+            nativeId,
+          }));
+        } else {
+          expect(order).toEqual(['reanchor']);
+          expect(emitted).toHaveLength(0);
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'respawn-compaction-unannounced',
+            nativeId,
+            reason: 'successor-reanchor-unconfirmed',
+            adopted: true,
+          }));
+        }
+      } finally {
+        await injectIntoHost(socketPathFor(ownerId), {
+          mode: 'raw',
+          data: '\\x04',
+          ownerId,
+        }).catch(() => false);
+        await done;
+        rmSync(eventLog, { force: true });
+        rmSync(metaPathFor(ownerId), { force: true });
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+});
+
 it('waits for a headless Codex model-menu repaint before confirming the existing model', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codex-late-model-choice-'));
   const ownerId = uniqueOwner('LATE-MODEL-CHOICE');
