@@ -14,6 +14,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import type { CloudCredentialRef } from '@papercusp/deployment-driver';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { describeFetchError } from '../loopback-fetch';
 
 const requireCjs = createRequire(import.meta.url);
@@ -424,6 +425,9 @@ export interface GcpWorkspaceHostAuthResolverDeps extends Pick<
   /** Injectable delay for the bounded gcloud-exec retry below (EI-22191286944372582);
    *  tests pass a no-op so the retry schedule costs nothing in CI. */
   sleep?: (ms: number) => Promise<void>;
+  /** Reuse window for the gcloud active-user resolution. Defaults to the process-wide memo
+   *  when `exec` is the real gcloud, and to no memo when `exec` is injected (WI-10005446). */
+  activeUserAuthMemo?: GcloudActiveUserAuthMemo;
 }
 
 /**
@@ -548,13 +552,69 @@ export async function acquireGcpGcloudActiveUserAuth(
 }
 
 /** Resolve the selected non-secret connection reference to a token supplier. */
+/**
+ * How long one gcloud active-user resolution (account, access token, project) is reused.
+ * Each resolution forks three gcloud CLIs at about 0.7 CPU-s each, and bg-host re-resolved
+ * roughly every 45 s (measured 2026-10-02, WI-10005446). gcloud refreshes a user token that
+ * expires within 300 s before printing it (_CREDENTIALS_EXPIRY_WINDOW in
+ * googlecloudsdk/core/credentials/store.py), so a token reused for at most 180 s still has
+ * about 120 s of validity at its last use. The clock starts when the resolution starts.
+ */
+export const GCLOUD_ACTIVE_USER_AUTH_TTL_MS = 180_000;
+
+export interface GcloudActiveUserAuthMemo {
+  /** A resolution younger than the TTL, else the result of `resolve`. Concurrent callers
+   *  share one in-flight run; a failure is never stored. Each caller gets its own copy. */
+  get(resolve: () => Promise<GcpResolvedAuth>): Promise<GcpResolvedAuth>;
+}
+
+export function createGcloudActiveUserAuthMemo(
+  options: { ttlMs?: number; now?: () => number } = {},
+): GcloudActiveUserAuthMemo {
+  const ttlMs = options.ttlMs ?? GCLOUD_ACTIVE_USER_AUTH_TTL_MS;
+  const now = options.now ?? Date.now;
+  let entry: { auth: GcpResolvedAuth; startedAtMs: number } | undefined;
+  let inflight: Promise<GcpResolvedAuth> | undefined;
+  return {
+    get(resolve) {
+      if (entry && now() - entry.startedAtMs < ttlMs) return Promise.resolve({ ...entry.auth });
+      if (!inflight) {
+        const startedAtMs = now();
+        inflight = resolve().then(
+          (auth) => {
+            entry = { auth, startedAtMs };
+            inflight = undefined;
+            return auth;
+          },
+          (error: unknown) => {
+            inflight = undefined;
+            throw error;
+          },
+        );
+      }
+      return inflight.then((auth) => ({ ...auth }));
+    },
+  };
+}
+
+// One memo per process rather than per acquirer closure, so it holds however often callers
+// compose a provider. gcloud's active account and project are process-wide state too.
+const sharedGcloudActiveUserAuth = pinModuleState(
+  '@papercusp/operator-core.gcp-preflight.gcloud-active-user-auth',
+  () => ({ memo: createGcloudActiveUserAuthMemo() }),
+);
+
 export function createGcpWorkspaceHostAcquireAuth(
   credentialRef: string,
   deps: GcpWorkspaceHostAuthResolverDeps = {},
 ): () => Promise<GcpResolvedAuth> {
   const ref = credentialRef.trim();
   if (ref === GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF) {
-    return () => acquireGcpGcloudActiveUserAuth(deps);
+    // An injected exec is a caller-specific runner (or a test): it neither reads nor fills
+    // the process-wide memo unless it brings its own.
+    const memo = deps.activeUserAuthMemo ?? (deps.exec ? undefined : sharedGcloudActiveUserAuth.memo);
+    if (!memo) return () => acquireGcpGcloudActiveUserAuth(deps);
+    return () => memo.get(() => acquireGcpGcloudActiveUserAuth(deps));
   }
   if (!ref.startsWith('adc://')) throw new Error('gcp_workspace_host_cloud_credential_ref_unsupported');
 
