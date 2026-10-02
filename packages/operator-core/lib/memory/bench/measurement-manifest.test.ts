@@ -462,7 +462,9 @@ describe('incremental relevance vector reuse', () => {
       .rejects.toThrow('completed receipt mismatch');
   });
   it.each([null, 0, false, {}, [], ''])('refuses invalid shared manifest vector selector %j', async (selector) => {
-    const f = retainedPreparedFixture(); f.p.cell.parameters.reuseVectorsInput = selector;
+    const f = retainedPreparedFixture();
+    // Adversarial decoded inputs deliberately exceed the well-typed parameter union.
+    (f.p.cell.parameters as Record<string, unknown>).reuseVectorsInput = selector;
     await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('invalid retained relevance vector input');
   });
   it.each(['undeclared', 'missing'])('refuses a shared manifest %s selected vector input', async (failure) => {
