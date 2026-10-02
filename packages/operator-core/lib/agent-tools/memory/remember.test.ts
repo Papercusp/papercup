@@ -71,6 +71,10 @@ vi.mock('../../memory/ref-expand', () => ({
 vi.mock('../../knowledge-packs/identity-learning', () => ({
   wornMemoryIdentityIds: vi.fn(async () => ['test-identity']),
 }));
+vi.mock('../../agent-facts/store', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../agent-facts/store')>();
+  return { ...real, resolveFactFederationSlug: vi.fn(real.resolveFactFederationSlug) };
+});
 // P-009: remember.ts now asks resolveConflictJudge(); route it through the
 // anthropic-judge mocks below so these cases keep their meaning and never touch
 // the real Jev key store. The factory itself is pinned in conflict-judge.test.ts.
@@ -99,6 +103,9 @@ import { journalPendingWrite } from '../../memory/write-journal';
 import { isMemoryPaused } from '../../memory/memory-pause';
 import { wornMemoryIdentityIds } from '../../knowledge-packs/identity-learning';
 import { createAnthropicJudge, conflictJudgeAvailable } from '../../memory/anthropic-judge';
+import { resolveConflictJudge } from '../../memory/conflict-judge';
+import { resolveFactFederationSlug } from '../../agent-facts/store';
+import { getFlag } from '@papercusp/flags/server';
 
 type FakeBackend = {
   name: string;
@@ -1122,6 +1129,111 @@ describe('memory:remember pre-write deadlines (EI-24844815056615401)', () => {
       const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
       expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
       expect(parsed.journaled).toBeUndefined();
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('continues writing when optional conflict-judge configuration stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_MEMORY_CONFLICT_CHECK', 'on');
+    vi.stubEnv('PAPERCUSP_MEMORY_DEDUP', 'off');
+    vi.mocked(resolveConflictJudge).mockImplementationOnce(
+      () => new Promise<Awaited<ReturnType<typeof resolveConflictJudge>>>(() => {}),
+    );
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails closed when the federation egress flag stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(getFlag).mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler(
+        { content: 'a shareable memory fact', kind: 'project', shareable: true, harness_slug: 'papercusp' },
+        fakeCtx,
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: false, stored: false, reason: 'mem0_federation_disabled' });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails closed when federation scope resolution stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(getFlag).mockResolvedValueOnce(true);
+    vi.mocked(resolveFactFederationSlug).mockImplementationOnce(
+      () => new Promise<string | null>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler(
+        { content: 'a shareable memory fact', kind: 'project', shareable: true, harness_slug: 'papercusp' },
+        fakeCtx,
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({
+        ok: false,
+        stored: false,
+        reason: 'memory_timeout',
+        step: 'federation_scope',
+      });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('continues writing when the optional content-free flag lookup stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(resolveConflictJudge).mockResolvedValueOnce({
+      available: true,
+      backend: 'jev',
+      judge: vi.fn(async () => ({ conflicts: [] })),
+    });
+    vi.mocked(getFlag).mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_MEMORY_CONFLICT_CHECK', 'on');
+    vi.stubEnv('PAPERCUSP_MEMORY_DEDUP', 'off');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
       expect(b.remember).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
