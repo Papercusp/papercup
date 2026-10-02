@@ -94,6 +94,25 @@ describe("bootc release request evidence readers", () => {
     expect(narrowed.excludedGenericKernelCpe).toBe(1);
   });
 
+  it("drops syft's linux-kernel artifact (vmlinuz, pkg:generic) on an EL9 kernel, keeps a non-EL9 one (WI-10005674)", () => {
+    // The real shape on a bootc image: the kernel image is cataloged as type linux-kernel, matched
+    // only by upstream NVD CPE, while the kernel RPMs stay matched in the vendor namespace.
+    const linuxKernel = (version: string, id: string) => ({
+      artifact: { name: "linux-kernel", type: "linux-kernel", version, purl: `pkg:generic/linux-kernel@${version}` },
+      vulnerability: { id, severity: "High", namespace: "nvd:cpe", fix: { state: "fixed", versions: ["5.15.16"] } },
+    });
+    const narrowed = actionableGrypeReport({
+      descriptor: { name: "grype", version: "0.117.0" },
+      matches: [
+        linuxKernel("5.14.0-730.el9.x86_64", "CVE-2022-0185"),
+        linuxKernel("6.8.0-31-generic", "CVE-2024-1086"),
+        { artifact: { name: "kernel-core", type: "rpm", version: "5.14.0-730.el9" }, vulnerability: { id: "RHSA-4", severity: "High", namespace: "redhat:distro", fix: { state: "fixed" } } },
+      ],
+    });
+    expect((narrowed.report.matches as { vulnerability: { id: string } }[]).map((match) => match.vulnerability.id)).toEqual(["CVE-2024-1086", "RHSA-4"]);
+    expect(narrowed.excludedGenericKernelCpe).toBe(1);
+  });
+
   it("reads a clean secret scan only when record, log and coverage all agree", () => {
     expect(parseBootcSecretScan(scanRecord(), cleanLog(), DIGEST).findings).toEqual([]);
     expect(() => parseBootcSecretScan(scanRecord({ digest: `sha256:${"1".repeat(64)}` }), cleanLog(), DIGEST)).toThrow(/not sha256/);

@@ -19,6 +19,25 @@ const genericKernelCpe = {
   },
 };
 
+// The REAL shape syft + grype emit for the kernel image itself on a bootc image (measured on the
+// P-012 AWS bake, WI-10005674): syft's linux-kernel cataloger reads vmlinuz, so the artifact is
+// type `linux-kernel` with a pkg:generic purl — not an rpm — while the RPMs stay vendor-matched.
+const genericKernelImageCpe = {
+  artifact: {
+    name: 'linux-kernel',
+    type: 'linux-kernel',
+    version: '5.14.0-730.el9.x86_64',
+    purl: 'pkg:generic/linux-kernel@5.14.0-730.el9.x86_64',
+    locations: [{ path: '/usr/lib/modules/5.14.0-730.el9.x86_64/vmlinuz' }],
+  },
+  vulnerability: {
+    id: 'CVE-2022-0185',
+    namespace: 'nvd:cpe',
+    severity: 'High',
+    fix: { state: 'fixed', versions: ['5.4.173', '5.10.93', '5.15.16', '5.16.2'] },
+  },
+};
+
 const vendorKernelFinding = {
   artifact: { name: 'kernel-core', type: 'rpm', version: '5.14.0-730.el9' },
   vulnerability: {
@@ -244,6 +263,28 @@ describe('release supply-chain vulnerability gate', () => {
     expect(result.output).toContain('GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=1');
     expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=2');
     expect(result.output).toContain('SUPPLY_CHAIN_RESULT=VULN_GATE_REFUSED');
+  });
+
+  it("excludes syft's linux-kernel artifact (vmlinuz) on an EL9 kernel exactly like the kernel RPM", () => {
+    const result = runGate([genericKernelImageCpe, genericKernelCpe, vendorKernelFinding]);
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=2');
+    // The vendor-namespace kernel finding is still the gate population.
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
+  });
+
+  it('does not apply the EL9 exception to a non-EL9 linux-kernel artifact', () => {
+    const result = runGate([
+      {
+        ...genericKernelImageCpe,
+        artifact: { ...genericKernelImageCpe.artifact, version: '6.8.0-31-generic' },
+      },
+    ]);
+
+    expect(result.status, result.output).toBe(3);
+    expect(result.output).toContain('GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=0');
+    expect(result.output).toContain('GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=1');
   });
 
   it('does not apply the EL9 exception to a non-EL9 kernel package', () => {

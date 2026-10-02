@@ -276,7 +276,7 @@ else
   ACTIONABLE=$(jq '
     def generic_kernel_cpe:
       ((.artifact.name // "") | ascii_downcase | test("(^|-)kernel($|-)"))
-      and ((.artifact.type // "") | ascii_downcase) == "rpm"
+      and (((.artifact.type // "") | ascii_downcase) as $t | $t == "rpm" or $t == "linux-kernel")
       and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el9([._-]|$)"))
       and ((.vulnerability.namespace // "") | ascii_downcase) == "nvd:cpe";
     [.matches[]
