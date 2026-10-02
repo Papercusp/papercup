@@ -39,7 +39,7 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
@@ -88,7 +88,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-federation-detector');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   // Every claim door reads adv_sessions for operation-worker claim authority; without the
   // table the door fails closed before the detector floor is ever exercised.
