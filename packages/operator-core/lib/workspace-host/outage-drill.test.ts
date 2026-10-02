@@ -25,7 +25,7 @@ const config: OutageDrillConfig = {
   agentCommand: '/usr/local/lib/papercusp-agent-toolchain/bin/claude',
   workspaceDir: '/srv/papercusp/workspaces/ws',
   nonce: 'n1',
-  agentHoldSeconds: 30,
+  secret: 's3cret-value',
   pollMs: 1_000,
   agentTimeoutMs: 60_000,
   reconnectTimeoutMs: 60_000,
@@ -34,8 +34,12 @@ const config: OutageDrillConfig = {
 interface FakeOptions {
   /** The connector reconnects this many ms after the block lifts; null = never. */
   readonly reconnectAfterMs?: number | null;
-  /** The agent finishes this many ms after it starts. */
+  /** The agent finishes this many ms after it reads its gate (or after launch, with agentSkipsGate). */
   readonly agentRunsMs?: number;
+  /** The agent ignores its gate pipe and exits on its own (the 2026-10-02 live failure shape). */
+  readonly agentSkipsGate?: boolean;
+  /** The agent never opens its gate pipe, so the drill's write times out. */
+  readonly agentNeverReadsGate?: boolean;
   /** What the agent writes; defaults to the correct digest. */
   readonly agentOutput?: string;
   readonly agentExitCode?: number;
@@ -52,6 +56,8 @@ function fakeHost(options: FakeOptions = {}) {
   let connectorConnectedAt: number | null = clock - 60_000;
   let liftedAt: number | null = null;
   let agentStartedAt: number | null = null;
+  let gateReadAt: number | null = null;
+  let gateReadWhileBlocked: boolean | null = null;
   const commands: string[] = [];
   const cloud: string[][] = [];
   const tick = () => {
@@ -63,7 +69,10 @@ function fakeHost(options: FakeOptions = {}) {
       }
     }
   };
-  const agentDone = () => agentStartedAt !== null && clock - agentStartedAt >= (options.agentRunsMs ?? 40_000);
+  const agentDone = () => {
+    if (options.agentSkipsGate) return agentStartedAt !== null && clock - agentStartedAt >= (options.agentRunsMs ?? 1_000);
+    return gateReadAt !== null && clock - gateReadAt >= (options.agentRunsMs ?? 8_000);
+  };
   const ok = (stdout = ''): HostCommandResult => ({ code: 0, stdout, stderr: '' });
   const deps: OutageDrillDeps = {
     now: () => new Date(clock),
@@ -105,12 +114,20 @@ function fakeHost(options: FakeOptions = {}) {
         return ok();
       }
       if (command.startsWith('test -e')) return { code: agentDone() ? 0 : 1, stdout: '', stderr: '' };
+      if (command.startsWith('timeout') && command.includes('.gate')) {
+        // The write blocks until the agent's `cat` opens the pipe; a finished or absent reader times out.
+        if (options.agentNeverReadsGate || agentDone()) return { code: 124, stdout: '', stderr: '' };
+        gateReadAt = clock;
+        gateReadWhileBlocked = blocked;
+        return ok();
+      }
+      if (command.startsWith('rm -f')) return ok();
       if (command.startsWith('cat') && command.includes('.exit')) return ok(agentDone() ? `${options.agentExitCode ?? 0}\n` : '');
-      if (command.startsWith('cat')) return ok(`${options.agentOutput ?? sha256Hex(config.nonce)}\n`);
+      if (command.startsWith('cat')) return ok(`${options.agentOutput ?? sha256Hex(config.secret)}\n`);
       return { code: 127, stdout: '', stderr: `unexpected ${command}` };
     },
   };
-  return { deps, commands, cloud };
+  return { deps, commands, cloud, gateReadWhileBlocked: () => gateReadWhileBlocked };
 }
 
 describe('parseEstablishedConnections', () => {
@@ -183,9 +200,42 @@ describe('runOutageDrill + evaluateOutageDrill', () => {
     expect(verdict.failures).toContain('Papercusp was still reachable from the host during the block');
   });
 
-  it('fails when the agent had already finished before the block landed', async () => {
-    const verdict = evaluateOutageDrill(await runOutageDrill(config, fakeHost({ agentRunsMs: 1_000 }).deps));
-    expect(verdict.failures).toContain('the agent task was not running when the block landed');
+  it('fails when the agent ignored its gate and finished before the block landed', async () => {
+    const verdict = evaluateOutageDrill(await runOutageDrill(config, fakeHost({ agentSkipsGate: true }).deps));
+    expect(verdict.failures).toEqual(expect.arrayContaining([
+      'the agent task was not running when the block landed',
+      'the agent was never handed its secret during the outage',
+    ]));
+  });
+
+  it('hands the agent its secret only through the pipe, and only once Papercusp is unreachable', async () => {
+    const host = fakeHost();
+    const evidence = await runOutageDrill(config, host.deps);
+    expect(host.gateReadWhileBlocked()).toBe(true);
+    expect(evidence.agent.gateReleasedAt! > evidence.blockedAt!).toBe(true);
+    const launch = host.commands.find((command) => command.includes('nohup'))!;
+    expect(launch).toContain('mkfifo');
+    expect(launch).not.toContain(config.secret);
+    // A detached agent holding the SSH channel's stdin keeps the launch call from ever returning.
+    expect(launch).toMatch(/ < \/dev\/null > \/dev\/null 2>&1 &$/);
+    expect(evidence.agent.expected).toBe(sha256Hex(config.secret));
+  });
+
+  it('fails, naming the cause, when the agent never opens its gate pipe', async () => {
+    const host = fakeHost({ agentNeverReadsGate: true });
+    const evidence = await runOutageDrill(config, host.deps);
+    expect(host.cloud.map((args) => args[2])).toEqual(['create', 'delete']);
+    expect(evaluateOutageDrill(evidence).failures).toEqual(expect.arrayContaining([
+      'drill error: the agent never read its gate pipe within 60s (exit 124)',
+      'the agent was never handed its secret during the outage',
+    ]));
+  });
+
+  it('never releases the secret when the block did not take effect', async () => {
+    const host = fakeHost({ blockIneffective: true });
+    const evidence = await runOutageDrill(config, host.deps);
+    expect(host.gateReadWhileBlocked()).toBeNull();
+    expect(evidence.agent.gateReleasedAt).toBeNull();
   });
 
   it('always tries to lift the block, and reports a block it could not remove', async () => {

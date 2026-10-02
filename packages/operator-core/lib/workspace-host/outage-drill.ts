@@ -374,9 +374,11 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
       `nohup sh -c ${shellQuote(
         `${shellQuote(config.agentCommand)} -p ${shellQuote(prompt)} --allowedTools Bash,Write ` +
           `> ${shellQuote(FLAG_FILE(config.workspaceDir, config.nonce, 'log'))} 2>&1; echo $? > ${shellQuote(exitFile)}`,
-      )} > /dev/null 2>&1 &`;
+      )} < /dev/null > /dev/null 2>&1 &`;
+    // stdin MUST be detached: a background agent that inherits the SSH channel's stdin holds the session
+    // open, so this call never returns (measured 2026-10-02: launch hit the 90s SSH timeout, block never ran).
     const started = await deps.hostExec(launch);
-    if (started.code !== 0) throw new Error(`agent launch failed: ${started.stderr.trim()}`);
+    if (started.code !== 0) throw new Error(`agent launch failed (exit ${started.code}): ${started.stderr.trim()}`);
     log('agent task started');
 
     const blocked = await deps.cloudExec(rule.createArgs);

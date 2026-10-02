@@ -4,7 +4,11 @@
  *
  *   tsx packages/operator-core/lib/workspace-host/outage-drill-cli.ts \
  *     --project <p> --zone <z> --instance <name> --instance-id <id> --network <net> \
- *     --host-id <host-…> --workspace-dir <dir> [--nonce <n>] [--out <evidence.json>]
+ *     --host-id <host-…> --workspace-dir <dir> [--agent <cli>] [--nonce <n>] [--out <evidence.json>]
+ *
+ * --agent is the agent CLI on the host, invoked as `<cli> -p <prompt> --allowedTools Bash,Write`. A
+ * hosted host ships only the local-inference agent (D-250); the customer connects their own model
+ * account, so point --agent at a wrapper that runs claude with that account's credential.
  *
  * Needs HARNESS_ADMIN_DATABASE_URL (the hosted connector heartbeat lives in
  * papercusp_auth.hosted_workspace_connectors) and the controller's IAP SSH key + known_hosts
@@ -84,7 +88,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       agentCommand: args.get('agent') ?? DEFAULT_AGENT,
       workspaceDir: need('workspace-dir'),
       nonce,
-      agentHoldSeconds: Number(args.get('hold-seconds') ?? 60),
+      secret: randomBytes(16).toString('hex'),
     };
   } catch (error) {
     console.error(String(error instanceof Error ? error.message : error));
