@@ -307,7 +307,7 @@ describe('runOutageDrill + evaluateOutageDrill', () => {
       execFileSync('mkfifo', ['-m', '600', gate]);
       const reader = spawn('sh', ['-c', `cat '${gate}'; echo; timeout 5 cat '${gate}' > /dev/null; echo reopen=$?`]);
       let read = '';
-      reader.stdout.on('data', (chunk: Buffer) => { read += chunk.toString(); });
+      reader.stdout.setEncoding('utf8').on('data', (chunk: string) => { read += chunk; });
       const exited = new Promise<number | null>((resolve) => reader.on('exit', resolve));
       const released = execFileSync('sh', ['-c', `timeout 10 sh -c '${gateReleaseCommand(gate, 's3cret').replace(/'/g, `'\\''`)}'`]).toString();
       expect(released).toContain(GATE_RELEASED_MARKER);
