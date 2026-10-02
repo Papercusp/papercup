@@ -2420,5 +2420,78 @@
       21664
     ]
   },
-  "next": "Renew P002 saved unit provenance in retained clean 920030a3 clone: existing holder contract positives plus seven calibrated controls, existing watchdog contract positives plus four calibrated controls. Read saved checks/claims and strict staging evaluator first; reuse fresh integration/PID proof from p002CurrentProof. After all replacement-only clauses PASS, conditionally withdraw only exact superseded bindings while preserving historical ledger, then governing whole-plan evaluation. Broader P003-P006, independent rubric ratification/D013 card/closure audit/final shipment remain OPEN."
+  "p002CleanUnitRenewalFire179": {
+    "nativeSession": "01a0fc4e-e8ae-7d00-9231-3cf7115a7ce4",
+    "scope": "Five P002 replacement-only clauses pass the strict staging evaluator; after binding-only withdrawal, five governing clauses pass the release evaluator. A strict staging governing rerun remains open because staging entered start-pre before the final read.",
+    "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+    "cloneRoot": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+    "fingerprintVerification": "All seventeen p002CurrentProof fingerprints match canonical and clean retained clone; no source/test edits.",
+    "holderPositiveRun": 20517982,
+    "holderPositiveResult": "15 PASS; 27 filtered skips; exit 0",
+    "respawnPositiveRun": 20517985,
+    "respawnPositiveResult": "5 PASS; 107 filtered skips; exit 0",
+    "counterexampleRuns": {
+      "one-elected-holder": 20517991,
+      "elected-lost-historical-live": 20517997,
+      "named-bounded-handoff": 20518001,
+      "expired-handoff": 20518004,
+      "third-holder": 20518005,
+      "unresolved-elected-holder": 20518006,
+      "confirmed-loss-control": 20518011,
+      "elected-loss-recovery": 20517990,
+      "live-holder-no-double-spawn": 20517996,
+      "concurrent-takeover-refusal": 20517998,
+      "successful-recovery-control": 20518003
+    },
+    "counterexampleResult": "Each of eleven controls: one intended assertion FAIL and one independent calibration PASS, exit 1. Holder controls have 40 filtered skips; respawn controls have 110. Exact scoped ledger rows are clean, non-scratch, mutation-probe at the retained pin.",
+    "selectorCorrection": "The unquoted holder selector ran calibration only and is excluded from evidence. Corrected selectors include Vitest's literal quotes around scenario names. Predecessor fire178 logs are dated separately; this record uses the current continuation's exact terminal ledger rows.",
+    "proofManifest": "/tmp/p006-fire179-renew-unit-proof.json",
+    "holderMatrix": "/tmp/p006-fire179-holder-matrix.json",
+    "respawnMatrix": "/tmp/p006-fire179-respawn-matrix.json",
+    "newUnitBindingIds": [21666, 21667, 21668, 21669, 21670, 21671, 21672, 21673, 21674, 21675, 21676, 21677, 21678, 21679, 21680, 21681, 21682, 21683, 21684, 21685, 21686, 21687],
+    "selectedProof": {
+      "evaluatorBuild": "d849cabb62",
+      "route": "Attributed staging :3170",
+      "governing": false,
+      "verdicts": {"pass": 5, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire179-selected-eval-decoded.json",
+      "selection": "/tmp/p006-fire179-selected-eval-payload.json"
+    },
+    "retiredBindingIds": [17965, 17964, 17963, 17962, 17958, 17957, 17956, 17954, 17952, 17950, 17578, 17564, 17563, 17562, 17561, 17560, 17559, 17558, 17550, 17549, 17548, 17547, 17540, 17529, 17528, 17527, 17526, 17525, 17524, 17523, 17522],
+    "retirementVerification": "31 exact identities re-read before withdrawal; receipt confirms 31 retracted and zero failures. Subsequent read returns exactly the 32 selected replacement bindings. Historical test rows 20350914/20350912/20342003/20336577/20336601 retain identical recorded fields. D003 baseline, D013 real-goal card requirement and D016 historical evidence are preserved.",
+    "retirementReceipt": "/tmp/p006-fire179-retire-p002-decoded.json",
+    "governingProof": {
+      "evaluatorBuild": "f52b2457ba",
+      "route": "Release tool transport; separate from strict staging proof",
+      "governing": true,
+      "verdicts": {"pass": 5, "fail": 0, "unknown": 0},
+      "receipt": "/tmp/p006-fire179-governing-eval-decoded.json"
+    },
+    "limits": "No strict staging governing or whole-plan verdict, source/product repair, rubric ratification, D013 real-card acceptance, shipment, native UI, P2P, shared restart or LIVE_GATE_OPS claim. Staging health read observed activating/start-pre with no listener and no proven root cause. P006/P007/P008 remain open."
+  },
+  "p002GoverningCurrentProofFire180": {
+    "nativeSession": "01a0fc67-3b04-76d2-95a9-07b7918c89c3",
+    "observedAt": "2026-10-02T11:42:35Z",
+    "fingerprintVerification": "All seventeen canonical and retained clean-clone fingerprints still match; retained clone git status is empty.",
+    "route": "Attributed staging :3170; no bindingIds, workItemIds or evidenceRefs selection",
+    "evaluatorBuild": {"sha": "d849cabb62", "version": "0.0.0"},
+    "governing": true,
+    "specIds": ["WOE-P002-ELECTION", "WOE-P002-HANDOFF", "WOE-P002-UNKNOWN", "WOE-P002-RESPAWN", "WOE-P002-STALE-RESPAWN"],
+    "verdicts": {"pass": 5, "fail": 0, "unknown": 0},
+    "wouldBlock": [],
+    "receipt": "/tmp/p006-fire180-p002-governing-decoded.json",
+    "rawEnvelope": "/tmp/p006-fire180-p002-governing-raw.json",
+    "spillSha256": "aae9a3b95830daa1004bac6e338d3e299004f8a5fc68fae54e6f9a8a730326de",
+    "wholePlanCensus": {
+      "governing": true,
+      "acceptedClauses": 28,
+      "verdicts": {"pass": 11, "fail": 16, "unknown": 1},
+      "unknownSpecId": "WOE-P002-AUTHORITY",
+      "unknownCriteria": ["freshness"],
+      "unknownBindingIds": [17942, 17943, 17944, 17948, 17959, 17960, 17961],
+      "receipt": "/tmp/p006-fire180-whole-governing-decoded.json"
+    },
+    "limits": "This completes the five renewed P002 governing checks, not all P002 or P006 acceptance. Authority proof renewal, P003-P006 proof, independent rubric ratification, D013 real-goal card, closure audit and shipment remain open. No source/test, accepted-clause, BAR, baseline or historical-ledger change."
+  },
+  "next": "Renew P002 AUTHORITY clean unit/integration proof and three calibrated causal controls against the unchanged retained clone, then evaluate replacement-only evidence before any superseded binding withdrawal. Do not rerun the five passing P002 clauses or unchanged native diagnostics. Continue P003-P006 proof, independent rubric review/ratification, D013 real-goal card reuse, closure audit and final shipment; preserve separate P007/P008 checks and acceptance gaps."
 }
