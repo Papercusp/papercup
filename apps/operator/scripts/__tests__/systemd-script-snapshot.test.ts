@@ -53,7 +53,11 @@ describe('papercusp-script-snapshot.sh', () => {
     expect(dropin).toContain('ExecStart=\nExecStart=/usr/bin/bash ');
     expect(dropin).toMatch(/ExecStart=.*papercusp-script-snapshot\.sh .*sync-staging-checkout\.sh/);
     const script = await readFile(resolve(__dirname, '../../bin/release/sync-staging-checkout.sh'), 'utf8');
-    expect(script).toMatch(/bash "\$INTEGRATION_ROOT\/apps\/operator\/scripts\/systemd\/papercusp-script-snapshot\.sh" \\\n\s+"\$INTEGRATION_ROOT\/apps\/operator\/bin\/release\/setup-release-checkout\.sh"/);
+    expect(script).toMatch(/snapshot_script="\$INTEGRATION_ROOT\/apps\/operator\/scripts\/systemd\/papercusp-script-snapshot\.sh"/);
+    expect(script).toMatch(/setup_script="\$INTEGRATION_ROOT\/apps\/operator\/bin\/release\/setup-release-checkout\.sh"/);
+    expect(script).toMatch(/\bbash "\$snapshot_script" "\$setup_script"/);
+    // setup-release-checkout must never be exec'd directly, bypassing the snapshot.
+    expect(script).not.toMatch(/^\s*(?:bash\s+)?"\$setup_script"/m);
   });
 
   it.each([false, true])('distinguishes lazy source mutation with snapshot=%s', async (snapshot) => {
