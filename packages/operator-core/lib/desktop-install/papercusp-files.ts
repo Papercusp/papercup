@@ -1637,8 +1637,22 @@ export const PSU_REEXEC_EXIT_CODE = 87;
  *  fresh code, so the fixed point is reached in one hop. The cap exists for the
  *  case that does NOT converge — a file rewritten under a running loop (git-sync
  *  sweeps this tree continuously) — where an uncapped loop would respawn the
- *  owner's session forever. */
+ *  owner's session forever.
+ *
+ *  WI-10005351: the cap counts re-execs inside ONE BURST (see
+ *  PSU_REEXEC_WINDOW_SEC), not over the session's lifetime. Adoptions ride on
+ *  carry-respawns, so a healthy long-lived session on this tree adopts every
+ *  respawn while host code keeps changing: measured 2026-10-02, 6 of the 7
+ *  owners whose event log reached a 17th adoption got no prompt successor
+ *  kickoff on it. The shim refused and exited, and the session stayed dark
+ *  until an unrelated wake resumed a stale native id. */
 export const PSU_REEXEC_MAX = 16;
+
+/** WI-10005351: a re-exec more than this many seconds after the previous one
+ *  starts a new burst (the counter resets). A genuine non-converging loop
+ *  re-execs within seconds; legitimate adoptions are a respawn apart (minutes).
+ *  `PAPERCUSP_PSU_REEXEC_WINDOW_SEC` overrides it (non-negative integer). */
+export const PSU_REEXEC_WINDOW_SEC = 300;
 
 function launcherNameVariants(launcherPath: string): string[] {
   const names = [path.basename(launcherPath)];
@@ -1752,6 +1766,10 @@ export async function writeShim(
         // promise that someone will re-run it, and exit into nobody.
         'export PAPERCUSP_PSU_REEXEC_PPID=$$\n' +
         'psu_reexecs=0\n' +
+        // WI-10005351: the cap below counts one BURST, not the session lifetime.
+        `psu_reexec_window="\${PAPERCUSP_PSU_REEXEC_WINDOW_SEC:-${PSU_REEXEC_WINDOW_SEC}}"\n` +
+        `case "$psu_reexec_window" in ''|*[!0-9]*) psu_reexec_window=${PSU_REEXEC_WINDOW_SEC} ;; esac\n` +
+        'psu_last_reexec_at=$SECONDS\n' +
         'while :; do\n' +
         `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
         '  psu_code=$?\n' +
@@ -1779,12 +1797,17 @@ export async function writeShim(
         '    esac\n' +
         '  done\n' +
         '  set -- "${psu_next_args[@]}"\n' +
+        // WI-10005351: a re-exec a full window after the previous one is a new
+        // burst. A real loop re-execs within seconds; adoptions are a respawn
+        // apart, so a long-lived session never accumulates toward the cap.
+        '  if [ $((SECONDS - psu_last_reexec_at)) -ge "$psu_reexec_window" ]; then psu_reexecs=0; fi\n' +
+        '  psu_last_reexec_at=$SECONDS\n' +
         '  psu_reexecs=$((psu_reexecs + 1))\n' +
         // -gt, not -ge: `psu_reexecs` counts re-execs ALREADY PERFORMED, so the
         // Nth one must be allowed to happen before the N+1th is refused.
         `  if [ "$psu_reexecs" -gt ${PSU_REEXEC_MAX} ]; then\n` +
         `    printf '%s\\n' ${shellLiteral(
-          `papercusp ${label}: ${PSU_REEXEC_MAX} host re-execs in one session — refusing to loop again`,
+          `papercusp ${label}: ${PSU_REEXEC_MAX} host re-execs in one burst (each within the re-exec window of the last) — refusing to loop again`,
         )} >&2\n` +
         '    exit "$psu_code"\n' +
         '  fi\n' +

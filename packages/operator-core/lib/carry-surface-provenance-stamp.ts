@@ -346,11 +346,29 @@ export function ownerAttributionEnforcement(
   };
 }
 
+/** Keep generated provenance preambles to one standalone marker per note. */
+export function normalizeUnverifiedOwnerAttributionMarkers(
+  text: string | null | undefined,
+): string | null | undefined {
+  if (text == null || !text.includes(UNVERIFIED_OWNER_ATTRIBUTION_MARKER)) return text;
+  let kept = false;
+  return text
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (line.trim() !== UNVERIFIED_OWNER_ATTRIBUTION_MARKER) return true;
+      if (kept) return false;
+      kept = true;
+      return true;
+    })
+    .join('\n');
+}
+
 /** Prefix an idempotent marker onto persisted narrative text. */
 export function markUnverifiedOwnerAttribution(text: string | null | undefined): string | null | undefined {
   if (text == null || !text.trim()) return text;
-  if (text.includes(UNVERIFIED_OWNER_ATTRIBUTION_MARKER)) return text;
-  return `${UNVERIFIED_OWNER_ATTRIBUTION_MARKER}\n${text}`;
+  const normalized = normalizeUnverifiedOwnerAttributionMarkers(text) ?? text;
+  if (normalized.includes(UNVERIFIED_OWNER_ATTRIBUTION_MARKER)) return normalized;
+  return `${UNVERIFIED_OWNER_ATTRIBUTION_MARKER}\n${normalized}`;
 }
 
 /**

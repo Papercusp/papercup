@@ -88,7 +88,11 @@ export function measurementPackageVersion(name: string): string {
   // Literal loader targets keep the benchmark's import closure inspectable.
   const entry = name === '@huggingface/transformers' ? require.resolve('@huggingface/transformers')
     : name === '@huggingface/tokenizers' ? require.resolve('@huggingface/tokenizers')
-    : name === 'tokenizers' ? require.resolve('tokenizers') : undefined;
+    : name === 'tokenizers' ? require.resolve('tokenizers')
+    // Resolve (never import) the native addon: a literal import() would put onnxruntime-node in
+    // operator-core's bare-import closure, which the desktop sidecar-union test requires every
+    // operator-core manifest to declare (WI-10005359).
+    : name === 'onnxruntime-node' ? require.resolve('onnxruntime-node') : undefined;
   if (!entry) throw new Error(`undeclared benchmark runtime package ${name}`);
   let dir = path.dirname(entry);
   for (;;) {

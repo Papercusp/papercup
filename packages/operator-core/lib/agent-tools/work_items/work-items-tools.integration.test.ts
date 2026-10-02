@@ -1283,6 +1283,47 @@ describe('work_items:get { operationalBrief } — work-item brief (real PG)', ()
     return { row, brief: row.operationalBrief as Brief };
   }
 
+  const PRIOR_UPDATE = [
+    '## Did', 'Older completed work.', '',
+    '## Left', 'Old residue.', '',
+    '## Next action', 'Do the stale action.',
+  ].join('\n');
+  const CURRENT_UPDATE = [
+    '## Did', 'Newest progress.', '',
+    '## Left', 'Current residue.', '',
+    '## Next action', 'Do the current action.',
+  ].join('\n');
+  const CURRENT_UPDATE_WITHOUT_NEXT = [
+    '## Did', 'Newest progress.', '',
+    '## Left', 'Current residue.',
+  ].join('\n');
+
+  async function seedAppendedCheckpoint(id: string, latestUpdate = CURRENT_UPDATE): Promise<string> {
+    const checkpoint = `${PRIOR_UPDATE}\n\n---\n${latestUpdate}`;
+    const { setWorkItemCheckpointWithPrior } = await import('../../work-item-checkpoint');
+    await setWorkItemCheckpointWithPrior(
+      { harness: 'papercup', workItemId: id },
+      checkpoint,
+      { latestUpdate },
+    );
+    return checkpoint;
+  }
+
+  async function alterLatestUpdateMetadata(id: string, mode: 'missing' | 'invalid'): Promise<void> {
+    const { workItemScope } = await import('../../carry-note');
+    const scope = workItemScope('papercup', id);
+    if (mode === 'missing') {
+      await db.sql`
+        UPDATE harness_shared.carry_notes SET journal = '[]'::jsonb
+         WHERE scope = ${scope}`;
+      return;
+    }
+    await db.sql`
+      UPDATE harness_shared.carry_notes
+         SET journal = jsonb_set(journal, '{0,latestUpdate,noteHash}', to_jsonb('invalid-hash'::text), true)
+       WHERE scope = ${scope}`;
+  }
+
   it('reports the active claim and the structured next action from the same read', async () => {
     const created = await createOne({ kind: 'feature', title: 'brief: claimed', harness: 'papercup' });
     const id = (created.workItem as Record<string, unknown>).id as string;
@@ -1308,6 +1349,36 @@ describe('work_items:get { operationalBrief } — work-item brief (real PG)', ()
     expect(brief.facts.successorResidue).toMatchObject({ status: 'known', value: { left: 'Bind evidence.' } });
     expect(brief.text).toContain('claim: su-tester');
   });
+
+  it('uses the validated latest update instead of preserved checkpoint history', async () => {
+    const created = await createOne({ kind: 'feature', title: 'brief: appended checkpoint', harness: 'papercup' });
+    const id = (created.workItem as Record<string, unknown>).id as string;
+    const checkpoint = await seedAppendedCheckpoint(id, CURRENT_UPDATE_WITHOUT_NEXT);
+
+    const { row, brief } = await readBrief(id);
+    expect(row.checkpoint).toBe(checkpoint);
+    expect(brief.nextAction.status).toBe('unknown');
+    expect(brief.nextAction).not.toMatchObject({ value: 'Do the stale action.' });
+    expect(brief.facts.successorResidue).toMatchObject({ status: 'known', value: { left: 'Current residue.' } });
+  });
+
+  it.each(['missing', 'invalid'] as const)(
+    'marks the current focus unknown when latest-update metadata is %s',
+    async (mode) => {
+      const created = await createOne({ kind: 'feature', title: `brief: ${mode} latest-update metadata`, harness: 'papercup' });
+      const id = (created.workItem as Record<string, unknown>).id as string;
+      await seedAppendedCheckpoint(id);
+      await alterLatestUpdateMetadata(id, mode);
+
+      const { brief } = await readBrief(id);
+      expect(brief.facts.checkpoint).toMatchObject({
+        status: 'known', value: { status: 'available' },
+      });
+      expect(brief.nextAction.status).toBe('unknown');
+      expect(brief.facts.successorResidue.status).toBe('unknown');
+      expect(brief.nextAction).not.toMatchObject({ value: 'Do the stale action.' });
+    },
+  );
 
   it('reports an active set_blocker record stored on the row as a blocker', async () => {
     const created = await createOne({ kind: 'feature', title: 'brief: blocked', harness: 'papercup' });

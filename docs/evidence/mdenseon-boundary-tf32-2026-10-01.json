@@ -658,7 +658,7 @@
     "gpuAcceptanceComplete": false
   },
   "nativeRuntimeKernelPreparation": {
-    "status": "source/runtime content and profiler preparation retained; padded v3 payload failed source-root qualification before inference; source repair verified locally",
+    "status": "fresh runtime v3 and path semantics qualified; padded v4 subsequently failed file-worker boot before model construction; worker argv repair verified locally and requires a new frozen runtime",
     "runtimeArtifact": {
       "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v2",
       "receiptSha256": "d4162dd6d89b317d832254c97fe1bcefb2abb65cede82526dfa59b64955f05c1",
@@ -745,6 +745,60 @@
     "test": { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "sha256": "756046bb8db862011cc20d7f9ed0ddc95e3f44e148eb663793b416aa14929a40" },
     "modelInferencePerformed": false,
     "priorFrozenArtifactsChanged": false,
+    "gpuAcceptanceComplete": false
+  },
+  "nativeRuntimeV3Preparation": {
+    "taskId": "0muqlneci772ct7t4ad",
+    "status": "completed exit 0; source/dependency bytes and exact copied-runtime path preflight verified",
+    "completedAt": "2026-10-02T07:00:25.533Z",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v3",
+    "recipeSha256": "7fdf87fac0e9ed75249ab4bfbf8ef1c1e1ce55e3b39975b8d149216831bf881d",
+    "contentReceipt": { "sha256": "25762b9c5587c38277b5e6d6ba1f53eb51a5eb6c1697319f5659f9e6c9f33061", "bytes": 3970 },
+    "sourceRecordsChecked": 31404,
+    "dependencyRecordsChecked": 241451,
+    "pathPreflight": { "sha256": "8cb0966c87af90efdbfe4138d9f2de3bdb880c53b224f15c0b7fe13f260da543", "bytes": 639, "externalOutputAccepted": true, "sourceTreeOutputRejected": true, "outputCreated": false },
+    "reuse": "Independent copy via the existing sourceable dependency-generation copier, with tested overlays frozen before slow copying and every declared content record checked.",
+    "modelInferencePerformed": false,
+    "nativeCudaClosureQualified": false
+  },
+  "nativeCudaPaddedV4Attempt": {
+    "taskId": "0muqmk86vcu4q271vb8",
+    "status": "terminal exit 1; path/source/reference/profiler preflight passed but file-worker boot failed before model construction",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v4",
+    "recipeSha256": "cf6f191dd3fe4e7387ee7d73af5727ce79742d40df94758683aa763db99b5bb0",
+    "runtimeReceiptSha256": "25762b9c5587c38277b5e6d6ba1f53eb51a5eb6c1697319f5659f9e6c9f33061",
+    "launchAt": "2026-10-02T07:11:39.630Z",
+    "payloadStartedAt": "2026-10-02T07:11:44.009Z",
+    "payloadFailedAt": "2026-10-02T07:11:52.990Z",
+    "activeCell": "single-short-query",
+    "completedSingles": [],
+    "error": "ERR_INPUT_TYPE_NOT_ALLOWED: --input-type can only be used with string input via --eval, --print, or STDIN",
+    "deviceConstructionVerified": false,
+    "workerInputTraceEstablished": false,
+    "gpuVectorOrKernelProofEstablished": false,
+    "next": "Preserve this attempt and runtime v3. Freeze a new runtime with the tested worker argv fix, qualify a file-based parent/worker boot before heavy admission, then declare a new native diagnostic."
+  },
+  "nativeWorkerArgvRepair": {
+    "workItem": "WI-10005356",
+    "status": "canonical source and conventional regression guards verified; new frozen native runtime still required",
+    "rootCause": "The shipped file-based embedder Worker implicitly inherited process.execArgv from a stdin parent. Node rejected its stdin-only --input-type option before the worker could become ready. The initial tokenizer-worker hypothesis was incorrect.",
+    "reuse": "Set explicit empty execArgv for the existing plain-JS worker, following the existing generic decision-model worker pattern. Model/device/precision/tokenizer contracts are unchanged.",
+    "distinguishingControl": "A raw file Worker still fails under combined and separate stdin flag forms. The corrected shipped factory boots a real worker and returns a synthetic protocol vector without forwarding any model request.",
+    "verification": {
+      "redRunId": "35a59aca-02a2-4205-9ec8-d19485cc8431",
+      "redTestRunId": 20493736,
+      "before": "Both new boot regression cases fail with ERR_INPUT_TYPE_NOT_ALLOWED; ten unrelated cases were excluded by the name filter.",
+      "greenRunId": "8510c36a-fedd-41d0-b5f7-da1e917362ad",
+      "greenTestRunIds": [20493745, 20493746, 20493747],
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": "Scoped memory-library tsc compiler exit 0",
+      "recurrenceGuard": "Real stdin parent under both flag forms; raw file-worker negative control; actual shipped worker readiness; no model request forwarded. Neighboring input-trace, ONNX pin and mDenseOn adapter suites pass."
+    },
+    "source": { "path": "libs/generic/memory/src/local-embedder-worker.ts", "sha256": "002dac336b5b4371abe107db4fc9186dffaae68bf6f49398d8ff742b243100e1" },
+    "test": { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "sha256": "f5fabcc40b811a0de18b595c07f5c4620f0d37747893a6d2cd926c79d9c1cfc1" },
+    "modelInferencePerformed": false,
     "gpuAcceptanceComplete": false
   },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."

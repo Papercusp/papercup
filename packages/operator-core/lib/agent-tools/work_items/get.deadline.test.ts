@@ -15,6 +15,7 @@ const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
 const getWorkItemCheckpointWithMeta = vi.fn();
 const getWorkItemCheckpointFreshness = vi.fn();
+const listSpecEvidence = vi.fn();
 
 vi.mock('../../work-items', () => ({
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
@@ -27,6 +28,11 @@ vi.mock('../../work-items', () => ({
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...args: unknown[]) => getWorkItemCheckpointWithMeta(...args),
   getWorkItemCheckpointFreshness: (...args: unknown[]) => getWorkItemCheckpointFreshness(...args),
+}));
+
+vi.mock('../plans/spec-evidence-store', async (original) => ({
+  ...(await original<typeof import('../plans/spec-evidence-store')>()),
+  listSpecEvidence: (...args: unknown[]) => listSpecEvidence(...args),
 }));
 
 import get, { WORK_ITEMS_GET_BUDGET_MS, WORK_ITEMS_GET_MAX_CONCURRENCY } from './get';
@@ -85,6 +91,43 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     });
     expect(out.data.results[0]).not.toMatchObject({ error: expect.stringContaining('not found') });
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:WI-detail-timeout exceeded'));
+
+    warnSpy.mockRestore();
+  });
+
+  it('bounds resume enrichment when a checkpoint dependency never settles', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-resume-timeout',
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercusp',
+      state: 'open',
+      title: 'resume timeout',
+      assignee: 'su-test',
+    });
+    getWorkItemCheckpointWithMeta.mockImplementation(() => new Promise(() => {}));
+    getWorkItemCheckpointFreshness.mockResolvedValue({ verdict: 'fresh' });
+    listSpecEvidence.mockResolvedValue([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const pending = get.handler(
+      { id: 'WI-resume-timeout', resume: true } as never,
+      ctx as never,
+    ) as Promise<Out>;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-resume-timeout',
+      availability: 'unavailable',
+      error: 'timeout',
+      retryable: true,
+      phase: 'read',
+      budgetMs: WORK_ITEMS_GET_BUDGET_MS,
+    });
+    expect(getWorkItemCheckpointWithMeta).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:WI-resume-timeout exceeded'));
 
     warnSpy.mockRestore();
   });

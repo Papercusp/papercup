@@ -15,6 +15,7 @@ import {
   UNRESOLVED_TURN_REF_NOTE,
   UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
   markUnverifiedOwnerAttribution,
+  normalizeUnverifiedOwnerAttributionMarkers,
   ownerAttributionEnforcement,
   retainedProvenanceText,
   stampCarrySurfaceProvenance,
@@ -444,6 +445,24 @@ describe('owner-attribution persistence enforcement (P-016 / EI-212678)', () => 
     expect(marked.startsWith(`${UNVERIFIED_OWNER_ATTRIBUTION_MARKER}\n`)).toBe(true);
     expect(markUnverifiedOwnerAttribution(marked)).toBe(marked);
     expect(markUnverifiedOwnerAttribution(null)).toBeNull();
+  });
+
+  it('collapses duplicate standalone markers from legacy read-modify-write notes', () => {
+    const duplicated = [
+      UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
+      'first state block',
+      '---',
+      UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
+      'second state block',
+      '---',
+      UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
+    ].join('\n');
+    const expected = [UNVERIFIED_OWNER_ATTRIBUTION_MARKER, 'first state block', '---', 'second state block', '---'].join(
+      '\n',
+    );
+
+    expect(normalizeUnverifiedOwnerAttributionMarkers(duplicated)).toBe(expected);
+    expect(markUnverifiedOwnerAttribution(duplicated)).toBe(expected);
   });
 
   function textForRef(ref: string): string {

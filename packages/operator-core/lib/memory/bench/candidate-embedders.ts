@@ -222,12 +222,11 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
     'libs/generic/memory/src/local-embedder-worker.ts', 'libs/generic/memory/src/local-embedder-worker.script.mjs',
     'libs/generic/memory/src/embed-device.ts', 'packages/operator-core/lib/memory/bench/measurement-manifest.ts']
     .map((file) => fingerprintFile(path.join(repo, file))));
-  const ort = await import('onnxruntime-node');
   const identity = { requestSha256: expectedSha, referenceSummarySha256: referenceSummarySha, device, sources, references,
     execution: { dtype: 'fp32', ...ORT_SESSION_OPTIONS }, nativeTransport: 'shipped-worker-single-text',
     selectedCell: selectedCell ?? null, precisionEnvironment: { NVIDIA_TF32_OVERRIDE: tf32Override ?? 'unset' },
     runtimeVersions: { node: process.versions.node, transformers: measurementPackageVersion('@huggingface/transformers'),
-      tokenizers: measurementPackageVersion('tokenizers'), onnxruntimeNode: ort.env.versions.node },
+      tokenizers: measurementPackageVersion('tokenizers'), onnxruntimeNode: measurementPackageVersion('onnxruntime-node') },
     providerProof: 'worker-session-construction-report', computeKernelProfiling: 'not-exposed-by-shipped-worker',
     tokenIdsProof: 'independent qualification tokenizer and opt-in pre-graph worker tensors',
     actualWorkerTokenTrace: 'private per-cell JSONL, emitted before candidate inference' };

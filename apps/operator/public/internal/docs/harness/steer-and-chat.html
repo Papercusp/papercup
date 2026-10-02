@@ -175,16 +175,18 @@ SIGINT headless); no checkpoint is guaranteed.</li>
 </ul>
 <p>You cannot interrupt your own turn.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="human-gates-questions-escalations-approvals">Human gates: questions, escalations, approvals</h2><a class="sl-anchor-link" href="#human-gates-questions-escalations-approvals"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Human gates: questions, escalations, approvals”</span></a></div>
-<p>Agents pause for humans through structured gates rather than free chat: a
+<p>Agents request human decisions through structured gates rather than free chat: a
 mid-tool decision card (<code dir="auto">ctx.askUser</code> / <code dir="auto">chat:ask_choice</code>; with the
 <code dir="auto">papercusp-inbox-durable-escalations</code> flag the card is also mirrored to a
 durable coord escalation so it can be answered later from the inbox),
-knowledge-first questions routed by topic (<code dir="auto">coord:ask</code> → a conversation
-answered via <code dir="auto">conversations:answer</code>), pipeline escalations
+durable owner questions via <code dir="auto">coord:ask-owner</code>, pipeline escalations
 (<code dir="auto">harness:escalation</code> surfaces the blocker; resolution re-enters the
 pipeline), and plan items marked <code dir="auto">needs-human</code> (which also block a DONE
 finalization — see <a href="/internal/docs/harness/smoke-test">Smoke-test gate</a> for
 the gate family).</p>
+<p>The owner’s Ask-an-agent UI uses <code dir="auto">coord:ask</code> for questions to a named agent.
+It is owner-UI-only; agents contact peers with <code dir="auto">coord:send</code> or
+<code dir="auto">coord:message-agent</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="observing-without-steering">Observing without steering</h2><a class="sl-anchor-link" href="#observing-without-steering"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Observing without steering”</span></a></div>
 <p><code dir="auto">fleet:bee_mail</code> renders what a specific agent has received/sent (the
 cup-dossier view) — for <em>inspection</em>, not for reading your own inbox

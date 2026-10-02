@@ -280,6 +280,42 @@ describe('psu shim re-exec loop (WI-38292)', () => {
     expect(stderr).toContain('refusing to loop again');
   });
 
+  it('WI-10005351: re-execs spaced a window apart never reach the cap — a long-lived session adopting all day is not a loop', async () => {
+    await writePsuShim();
+    // Asks for a re-exec on every pass until it has run PSU_REEXEC_MAX + 4
+    // times, then ends the session normally. Under the lifetime cap the shim
+    // refused at pass PSU_REEXEC_MAX + 1 and the session went dark (measured:
+    // 6 of 7 owners whose event log reached a 17th adoption got no prompt
+    // successor kickoff on it). Window 0 makes every re-exec a new burst, which
+    // is exactly the spacing of real adoptions (one per carry-respawn, minutes apart).
+    const passes = PSU_REEXEC_MAX + 5;
+    await fs.writeFile(
+      launcherPath,
+      [
+        "import { appendFileSync, readFileSync } from 'node:fs';",
+        "appendFileSync(process.env.RUN_LOG, 'pass\\n');",
+        "const n = readFileSync(process.env.RUN_LOG, 'utf8').split('\\n').filter(Boolean).length;",
+        `process.exit(n < ${passes} ? ${PSU_REEXEC_EXIT_CODE} : 0);`,
+        '',
+      ].join('\n'),
+    );
+
+    const { code, stderr } = await runShim({ PAPERCUSP_PSU_REEXEC_WINDOW_SEC: '0' });
+    expect(stderr).not.toContain('refusing to loop again');
+    expect(code).toBe(0);
+    expect(await runCount()).toBe(passes);
+  });
+
+  it('WI-10005351: a malformed window override falls back to the default burst window, so a real loop is still capped', async () => {
+    await writePsuShim();
+    await fs.writeFile(launcherPath, launcherSource('always', PSU_REEXEC_EXIT_CODE));
+
+    const { code, stderr } = await runShim({ PAPERCUSP_PSU_REEXEC_WINDOW_SEC: 'soon' });
+    expect(code).toBe(PSU_REEXEC_EXIT_CODE);
+    expect(await runCount()).toBe(PSU_REEXEC_MAX + 1);
+    expect(stderr).toContain('refusing to loop again');
+  });
+
   it('does not `exec` the launcher — bash must survive the swap or the terminal foreground pgid dies with it', async () => {
     await writePsuShim();
     const body = await fs.readFile(shimPath, 'utf8');

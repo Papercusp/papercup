@@ -1088,7 +1088,9 @@ describe.each(['selected', 'refill'] as const)('failed cascade dispatch — %s m
       { ownerId: 'also-unlaunchable', kind: 'dispatch_failed' },
     ]);
     if (menu === 'refill') {
-      expect(row.routing).toMatchObject({ selection: { underFilled: { answers: 0, min: 2, reason: 'refill-spent' } } });
+      // WI-10005360: every refill pick was refused BEFORE launch, so the round is
+      // not spent — the cascade ran out because the POOL did. That is the honest label.
+      expect(row.routing).toMatchObject({ selection: { underFilled: { answers: 0, min: 2, reason: 'no-untried-candidate' } } });
     }
     expect(emits).toHaveLength(1);
   });
@@ -1436,6 +1438,83 @@ describe('advanceCascade — liveness-blind refill + honest under-filled (D-002/
     expect(r.cascade.exhausted).toBe(true);
     const routingRow = parseRouting((await stateRow(id)).routing);
     expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'refill-spent' });
+  });
+
+  // WI-10005360 (conv-muqlw2ay): min 1, the menu AND the one refill pick were all
+  // refused BEFORE launch, and the consult closed `refill-spent` while launchable
+  // experts sat untried. The bound is on LAUNCHES — a pre-launch refusal costs no
+  // answering session, so it must not spend the round.
+  function refusalPoolRouting(extra: string[]) {
+    const cand = (ownerId: string, score: number) => ({
+      ownerId, score, relevance: score, signals: { similarity: score - 0.1 }, liveness: 'ended',
+    });
+    return {
+      relevanceFloor: 0.5,
+      simFloor: 0.4,
+      candidates: [cand(RESPONDER, 0.9), ...extra.map((o, i) => cand(o, 0.8 - i * 0.05))],
+      selection: {
+        min: 1,
+        max: 1,
+        selected: [{ ownerId: RESPONDER, via: 'floor', score: 0.9, similarity: 0.8, liveness: 'live' }],
+      },
+    };
+  }
+
+  it('WI-10005360: a refill round refused entirely before launch is NOT spent — it extends until an expert launches', async () => {
+    const id = await seedConsult({
+      state: 'active',
+      routing: refusalPoolRouting(['refused-1', 'refused-2', 'launchable', 'never-needed']),
+    });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      return o.responder === 'launchable' ? { woke: 1, answeringOwnerId: 'launchable-fork' } : { woke: 0 };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(dispatchCalls.map((o) => o.responder)).toEqual(['refused-1', 'refused-2', 'launchable']);
+    expect(r.cascade).toMatchObject({ advanced_to: 'launchable', exhausted: false });
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ responder_id: 'launchable', closed_at: null });
+    const routingRow = parseRouting(row.routing);
+    // The continuation APPENDS to the original stamp, so `added` stays the full record.
+    expect(routingRow.selection?.refill?.added).toEqual(['refused-1', 'refused-2', 'launchable']);
+    expect(routingRow.selection?.refill).toHaveProperty('continued');
+    expect(routingRow.selection?.underFilled).toBeUndefined();
+    // Still bounded: once one pick launched, nobody further is pulled in.
+    expect(routingRow.selection?.selected?.map((s) => s.ownerId)).not.toContain('never-needed');
+  });
+
+  it('WI-10005360 bound: once a refill pick LAUNCHED, the round is spent — its fork declining ends refill-spent with pool left', async () => {
+    const id = await seedConsult({ state: 'active', routing: refusalPoolRouting(['launch-a', 'spare-b']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      await o.onAnsweringOwner?.(`${o.responder}-fork`);
+      return { woke: 1, answeringOwnerId: `${o.responder}-fork` };
+    };
+    const first = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in first) throw new Error(first.error);
+    expect(first.cascade).toMatchObject({ advanced_to: 'launch-a', exhausted: false });
+    // The launched fork posts under its OWN identity, so the digest has no entry
+    // under 'launch-a' — that absence must read as "launched" (spent), never as
+    // "refused before launch".
+    const second = await consultDeclineCore(
+      { workspaceId: WS, authorId: 'launch-a-fork', conversationId: id, reason: 'transcript does not cover this' },
+      deps,
+    );
+    if ('error' in second) throw new Error(second.error);
+    expect(second.cascade.exhausted).toBe(true);
+    expect(dispatchCalls.map((o) => o.responder)).toEqual(['launch-a']);
+    const routingRow = parseRouting((await stateRow(id)).routing);
+    expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'refill-spent' });
+    expect(routingRow.selection?.selected?.map((s) => s.ownerId)).not.toContain('spare-b');
   });
 
   it('nobody untried left at all — honest terminal: no-untried-candidate, never a silent exhaustion', async () => {

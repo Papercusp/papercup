@@ -43,6 +43,9 @@ vi.mock('../../work-items', async (importOriginal) => ({
   resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
   linkWorkItem: (...a: unknown[]) => linkWorkItem(...a),
   subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
+  // D-035 agent-work door gate: the real lookup opens PG, which a unit test may not. null =
+  // the row IS agent work, so every case reaches the design-evidence gate it is testing.
+  readNonAgentWorkCategory: async () => null,
   SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
 }));
 

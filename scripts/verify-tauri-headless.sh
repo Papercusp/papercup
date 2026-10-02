@@ -915,6 +915,28 @@ if [ "$ISOLATED_SEED" = "ready" ] && [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]
   exit 2
 fi
 
+# R171 reached a reachable shared DB with unapplied, backup-conflicting DDL
+# only after its expensive source/dependency snapshot and host build. Check the
+# exact launch environment first. This SELECT-only probe neither applies DDL
+# nor bypasses the boot migration/backup rendezvous. The isolated mode creates
+# its own fully migrated DB later and has no shared target to inspect here.
+shared_schema_readiness_preflight() {
+  [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ] || return 0
+  local status=0
+  (
+    cd "$REPO_DIR/apps/operator" || exit 74
+    set -a
+    if [ -f .env.local ]; then . ./.env.local; fi
+    set +a
+    timeout --kill-after=1s 8s node "$DESKTOP_DIR/bin/dev-operator-pg-probe.mjs" --repo-root "$REPO_DIR" --require-applied-schema
+  ) || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "VERIFY_TAURI_SHARED_SCHEMA_NOT_READY probe_exit=$status — refusing before source/dependency preparation; no migrations applied. Use the maintained guarded migration path or VERIFY_TAURI_ISOLATED_DB=1 for a disposable DB." >&2
+    return "$status"
+  fi
+}
+shared_schema_readiness_preflight || exit $?
+
 # The dependency snapshot uses hardlinks. A fast /tmp mount may be on another
 # device. Only the operator/dependency snapshot needs the donor filesystem;
 # the much larger SPA/profile/database payloads remain on TMPDIR.

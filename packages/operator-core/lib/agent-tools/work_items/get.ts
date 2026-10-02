@@ -833,6 +833,10 @@ export default defineTool({
       !needsWorkItemDetail &&
       sourceReadOptions !== undefined;
     const stageSamples: Array<{ baseReadMs: number | null; enrichmentMs: number | null }> = [];
+    const checkpointLatestUpdateById = new Map<
+      string,
+      NonNullable<Awaited<ReturnType<typeof getWorkItemCheckpointWithMeta>>['latestUpdate']>
+    >();
     // P-030: resolved ONCE for the whole bulk read. The reader is an argument to
     // the holder lens, never a cache-key dimension — the per-id `cachedRead`
     // below is deliberately non-principal-scoped, so reader-relative holder
@@ -1148,9 +1152,11 @@ export default defineTool({
           checkpointChecks,
           checkpointBody,
           checkpointContentHash,
+          latestUpdate: checkpointLatestUpdate,
           subjectFingerprint: storedSubjectFingerprint,
           readFailed: checkpointReadFailed,
         } = checkpointRead;
+        if (checkpointLatestUpdate) checkpointLatestUpdateById.set(workItem.id, checkpointLatestUpdate);
         const checkpointSubjectFingerprint = checkpointSubjectFingerprintForRead(
           workItem,
           checkpointReadFailed,
@@ -1449,7 +1455,8 @@ export default defineTool({
       const { projectWorkItemOperationalBrief, renderOperationalBrief, renderWorkItemFactLines } = await import('../../operational-brief');
       for (const result of env.results as Array<Record<string, unknown>>) {
         if (result.ok !== true || result.availability !== 'available') continue;
-        const brief = projectWorkItemOperationalBrief(result, { linksRead: readDetail });
+        const latestUpdate = typeof result.id === 'string' ? checkpointLatestUpdateById.get(result.id) : undefined;
+        const brief = projectWorkItemOperationalBrief(result, { linksRead: readDetail, latestUpdate });
         result.operationalBrief = {
           ...brief,
           text: [renderOperationalBrief(brief), ...renderWorkItemFactLines(brief)].join('\n'),
