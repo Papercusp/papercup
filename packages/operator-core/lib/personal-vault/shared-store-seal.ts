@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import { DisclosureRefused } from './disclosure-ledger';
-import { snapshotActiveLabels, storeSealedContent } from './sealed-contents';
+import { openSealedForOwner, snapshotActiveLabels, storeSealedContent } from './sealed-contents';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -84,6 +84,78 @@ export function sharedSealRefOf(text: unknown): { store: SharedSealStore; ref: s
   const match = SEALED_STUB_RE.exec(text);
   if (!match || !isSharedSealStore(match[1])) return null;
   return { store: match[1], ref: match[2] };
+}
+
+/**
+ * The OWNER's view of sealed shared rows (WI-10005548). D-006 makes the owner a
+ * permitted reader of everything, so an owner surface shows what was written in
+ * place of the stub, and nobody is labelled. Returns stub → authored text for each
+ * stub among `texts` whose sealed row is readable. A non-stub, or a stub whose
+ * sealed row is gone, is absent from the map, so the caller keeps the shared row.
+ *
+ * OWNER SURFACES ONLY. An agent opens a stub with personal:open-sealed, which
+ * labels it; calling this on an agent read path would launder the content.
+ */
+export async function openSharedSealsForOwner(
+  sql: Db,
+  params: { workspaceId: string | null | undefined; texts: Iterable<unknown> },
+): Promise<Map<string, string>> {
+  const opened = new Map<string, string>();
+  const workspaceId = concreteWorkspace(params.workspaceId);
+  if (!workspaceId) return opened;
+  const refsByStore = new Map<SharedSealStore, Map<string, string>>();
+  for (const text of params.texts) {
+    const seal = sharedSealRefOf(text);
+    if (!seal) continue;
+    let refs = refsByStore.get(seal.store);
+    if (!refs) refsByStore.set(seal.store, (refs = new Map()));
+    refs.set(seal.ref, text as string);
+  }
+  for (const [store, refs] of refsByStore) {
+    const contents = await openSealedForOwner(sql, { workspaceId, store, refs: [...refs.keys()] });
+    for (const [ref, stub] of refs) {
+      const text = contents.get(ref)?.text;
+      if (typeof text === 'string') opened.set(stub, text);
+    }
+  }
+  return opened;
+}
+
+/**
+ * Replace each sealed stub in `rows` with its authored text, for an OWNER read
+ * surface (see openSharedSealsForOwner). The read runs in its own
+ * workspace-scoped transaction because personal_sealed_contents is under RLS, and
+ * only when a stub is present, so an ordinary page costs no query. If the sealed
+ * store cannot be read, the rows come back unchanged and the owner sees the stub:
+ * a read surface degrades to what the shared row holds rather than failing.
+ */
+export async function unsealRowsForOwner<T>(
+  rows: readonly T[],
+  params: {
+    workspaceId: string | null | undefined;
+    textOf: (row: T) => unknown;
+    withText: (row: T, text: string) => T;
+  },
+): Promise<T[]> {
+  const workspaceId = concreteWorkspace(params.workspaceId);
+  if (!workspaceId || !rows.some((row) => sharedSealRefOf(params.textOf(row)))) return [...rows];
+  let opened: Map<string, string>;
+  try {
+    const { withWorkspace } = await import('@papercusp/db-org');
+    opened = await withWorkspace(workspaceId, (tx) =>
+      openSharedSealsForOwner(tx, { workspaceId, texts: rows.map(params.textOf) }),
+    );
+  } catch (error) {
+    console.warn(
+      `[shared-store-seal] owner unseal unavailable; showing stubs (${error instanceof Error ? error.message : String(error)})`,
+    );
+    return [...rows];
+  }
+  return rows.map((row) => {
+    const text = params.textOf(row);
+    const authored = typeof text === 'string' ? opened.get(text) : undefined;
+    return authored === undefined ? row : params.withText(row, authored);
+  });
 }
 
 function concreteWorkspace(workspaceId: string | null | undefined): string | null {
