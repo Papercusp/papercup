@@ -17,7 +17,7 @@ export function summarizeHeapSnapshot(snap: any, { top }?: {
 };
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
  * @param {import('node:stream').Readable} input
- * @param {{ top?: number }} [options]
+ * @param {{ top?: number }} [options] top=0 keeps all classes for multi-snapshot aggregation.
  */
 export function summarizeHeapSnapshotStream(input: import("node:stream").Readable, { top }?: {
     top?: number;

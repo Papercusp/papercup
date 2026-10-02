@@ -84,10 +84,10 @@ export function summarizeHeapSnapshot(snap, { top = 30 } = {}) {
 
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
  * @param {import('node:stream').Readable} input
- * @param {{ top?: number }} [options]
+ * @param {{ top?: number }} [options] top=0 keeps all classes for multi-snapshot aggregation.
  */
 export async function summarizeHeapSnapshotStream(input, { top = 30 } = {}) {
-  if (!Number.isInteger(top) || top < 1 || top > 100) throw new TypeError('Invalid heap census top limit');
+  if (!Number.isInteger(top) || top < 0 || top > 100) throw new TypeError('Invalid heap census top limit');
   const hash = createHash('sha256'); let bytes = 0;
   input.on('data', chunk => { hash.update(chunk); bytes += Buffer.byteLength(chunk); });
   const stream = input.pipe(parser.asStream({ packStrings: false, streamStrings: true,
@@ -164,7 +164,7 @@ export async function summarizeHeapSnapshotStream(input, { top = 30 } = {}) {
     throw TypeError('Incomplete heap snapshot nodes/string table');
   return { bytes, sha256: hash.digest('hex'), census: { nodeCount, totalSelfSizeBytes,
     types: [...byType.values()].sort((a, b) => b.selfSizeBytes - a.selfSizeBytes),
-    topClasses: [...byClass.values()].sort((a, b) => b.selfSizeBytes - a.selfSizeBytes).slice(0, top),
+    topClasses: [...byClass.values()].sort((a, b) => b.selfSizeBytes - a.selfSizeBytes).slice(0, top || undefined),
     definition: 'V8 snapshot node self_size, after snapshot GC; not retained/exclusive bytes or total native memory.' } };
 }
 
@@ -206,7 +206,7 @@ let parsedSnapshots = 0;
 
 for (const file of files) {
   try {
-    const { census } = await summarizeHeapSnapshotStream(createReadStream(file), { top: 100 });
+    const { census } = await summarizeHeapSnapshotStream(createReadStream(file), { top: 0 });
     parsedSnapshots++; totalSizeBytes += census.totalSelfSizeBytes;
     for (const row of census.topClasses) {
       const prev = byClass.get(row.class) ?? { selfSize: 0, count: 0 };
