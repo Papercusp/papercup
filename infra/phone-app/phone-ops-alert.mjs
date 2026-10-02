@@ -12,7 +12,10 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-const execFile = promisify(execFileCallback);
+let execFileMemo;
+function execFile(...args) {
+  return (execFileMemo ??= promisify(execFileCallback))(...args);
+}
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '../..');
 const permitted = {
