@@ -5,7 +5,7 @@
  * for GCP's deterministic shared-network names and judged coverage against GCP's eight kinds. These
  * tests pin the AWS path end to end through `runWorkspaceHostDestroy`: the inventory request carries
  * only the account/region/workspace scope, the census is judged by the AWS profile (vm, disk,
- * snapshot by `papercusp:*` tags), a surviving tagged instance still fails the destroy, and a
+ * snapshot, spot-request by `papercusp:*` tags), surviving tagged resources fail the destroy, and a
  * provider with no census (or a provider/host mismatch) is refused before any provider call.
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,7 @@ import {
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
 import {
+  AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS,
   AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS,
   type AwsWorkspaceHostInventoryRequest,
   type AwsWorkspaceHostInventorySnapshot,
@@ -75,7 +76,7 @@ function awsInventory(observed: AwsWorkspaceHostInventorySnapshot['observed'] = 
   return {
     complete: true,
     observed,
-    inventoryEvidence: (['vm', 'disk', 'snapshot'] as const).map((kind) => ({
+    inventoryEvidence: AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.map((kind) => ({
       kind,
       strategy: 'managed-labels' as const,
       providerEvidenceRef: `aws://ec2/${REGION}/${kind}?tag:papercusp:workspace-id=${WORKSPACE_ID}`,
@@ -198,12 +199,15 @@ describe('runWorkspaceHostDestroy on an AWS host', () => {
     }));
   });
 
-  it('still fails the destroy when a tagged instance of this host survives the settle window', async () => {
+  it.each([
+    resources[0]!,
+    { target: 'aws', kind: 'spot-request', providerId: 'sir-open', parentProviderId: ACCOUNT_ID, region: REGION },
+  ] satisfies WorkspaceHostResourceRef[])('still fails the destroy when a tagged $kind of this host survives the settle window', async (resource) => {
     const { provider, inventoryManagedResources } = providerHarness();
     const { store, updateOperation, updateHostState } = storeHarness();
     inventoryManagedResources.mockResolvedValue(awsInventory([
       {
-        resource: resources[0]!,
+        resource,
         labels: {
           [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed]: 'true',
           [AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId]: 'host-aws',
@@ -218,23 +222,24 @@ describe('runWorkspaceHostDestroy on an AWS host', () => {
 
     expect(result.status).toBe('failed');
     expect(failureReason(updateOperation)).toMatch(/census is not clean after 1 read\(s\)/);
-    expect(failureReason(updateOperation)).toContain('i-0abc');
+    expect(failureReason(updateOperation)).toContain(resource.providerId);
     expect(updateHostState).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'absent' }));
   });
 
-  it('refuses an AWS census whose inventory skipped a kind the AWS profile requires', async () => {
+  it.each(AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS)('refuses an AWS census whose inventory skipped required kind %s', async (kind) => {
     const { provider, inventoryManagedResources } = providerHarness();
-    const { store, updateOperation } = storeHarness();
+    const { store, updateOperation, updateHostState } = storeHarness();
     const partial = awsInventory();
     inventoryManagedResources.mockResolvedValue({
       ...partial,
-      inventoryEvidence: partial.inventoryEvidence.filter((evidence) => evidence.kind !== 'snapshot'),
+      inventoryEvidence: partial.inventoryEvidence.filter((evidence) => evidence.kind !== kind),
     });
 
     const result = await runWorkspaceHostDestroy({ ...destroyInput(provider, store), censusSettleMs: 0 });
 
     expect(result.status).toBe('failed');
-    expect(failureReason(updateOperation)).toMatch(/snapshot/);
+    expect(failureReason(updateOperation)).toContain(`AWS workspace-host census inventory incomplete: ${kind}`);
+    expect(updateHostState).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'absent' }));
   });
 
   it('refuses, before any provider call, a provider that has no controller-independent census', async () => {
