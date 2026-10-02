@@ -62,6 +62,8 @@ describe('Codex credit-backed allowance exhaustion', () => {
 
   it('reinstates the allowance wall when credits are no longer available', () => {
     const p = recordAccountWindow(creditedPool(true), 'credited', { usageCreditsAvailable: false }, T0 + MIN);
+    expect(getAccount(p, 'credited')!.rate.utilizationAt).toBe(T0);
+    expect(getAccount(p, 'credited')!.rate.usageCreditsObservedAt).toBe(T0 + MIN);
     expect(accountFull(getAccount(p, 'credited')!, T0 + MIN)).toBe(true);
     expect(usageWalledUntil(getAccount(p, 'credited')!, T0 + MIN)).toBe(T0 + 10_080 * MIN);
   });

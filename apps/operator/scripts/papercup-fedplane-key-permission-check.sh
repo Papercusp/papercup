@@ -402,7 +402,10 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     # extra process.
     deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 19 ionice -c 3 bash -c '
         re="$1"; shift
-        find "$@" -print0 2>/dev/null | xargs -0 -r -n 200 grep -laIE -m1 "$re" 2>/dev/null
+        # The current workspace population is over 1.1M eligible files; batches
+        # of 200 start nearly 6,000 grep processes per run. Larger batches cut
+        # process startup overhead; xargs still enforces system argument-size limits.
+        find "$@" -print0 2>/dev/null | xargs -0 -r -n 1000 grep -laIE -m1 "$re" 2>/dev/null
       ' _ "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
     rc=$?
     # 124 is timeout(1)'s own "the command timed out" status. Partial output from

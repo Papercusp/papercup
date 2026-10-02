@@ -1083,8 +1083,12 @@ export function parseCodexRateReset(
       walledResetAt = walledResetAt === null ? resetAt : Math.max(walledResetAt, resetAt);
     }
   };
-  consider(windows.utilization, windows.windowResetAt);
-  consider(windows.utilization7d, windows.windowResetAt7d);
+  // Paid continuation makes the included premium meter non-binding. A real
+  // request/token throttle and the separate reserve meter still supply their resets.
+  if (windows.usageCreditsAvailable !== true || windows.bucket === 'base_model_inference') {
+    consider(windows.utilization, windows.windowResetAt);
+    consider(windows.utilization7d, windows.windowResetAt7d);
+  }
 
   // api.openai.com's bearer lane speaks the generic OpenAI dialect rather than
   // the ChatGPT subscription's x-codex-* windows. Reset values are durations

@@ -19,12 +19,15 @@
  * hot proxy path off disk between refreshes.
  */
 import { promises as fs } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getOAuthToken, type TokenStorage } from '../oauth/token';
 import { getProvider, registerProvider, makeClaudeProvider } from '../oauth/providers';
-import { listClaudeKeychainCredentialItems, writeClaudeKeychainOAuthBundle } from '../agent-auth-detect';
+import {
+  listClaudeKeychainCredentialItemsAsync,
+  readKeychainSecretAsync,
+  writeClaudeKeychainOAuthBundleAsync,
+} from '../agent-auth-detect';
 
 /** The OAuth beta flag a subscription (non-API-key) request must carry. */
 export const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
@@ -217,30 +220,36 @@ export interface CredentialResolver {
 // write-back, disk fallback). Reading a SECRET (`-w`) may raise a one-time "allow access" GUI
 // prompt on some Macs (click "Always Allow"); enumeration is metadata-only and never prompts.
 
+// Every Keychain call below is NON-BLOCKING (WI-10005306). The gateway serves every fleet
+// member's inference from one event loop, and the freshest-scan shells out to `security` once
+// per enumerated item (dozens on a fleet Mac) plus a `dump-keychain` of up to 15s. Run with
+// spawnSync, each call froze every in-flight request for its duration. The injectable seams
+// accept a sync OR async function, so a plain sync test fake stays assignable (`await` takes
+// plain values); the defaults are agent-auth-detect's execFile-based helpers.
+
 /** Read the Keychain item's secret payload, or null when absent/unreadable. Injectable for tests
  *  (there is no `security` off macOS). */
-export type KeychainSecretReader = (service: string) => string | null;
+export type KeychainSecretReader = (service: string) => Promise<string | null> | string | null;
 
-const defaultKeychainReader: KeychainSecretReader = (service) => {
-  try {
-    const r = spawnSync('security', ['find-generic-password', '-s', service, '-w'], {
-      encoding: 'utf8',
-      timeout: 5_000,
-    });
-    if (r.status === 0 && typeof r.stdout === 'string' && r.stdout.trim()) return r.stdout;
-  } catch {
-    /* security absent / errored → treated as not-found below */
-  }
-  return null;
-};
+const defaultKeychainReader: KeychainSecretReader = (service) => readKeychainSecretAsync(service);
 let keychainReader: KeychainSecretReader = defaultKeychainReader;
 export function _setKeychainReaderForTests(fn: KeychainSecretReader | null): void {
   keychainReader = fn ?? defaultKeychainReader;
 }
 
+/** One reader call that never throws: a throwing/rejecting seam is a miss, like a null. */
+async function readKeychainSecret(service: string): Promise<string | null> {
+  try {
+    const raw = await keychainReader(service);
+    return typeof raw === 'string' && raw ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read + parse Claude Code's Keychain bundle. Throws with actionable guidance on any miss. */
-export function readClaudeKeychainBundle(service: string): ClaudeCredentialBundle {
-  const raw = keychainReader(service);
+export async function readClaudeKeychainBundle(service: string): Promise<ClaudeCredentialBundle> {
+  const raw = await readKeychainSecret(service);
   if (!raw) {
     throw new Error(
       `inference-gateway: no readable Keychain item for service '${service}' — is Claude Code ` +
@@ -257,8 +266,10 @@ export function readClaudeKeychainBundle(service: string): ClaudeCredentialBundl
 
 /** Enumerate Claude Code Keychain items (service + account, metadata only) — injectable for
  *  tests (there is no Keychain off macOS). Defaults to agent-auth-detect's `dump-keychain` shim. */
-export type KeychainItemLister = () => { service: string; account: string | null }[];
-const defaultKeychainItemLister: KeychainItemLister = () => listClaudeKeychainCredentialItems();
+export type KeychainItemLister = () =>
+  | Promise<{ service: string; account: string | null }[]>
+  | { service: string; account: string | null }[];
+const defaultKeychainItemLister: KeychainItemLister = () => listClaudeKeychainCredentialItemsAsync();
 let keychainLister: KeychainItemLister = defaultKeychainItemLister;
 export function _setKeychainListerForTests(fn: KeychainItemLister | null): void {
   keychainLister = fn ?? defaultKeychainItemLister;
@@ -266,9 +277,13 @@ export function _setKeychainListerForTests(fn: KeychainItemLister | null): void 
 
 /** Write a rotated bundle back into a Keychain item — injectable for tests. Defaults to
  *  agent-auth-detect's `add-generic-password -U` shim (false off macOS / on ACL refusal). */
-export type KeychainBundleWriter = (service: string, account: string, secret: string) => boolean;
+export type KeychainBundleWriter = (
+  service: string,
+  account: string,
+  secret: string,
+) => Promise<boolean> | boolean;
 const defaultKeychainBundleWriter: KeychainBundleWriter = (service, account, secret) =>
-  writeClaudeKeychainOAuthBundle(service, account, secret);
+  writeClaudeKeychainOAuthBundleAsync(service, account, secret);
 let keychainWriter: KeychainBundleWriter = defaultKeychainBundleWriter;
 export function _setKeychainWriterForTests(fn: KeychainBundleWriter | null): void {
   keychainWriter = fn ?? defaultKeychainBundleWriter;
@@ -301,11 +316,18 @@ export function localCredentialsFilePath(): string {
 export async function scanLocalCredentialCandidates(baseService: string): Promise<LocalCredentialCandidate[]> {
   const out: LocalCredentialCandidate[] = [];
   const metas = new Map<string, string | null>([[baseService, null]]);
-  for (const m of keychainLister()) {
+  let listed: { service: string; account: string | null }[] = [];
+  try {
+    const l = await keychainLister();
+    if (Array.isArray(l)) listed = l;
+  } catch {
+    /* enumeration failed → scan the base item + disk bundle only */
+  }
+  for (const m of listed) {
     if (!metas.has(m.service) || m.account) metas.set(m.service, m.account);
   }
   for (const [service, account] of metas) {
-    const raw = keychainReader(service);
+    const raw = await readKeychainSecret(service);
     if (!raw) continue;
     try {
       const bundle = JSON.parse(raw.trim()) as ClaudeCredentialBundle;
@@ -359,7 +381,13 @@ export function selectLocalCredential(
 async function persistLocalCandidate(c: LocalCredentialCandidate): Promise<void> {
   if (c.kind === 'keychain') {
     const account = c.account ?? process.env.USER ?? '';
-    if (account && keychainWriter(c.service!, account, JSON.stringify(c.bundle))) return;
+    let wrote = false;
+    try {
+      wrote = account !== '' && (await keychainWriter(c.service!, account, JSON.stringify(c.bundle))) === true;
+    } catch {
+      /* a throwing writer is a refused write-back → disk fallback below */
+    }
+    if (wrote) return;
   }
   const filePath = c.kind === 'file' ? c.path! : localCredentialsFilePath();
   try {

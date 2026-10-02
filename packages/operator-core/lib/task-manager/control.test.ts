@@ -1084,6 +1084,62 @@ describe('freeze / thaw', () => {
   });
 });
 
+describe('freeze / thaw — wall-clock deadlines keep running (EI-24796665684871321)', () => {
+  const NOW = Date.parse('2026-10-01T18:00:00.000Z');
+  const okExec = (async () => ({ stdout: '', stderr: '' })) as never;
+
+  it('a freeze of a task with a ledger deadline reports it and warns the clock keeps running', async () => {
+    row({ taskId: 'g1', deadlineAt: new Date(NOW + 50_000).toISOString() });
+    const out = await freezeTask('g1', { execFileAsync: okExec, now: () => NOW });
+    expect(out).toMatchObject({
+      ok: true,
+      action: 'freeze',
+      deadline: { remainingSec: 50, expired: false },
+    });
+    // Narrow on the ok branch (the union's failure arm has no `warnings`).
+    expect(out.ok && out.warnings?.[0]).toContain('KEEPS RUNNING');
+  });
+
+  it('a freeze of the incident command flags the inner GNU timeout (ledger has no deadline)', async () => {
+    row({ taskId: 'g2', argv: ['bash', '-o', 'pipefail', '-c', 'timeout -k 30 1800 gitnexus analyze'] });
+    const out = await freezeTask('g2', { execFileAsync: okExec, now: () => NOW });
+    expect(out).toMatchObject({
+      ok: true,
+      innerTimeouts: [{ seconds: 1800, matched: 'timeout -k 30 1800' }],
+    });
+    expect(out.ok && out.deadline).toBeUndefined();
+    expect(out.ok && out.warnings?.[0]).toContain('HEURISTIC');
+  });
+
+  it('a thaw with the budget nearly spent warns the task is about to be terminated', async () => {
+    // The incident's own numbers: 29:10 of a 30:00 budget used while frozen → 50s left.
+    row({ taskId: 'g3', deadlineAt: new Date(NOW + 50_000).toISOString() });
+    const out = await thawTask('g3', { execFileAsync: okExec, now: () => NOW });
+    expect(out).toMatchObject({ ok: true, action: 'thaw', deadline: { remainingSec: 50 } });
+    expect(out.ok && out.warnings?.[0]).toContain('frozen time counted against it');
+  });
+
+  it('a task with no wall-clock deadline of either kind carries NO deadline fields at all', async () => {
+    row({ taskId: 'g4', argv: ['bash', '-c', 'npm test'] });
+    const out = await freezeTask('g4', { execFileAsync: okExec, now: () => NOW });
+    expect(out.ok).toBe(true);
+    // The success shape is unchanged for a plain task — callers that destructure only
+    // { ok, taskId, action, detail } see exactly what they saw before.
+    expect(out).toEqual({ ok: true, taskId: 'g4', action: 'freeze', detail: 'scope pc-g4.scope frozen' });
+  });
+
+  it('a FAILED freeze carries no deadline report (nothing was frozen, so nothing to warn about)', async () => {
+    row({ taskId: 'g5', deadlineAt: new Date(NOW + 50_000).toISOString() });
+    const failing = (async () => {
+      throw new Error('systemctl exploded');
+    }) as never;
+    const out = await freezeTask('g5', { execFileAsync: failing, now: () => NOW });
+    expect(out).toMatchObject({ ok: false, error: 'command_failed' });
+    expect(out).not.toHaveProperty('warnings');
+    expect(out).not.toHaveProperty('deadline');
+  });
+});
+
 describe('limitTask', () => {
   it('applies budgets at runtime', async () => {
     row({ taskId: 'f1' });

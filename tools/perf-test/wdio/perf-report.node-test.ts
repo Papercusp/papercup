@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +25,153 @@ import {
 } from "./app-mount";
 import { classifyAttemptTimeout } from "../../../libs/generic/gui-readiness/src/interaction-measure";
 import { beginInteraction, endInteraction, markInteractionPhase } from "../../../apps/operator/app/_components/perf/perf-marks";
+
+// Exercise the real writer in overlapping launchers and their forked workers.
+// Copy only this dependency-free module so the pre-fix shared-file reset cannot
+// erase a developer's live run while reproducing the collision.
+async function measureLauncher(source: string, runId: string, inheritedCollection?: string) {
+  const script = String.raw`
+    const { spawnSync } = require('node:child_process');
+    const report = require(process.argv[1]);
+    process.on('message', ({ id, command, measure }) => {
+      try {
+        let result;
+        if (command === 'prepare') {
+          if (report.prepareMeasures) report.prepareMeasures();
+          report.resetMeasures();
+          result = report.MEASURES_PATH;
+        } else if (command === 'write') {
+          const worker = spawnSync(process.execPath, ['--import', 'tsx', '-e',
+            "const r=require(process.argv[1]);r.recordMeasure(JSON.parse(process.argv[2]));process.stdout.write(JSON.stringify({path:r.MEASURES_PATH,measures:r.readMeasures()}));",
+            process.argv[1], JSON.stringify(measure)], { env: process.env, encoding: 'utf8' });
+          if (worker.status !== 0) throw new Error(worker.stderr || String(worker.error));
+          result = JSON.parse(worker.stdout);
+        } else if (command === 'reset') {
+          report.resetMeasures(); result = report.readMeasures();
+        } else if (command === 'read') result = report.readMeasures();
+        process.send({ id, result });
+      } catch (error) { process.send({ id, error: String(error) }); }
+    });
+  `;
+  const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_PERF_RUN_ID: runId };
+  delete env.PAPERCUSP_PERF_MEASURES_PATH;
+  if (inheritedCollection) env.PAPERCUSP_PERF_MEASURES_PATH = inheritedCollection;
+  const child = spawn(process.execPath, ['--import', 'tsx', '-e', script, source], {
+    cwd: __dirname, env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  await once(child, 'spawn');
+  let sequence = 0;
+  const request = (command: string, measure?: PerfMeasure) => new Promise<any>((resolve, reject) => {
+    const id = ++sequence;
+    const timer = setTimeout(() => finish(new Error('measure launcher response timed out')), 5_000);
+    const finish = (error?: Error, result?: unknown) => {
+      clearTimeout(timer);
+      child.off('message', receive);
+      child.off('exit', exited);
+      error ? reject(error) : resolve(result);
+    };
+    const receive = (message: any) => {
+      if (message.id === id) finish(message.error ? new Error(message.error) : undefined, message.result);
+    };
+    const exited = () => finish(new Error('measure launcher exited before replying'));
+    child.on('message', receive);
+    child.once('exit', exited);
+    child.send({ id, command, measure });
+  });
+  return { child, request };
+}
+
+async function stopMeasureLauncher(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exit = once(child, 'exit');
+  child.kill('SIGTERM');
+  await exit;
+}
+
+for (const profile of ['distinct', 'same', 'unnamed'] as const) {
+  test(`overlapping measure launchers preserve worker receipts and reset isolation (${profile} profiles)`, {
+    timeout: 15_000,
+  }, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'perf-measure-isolation-'));
+    const source = path.join(root, 'perf-report.ts');
+    writeFileSync(source, readFileSync(path.join(__dirname, 'perf-report.ts')));
+    const launchers: Awaited<ReturnType<typeof measureLauncher>>[] = [];
+    try {
+      const a = await measureLauncher(source, profile === 'unnamed' ? '' : 'profile-A'); launchers.push(a);
+      const first: PerfMeasure = { key: 'interaction:run-A', value: 1937, unit: 'ms', budget: 1500, ok: false };
+      const second: PerfMeasure = { key: 'interaction:run-B', value: 590, unit: 'ms', budget: 1500, ok: true };
+      const aPath = await a.request('prepare');
+      const aWorker = await a.request('write', first);
+      assert.equal(aWorker.path, aPath, 'worker must inherit its launcher collection');
+      assert.deepEqual(aWorker.measures, [first]);
+      // A new launcher may inherit a parent's old collection environment. Its
+      // prepare must replace that binding; only spec workers reuse it.
+      const b = await measureLauncher(source, profile === 'unnamed' ? '' : profile === 'same' ? 'profile-A' : 'profile-B', aPath);
+      launchers.push(b);
+      const bPath = await b.request('prepare');
+      const afterPeerReset = await a.request('read');
+      const bWorker = await b.request('write', second);
+      const aBeforeClear = await a.request('read');
+      const bBeforeClear = await b.request('read');
+      await a.request('reset');
+      const bAfterPeerClear = await b.request('read');
+      assert.deepEqual(afterPeerReset, [first], 'another launcher preparation must not erase the first outcome');
+      assert.notEqual(aPath, bPath, 'a profile name is not a unique collection lifetime');
+      assert.equal(bWorker.path, bPath);
+      assert.deepEqual(aBeforeClear, [first], 'run A must not publish run B outcomes');
+      assert.deepEqual(bBeforeClear, [second], 'run B must not publish run A outcomes');
+      assert.deepEqual(bAfterPeerClear, [second], 'run A completion must not delete run B outcomes');
+      assert.deepEqual(await a.request('read'), []);
+      assert.deepEqual(await b.request('reset'), []);
+    } finally {
+      await Promise.all(launchers.map(({ child }) => stopMeasureLauncher(child)));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('unprepared measurement collection refuses the legacy shared file', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'perf-measure-unprepared-'));
+  const source = path.join(root, 'perf-report.ts');
+  const legacy = path.join(root, 'results', 'measures.jsonl');
+  const saved = '{"key":"interaction:old-run","value":1,"unit":"ms","budget":1500,"ok":true}\n';
+  try {
+    writeFileSync(source, readFileSync(path.join(__dirname, 'perf-report.ts')));
+    mkdirSync(path.dirname(legacy)); writeFileSync(legacy, saved);
+    const env = { ...process.env }; delete env.PAPERCUSP_PERF_MEASURES_PATH;
+    const child = spawnSync(process.execPath, ['--import', 'tsx', '-e',
+      "const r=require(process.argv[1]);const before=r.readMeasures();r.resetMeasures();r.recordMeasure({key:'interaction:new',value:1,unit:'ms',budget:2,ok:true});process.stdout.write(JSON.stringify({before,after:r.readMeasures(),path:r.MEASURES_PATH}));",
+      source], { cwd: __dirname, env, encoding: 'utf8' });
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(JSON.parse(child.stdout), { before: [], after: [], path: null });
+    assert.match(child.stderr, /collection was not prepared/);
+    assert.equal(readFileSync(legacy, 'utf8'), saved, 'no read, write or reset may adopt the legacy file');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a fresh collection retains a crashed or unpublished prior receipt without adopting it', {
+  timeout: 10_000,
+}, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'perf-measure-retention-'));
+  const source = path.join(root, 'perf-report.ts');
+  let launcher: Awaited<ReturnType<typeof measureLauncher>> | undefined;
+  try {
+    writeFileSync(source, readFileSync(path.join(__dirname, 'perf-report.ts')));
+    launcher = await measureLauncher(source, 'reused-profile');
+    const measure: PerfMeasure = { key: 'interaction:failed-run', value: 2000, unit: 'ms', budget: 1500, ok: false };
+    const prior = await launcher.request('prepare');
+    await launcher.request('write', measure);
+    const next = await launcher.request('prepare');
+    assert.notEqual(prior, next);
+    assert.deepEqual(await launcher.request('read'), []);
+    assert.equal(readFileSync(prior, 'utf8'), `${JSON.stringify(measure)}\n`);
+    await launcher.request('reset');
+    assert.equal(readFileSync(prior, 'utf8'), `${JSON.stringify(measure)}\n`);
+  } finally {
+    if (launcher) await stopMeasureLauncher(launcher.child);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('popup timeout snapshot retains late completion after the real end consumes its start', () => {
   const name = 'node-popup-late-completion';
@@ -1997,6 +2144,8 @@ test("the runner resets stale measures before any preflight can throw", () => {
   const config = readFileSync(path.join(__dirname, "wdio.conf.ts"), "utf8");
   const onPrepare = config.slice(config.indexOf("async onPrepare()"), config.indexOf("async onComplete()"));
   const reset = onPrepare.indexOf("resetMeasures();");
+  const prepare = onPrepare.indexOf("prepareMeasures();");
+  assert(prepare >= 0 && prepare < reset, 'allocate a fresh inherited worker collection before any reset or preflight');
   assert(reset >= 0);
   assert(reset < onPrepare.indexOf("assertNativeWebDriverAvailable();"));
   assert(reset < onPrepare.indexOf("assertInstallationComplete();"));

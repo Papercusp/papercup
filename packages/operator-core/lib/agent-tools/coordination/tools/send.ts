@@ -352,9 +352,9 @@ function readClaimKind(value: unknown): string | null {
 /**
  * Whether `address` is the same owner-id alias that the live recipient
  * resolver accepts for `ownerId`. This matters when a reply closes a thread
- * after the original sender's session has ended: the dead owner is no longer
- * in the roster, so the normal resolver cannot expand a copied short handle
- * or prefix. The related message is the proof of which owner the alias names;
+ * after the original sender has ended, or when the sender's short handle is
+ * ambiguous among live owners. The related message proves which owner the alias
+ * names;
  * keep this matcher exactly aligned with resolveRecipientsAgainst's
  * exact/prefix/substring rules.
  */
@@ -1122,8 +1122,7 @@ async function sendOne(
   // stays fail-soft (never refuse a genuine reply on a transient read hiccup).
   // The fetched original is reused by the reply-wake block below (one lookup),
   // AND by the recipient-resolution block right after (EI-18145: see
-  // `goneRepliedTo` — resolved BEFORE recipient resolution so that block can
-  // tell "closing a loop with a since-ended sender" apart from a bad address).
+  // recipient block can use the authenticated sender for only that alias).
   let relatedOriginal: Awaited<ReturnType<typeof getMessageById>> = null;
   // Keep the caller's ref for diagnostics, but persist and reuse the canonical
   // full id when resolveMessageRef accepted a unique leading prefix.
@@ -1196,9 +1195,12 @@ async function sendOne(
   // happen — instead of the old silent ok:true. Fail-soft: a roster-read hiccup
   // degrades to the raw ids (never blocks coord). Local-roster scoped.
   //
-  // EI-18145: a reply CLOSING A LOOP with the original sender of `related_msg_id`
-  // is exempt from the unknown-recipient refusal for THAT one id. A directed
-  // obligation (unanswered-directed / the delivery-ladder alarm) is satisfied by
+  // EI-18145 / EI-24838286424095637: the related message authenticates its
+  // original sender for that exact alias. This permits an unknown alias when
+  // that sender has left the roster, or an ambiguous alias when that sender is
+  // one of the live candidates. Any OTHER unknown or ambiguous recipient still
+  // hard-refuses. A directed obligation (unanswered-directed / the delivery-ladder
+  // alarm) is satisfied by
   // recording a reply authored by the recipient with `related_msg_id` set — it
   // does NOT require the original sender to still exist. Before this fix, once
   // a correspondent's session ended (reaped from the roster), NOTHING could ever
@@ -1207,31 +1209,54 @@ async function sendOne(
   // named the now-gone sender — a structurally unresolvable dead end (observed
   // live: EI-18145123522199011, a directed ping from a since-ended sender kept
   // re-surfacing as "unanswered" with no way to ever clear it). Scoped tight:
-  // only the specific unknown id that IS `relatedOriginal.from` is exempted —
-  // any OTHER unknown/ambiguous recipient on the same send still hard-refuses.
+  // only an unknown or ambiguous alias matching `relatedOriginal.from` is
+  // canonicalized; unrelated recipients still go through normal validation.
   let toSend = msg.to;
   let goneRepliedTo: string[] = [];
   if (msg.to.some((id) => !isSelectorOrWildcard(id))) {
     try {
       const r = await resolveRecipients(msg.to, identity.workspaceId);
-      const closingGoneSender = relatedOriginal?.from ?? null;
-      const goneReplyAliases = closingGoneSender ? r.unknown.filter((id) => isOwnerIdAlias(id, closingGoneSender)) : [];
-      // Canonicalize a resolver-supported short handle/prefix to the full
-      // ownerId in the durable reply. Once the session is gone there is no
-      // roster left to perform that expansion, but the related message gives
-      // us the authenticated canonical sender id.
-      if (goneReplyAliases.length && closingGoneSender !== null) {
-        goneRepliedTo = [closingGoneSender];
+      const closingReplySender = relatedOriginal?.from ?? null;
+      const goneReplyAliases = closingReplySender
+        ? r.unknown.filter((id) => isOwnerIdAlias(id, closingReplySender))
+        : [];
+      const ambiguousReplyAliases = closingReplySender
+        ? r.ambiguous.filter(
+            ({ id, matches }) => matches.includes(closingReplySender) && isOwnerIdAlias(id, closingReplySender),
+          )
+        : [];
+      // Canonicalize an unknown alias to the full ownerId in the durable reply
+      // when the original sender has left the roster. For a live sender, the
+      // matching entry in `r.ambiguous` proves the alias was shared by multiple
+      // owners and lets this related message disambiguate only that sender.
+      if (goneReplyAliases.length && closingReplySender !== null && !r.resolved.includes(closingReplySender)) {
+        goneRepliedTo = [closingReplySender];
       }
+      // A related message authenticates its exact sender, so it can disambiguate
+      // that sender's own short handle even when other live respawn IDs share it.
+      // The candidate check above keeps unrelated ambiguous addresses refused.
+      const resolvedAmbiguousReplySender =
+        ambiguousReplyAliases.length &&
+        closingReplySender !== null &&
+        !r.resolved.includes(closingReplySender)
+          ? [closingReplySender]
+          : [];
       const trulyUnknown = r.unknown.filter((id) => !goneReplyAliases.includes(id));
-      if (trulyUnknown.length || r.ambiguous.length) {
+      const trulyAmbiguous = r.ambiguous.filter(
+        ({ id }) => !ambiguousReplyAliases.some((alias) => alias.id === id),
+      );
+      if (trulyUnknown.length || trulyAmbiguous.length) {
         // EI-19343900550313022: this is ALL-OR-NOTHING BY DESIGN (see toArg's
         // own description), but that is easy to miss in the moment — a sender
         // with 2 valid + 1 fabricated/typo'd recipient reads "nothing was sent"
         // and can reasonably assume the valid two are unaffected. They are not:
         // say so explicitly whenever the list carried >1 addressee, so the
         // sender knows to re-notify the valid ones (or re-split via items[]).
-        const otherValidCount = r.resolved.length + goneRepliedTo.length;
+        const otherValidCount = new Set([
+          ...r.resolved,
+          ...resolvedAmbiguousReplySender,
+          ...goneRepliedTo,
+        ]).size;
         // knowledge-at-symptom-time-2026-08-09 P-005: when the bad address is
         // session-SHAPED, the existing advice ("use the handle / look it up in
         // coord:presence") answers the wrong question — no live session will
@@ -1270,10 +1295,10 @@ async function sendOne(
               : '') +
             roleHint,
           ...(trulyUnknown.length ? { unknown_recipients: trulyUnknown } : {}),
-          ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
+          ...(trulyAmbiguous.length ? { ambiguous_recipients: trulyAmbiguous } : {}),
         };
       }
-      toSend = [...r.resolved, ...goneRepliedTo];
+      toSend = [...r.resolved, ...resolvedAmbiguousReplySender, ...goneRepliedTo];
     } catch (e) {
       console.warn(`[coord:send] recipient resolve failed, sending unresolved: ${e instanceof Error ? e.message : e}`);
     }

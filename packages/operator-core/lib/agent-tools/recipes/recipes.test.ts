@@ -23,6 +23,7 @@ import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispa
 // we can capture the `allowed` set the handler builds for the facade.
 const {
   getRecipeMock,
+  reviseRecipeSourceMock,
   recordRecipeRunMock,
   runOrchestrationMock,
   normalizeExecutionTraceMock,
@@ -60,6 +61,7 @@ const {
   };
   return {
     getRecipeMock: vi.fn(),
+    reviseRecipeSourceMock: vi.fn(),
     recordRecipeRunMock: vi.fn(async () => {}),
     runOrchestrationMock: vi.fn<typeof import('@papercusp/agent-mcp').runToolOrchestration>(async () => ({
       ok: true,
@@ -92,6 +94,7 @@ vi.mock('../locks/su-lock-store', async (importOriginal) => ({
 vi.mock('../../code-recipes-store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getRecipe: getRecipeMock,
+  reviseRecipeSource: reviseRecipeSourceMock,
   recordRecipeRun: recordRecipeRunMock,
 }));
 vi.mock('../../code-recipes-search', async (importOriginal) => ({
@@ -131,7 +134,7 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 // Side-effect: register the recipes:* tools AFTER the mocks are hoisted.
 import './list';
 import recipeGetTool from './get';
-import './revise';
+import recipeReviseTool from './revise';
 import recipeSearchTool from './search';
 import recipeRunTool from './run';
 import './candidates';
@@ -220,6 +223,100 @@ describe('recipes:* registration (P-005, P-013)', () => {
       expect(tool.capabilities).toContain('intel:write');
     });
   }
+});
+
+describe('recipes:revise versioned contract updates', () => {
+  it('accepts and atomically forwards an invocation-scoped binding contract', async () => {
+    const current = {
+      id: 'read-all-criterion-evidence-of-one-scorecard',
+      title: 'Read all criterion evidence of one scorecard',
+      description: 'read scorecard evidence',
+      script: 'return 1;',
+      bindingSchema: null,
+      capabilityManifest: null,
+      updatedAt: '2026-10-02T00:00:00.000Z',
+      toolsUsed: [],
+    };
+    const bindingSchema = {
+      version: 1 as const,
+      properties: {
+        issueId: {
+          type: 'string' as const,
+          required: true,
+          description: 'Scorecard work-item id for this invocation.',
+          lifetime: { kind: 'invocation-ephemeral' as const },
+        },
+      },
+      additionalProperties: false as const,
+    };
+    const capabilityManifest = {
+      version: 1 as const,
+      representation: 'recipe-script' as const,
+      topology: { premises: ['host:same' as const] as ['host:same'] },
+      requirements: [],
+      lifecycle: { allowed: ['foreground' as const], default: 'foreground' as const },
+      replay: { class: 'read-only' as const },
+      content: { emits: ['text' as const] },
+    };
+    const script = 'return 2;';
+    getRecipeMock.mockResolvedValue(current);
+    reviseRecipeSourceMock.mockResolvedValue({
+      status: 'updated',
+      row: {
+        ...current,
+        script,
+        bindingSchema,
+        capabilityManifest,
+        updatedAt: '2026-10-02T00:01:00.000Z',
+      },
+    });
+    const tool = recipeReviseTool;
+    const args = {
+      id: current.id,
+      expectedRevision: recipeRevision(current.script, current.updatedAt, current),
+      script,
+      contract: { bindingSchema, capabilityManifest },
+      reason: 'Make the scorecard recipe reusable per invocation.',
+    };
+
+    expect(tool.args.safeParse(args).success).toBe(true);
+    await tool.handler(args, {
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'operator',
+      isSuperuser: false,
+      uiClientId: 'revise-test',
+    } as never);
+
+    expect(reviseRecipeSourceMock).toHaveBeenCalledWith(orgSqlMock, {
+      id: current.id,
+      script,
+      toolsUsed: [],
+      contract: { bindingSchema, capabilityManifest },
+      expectedUpdatedAt: current.updatedAt,
+    });
+  });
+
+  it('rejects a binding schema without its capability manifest', () => {
+    const tool = recipeReviseTool;
+    expect(tool.args.safeParse({
+      id: 'recipe',
+      expectedRevision: 'a'.repeat(64),
+      script: 'return 1;',
+      contract: {
+        bindingSchema: {
+          version: 1,
+          properties: {
+            issueId: { type: 'string', required: true, lifetime: { kind: 'invocation-ephemeral' } },
+          },
+          additionalProperties: false,
+        },
+        capabilityManifest: null,
+      },
+      reason: 'Add a binding without its manifest.',
+    }).success).toBe(false);
+  });
 });
 
 describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {

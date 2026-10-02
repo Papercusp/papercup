@@ -37,6 +37,10 @@ import {
   readClaudeKeychainOAuthBundle,
   writeClaudeKeychainOAuthBundle,
   _setClaudeKeychainAccessForTests,
+  _setClaudeKeychainAsyncAccessForTests,
+  parseDumpKeychainItems,
+  listClaudeKeychainCredentialItemsAsync,
+  readKeychainSecretAsync,
   type KeychainAccess,
 } from './agent-auth-detect';
 
@@ -162,6 +166,73 @@ describe('readClaudeKeychainOAuthBundle / writeClaudeKeychainOAuthBundle (REQ B 
     const writeArgs = spawnSync.mock.calls.at(-1)?.[1] as string[];
     expect(writeArgs[0]).toBe('add-generic-password');
     expect(writeArgs).toContain('-U');
+  });
+});
+
+describe('async Keychain list/read helpers (WI-10005306 — the inference gateway freshest-scan)', () => {
+  afterEach(() => _setClaudeKeychainAccessForTests(null));
+
+  const DUMP = [
+    'keychain: "/Users/u/Library/Keychains/login.keychain-db"',
+    '    "acct"<blob>="u"',
+    '    "svce"<blob>="Claude Code-credentials"',
+    '    "acct"<blob>="u"',
+    '    "svce"<blob>="Claude Code-credentials-6ede4198"',
+    '    "acct"<blob>="other"',
+    '    "svce"<blob>="Some Unrelated App"',
+    '    "svce"<blob>="Claude Code"',
+  ].join('\n');
+
+  it('parseDumpKeychainItems pairs each service with the account printed before it (null when none)', () => {
+    expect(parseDumpKeychainItems(DUMP)).toEqual([
+      { service: 'Claude Code-credentials', account: 'u' },
+      { service: 'Claude Code-credentials-6ede4198', account: 'u' },
+      { service: 'Some Unrelated App', account: 'other' },
+      { service: 'Claude Code', account: null },
+    ]);
+  });
+
+  it('listClaudeKeychainCredentialItemsAsync awaits a later-tick lister and keeps only Claude Code items', async () => {
+    _setClaudeKeychainAsyncAccessForTests({
+      read: () => null,
+      write: () => false,
+      list: () => new Promise((resolve) => setTimeout(() => resolve(parseDumpKeychainItems(DUMP)), 5)),
+    });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([
+      { service: 'Claude Code-credentials', account: 'u' },
+      { service: 'Claude Code-credentials-6ede4198', account: 'u' },
+      { service: 'Claude Code', account: null },
+    ]);
+  });
+
+  it('listClaudeKeychainCredentialItemsAsync is [] for an absent, rejecting, or non-array lister', async () => {
+    _setClaudeKeychainAsyncAccessForTests({ read: () => null, write: () => false });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([]);
+    _setClaudeKeychainAsyncAccessForTests({ read: () => null, write: () => false, list: () => Promise.reject(new Error('timeout')) });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([]);
+    _setClaudeKeychainAsyncAccessForTests({
+      read: () => null,
+      write: () => false,
+      list: () => 'garbage' as unknown as { service: string; account: string | null }[],
+    });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([]);
+  });
+
+  it('readKeychainSecretAsync returns the raw secret, and null on empty / rejecting / non-string', async () => {
+    _setClaudeKeychainAsyncAccessForTests({ read: (s) => Promise.resolve(s === 'svc' ? 'SECRET\n' : ''), write: () => false });
+    expect(await readKeychainSecretAsync('svc')).toBe('SECRET\n');
+    expect(await readKeychainSecretAsync('other')).toBeNull();
+    _setClaudeKeychainAsyncAccessForTests({ read: () => Promise.reject(new Error('ACL')), write: () => false });
+    expect(await readKeychainSecretAsync('svc')).toBeNull();
+  });
+
+  it('the DEFAULT async lister never calls spawnSync (it goes through execFile)', async () => {
+    _setClaudeKeychainAccessForTests(null);
+    spawnSync.mockClear();
+    // Off macOS the real `security` is absent, so execFile rejects → [] — but never via spawnSync.
+    await listClaudeKeychainCredentialItemsAsync();
+    await readKeychainSecretAsync('Claude Code-credentials');
+    expect(spawnSync).not.toHaveBeenCalled();
   });
 });
 

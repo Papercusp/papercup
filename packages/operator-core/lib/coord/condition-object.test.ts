@@ -273,7 +273,7 @@ describe('claimStateOf / leaseExpired', () => {
   });
 });
 
-describe('pending exact-run checkpoint:await lease evidence', () => {
+describe('pending checkpoint outcome awaits preserve condition leases', () => {
   it('extends an expired progress lease only to the earlier await deadline or 190-minute cap', () => {
     const takenAt = new Date(NOW - 31 * 60_000).toISOString();
     const awaitCreatedAt = new Date(NOW - 10 * 60_000).toISOString();

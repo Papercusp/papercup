@@ -165,7 +165,7 @@
     {
       "name": "edit",
       "pass": false,
-      "detail": "missing packages/operator-core/lib/scheduler/get-next.ts:3112 [engine note: gitnexus dispatch threw: gitnexus context exit 1: de_modules/gitnexus/dist/cli/tool.js:116:20)\n    at async Command.<anonymous> (file:///home/marsh-office/.papercusp/vendor/gitnexus/node_modules/gitnexus/dist/cli/lazy-action.js:33:9)\n\nNode.js v25.9.0]",
+      "detail": "missing packages/operator-core/lib/scheduler/get-next.ts:3112 [engine note: gitnexus dispatch threw: gitnexus context exit 1: de_modules/gitnexus/dist/cli/tool.js:116:20)\n    at async Command.<anonymous> (~/.papercusp/vendor/gitnexus/node_modules/gitnexus/dist/cli/lazy-action.js:33:9)\n\nNode.js v25.9.0]",
       "refreshCost": {
         "wallMs": 1812146.890135,
         "peakRssKb": null,

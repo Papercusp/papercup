@@ -225,7 +225,9 @@ every descendant, including ones that double-fork and reparent to init.
 live desktop window and peer agents' Xvfb instances. Use **`processes:kill { taskId }`** —
 it kills the whole cgroup subtree and cannot reach a recycled pid (PID wrap happens ~daily
 here under fleet load). An `identity_mismatch` refusal is the rail working, not a bug. To
-relieve pressure without losing work, **`processes:freeze`** beats killing.
+relieve pressure without losing work, **`processes:freeze`** beats killing — but it stops CPU, not
+the clock: a task under a wall-clock deadline (`capability:bash` timeout, an inner `timeout N`) burns
+it while frozen and is killed on thaw, so finish or kill+rerun those instead (read the result's `warnings`).
 
 | you want | use | not |
 |---|---|---|

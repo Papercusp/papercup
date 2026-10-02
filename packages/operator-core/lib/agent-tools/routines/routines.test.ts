@@ -202,6 +202,7 @@ describe('routines:list', () => {
         progress_age_ms: null,
         holds_exclusive_locks: [],
         locks_reported: false,
+        owner_reconciliation: null,
       },
       safe_to_restart: false,
       safe_to_restart_reason:
@@ -246,14 +247,13 @@ describe('routines:list', () => {
         stuck: true,
       },
     });
-    expect(verdict.warning).toBe(
-      "A git-sync fire has been in flight for 34m (phase 'local-sync'); its last recorded progress was 34m ago. " +
-        'Scheduled ticks skip while it holds the git-sync lock, so nothing is being committed and the raw last_status ' +
-        'still describes the tick before it. There IS a live process holding that lock: inspect it before any ' +
-        'restart (safe_to_restart is false).',
-    );
-    // WI-10002019: a wedged fire is still a LIVE fire holding the exclusive lock, so the
-    // destructive action stays contraindicated even though this row needs intervention.
+    const warning = String(verdict.warning);
+    expect(warning).toContain("activity marker has been active for 34m (phase 'local-sync')");
+    expect(warning).toContain('owner PID and exclusive lease have not both been proven stale');
+    expect(warning).toContain('safe_to_restart is false');
+    expect(warning).not.toContain('There IS a live process holding that lock');
+    // WI-24822134605202882: a stale clock does not prove its recorded fire owner is dead.
+    // The destructive action stays contraindicated until both PID and lock evidence agree.
     expect(verdict).toMatchObject({ execution: { status: 'stuck' }, safe_to_restart: false });
   });
 
@@ -339,11 +339,11 @@ describe('routines:list', () => {
         safe_to_restart: false,
       });
       // Asserted by phrase rather than by the whole string: the load-bearing property is
-      // that the misleading "nothing has completed" wording is GONE and the live fire is
-      // named, not the exact prose. An exact-match assertion here strands on any reword.
+      // that an unresolved active marker keeps restart unsafe, not the exact prose.
       const warning = String(verdict.warning);
-      expect(warning).toContain('a fire IS in flight');
-      expect(warning).toContain('do not restart');
+      expect(warning).toContain('an active marker remains');
+      expect(warning).toContain('Owner liveness and lock state have not both been proven stale');
+      expect(warning).toContain('Keep the restart verdict unsafe');
       expect(warning).not.toContain('the raw last_status may describe an older successful tick');
     });
 
@@ -535,6 +535,142 @@ describe('routines:list', () => {
       status: 'unknown',
       last_synced_at: null,
       raw_last_status: 'synced',
+    });
+  });
+
+  describe('EI-24822134605202882 per-fire owner reconciliation', () => {
+    const readFreshness = async (identity: Record<string, unknown>) => {
+      const now = Date.now();
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      sqlMock.mockResolvedValue([
+        gitSyncRoutineRow({
+          last_status: 'synced',
+          last_synced_at: now - 30 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 20 * 60_000,
+            updated_at: now - 10 * 60_000,
+            ...identity,
+          },
+        }),
+      ]);
+      const result = body(
+        await listTool.handler(
+          { installSlug: 'home-harness', name: 'git-sync' } as never,
+          { role: 'su' } as never,
+        ),
+      ) as { routines: Array<{ health: { git_sync_freshness: any } }> };
+      return result.routines[0]!.health.git_sync_freshness;
+    };
+
+    it('calls an active marker stale only when its dead owner has no exclusive resource lease', async () => {
+      const pid = 9_876_543;
+      const owner = `system:git-sync:${pid}:fire-1`;
+      deadPidMock.mockReturnValue(true);
+      resourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+
+      const freshness = await readFreshness({ owner, owner_pid: pid });
+
+      expect(deadPidMock).toHaveBeenCalledWith(pid);
+      expect(resourceQueueMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ resource: 'git-sync:home-harness' }),
+      );
+      expect(freshness).toMatchObject({
+        execution: {
+          status: 'idle',
+          owner_reconciliation: {
+            status: 'stale',
+            owner_pid: pid,
+            lock_state: 'absent',
+            matching_owner_lock: false,
+          },
+        },
+        in_flight: { active: false, stale_marker: true },
+        safe_to_restart: true,
+      });
+    });
+
+    it('keeps a definitively dead marker unsafe while either matching or other exclusive lease remains', async () => {
+      const pid = 9_876_544;
+      const owner = `system:git-sync:${pid}:fire-2`;
+      for (const leaseOwner of [owner, `system:git-sync:${pid + 1}:newer-fire`]) {
+        deadPidMock.mockClear();
+        deadPidMock.mockReturnValue(true);
+        resourceQueueMock.mockClear();
+        resourceQueueMock.mockResolvedValue({
+          holders: [{ owner: leaseOwner, mode: 'exclusive', status: 'held' }],
+          draining: false,
+          queue: [],
+        });
+
+        const freshness = await readFreshness({ owner, owner_pid: pid });
+
+        expect(freshness.execution.owner_reconciliation).toMatchObject({
+          status: 'unverified',
+          owner_pid: pid,
+          lock_state: 'held',
+          matching_owner_lock: leaseOwner === owner,
+        });
+        expect(freshness.safe_to_restart).toBe(false);
+      }
+    });
+
+    it('keeps missing or mismatched per-fire identity unsafe without probing the PID or lock queue', async () => {
+      const pid = 9_876_545;
+      const malformedIdentities = [
+        { owner_pid: pid },
+        { owner: `system:git-sync:${pid}:fire-3` },
+        { owner: `system:git-sync:${pid + 1}:fire-3`, owner_pid: pid },
+      ];
+      for (const identity of malformedIdentities) {
+        deadPidMock.mockClear();
+        resourceQueueMock.mockClear();
+
+        const freshness = await readFreshness(identity);
+
+        expect(freshness.execution.owner_reconciliation).toMatchObject({
+          status: 'unverified',
+          lock_state: 'unknown',
+          matching_owner_lock: null,
+        });
+        expect(freshness.safe_to_restart).toBe(false);
+        expect(deadPidMock).not.toHaveBeenCalled();
+        expect(resourceQueueMock).not.toHaveBeenCalled();
+      }
+    });
+
+    it('keeps a live or unprovable PID unsafe and does not infer that the resource lease is absent', async () => {
+      const pid = 9_876_546;
+      deadPidMock.mockReturnValue(false);
+
+      const freshness = await readFreshness({ owner: `system:git-sync:${pid}:fire-4`, owner_pid: pid });
+
+      expect(freshness.execution.owner_reconciliation).toMatchObject({
+        status: 'unverified',
+        owner_pid: pid,
+        lock_state: 'not-checked',
+        matching_owner_lock: null,
+      });
+      expect(freshness.safe_to_restart).toBe(false);
+      expect(resourceQueueMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the marker unsafe when the dead owner is known but the resource queue cannot be read', async () => {
+      const pid = 9_876_547;
+      deadPidMock.mockReturnValue(true);
+      resourceQueueMock.mockRejectedValue(new Error('resource queue unavailable'));
+
+      const freshness = await readFreshness({ owner: `system:git-sync:${pid}:fire-5`, owner_pid: pid });
+
+      expect(freshness.execution.owner_reconciliation).toMatchObject({
+        status: 'unverified',
+        owner_pid: pid,
+        lock_state: 'unknown',
+        matching_owner_lock: null,
+      });
+      expect(freshness.safe_to_restart).toBe(false);
     });
   });
 

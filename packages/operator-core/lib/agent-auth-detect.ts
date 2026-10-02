@@ -14,12 +14,39 @@ import { dirname, join } from 'node:path';
 /** Run `security` without blocking the event loop. Wrapped at CALL time (not a module-level
  *  `promisify(execFile)`), so a test that mocks node:child_process without `execFile` still
  *  imports this module; the missing function then surfaces inside the callers' try/catch. */
-function runSecurity(args: string[]): Promise<string> {
+function runSecurity(
+  args: string[],
+  opts: { timeout?: number; maxBuffer?: number } = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('security', args, { encoding: 'utf8', timeout: 5000 }, (error, stdout) =>
-      error ? reject(error) : resolve(String(stdout)),
+    execFile(
+      'security',
+      args,
+      { encoding: 'utf8', timeout: opts.timeout ?? 5000, ...(opts.maxBuffer ? { maxBuffer: opts.maxBuffer } : {}) },
+      (error, stdout) => (error ? reject(error) : resolve(String(stdout))),
     );
   });
+}
+
+/** Parse `security dump-keychain` output (metadata only) into service + account pairs. Each item
+ *  block prints its `"acct"<blob>="…"` attribute before its `"svce"<blob>="…"`, so pair the
+ *  last-seen account with the next service line. Pure; shared by the sync and async listers. */
+export function parseDumpKeychainItems(stdout: string): { service: string; account: string | null }[] {
+  const items: { service: string; account: string | null }[] = [];
+  let account: string | null = null;
+  for (const line of stdout.split('\n')) {
+    const a = /"acct"<blob>="([^"]*)"/.exec(line);
+    if (a) {
+      account = a[1];
+      continue;
+    }
+    const s = /"svce"<blob>="([^"]*)"/.exec(line);
+    if (s) {
+      items.push({ service: s[1], account });
+      account = null;
+    }
+  }
+  return items;
 }
 
 function anyExists(paths: readonly string[]): boolean {
@@ -114,23 +141,7 @@ const defaultKeychainAccess: KeychainAccess = {
         maxBuffer: 32 * 1024 * 1024,
       });
       if (r.status !== 0 || typeof r.stdout !== 'string') return [];
-      // Each item block prints its `"acct"<blob>="…"` attribute before its `"svce"<blob>="…"`,
-      // so pair the last-seen account with the next service line.
-      const items: { service: string; account: string | null }[] = [];
-      let account: string | null = null;
-      for (const line of r.stdout.split('\n')) {
-        const a = /"acct"<blob>="([^"]*)"/.exec(line);
-        if (a) {
-          account = a[1];
-          continue;
-        }
-        const s = /"svce"<blob>="([^"]*)"/.exec(line);
-        if (s) {
-          items.push({ service: s[1], account });
-          account = null;
-        }
-      }
-      return items;
+      return parseDumpKeychainItems(r.stdout);
     } catch {
       return [];
     }
@@ -159,6 +170,9 @@ const defaultKeychainAccess: KeychainAccess = {
 export interface KeychainAccessAsync {
   read(service: string): Promise<string | null> | string | null;
   write(service: string, account: string, secret: string): Promise<boolean> | boolean;
+  /** Non-blocking {@link KeychainAccess.list} (WI-10005306): `dump-keychain` metadata only.
+   *  Optional so existing fakes keep compiling; absent/erroring → an empty list. */
+  list?(): Promise<{ service: string; account: string | null }[]> | { service: string; account: string | null }[];
 }
 
 const defaultKeychainAccessAsync: KeychainAccessAsync = {
@@ -170,6 +184,15 @@ const defaultKeychainAccessAsync: KeychainAccessAsync = {
       /* security absent / ACL-blocked / non-zero exit / timeout → treated as not-found */
     }
     return null;
+  },
+  async list() {
+    try {
+      return parseDumpKeychainItems(
+        await runSecurity(['dump-keychain'], { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }),
+      );
+    } catch {
+      return [];
+    }
   },
   async write(service, account, secret) {
     try {
@@ -259,14 +282,44 @@ export async function readClaudeKeychainOAuthBundleAsync(
  * platform gate here, so tests can fake the shim without faking process.platform.
  */
 export function listClaudeKeychainCredentialItems(): { service: string; account: string | null }[] {
+  return filterClaudeKeychainItems(keychainAccess.list?.() ?? []);
+}
+
+function filterClaudeKeychainItems(
+  all: readonly { service: string; account: string | null }[],
+): { service: string; account: string | null }[] {
   const base = CLAUDE_KEYCHAIN_SERVICES[0];
-  const all = keychainAccess.list?.() ?? [];
   return all.filter(
     (m) =>
       m.service === base ||
       m.service.startsWith(`${base}-`) ||
       m.service === CLAUDE_KEYCHAIN_SERVICES[1],
   );
+}
+
+/** Non-blocking {@link listClaudeKeychainCredentialItems} for event-loop callers — the inference
+ *  gateway's freshest-scan (WI-10005306). Same contract: empty on any miss, never throws. */
+export async function listClaudeKeychainCredentialItemsAsync(): Promise<
+  { service: string; account: string | null }[]
+> {
+  try {
+    const all = await keychainAccessAsync.list?.();
+    return filterClaudeKeychainItems(Array.isArray(all) ? all : []);
+  } catch {
+    return [];
+  }
+}
+
+/** Non-blocking read of one Keychain item's raw secret (`-w`), or null on ANY miss — `security`
+ *  absent, ACL-blocked, item absent, timeout. Never throws. No platform gate (like the lister), so
+ *  tests can fake the shim without faking process.platform; off macOS `security` is absent. */
+export async function readKeychainSecretAsync(service: string): Promise<string | null> {
+  try {
+    const raw = await keychainAccessAsync.read(service);
+    return typeof raw === 'string' && raw.trim() ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

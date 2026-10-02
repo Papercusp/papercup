@@ -802,6 +802,30 @@ describe('parseCodexRateReset — the codex-dialect 429 reset parser (WI-2038027
 });
 
 describe('Codex usage-credit capacity', () => {
+  it('does not turn a paid-account burst throttle into the included weekly reset', () => {
+    const now = Date.UTC(2026, 9, 2);
+    expect(parseCodexRateReset({
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-primary-reset-after-seconds': '604800',
+      'x-codex-credits-has-credits': 'True',
+      'x-codex-credits-balance': '50000',
+      'retry-after': '1',
+    }, now)).toMatchObject({ resetAt: now + 1000, transient: true });
+  });
+
+  it('preserves an exhausted reserve meter even when the wallet has credits', () => {
+    const now = Date.UTC(2026, 9, 2);
+    expect(parseCodexRateReset({
+      'x-codex-active-limit': 'base_model_inference',
+      'x-base-model-inference-primary-used-percent': '100',
+      'x-base-model-inference-primary-window-minutes': '10080',
+      'x-base-model-inference-primary-reset-after-seconds': '3600',
+      'x-codex-credits-has-credits': 'True',
+      'x-codex-credits-balance': '50000',
+    }, now)).toMatchObject({ resetAt: now + 3600_000, transient: false });
+  });
+
   it('retains available credits alongside an exhausted included allowance', () => {
     expect(parseCodexRateLimitHeaders({
       'x-codex-active-limit': 'premium',

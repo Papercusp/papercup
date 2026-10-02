@@ -413,6 +413,23 @@ describe('blueprint operation claim authority (real PostgreSQL)', () => {
     expect((await wi.observeWorkItem('WI-ordinary-preview', { harness: H, assignee: 'preview-worker' }))?.available)
       .toBe(false);
   });
+
+  // R-8 / R-16 (plan blueprint-backed-work-item-execution-2026-09-23): the receipt match covers the
+  // WHOLE accepted pin, not only its key fields. A pin that agrees with the applied receipt on kind,
+  // harness, operation and revision but carries a different accepted input is a different operation:
+  // the preview must name the mismatch, and the claim must refuse it (its UPDATE fences the pin too).
+  it('refuses a pin that matches the receipt key fields but differs in its accepted input', async () => {
+    const id = 'WI-operation-drifted-pin';
+    await seedFeature(id);
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = ${db.sql.json({ blueprintOperation: { ...pin(), input: { drifted: true } } })}
+      WHERE feature_id = ${id}`;
+    await activateWorker('drift-worker', id);
+
+    expect((await wi.observeWorkItem(id, { harness: H, assignee: 'drift-worker' }))?.operationClaimDenied)
+      .toContain('differs from the applied operation receipt');
+    expect(await wi.claimWorkItem(id, 'drift-worker', { harness: H })).toBeNull();
+  });
 });
 
 describe('EI-22536788145490710: upgrade the installed issue claim guard', () => {

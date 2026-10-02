@@ -1,5 +1,5 @@
 /** Hermetic composition smoke for the gateway service (P-013) — injected account + resolver. */
-import { test, afterEach } from 'vitest';
+import { test, afterEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
 import type { GatewayPayloadSpool } from './payload-spool';
+import * as burnAlert from './burn-alert';
 
 /** The per-account multiplier P-010 deleted along with `accountScaledCodexConcurrency`.
  *  Spelled here only so the falsifier below can name the number that must not return. */
@@ -18,6 +19,7 @@ let svc: RunningGatewayService | undefined;
 let tempDir: string | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await svc?.stop();
   svc = undefined;
   await new Promise<void>((r) => (upstream ? upstream.close(() => r()) : r()));
@@ -560,6 +562,52 @@ test('reloadPool follows the back-compat single resolveAccount path (re-resolves
   assert.equal(changed.changed, true, 'a changed single account hot-reloads');
   assert.equal(svc.configVersion(), 2);
   assert.deepEqual(changed.accounts, ['solo']);
+});
+
+test('credit projection records depletion immediately even when the included meter is unchanged', async () => {
+  const recorded = vi.spyOn(burnAlert, 'recordAccountWindowWithBurnAlert')
+    .mockResolvedValue({ pool: { accounts: [] }, transition: null });
+  let available = true;
+  upstream = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'x-codex-primary-used-percent': '100',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-credits-has-credits': available ? 'True' : 'False',
+      'x-codex-credits-balance': available ? '50000' : '0',
+    });
+    res.end('{"ok":true}');
+  });
+  await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
+  const base = 'http://127.0.0.1:' + (upstream.address() as { port: number }).port;
+  process.env.OPENAI_BASE_URL_UPSTREAM = base;
+  svc = await startGatewayService({
+    port: 0, upstreamBase: base, log: () => {},
+    resolveAccounts: async (_ws, provider) => [{
+      accountId: provider === 'codex' ? 'test-codex' : 'test-claude',
+      credentialRef: 'token:/test-credential', source: 'pool',
+    }],
+    makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'test-token', invalidate: () => {} }),
+    observePool: () => () => {},
+    resolveLocalBackends: async () => [],
+    poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+  });
+  const send = async () => {
+    const response = await fetch('http://127.0.0.1:' + svc!.port + '/v1/responses', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-6.1-sol', input: 'credit projection' }),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+  };
+  await send();
+  await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 1));
+  assert.equal(recorded.mock.calls[0]![1].usageCreditsAvailable, true);
+  assert.equal(recorded.mock.calls[0]![1].utilization7d, 1);
+  available = false;
+  await send();
+  await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 2));
+  assert.equal(recorded.mock.calls[1]![1].usageCreditsAvailable, false);
 });
 
 test('/admin/config exposes the live codexAccounts alongside the claude pool', async () => {

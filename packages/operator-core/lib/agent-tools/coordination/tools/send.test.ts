@@ -1321,6 +1321,47 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(opts.related_msg_id).toBe('orig');
   });
 
+  it('EI-24838286424095637: related_msg_id disambiguates its live sender from a shared respawn handle', async () => {
+    const originalSender = 'su-respawn-8a3f0001-1111-4111-8111-111111111111';
+    const otherRespawn = 'su-respawn-8a3f0002-2222-4222-8222-222222222222';
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: originalSender, to: ['me'] }));
+    mockResolvedOnceTyped(resolveM, {
+      resolved: [],
+      unknown: [],
+      ambiguous: [{ id: 'respa', matches: [originalSender, otherRespawn] }],
+    });
+
+    const b = await body({ to: ['respa'], summary: 'reply to the delivered sender', related_msg_id: 'orig' });
+
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].ambiguous_recipients).toBeUndefined();
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const opts = sendM.mock.calls[0][1] as { to: string[]; related_msg_id?: string };
+    expect(opts.to).toEqual([originalSender]);
+    expect(opts.related_msg_id).toBe('orig');
+  });
+
+  it('EI-24838286424095637: a related message does not disambiguate an unrelated live handle', async () => {
+    const originalSender = 'su-sender-8a3f0001-1111-4111-8111-111111111111';
+    const firstRespawn = 'su-respawn-8a3f0002-2222-4222-8222-222222222222';
+    const secondRespawn = 'su-respawn-8a3f0003-3333-4333-8333-333333333333';
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: originalSender, to: ['me'] }));
+    mockResolvedOnceTyped(resolveM, {
+      resolved: [],
+      unknown: [],
+      ambiguous: [{ id: 'respa', matches: [firstRespawn, secondRespawn] }],
+    });
+
+    const b = await body({ to: ['respa'], summary: 'reply to a different recipient', related_msg_id: 'orig' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'unknown_recipient',
+      ambiguous_recipients: [{ id: 'respa', matches: [firstRespawn, secondRespawn] }],
+    });
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
   it('EI-18145: an unknown recipient UNRELATED to related_msg_id.from still hard-refuses (the exemption is scoped, not blanket)', async () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] }));
     mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['some-other-ghost'], ambiguous: [] });

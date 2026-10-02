@@ -298,7 +298,8 @@ function makeWindowProjector(
       resetAt !== prev.resetAt ||
       Math.abs(util7d - prev.util7d) >= 0.03 ||
       resetAt7d !== prev.resetAt7d ||
-      creditChanged;
+      creditChanged ||
+      usageCreditsAvailable !== undefined;
     if (!significant) return;
     last.set(projectionKey, { util, resetAt, util7d, resetAt7d, at: t, usageCreditsAvailable: usageCreditsAvailable ?? prev?.usageCreditsAvailable });
     // WI-41147 leg c: the shared write-seam wrapper — records the window AND states any
@@ -310,10 +311,10 @@ function makeWindowProjector(
         recordAccountWindowWithBurnAlert(
           accountId,
           {
-            utilization: util,
-            windowResetAt: resetAt || undefined,
-            utilization7d: util7d || undefined,
-            windowResetAt7d: resetAt7d || undefined,
+            utilization: w.utilization,
+            windowResetAt: w.windowResetAt,
+            utilization7d: w7.utilization7d,
+            windowResetAt7d: w7.windowResetAt7d,
             usageCreditsAvailable,
           },
           t,
@@ -1259,7 +1260,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           windowResetAt7d: a.rate?.windowResetAt7d,
           // When the store TOOK the reading — the gateway's store↔pool reconciliation (P-008) clears an
           // in-memory park only on a reading newer than the park it would clear.
-          readingAt: a.rate?.utilizationAt,
+          readingAt: Math.max(a.rate?.utilizationAt ?? 0, a.rate?.usageCreditsObservedAt ?? 0) || undefined,
           usageCreditsAvailable: a.rate?.usageCreditsAvailable,
           // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
           // accountBurnAction applies the canonical freshness gate, so a days-old SHED verdict cannot

@@ -215,6 +215,8 @@ export interface AccountRateState {
   utilizationAt?: number;
   /** Codex upstream credit eligibility; included-meter exhaustion alone is not an account wall. */
   usageCreditsAvailable?: boolean;
+  /** When credit eligibility was observed; a credit-only update is not a new usage-window reading. */
+  usageCreditsObservedAt?: number;
   /**
    * Unified-7d (weekly) rolling utilization (a fraction; 1.0 = 100%) from
    * `anthropic-ratelimit-unified-7d-utilization` — the LONGER Claude Max limit alongside the 5h.
@@ -570,8 +572,12 @@ export function recordAccountWindow(
         windowResetAt: w.windowResetAt ?? a.rate.windowResetAt,
         utilization7d: w.utilization7d ?? a.rate.utilization7d,
         windowResetAt7d: w.windowResetAt7d ?? a.rate.windowResetAt7d,
-        utilizationAt: now,
-        usageCreditsAvailable: w.usageCreditsAvailable ?? a.rate.usageCreditsAvailable,
+        utilizationAt:
+          w.utilization !== undefined || w.windowResetAt !== undefined ||
+          w.utilization7d !== undefined || w.windowResetAt7d !== undefined
+            ? now : a.rate.utilizationAt,
+        ...(accountProvider(a) === 'codex' && w.usageCreditsAvailable !== undefined
+          ? { usageCreditsAvailable: w.usageCreditsAvailable, usageCreditsObservedAt: now } : {}),
         // WI-41147: retain a spaced history of 7d readings so the burn governor can derive
         // d(utilization7d)/dt. Only a real 7d observation appends — a 5h-only update leaves
         // the history untouched (appending the STALE carried-forward 7d value would flatten

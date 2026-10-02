@@ -26771,7 +26771,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Memory or CPU pressure and you want relief WITHOUT throwing away in-flight work — freeze the biggest consumers, let the box recover, then resume. Also useful to hold a task still while you inspect what it did.",
-        "notWhen": "NOT for ending a task — use `processes:kill`. NOT available for `confined:false` rows (check `processes:list` first). A frozen task still holds its memory: freeze relieves CPU/IO thrash and stops further growth, it does not free RSS.",
+        "notWhen": "NOT for ending a task — use `processes:kill`. NOT available for `confined:false` rows (check `processes:list` first). A frozen task still holds its memory: freeze relieves CPU/IO thrash and stops further growth, it does not free RSS. NOT for a task under a wall-clock deadline: the freezer stops CPU, NOT the clock — `capability:bash` timeout (the ledger `deadline`) and a command's own `timeout N` keep burning while frozen and kill the payload on thaw, possibly mid-write. Finish or kill+rerun such a task; read `warnings`.",
         "chaining": "Freeze -> diagnose via `processes:list` -> `processes:freeze { taskId, resume:true }` to let it continue."
       }
     },
@@ -29612,7 +29612,7 @@
       "guidance": {
         "when": "You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.",
         "notWhen": "You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.",
-        "chaining": "scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index, then fetch independent criterion roots with Promise.all (keep each criterion’s evidenceRead.next page loop sequential) → concatenate every complete page → re-run every evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence."
+        "chaining": "scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index, then fetch independent criterion roots in small bounded Promise.all batches (keep each criterion’s evidenceRead.next page loop sequential). MCP result-door output is shared across sibling reads: a later result may be a recoverable `papercusp.output-envelope/v1` wrapper with no inline scorecard. Inspect the outer shape before reading scorecard.criteria; when it is an envelope, follow its content reference with capability:read and restore the original tool result. Never interpret an envelope as a missing criterion or grade from a partial read. Concatenate every complete page → re-run every evidence probe → scorecards:emit the grading-integrity audit."
       }
     },
     {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -332,6 +332,38 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out).not.toContain('node_modules/');
       expect(out).not.toContain('node_modules.deploy-tmp.');
       expect(out).not.toContain('node_modules.deploy-old.');
+    });
+
+    it('keeps grep process count bounded for large candidate batches', () => {
+      const fx = withControl(fixture());
+      const deep = join(fx.root, 'deep');
+      const bin = join(fx.root, 'bin');
+      const counter = join(fx.root, 'grep-invocations');
+      mkdirSync(deep, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+
+      const configText = 'ordinary configuration data with no key material\n'.repeat(4);
+      for (let i = 0; i < 1001; i += 1) {
+        writeFileSync(join(deep, `config-${i}.txt`), configText);
+      }
+
+      // Count only xargs batches; the probe's other grep calls have fewer than
+      // ten arguments. Keep using the real grep for matching behavior.
+      const grepShim = join(bin, 'grep');
+      writeFileSync(
+        grepShim,
+        '#!/usr/bin/env bash\nif [ "$#" -gt 10 ]; then printf x >> "$KEYPERM_GREP_COUNTER"; fi\nexec /usr/bin/grep "$@"\n',
+      );
+      chmodSync(grepShim, 0o755);
+
+      runProbe(fx, {
+        KEYPERM_DEEP: '1',
+        KEYPERM_DEEP_ROOTS: deep,
+        KEYPERM_GREP_COUNTER: counter,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      });
+
+      expect(readFileSync(counter, 'utf8').length).toBeLessThanOrEqual(2);
     });
 
     it('does not double-report a .ssh key already reported by tier 1', () => {
