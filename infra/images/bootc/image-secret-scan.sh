@@ -70,6 +70,8 @@ rm -f "$LOG" "$REC"
 
 PODMAN=(sudo -n podman)
 TLS=(); [ "$INSECURE" -eq 1 ] && TLS=(--tls-verify=false)
+# Same skopeo source as release-supply-chain.sh, so both scripts read the registry the same way.
+SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
 
 CTR=""
 cleanup() {
@@ -81,10 +83,35 @@ trap cleanup EXIT
 echo "=== create a stopped container from $IMAGE ==="
 CTR="$("${PODMAN[@]}" create --pull=missing "${TLS[@]}" "$IMAGE" /bin/true 2>"$OUTDIR/secret-scan-create.err")" \
   || { sed -n '1,5p' "$OUTDIR/secret-scan-create.err" >&2; CTR=""; die "podman create"; }
-# Bind the container to the digest we were asked to scan; a local-store name collision must not
+# Bind the container to the image we were asked to scan; a local-store name collision must not
 # substitute a different image under the same reference.
-GOT="$("${PODMAN[@]}" inspect --format '{{.ImageDigest}}' "$CTR" 2>/dev/null)"
-[ "$GOT" = "$DIGEST" ] || die "container image digest $GOT is not the requested $DIGEST"
+#
+# ⚠ Bind by CONTENT, never by manifest digest. A manifest digest names one ENCODING of an image,
+# and a local build re-encodes on push: the local store keeps the manifest it wrote at build
+# time as `.Digest` / the container's `.ImageDigest`, while the registry holds the re-encoded
+# manifest under a different digest. Measured 2026-10-02 (WI-10005624): the AWS bake pushed
+# sha256:37825ebf…, the local store recorded sha256:fae3edf7… for the SAME image, and a
+# `.ImageDigest` comparison refused the correct image. What both encodings share is the CONFIG
+# digest, which is the local image ID and is content-addressed over the layers' uncompressed
+# diff_ids. So: ask the REGISTRY which config the requested manifest names (as
+# release-supply-chain.sh does, D-287: never the local store), and require the container's image
+# ID to be exactly that config.
+MANIFEST="$("${PODMAN[@]}" run --rm --network host --entrypoint skopeo "$SKOPEO_IMG" \
+  inspect "${TLS[@]}" --raw "docker://$IMAGE" 2>"$OUTDIR/secret-scan-manifest.err")" \
+  || { sed -n '1,5p' "$OUTDIR/secret-scan-manifest.err" >&2; die "could not read the registry manifest for $IMAGE"; }
+if printf '%s' "$MANIFEST" | jq -e 'has("manifests")' >/dev/null 2>&1; then
+  die "$IMAGE is a multi-platform index; pass the digest of the single-platform manifest to scan"
+fi
+CONFIG="$(printf '%s' "$MANIFEST" | jq -r '.config.digest // empty' 2>/dev/null)"
+case "$CONFIG" in
+  sha256:*) [ "${#CONFIG}" -eq 71 ] || die "registry manifest for $IMAGE names a malformed config digest: $CONFIG";;
+  *) die "registry manifest for $IMAGE names no config digest";;
+esac
+GOT_ID="$("${PODMAN[@]}" inspect --format '{{.Image}}' "$CTR" 2>/dev/null)"
+GOT_ID="sha256:${GOT_ID#sha256:}"
+[ "$GOT_ID" = "$CONFIG" ] \
+  || die "container image $GOT_ID is not the image the registry holds at $DIGEST (config $CONFIG)"
+echo "IMAGE_CONFIG=$CONFIG  (container image id == registry config of $DIGEST)"
 
 echo "=== export the root filesystem to $TREE (as $(id -un)) ==="
 rm -rf "$TREE"; mkdir -p "$TREE"
