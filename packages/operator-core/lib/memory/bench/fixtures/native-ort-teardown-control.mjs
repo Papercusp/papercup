@@ -54,7 +54,20 @@ async function run(config) {
 
 async function target(config) {
   // Match the shipped parent's native binding pin before the FILE worker loads.
-  createRequire(config.ortEntry)(config.ortEntry);
+  const ort = createRequire(config.ortEntry)(config.ortEntry);
+  if (config.parentLogLevel !== undefined) {
+    if (!['warning', 'info'].includes(config.parentLogLevel)) throw new Error('invalid parent initializer log level');
+    ort.env.logLevel = config.parentLogLevel;
+    // A separate small CPU session exercises the process-global first
+    // initializer; it changes no CUDA provider options in the worker.
+    const initial = await ort.InferenceSession.create(graph, {
+      executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1,
+    });
+    await initial.release();
+  }
+  if (config.terminal !== undefined && !['settled', 'uncaught'].includes(config.terminal)) {
+    throw new Error('invalid native teardown terminal mode');
+  }
   const worker = new Worker(new URL(import.meta.url), { workerData: config, execArgv: [] });
   let result;
   try {
@@ -68,6 +81,10 @@ async function target(config) {
     if (!result) await worker.terminate();
   }
   process.stdout.write(JSON.stringify(result) + '\n');
+  if (config.terminal === 'uncaught') {
+    if (!result.expectedError) throw new Error('uncaught control requires the retained shape error');
+    throw new Error(result.expectedError);
+  }
 }
 
 async function capture(root, config) {

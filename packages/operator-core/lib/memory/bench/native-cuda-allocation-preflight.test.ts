@@ -174,6 +174,28 @@ describe('small native ORT teardown control', () => {
     expect(JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'))).toMatchObject({ eof: true, exitCode: 0, signal: null });
   });
 
+  it('retains an uncaught model error as exit1 after FILE-worker cleanup, rather than successful closure', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root, JSON.stringify({
+      ortEntry, device: 'cpu', outcome: 'shape-error', release: 'environment', terminal: 'uncaught',
+    })], { encoding: 'utf8', timeout: 15000 });
+    expect(child.status).toBe(1);
+    expect(JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'))).toMatchObject({ eof: true, exitCode: 1, signal: null });
+    expect(JSON.parse(readFileSync(join(root, 'target.stdout.log'), 'utf8')).expectedError).toContain('Got invalid dimensions');
+    expect(readFileSync(join(root, 'target.stderr.log'), 'utf8')).toContain('Got invalid dimensions');
+  });
+
+  it.each(['warning', 'info'] as const)('measures the process-global first %s initializer despite later FILE-worker INFO', parentLogLevel => {
+    const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root, JSON.stringify({
+      ortEntry, device: 'cpu', outcome: 'success', release: 'dispose', parentLogLevel,
+    })], { encoding: 'utf8', timeout: 15000 });
+    expect(child.status, child.stderr).toBe(0);
+    const stderr = readFileSync(join(root, 'target.stderr.log'), 'utf8');
+    expect(stderr.includes('Creating BFCArena for Cpu')).toBe(parentLogLevel === 'info');
+    expect(JSON.parse(readFileSync(join(root, 'target.stdout.log'), 'utf8'))).toMatchObject({ disposed: true, output: [1, 2, 3, 4, 5, 6] });
+  });
+
   it('refuses an unsupported device before native session construction', () => {
     const child = spawnSync(process.execPath, [controlFixture, 'target', JSON.stringify({
       ortEntry, device: 'automatic', outcome: 'success', release: 'dispose',
