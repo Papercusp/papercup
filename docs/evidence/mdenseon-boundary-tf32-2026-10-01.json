@@ -658,7 +658,7 @@
     "gpuAcceptanceComplete": false
   },
   "nativeRuntimeKernelPreparation": {
-    "status": "fresh native source/runtime content and profiler import/export preparation verified; separate guarded GPU diagnostic submitted with terminal outcome pending",
+    "status": "source/runtime content and profiler preparation retained; padded v3 payload failed source-root qualification before inference; source repair verified locally",
     "runtimeArtifact": {
       "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v2",
       "receiptSha256": "d4162dd6d89b317d832254c97fe1bcefb2abb65cede82526dfa59b64955f05c1",
@@ -710,11 +710,42 @@
     "recipeSha256": "74d8c73a0c7408f771b7dedca63a6a30d6262c31d1d012960aa1a23ed664bee0",
     "launchPreflightVerified": true,
     "launchRecordedAt": "2026-10-02T05:54:23.544Z",
-    "status": "submitted; terminal model/input/kernel results pending",
+    "status": "terminal failure before native request, worker input or model inference",
+    "payloadStartedAt": "2026-10-02T06:09:30.009Z",
+    "payloadFailedAt": "2026-10-02T06:09:31.128Z",
+    "terminalAt": "2026-10-02T06:09:33.355Z",
+    "exitCode": 1,
+    "failure": "raw boundary output must stay private outside repository",
+    "failureLayer": "checkout-only source-root resolution inherited an unrelated ancestor home checkout above the Git-free frozen source tree",
     "historicalFirstRead": "Task running; latest wrapper output queued for a heavy slot at 45 seconds. Launch receipt present and payload driver absent at that read. This snapshot never authorizes cancellation or a duplicate launch.",
     "fullGpuPopulationComplete": false,
     "kernelPidAndSequenceBindingVerified": false,
-    "next": "Attach only this exact durable task id, then inspect actual payload driver, retained vectors/input trace, profiler database and completion. Do not infer CUDA computation from construction or wrapper CPU use."
+    "next": "Preserve this failed attempt. Before a new GPU attempt, freeze a fresh source/runtime with the tested source-layout repair and run nativeBenchmarkOutputPaths during pre-admission qualification. This attempt establishes no GPU input/vector/kernel result."
+  },
+  "nativeSourceRootRepair": {
+    "workItem": "WI-10005329",
+    "status": "source fix and conventional regression guards verified locally; fresh frozen native runtime remains P006 work",
+    "rootCause": "The native runner used moduleRepoRoot's nearest .git predicate for an intentionally Git-free frozen source snapshot. An unrelated ancestor home .git was returned, so a private cache sibling was incorrectly classified as repository output.",
+    "reuse": "Use the existing moduleRepoRoot walker with the benchmark's required source-layout predicate, and the existing measurement-manifest realDestination resolver for symlink-aware containment. Both native boundary and incumbent reference runners use this shared preflight.",
+    "distinguishingProbe": "The exact retained frozen candidate module URL resolved to the unrelated ancestor under the old checkout predicate. The fixed helper resolved runtime-source-v2/tree and accepted the private v4 destination without creating it or performing inference.",
+    "verification": {
+      "runId": "ddbe3e00-f4b7-4de7-b51c-8fafa3097302",
+      "testRunIds": [20487209, 20487210],
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "typecheck": "Three requested files and their direct import/type users; 17 files checked, compiler exit 0",
+      "diffCheck": "exit 0",
+      "recurrenceGuard": "Git-free source beneath an unrelated ancestor checkout; source-root and symlink output refusal; sibling-prefix acceptance; incomplete source layout refusal. Guards run in the existing candidate-embedders.test.ts framework suite."
+    },
+    "sources": [
+      { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "sha256": "ce7357569745ed73706bb6907a2d35b86b0a8223d7d079fc70dadf0fac1a0295" },
+      { "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts", "sha256": "5591134a6fcec126cec6d71203e6e38230c8ec51c89bd4878ed1a1a586b39729" }
+    ],
+    "test": { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "sha256": "756046bb8db862011cc20d7f9ed0ddc95e3f44e148eb663793b416aa14929a40" },
+    "modelInferencePerformed": false,
+    "priorFrozenArtifactsChanged": false,
+    "gpuAcceptanceComplete": false
   },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
