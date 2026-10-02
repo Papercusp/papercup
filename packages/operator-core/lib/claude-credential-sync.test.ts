@@ -21,6 +21,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileClaudeCredentials, startClaudeCredentialSync } from './claude-credential-sync';
 import { _setClaudeKeychainAccessForTests, type KeychainAccess } from './agent-auth-detect';
@@ -362,11 +363,10 @@ describe('reconcileClaudeCredentials — off the event loop (WI-10005186)', () =
   // wait_transaction_locked, syscall rename, path <owner>/.credentials.json.credsync-*).
   const SYNC_CALL = /\b\w+Sync\s*\(/g;
 
-  it('yields to the event loop while the pass is in flight (a sync body would not)', async () => {
-    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
-    for (let i = 0; i < 20; i++) writeCreds(sessionPath(`su-${i}`), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
-    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
-
+  /** Event-loop turns (setImmediate callbacks) that run while `start()`'s promise is pending.
+   *  A synchronous body — even one wrapped in `async` or deferred to a microtask — settles
+   *  before any setImmediate callback runs, so it reads 0. */
+  async function turnsDuring(start: () => Promise<unknown>): Promise<number> {
     let turns = 0;
     let done = false;
     const spin = () => {
@@ -375,21 +375,45 @@ describe('reconcileClaudeCredentials — off the event loop (WI-10005186)', () =
       setImmediate(spin);
     };
     setImmediate(spin);
-    const pending = run();
-    // Nothing is written synchronously at the call site.
-    expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-old');
-    const r = await pending;
-    done = true;
+    try {
+      await start();
+    } finally {
+      done = true;
+    }
+    return turns;
+  }
 
-    expect(r.updated).toHaveLength(21);
+  it('control: the turn counter reads 0 for a synchronous pass dressed as async', async () => {
+    const syncPass = async () => {
+      for (let i = 0; i < 20; i++) writeCreds(sessionPath(`su-${i}`), { claudeAiOauth: bundle(NOW, `c${i}`) });
+    };
+    expect(await turnsDuring(syncPass)).toBe(0);
+    expect(await turnsDuring(() => Promise.resolve().then(syncPass))).toBe(0);
+  });
+
+  it('yields to the event loop while the pass is in flight (a sync body would not)', async () => {
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    for (let i = 0; i < 20; i++) writeCreds(sessionPath(`su-${i}`), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    writeCreds(sessionPath('su-fresh'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'new') });
+
+    let r: Awaited<ReturnType<typeof run>> | undefined;
+    const turns = await turnsDuring(async () => {
+      const pending = run();
+      // Nothing is written synchronously at the call site.
+      expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-old');
+      r = await pending;
+    });
+
+    expect(r?.updated).toHaveLength(21);
     expect(readJson(sessionPath('su-0')).claudeAiOauth.accessToken).toBe('sk-ant-oat01-new');
-    // A synchronous pass — even one wrapped in `async` or deferred to a microtask —
-    // completes before any setImmediate callback runs, leaving turns at 0.
     expect(turns).toBeGreaterThan(0);
   });
 
   it('code-shape guard: the pass path makes no synchronous call', () => {
-    const src = readFileSync(new URL('./claude-credential-sync.ts', import.meta.url), 'utf8');
+    // CREDSYNC_SHAPE_SUBJECT lets a copy-out mutation probe point this guard at a mutant.
+    const subject =
+      process.env.CREDSYNC_SHAPE_SUBJECT ?? fileURLToPath(new URL('./claude-credential-sync.ts', import.meta.url));
+    const src = readFileSync(subject, 'utf8');
     const end = src.indexOf('export function startClaudeCredentialSync');
     expect(end).toBeGreaterThan(0); // the anchor exists — otherwise this guard checks nothing
     const code = src
