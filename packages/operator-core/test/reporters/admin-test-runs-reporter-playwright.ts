@@ -25,7 +25,7 @@ import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-r
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from '@papercusp/operator-core/lib/testing-worktree';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
-import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
+import { describeWorktreeDirt, resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import type { TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { posix, relative } from 'node:path';
 
@@ -216,6 +216,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     try {
       const worktreeAfter = captureWorktreeSnapshot(this.runRoot);
       const worktreeDirty = computeWorktreeDirty(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter);
+      const dirtReason = describeWorktreeDirt(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter)?.slice(0, 500);
       for (const [file, agg] of this.byFile) {
         try {
           const filePath = toWorkspaceRel(file, this.runRoot);
@@ -225,7 +226,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
             ? 'skip'
             : 'pass';
           const durationMs = Math.max(0, agg.finishedAt - agg.startedAt);
-          const outputTail = agg.errors.length > 0 ? agg.errors.join('\n').slice(-4000) : null;
+          // output_tail is readable by existing strict execution_details readers.
+          const output = [...agg.errors, ...(dirtReason ? [`[worktree provenance] ${dirtReason}`] : [])].join('\n');
+          const outputTail = output ? output.slice(-4000) : null;
           this.pending.push(
             insertRow({
               filePath,
