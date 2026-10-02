@@ -349,6 +349,8 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
 type NativeTarget = ReturnType<typeof collectOwnedWebKitSample>['processes'][number];
 /** Explicit diagnostic only: ptrace stops the target, so these runs cannot certify
  * latency. Validate the whole owned ancestry immediately before and after attach.
+ * Capture the post-attach clock and library mappings with the frames so stripped
+ * addresses can be resolved offline without downloading symbols during the run.
  * Never enable downloads, user init files, or an unbounded debugger session. */
 export function captureOwnedNativeStacks(options: NativeProbeOptions, target: NativeTarget,
   proc: ProcReader = liveProc,
@@ -356,6 +358,8 @@ export function captureOwnedNativeStacks(options: NativeProbeOptions, target: Na
     '--signal=TERM', '--kill-after=1s', '2s', 'gdb', '--batch', '--nx', '--nh',
     '-iex', 'set debuginfod enabled off', '-iex', 'set auto-load off',
     '-ex', 'set pagination off', '-ex', `attach ${pid}`,
+    '-ex', 'python import time; print("NATIVE_STACK_STOP_EPOCH_MS=%d" % (time.time_ns() // 1000000))',
+    '-ex', 'info proc mappings',
     '-ex', 'thread apply all bt 16', '-ex', 'detach', '-ex', 'quit'], {
     encoding: 'utf8', timeout: 4_000, maxBuffer: 256 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -381,10 +385,22 @@ export function captureOwnedNativeStacks(options: NativeProbeOptions, target: Na
     if (!/\[Inferior .* detached\]/.test(output) || !/^#0\s+/m.test(output)) {
       throw new Error('Native stack capture has no frame/detach proof');
     }
+    const stopMarkers = [...output.matchAll(/^NATIVE_STACK_STOP_EPOCH_MS=(\d{13})$/gm)];
+    if (stopMarkers.length !== 1) throw new Error('Native stack capture has no unique post-attach clock');
+    const stoppedEpochMs = Number(stopMarkers[0][1]);
+    if (!Number.isSafeInteger(stoppedEpochMs) || stoppedEpochMs < startedEpochMs ||
+        stoppedEpochMs > Date.now()) throw new Error('Native stack post-attach clock is outside capture');
+    const mappingLines = output.split('\n').filter((line) =>
+      /^\s*0x[0-9a-f]+\s+0x[0-9a-f]+/.test(line) &&
+      /\/(?:libwebkit2gtk|libjavascriptcoregtk)-4\.1\.so\.0\s*$/.test(line));
+    if (!mappingLines.some((line) => line.includes('/libwebkit2gtk-4.1.so.0'))) {
+      throw new Error('Native stack capture has no WebKit mapping for offline symbols');
+    }
     return { kind: 'native-stack' as const, status: 'captured' as const,
-      startedEpochMs, completedEpochMs: Date.now(), durationMs: performance.now() - started,
+      startedEpochMs, stoppedEpochMs, completedEpochMs: Date.now(), durationMs: performance.now() - started,
       pid: target.pid, identity: target.identity, ancestry: target.ancestry,
-      observerEffect: 'debugger attachment stops target; diagnostic, not latency acceptance', output };
+      observerEffect: 'debugger attachment stops target; diagnostic, not latency acceptance',
+      mappingLines: mappingLines.slice(0, 40), output };
   } catch (error) {
     return { kind: 'native-stack' as const, status: 'unavailable' as const,
       startedEpochMs, completedEpochMs: Date.now(), durationMs: performance.now() - started,
