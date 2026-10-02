@@ -1101,7 +1101,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }, 500_000);
 
-  it.each(['diagnostic', 'ordinary', ...(process.env.PAPERCUSP_P011_HEAP_CENSUS === '1' ? ['snapshot'] : [])] as const)('binds %s PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async mode => {
+  it.each(['diagnostic', 'ordinary', ...(process.env.PAPERCUSP_P011_HEAP_CENSUS === '1' ? ['snapshot'] : []),
+    ...(process.env.PAPERCUSP_P011_HEAP_RETAINERS === '1' ? ['retainers'] : [])] as const)('binds %s PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async mode => {
     const destination = evidenceDestination(process.env.PAPERCUSP_P011_REPORT);
     // Read the maintained desktop transport contract before bundle/DB work.
     // The separate device route supports only its curated mobile query names.
@@ -1330,7 +1331,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               arrays: await retainedContainerCensus(cdp, 'array') }); publish();
           }
         }
-        if (report.mode === 'snapshot') {
+        if (report.mode === 'snapshot' || report.mode === 'retainers') {
           phase('private-heap-snapshot');
           const snapshotPath = e.TEST_REPORT_PATH + '.heapsnapshot';
           const started = Date.now();
@@ -1339,9 +1340,17 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             const captured = (await cdp.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
               JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
             if (captured !== snapshotPath) throw Error('Private snapshot destination mismatch');
-            const { summarizeHeapSnapshotStream } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
+            const { summarizeHeapSnapshotStream, summarizeHeapRetainers } = await import(pathToFileURL(e.TEST_HEAP_ANALYZER));
             const summary = await summarizeHeapSnapshotStream(require('node:fs').createReadStream(snapshotPath));
             report.heapSnapshot = { ...summary, durationMs: Date.now() - started, pid: host.pid };
+            if (report.mode === 'retainers') {
+              phase('private-heap-retainer-analysis');
+              const analysisStarted = Date.now();
+              report.heapRetainers = { ...(await summarizeHeapRetainers(readFileSync(snapshotPath),
+                { top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32 })),
+                durationMs: Date.now() - analysisStarted, pid: host.pid };
+              publish();
+            }
           } finally {
             require('node:fs').rmSync(snapshotPath, { force: true });
             report.snapshotRemoved = !require('node:fs').existsSync(snapshotPath); publish();
@@ -1402,12 +1411,18 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(report.hostReaped).toBe(true);
       expect(existsSync(report.home)).toBe(false);
       expect(report.windows).toHaveLength(3);
-      expect(report.samples).toHaveLength(mode === 'ordinary' ? 13 : mode === 'snapshot' ? 14 : 16);
+      expect(report.samples).toHaveLength(mode === 'ordinary' ? 13 : mode === 'diagnostic' ? 16 : 14);
       expect(report.retainedContainers).toHaveLength(mode === 'diagnostic' ? 3 : 0);
-      expect(report.profilerOperations).toHaveLength(mode === 'ordinary' ? 0 : mode === 'snapshot' ? 1 : 15);
-      if (mode === 'snapshot') {
+      expect(report.profilerOperations).toHaveLength(mode === 'ordinary' ? 0 : mode === 'diagnostic' ? 15 : 1);
+      if (mode === 'snapshot' || mode === 'retainers') {
         expect(report.snapshotRemoved).toBe(true); expect(report.postSnapshotRowsPreserved).toBe(true);
         expect(report.heapSnapshot.pid).toBe(report.pid);
+        if (mode === 'retainers') {
+          expect(report.heapRetainers.pid).toBe(report.pid);
+          expect(report.heapRetainers.groups.length).toBeGreaterThan(0);
+          expect(report.heapRetainers.groups.length).toBeLessThanOrEqual(20);
+          expect(report.heapRetainers.definition).toContain('class retained sizes overlap');
+        }
         expect(report.heapSnapshot.census.nodeCount).toBeGreaterThan(0);
         expect(report.heapSnapshot.census.totalSelfSizeBytes).toBeGreaterThan(0);
         expect(report.heapSnapshot.census.types.reduce((sum: number, row: any) => sum + row.count, 0))

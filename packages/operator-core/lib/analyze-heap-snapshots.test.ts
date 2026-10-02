@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { summarizeHeapSnapshot, summarizeHeapSnapshotStream } from '../../../scripts/analyze-heap-snapshots.mjs';
+import { summarizeHeapSnapshot, summarizeHeapSnapshotStream, summarizeHeapRetainers } from '../../../scripts/analyze-heap-snapshots.mjs';
 
 describe('private V8 heap snapshot census', () => {
   it('detects a real surviving large array without exporting private string payloads', async () => {
@@ -72,4 +72,40 @@ describe('private V8 heap snapshot census', () => {
     expect(result.census.topClasses.reduce((sum: number, row: any) => sum + row.selfSizeBytes, 0))
       .toBe(result.census.totalSelfSizeBytes);
   });
+
+  it('distinguishes exclusive large allocations from shared holders in a real dominator graph', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'p011-heap-retainers-'));
+    try {
+      const result = spawnSync(process.execPath, ['-e', String.raw`
+        const { writeHeapSnapshot } = require('node:v8');
+        class ExclusiveHeapFixture { constructor() { this.values = Array(2000000).fill(17); } }
+        class SharedHeapFixture { constructor(values) { this.values = values; } }
+        globalThis.exclusive = new ExclusiveHeapFixture();
+        const shared = Array(2000000).fill(23);
+        globalThis.left = new SharedHeapFixture(shared);
+        globalThis.right = new SharedHeapFixture(shared);
+        globalThis.payload = 'DoNotExportThisPayload' + 'sensitive'.repeat(100000);
+        writeHeapSnapshot(require('node:path').join(process.env.P011_HEAP_DIR, 'owners.heapsnapshot'));
+        if (globalThis.left.values !== globalThis.right.values) process.exit(2);
+      `], { env: { ...process.env, P011_HEAP_DIR: directory }, encoding: 'utf8', timeout: 60000 });
+      expect(result.status, result.stderr).toBe(0);
+      const bytes = readFileSync(join(directory, 'owners.heapsnapshot'));
+      const report = await summarizeHeapRetainers(bytes, { top: 30, perClass: 4, retainerDepth: 1 });
+      const exclusive = report.groups.find(group => group.class === 'ExclusiveHeapFixture');
+      expect(exclusive?.nodes[0].retainedSizeBytes).toBeGreaterThan(15_000_000);
+      const shared = report.groups.find(group => group.class === 'SharedHeapFixture');
+      expect(shared?.count).toBe(2);
+      expect(shared?.nodes).toHaveLength(2);
+      expect(shared?.nodes.every(node => node.retainedSizeBytes < 1_000_000)).toBe(true);
+      const retainedSharedArray = report.groups.flatMap(group => group.nodes).find(node =>
+        node.type === 'Object' && node.class === 'Array' && node.retainedSizeBytes > 15_000_000 &&
+        node.retainers.filter(retainer => retainer.class === 'SharedHeapFixture').length === 2);
+      expect(retainedSharedArray, 'Both shared holders must retain the same large array.').toBeDefined();
+      expect(JSON.stringify(report)).not.toMatch(/DoNotExportThisPayload|sensitive|heapsnapshot|P011_HEAP_DIR/);
+      expect(report.definition).toContain('class retained sizes overlap');
+      expect(report.groups.length).toBeLessThanOrEqual(30);
+      await expect(summarizeHeapRetainers(Buffer.from('{"snapshot":'))).rejects.toThrow();
+      await expect(summarizeHeapRetainers(bytes, { retainerDepth: 4 })).rejects.toThrow('Invalid');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 75000);
 });
