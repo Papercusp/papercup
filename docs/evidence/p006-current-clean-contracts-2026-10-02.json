@@ -2562,6 +2562,172 @@
     },
     "limits": "P006 remains partial. P003-P006 proof, independent rubric review/ratification, D013 real-goal card acceptance, closure audit and final shipment remain open. P007 root/product/R7 and P008 historical cause/adoption/R8 are separate open acceptance. No product source/test, accepted-clause, BAR, immutable baseline, native, P2P, shared restart or LIVE_GATE_OPS change. Fire180 records above remain dated history."
   },
+  "p003MeasuredAdmissionFire185": {
+    "recordedAt": "2026-10-02T12:42:03.525804+00:00",
+    "scope": "P003 MEASURED-ADMISSION source guards and clean test proof advanced; replacement-only evaluation FAIL execution-integrity. No P003 binding withdrawal or governing PASS. P006/rubric/real-goal/audit/shipment and separate P007/P008 remain open.",
+    "sourceChanges": [
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts"
+    ],
+    "reused": "Extended the existing real-PG rollup fixture and composed its writer/reader with resolveGoalLaunchForGoal; no production comparator change or new test framework.",
+    "fingerprints": {
+      "packages/operator-core/lib/goal-launch-settings.ts": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "packages/operator-core/lib/goal-launch-settings.test.ts": "d5a4bee992dc7432f4571f4299fa77e36f783d6d20402102e02d65afa0621b75",
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "5eb8e87ea661d6d54f62b5acb3e654c1a5e46a77e02c993390cfc449993eb0f8"
+    },
+    "unit": {
+      "testRunId": 20527058,
+      "pass": 2,
+      "filteredSkip": 165,
+      "exit": 0,
+      "pin": "920030a3b939abd0c2b828fdb1ade3e291fb1071",
+      "cloneRoot": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+      "worktreeDirty": false,
+      "isScratchConfig": false
+    },
+    "unitMutations": [
+      {
+        "testRunId": 20527520,
+        "operator": ">",
+        "intendedFailure": "at-ceiling-refused",
+        "fail": 1,
+        "calibrationPass": 1,
+        "filteredSkip": 165
+      },
+      {
+        "testRunId": 20527568,
+        "operator": "<=",
+        "intendedFailure": "under-ceiling-admitted",
+        "fail": 1,
+        "calibrationPass": 1,
+        "filteredSkip": 165
+      }
+    ],
+    "integration": {
+      "cases": "snapshot and launch-time measurement each refuse 2000/2000 cents and admit 1999/2000 cents",
+      "focusedDirtyRun": 20527580,
+      "focusedPass": 4,
+      "focusedFilteredSkip": 38,
+      "fullDirtyRun": 20527602,
+      "cleanRun": 20527628,
+      "fullPass": 42,
+      "fullSkip": 0,
+      "exit": 0,
+      "pin": "c11fb0c0b0b5da79e3ad45616db0f4aab6966679",
+      "cloneRoot": "/tmp/papercusp-lint-as-committed-c11fb0c0b0-F8pwKa",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "cleanPgCleanup": {
+        "dataDir": "/tmp/papercusp-native-pg-IMjNJt",
+        "port": 35613,
+        "ref": "c11fb0c0b0b5da79e3ad45616db0f4aab6966679",
+        "testExit": 0,
+        "dataDirRemoved": true,
+        "portClosed": true
+      }
+    },
+    "integrationMutations": {
+      "boundaryRun": 20527660,
+      "underRun": 20527669,
+      "each": "2 intended FAIL and 2 opposite-scenario calibration PASS; 38 filtered skips; maintained private overlay caught both faults",
+      "cleanup": {
+        "dataDir": "/tmp/papercusp-native-pg-njhiTp",
+        "port": 37121,
+        "cloneRoot": "/tmp/papercusp-lint-as-committed-c11fb0c0b0-F8pwKa",
+        "controls": [
+          {
+            "name": "boundary",
+            "operator": ">",
+            "mutation": "s/(budget\\.spentCents|live\\.rollup\\.spentCents) >= budget\\.budgetCents/$1 > budget.budgetCents/",
+            "exit": 0,
+            "log": "/tmp/p006-fire185-measured-admission-integration-boundary-control.log"
+          },
+          {
+            "name": "under",
+            "operator": "<=",
+            "mutation": "s/(budget\\.spentCents|live\\.rollup\\.spentCents) >= budget\\.budgetCents/$1 <= budget.budgetCents/",
+            "exit": 0,
+            "log": "/tmp/p006-fire185-measured-admission-integration-under-control.log"
+          }
+        ],
+        "dataDirRemoved": true,
+        "portClosed": true
+      }
+    },
+    "bindings": {
+      "initialPositiveIds": [
+        21728,
+        21729
+      ],
+      "mutationIds": [
+        21749,
+        21750,
+        21751,
+        21752
+      ],
+      "underPositiveIds": [
+        21753,
+        21754
+      ],
+      "selectedIds": [
+        21728,
+        21729,
+        21749,
+        21750,
+        21751,
+        21752,
+        21753,
+        21754
+      ],
+      "selectedActualEvidenceRefs": [
+        "packages/operator-core/lib/goal-launch-settings.test.ts",
+        "packages/operator-core/lib/goals/spend-rollup.integration.test.ts",
+        "test-run 20527520 mutation-probe mutant fail packages/operator-core/lib/goal-launch-settings.test.ts @920030a3b939",
+        "test-run 20527568 mutation-probe mutant fail packages/operator-core/lib/goal-launch-settings.test.ts @920030a3b939",
+        "test-run 20527660 mutation-probe mutant fail packages/operator-core/lib/goals/spend-rollup.integration.test.ts @c11fb0c0b0b5",
+        "test-run 20527669 mutation-probe mutant fail packages/operator-core/lib/goals/spend-rollup.integration.test.ts @c11fb0c0b0b5"
+      ],
+      "verdict": "FAIL execution-integrity",
+      "evaluatorBuild": {
+        "sha": "c11fb0c0b0",
+        "version": "0.0.0"
+      },
+      "exactCausalPairFailure": {
+        "at-ceiling-refused": {
+          "negative": 2,
+          "recurrence": 0
+        },
+        "under-ceiling-admitted": {
+          "negative": 2,
+          "recurrence": 2
+        }
+      },
+      "expected": "Exactly one negative and one recurrence binding per required scenario. Ordinary same-file positive references collapse to the latest scenario; unique scenario-specific repaired refs are needed. Do not rerun tests to repair this metadata.",
+      "old17377": "Preserved; no identity read/withdrawal/governing evaluation this turn."
+    },
+    "toolRouteNotes": [
+      "Default release host refused clone fromTestRun with test_run_file_outside_root; current staging3170 accepted both clean positives.",
+      "Mutation target must be the required scenario id here; lowercase clause-id targets were refused before binding. Corrected four bindings succeeded.",
+      "Request-only host refused git-sync; sanctioned background CLI found a held scheduled sync. Scheduled commit subsequently matched the changed test bytes. These DRAIN frictions remain on the current item."
+    ],
+    "logs": {
+      "/tmp/p006-fire185-measured-admission-unit.log": "aca1ec233e56154b66c384083248f53167d9d477ba9ba4f0772c0d5892418dba",
+      "/tmp/p006-fire185-measured-admission-boundary-control.log": "be6dec084ea0b6ad33c2ac3b60dc5434b0d2967a3c1f838a6690f95027079202",
+      "/tmp/p006-fire185-measured-admission-under-control.log": "65ea63710e3716701061e737b592b3a33aa6f55a8ddca457b8cb6952d1bd0871",
+      "/tmp/p006-fire185-measured-admission-pg.log": "418e4295ab6b2509663880665cd562be454b3eff6db380e48bd666d286c0001f",
+      "/tmp/p006-fire185-measured-admission-pg-full.log": "b343525a76324b392e2d6aac31939f9ad9c7357d65a37e7f5073da2b93bbba53",
+      "/tmp/p006-fire185-measured-admission-clean-pg.log": "e8da119f48bbb344737b89c66082583946b070181f8048e48211f5df908a0d85",
+      "/tmp/p006-fire185-measured-admission-integration-boundary-control.log": "0a4eda18a4e2544ca90cba84c80f3cddc12c57ab371ada3121e7dfd6c87a9c15",
+      "/tmp/p006-fire185-measured-admission-integration-under-control.log": "a0747cd3180f29d778bf862f380d17354ed94c06d36a20947cf7f8f8291892fb"
+    },
+    "receipts": [
+      "/tmp/p006-fire185-admission-initial-bind-decoded.json",
+      "/tmp/p006-fire185-admission-mutation-bind.json",
+      "/tmp/p006-fire185-admission-under-positive-bind.json",
+      "/tmp/p006-fire185-admission-selected-full-decoded.json"
+    ],
+    "next": "Read exact current evidence/server-derived testRun metadata. Give repaired scenarios unique refs; select one successful negative and one repaired recurrence per scenario while retaining unit+integration layers. Reuse current clean receipts and compare hashes. Only selected PASS permits exact17377 identity read and conditional withdrawal, then governing(no bindingIds/workItemIds/evidenceRefs). Reconcile D014 through the leader; preserve D003/D013/D016 and all carried checks."
+  },
   "p003PreparationFire183": {
     "scope": "Read-only preparation; all six accepted P003 clauses remain FAIL. No P003 evidence binding, withdrawal, test execution or source change.",
     "acceptedRevisions": "BREACH, MEASURED-ADMISSION, NUMERATOR, UNMEASURED, UNMEASURED-ADMISSION and WINDOW are revision3 with required unit+integration evidence and one-to-one causal scenarios.",
