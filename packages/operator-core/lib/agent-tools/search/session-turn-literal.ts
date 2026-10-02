@@ -31,6 +31,7 @@
 import type postgres from 'postgres';
 import { hitProvenance, type MatchProvenance, type SearchFilters, type SearchHit } from '@papercusp/search';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import {
   readSessionSearchReadiness,
   sessionSearchTierAvailability,
@@ -280,7 +281,8 @@ type Tx = postgres.TransactionSql;
 /**
  * The scope + filter predicates every exact-tier query shape applies to `harness_shared.session_turns`
  * (the trigram branch's candidate CTE AND the recency walk) — one definition so the two can never disagree
- * about which turns a filter admits.
+ * about which turns a filter admits. Includes the D-006 reader rule, fail closed (WI-10005570): a turn an
+ * agent recorded inside one of its disclosure windows matches only when `filters.readerIds` names that agent.
  */
 function turnScopePredicate(tx: Tx, q: SessionTurnLiteralQuery) {
   const f = q.filters ?? {};
@@ -295,7 +297,8 @@ function turnScopePredicate(tx: Tx, q: SessionTurnLiteralQuery) {
              AND (${f.sessionId ?? null}::text IS NULL OR session_id = ${f.sessionId ?? null})
              AND (${f.sourceKind ?? null}::text IS NULL OR source_kind = ${f.sourceKind ?? null})
              AND (${f.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since ?? null}::timestamptz)
-             AND (${f.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until ?? null}::timestamptz)`;
+             AND (${f.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until ?? null}::timestamptz)
+             AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', f.readerIds ?? []) as never}`;
 }
 
 // ─────────────────────── recency walk (WI-10005294, D-015) ───────────────────────

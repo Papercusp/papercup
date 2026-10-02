@@ -911,15 +911,16 @@ const sessionTurnFilterSql = (p: SearchSourceParams) => {
 };
 
 /**
- * D-006 / P-013 (personal-data-reader-set-labels): with `filters.readerIds`, a
- * turn another agent recorded inside its disclosure windows is excluded from
- * matching, so it never competes for a result slot and the result size reveals
- * nothing about its text (personal-vault/transcript-exclusion.ts). Without
- * `readerIds` the source applies no reader rule.
+ * D-006 / P-013 (personal-data-reader-set-labels): a turn an agent recorded
+ * inside one of its disclosure windows is excluded from matching, so it never
+ * competes for a result slot and the result size reveals nothing about its text
+ * (personal-vault/transcript-exclusion.ts). `filters.readerIds` names the caller's
+ * identities, whose OWN restricted turns stay visible to it. FAIL CLOSED
+ * (WI-10005570): a caller that names no reader (search:semantic, search:fulltext,
+ * any future surface) is treated as nobody, so every restricted turn is excluded.
  */
 const sessionTurnReaderSql = (p: SearchSourceParams, qualifier: string) => {
-  const readerIds = p.filters?.readerIds;
-  if (!readerIds) return p.sql`TRUE`;
+  const readerIds = p.filters?.readerIds ?? [];
   const sql = p.sql as unknown as Parameters<typeof restrictedTurnSql>[0];
   return p.sql`NOT ${restrictedTurnSql(sql, qualifier, readerIds) as never}`;
 };

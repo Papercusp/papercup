@@ -76,6 +76,9 @@ describe('cost-model levers', () => {
     expect(dedicatedHosts(1, capacity('mixed-e2s4'))).toBe(1);
     // 100 agents need 45.5 at p99: two e2-standard-8.
     expect(dedicatedHosts(100, capacity('mixed-e2s8'))).toBe(2);
+    // 140 agents: 63.7 busy at p99 over 31 usable slots = 3 hosts. Sizing on the mean (49 busy)
+    // or forgetting the Server slot (63.7 / 32) would both give 2.
+    expect(dedicatedHosts(140, capacity('mixed-e2s8'))).toBe(3);
   });
 
   it('each lever row costs no more than the row it builds on', () => {
