@@ -699,17 +699,69 @@ describe('immutable dependency generation', () => {
     expect(existsSync(validationTrace)).toBe(false);
   });
 
-  it('P-003: validates an ordinary cache hit from the v2 publication token without a generation walk', () => {
+  it('WI-10005569: a publication token survives a reboot that renumbers the block device (st_dev)', () => {
     const integration = makeIntegration();
     const first = publish(integration);
     expect(first.status, first.stderr).toBe(0);
-    expect(publishedToken(first.stdout)).toMatch(/^v2:[0-9a-f]{64}$/);
+    const generation = publishedPath(first.stdout);
+    // A `stat` shim that reports a different st_dev (%d) for every path, as a
+    // reboot renumbering /dev/nvme1n1 from 259:0 to 259:3 does.
+    const shimDir = join(integration, 'stat-shim');
+    mkdirSync(shimDir, { recursive: true });
+    const realStat = execFileSync('bash', ['-c', 'command -v stat'], {
+      encoding: 'utf8',
+    }).trim();
+    writeFileSync(
+      join(shimDir, 'stat'),
+      [
+        '#!/usr/bin/env bash',
+        `out="$(${realStat} "$@")" || exit $?`,
+        'if [ "$1" = -c ] && [[ "$2" == %d* ]]; then',
+        `  printf '%s\\n' "$out" | awk -F: 'BEGIN{OFS=":"}{$1=$1+3; print}'`,
+        'else',
+        `  printf '%s\\n' "$out"`,
+        'fi',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const run = (body: string, shim: boolean) =>
+      spawnSync('bash', ['-c', `set -uo pipefail\nsource "$SCRIPT"\n${body}`], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          SCRIPT,
+          GENERATION: generation,
+          PATH: shim ? `${shimDir}:${process.env.PATH}` : process.env.PATH,
+        },
+      });
+    // Control: the shim really changes the device, so the legacy schema-2
+    // token (which binds st_dev) moves under it. Without this the assertion
+    // below could pass vacuously.
+    const legacy = 'dependency_generation_publication_token "$GENERATION" 2';
+    const legacyBefore = run(legacy, false);
+    const legacyAfter = run(legacy, true);
+    expect(legacyBefore.status, legacyBefore.stderr).toBe(0);
+    expect(legacyAfter.stdout.trim()).toMatch(/^v2:[0-9a-f]{64}$/);
+    expect(legacyAfter.stdout.trim()).not.toBe(legacyBefore.stdout.trim());
+
+    const valid = run(
+      'dependency_generation_publication_is_valid "$GENERATION" && echo VALID',
+      true,
+    );
+    expect(valid.stdout, valid.stderr).toContain('VALID');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('P-003: validates an ordinary cache hit from the v3 publication token without a generation walk', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    expect(publishedToken(first.stdout)).toMatch(/^v3:[0-9a-f]{64}$/);
     const generation = publishedPath(first.stdout);
     const marker = readFileSync(
       join(generation, '.papercusp-dependency-generation'),
       'utf8',
     );
-    expect(marker).toContain('publication_schema=2\n');
+    expect(marker).toContain('publication_schema=3\n');
     expect(marker).toContain(`publication_token=${publishedToken(first.stdout)}\n`);
     const validationTrace = join(integration, 'hot-validation.trace');
 
@@ -759,7 +811,7 @@ describe('immutable dependency generation', () => {
       trees_copied: '3',
       trees_removed: '0',
     });
-    expect(publishedToken(repaired.stdout)).toMatch(/^v2:[0-9a-f]{64}$/);
+    expect(publishedToken(repaired.stdout)).toMatch(/^v3:[0-9a-f]{64}$/);
     expect(publishedToken(repaired.stdout)).not.toBe(`v2:${'0'.repeat(64)}`);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
@@ -795,7 +847,7 @@ describe('immutable dependency generation', () => {
         ({ phase }) => phase === 'cache-validation',
       ),
     ).toMatchObject({ outcome: 'legacy-deep-hit' });
-    expect(publishedToken(legacyHit.stdout)).not.toMatch(/^v2:/);
+    expect(publishedToken(legacyHit.stdout)).not.toMatch(/^v[23]:/);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('WI-41491: invalidates the selector when dependency inputs change and rewarms the new key', () => {

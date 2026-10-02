@@ -656,6 +656,29 @@ dependency_generation_stat_token() {
   stat -f '%d:%i:%m:%z' "$path"
 }
 
+# Device-free variants for the DURABLE publication token (schema 3). st_dev is
+# not a stable identity across reboots: block-extended nvme minors are assigned
+# at boot, so a reboot that renumbers the device invalidated every schema-2
+# token and wedged the gate with exit 74 (WI-10005569). The generation root path
+# already pins the filesystem; inode + mtime + size + content digests remain.
+# The in-run selector token (generation_token) keeps %d: it is compared within
+# one boot.
+dependency_generation_durable_stat_token() {
+  local path="$1"
+  if stat -c '%i:%Y:%s' "$path" 2>/dev/null; then
+    return 0
+  fi
+  stat -f '%i:%m:%z' "$path"
+}
+
+dependency_generation_durable_inode_token() {
+  local path="$1"
+  if stat -c '%i' "$path" 2>/dev/null; then
+    return 0
+  fi
+  stat -f '%i' "$path"
+}
+
 dependency_generation_inode_token() {
   local path="$1"
   if stat -c '%d:%i' "$path" 2>/dev/null; then
@@ -676,31 +699,41 @@ dependency_generation_marker_payload_digest() {
 # per-tree manifest, plus stat identities for the four immutable objects. The
 # 13-GiB tree is never walked here. Deep content verification remains available
 # through dependency_generation_deep_audit and is used for legacy/recovery.
+# Schema 3 (the default, written by every new publication) is device-free; the
+# legacy schema 2 binds st_dev and is still verified for markers that carry it.
 dependency_generation_publication_token() {
-  local generation="$1" marker manifest tree
+  local generation="$1" schema="${2:-3}" marker manifest tree
   local generation_inode tree_token marker_inode manifest_token
   local marker_digest manifest_digest recorded_manifest_digest digest
+  local inode_fn stat_fn
+  case "$schema" in
+    3) inode_fn=dependency_generation_durable_inode_token
+       stat_fn=dependency_generation_durable_stat_token ;;
+    2) inode_fn=dependency_generation_inode_token
+       stat_fn=dependency_generation_stat_token ;;
+    *) return 1 ;;
+  esac
   marker="$generation/.papercusp-dependency-generation"
   manifest="$generation/.tree-manifest"
   tree="$generation/tree"
   [ -d "$generation" ] && [ -d "$tree" ] && [ -f "$marker" ] && [ -f "$manifest" ] \
     || return 1
-  generation_inode="$(dependency_generation_inode_token "$generation")" || return 1
-  tree_token="$(dependency_generation_stat_token "$tree")" || return 1
-  marker_inode="$(dependency_generation_inode_token "$marker")" || return 1
-  manifest_token="$(dependency_generation_stat_token "$manifest")" || return 1
+  generation_inode="$("$inode_fn" "$generation")" || return 1
+  tree_token="$("$stat_fn" "$tree")" || return 1
+  marker_inode="$("$inode_fn" "$marker")" || return 1
+  manifest_token="$("$stat_fn" "$manifest")" || return 1
   marker_digest="$(dependency_generation_marker_payload_digest "$marker")" || return 1
   manifest_digest="$(dependency_generation_manifest_fingerprint "$manifest")" || return 1
   recorded_manifest_digest="$(dependency_generation_read_field "$marker" tree_manifest_sha256)"
   [ "$manifest_digest" = "$recorded_manifest_digest" ] || return 1
   digest="$({
-    printf 'schema\t2\n'
+    printf 'schema\t%s\n' "$schema"
     printf 'generation\t%s\n' "$generation_inode"
     printf 'tree\t%s\n' "$tree_token"
     printf 'marker\t%s\t%s\n' "$marker_inode" "$marker_digest"
     printf 'manifest\t%s\t%s\n' "$manifest_token" "$manifest_digest"
   } | dependency_generation_sha256)" || return 1
-  printf 'v2:%s\n' "$digest"
+  printf 'v%s:%s\n' "$schema" "$digest"
 }
 
 dependency_generation_has_publication_contract() {
@@ -731,10 +764,11 @@ dependency_generation_publication_is_valid() {
   schema="$(dependency_generation_read_field "$marker" publication_schema)"
   recorded_token="$(dependency_generation_read_field "$marker" publication_token)"
   token_count="$(grep -c '^publication_token=' "$marker" 2>/dev/null || true)"
-  [ "$schema" = '2' ] && [ "$token_count" = '1' ] \
-    && [[ "$recorded_token" =~ ^v2:[0-9a-f]{64}$ ]] || return 1
+  case "$schema" in 2|3) ;; *) return 1 ;; esac
+  [ "$token_count" = '1' ] \
+    && [[ "$recorded_token" =~ ^v${schema}:[0-9a-f]{64}$ ]] || return 1
   dependency_generation_reuse_manifest_is_valid "$generation" || return 1
-  current_token="$(dependency_generation_publication_token "$generation" 2>/dev/null || true)"
+  current_token="$(dependency_generation_publication_token "$generation" "$schema" 2>/dev/null || true)"
   [ -n "$current_token" ] && [ "$current_token" = "$recorded_token" ]
 }
 
@@ -778,7 +812,7 @@ dependency_generation_select_prevalidated() {
   }
   generation="$generation_root/$identity"
   case "$expected_token" in
-    v2:*)
+    v2:*|v3:*)
       if ! dependency_generation_publication_is_valid "$generation" "$identity" '' 'full'; then
         dependency_generation_log \
           "FATAL: prewarmed dependency generation $identity has an invalid publication token"
@@ -2629,7 +2663,7 @@ dependency_generation_ensure_once() {
       "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
       "$snapshot" "${created_ns%?????????}" "$created_ns"
     if [ -n "$tree_manifest_digest" ]; then
-      printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npublication_schema=2\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
+      printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npublication_schema=3\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
         "$tree_manifest_digest" "$predecessor_identity" \
         "$tree_reused" "$tree_copied" "$tree_removed"
     fi

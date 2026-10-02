@@ -15582,7 +15582,7 @@ export async function checkpointDependencyInputFingerprint(
  */
 /**
  * Mirror of dependency-generation.sh's prevalidated-token read (WI-10004826):
- * `v2:` tokens are the marker's `publication_token=` field; legacy tokens are
+ * `v2:`/`v3:` tokens are the marker's `publication_token=` field; legacy tokens are
  * `stat %d:%i:%Y:%s` of the generation dir, `|`, then the same for its marker
  * (or `missing`). Returns null when the generation cannot be read.
  */
@@ -15594,7 +15594,7 @@ export function liveDependencyGenerationToken(
   const generation = path.join(generationRoot, identity);
   const marker = path.join(generation, ".papercusp-dependency-generation");
   try {
-    if (expectedToken.startsWith("v2:")) {
+    if (/^v[23]:/.test(expectedToken)) {
       const line = readFileSync(marker, "utf8")
         .split("\n")
         .find((l) => l.startsWith("publication_token="));
