@@ -382,9 +382,14 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     const r = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });
     expect(r.totalCents).toBe(205);
     expect(r.spentCents).toBe(105);
-    // Dropping the goal-creation lower bound would add this observed 100-dollar
-    // goal-attributed sample; the repaired reader excludes it.
-    expect(r.spentCents! + 10_000).toBe(10_105);
+    // Execute the wrong no-lower-bound population against this same real ledger.
+    // It includes the pre-creation 100-dollar sample; the repaired reader above
+    // excludes that row from its authoritative 105-cent figure.
+    const [unbounded] = await rootSql<Array<{ cents: number }>>`
+      SELECT round(sum(cost_usd) * 100)::integer AS cents
+        FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND goal_id = ${GOAL}`;
+    expect(unbounded?.cents).toBe(10_105);
   });
 
   it('a pot-less goal whose fleets spend under its goal id is MEASURED (the D-011 fix)', async () => {
