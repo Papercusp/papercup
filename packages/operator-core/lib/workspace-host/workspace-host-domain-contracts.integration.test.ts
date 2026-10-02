@@ -32,6 +32,7 @@ const {
   readWorkspaceHostDestroyTarget,
   recordWorkspaceHostObservation,
   updateWorkspaceHostLifecycleState,
+  updateWorkspaceHostOperation,
   upsertWorkspaceHost,
   upsertWorkspaceHostConnection,
   upsertWorkspaceHostResourceCheckpoint,
@@ -256,6 +257,83 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
     `;
     expect(host).toEqual({ controller_id: 'controller-b', controller_fence: 2, desired_revision: 2 });
+  });
+
+  // WI-10005307: a host whose FIRST provision failed was fenced forever. The first-operation
+  // exemption (a provision/restore may claim the revision its host row was written with) required
+  // "no prior operation", and the failed provision counted as one — so every retry, under a fresh
+  // operationId and the SAME controller authority, threw WorkspaceHostControllerFenceError while the
+  // API had already answered 202. Measured live on host-0f9b1ba8db30d143becc130a, 2026-10-02.
+  async function seedFirstProvision(hostId: string) {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const authority = { controllerId: 'controller-a', fence: 1 } as const;
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      hostGeneration: 1,
+      desiredRevision: 1,
+      observedRevision: 0,
+      runtimeRelease: release,
+      controllerAuthority: authority,
+    });
+    const provision = (operationId: string) =>
+      beginWorkspaceHostOperation({
+        workspaceId,
+        operationId,
+        hostId,
+        action: 'provision',
+        desiredRevision: 1,
+        controllerAuthority: authority,
+      });
+    const finish = (operationId: string, status: 'succeeded' | 'failed') =>
+      updateWorkspaceHostOperation({
+        workspaceId,
+        operationId,
+        status,
+        percent: 100,
+        message: status,
+        controllerAuthority: authority,
+      });
+    await provision('prov-1');
+    return { workspaceId, provision, finish };
+  }
+
+  it('lets a failed first provision be retried under a new operation id at the same revision', async () => {
+    const { workspaceId, provision, finish } = await seedFirstProvision('host-retry-after-failed-first');
+
+    // Control: while the first provision is still in flight, a second one at the same revision is
+    // fenced — the exemption must not become "any number of concurrent first operations".
+    await expect(provision('prov-1-concurrent')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    await finish('prov-1', 'failed');
+    await provision('prov-1-r2');
+
+    const operations = await db.adminSql<{ id: string; status: string; desired_revision: string }[]>`
+      SELECT id, status, desired_revision FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND host_id = 'host-retry-after-failed-first'
+      ORDER BY created_at, id
+    `;
+    expect(operations.map((row) => [row.id, row.status, Number(row.desired_revision)])).toEqual([
+      ['prov-1', 'failed', 1],
+      ['prov-1-r2', 'queued', 1],
+    ]);
+
+    // Control: the retry is now the in-flight first operation, so a third attempt is fenced again.
+    await expect(provision('prov-1-r3')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+  });
+
+  it('still fences a same-revision provision after a succeeded first provision or a failed one under recovery', async () => {
+    const succeeded = await seedFirstProvision('host-first-succeeded');
+    await succeeded.finish('prov-1', 'succeeded');
+    await expect(succeeded.provision('prov-1-again')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    const recovering = await seedFirstProvision('host-first-failed-recovering');
+    await recovering.finish('prov-1', 'failed');
+    await db.adminSql`
+      UPDATE harness_shared.workspace_host_operations SET recovery_state = 'recovering'
+      WHERE workspace_id = ${recovering.workspaceId} AND id = 'prov-1'
+    `;
+    await expect(recovering.provision('prov-1-r2')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
   });
 
   it('advances observed revision only through the fenced operation that produced the observation', async () => {
