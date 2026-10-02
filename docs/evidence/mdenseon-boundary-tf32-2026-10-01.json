@@ -658,7 +658,7 @@
     "gpuAcceptanceComplete": false
   },
   "nativeRuntimeKernelPreparation": {
-    "status": "fresh runtime v3 and path semantics qualified; padded v4 subsequently failed file-worker boot before model construction; worker argv repair verified locally and requires a new frozen runtime",
+    "status": "fresh runtime v4 content, private-path semantics and actual file-parent worker boot qualified without model inference; native GPU/kernel/capacity acceptance remains open",
     "runtimeArtifact": {
       "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v2",
       "receiptSha256": "d4162dd6d89b317d832254c97fe1bcefb2abb65cede82526dfa59b64955f05c1",
@@ -780,7 +780,7 @@
   },
   "nativeWorkerArgvRepair": {
     "workItem": "WI-10005356",
-    "status": "canonical source and conventional regression guards verified; new frozen native runtime still required",
+    "status": "canonical source and conventional regression guards verified; fresh frozen runtime v4 and actual no-model file-parent worker boot now qualified",
     "rootCause": "The shipped file-based embedder Worker implicitly inherited process.execArgv from a stdin parent. Node rejected its stdin-only --input-type option before the worker could become ready. The initial tokenizer-worker hypothesis was incorrect.",
     "reuse": "Set explicit empty execArgv for the existing plain-JS worker, following the existing generic decision-model worker pattern. Model/device/precision/tokenizer contracts are unchanged.",
     "distinguishingControl": "A raw file Worker still fails under combined and separate stdin flag forms. The corrected shipped factory boots a real worker and returns a synthetic protocol vector without forwarding any model request.",
@@ -800,6 +800,61 @@
     "test": { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "sha256": "f5fabcc40b811a0de18b595c07f5c4620f0d37747893a6d2cd926c79d9c1cfc1" },
     "modelInferencePerformed": false,
     "gpuAcceptanceComplete": false
+  },
+  "nativeRuntimeV4Preparation": {
+    "taskId": "0muqohnluga6w5jbl52",
+    "status": "completed exit 0; exact copied source/dependency/path and actual file-parent worker boot qualified without model inference",
+    "completedAt": "2026-10-02T08:17:10.359Z",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v4",
+    "recipeSha256": "2ffb066201f8408277d3fecedc6b269538cce4b2d4e77737cc16b596659f12b0",
+    "contentReceipt": {
+      "bytes": 4215,
+      "sha256": "6660b9a737d5109b3e01f3a76a6c7548857814f86c60cb9e6daea711d585dc9f"
+    },
+    "sourceRecordsChecked": 31404,
+    "dependencyRecordsChecked": 241451,
+    "overlays": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 43909,
+        "sha256": "002dac336b5b4371abe107db4fc9186dffaae68bf6f49398d8ff742b243100e1"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 8124,
+        "sha256": "f5fabcc40b811a0de18b595c07f5c4620f0d37747893a6d2cd926c79d9c1cfc1"
+      }
+    ],
+    "overlayTestEvidenceReused": {
+      "runId": "8510c36a-fedd-41d0-b5f7-da1e917362ad",
+      "testRunIds": [
+        20493745,
+        20493746,
+        20493747
+      ],
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0
+    },
+    "pathPreflight": {
+      "bytes": 639,
+      "sha256": "2607c594ccaa81bee3dbe6c6f9853494c312888979d701dccd6d8eaec7533dcd"
+    },
+    "workerBootPreflight": {
+      "bytes": 1380,
+      "sha256": "a850cbe74f2eb23e0e026a9cf1eca90e769c33d712f03b2ad626df4c12dc4c91"
+    },
+    "parentDriver": {
+      "sha256": "cf8aa9c11ec9ba8800c289953eab21c8ce17735020f0fdc089ffd6fcf8ea4599",
+      "bytes": 7985
+    },
+    "actualWorkerReady": true,
+    "modelRequestForwarded": false,
+    "modelInferencePerformed": false,
+    "gpuDeviceConstructionVerified": false,
+    "kernelTracingQualified": false,
+    "nativeCudaClosureQualified": false,
+    "reuse": "Independent snapshot of qualified R3 via its pinned existing dependency-generation copier; two tested worker overlays; original V1 dependency receipt retained. Existing R3/V4 and V7/V5 remain immutable."
   },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
