@@ -236,6 +236,18 @@ describe('fail open with a typed reason', () => {
     expect(out).toMatchObject({ kind: 'inconclusive', reason: 'network-error' });
   });
 
+  it('a network fault with an EMPTY message still records why (WI-10005372)', async () => {
+    // Node's connect failure on every address of a multi-address host: message '', cause in code/errors.
+    const perAddress = Object.assign(new Error('connect ECONNREFUSED 104.18.24.46:443'), { code: 'ECONNREFUSED' });
+    const fault = Object.assign(new AggregateError([perAddress], ''), { code: 'ECONNREFUSED' });
+    const { fn } = scriptedFetch([fault]);
+    const out = await client(fn).c.decide(choiceRequest);
+    expect(out).toMatchObject({ kind: 'inconclusive', reason: 'network-error' });
+    expect(out.kind === 'inconclusive' && out.detail).toBe(
+      'AggregateError [ECONNREFUSED] (Error [ECONNREFUSED]: connect ECONNREFUSED 104.18.24.46:443)',
+    );
+  });
+
   it('a hung request ⇒ timeout within the deadline', async () => {
     const { fn } = scriptedFetch(['hang']);
     const t0 = Date.now();
