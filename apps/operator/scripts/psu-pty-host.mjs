@@ -728,8 +728,28 @@ function nativeTranscriptRoot(agent, env, home) {
 // alphabet. `coord-inject:owner` is valid; a narrower host-only parser falsely
 // reports its native carry as missing provenance.
 const LEADING_TURN_ORIGIN_RE = /^⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧$/;
+
+/** WI-10005628: Claude Code stores a large bracketed paste in its native transcript
+ * as `\n\n<pasted_content id="3e9a">\n⟦turn-origin:…⟧\n…\n</pasted_content id="3e9a">\n`.
+ * Every scripted kickoff typed through the PTY arrives in that wrapper, so the
+ * first line is empty and the marker proof never matched: the host declared the
+ * kickoff unverified and killed a child that was already working (54 kills on
+ * 2026-10-02 from 16:00Z, freshly elected goal holders among them). Same grammar
+ * as the canonical PASTE_WRAPPER_SOURCE in
+ * packages/operator-core/lib/turn-provenance/envelope-grammar.ts (WI-10002461),
+ * pinned by envelope-grammar-cross-language.test.ts. WHOLE-PROMPT ONLY: words
+ * outside the paste leave the text unchanged. */
+const PASTE_WRAPPER_RE = /^\s*<pasted_content id="([A-Za-z0-9_-]{1,64})">\r?\n?([\s\S]*?)\r?\n?<\/pasted_content id="\1">\s*$/;
+
+/** The pasted text when `text` is entirely one Claude Code paste block; otherwise `text`. */
+export function unwrapWholePaste(text) {
+  const value = String(text ?? '');
+  const m = PASTE_WRAPPER_RE.exec(value);
+  return m ? m[2] : value;
+}
+
 export function leadingTurnOriginMarker(text) {
-  const firstLine = String(text ?? '').replace(/\r\n?/g, '\n').split('\n', 1)[0].trim();
+  const firstLine = unwrapWholePaste(text).replace(/\r\n?/g, '\n').split('\n', 1)[0].trim();
   return LEADING_TURN_ORIGIN_RE.test(firstLine)
     ? firstLine
     : null;
@@ -943,8 +963,11 @@ function scanNativeTranscriptMarker({
           let userPromptText = null;
           if (expectedPrompt) {
             if (row?.type !== 'user' || row?.message?.role !== 'user' ||
-                typeof row?.message?.content !== 'string' ||
-                row.message.content.replace(/\r\n?/g, '\n').trimEnd() !== expectedPrompt) continue;
+                typeof row?.message?.content !== 'string') continue;
+            // WI-10005628: a long typed prompt lands wrapped in a paste block.
+            const nativePrompt = row.message.content.replace(/\r\n?/g, '\n').trimEnd();
+            if (nativePrompt !== expectedPrompt &&
+                unwrapWholePaste(nativePrompt).trimEnd() !== expectedPrompt) continue;
           } else {
             const userContent = nativeUserPromptContent(row);
             if (userContent == null) continue;
@@ -977,7 +1000,7 @@ function scanNativeTranscriptMarker({
           // assistant echo certify a successor whose first prompt was different.
           const promptMarker = leadingTurnOriginMarker(userPromptText);
           const lostChars = allowTruncated
-            ? truncatedTurnOriginMarkerLoss(marker, userPromptText)
+            ? truncatedTurnOriginMarkerLoss(marker, unwrapWholePaste(userPromptText))
             : null;
           if (promptMarker === marker) return { nativeRef: path, lostChars: 0 };
           if (lostChars != null) return { nativeRef: path, lostChars };

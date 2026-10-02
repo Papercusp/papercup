@@ -302,6 +302,8 @@ export function shouldWriteHostDiagnostic({ bridgeTty, env }?: {
     bridgeTty?: boolean;
     env?: EnvironmentMap;
 }): boolean;
+/** The pasted text when `text` is entirely one Claude Code paste block; otherwise `text`. */
+export function unwrapWholePaste(text: any): string;
 export function leadingTurnOriginMarker(text: any): string | null;
 /** WI-10002752: Codex has no system-prompt CLI flag, so a carry-respawn's carry
  * document rides in the first TYPED turn (`mintCarryRespawnArgs` returns it as
