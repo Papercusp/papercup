@@ -132,6 +132,16 @@ async function seedGoal(opts: { status?: string; launchSettings?: unknown } = {}
     VALUES (${GOAL}, ${WS}, ${HARNESS}, ${'killed-holder goal'}, ${opts.status ?? 'active'},
             ${'The lost holder is replaced once and the original goal reads dormant.'}, ${1000},
             ${opts.launchSettings === undefined ? null : admin.json(opts.launchSettings as never)})`;
+  // Operating inputs require a budget, while this suite tests holder liveness.
+  // Give the launch gate an actual priced, goal-attributed measurement below
+  // that ceiling instead of relying on admission of an empty ledger.
+  const ts = Date.now();
+  await admin`
+    INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, bucket_key, provider, model_class, source, ingested_at,
+       harness_slug, goal_id, cost_usd)
+    VALUES (${WS}, ${ts}, ${'test:goal-holder'}, ${'anthropic'}, ${'test'},
+            ${'interactive'}, ${ts}, ${HARNESS}, ${GOAL}, ${0.01})`;
 }
 
 /**
@@ -237,6 +247,7 @@ beforeEach(async () => {
   await admin`DELETE FROM harness_shared.adv_sessions WHERE workspace_id = ${WS}`;
   await admin`DELETE FROM harness_shared.agent_mode_changes WHERE workspace_id = ${WS}`;
   await admin`DELETE FROM harness_shared.agent_modes WHERE workspace_id = ${WS}`;
+  await admin`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
   await admin`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
 });
 
