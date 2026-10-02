@@ -245,6 +245,42 @@ describe('retireRemeasuredPredecessors', () => {
   });
 });
 
+describe('re-measure never retires a clean-tree proof for a dirty-tree run (WI-10005451)', () => {
+  // Measured 2026-10-02 on WI-10001893: remeasure ran in the shared tree (test_run worktree_dirty=true)
+  // and retracted bindings whose run came from a lint:as-committed clone (worktree_dirty=false); the
+  // acceptance BAR rejects dirty runs, so the one-call repair downgraded an accepted proof.
+  const scope = { workspaceId: 'ws', harnessSlug: 'h', actorId: 'su-x', root: '/r' };
+  const prepared = [{ input: { planSlug: 'p', workItemId: 'WI-1', evidenceRef: 'test-run-group:new:0' } }] as never;
+  const withRun = (bound: unknown, worktreeDirty: boolean | null) =>
+    ({ ...(bound as object), testRunProvenance: { filePath: 'src/subject.test.ts', commitSha: 'abc', worktreeDirty } }) as never;
+  const selected = planTestEvidenceRemeasure([
+    withRun(row(10, { currentness: sourceStale }), false),
+    withRun(row(9, { currentness: sourceStale }), true),
+  ]).selected;
+
+  it('records which superseded rows were measured on a clean tree', () => {
+    expect(selected[0]).toMatchObject({ supersedes: [9, 10], cleanBindingIds: [10] });
+    expect(planTestEvidenceRemeasure([row(10, { currentness: sourceStale })]).selected[0]).not.toHaveProperty('cleanBindingIds');
+  });
+
+  it.each([true, null])('keeps the clean proof when the fresh run worktreeDirty=%s, and retires only the dirty one', async (dirty) => {
+    const list = vi.fn().mockResolvedValue([withRun(row(20, { evidenceRef: 'test-run-group:new:0' }), dirty)]);
+    const retract = vi.fn().mockResolvedValue({ status: 'retracted' });
+    const outcome = await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract });
+    expect(retract.mock.calls.map(([call]) => call.bindingId)).toEqual([9]);
+    expect(outcome[0]).toMatchObject({ replacementId: 20, retired: [9], cleanProofKept: { bindingIds: [10] } });
+    expect((outcome[0] as { cleanProofKept: { repair: string } }).cleanProofKept.repair).toContain('lint:as-committed');
+  });
+
+  it('lets a known-clean fresh run retire a clean predecessor', async () => {
+    const list = vi.fn().mockResolvedValue([withRun(row(20, { evidenceRef: 'test-run-group:new:0' }), false)]);
+    const retract = vi.fn().mockResolvedValue({ status: 'retracted' });
+    const outcome = await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract });
+    expect(retract.mock.calls.map(([call]) => call.bindingId)).toEqual([9, 10]);
+    expect(outcome[0]).not.toHaveProperty('cleanProofKept');
+  });
+});
+
 describe('re-measure names the reviewer judgment it cannot carry (WI-10004452)', () => {
   // Observed 2026-09-30 on plan jev-performance-improvements-2026-09-30: remeasure retired
   // hand-bound binding 17183 (adequacy.pathReachable/oracleIndependent/falsifiable plus

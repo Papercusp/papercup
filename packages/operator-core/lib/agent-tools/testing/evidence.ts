@@ -526,7 +526,10 @@ export type RemeasureSelection = { specId: string; testPath: string; bindingId: 
   /** Every live row of this recipe at this revision — withdrawn only once a fresh run PASSES. */
   supersedes: number[];
   /** Reviewer judgment those rows carried (WI-10004452): the fresh run will not reproduce it. */
-  judgment?: { fields: string[]; bindingIds: number[] } };
+  judgment?: { fields: string[]; bindingIds: number[] };
+  /** Those rows whose ledger run was a CLEAN tree (worktree_dirty=false, e.g. a lint:as-committed
+   * clone). Only a fresh run that is itself known-clean may retire them (WI-10005451). */
+  cleanBindingIds?: number[] };
 
 /** Evidence kinds a re-measure must ACCOUNT for, even when it cannot re-run them itself. */
 export const REMEASURE_EVIDENCE_KINDS = ['test', 'mutation'] as const;
@@ -623,6 +626,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
   const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number] | null; testPath: string; phase?: string }>();
   const members = new Map<string, number[]>();
   const judgments = new Map<string, { fields: Set<string>; bindingIds: number[] }>();
+  const clean = new Map<string, number[]>();
   for (const row of [...rows].sort((a, b) => b.id - a.id)) {
     // Counterexample proofs assert a SPECIFIC failure against a deliberately broken
     // subject; re-running them against moved code is not the same claim.
@@ -646,6 +650,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
     if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase: execution?.phase });
     if (row.specRevision === latest.get(key)!.row.specRevision) {
       members.set(key, [...(members.get(key) ?? []), row.id]);
+      if (row.testRunProvenance?.worktreeDirty === false) clean.set(key, [...(clean.get(key) ?? []), row.id]);
       const fields = reviewerJudgmentFields(row.details);
       if (fields.length > 0) {
         const judgment = judgments.get(key) ?? { fields: new Set<string>(), bindingIds: [] };
@@ -689,9 +694,11 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
       (overall !== 'unknown' && phase === 'source-changed' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason)))
     ) {
       const judgment = judgments.get(key);
+      const cleanIds = clean.get(key);
       selected.push({ ...base, staleReasons, ...(moved !== undefined ? { movedPaths: moved } : {}),
         binding: { ...binding, specRevision: row.specRevision }, supersedes: (members.get(key) ?? []).sort((a, b) => a - b),
-        ...(judgment ? { judgment: { fields: [...judgment.fields].sort(), bindingIds: [...judgment.bindingIds].sort((a, b) => a - b) } } : {}) });
+        ...(judgment ? { judgment: { fields: [...judgment.fields].sort(), bindingIds: [...judgment.bindingIds].sort((a, b) => a - b) } } : {}),
+        ...(cleanIds ? { cleanBindingIds: [...cleanIds].sort((a, b) => a - b) } : {}) });
     } else if (overall === 'unknown') skipped.push({ ...base, reason: 'unmeasurable', detail: row.currentness.unknownReasons.join(',').slice(0, 240) });
     else skipped.push({ ...base, reason: 'not-remeasurable', detail: [...staleReasons, phase ?? 'no-phase'].join(',') });
   }
@@ -747,8 +754,14 @@ export async function retireRemeasuredPredecessors(selected: readonly RemeasureS
         reason: `fresh run not a current pass (${execution?.phase ?? 'absent'}/${outcome ?? 'unknown'})` });
       continue;
     }
+    // WI-10005451: a remeasure runs in the SHARED tree, so its run is usually dirty. Retiring a
+    // clean (as-committed) proof for it downgrades the proof the acceptance BAR accepts into one
+    // it rejects. Only a fresh run that is itself known-clean may retire a clean predecessor.
+    const replacementClean = replacement.testRunProvenance?.worktreeDirty === false;
+    const cleanKept = replacementClean ? [] : (entry.cleanBindingIds ?? []).filter((id) => entry.supersedes.includes(id));
     const retired: number[] = [];
     for (const bindingId of entry.supersedes) {
+      if (cleanKept.includes(bindingId)) continue;
       const result = await deps.retract({ harnessSlug: scope.harnessSlug, bindingId, actorId: scope.actorId,
         reason: `superseded by re-measured binding ${replacement.id} (testing:run remeasureEvidence run ${runId}): measured paths moved since this proof` })
         .catch(() => null);
@@ -760,6 +773,11 @@ export async function retireRemeasuredPredecessors(selected: readonly RemeasureS
     const notCarried = (entry.judgment?.fields ?? []).filter((field) => !carried.has(field));
     const lostFrom = (entry.judgment?.bindingIds ?? []).filter((id) => retired.includes(id));
     outcomes.push({ specId: entry.specId, testPath: entry.testPath, replacementId: replacement.id, retired,
+      ...(cleanKept.length > 0
+        ? { cleanProofKept: { bindingIds: cleanKept,
+            reason: `fresh run ${replacement.testRunProvenance?.worktreeDirty === true ? 'ran on a dirty worktree' : 'has unknown worktree cleanliness'}; it may not retire a clean-tree proof`,
+            repair: `re-prove from a clean tree (npm run lint:as-committed -- <script> --keep, then testing:run the clone's test path), bind it, then retract ${cleanKept.join(', ')}` } }
+        : {}),
       ...(notCarried.length > 0 && lostFrom.length > 0
         ? { judgmentNotCarried: { fields: notCarried, fromBindingIds: lostFrom,
             repair: `re-verify against the current test source, then plans:bind-spec-evidence the run behind binding ${replacement.id} with this judgment` } }
