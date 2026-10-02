@@ -809,7 +809,12 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // subscription billing (test mode ships live with it OFF). case:
     // 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK both
     // stay 12. Count 34 → 35.
-    expect(offCount).toBe(35);
+    // 2026-10-02 (enterprise-data-sources-2026-10-01 P-016, WI-10005052) —
+    // papercusp-slack-org-connector, the gate on the customer-owned Slack
+    // organization connector, held dark until a legal read of Slack's 2025 API
+    // terms is on record. case: 'owner-authority', so the parking subset and
+    // DARK_FLAGS_HIGH_WATERMARK both stay 12. Count 35 → 36.
+    expect(offCount).toBe(36);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
