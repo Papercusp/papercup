@@ -197,7 +197,7 @@ describe('Phone candidate artifact pin', () => {
 case "$3:$4" in
   rev-parse:--show-toplevel) printf '%s\\n' "$PHONE_TEST_ROOT" ;;
   rev-parse:HEAD) printf '%s\\n' "$PHONE_TEST_REVISION" ;;
-  status:--porcelain) exit 0 ;;
+  status:--porcelain) [ -z "$PHONE_TEST_DIRTY" ] || printf '%s\\n' "$PHONE_TEST_DIRTY" ;;
   *) exit 2 ;;
 esac
 `, { mode: 0o700 });
@@ -217,6 +217,7 @@ esac
     expect(readFileSync(manifest, 'utf8')).toContain(`PHONE_ARTIFACT_PIN_V1 ${'a'.repeat(40)}`);
     expect(readFileSync(manifest, 'utf8')).not.toContain('private-pin-fixture-secret');
     expect(run(env, ['--verify-artifacts']).status).toBe(0);
+    expect(run({ ...env, PHONE_TEST_DIRTY: ' M apps/sidecar/src/server.ts' }, ['--verify-artifacts']).status).toBe(1);
     const completePin = readFileSync(manifest, 'utf8');
     writeFileSync(manifest, completePin.split('\n').slice(0, 3).join('\n') + '\n');
     expect(run(env, ['--verify-artifacts']).status).toBe(1);

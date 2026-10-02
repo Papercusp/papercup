@@ -109,8 +109,15 @@ phone_source_revision() {
   worker_root="$(git -C "$WORKER_DIR" rev-parse --show-toplevel)" || die "Phone worker is not in a git tree"
   sidecar_root="$(git -C "$SIDECAR_DIR" rev-parse --show-toplevel)" || die "Phone sidecar is not in a git tree"
   [[ "$worker_root" == "$sidecar_root" ]] || die "Phone worker and sidecar must share one source revision"
-  dirty="$(git -C "$worker_root" status --porcelain)" || die "cannot inspect Phone source changes"
-  [[ -z "$dirty" ]] || die "Phone source is not clean; pin a committed candidate"
+  # Peer test receipts and evidence may be in progress in the shared Phone
+  # checkout. They are not loaded by these production entrypoints; all other
+  # tracked/untracked source changes still refuse the pin.
+  dirty="$(git -C "$worker_root" status --porcelain --untracked-files=all -- . \
+    ':(exclude)docs/evidence/**' \
+    ':(exclude,glob)**/*.test.ts' \
+    ':(exclude,glob)**/*.integration.test.ts' \
+    ':(exclude,glob)**/*.e2e.test.ts')" || die "cannot inspect Phone source changes"
+  [[ -z "$dirty" ]] || die "Phone runtime source is not clean; pin a committed candidate"
   revision="$(git -C "$worker_root" rev-parse HEAD)" || die "cannot resolve Phone source revision"
   [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || die "invalid Phone source revision"
   printf '%s\n' "$revision"
