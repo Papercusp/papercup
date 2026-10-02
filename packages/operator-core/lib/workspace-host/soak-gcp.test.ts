@@ -1,10 +1,7 @@
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  WORKSPACE_HOST_SOAK_READ_ATTEMPTS,
-  WORKSPACE_HOST_SOAK_READ_RETRY_MS,
-  resolveGcpWorkspaceHostSoakSeams,
-} from './soak-gcp';
+import { resolveGcpWorkspaceHostSoakSeams } from './soak-gcp';
+import { WORKSPACE_HOST_SOAK_READ_ATTEMPTS, WORKSPACE_HOST_SOAK_READ_RETRY_MS } from './soak-ssh-probe';
 
 const desired = {
   hostId: 'host-soak',

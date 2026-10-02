@@ -120,6 +120,7 @@ export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> 
     | GradeRoutedIdeaResult['reason']
     | 'no-self-grade'
     | 'not-routed'
+    | 'agent-review-ledger-id-required'
     | NonNullable<AgentReviewGradePreflight['refusal']>;
   gradedBy: GradedBy;
   /** The resolved ledger key (null when a routedRef resolved to nothing). */
@@ -133,6 +134,10 @@ export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> 
   revisionWake?: RevisionWakeOutcome;
   /** D-003: work-item routing transition driven by this standing ledger grade. */
   agentReview?: AgentReviewReconcileOutcome;
+  /** Canonical pending-review ledger key when a bare work-item key collides. */
+  ledgerIdeaId?: string;
+  /** Ready-to-use retry args for a refused bare-key review collision. */
+  gradeWith?: { ideaId: string };
 }
 
 export const gradeIdeaArgs = z
@@ -237,6 +242,35 @@ async function resolveIdeaIdFromKey(ideaId: string): Promise<string | null> {
      ORDER BY (idea_id = ${ideaId}) DESC, routed_at DESC
      LIMIT 1`;
   return rows[0]?.idea_id ?? null;
+}
+
+interface AgentReviewLedgerCollision {
+  workItemId: string;
+  ledgerIdeaId: string;
+}
+
+/** Refuse a bare work-item key that collides with a historical routed ledger row. */
+async function findAgentReviewLedgerCollision(ideaId: string): Promise<AgentReviewLedgerCollision | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ work_item_id: string; ledger_idea_id: string }[]>`
+    SELECT wi.feature_id AS work_item_id,
+           wi.payload #>> '{agentReview,ledgerIdeaId}' AS ledger_idea_id
+      FROM harness_shared.work_items wi
+     WHERE wi.feature_id = ${ideaId}
+       AND wi.status = 'open'
+       AND wi.payload #>> '{agentReview,status}' = 'pending'
+       AND NULLIF(btrim(wi.payload #>> '{agentReview,ledgerIdeaId}'), '') IS NOT NULL
+       AND wi.payload #>> '{agentReview,ledgerIdeaId}' <> ${ideaId}
+       AND EXISTS (
+         SELECT 1
+           FROM harness_shared.scout_routed_ideas historical
+          WHERE historical.workspace_id = wi.workspace_id
+            AND historical.idea_id = ${ideaId}
+            AND historical.routed_ref IS NOT NULL
+       )
+     LIMIT 1`;
+  const row = rows[0];
+  return row ? { workItemId: row.work_item_id, ledgerIdeaId: row.ledger_idea_id } : null;
 }
 
 const WORK_ITEM_ID_PREFIX = /^(?:WI|EI|F|PR)-/i;
@@ -524,6 +558,8 @@ export interface GradeIdeaDeps {
   resolveIdeaIdFromRef: typeof resolveIdeaIdFromRef;
   /** EI-15389: resolve an ideaId-keyed call (bare work-item id or full idea_id) to the ledger PK. */
   resolveIdeaIdFromKey: typeof resolveIdeaIdFromKey;
+  /** Detect a bare work-item key that would select a historical routed row. */
+  findAgentReviewLedgerCollision: typeof findAgentReviewLedgerCollision;
   /** Resolution-miss probe; a positive issue-family row is an unrouted candidate. */
   getWorkItem: WorkItemExistenceProbe;
   readIdeaSummary: typeof readIdeaSummary;
@@ -541,6 +577,7 @@ const defaultDeps: GradeIdeaDeps = {
   gradeRoutedIdea,
   resolveIdeaIdFromRef,
   resolveIdeaIdFromKey,
+  findAgentReviewLedgerCollision,
   getWorkItem: async (id) => getWorkItem(id),
   readIdeaSummary,
   readCreatedBy,
@@ -557,6 +594,25 @@ export async function runGradeIdea(
 ): Promise<GradeIdeaOutcome> {
   const gradedBy = deriveGradedBy(ctx);
   const feedback = clampText(args.feedback, LIMITS.ANNOTATION);
+
+  // A pending review owns the canonical ledger id in its work-item payload. If a
+  // bare work-item key is already routed as a different historical idea, do not
+  // let exact-id-first resolution grade that older row by accident.
+  const candidateId = args.ideaId != null ? candidateWorkItemId(args) : null;
+  if (args.ideaId != null && candidateId === args.ideaId) {
+    const collision = await deps.findAgentReviewLedgerCollision(args.ideaId);
+    if (collision) {
+      return {
+        applied: false,
+        reason: 'agent-review-ledger-id-required',
+        gradedBy,
+        ideaId: collision.ledgerIdeaId,
+        idea: null,
+        ledgerIdeaId: collision.ledgerIdeaId,
+        gradeWith: { ideaId: collision.ledgerIdeaId },
+      };
+    }
+  }
 
   // EI-15389: resolve the key to the real ledger PK. An ideaId-keyed call may
   // carry a bare routed work-item id (`EI-15375`) rather than the cycle-prefixed

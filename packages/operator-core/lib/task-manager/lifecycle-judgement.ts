@@ -163,7 +163,11 @@ export interface OpenLifecycleCandidateItem {
   harnessSlug: string | null;
   /** A claim is dispatch ownership, even when the item still has open status. */
   takenBy?: string | null;
-  /** Issue-family work-items store their claim holder in `assignee`, not `taken_by`. */
+  /**
+   * Holder as the engineer_issues VIEW names it (taken_by AS assignee). The base
+   * work_items table has no assignee column, so the real query never sets this;
+   * it exists only for callers and fakes that hand over view-shaped rows (WI-10005157).
+   */
   assignee?: string | null;
 }
 
@@ -1012,20 +1016,20 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       task_id: string;
       harness_slug: string | null;
       taken_by: string | null;
-      assignee: string | null;
     }>>`
       SELECT feature_id AS id,
              payload #>> '{processLifecycleCandidate,taskId}' AS task_id,
-             harness_slug, taken_by, assignee
+             harness_slug, taken_by
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          -- Open is not unclaimed: the judge leaves status open while working.
-         -- Feature-family rows store their holder in taken_by; issue-family rows
-         -- store it in assignee. A dead holder is released by the stale-claim
-         -- reaper; do not launch another judge against either still-owned form.
+         -- In this BASE table every family (feature AND issue) stores its holder
+         -- in taken_by. The 'assignee' column exists only on the engineer_issues
+         -- VIEW (taken_by AS assignee), so naming it here throws 42703 on every
+         -- pass (WI-10005157). A dead holder is released by the stale-claim
+         -- reaper; do not launch another judge against a still-owned item.
          AND (taken_by IS NULL OR taken_by = '')
-         AND (assignee IS NULL OR assignee = '')
          AND COALESCE(payload #>> '{processLifecycleCandidate,taskId}', '') <> ''
        ORDER BY updated_ts ASC, feature_id ASC
     `;
@@ -1034,7 +1038,6 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       taskId: row.task_id,
       harnessSlug: row.harness_slug ?? null,
       takenBy: row.taken_by,
-      assignee: row.assignee,
     }));
   },
 

@@ -976,6 +976,18 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       ]);
       await recordDirectOperationModelAttestation(getOrgPg().sql, context, evidence);
     },
+    checkGoalInferenceAdmission: async (ownerId) => {
+      const [{ activeWorkspaceId }, { getOrgPg }, { checkGoalInferenceAdmission }] = await Promise.all([
+        import('../workspace-registry'),
+        import('@papercusp/db-org'),
+        import('../goal-launch-settings'),
+      ]);
+      return checkGoalInferenceAdmission({
+        workspaceId: opts.workspace ?? activeWorkspaceId(),
+        ownerId,
+        sql: getOrgPg().sql,
+      });
+    },
     pool,
     codexPool,
     codexCliPool,

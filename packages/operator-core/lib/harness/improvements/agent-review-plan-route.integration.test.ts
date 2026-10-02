@@ -78,7 +78,7 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
     if (!process.env.KEEP_TEST_PG) await teardownTestPg();
   });
 
-  it('moves review authority before the plan upsert, then grades the fallback into approved', async () => {
+  it('moves review authority before the plan upsert, refuses the colliding bare key, then grades the fallback', async () => {
     const out = await runRouteIdea(
       { featureId: ID, rail: 'plan' },
       { isSuperuser: true, uiClientId: 'su-router', workspaceId: WS, harnessSlug: HARNESS },
@@ -122,6 +122,28 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
 
     const claimed = await claimAgentReview({ id: ID, reviewer: 'su-reviewer', harnessSlug: HARNESS });
     expect(claimed.claimed).toBe(true);
+
+    const bareGrade = await runGradeIdea(
+      { ideaId: ID, grade: 4, feedback: 'This must not land on the historical plan row.' },
+      { ownerId: 'su-reviewer', role: 'operator' },
+    );
+    expect(bareGrade).toMatchObject({
+      applied: false,
+      reason: 'agent-review-ledger-id-required',
+      ledgerIdeaId: FALLBACK,
+      gradeWith: { ideaId: FALLBACK },
+    });
+
+    const [historicalAfterRefusal] = await db.adminSql<{
+      human_grade: number | null;
+      human_feedback: string | null;
+    }[]>`
+      SELECT human_grade, human_feedback
+        FROM harness_shared.scout_routed_ideas
+       WHERE idea_id = ${ID}`;
+    expect(historicalAfterRefusal).toEqual({ human_grade: null, human_feedback: null });
+    const stillPending = await getWorkItem(ID, HARNESS);
+    expect((stillPending!.payload as { agentReview: { status: string } }).agentReview.status).toBe('pending');
 
     const graded = await runGradeIdea(
       { ideaId: FALLBACK, grade: 5, feedback: 'The proposal is ready for implementation.' },

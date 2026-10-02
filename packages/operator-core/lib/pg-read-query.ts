@@ -3672,8 +3672,15 @@ export function assertSingleReadStatement(raw: string): string {
  * CONSENT (or these tables revoked outright from whatever role agent SQL uses),
  * not merely workspace. Until one exists, THIS is the control — not a
  * belt-and-braces addition to a working one.
+ *
+ * `documents` is the vault table's name since migration 1327 (WI-10005071).
+ * `personal_documents` stays fenced because 1327 leaves a compat VIEW under that
+ * name for the release build that still reads it; that view reads the same
+ * rows. Drop the old name from this list only in the contract migration that
+ * drops the view, never before: an unfenced alias is a way into the mailbox.
  */
 const PERSONAL_VAULT_RELATIONS = [
+  'documents',
   'personal_documents',
   'personal_identities',
   'personal_identity_aliases',
@@ -3685,7 +3692,7 @@ const PERSONAL_VAULT_RELATIONS = [
 /**
  * Organization-corpus access-control relations (migration 1316, plan
  * enterprise-data-sources-2026-10-01 P-014). Organization documents themselves
- * live in `personal_documents` (scope='organization'), which the list above
+ * live in `documents` (scope='organization'), which the list above
  * already fences. These three decide WHO may read them: the source-derived
  * permission lists, their members, and the owner-configured mapping from a
  * provider identity (a Slack/Asana user) to a local user. Ad-hoc SQL against
@@ -3715,9 +3722,14 @@ function findFencedRelation(stripped: string, relations: readonly string[]): str
  *
  * Stripping literals and comments FIRST is what keeps the guard usable rather
  * than merely strict: auditing the vault's own schema — `WHERE relname =
- * 'personal_documents'`, or this file's own doc comments — stays allowed, because
- * there the name is a string, not a table reference. `personal_documents_id` does
- * not match either: `_` is a word character, so the trailing `\b` fails.
+ * 'documents'`, or this file's own doc comments — stays allowed, because
+ * there the name is a string, not a table reference. `documents_id` and
+ * `personal_documents` do not match `documents` either: `_` is a word character,
+ * so the `\b` on that side fails. That is also why each name is listed on its own.
+ *
+ * The match is on the bare identifier, so `documents` is fenced in any schema,
+ * not only harness_shared. That is deliberate (a fence errs closed); a table in
+ * another schema that happens to be named `documents` is read by quoting it.
  *
  * Absolute rather than grant-aware on purpose. This is a pure SQL helper with no
  * principal in scope; a consent check it cannot actually perform would be worse
@@ -3746,7 +3758,7 @@ export function personalVaultRefusal(rawSql: string): string | null {
     'here and no vault access is audited, so this door reads the mailbox that personal:search ' +
     'refuses without consent (WI-10001796). Use personal:search, which resolves your principal ' +
     "and requires a live owner grant. Reading vault SCHEMA is still fine — quote the name " +
-    "('personal_documents') so it is a literal rather than a table reference."
+    `('${hit}') so it is a literal rather than a table reference.`
   );
 }
 

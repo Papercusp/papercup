@@ -38,6 +38,7 @@ import {
   setWorkItemStateWithAliasInfo,
 } from '../work-items';
 import { isStrictOwnerActionCapability } from '../harness/improvements/agent-review-policy';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 export const BLOCKER_DEFAULT_REAPER_ACTOR = 'system:blocker-default-reaper';
 
@@ -79,7 +80,7 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
     const rows = await sql<Array<{ id: string; harness: string; payload: unknown }>>`
       SELECT w.feature_id AS id, w.harness_slug AS harness, w.payload AS payload
         FROM harness_shared.work_items w
-       WHERE w.status NOT IN ('done', 'dropped', 'resolved', 'closed')
+       WHERE NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          AND jsonb_typeof(w.payload->'externalBlockers') = 'array'
          AND EXISTS (
                SELECT 1 FROM jsonb_array_elements(w.payload->'externalBlockers') b

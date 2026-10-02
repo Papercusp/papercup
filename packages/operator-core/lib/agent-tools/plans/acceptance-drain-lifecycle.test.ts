@@ -72,7 +72,24 @@ const PLAN = 'drained-plan-2026-09-20';
 // this suite MOCKS to answer the acceptance-filing probe. Unpinned, a second
 // primary obligation appeared on the agenda below (measured 2026-09-22,
 // WI-2144525). It has its own suite; pin it empty here.
-const NO_OWNER_DIRECTIVES = { ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [] };
+//
+// The same applies to the plan-acceptance read itself (D-039): the reader's
+// DEFAULT `planAcceptance` dep now serves the PERSISTED closure observation
+// (goals/plan-closure-observations), not an inline gate evaluation, so with the
+// mocked `getOrgPg().sql` it resolved to "plan does not resolve" -> `unknown` /
+// `inspect` instead of the `due` / `repair` this lifecycle asserts (measured
+// 2026-10-01T22:42Z, run 20452719, before any consult-reconciliation edit).
+// This suite's subject is the drain -> filing -> obligation join over the MOCKED
+// gate verdict, so it pins the dep to that same verdict; the persisted-read path
+// has its own coverage in the plan-closure-observations tests.
+// Likewise the consult-reconciliation family (EI-23764501791910357): its default
+// dep reads harness_shared.consult_state, which this suite never seeds.
+const NO_OWNER_DIRECTIVES = {
+  ownerDirectives: async () => [],
+  waitingOn: async () => [],
+  consultReconciliations: async () => [],
+  planAcceptance: async (_workspaceId: string, planSlug: string) => M.evaluate(planSlug),
+};
 let currentBody: string;
 
 function planBody(status: string, itemStatus = 'done'): string {

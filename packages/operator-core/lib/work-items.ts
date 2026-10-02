@@ -1738,7 +1738,7 @@ export {
   type TerminalOwnerOriginHealReason,
 } from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
-import { ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
+import { ISSUE_FAMILY_ROUTE_KINDS, agentWorkCategoryWhereSql } from './work-nature/agent-work-predicate';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare
@@ -5520,6 +5520,10 @@ export async function claimWorkItem(
          -- can't bypass the auditor either — remote, un-admitted stays unclaimable
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
          AND ${autoPickableWhereSql(sql, ws)}
+         -- P-009 / D-022 pt 4 / D-024: a named claim cannot take a row that is not agent
+         -- work at all (a record, document or event, or human-audience work such as
+         -- email-draft-proposal). Category half only: readiness floors stay off this path.
+         AND ${agentWorkCategoryWhereSql(sql, 'target')}
          -- P-002 born-pending: duplicate screening is a second, orthogonal gate.
          AND ${(() => {
            const forceAdmission =

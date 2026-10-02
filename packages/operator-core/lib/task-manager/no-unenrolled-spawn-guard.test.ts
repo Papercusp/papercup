@@ -342,6 +342,21 @@ describe('bounded awaited process-group runners', () => {
     // this pins only the static guard's classification and path isolation.
   });
 
+  const mutationProbeFence = 'packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts';
+  const mutationProbeFenceSource = readFileSync(join(REPO_ROOT, mutationProbeFence), 'utf8');
+
+  it('allowlists the mutation-probe worker only while its deadline cleanup remains awaited', () => {
+    expect(KNOWN_DEFECTS.has(mutationProbeFence)).toBe(false);
+    expect(allow.get(mutationProbeFence)).toContain('request deadline');
+    expect(spawnTriggers(mutationProbeFence, mutationProbeFenceSource).detachedNotFalse).toBe(true);
+    expect(mutationProbeFenceSource).toContain('timer = setTimeout(');
+    expect(mutationProbeFenceSource).toContain('terminateSpawnTree(worker, detached)');
+    expect(mutationProbeFenceSource).toContain('await exited');
+    // A new path is still caught; only the reviewed, bounded real site is exempt.
+    expect(check(NEW, mutationProbeFenceSource)).toBe(true);
+    expect(check(mutationProbeFence, mutationProbeFenceSource)).toBe(false);
+  });
+
   const oddsmith = 'packages/operator-core/lib/harness/routines/oddsmith-cron-shared.ts';
   const source = readFileSync(join(REPO_ROOT, oddsmith), 'utf8');
 

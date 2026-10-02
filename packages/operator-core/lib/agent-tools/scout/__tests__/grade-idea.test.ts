@@ -50,6 +50,7 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
     // real ledger idea_id. Per-test overrides model the bare-work-item-id
     // resolution (a bare `EI-…` → the cycle-prefixed idea_id, or null on a miss).
     resolveIdeaIdFromKey: vi.fn(async (id: string) => id),
+    findAgentReviewLedgerCollision: vi.fn(async () => null),
     getWorkItem: vi.fn(async () => null),
     readIdeaSummary: vi.fn(async () => summary()),
     // D-012: default row is UNattributed (created_by null) — no self-grade path.
@@ -108,6 +109,28 @@ describe('gradeIdeaArgs validation', () => {
 });
 
 describe('runGradeIdea', () => {
+  it('refuses a bare work-item key that collides with a historical row and returns the canonical review key', async () => {
+    const deps = fakeDeps({
+      findAgentReviewLedgerCollision: vi.fn(async (workItemId: string) => ({
+        workItemId,
+        ledgerIdeaId: `agent-review:${workItemId}`,
+      })),
+    });
+
+    const out = await runGradeIdea({ ideaId: 'EI-42', grade: 4 }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'agent-review-ledger-id-required',
+      ledgerIdeaId: 'agent-review:EI-42',
+      gradeWith: { ideaId: 'agent-review:EI-42' },
+    });
+    expect(deps.findAgentReviewLedgerCollision).toHaveBeenCalledWith('EI-42');
+    expect(deps.resolveIdeaIdFromKey).not.toHaveBeenCalled();
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+    expect(deps.preflightAgentReviewGrade).not.toHaveBeenCalled();
+  });
+
   it("writes through C-2 with gradedBy 'auto-grader' for a mug ctx and returns the read-back summary", async () => {
     const deps = fakeDeps({
       readIdeaSummary: vi.fn(async () => summary({ humanGrade: 5, gradedBy: 'auto-grader', humanFeedback: 'love it' })),

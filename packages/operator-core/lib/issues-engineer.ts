@@ -3179,7 +3179,7 @@ export async function claimIssue(
        AND (
          ${sameHolderPredicate}
          ${agentReviewAdmission || selfFiledFalloutAdmission ? sql`OR TRUE` : sql``}
-         OR target.state IN ('resolved', 'closed', 'done', 'dropped')
+         OR target.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[])
          OR (
            COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
            AND COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${assignee}

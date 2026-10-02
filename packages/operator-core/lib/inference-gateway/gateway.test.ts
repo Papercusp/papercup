@@ -23,6 +23,7 @@ import {
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { createDurableGatewayAdmissionGovernor } from './durable-admission';
+import type { GatewayPayloadSpool } from './payload-spool';
 import { MemoryAdmissionQueueStore } from '../resource-governor/memory-admission-queue-store';
 import type { AdmissionRequest, AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import { OrgTxnTimeoutError } from '../pg-bounded-txn';
@@ -6328,4 +6329,88 @@ test('maintenance label rides tier 1 when the tier layer is on (never AIMD-shed,
   assert.equal(tierOf('compaction', map), 1);
   const { caps } = defaultTierCaps(24, tiersOfMap(map));
   assert.equal(caps[1], 24, 'tier 1 (incl. maintenance) may use the whole pool');
+});
+
+test('goal budget denial happens before body spool and provider dispatch', async () => {
+  let spoolCalls = 0;
+  let providerCalls = 0;
+  const payloadSpool: GatewayPayloadSpool = {
+    spool: async () => {
+      spoolCalls++;
+      throw new Error('goal budget should reject before spool');
+    },
+    read: async () => null,
+    retain: async () => {},
+    release: async () => {},
+    sweep: async () => 0,
+  };
+  await boot(
+    (_req, res) => {
+      providerCalls++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    {
+      payloadSpool,
+      checkGoalInferenceAdmission: async (ownerId) => {
+        assert.equal(ownerId, 'goal-owner');
+        return {
+          allowed: false,
+          status: 403,
+          code: 'goal_budget_exceeded',
+          message: 'goal budget reached',
+        };
+      },
+    },
+  );
+
+  const res = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { [OWNER_HEADER]: 'goal-owner', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-test', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  const body = (await res.json()) as { error?: { code?: string; message?: string } };
+
+  assert.equal(res.status, 403);
+  assert.equal(body.error?.code, 'goal_budget_exceeded');
+  assert.equal(body.error?.message, 'goal budget reached');
+  assert.equal(spoolCalls, 0);
+  assert.equal(providerCalls, 0);
+});
+
+test('goal budget measurement failure fails closed before body spool', async () => {
+  let spoolCalls = 0;
+  const payloadSpool: GatewayPayloadSpool = {
+    spool: async () => {
+      spoolCalls++;
+      throw new Error('goal budget should reject before spool');
+    },
+    read: async () => null,
+    retain: async () => {},
+    release: async () => {},
+    sweep: async () => 0,
+  };
+  await boot(
+    (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    {
+      payloadSpool,
+      checkGoalInferenceAdmission: async () => {
+        throw new Error('ledger unavailable');
+      },
+    },
+  );
+
+  const res = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { [OWNER_HEADER]: 'goal-owner', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-test', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  const body = (await res.json()) as { error?: { code?: string } };
+
+  assert.equal(res.status, 503);
+  assert.equal(body.error?.code, 'goal_budget_admission_unavailable');
+  assert.equal(spoolCalls, 0);
 });

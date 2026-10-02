@@ -74,6 +74,18 @@ export function agentWorkConsolidatedWhereSql(sql: postgres.Sql, alias: string |
   );
 }
 
+/**
+ * The CATEGORY half of the same function, for the by-id claim (claimWorkItem). It passes
+ * NULL for lane and needs_owner_action, so only nature = 'work' AND audience = 'agent' can
+ * refuse. Readiness floors (owner action, the observation lane) stay off the by-id path per
+ * work-item-dependency-edges-2026-08-02#D-008; whether a row is agent work at all is a
+ * category fact that never becomes ready, so it gates every door (D-022 point 4, D-024).
+ */
+export function agentWorkCategoryWhereSql(sql: postgres.Sql, alias: string | null = null) {
+  const p = columnPrefix(alias);
+  return sql.unsafe(`harness_shared.work_item_is_agent_work(${p}nature, ${p}audience, NULL, NULL)`);
+}
+
 /** The in-memory twin, for paths that hold a row rather than a query. Same truth table. */
 export function isAgentWork(row: {
   nature: string | null | undefined;

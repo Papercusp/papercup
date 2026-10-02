@@ -70,20 +70,29 @@ beforeEach(() => {
     if (!query.includes('FROM harness_shared.session_briefs')) throw new Error(`unexpected policy I/O: ${query}`);
     // The current control-anchor query reads the brief and launch identity
     // together. Six cache-header comparisons are null on this fresh fixture;
-    // both subqueries remain bound to the same owner/workspace pair.
+    // both subqueries remain bound to the same owner/workspace pair, followed
+    // by the two null exact-session selectors for this legacy replay context.
     expect(values).toEqual([
       'su-policy', 'ws-policy',
       ...Array(12).fill(null),
       'su-policy', 'ws-policy',
+      null, null,
     ]);
     return [{ control_state: h.state, control_generation: 7, workspace_id: 'ws-policy' }];
   });
   installControlAnchorKernelResolver(); // same installation as events/index at tool bootstrap
   setSessionConfinementResolver(() => null);
 });
-afterEach(() => {
+afterEach(async () => {
   setKernelEnforcementResolver(null);
   setSessionConfinementResolver(undefined);
+  // The production kernel deliberately turns failed authority reads into a
+  // denial. A broken SQL fake must also report its original failure here, so
+  // contract drift cannot masquerade as the confinement/audit verdict we test.
+  const reads = await Promise.allSettled(h.sql.mock.results
+    .filter(result => result.type === 'return')
+    .map(result => result.value));
+  expect(reads.filter(result => result.status === 'rejected'), 'policy fixture I/O failed').toEqual([]);
 });
 
 describe('admission replay policy fidelity', () => {

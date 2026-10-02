@@ -18,6 +18,7 @@ import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agen
 import { activeWorkspaceId } from '../../workspace-registry';
 import { classifyForRehome, isHarnessInScope, primeWorkScopePolicy, recordWorkScopeDecision } from '../../work-scope-policy';
 import { loadOwnAuthorPubkeys } from '../../work-items-admission';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /**
  * Every `harness_shared` relation carrying (workspace_id, harness_slug, feature_id)
@@ -88,7 +89,7 @@ async function findTitleIdentityTwin(workspaceId: string, id: string, from: stri
        AND t.feature_id <> s.feature_id
        AND t.payload #>> '{admissionIdentity,titleKey}' = s.payload #>> '{admissionIdentity,titleKey}'
      WHERE s.workspace_id = ${workspaceId} AND s.harness_slug = ${from} AND s.feature_id = ${id}
-       AND (t.status IS NULL OR t.status <> ALL (ARRAY['passed','deprecated','resolved','closed','done','dropped']::text[]))
+       AND (t.status IS NULL OR t.status <> ALL (${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
      ORDER BY t.created_ts DESC NULLS LAST
      LIMIT 1`;
   return rows[0]?.feature_id ?? null;

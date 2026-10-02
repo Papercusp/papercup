@@ -798,10 +798,12 @@ describe('runLifecycleJudgementSweep', () => {
     expect(result.openItems).toEqual([]);
     expect(result.judge.attempted).toBe(false);
     expect(spawn).not.toHaveBeenCalled();
-    expect(readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8'))
-      .toContain("AND (taken_by IS NULL OR taken_by = '')");
-    expect(readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8'))
-      .toContain("AND (assignee IS NULL OR assignee = '')");
+    const source = readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8');
+    expect(source).toContain("AND (taken_by IS NULL OR taken_by = '')");
+    // WI-10005157: this used to pin an assignee predicate, but harness_shared.work_items has
+    // no assignee column (only the engineer_issues view does), so every real pass threw 42703.
+    // The real-schema guard is lifecycle-judgement.integration.test.ts.
+    expect(source).not.toMatch(/AND \(assignee IS NULL/);
   });
 
   it('launches for an earlier open candidate even when this sweep finds no current candidate', async () => {

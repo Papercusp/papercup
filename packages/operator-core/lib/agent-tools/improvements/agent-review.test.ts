@@ -34,7 +34,14 @@ beforeEach(() => {
 
 describe('improvements:agent-review public door', () => {
   it('claims the requested second pending item without consuming the first', async () => {
-    h.claim.mockResolvedValue({ claimed: true, workItem: { id: 'WI-8', title: 'review me second' } });
+    h.claim.mockResolvedValue({
+      claimed: true,
+      workItem: {
+        id: 'WI-8',
+        title: 'review me second',
+        payload: { agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'agent-review:WI-8', round: 1 } },
+      },
+    });
 
     const out = await call({ mode: 'claim', id: 'WI-8' }, { harnessSlug: 'papercusp' });
 
@@ -48,12 +55,22 @@ describe('improvements:agent-review public door', () => {
       ok: true,
       mode: 'claim',
       claimed: true,
-      workItem: { id: 'WI-8', title: 'review me second' },
+      workItem: {
+        id: 'WI-8',
+        title: 'review me second',
+        payload: { agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'agent-review:WI-8', round: 1 } },
+      },
+      ledgerIdeaId: 'agent-review:WI-8',
+      gradeWith: { ideaId: 'agent-review:WI-8' },
     });
   });
 
   it('claim-next derives reviewer identity and concrete harness from the caller context', async () => {
-    h.claimNext.mockResolvedValue({ id: 'WI-7', title: 'review me' });
+    h.claimNext.mockResolvedValue({
+      id: 'WI-7',
+      title: 'review me',
+      payload: { agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'agent-review:WI-7', round: 1 } },
+    });
 
     const out = await call({ mode: 'claim-next' }, { harnessSlug: 'papercusp' });
 
@@ -62,7 +79,13 @@ describe('improvements:agent-review public door', () => {
       ok: true,
       mode: 'claim-next',
       claimed: true,
-      workItem: { id: 'WI-7', title: 'review me' },
+      workItem: {
+        id: 'WI-7',
+        title: 'review me',
+        payload: { agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'agent-review:WI-7', round: 1 } },
+      },
+      ledgerIdeaId: 'agent-review:WI-7',
+      gradeWith: { ideaId: 'agent-review:WI-7' },
     });
   });
 
