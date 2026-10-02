@@ -1165,6 +1165,63 @@ export interface GatewayCarryTrialBinding {
   } | null>;
 }
 
+export type GatewayGoalBudgetDecision =
+  | { readonly allowed: true }
+  | {
+      readonly allowed: false;
+      readonly status: 403 | 503;
+      readonly code: string;
+      readonly message: string;
+    };
+
+class GoalInferenceAdmissionRefusal extends Error {
+  constructor(
+    readonly status: 403 | 503,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GoalInferenceAdmissionRefusal';
+  }
+}
+
+function respondGoalInferenceAdmissionRefusal(
+  error: unknown,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  writeJson: (
+    response: http.ServerResponse,
+    status: number,
+    body: unknown,
+    extra?: Record<string, string>,
+  ) => void,
+): boolean {
+  if (!(error instanceof GoalInferenceAdmissionRefusal)) return false;
+  req.resume();
+  const retryable = error.status === 503;
+  if (!res.headersSent) {
+    writeJson(
+      res,
+      error.status,
+      {
+        type: 'error',
+        error: {
+          type: retryable ? 'overloaded_error' : 'permission_error',
+          code: error.code,
+          message: error.message,
+        },
+        gateway: true,
+      },
+      retryable
+        ? { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC), 'x-should-retry': 'true' }
+        : { 'x-should-retry': 'false' },
+    );
+  } else if (!res.destroyed) {
+    res.destroy();
+  }
+  return true;
+}
+
 export interface GatewayDeps {
   /** Dedicated bounded-trial gateway only. No production grant issuer is implied.
    * When bound, every request is authenticated and only Codex HTTP Responses
@@ -1190,6 +1247,8 @@ export interface GatewayDeps {
   admissionGovernor?: GatewayAdmissionGovernor;
   /** Optional parent lineage when the gateway is itself running under a governed request. */
   admissionParent?: AdmissionContext | null;
+  /** Per-turn goal budget check; runs before body spool and durable admission. */
+  checkGoalInferenceAdmission?: (ownerId: string) => Promise<GatewayGoalBudgetDecision>;
   /** Single-account fallback: a fresh bearer for the bound account (the resolver's `current`).
    *  Superseded by `pool` when present. */
   token?(): Promise<string>;
@@ -9865,7 +9924,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    * outlive its socket) from every lane. Measured at the split: two of the three entry sites
    * cross this governor, and for `localOpenAiChat` it is the ONLY real admission it has.
    *
-   * `async` because the spool must persist the body BEFORE the admission decision is taken.
+   * `async` because the spool must persist the body BEFORE the durable admission decision is taken.
    * Callers already treat the result as a promise, so this is not a contract change — the
    * bypass path below still returns without awaiting anything.
    */
@@ -9902,9 +9961,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // happens to pass — is what implements the deliberate UNQUEUED path for codex
     // `/v1/models`, so metadata is never starved behind an Anthropic storm.
     if (gatewayAdmissionBypassKeyForRequest(opts.req.method, opts.req.url)) return execute();
-    // D-004: the body is persisted BEFORE the admission decision, so queue depth stops scaling
+    // D-004: after the goal-budget preflight, the body is persisted BEFORE durable admission,
+    // so queue depth stops scaling
     // resident memory and the receipt can be executed after this socket is gone. A client that
     // already spooled its own payload passes the ref explicitly and is left alone.
+    if (ownerId && deps.checkGoalInferenceAdmission) {
+      let decision: GatewayGoalBudgetDecision;
+      try {
+        decision = await deps.checkGoalInferenceAdmission(ownerId);
+      } catch {
+        throw new GoalInferenceAdmissionRefusal(
+          503,
+          'goal_budget_admission_unavailable',
+          'goal budget could not be verified; inference is refused before provider dispatch',
+        );
+      }
+      if (!decision.allowed) {
+        throw new GoalInferenceAdmissionRefusal(decision.status, decision.code, decision.message);
+      }
+    }
     const clientPayloadRef = (opts.req.headers['x-papercusp-payload-ref'] as string | undefined)?.trim() || undefined;
     let spooledPayloadRef = clientPayloadRef;
     if (!clientPayloadRef) {
@@ -10764,6 +10839,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         lane: gatewayLaneRegistry.localOpenAiChat,
         task: () => proxyLocal(req, res, localUrl),
       }).catch((e) => {
+        if (respondGoalInferenceAdmissionRefusal(e, req, res, sendJson)) return;
         markRequestGatewayError(req);
         log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
         if (!res.headersSent)
@@ -10795,6 +10871,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         lane: providerAdapters.codex.lane,
         task: () => proxyOpenAi(req, res, url, passThroughLaneAdmission),
       }).catch((e) => {
+        if (respondGoalInferenceAdmissionRefusal(e, req, res, sendJson)) return;
         codexUpstreamErrors++;
         log('error', `codex models handler crashed: ${(e as Error).message}`);
         if (!res.headersSent)
@@ -10960,6 +11037,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           ? proxyOpenAi(req, res, url, providerLaneAdmission)
           : proxy(req, res, url, providerLaneAdmission),
     }).catch((e) => {
+      if (respondGoalInferenceAdmissionRefusal(e, req, res, sendJson)) return;
       // D-003 permits a request to fail for invalid input or an inability to persist truthfully —
       // and for nothing else. These two branches are those cases; both happen BEFORE admission, so
       // no receipt exists and no upstream work has started.
