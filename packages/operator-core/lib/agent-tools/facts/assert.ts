@@ -1149,6 +1149,8 @@ export default defineTool({
       // enforcement above.
       ...(args.permanent !== undefined ? { permanent: args.permanent } : {}),
       createdBy: identity.ownerId,
+      // P-012 / D-006: a writer holding a restricted disclosure stores a sealed stub.
+      writerOwnerId: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
     };

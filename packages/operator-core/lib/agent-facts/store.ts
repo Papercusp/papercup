@@ -944,6 +944,13 @@ export interface AssertFactInput {
   recheck?: FactRecheck | null;
   createdBy: string;
   /**
+   * personal-data-reader-set-labels P-012 / D-006: the agent identity that
+   * authored the body. While it holds a restricted Personal Vault disclosure the
+   * stored body is a sealed stub (personal:open-sealed opens it). Omit for
+   * system writers, which hold no disclosures.
+   */
+  writerOwnerId?: string | null;
+  /**
    * P-001 (facts-require-explicit-expiry-2026-09-02) — one half of the REQUIRED
    * lifetime declaration; see {@link validateFactLifetime}. There is no silent 7d
    * fallback any more: a write that declares no lifetime AT ALL is refused. A
@@ -1785,6 +1792,20 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     );
   }
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
+  // personal-data-reader-set-labels P-012 / D-006: a writer holding a restricted
+  // Personal Vault disclosure stores a sealed stub; the body moves to the sealed
+  // store in THIS transaction, so it never lands on the shared row in the clear.
+  const storedBody = input.writerOwnerId?.trim()
+    ? (
+        await sealSharedTextInTxOrRefuse(sql, {
+          workspaceId: ws,
+          writerOwnerId: input.writerOwnerId,
+          store: 'fact',
+          text: body,
+          context: { scope: input.scope, scopeRef: ref, key },
+        })
+      ).text
+    : body;
   // EI-18681964809855890: an explicit ttlSec always wins; otherwise a
   // provisional/suspected confidence tier supplies its documented short TTL
   // (see defaultTtlSecForConfidence). Ordinary writes are validated above and
@@ -1977,7 +1998,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        -- it (never NULL it back out) — carried forward off the superseded row,
        -- since there is no longer an UPDATE branch to COALESCE against.
        COALESCE(${input.potHomeSlug ?? null}, (SELECT harness_slug FROM superseded)),
-       ${input.scope}, ${ref}, ${key}, ${body},
+       ${input.scope}, ${ref}, ${key}, ${storedBody},
        ${input.sourceRef ?? null}, ${input.createdBy ?? null},
        ${permanentFact ? sql`'infinity'::timestamptz` : sql`now() + make_interval(secs => ${ttl})`},
        ${input.shareable === true},

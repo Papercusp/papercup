@@ -39,6 +39,9 @@ import { resolveFactFederationSlug } from '../../agent-facts/store';
 import { hardText, LIMITS } from '../limits';
 import { coerceMemoryKind } from './remember-coerce';
 import { trackDetached } from '../../detached-imports';
+import { sealSharedText } from '../../personal-vault/shared-store-seal';
+import { DisclosureRefused } from '../../personal-vault/disclosure-ledger';
+import { disclosureSubject } from '../_disclosure-subject';
 
 // The store holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
 // The `ephemeral` kind was retired — ephemeral state belongs in coord (delta-
@@ -328,6 +331,29 @@ export default defineTool({
     } else {
       scopeKey = user.id;
       scope = 'user';
+    }
+
+    // personal-data-reader-set-labels P-012 / D-006: a harness/hive pool is read by
+    // every agent in it, so a writer holding a restricted Personal Vault disclosure
+    // stores a sealed stub there. Sealed BEFORE anchor extraction and the
+    // write-ahead journal, both of which persist the content. Owner-scoped (user)
+    // memory is read only by its owner and is never sealed.
+    if (scope !== 'user') {
+      try {
+        const sealed = await sealSharedText(getOrgPg().sql, {
+          workspaceId: ctx.principal?.workspaceId ?? ctx.workspaceId,
+          writerOwnerId: disclosureSubject(ctx),
+          store: 'memory',
+          text: args.content,
+          context: { scope: scopeKey, kind: args.kind },
+        });
+        if (sealed.sealed) args = { ...args, content: sealed.text };
+      } catch (error) {
+        if (!(error instanceof DisclosureRefused)) throw error;
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, stored: false, reason: error.code, message: error.message }) }],
+        };
+      }
     }
 
     // Supersession authorization/link-integrity preflight. The target must be
