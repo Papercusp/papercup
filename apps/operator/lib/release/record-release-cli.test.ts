@@ -867,9 +867,9 @@ describe('R-6 Android result falsifier detector', () => {
   const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
 
   it('rejects empty, skipped, failed, errored, and missing instrumentation results', () => {
-    // The maintained Android runner guard matrix takes about 47 seconds on the
-    // current mobile tree. Bound the synchronous child directly; Vitest cannot
-    // interrupt spawnSync while its event loop is blocked.
+    // The maintained Android runner guard matrix takes tens of seconds.
+    // Bound its synchronous child directly; Vitest cannot interrupt spawnSync
+    // while its event loop is blocked.
     const result = spawnSync('make', ['test-android-runner'], {
       cwd: mobileDir,
       encoding: 'utf8',
