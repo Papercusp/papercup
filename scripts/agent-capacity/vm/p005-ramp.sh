@@ -49,6 +49,28 @@ CACHE=${AGENT_CAPACITY_CACHE:-$HOME/.cache/agent-capacity}
 FP=$HOME/capacity/fp
 mkdir -p "$FP" || exit 1
 ts() { date -u +%FT%TZ; }
+# A shared tree (WORKDIR=shared) runs no git-sync. A replayed git that is killed mid-write (a session
+# hitting its wall limit) therefore leaves .git/index.lock behind, and every later git write in the tree
+# fails for the rest of the run (EI-24863025873375990: 25 min on cap-wi5384). Mirror git-sync's
+# clearStaleGitLock: unlink the lock once it is STALE_LOCK_SEC old and no git process runs inside the tree.
+STALE_LOCK_SEC=${STALE_LOCK_SEC:-90}
+LOCK_REAP_SEC=${LOCK_REAP_SEC:-15}
+git_in_tree() { # <tree>: is any live git process's cwd inside it?
+  local p c
+  for p in $(pgrep -x git); do
+    c=$(readlink "/proc/$p/cwd" 2>/dev/null) || continue
+    case "$c/" in "$1"/*) return 0 ;; esac
+  done
+  return 1
+}
+reap_stale_lock() { # <tree> <log>: one reap attempt; a reap appends one line to <log>
+  local l="$1/.git/index.lock" m age
+  m=$(stat -c %Y "$l" 2>/dev/null) || return 0
+  age=$(($(date +%s) - m))
+  [ "$age" -ge "$STALE_LOCK_SEC" ] || return 0
+  git_in_tree "$1" && return 0
+  rm -f "$l" && echo "$(ts) reaped $l age=${age}s" >> "$2"
+}
 ooms() { awk '$1=="oom_kill"{print $2; f=1} END{if(!f) print 0}' "$SLICE/memory.events" 2>/dev/null || echo 0; }
 sel=()
 [ "$SELECT" = all ] || sel=(--select "$SELECT")
@@ -83,12 +105,21 @@ for n in $STEPS; do
   echo "RAMP_STEP_START $run n=$n $(ts)"
   [ -z "$parked" ] || echo "RAMP_STEP_PARKED $run parked=$parked release_at_sec=$PARK_RELEASE_SEC"
   t0=$(date +%s)
+  reaper=''
+  if [ "$WORKDIR" = shared ]; then
+    : > "$FP/$run.lock-reaps.log"
+    (while :; do reap_stale_lock "$CACHE/prepared/papercusp" "$FP/$run.lock-reaps.log"; sleep "$LOCK_REAP_SEC"; done) &
+    reaper=$!
+  fi
   npx tsx "$S/load-driver.ts" --agents "$n" --duration-sec "$DUR" --stagger-ms 1000 "${sel[@]}" "${tasks[@]}" \
     --run-id "$run" --isolation systemd --workdir "$WORKDIR" ${AGENT_ENV:+--agent-env "$AGENT_ENV"} \
     ${parked:+--parked "$parked" --park-at-request "$PARK_AT_REQUEST" --release-at-sec "$PARK_RELEASE_SEC"} >"$FP/$run.driver.log" 2>&1
   rc=$?
-  # A shared tree keeps every session's edits; record how far it has drifted from its checkout.
-  [ "$WORKDIR" != shared ] || echo "RAMP_SHARED_TREE run=$run dirty=$(git -C "$CACHE/prepared/papercusp" status --porcelain 2>/dev/null | wc -l)"
+  [ -z "$reaper" ] || { kill "$reaper" 2>/dev/null; wait "$reaper" 2>/dev/null; }
+  # A shared tree keeps every session's edits; record how far it has drifted from its checkout, and
+  # how many stale index.locks were reaped (a step with reaps had git writes failing for up to
+  # STALE_LOCK_SEC + LOCK_REAP_SEC each, so read its numbers with that in mind).
+  [ "$WORKDIR" != shared ] || echo "RAMP_SHARED_TREE run=$run dirty=$(git -C "$CACHE/prepared/papercusp" status --porcelain 2>/dev/null | wc -l) lock_reaps=$(wc -l < "$FP/$run.lock-reaps.log")"
   elapsed=$(($(date +%s) - t0))
   kill "$sampler" 2>/dev/null || true
   systemctl --user stop "hold-capdrv-$run" 2>/dev/null || true

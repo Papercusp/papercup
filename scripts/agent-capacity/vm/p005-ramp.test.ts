@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -38,6 +38,7 @@ describe('vm/p005-ramp.sh (faked systemd-run/systemctl/npx and the sampler)', ()
   echo "DRIVER_CHECK_OK sessions=6 corpus=x tasks=6"; exit 0 ;;
 esac
 echo "$@" >> "${home}/npx.log"
+[ -n "\${FAKE_DRIVER_SLEEP:-}" ] && sleep "\${FAKE_DRIVER_SLEEP}"
 n=""; run=""
 while [ $# -gt 0 ]; do case "$1" in --agents) n=$2; shift;; --run-id) run=$2; shift;; esac; shift; done
 slow=1.05
@@ -129,7 +130,64 @@ printf '{"runs":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"a
     expect(readFileSync(path.join(home, 'npx.log'), 'utf8')).toContain(
       '--run-id p005-p529-b-n12 --isolation systemd --workdir shared --agent-env PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE=papercusp-tsc-service',
     );
-    expect(r.stdout).toMatch(/^RAMP_SHARED_TREE run=p005-p529-b-n12 dirty=\d+$/m);
+    expect(r.stdout).toMatch(/^RAMP_SHARED_TREE run=p005-p529-b-n12 dirty=\d+ lock_reaps=0$/m);
+  });
+
+  // EI-24863025873375990: a shared tree runs no git-sync, so a stale index.lock must be reaped by the ramp.
+  describe('shared tree: stale index.lock reaper', () => {
+    const tree = () => path.join(home, '.cache', 'agent-capacity', 'prepared', 'papercusp');
+    const lock = () => path.join(tree(), '.git', 'index.lock');
+    const plantLock = (ageSec: number) => {
+      mkdirSync(path.join(tree(), '.git'), { recursive: true });
+      writeFileSync(lock(), '');
+      const t = Date.now() / 1000 - ageSec;
+      utimesSync(lock(), t, t);
+    };
+    const reapEnv = { WORKDIR: 'shared', LOCK_REAP_SEC: '1', FAKE_DRIVER_SLEEP: '2' };
+
+    it('reaps a lock older than STALE_LOCK_SEC with no git inside the tree, and counts it on the step line', () => {
+      plantLock(200);
+      const r = run(reapEnv, 'p529-b', 'all', '12');
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(lock())).toBe(false);
+      expect(r.stdout).toMatch(/^RAMP_SHARED_TREE run=p005-p529-b-n12 dirty=\d+ lock_reaps=1$/m);
+      expect(readFileSync(path.join(home, 'capacity', 'fp', 'p005-p529-b-n12.lock-reaps.log'), 'utf8')).toMatch(
+        /reaped .*index\.lock age=\d+s/,
+      );
+    });
+
+    it('keeps a lock younger than STALE_LOCK_SEC (a live writer may hold it)', () => {
+      plantLock(5);
+      const r = run(reapEnv, 'p529-b', 'all', '12');
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(lock())).toBe(true);
+      expect(r.stdout).toMatch(/lock_reaps=0$/m);
+    });
+
+    it('keeps an old lock while a git process runs inside the tree', () => {
+      plantLock(200);
+      // A process whose comm is exactly "git" (a #!/bin/bash script named git) with its cwd in the tree.
+      const holderDir = path.join(home, 'holder');
+      mkdirSync(holderDir);
+      writeFileSync(path.join(holderDir, 'git'), '#!/bin/bash\nsleep 30\n');
+      chmodSync(path.join(holderDir, 'git'), 0o755);
+      const holder = spawn(path.join(holderDir, 'git'), [], { cwd: tree(), stdio: 'ignore' });
+      try {
+        const r = run(reapEnv, 'p529-b', 'all', '12');
+        expect(r.status, r.stderr).toBe(0);
+        expect(existsSync(lock())).toBe(true);
+        expect(r.stdout).toMatch(/lock_reaps=0$/m);
+      } finally {
+        holder.kill('SIGKILL');
+      }
+    });
+
+    it('a private workdir runs no reaper, even with a stale lock in the prepared tree', () => {
+      plantLock(200);
+      const r = run({ LOCK_REAP_SEC: '1', FAKE_DRIVER_SLEEP: '2' }, 'p529-a', 'all', '12');
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(lock())).toBe(true);
+    });
   });
 
   it('without AGENT_ENV no --agent-env is passed, and a private workdir prints no shared-tree line', () => {
