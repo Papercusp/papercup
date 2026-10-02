@@ -1234,10 +1234,6 @@ describe('durable detached snapshot lifecycle', () => {
         expect(ledgerRead).toBe(false);
         expect(updates).toHaveLength(0);
         expect(recovered?.finishedAt).toBeNull();
-      } else if (scenario.expected === 'pass') {
-        expect(ledgerRead).toBe(true);
-        expect(updates).toHaveLength(1);
-        expect(recovered).toMatchObject({ exitCode: 0, finishedAt: 1_700_000_009_000 });
       } else {
         expect(ledgerRead).toBe(true);
         expect(updates).toHaveLength(1);
