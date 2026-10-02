@@ -17,6 +17,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import {
+  AppRelayRateLimiter,
+  InMemoryHostedAppRelayUsageStore,
   PORTAL_MINT_ROUTE_PATH,
   PORTAL_TOKEN_ROUTE_PATH,
   decideAppHttpRoute,
@@ -297,7 +299,12 @@ describe('the mint and token routes are reachable from neither relay plane (P-32
 describe("the portal MCP 401 names the workspace's authorization server (P-325)", () => {
   // The relay classifies the server-authenticated connector before checking
   // the app key. Use the real empty broker; no machine is connected here.
-  const deps = { port: new HostedWorkspaceSessionBroker() } as HostedAppRelayDependencies;
+  const deps: HostedAppRelayDependencies = {
+    port: new HostedWorkspaceSessionBroker(),
+    usage: new InMemoryHostedAppRelayUsageStore(),
+    rate: new AppRelayRateLimiter(100),
+    limits: { requestsPerMinute: 100, monthlyBandwidthBytes: 1024 * 1024 },
+  };
   it('carries resource_metadata on /mcp, and a plain Bearer challenge on tool calls', async () => {
     const mcp = await handleHostedAppRelay(new Request('https://app.papercusp.com/api/workspaces/ws-1/mcp', { method: 'POST' }), deps);
     expect(mcp.status).toBe(401);
