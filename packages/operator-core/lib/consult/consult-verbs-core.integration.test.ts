@@ -1744,7 +1744,8 @@ describe('consultReconcileCore', () => {
         { workspaceId: WS, authorId: REQUESTER, conversationId: 'conv-v-nope', disposition: 'confirmed', note: 'x' },
         deps,
       ),
-    ).toEqual({ error: 'not_a_consult' });
+      // a short, non-full-shaped id earns the truncated-ref hint, so match the code only
+    ).toMatchObject({ error: 'not_a_consult' });
     expect((await stateRow(id)).outcome).toBeNull();
   });
 
