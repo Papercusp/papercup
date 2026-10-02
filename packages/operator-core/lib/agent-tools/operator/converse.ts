@@ -40,6 +40,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool, lookupByMcpName, resolveBearer } from '@papercusp/agent-mcp';
+import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { agentSpawnTransformConfigured } from '@papercusp/papercusp-shared/agent';
 import { runAgentChat, resolveBackend } from '../../agent-chat-stream';
 import { readAgentConfig, surfaceBackend, surfaceModel } from '../../agent-config';
@@ -80,6 +81,8 @@ import {
 import { agentBackendCredentialVerdict } from '../../agent-auth-detect';
 import { brainNoOutputMessage, type BrainAttemptOutcome, type SkippedBrainFailover } from './converse-failure';
 import { tutorialHelpContext, tutorialHelpContextSchema } from '../../onboarding/cloud-tutorial-help';
+
+const CONVERSE_PI_SESSION_TTL_MS = 30 * 60 * 1000;
 
 const MessageSchema = z.object({
   role: z.union([z.literal('user'), z.literal('assistant'), z.literal('system')]),
@@ -341,9 +344,10 @@ export default defineTool({
     const selectedOperatorTools: readonly string[] = selectConverseTools({
       role,
       hostTrust,
+      agentRunsAsCustomer: hostedCustomerIdentity,
       publicDoorNames: () => capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
     });
-    const operatorTools: readonly string[] = input.lessonContext || !principalOk || hostedCustomerIdentity
+    const operatorTools: readonly string[] = input.lessonContext || !principalOk
       ? []
       : hostTrust === 'public' && publicPrincipal
         ? selectedOperatorTools.filter((fullName) => {
@@ -467,6 +471,38 @@ export default defineTool({
         && /^(?:llm-testing\/)?[0-9a-fA-F-]{16,128}$/.test(input.uiClientId)
         ? input.uiClientId
         : null;
+    // D-421: the customer OS identity gets a workspace-bound PI principal with
+    // only the exact customer-safe chat tools and their declared capabilities.
+    // The route does not carry a hosted membership principal, so this scope is
+    // deliberately derived from the existing owned-loop tool selection; it is
+    // never copied from the operator's '*' principal.
+    const customerPiToolNames = operatorTools.map((name) => name.replace(/^mcp__agentmcp__/, ''));
+    let customerPiSession: Awaited<ReturnType<typeof startPiSession>> | null = null;
+    if (hostedCustomerIdentity && principalOk && customerPiToolNames.length > 0) {
+      const unknownTool = customerPiToolNames.find((name) => !lookupByMcpName(name));
+      if (unknownTool) throw new Error(`operator converse customer tool is not registered: ${unknownTool}`);
+      const capabilities = [...new Set(
+        customerPiToolNames.flatMap((name) => lookupByMcpName(name)!.capabilities),
+      )].sort();
+      customerPiSession = await startPiSession({
+        workspaceId,
+        sessionId: `operator-converse-${globalThis.crypto.randomUUID()}`,
+        capabilities,
+        allowedTools: customerPiToolNames,
+        expiresAt: new Date(Date.now() + CONVERSE_PI_SESSION_TTL_MS),
+      });
+    }
+    const revokeCustomerPiSession = async (): Promise<void> => {
+      if (!customerPiSession) return;
+      try {
+        await endPiSession(workspaceId, customerPiSession.sessionId);
+      } catch (err) {
+        // The durable expires_at is the crash/revocation backstop; a cleanup
+        // failure must not erase the completed chat result.
+        console.warn('[operator:converse] PI session cleanup failed:', err instanceof Error ? err.message : err);
+      }
+    };
+
     // The agentmcp HTTP MCP mount (converse-toolset.ts) — one set feeds BOTH the
     // `?tools=` allowlist and `--allowed-tools`, so the listed surface and the
     // callable surface stay identical by construction. chat:ask_choice is on
@@ -474,7 +510,8 @@ export default defineTool({
     // state-channel `openCards` snapshot (Phase 2a). `?tools=` shrinks the
     // /api/mcp surface to the selected set, loaded NON-deferred, so Claude Code
     // stops ToolSearch-flailing over a giant deferred catalog (P-009).
-    //   owner trust  → `superuser=1` + the on-disk superuser token (unchanged).
+    //   owner trust  → `superuser=1` + the on-disk superuser token, except for
+    //                  customer-run brains, which get their short-lived PI token.
     //   public trust → NO superuser param, NO disk token — ever (D-007 §2): the
     //                  per-user boundary's own bearer (input.principalToken) or
     //                  no mount at all, so a public brain never borrows the
@@ -494,7 +531,9 @@ export default defineTool({
       uiClientId,
       superuserToken: hostTrust === 'owner' && !hostedCustomerIdentity ? readSuperuserToken() : '',
       agentRunsAsCustomer: hostedCustomerIdentity,
-      principalToken: hostTrust === 'public' ? (input.principalToken ?? null) : null,
+      principalToken: hostTrust === 'public'
+        ? (input.principalToken ?? null)
+        : (customerPiSession?.bearer ?? null),
     });
     const mcpConfig =
       principalOk && mount
@@ -671,6 +710,7 @@ export default defineTool({
           }
         }
       } catch (err) {
+        await revokeCustomerPiSession();
         throw new Error(
           `operator converse failed: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -717,6 +757,10 @@ export default defineTool({
         }
       }
     }
+
+    // Revoke the customer-run bearer as soon as the model stream is finished.
+    // expires_at remains the durable fallback if the host dies before here.
+    await revokeCustomerPiSession();
 
     // Definitive failure: nothing produced across all attempts. Surface
     // it as an error rather than masquerading a dead brain as an empty

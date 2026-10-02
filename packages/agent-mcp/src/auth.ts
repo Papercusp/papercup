@@ -7,11 +7,11 @@
  *   - kind='harness' → harness's role config (out of scope for MCP v1;
  *     this server doesn't admit harness bearers as direct callers).
  *   - kind='system'  → harness_shared.system_principals.capabilities
- *   - kind='pi'      → harness_shared.pi_sessions.capabilities (only if
- *     ended_at IS NULL).
+ *   - kind='pi'      → harness_shared.pi_sessions.capabilities plus an
+ *     optional exact tool-name scope (only if not ended and expires_at is future).
  *
  * In-memory cap state is keyed by (workspace_id, principal_slug) in a
- * bounded TTL+LRU cache (negative results included). Capability writes
+ * bounded TTL+LRU cache (negative results included). Principal writes
  * (provisioning.ts) emit a NOTIFY on PRINCIPAL_INVALIDATE_CHANNEL that
  * this module LISTENs to in order to invalidate eagerly; the TTL bounds
  * staleness if the LISTEN is unavailable.

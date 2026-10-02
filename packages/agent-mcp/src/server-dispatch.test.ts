@@ -102,6 +102,30 @@ describe('dispatch — control flow', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it('enforces an exact PI tool allowlist even when capabilities include the wildcard', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['*']),
+      allowedTools: new Set(['test:other']),
+    } as never);
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'authorization_denied' } });
+    expect(res.error?.message).toContain('not allowed to call tool');
+    expect(handler).not.toHaveBeenCalled();
+    expect(withWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('allows an exact PI-listed tool after the allowlist check', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['*']),
+      allowedTools: new Set(['test:echo']),
+    } as never);
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res.ok).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
   it('invalid args → invalid_args, handler not run', async () => {
     vi.mocked(standardValidate).mockResolvedValue({ ok: false, issues: [{ message: 'bad' }] } as never);
     const res = await dispatch({ toolName: 'test:echo', args: { x: 'no' }, bearer: 'b' });
