@@ -2252,6 +2252,416 @@
     },
     "acceptanceComplete": false
   },
+  "sourcePopulationAccounting": {
+    "status": "retained-census-and-source-power-accounted; independent source expansion still required",
+    "assessment": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/source-accounting-v1/assessment.json",
+      "sha256": "ff88a5c0c20d52051933c075560cdff739c8c2861f14532081d267bcd8060985",
+      "bytes": 709255
+    },
+    "reproduction": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/source-accounting-v1/reproduce.mjs",
+      "sha256": "33e7d591e173584191ac44314dfd594f16c5f0ae63627b8389ccb86f4f92f82b",
+      "bytes": 7719
+    },
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+        "sha256": "86288f53331a6bfec3d0d9ad41b4cc93ffe23d519348f4d66df9e382a3b5f3b4",
+        "bytes": 27552
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/paired-leg-report.ts",
+        "sha256": "9f7d0c616cd85eecb02274d3d5ce6c07b888cf9a66e52769dcd36514a2b43fda",
+        "bytes": 15631
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "cd15b05b58dbd4cc271b799b740aab8c5c335cead6bccfaf6d5415d8adb03b83",
+        "bytes": 56298
+      }
+    ],
+    "inputs": {
+      "census": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/census-v2.json",
+        "sha256": "b15da1426e9825621da89b0d774e3f88ac993ec2c799947ff9650a705e4641a5",
+        "bytes": 21848119
+      },
+      "snapshot": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v2.json",
+        "sha256": "b8449e9c7760283644ae8668fec897194c057e723f99a2d650aab62e57be150f",
+        "bytes": 1513218
+      },
+      "labels": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/labels.json",
+        "sha256": "0adca29735f180166016d3965e54f3639f16f5f09b541220294c7228f155d023",
+        "bytes": 49862
+      },
+      "judgments": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/judgments.json",
+        "sha256": "1acf4353a543f89ab035c3fab84701b0ef98fbabd570c34f87e954055026a81f",
+        "bytes": 39973
+      }
+    },
+    "sourcePopulations": {
+      "memory": {
+        "populationRows": 2025,
+        "eligibleRows": 959,
+        "provenanceExcludedRows": 1066,
+        "snapshotRows": 512,
+        "partitions": {
+          "calibration": {
+            "accessibleSources": 94,
+            "snapshotSources": 65,
+            "authoredSources": 32,
+            "acceptedSources": 9,
+            "outsideSnapshot": 29,
+            "unattemptedInSnapshot": 33,
+            "authoredWithoutAcceptedLabels": 23
+          },
+          "test": {
+            "accessibleSources": 312,
+            "snapshotSources": 218,
+            "authoredSources": 32,
+            "acceptedSources": 8,
+            "outsideSnapshot": 94,
+            "unattemptedInSnapshot": 186,
+            "authoredWithoutAcceptedLabels": 24
+          }
+        },
+        "allEligibleRowsInSnapshot": false,
+        "allEligibleSourcesAuthored": false
+      },
+      "prose": {
+        "populationRows": 13996,
+        "eligibleRows": 13996,
+        "provenanceExcludedRows": 0,
+        "snapshotRows": 515,
+        "partitions": {
+          "calibration": {
+            "accessibleSources": 514,
+            "snapshotSources": 34,
+            "authoredSources": 32,
+            "acceptedSources": 8,
+            "outsideSnapshot": 480,
+            "unattemptedInSnapshot": 2,
+            "authoredWithoutAcceptedLabels": 24
+          },
+          "test": {
+            "accessibleSources": 1601,
+            "snapshotSources": 109,
+            "authoredSources": 32,
+            "acceptedSources": 2,
+            "outsideSnapshot": 1492,
+            "unattemptedInSnapshot": 77,
+            "authoredWithoutAcceptedLabels": 30
+          }
+        },
+        "allEligibleRowsInSnapshot": false,
+        "allEligibleSourcesAuthored": false
+      }
+    },
+    "powerPlanning": [
+      {
+        "corpus": "memory",
+        "baseline": "gemma",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 8,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 8,
+            "observedMde80": 0.34114067229234,
+            "observedDelta": -0.1875,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.1575,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 1035,
+            "projectedComponentsForObservedMarginDistance": 38,
+            "projectedMde80AtSourceUpperBound": 0.05462622604199865,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 8,
+            "observedMde80": 0.2624735332314141,
+            "observedDelta": 0.09999999999999998,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.06999999999999998,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 613,
+            "projectedComponentsForObservedMarginDistance": 113,
+            "projectedMde80AtSourceUpperBound": 0.042029402299044526,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 8,
+            "observedMde80": 0.15727318700604712,
+            "observedDelta": -0.029166666666666563,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.0008333333333334358,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 220,
+            "projectedComponentsForObservedMarginDistance": 284946,
+            "projectedMde80AtSourceUpperBound": 0.025183865078320544,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      },
+      {
+        "corpus": "memory",
+        "baseline": "harrier",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 8,
+            "observedMde80": 0.166317895749671,
+            "observedDelta": 0.08750000000000002,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.05750000000000002,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 246,
+            "projectedComponentsForObservedMarginDistance": 67,
+            "projectedMde80AtSourceUpperBound": 0.026632177591141767,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 8,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 8,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 8,
+            "observedMde80": 0.055439298583226077,
+            "observedDelta": 0.029166666666666674,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.0008333333333333248,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 28,
+            "projectedComponentsForObservedMarginDistance": 35407,
+            "projectedMde80AtSourceUpperBound": 0.008877392530380975,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "gemma",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "harrier",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      }
+    ],
+    "projectionAssumptions": [
+      "Stable paired source variance; independent future components",
+      "Accessible test sources are an upper bound, reduced by connected relevance and conservative label exclusions",
+      "Zero observed variance supplies no extrapolated power",
+      "Effect-vs-zero and distance-to-margin projections are distinct; neither is an observed result"
+    ],
+    "verification": {
+      "runId": "c44fc311-27fe-49b9-8db4-f42a2e27bd62",
+      "testRunIds": [
+        20562227,
+        20562228
+      ],
+      "passed": 45,
+      "failed": 0,
+      "skipped": 0,
+      "scopedTypecheck": {
+        "namedFiles": 4,
+        "checkedFiles": 181,
+        "errors": 0,
+        "at": "2026-10-02T20:36:57.789Z",
+        "head": "58d19872a8"
+      }
+    },
+    "authorRecovery": {
+      "authorsReconstructed": 128,
+      "uniquePrivateArtifactPinsVerified": 371,
+      "retainedSourcePairedComparisonsRecomputedExactly": 4,
+      "newInferenceCalls": 0
+    },
+    "nextExpansion": {
+      "existingSnapshotAvailableTargets": {
+        "memory": {
+          "calibration": 65,
+          "test": 218
+        },
+        "prose": {
+          "calibration": 34,
+          "test": 109
+        }
+      },
+      "uniformTargetBudgetCeiling": 34,
+      "reason": "The existing collector requires one equal target count in both partitions and both corpora. A uniform request of 64 exceeds the 34 frozen prose calibration sources. Exhaustion requires explicit unequal source budgets or a new snapshot drawn from the retained full census, plus bounded question batches; neither changing the held-out partition seed nor recycling excluded labels is permitted.",
+      "sourceOrder": "Use the existing hashJson([snapshot.seed, sourceGroup]) order and preserve all prior raw author/label/measurement artifacts."
+    },
+    "acceptance": {
+      "p003Complete": false,
+      "fullAccessibleSourceCensusExhausted": false,
+      "modelAdoptionAuthorized": false,
+      "verificationInferencePerformed": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
