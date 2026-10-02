@@ -830,22 +830,23 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
     if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);
   }
   const entries = [...merged].map(([name, entry]) => [name, entry.raw] as [string, unknown]);
-  // `work_items:complete` has a wide nested `completion` record followed by
-  // shallow controls (`validateOnly` and `assumptions`) in both union branches,
-  // plus the structured `specAdequacy.current` evidence selector in the
-  // shorthand branch. Keep all of these contract-bearing fields ahead of the
-  // wide record in the bounded projection so adding validator-owned annotations
-  // cannot evict callable top-level fields or the current-evidence tuple shape.
-  // Limit this ordering rule to the recognizable completion envelope; generic
-  // root unions retain their source order.
+  // Prefer the canonical completion envelope to its many legacy shorthand
+  // aliases. Validator-owned constraints consume part of the root budget, so
+  // merely moving controls just before completion still lets preceding legacy
+  // fields evict completion.verification.coverage at the final text cutoff.
+  // Keep identity, shallow controls, the current-evidence selector and the
+  // canonical record together before expendable aliases. Generic root unions
+  // retain their source order.
   const completionIndex = entries.findIndex(([name]) => name === 'completion');
   const completionControls = new Set(['specAdequacy', 'validateOnly', 'assumptions']);
   if (completionIndex >= 0 && entries.some(([name]) => completionControls.has(name))) {
-    const controls = entries.filter(([name]) => completionControls.has(name));
-    const withoutControls = entries.filter(([name]) => !completionControls.has(name));
-    const adjustedCompletionIndex = withoutControls.findIndex(([name]) => name === 'completion');
-    withoutControls.splice(adjustedCompletionIndex, 0, ...controls);
-    return { entries: withoutControls, required, unionHint, conditionalHint };
+    const canonicalFields = new Set([
+      'id', 'workItem', 'harness', 'state', 'recordOnly', 'validateOnly',
+      'assumptions', 'specAdequacy', 'completion',
+    ]);
+    const canonical = entries.filter(([name]) => canonicalFields.has(name));
+    const aliases = entries.filter(([name]) => !canonicalFields.has(name));
+    return { entries: [...canonical, ...aliases], required, unionHint, conditionalHint };
   }
   return { entries, required, unionHint, conditionalHint };
 }
