@@ -40,6 +40,7 @@ export interface NativeProbeOptions {
   driverIdentity: string;
   appPath: string;
   stacks?: boolean;
+  stackDelayMs?: number;
   environment?: boolean;
   outputDescriptors?: boolean;
   debugFile?: string;
@@ -392,6 +393,47 @@ export function captureOwnedNativeStacks(options: NativeProbeOptions, target: Na
   }
 }
 
+/** Delay debugger attachment from the first observation of an owned WebKit
+ * lifetime. A page-relative queue interval can be correlated with the native
+ * sample timestamps after the run; a capture outside it is not queue evidence.
+ * The global cap still applies if WebKit replaces its process mid-run. */
+export function parseNativeStackDelayMs(value: string | undefined): number {
+  if (value === undefined) return 0;
+  if (!/^(0|[1-9]\d*)$/.test(value)) throw new Error('Native stack delay must be an integer from 0 to 15000 ms');
+  const delay = Number(value);
+  if (!Number.isSafeInteger(delay) || delay > 15_000) {
+    throw new Error('Native stack delay must be an integer from 0 to 15000 ms');
+  }
+  return delay;
+}
+
+export class NativeStackCaptureSchedule {
+  private targetKey: string | null = null;
+  private firstSeenEpochMs = 0;
+  private lastCaptureEpochMs = Number.NEGATIVE_INFINITY;
+  private captures = 0;
+
+  constructor(readonly delayMs: number) {
+    if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 15_000) {
+      throw new Error('Native stack delay must be an integer from 0 to 15000 ms');
+    }
+  }
+
+  due(targetKey: string | null, epochMs: number): boolean {
+    if (targetKey === null) return false;
+    if (targetKey !== this.targetKey) {
+      this.targetKey = targetKey;
+      this.firstSeenEpochMs = epochMs;
+      this.lastCaptureEpochMs = Number.NEGATIVE_INFINITY;
+    }
+    if (this.captures >= 3 || epochMs - this.firstSeenEpochMs < this.delayMs ||
+        epochMs - this.lastCaptureEpochMs < 1_000) return false;
+    this.captures++;
+    this.lastCaptureEpochMs = epochMs;
+    return true;
+  }
+}
+
 const MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const MAX_SAMPLES = 1200;
 
@@ -443,10 +485,11 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
   if (process.platform !== 'linux') throw new Error('Native CPU diagnostic requires Linux /proc');
   const driverIdentity = readProcessIdentity(driverPid);
   if (!driverIdentity) throw new Error('Native CPU diagnostic cannot identify its driver');
-  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks, environment: true,
+  const stackDelayMs = stacks ? parseNativeStackDelayMs(process.env.PAPERCUSP_PERF_NATIVE_STACK_DELAY_MS) : 0;
+  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks, stackDelayMs, environment: true,
     outputDescriptors: true, debugFile: process.env.GST_DEBUG_FILE };
   // Exclusive create prevents a rerun from overwriting earlier diagnostic evidence.
-  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v5',
+  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v6',
     options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: MAX_SAMPLES,
     persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES,
     environment: { keys: ENVIRONMENT_KEYS, maxBytes: MAX_ENVIRONMENT_BYTES,
@@ -459,8 +502,9 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
     lifecycle: { maxIdentities: MAX_TRACKED_IDENTITIES, maxStatBytes: 4096,
       source: 'two bracketed procfs stat reads of previously observed owned identities',
       limitation: 'missing procfs entries and PID replacement do not prove a signal or reaping; no wait receipt is available for non-child targets' },
-    stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, debuggerTimeoutMs: 4_000,
-      maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });
+    stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, afterFirstOwnedWebKitMs: stackDelayMs,
+      trigger: 'first observation of this owned WebKit PID identity; reset delay on replacement',
+      debuggerTimeoutMs: 4_000, maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });
   return fork(__filename, [JSON.stringify(options), file], {
     execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
@@ -486,7 +530,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   let samples = 0;
   let finished = false;
   const stackRows: ReturnType<typeof captureOwnedNativeStacks>[] = [];
-  let lastStackEpochMs = 0;
+  const stackSchedule = new NativeStackCaptureSchedule(options.stackDelayMs ?? 0);
   let timer: NodeJS.Timeout;
   const finish = (reason: string) => {
     if (finished) return;
@@ -517,9 +561,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
       samples++;
       if (samples === 1 && process.connected) process.send?.({ kind: 'sampling-started' });
       const target = sample.processes.find(({ kind }) => kind === 'webkit');
-      if (options.stacks && target && stackRows.length < 3 && Date.now() - lastStackEpochMs >= 1_000) {
+      if (options.stacks && target && stackSchedule.due(
+        `${target.pid}:${target.identity}:${target.appIdentity}`, Date.now())) {
         stackRows.push(captureOwnedNativeStacks(options, target));
-        lastStackEpochMs = Date.now();
       }
       timer = setTimeout(tick, 100);
     } catch (error) { finish(`unavailable: ${String(error).slice(0, 300)}`); }
