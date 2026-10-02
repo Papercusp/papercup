@@ -207,7 +207,7 @@ describe('blind label collection through the injected stateless transport', () =
       expect(rejected).toMatchObject({ kind: 'rejected-call', origin: pin, invocationId: original.invocationId });
       const selected = JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0.json'), 'utf8'));
       expect(selected.invocationId).not.toBe(original.invocationId);
-      expect(selected.origin.path).toEndWith('memory-judge-1-0-attempt-2.json');
+      expect(path.basename(selected.origin.path)).toBe('memory-judge-1-0-attempt-2.json');
       expect(JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8')).memory).toHaveLength(8);
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
