@@ -685,12 +685,42 @@ describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () 
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it('an agent_crash on a 10-minute loop cadence is not misreported as chronic provider backoff', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const longCadenceRef = { ...refRow, reschedule_interval_sec: 600 };
+    const sql = fakeSql({ ref: longCadenceRef, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const crashRaw = deathRaw({
+      stdoutTail: '',
+      stderrTail: 'Permission deny rule "ToolSearch" matches no known tool — check for typos.',
+    });
+    const res = await handleLoopResumeTurnExit(loopDelivery(), crashRaw, { sql: sql as never, recordFire });
+
+    expect(res.class).toBe('agent_crash');
+    expect(res.rearmedMs).toBe(600_000);
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('a rate-limit delay equal to a 10-minute loop cadence is not chronic backoff', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const longCadenceRef = { ...refRow, reschedule_interval_sec: 600 };
+    const sql = fakeSql({ ref: longCadenceRef, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(loopDelivery(), deathRaw(), { sql: sql as never, recordFire });
+
+    expect(res.class).toBe('rate_limited');
+    expect(res.rearmedMs).toBe(600_000);
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   // EI-19381528967421062: this is the item's OWN reported gap. surfaceToUser alone missed a
   // sustained rate_limited streak (dead egress proxy) whose computed re-arm delay ran
   // ~50-100 minutes with zero alert. A short/ordinary rate_limited death (the test above,
-  // computed delay = the 2min floor) must stay silent; ONE whose computed delay clears the
+  // computed delay = the 2min cadence) must stay silent; ONE whose additional delay clears the
   // chronic floor must alert despite the class being non-surfaceToUser.
-  it('a CHRONIC rate_limited death (computed backoff >= the chronic floor) DOES trigger the wedge alert', async () => {
+  it('a CHRONIC rate_limited death (provider-added delay >= the chronic floor) DOES trigger the wedge alert', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
     const recordFire = vi.fn(async () => {});
