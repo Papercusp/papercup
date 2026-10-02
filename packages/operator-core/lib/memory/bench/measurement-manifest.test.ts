@@ -268,7 +268,7 @@ describe('complete native loader capture qualification', () => {
     expect(()=>bindNativeLoaderClosure(bytes,[window],sample(),observed)).toThrow('native loader');
   });
   it.each(['missing-process','entry','headers','count','interpreter','base','vdso-hash','vdso-size','vdso-overlap',
-    'residue','init-path','init-only','transfer','double-transfer','late-error','transient'])('refuses %s closure evidence',failure=>{
+    'residue','init-path','init-only','malformed-init','transfer','double-transfer','late-error','transient','preinit'])('refuses %s closure evidence',failure=>{
     const event=sample(),process=event.runtime!.loaderProcess!;let text=log().toString();
     if(failure==='missing-process') delete event.runtime!.loaderProcess;
     if(failure==='entry') process.entryAddress='1800';
@@ -283,12 +283,28 @@ describe('complete native loader capture qualification', () => {
       path:'/lib/unjoined.so',mappedRanges:[{startAddress:'9000',endAddress:'a000',fileOffset:'0',permissions:'r-xp'}]});
     if(failure==='init-path') text=text.replace('calling init: /lib/library.so','calling init: unresolved.so');
     if(failure==='init-only') text=text.replace('calling init: /lib/library.so','calling init: /lib/unjoined.so');
+    if(failure==='malformed-init') text=text.replace('calling init: /lib/library.so','calling init:');
     if(failure==='transfer') text=text.replace('transferring control: /runtime/node','transferring control: /lib/library.so');
     if(failure==='double-transfer') text=text.replace(marker('start'),'123: transferring control: /runtime/node\n'+marker('start'));
     if(failure==='late-error') text+='123: fatal: lost loader evidence\n';
     if(failure==='transient') text=text.replace(marker('end'),'123: file=transient.so [0];  generating link map\n'+marker('end'));
+    if(failure==='preinit') text=text.replace(marker('end'),'123: calling preinit: /runtime/node\n'+marker('end'));
     const bytes=Buffer.from(text);
     expect(()=>bindNativeLoaderClosure(bytes,[window],event,receipt(bytes))).toThrow('native loader');
+  });
+  it('binds symlink aliases by inode/device/hash and refuses replaced alias bytes',()=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-loader-alias-'));roots.push(root);
+    const file=path.join(root,'library.so'),alias=path.join(root,'alias.so');fs.writeFileSync(file,'pinned loader bytes');fs.symlinkSync(file,alias);
+    const event=sample(),stat=fs.statSync(file,{bigint:true}),library=event.runtime!.libraries[0];
+    library.path=file;library.bytes=Number(stat.size);library.sha256=crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    library.mappedInode=stat.ino.toString();
+    const major=((stat.dev>>8n)&0xfffn)|((stat.dev>>32n)&0xfffff000n),minor=(stat.dev&0xffn)|((stat.dev>>12n)&0xffffff00n);
+    library.mappedDevice=major.toString(16)+':'+minor.toString(16);
+    const bytes=Buffer.from(log().toString().replace('calling init: /lib/library.so','calling init: '+alias));
+    const result=bindNativeLoaderClosure(bytes,[window],event,receipt(bytes));
+    expect(result.initializationJoins[0]).toMatchObject({object:alias,file:{path:file,sha256:library.sha256}});
+    fs.writeFileSync(file,'changed same length');
+    expect(()=>bindNativeLoaderClosure(bytes,[window],event,receipt(bytes))).toThrow('alias does not bind');
   });
 });
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });

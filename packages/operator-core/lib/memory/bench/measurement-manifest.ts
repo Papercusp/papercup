@@ -415,10 +415,10 @@ export function inspectNativeLoaderActivity(stderr: string, windows: NativeProfi
     if (index < first && initialization) startupLibraries.add(initialization[1]);
     if (index <= first || index >= last) continue;
     const map = text.match(/^file=(.+) \[(\d+)\];\s+(generating|destroying) link map$/);
-    const call = text.match(/^calling (init|fini):\s*(.*?)\s*(?:\[(\d+)\])?$/);
+    const call = text.match(/^calling (preinit|init|fini):\s*(.*?)\s*(?:\[(\d+)\])?$/);
     if (map) activity.push({ line: index+1, operation: map[3]+'-map', object: map[1], namespace: map[2] });
     else if (call) activity.push({ line: index+1, operation: call[1], object: call[2], namespace: call[3] ?? null });
-    else if (/generating link map|destroying link map|calling init:|calling fini:|error:|fatal:/i.test(text)) {
+    else if (/generating link map|destroying link map|calling (?:preinit|init|fini):|error:|fatal:/i.test(text)) {
       throw new Error('unsupported or failed native loader activity');
     }
   }
@@ -595,6 +595,9 @@ export function bindNativeLoaderClosure(stderrBytes: Buffer, windows: NativeProf
     if(/error:|fatal:/i.test(row[2])) throw new Error('native loader failed capture');
     if(index>=firstMarker) continue;
     const init=row[2].match(/^calling (?:preinit|init):\s+(.+)$/), transfer=row[2].match(/^transferring control:\s+(.+)$/);
+    if (/calling (?:preinit|init):|transferring control:/i.test(row[2]) && !init && !transfer) {
+      throw new Error('native loader startup path evidence malformed');
+    }
     if(transfer) {
       if(resolveFile(transfer[1])!==executable) throw new Error('native loader control target differs from executable');
       transfers++;
