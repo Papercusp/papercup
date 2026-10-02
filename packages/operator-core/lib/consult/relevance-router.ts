@@ -59,6 +59,7 @@
  * reaches memory/configure, which opens PG at import time).
  */
 import type { Sql } from 'postgres';
+import { D006_TRANSCRIPT_RULE, restrictedTranscriptOwners } from '../personal-vault/transcript-exclusion';
 import {
   proseProfilePredicateSql,
   type ProseProfileSelection,
@@ -211,6 +212,13 @@ export interface RoutingSnapshot {
   recencyHalfLifeDays: number;
   candidates: RoutingCandidate[];
   computedAt: string;
+  /**
+   * D-006 / P-013: transcript turns dropped because their owner has held a
+   * personal-data disclosure (personal-vault/transcript-exclusion.ts). The
+   * answer session forks a routed expert's whole transcript, so such an expert
+   * is never routable; counted here rather than silently dropped.
+   */
+  withheld?: { restricted_turns: number; restricted_owners: number; rule: string };
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
    * similarity could not be measured at all (≠ measured and found nothing). */
   degraded?: 'embed-unavailable';
@@ -613,6 +621,29 @@ function annotateLiveness(
  * three bounded SQL reads; returns the D-008 snapshot for the caller to
  * persist into consult_state.routing.
  */
+/**
+ * Drop transcript rows whose owner has ever held a personal-data disclosure
+ * (D-006 / P-013), counting them. Throws `disclosure_ledger_unavailable` when
+ * the ledger cannot be read: a consult is refused, never routed unfiltered.
+ */
+async function withholdRestrictedExperts<T extends { owner: string }>(
+  sql: unknown,
+  rows: T[],
+): Promise<{ rows: T[]; withheld?: RoutingSnapshot['withheld'] }> {
+  if (rows.length === 0) return { rows };
+  const restricted = await restrictedTranscriptOwners(sql as Sql, rows.map((r) => r.owner));
+  if (restricted.size === 0) return { rows };
+  const kept = rows.filter((r) => !restricted.has(r.owner));
+  return {
+    rows: kept,
+    withheld: {
+      restricted_turns: rows.length - kept.length,
+      restricted_owners: restricted.size,
+      rule: D006_TRANSCRIPT_RULE,
+    },
+  };
+}
+
 export async function routeConsult(
   params: ConsultRouteParams,
   deps: ConsultRouteDeps,
@@ -690,6 +721,11 @@ export async function routeConsult(
       // turning a recoverable fallback miss into a consult failure.
       lexicalRows = [];
     }
+    // D-006 / P-013: outside the try on purpose — an unreadable ledger must
+    // refuse the consult, never degrade to an unfiltered route.
+    const lexicalShown = await withholdRestrictedExperts(sql, lexicalRows);
+    lexicalRows = lexicalShown.rows;
+    if (lexicalShown.withheld) base.withheld = lexicalShown.withheld;
 
     const byOwner = new Map<string, { ranks: number[]; newestTs: number | null; evidence: TurnEvidence[] }>();
     for (const r of lexicalRows) {
@@ -783,7 +819,7 @@ export async function routeConsult(
   //      over-filtering starves the router.
   //    - withIterativeScan: without it the HNSW scan stops at hnsw.ef_search
   //      and silently under-returns (WI-37603).
-  const turnRows = (await withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
+  const fetchedTurnRows = (await withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
     SELECT owner, session_id, turn_idx,
            COALESCE(ts, ingested_at) AS ts,
            1 - (text_embedding <=> ${qVec}::vector) AS sim
@@ -804,6 +840,11 @@ export async function routeConsult(
     ts: string | Date | null;
     sim: number;
   }>;
+  // D-006 / P-013: the answer session forks a routed expert's WHOLE transcript,
+  // so an expert who has held a disclosure is not a routable source at all.
+  const shownTurns = await withholdRestrictedExperts(sql, fetchedTurnRows);
+  const turnRows = shownTurns.rows;
+  if (shownTurns.withheld) base.withheld = shownTurns.withheld;
 
   if (turnRows.length === 0) {
     return {
