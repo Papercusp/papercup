@@ -8,6 +8,30 @@ import { describe, it, expect, vi, afterAll } from 'vitest';
 import * as realHost from '../scripts/psu-pty-host.mjs';
 import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
 
+describe('operatorPinEvidence', () => {
+  it('persists only the direct-3170 enum for a loopback operator URL, not URL credentials', () => {
+    expect(
+      realHost.operatorPinEvidence({
+        PAPERCUSP_OPERATOR_URL: 'https://agent:credential@127.0.0.1:3170/api/mcp?token=private',
+        PAPERCUSP_UNRELATED_SECRET: 'must-not-be-copied',
+      }),
+    ).toBe('direct-3170');
+  });
+
+  it.each([
+    'http://127.0.0.1:3070/api/mcp',
+    'ftp://localhost:3170/api/mcp',
+    'https://operator.example:3170/api/mcp',
+    'http://localhost:3170/private/path',
+  ])('classifies non-direct targets as other: %s', (url) => {
+    expect(realHost.operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: url })).toBe('other');
+  });
+
+  it('classifies a missing target as unset', () => {
+    expect(realHost.operatorPinEvidence({})).toBe('unset');
+  });
+});
+
 describe('loop respawn operator environment (EI-24377966944594715)', () => {
   it.each([
     { PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3880' },

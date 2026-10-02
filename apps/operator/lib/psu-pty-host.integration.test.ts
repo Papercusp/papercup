@@ -2341,9 +2341,8 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
         "const marker=process.argv[process.argv.length-1];" +
         "let repaint=null;if(marker==='RECYCLED'){repaint=setInterval(()=>process.stdout.write('.'),20);}" +
-        "process.stdin.setEncoding('utf8');let b='';" +
-        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
-        "if(line==='QUIT'){process.exit(0);}if(repaint){clearInterval(repaint);repaint=null;}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        "process.stdin.setEncoding('utf8');let b='',mcp=false,carryEchoed=false;" +
+        "process.stdin.on('data',d=>{b+=d;if(repaint){clearInterval(repaint);repaint=null;}if(!mcp&&(b.includes('/mcp\\r')||b.includes('/mcp\\n'))){mcp=true;process.stdout.write('MCP_DIALOG\\n❯ 1. papercusp-su connecting\\n');setTimeout(()=>process.stdout.write('MCP_RECONNECTED\\n❯ 1. papercusp-su connected\\n'),250);}if(!carryEchoed&&b.includes('CARRIED')){carryEchoed=true;process.stdout.write('ECHO:CARRIED\\n');}if(b.includes('QUIT'))process.exit(0);});" +
         'setTimeout(()=>process.exit(0),15000);';
       let exitCode: number | null = null;
       const done = hostThroughPty({
@@ -2383,8 +2382,16 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         const deadline = Date.now() + 5_000;
         while (!captured().includes('ECHO:CARRIED') && Date.now() < deadline) await sleep(25);
         expect(captured()).toContain('ECHO:CARRIED');
+        expect(captured()).toContain('MCP_DIALOG');
+        expect(captured()).toContain('MCP_RECONNECTED');
+        expect(captured().indexOf('MCP_RECONNECTED')).toBeLessThan(captured().indexOf('ECHO:CARRIED'));
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
         expect(events.filter((event) => event.kind === 'busy-gate-expired' && event.mode === 'carry-respawn')).toEqual([]);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-ready',
+          serverName: 'papercusp-su',
+          attempts: 1,
+        }));
         expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount ?? 0).toBe(0);
       } finally {
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
@@ -2396,6 +2403,88 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       expect(existsSync(meta)).toBe(false);
     },
     20_000,
+  );
+
+  it(
+    'does not submit a carry when papercusp-su readiness fails after the fresh TUI boots',
+    async () => {
+      const ownerId = `su-recycle-claude-mcp-failed-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
+        "process.stdin.setEncoding('utf8');let b='',mcpDialogs=0;" +
+        "process.stdin.on('data',d=>{b+=d;if(mcpDialogs<2&&(b.includes('/mcp\\r')||b.includes('/mcp\\n'))){mcpDialogs++;process.stdout.write('MCP_DIALOG\\n❯ 1. unrelated-server connected\\n');}if(b.includes('CARRY_MUST_NOT_BE_WRITTEN'))process.stdout.write('ECHO:FORBIDDEN_CARRY\\n');if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),30000);';
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'INITIAL'],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '40',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        mintCarryRespawnArgs: (args: string[]) => ({ args: args.slice(0, -1).concat('RECYCLED'), nativeId: null }),
+        onExit: (code: number) => { exitCode = code; },
+      });
+
+      try {
+        await sleep(600);
+        expect(captured()).toContain('BOOT:');
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          data: 'CARRY_MUST_NOT_BE_WRITTEN',
+          systemPromptAddendum: 'deterministic carry',
+          sessionClass: 'claude-su',
+        });
+        const deadline = Date.now() + 24_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < deadline) {
+          if (existsSync(eventLog)) {
+            const contents = readFileSync(eventLog, 'utf8').trim();
+            events = contents ? contents.split('\n').map((line) => JSON.parse(line)) : [];
+            if (events.some((event) => event.kind === 'respawn-carry-mcp-unavailable')) break;
+          }
+          await sleep(50);
+        }
+
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-mcp-unavailable',
+          serverName: 'papercusp-su',
+          attempts: 2,
+        }));
+        expect(captured()).not.toContain('ECHO:FORBIDDEN_CARRY');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          reason: 'carry-mcp-unavailable',
+        }));
+        expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
+        expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount).toBe(1);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done;
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    32_000,
   );
 
   it(
@@ -2639,6 +2728,84 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
 
       await rawInject(sock, 'QUIT\n');
       await done;
+    },
+    25_000,
+  );
+
+  it(
+    'stores only the direct-3170 enum for an interactive stale host and preserves the D-008 no-reexec refusal',
+    async () => {
+      const ownerId = `su-stale-host-direct-3170-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      const env = {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_OPERATOR_URL: 'http://agent:PRIVATE-CREDENTIAL@127.0.0.1:3170/api/mcp?token=PRIVATE-TOKEN',
+        PAPERCUSP_TEST_SECRET: 'UNRELATED-PRIVATE-VALUE',
+        TERM: 'xterm-256color',
+      };
+      delete env.PAPERCUSP_PSU_REEXEC;
+      delete env.PAPERCUSP_PSU_REEXEC_PPID;
+
+      const reexecs: number[] = [];
+      let done: Promise<void> | undefined;
+      try {
+        done = hostThroughPty({
+          command: execPath,
+          args: ['-e', childCode, 'ORIGINAL'],
+          cwd: '/tmp',
+          env,
+          ownerId,
+          io,
+          bridgeTty: true,
+          hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
+          mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
+          onReexec: ({ code }: { code: number }) => { reexecs.push(code); },
+          onExit: () => {},
+        });
+
+        await sleep(600);
+        expect(captured()).toContain('BOOT:');
+        await controlInject(sock, 'recycle', '');
+
+        const deadline = Date.now() + 8_000;
+        let eventLogText = '';
+        let staleRow: Record<string, unknown> | undefined;
+        while (Date.now() < deadline) {
+          if (existsSync(eventLog)) {
+            eventLogText = readFileSync(eventLog, 'utf8');
+            staleRow = eventLogText
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => JSON.parse(line))
+              .find((event) => event.kind === 'host-code-stale');
+            if (staleRow) break;
+          }
+          await sleep(25);
+        }
+
+        expect(staleRow).toMatchObject({
+          kind: 'host-code-stale',
+          operatorPin: 'direct-3170',
+          bridgeTty: true,
+          notAdoptingReason: 'interactive-tty',
+          willAdopt: false,
+        });
+        expect(reexecs).toEqual([]);
+        expect(eventLogText).not.toContain('PRIVATE-CREDENTIAL');
+        expect(eventLogText).not.toContain('PRIVATE-TOKEN');
+        expect(eventLogText).not.toContain('UNRELATED-PRIVATE-VALUE');
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        if (done) await done;
+      }
     },
     25_000,
   );
