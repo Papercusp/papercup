@@ -27,7 +27,12 @@ export const NOT_AGENT_WORK = 'not_agent_work' as const;
 /** The write doors that gate on the category half of the agent-work predicate. */
 export type AgentWorkDoor = 'work_items:set_state' | 'work_items:complete';
 
-export interface NotAgentWorkRefusal {
+/**
+ * A type ALIAS, not an interface, on purpose: both doors return this through `runBulk`,
+ * whose item type is `BulkItemResult` with an index signature. An interface is not
+ * implicitly assignable to an index signature; an object type alias is.
+ */
+export type NotAgentWorkRefusal = {
   ok: false;
   id: string;
   error: typeof NOT_AGENT_WORK;
@@ -35,7 +40,7 @@ export interface NotAgentWorkRefusal {
   nature: string;
   audience: string | null;
   hint: string;
-}
+};
 
 /**
  * Returns the typed refusal when `id` resolves to a row that is not agent work by

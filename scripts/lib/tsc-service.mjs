@@ -120,7 +120,38 @@ export function tscServiceTemplateSocket({ template, root, env = process.env, ru
   // One `Listen=` value per line, e.g. `/run/user/1001/papercusp-tsc-service-….sock (Stream)`.
   const listen = (shown.stdout ?? '').split('\n').map((line) => line.trim()).find((line) => line.startsWith('/'));
   if (shown.status !== 0 || !listen) return { unit, error: `${unit} reports no unix socket` };
-  return { unit, socketPath: listen.replace(/\s+\([A-Za-z]+\)$/, '') };
+  return { unit, socketPath: unescapeSystemctlValue(listen.replace(/\s+\([A-Za-z]+\)$/, '')) };
+}
+
+/**
+ * `systemctl show` C-escapes property values: the escaped instance's literal `\x2d` in the socket
+ * path prints as `\\x2d` (measured, systemd 255), so the printed path is not the path on disk.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function unescapeSystemctlValue(value) {
+  const bytes = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === '\\' && i + 1 < value.length) {
+      const next = value[i + 1];
+      const hex = value.slice(i + 2, i + 4);
+      if (next === 'x' && /^[0-9a-fA-F]{2}$/.test(hex)) {
+        bytes.push(Number.parseInt(hex, 16));
+        i += 3;
+        continue;
+      }
+      const simple = { '\\': 0x5c, n: 0x0a, t: 0x09, '"': 0x22, "'": 0x27 }[next];
+      if (simple !== undefined) {
+        bytes.push(simple);
+        i += 1;
+        continue;
+      }
+    }
+    bytes.push(...Buffer.from(ch, 'utf8'));
+  }
+  return Buffer.from(bytes).toString('utf8');
 }
 
 /**

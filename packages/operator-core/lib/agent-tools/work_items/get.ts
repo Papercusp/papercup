@@ -1109,6 +1109,7 @@ export default defineTool({
                 // sibling loop carry-note has exposed exactly this on its READ side
                 // since loop/status.ts:78; this closes the asymmetry.
                 checkpointContentHash: r.checkpoint === null ? null : shortCarryHash(r.checkpoint),
+                latestUpdate: r.latestUpdate,
                 subjectFingerprint: r.subjectFingerprint,
                 readFailed: false as const,
               };
@@ -1125,9 +1126,10 @@ export default defineTool({
               // exactly what `checkpointReadFailed` disambiguates for every other
               // field on this leg.
               checkpointContentHash: null,
+              latestUpdate: undefined,
               subjectFingerprint: undefined,
               readFailed: true as const,
-            })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointBody: null, checkpointContentHash: null, subjectFingerprint: undefined, readFailed: false as const }),
+            })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointBody: null, checkpointContentHash: null, latestUpdate: undefined, subjectFingerprint: undefined, readFailed: false as const }),
           needsPlanItemBlocked ? planItemLaneBlockReason(workItem).catch(() => null) : Promise.resolve(null),
           needsClaimCollision ? planItemClaimCollision(workItem).catch(() => null) : Promise.resolve(null),
           // WI-40825: has the linked plan item been REWRITTEN since this

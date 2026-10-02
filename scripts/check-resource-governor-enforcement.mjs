@@ -1295,6 +1295,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/gen-declarations.ts: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/lib/stale-declaration-suppressions.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/stale-declaration-suppressions.ts: importerSources is a build-time helper called by gen-declarations.ts to diagnose newly unused TypeScript suppressions. Its sole process start is one synchronous execFileSync('git', ['-C', repoRoot, 'grep', '-l', '-F', ...patterns, '--', ...importerGlobs]) over the finite tracked source tree, with captured output bounded by maxBuffer. The caller awaits that metadata search before the in-process suppression scan; an empty module set starts nothing, exit 1 means a measured empty result, and other failures remain null/not-measured. It starts no detached worker, provider request, runtime schedule, or resident queue; admitting this local build metadata read would gate the diagnostic rather than govern persistent capacity.",
+  },
+  {
     path: "scripts/gen-doc-projections.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2042,14 +2049,6 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "spawnInvokeOnce is the DBOS pipeline agent-process chokepoint: its durable workflow supplies the receipt and its governorForBackend acquire supplies provider pacing; this direct child start is not a second resident queue, and re-admitting it would double-count the same agent turn",
-    },
-  ],
-  [
-    "packages/operator-core/lib/inference-gateway/credential-store.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "security/keychain credential lookup via awaited spawnSync; bounded metadata read that exits immediately and creates no resident provider work",
     },
   ],
   [

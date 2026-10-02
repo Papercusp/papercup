@@ -57,6 +57,14 @@ export function tscServiceTemplateSocket({ template, root, env, run }: {
     unit: string;
 };
 /**
+ * `systemctl show` C-escapes property values: the escaped instance's literal `\x2d` in the socket
+ * path prints as `\\x2d` (measured, systemd 255), so the printed path is not the path on disk.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function unescapeSystemctlValue(value: string): string;
+/**
  * The tsconfig a gate's `tscCommand` compiles, or null when the command carries anything the
  * service does not reproduce. Deliberately a whitelist: every leg today is exactly
  * `npx tsc -p <cfg> --noEmit --incremental false`, and a new flag (say `--strict false`) would

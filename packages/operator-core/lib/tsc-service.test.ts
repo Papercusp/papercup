@@ -25,6 +25,7 @@ import {
   tscServiceTemplateSocket,
   tscServiceTemplateSocketUnit,
   typecheckViaService,
+  unescapeSystemctlValue,
 } from '../../../scripts/lib/tsc-service.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import { parseTscErrors } from '../../../scripts/lib/tsc-baseline-gate.mjs';
@@ -121,6 +122,20 @@ describe('tscServiceTemplateSocket', () => {
     ]);
     // systemctl --user finds the user bus through XDG_RUNTIME_DIR, which an SSH exec may not carry.
     expect(calls[0].env.XDG_RUNTIME_DIR).toMatch(/^\/run\/user\/\d+$/);
+  });
+
+  it('decodes systemctl show escaping, so an escaped instance path matches the socket on disk', () => {
+    // Shape measured on systemd 255 for a checkout whose path holds a `-`: the socket file name
+    // holds a literal `\x2d`, which `systemctl show` prints as `\\x2d`.
+    const printed = '/run/user/1001/papercusp-tsc-service-srv-ws-papercusp\\\\x2ddesktop.sock (Stream)\n';
+    const { run } = fakeRun([{ status: 0 }, { status: 0, stdout: printed }]);
+    const located = tscServiceTemplateSocket({ template: 'papercusp-tsc-service', root: '/srv/ws/papercusp-desktop', env: {}, run });
+    expect(located).toEqual({
+      unit: 'papercusp-tsc-service@srv-ws-papercusp\\x2ddesktop.socket',
+      socketPath: '/run/user/1001/papercusp-tsc-service-srv-ws-papercusp\\x2ddesktop.sock',
+    });
+    expect(unescapeSystemctlValue('a\\xc3\\xbcb\\\\c\\tz')).toBe('aüb\\c\tz');
+    expect(unescapeSystemctlValue('/plain/path.sock')).toBe('/plain/path.sock');
   });
 
   it('reports a failed start without asking for the socket, so the caller falls back to the CLI', () => {
