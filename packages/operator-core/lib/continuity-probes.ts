@@ -669,19 +669,26 @@ async function runOne(
     };
   }
   const decoded = decodeToolResult(dispatched.value);
-  const decodedBytes = jsonBytes(decoded);
-  if (decodedBytes === null || decodedBytes > CONTINUITY_PROBE_RESULT_MAX_BYTES) {
+  // WI-10005537: the budget bounds what the predicate JUDGES, not the whole tool
+  // body. The body is already materialized by the time we get here, so charging
+  // it bought no protection; it only refused a healthy probe whenever the read
+  // tool's full result was large (dev:pipeline_position runs ~20KB+ with no
+  // projection), and scorecard criterion probes fail closed on that refusal, so
+  // no independent acceptance card could be filed. A selected value that is
+  // itself over budget (e.g. `exists` on a huge subtree) is still refused.
+  const verdict = evaluateContinuityPredicate(probe.expect, decoded);
+  const judgedBytes = verdict.actual === undefined ? 0 : jsonBytes(verdict.actual);
+  if (judgedBytes === null || judgedBytes > CONTINUITY_PROBE_RESULT_MAX_BYTES) {
     return {
       ...base,
       status: 'error',
       executed: true,
       diagnostic: {
         code: 'result_too_large',
-        message: `decoded probe result exceeded the ${CONTINUITY_PROBE_RESULT_MAX_BYTES}-byte budget`,
+        message: `the value at ${probe.expect.path} exceeded the ${CONTINUITY_PROBE_RESULT_MAX_BYTES}-byte budget`,
       },
     };
   }
-  const verdict = evaluateContinuityPredicate(probe.expect, decoded);
   const observed = observedScalar(verdict.actual);
   return {
     ...base,

@@ -340,6 +340,29 @@ describe('continuity probe wake replay', () => {
     );
     expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true, observed: false });
   });
+
+  // WI-10005537: a rubric probe on dev:pipeline_position with no projection
+  // (expect $.servingRuntimes[0].containsChange) was refused result_too_large
+  // because the WHOLE body (~20KB+) was charged against the budget, though the
+  // predicate reads one boolean. scorecards:emit fails closed on that refusal,
+  // so no independent acceptance card could be filed for the plan.
+  it('judges a small selected value inside a body larger than the result budget', async () => {
+    const body = (containsChange: boolean) => ({
+      servingRuntimes: [{ runtime: 'release-operator', method: 'blob', containsChange }],
+      stages: Array.from({ length: 40 }, (_, i) => ({ stage: `s${i}`, detail: 'd'.repeat(600) })),
+    });
+    expect(JSON.stringify(body(true)).length).toBeGreaterThan(CONTINUITY_PROBE_RESULT_MAX_BYTES);
+    const probe = readProbe({ expect: { path: '$.servingRuntimes[0].containsChange', op: 'eq', value: true } });
+    const run = async (containsChange: boolean) =>
+      runContinuityProbeBatch([source(probe)], {
+        dispatchTool: vi.fn(async () => ({ content: [{ type: 'text', text: JSON.stringify(body(containsChange)) }] })),
+      });
+
+    expect((await run(true)).results[0]).toMatchObject({ status: 'fresh', executed: true, observed: true });
+    // Falsifier: the same oversized shape must still read STALE when the value differs,
+    // so the fix cannot pass by treating any large body as a match.
+    expect((await run(false)).results[0]).toMatchObject({ status: 'stale', executed: true, observed: false });
+  });
 });
 
 // EI-24809550207915153: the batch hard-coded the 2.5s wake budget for every caller, so a

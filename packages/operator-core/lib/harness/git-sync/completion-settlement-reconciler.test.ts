@@ -517,7 +517,7 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
         verdicts.push(await reader.contains(root, closeHeadSha, toSha, path, blobs.get(path)!));
         exact.push(await completionBlobHistoryContains(root, closeHeadSha, toSha, path, blobs.get(path)!));
       }
-      return { verdicts, exact, reads: reader.historyReads() };
+      return { verdicts, exact, reads: reader.historyReads(), ancestry: reader.ancestryReads() };
     };
     return { root, run, commit, pass };
   }
@@ -561,7 +561,51 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     expect(third.reads).toBe(2);
   });
 
-  it('WI-10005380: a blob seen only on a merged-away side branch is found like the per-pair check, and a match is not remembered', async () => {
+  it('WI-10005524: a kept match is re-proved at a descendant by one shared merge-base, and searched again at a non-descendant', async () => {
+    const { root, run, commit, pass } = historyFixture('completion-history-kept-match-');
+    const paths = ['a.ts', 'b.ts', 'c.ts'];
+    const closeHeadSha = commit('close head', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} before";\n`])));
+    const closeText = (path: string) => `export const v = "${path} close time";\n`;
+    const blobs = new Map<string, string>();
+    for (const path of paths) {
+      writeFileSync(join(root, path), closeText(path));
+      blobs.set(path, run('hash-object', '-w', path));
+    }
+    // a.ts and b.ts reach a commit and are then superseded; c.ts never does.
+    commit('land a and b', { 'a.ts': closeText('a.ts'), 'b.ts': closeText('b.ts') });
+    const pass1 = commit('supersede', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} later";\n`])));
+
+    const first = await pass(closeHeadSha, pass1, blobs, paths);
+    expect(first.verdicts).toEqual([true, true, false]);
+    expect(first.verdicts).toEqual(first.exact);
+    expect(first.reads).toBe(3); // one shared search + the exact check for each sighting
+
+    // The same commit again: both matches are answered from the memo, nothing is read.
+    const again = await pass(closeHeadSha, pass1, blobs, paths);
+    expect(again.verdicts).toEqual([true, true, false]);
+    expect([again.reads, again.ancestry]).toEqual([0, 0]);
+
+    // A descendant: both matches are re-proved by ONE merge-base, with no history search;
+    // c.ts searches only the new commit.
+    const pass2 = commit('unrelated', { 'other.ts': 'export const other = 1;\n' });
+    const second = await pass(closeHeadSha, pass2, blobs, paths);
+    expect(second.verdicts).toEqual([true, true, false]);
+    expect(second.verdicts).toEqual(second.exact);
+    expect([second.reads, second.ancestry]).toEqual([1, 1]);
+
+    // A commit that does NOT descend from the kept match (a branch cut at close time, as a
+    // submodule gitlink can move): the match must not be trusted. a.ts is searched again
+    // over the whole range and is truthfully not found there.
+    run('checkout', '-q', '-b', 'elsewhere', closeHeadSha);
+    const elsewhere = commit('elsewhere', { 'z.ts': 'export const z = 1;\n' });
+    const third = await pass(closeHeadSha, elsewhere, blobs, ['a.ts']);
+    expect(third.exact).toEqual([false]);
+    expect(third.verdicts).toEqual(third.exact);
+    expect(third.ancestry).toBe(1);
+    expect(third.reads).toBeGreaterThan(0);
+  });
+
+  it('WI-10005380: a blob seen only on a merged-away side branch is found like the per-pair check, and the match is kept', async () => {
     const { root, run, commit, pass } = historyFixture('completion-history-merge-side-');
     const base = 'export const v = "base";\n';
     const closeHeadSha = commit('close head', { 'p.ts': base });
@@ -583,8 +627,10 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     expect(first.exact).toEqual([true]);
     expect(first.verdicts).toEqual(first.exact);
     expect(first.reads).toBe(2);
-    // A match is never remembered: the next pass searches (and confirms) again.
-    expect((await pass(closeHeadSha, toSha, blobs, ['p.ts'])).reads).toBe(2);
+    // WI-10005524: the exact match is kept, so the next pass at the same commit reads nothing.
+    const second = await pass(closeHeadSha, toSha, blobs, ['p.ts']);
+    expect(second.verdicts).toEqual([true]);
+    expect([second.reads, second.ancestry]).toEqual([0, 0]);
   });
 
   it('a shared reader retries an unmeasured gitlink read, reuses settled ones, and shares one in flight', async () => {

@@ -12,6 +12,7 @@ import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { hasValidGitEntry } from '../locks/valid-git-entry';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { gitRefContains, type GitStdoutRead } from '../../git-ref-contains';
 import { streamGitFields, type GitSpawnOptions } from './untouched-paths';
 import type {
   CompletionSettlementManifest,
@@ -470,6 +471,8 @@ export interface CompletionBlobHistoryReader {
   gitlinkReads(): number;
   /** How many history `git log` reads this reader has issued. */
   historyReads(): number;
+  /** WI-10005524: how many `merge-base` reads re-proved a kept match at a later commit. */
+  ancestryReads(): number;
 }
 
 /**
@@ -770,7 +773,24 @@ export function createCompletionBlobHistoryReader(
     if (!SHA_RE.test(fromHeadSha) || !SHA_RE.test(toCommitSha) || !OBJECT_SHA_RE.test(blobSha)) return undefined;
     const path = normalizedRepoPath(repoRoot, rawPath);
     if (!path || path !== rawPath) return undefined;
-    const span = await spanOf(pairOf(nodePath.resolve(repoRoot), fromHeadSha, path, blobSha), toCommitSha, opts);
+    const pair = pairOf(nodePath.resolve(repoRoot), fromHeadSha, path, blobSha);
+    const kept = memo.get(pair.id);
+    if (kept?.foundThrough !== undefined) {
+      // WI-10005524: a match found through W still holds at T when W is an ancestor of T.
+      const to = await completionHistoryLocation(pair.root, toCommitSha, path, opts, sharedRead);
+      if (to === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
+      if (to && to.repositoryRoot === kept.repositoryRoot && to.path === kept.path) {
+        const still =
+          to.commitSha === kept.foundThrough || (await descends(to.repositoryRoot, kept.foundThrough, to.commitSha, opts));
+        if (opts.signal?.aborted) return 'unmeasured';
+        if (still === true) {
+          if (to.commitSha !== kept.foundThrough) memo.set(pair.id, { ...kept, foundThrough: to.commitSha });
+          return true;
+        }
+      }
+      // Not provably reachable from T (or not measured): search the whole range below.
+    }
+    const span = await spanOf(pair, toCommitSha, opts);
     if (span === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
     if (!span) return undefined;
     // from === to, or nothing landed since the last no-match: there is nothing to search.
@@ -790,7 +810,12 @@ export function createCompletionBlobHistoryReader(
     }
     // Seen in the range, or the shared search measured nothing: the per-pair check decides.
     historyReadCount += 1;
-    return historyLogFinds(span.from, span.to, blobSha, opts);
+    const verdict = await historyLogFinds(span.from, span.to, blobSha, opts);
+    // Both answers are exact over from..to, so keep them: a match is re-proved by one shared
+    // ancestry read next pass instead of a per-pair search, and a "seen" candidate that the
+    // exact check rejects is not searched over the same range again.
+    if (verdict === true || verdict === false) remember(span.pair, span, verdict);
+    return verdict;
   };
 
   return {
@@ -805,6 +830,7 @@ export function createCompletionBlobHistoryReader(
       }
     },
     historyReads: () => historyReadCount,
+    ancestryReads: () => ancestryReadCount,
     hint: (repoRoot, commitSha, paths) => {
       if (!SHA_RE.test(commitSha)) return;
       // Only paths contains() itself would accept: a declared non-file ref ('/reports/…',
@@ -840,6 +866,32 @@ async function blobHistoryContains(
   if (from.repositoryRoot !== to.repositoryRoot || from.path !== to.path) return undefined;
   if (from.commitSha === to.commitSha) return false;
   return historyLogFinds(from, to, blobSha, opts);
+}
+
+/**
+ * WI-10005524: is `ancestor` an ancestor-or-equal of `descendant` in one repository?
+ * {@link gitRefContains} reads it from `git merge-base` stdout (a stdout-only read cannot
+ * tell `--is-ancestor`'s exit 1 from a failure). null = the read measured nothing.
+ */
+function commitContains(
+  repositoryRoot: string,
+  descendant: string,
+  ancestor: string,
+  opts: GitSpawnOptions,
+): Promise<boolean | null> {
+  const read: GitStdoutRead = async (args) => {
+    let out = '';
+    const outcome = await streamGitFields(
+      ['-C', repositoryRoot, ...args],
+      (field) => {
+        out += field;
+      },
+      // Bounded one-line output, so the sidecar can run it (see the ls-tree read above).
+      { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
+    );
+    return outcome === 'complete' && !opts.signal?.aborted ? out.trim() : null;
+  };
+  return gitRefContains(read, descendant, ancestor);
 }
 
 /** The exact history check for one (path, blob) over `from..to`, in one location. */
