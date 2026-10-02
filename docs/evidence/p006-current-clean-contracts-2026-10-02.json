@@ -1908,5 +1908,249 @@
     "bindingsReceipt": "/tmp/p006-idempotence-bindings-20261002-fire174.json",
     "limits": "Accepted clauses, BARs, source, tests, D-003 baseline and D-016 historical evidence unchanged. No native/P2P/sharedrestart/LIVE_GATE_OPS work or final shipment claim."
   },
-  "next": "Continue ORDER@4 after fresh claims/source/readiness: blocked-head-next-eligible and eligible-ordered-head. IDEMPOTENCE@3 now governs PASS on seven current bindings; latest census is five PASS,22FAIL,oneUNKNOWN. Reuse unchanged saved proofs; do not repeat current idempotence/exclusion/claim/lifecycle tests or controls. Independent rubric ratification, D013 real-goal card, closure audit and final shipment remain separate. Preserve D003/D013/D016 and24WI/12loop checks; no unchangednative/P2P/sharedrestart/LIVE_GATE_OPS."
+  "orderCurrentProof": {
+    "verifiedAt": "2026-10-02T10:22:34.831184Z",
+    "nativeSession": "01a0fc12-d439-71f0-8cab-b6f63d108ebf",
+    "specId": "WOE-P001-ORDER",
+    "revision": 4,
+    "specFingerprint": "121c87fda3d187db94b802a016e0e1434b3cca79977ab9cfbbd5472e06ac5403",
+    "scope": "Current clean unit and real-PG ordering proof; governing acceptance PASS. Broader P006 acceptance and final shipment remain open.",
+    "sourceReadback": "Six exact reader/writer/test canonical, retained-clone and pin fingerprints match; retained clone clean. Production source and expected assertion literals unchanged.",
+    "sourceBindings": [
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "sha256": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties-db.ts",
+        "sha256": "950b9a44112a713cc1191e9d155ac0c0347e44ef11dbe4d3247b89a7d99dddac",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/derive-index.ts",
+        "sha256": "4583047dbd3b56d25e6f3a8e859a1e65d25cb2477ae130b11dc2bc2c30cc1203",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/plan-index-rows.ts",
+        "sha256": "75c5f9427e14a70a34c74f7254f67b4d5afb7c9149ff2301c4095d32ac801c70",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/goal-plan-placement-order-proof.test.ts",
+        "sha256": "2fe828648e22f5988ee32f23babb4913d579d4fa579fb9454105d95a5e137127",
+        "canonicalClonePinMatch": true
+      },
+      {
+        "path": "packages/operator-core/lib/goal-plan-placement-order.integration.test.ts",
+        "sha256": "d9b320d82ff4dc5914e3dad830620dd3d3f4090b0491091578a05a5197649c8a",
+        "canonicalClonePinMatch": true
+      }
+    ],
+    "positive": {
+      "testRunId": 20509703,
+      "pass": 3,
+      "skipped": 0,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "log": "/tmp/p006-order-positive-20261002-fire175.log",
+      "logSha256": "686f69fb3506162a4049ed243afa5d0c31b48d7ad96ceee04a3ef82267ab5abc",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goal-plan-placement-order-proof.test.ts"
+    },
+    "controls": [
+      {
+        "scenario": "blocked-head-next-eligible",
+        "testRunId": 20509705,
+        "counterexampleBindingId": 21636,
+        "recurrenceBindingId": 21633,
+        "recurrenceTestRunId": 20509703,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 1,
+        "exit": 1,
+        "log": "/tmp/p006-order-blocked-head-next-eligible-20261002-fire175.log",
+        "logSha256": "a053d3983313e1caf80d43cea06312d7ea32207e5dfa2e01671423e22fe884e2",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "eligible-ordered-head",
+        "testRunId": 20509704,
+        "counterexampleBindingId": 21637,
+        "recurrenceBindingId": 21634,
+        "recurrenceTestRunId": 20509703,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 1,
+        "exit": 1,
+        "log": "/tmp/p006-order-eligible-ordered-head-20261002-fire175.log",
+        "logSha256": "82b69b8e8adde513a4d04e70548bce134dc33d1dd8a8f89a0defd95b7a70acaa",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "integration": {
+      "testRunId": 20509710,
+      "pass": 3,
+      "skipped": 0,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "bindingId": 21635,
+      "log": "/tmp/p006-order-pg-positive-20261002-fire175.log",
+      "logSha256": "7b5a1e658973c4ffd19d15a0739d75c05cd8b5f16211c44ca2d8eee077ee6261",
+      "command": "Maintained startDedicatedNativePg plus PAPERCUSP_TEST_PG_ADMIN_URL override; PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/goal-plan-placement-order.integration.test.ts",
+      "cleanup": {
+        "dataDir": "/tmp/papercusp-native-pg-suFcPW",
+        "port": 38841,
+        "startedAt": "2026-10-02T10:12:44.182Z",
+        "childExit": {
+          "code": 0,
+          "signal": null
+        },
+        "dataDirRemoved": true,
+        "portListening": false,
+        "finishedAt": "2026-10-02T10:13:49.074Z"
+      },
+      "limits": "Persisted goal worklist and plan-index writers cover both required scenarios plus calibration. No causal pair IDs on this corroboration."
+    },
+    "liveCurrentBindingIds": [
+      21633,
+      21634,
+      21635,
+      21636,
+      21637
+    ],
+    "bindingReadbackReceipt": "/tmp/p006-order-final-bindings-20261002-fire175.json",
+    "selectedReplacement": {
+      "governing": false,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "ratings": {
+        "traceability": "pass",
+        "fixture-calibration": "not-applicable",
+        "falsifiability": "pass",
+        "correct-layer": "pass",
+        "oracle-independence": "pass",
+        "execution-integrity": "pass",
+        "freshness": "pass",
+        "plan-class-risk-floor": "pass",
+        "disclosed-gap": "not-applicable"
+      },
+      "receipt": "/tmp/p006-order-selected-full-20261002-fire175.json"
+    },
+    "withdrawals": {
+      "bindingIds": [
+        19050,
+        19051,
+        19052,
+        19053,
+        19054
+      ],
+      "scope": "Binding-only, after exact work-item/spec/revision/currentness read and selected replacement PASS.",
+      "receipt": "/tmp/p006-order-withdrawals-20261002-fire175.json",
+      "historicalTestRunIds": [
+        20405714,
+        20405746,
+        20405776,
+        20405749
+      ],
+      "historicalFieldsUnchanged": true,
+      "fieldsCompared": [
+        "id",
+        "filePath",
+        "status",
+        "source",
+        "worktreeDirty",
+        "isScratchConfig",
+        "commitSha",
+        "startedAt",
+        "finishedAt"
+      ]
+    },
+    "governingReplacement": {
+      "governing": true,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "receipt": "/tmp/p006-order-governing-20261002-fire175.json",
+      "selection": "No workItemIds or evidenceRefs."
+    },
+    "wholeCensus": {
+      "governing": true,
+      "population": 28,
+      "counts": {
+        "pass": 6,
+        "unknown": 1,
+        "fail": 21
+      },
+      "receipt": "/tmp/p006-order-whole-census-20261002-fire175.json",
+      "spillUri": "papercusp://scratch/papercusp-workspace/plans:evaluate-spec-test-adequacy/39fd1cc8-e0db-47d9-9450-4e14647298e0/result-door-1790936395556-59147690.spill",
+      "payloadSha256": "5ac07d47ba03135eda1e046814490ce640f41caf7cfa99320f06e321804e615d",
+      "payloadHashVerified": true,
+      "nextP002": [
+        {
+          "specId": "WOE-P002-AUTHORITY",
+          "revision": 3,
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-ELECTION",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "revision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "revision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        }
+      ]
+    },
+    "toolRouting": "Release API automatic fromTestRun rejected clean-clone lineage for three rows with test_run_file_outside_root; two explicit recurrences succeeded. Current staging binder, via attributed mcp-call --port3170, bound only the three refused rows successfully. No duplicate successful rows or incidental DRAIN filing.",
+    "limits": "Accepted clauses, BARs, D-003 immutable baseline, D-013 real-goal route and D-016 history unchanged. No native/P2P/sharedrestart/LIVE_GATE_OPS work or final shipment claim.",
+    "controlCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_ORDER_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-order-proof.test.ts -t 'order calibration:|repaired portfolio order contract: <scenario>'"
+  },
+  "next": "Continue P002 freshness: AUTHORITY@3/ELECTION@3/HANDOFF@3/RESPAWN@4/STALE-RESPAWN@3/UNKNOWN@3, then broader P003-P006 proof. First read canonical specs, exact stale bindings and saved current evidence; compare canonical/retained pin tests and changed writers before any new test. ORDER@4 now governs PASS on five current bindings; latest dated whole28 census sixPASS,21FAIL,oneUNKNOWN. Preserve six P001 proofs and all24WI/12loop checks. Independent rubric ratification, D013 existing real-goal card, closure audit and final shipment remain separate; no unchangednative/P2P/sharedrestart/LIVE_GATE_OPS."
 }
