@@ -600,13 +600,15 @@ export async function taggedHealedWakeText(
   const text = healedWakeText(ownerId, staleMins);
   try {
     const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
-    return tagTurnForInjection({
-      sid: ownerId,
-      origin: 'watchdog',
-      text,
-      ...(options.dir ? { dir: options.dir } : {}),
-      ...(options.nowMs != null ? { nowMs: options.nowMs } : {}),
-    }).taggedText;
+    return (
+      await tagTurnForInjection({
+        sid: ownerId,
+        origin: 'watchdog',
+        text,
+        ...(options.dir ? { dir: options.dir } : {}),
+        ...(options.nowMs != null ? { nowMs: options.nowMs } : {}),
+      })
+    ).taggedText;
   } catch {
     return text;
   }
