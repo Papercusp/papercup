@@ -4318,7 +4318,8 @@ async function completeOne(
         `To fix: re-read the originating item body and pass ` +
         `\`verification.requirementDisposition: [{ requirement: "<VERBATIM quote from that body>", ` +
         `disposition: "deferred", followUp: "EI-123" }, …]\` — one entry per distinct requirement, ` +
-        `each quote a literal span of the body, \`implemented\` entries citing a path that exists.`
+        `each quote a literal span of the body, and each \`implemented\` entry passes ` +
+        `\`citations: ["repo/relative/path.ts"]\` with a path that exists.`
       : `completion for ${it.id} landed authority:'proposed' rather than 'committed': its ` +
         `\`verification.requirementDisposition\` does not hold up. ` +
         (requirementShortfall.notQuotedFromSource.length
