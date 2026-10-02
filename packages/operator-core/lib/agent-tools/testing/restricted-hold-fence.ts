@@ -65,9 +65,16 @@ export interface RestrictedHoldFenceDeps {
   closures?: typeof testImportClosures;
 }
 
+/**
+ * Per-call bound on the census's git metadata reads. A timed-out call surfaces a non-numeric
+ * error code, which maps to exit 1 below, so the census throws and the fence refuses the run
+ * (fail-closed) instead of hanging testing:run on a wedged git.
+ */
+const GIT_TIMEOUT_MS = 60_000;
+
 const runGit: HoldRunGit = (args, cwd) =>
   new Promise((done) => {
-    execFile('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile('git', args, { cwd, timeout: GIT_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0;
       done({ code, stdout: String(stdout), stderr: String(stderr) });
     });

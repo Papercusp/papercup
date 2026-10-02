@@ -9,6 +9,7 @@ import {
   coldsnapCompositionOption,
   coldsnapCrateUrl,
   installPinnedColdsnap,
+  inspectPinnedColdsnap,
   pinnedColdsnapExecutable,
   pinnedColdsnapRoot,
   resolveColdsnapExecutable,
@@ -131,11 +132,39 @@ describe('installPinnedColdsnap', () => {
     expect(w.commands).toHaveLength(2);
   });
 
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['empty', ''],
+    ['non-string', 1790982000000],
+    ['invalid date', 'not-a-date'],
+  ])('does not trust an install stamp with a %s timestamp', async (_label, installedAt) => {
+    const w = world();
+    const executable = pinnedColdsnapExecutable('/home/u', PIN);
+    w.executables.add(executable);
+    w.files.set(join(pinnedColdsnapRoot('/home/u', PIN), 'papercusp-coldsnap.json'), JSON.stringify({
+      version: PIN.version,
+      crateSha256: PIN.crateSha256,
+      installedAt,
+    }));
+
+    expect(await inspectPinnedColdsnap('/home/u', w.deps, PIN)).toEqual({
+      installed: false,
+      executable,
+      reason: 'install stamp missing or unreadable',
+    });
+    expect((await installPinnedColdsnap('/home/u', w.deps, { pin: PIN })).status).toBe('installed');
+    expect(w.commands.map((c) => c.command)).toEqual(['tar', 'cargo']);
+    expect(await inspectPinnedColdsnap('/home/u', w.deps, PIN)).toEqual({ installed: true, executable });
+  });
+
   it('rebuilds when the stamp records a different pin (a pin bump never trusts the old build)', async () => {
     const w = world();
     await installPinnedColdsnap('/home/u', w.deps, { pin: PIN });
     const root = pinnedColdsnapRoot('/home/u', PIN);
-    w.files.set(join(root, 'papercusp-coldsnap.json'), JSON.stringify({ version: '9.9.9', crateSha256: '0'.repeat(64) }));
+    w.files.set(join(root, 'papercusp-coldsnap.json'), JSON.stringify({
+      version: '9.9.9', crateSha256: '0'.repeat(64), installedAt: w.deps.now().toISOString(),
+    }));
     expect((await installPinnedColdsnap('/home/u', w.deps, { pin: PIN })).status).toBe('installed');
     expect(w.commands).toHaveLength(4);
   });

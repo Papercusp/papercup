@@ -136,7 +136,8 @@ function parseStamp(text: string | undefined): ColdsnapStamp | undefined {
   try {
     const value = JSON.parse(text) as Partial<ColdsnapStamp>;
     return typeof value.version === 'string' && typeof value.crateSha256 === 'string'
-      ? { version: value.version, crateSha256: value.crateSha256, installedAt: String(value.installedAt ?? '') }
+      && typeof value.installedAt === 'string' && Number.isFinite(Date.parse(value.installedAt))
+      ? { version: value.version, crateSha256: value.crateSha256, installedAt: value.installedAt }
       : undefined;
   } catch {
     return undefined;
