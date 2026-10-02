@@ -62,6 +62,38 @@ export const MCP_PROXY_TENANT_SERVICE: TenantLoopbackService = {
   derivedEnv: (port) => ({ PAPERCUSP_MCP_PROXY_BASE: `http://127.0.0.1:${port}` }),
 };
 
+/**
+ * WI-10005586: the voice WebSocket walks (8 ports from a fixed base) are host-global too, so
+ * on a shared host only the first 7 (mobile) / 8 (desktop) tenants got voice and the rest
+ * logged FATAL with health still green (cap-p011, K=16). Clients never hard-code these ports:
+ * the chosen one reaches them through getMobileVoicePort() (device pairing / runtime-config)
+ * and getDesktopVoicePort() (desktop voice-config), so moving a tenant is invisible to them.
+ * Mobile voice binds every interface; the census counts wildcard listeners, which block it too.
+ */
+export const MOBILE_VOICE_TENANT_SERVICE: TenantLoopbackService = {
+  label: 'mobile-voice-ws',
+  envVar: 'MOBILE_VOICE_WS_PORT',
+  defaultPort: 3068,
+  rangeBase: 25800,
+  span: 1000,
+};
+
+export const DESKTOP_VOICE_TENANT_SERVICE: TenantLoopbackService = {
+  label: 'desktop-voice-ws',
+  envVar: 'DESKTOP_VOICE_WS_PORT',
+  defaultPort: 3076,
+  rangeBase: 26800,
+  span: 1000,
+};
+
+/** Every fixed-port service a Server pins per tenant. Ranges must stay disjoint and below 32768. */
+export const TENANT_LOOPBACK_SERVICES: readonly TenantLoopbackService[] = [
+  GATEWAY_TENANT_SERVICE,
+  MCP_PROXY_TENANT_SERVICE,
+  MOBILE_VOICE_TENANT_SERVICE,
+  DESKTOP_VOICE_TENANT_SERVICE,
+];
+
 export type TenantPortReason =
   | 'default-free'
   | 'default-own'
@@ -159,9 +191,10 @@ export function pinTenantLoopbackPort(
   return decision;
 }
 
-/** Pin every fixed-port loopback service. Call before anything spawns an agent. */
+/** Pin every fixed-port service in TENANT_LOOPBACK_SERVICES, in that order. Call before
+ *  anything spawns an agent or binds a voice listener. */
 export function pinTenantLoopbackPorts(deps: ResolveTenantPortDeps = {}): TenantPortDecision[] {
-  return [GATEWAY_TENANT_SERVICE, MCP_PROXY_TENANT_SERVICE].map((s) => pinTenantLoopbackPort(s, deps));
+  return TENANT_LOOPBACK_SERVICES.map((s) => pinTenantLoopbackPort(s, deps));
 }
 
 /** True only when this host can prove someone ELSE listens on 127.0.0.1:`port`. */

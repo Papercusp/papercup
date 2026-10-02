@@ -376,10 +376,11 @@ export function runBootstrap(): void {
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
 
-  // WI-10005481: decide this tenant's gateway / MCP-proxy ports by listener ownership
-  // BEFORE anything can spawn an agent, so no agent env ever carries a port another
-  // Linux user owns. Synchronous (/proc read), idempotent, a no-op when the defaults are
-  // free or ours. Never fatal: a failure leaves the pre-fix defaults in place.
+  // WI-10005481 / WI-10005586: decide this tenant's gateway, MCP-proxy and voice-WS ports
+  // by listener ownership BEFORE anything can spawn an agent or bind a voice listener, so
+  // no agent env carries a port another Linux user owns and tenants past the 8th still get
+  // voice. Synchronous (/proc read), idempotent, a no-op when the defaults are free or ours.
+  // Never fatal: a failure leaves the pre-fix defaults in place.
   try {
     pinTenantLoopbackPorts();
   } catch (err) {
