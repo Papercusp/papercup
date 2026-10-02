@@ -6,6 +6,7 @@ import { expect, test, type Page } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
 import AxeBuilder from '@axe-core/playwright';
+import { writeFile } from 'node:fs/promises';
 
 // The same maintained browser fixture can be paused for a real Orca/keyboard
 // review on an isolated desktop. Normal automated runs do not pause.
@@ -149,11 +150,36 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
   const fixture = await setupJourney(page, false);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const geometryReview = process.env.PAPERCUSP_TUTORIAL_GEOMETRY_REVIEW === '1';
-  await page.addInitScript((captureGeometry) => {
+  const orderReview = process.env.PAPERCUSP_TUTORIAL_FOCUS_ORDER_REVIEW === '1';
+  const revealControl = process.env.PAPERCUSP_TUTORIAL_FOCUS_REVEAL_CONTROL === '1';
+  const frameRevealControl = process.env.PAPERCUSP_TUTORIAL_FRAME_REVEAL_CONTROL === '1';
+  await page.addInitScript(({ captureGeometry, captureOrder, explicitReveal, frameReveal }) => {
     const behaviors: Array<ScrollBehavior | undefined> = [];
     Object.defineProperty(window, '__tutorialScrollBehaviors', { value: behaviors });
     const snapshots: unknown[] = [];
     Object.defineProperty(window, '__tutorialFocusGeometry', { value: snapshots });
+    const order: unknown[] = [];
+    Object.defineProperty(window, '__tutorialFocusOrder', { value: order });
+    const identify = (element: Element | null) => element?.getAttribute('aria-label')
+      ?? element?.getAttribute('data-tutorial-target') ?? element?.tagName;
+    // This arm records call order without forcing layout while the form mounts.
+    const recordOrder = (event: string, target?: Element, options?: unknown) => {
+      if (captureOrder && order.length < 100) order.push({ event, at: performance.now(),
+        target: identify(target ?? null), active: identify(document.activeElement), options });
+    };
+    if (captureOrder || explicitReveal || frameReveal) {
+      const focus = HTMLElement.prototype.focus;
+      HTMLElement.prototype.focus = function (options) {
+        recordOrder('focus:before', this, options);
+        focus.call(this, options);
+        recordOrder('focus:after', this, options);
+        if (explicitReveal && this.getAttribute('aria-label') === 'Connection label' && options?.preventScroll === false)
+          this.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+        if (frameReveal && this.getAttribute('aria-label') === 'Connection label' && options?.preventScroll === false)
+          requestAnimationFrame(() => this.scrollIntoView({ behavior: 'instant', block: 'nearest' }));
+      };
+      document.addEventListener('scroll', event => recordOrder('scroll', event.target instanceof Element ? event.target : undefined), true);
+    }
     const snapshot = (event: string, stack?: string) => {
       if (snapshots.length >= 80) return;
       const input = document.querySelector<HTMLElement>('input[aria-label="Connection label"]');
@@ -173,14 +199,16 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
     const scroll = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (options) {
       if (typeof options === 'object') behaviors.push(options.behavior);
+      recordOrder('scrollIntoView:before', this, options);
       if (captureGeometry) snapshot(`scrollIntoView:${this.getAttribute('data-tutorial-target') ?? this.tagName}:before`, new Error().stack);
       scroll.call(this, options);
+      recordOrder('scrollIntoView:after', this, options);
       if (captureGeometry) {
         snapshot('scrollIntoView:after');
         requestAnimationFrame(() => snapshot('scrollIntoView:next-frame'));
       }
     };
-  }, geometryReview);
+  }, { captureGeometry: geometryReview, captureOrder: orderReview, explicitReveal: revealControl, frameReveal: frameRevealControl });
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
   await fixture.sync.waitForServed(['workspaceHosts.control']);
   const guide = page.getByRole('region', { name: 'First agent guide' });
@@ -195,8 +223,24 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
     // Check before fill/Tab can scroll the newly mounted field into view.
     await expect(label).toBeInViewport({ ratio: 1 });
   } finally {
-    if (geometryReview) await test.info().attach('connection-focus-geometry', { contentType: 'application/json', body: JSON.stringify(
-      await page.evaluate(() => (window as unknown as { __tutorialFocusGeometry: unknown[] }).__tutorialFocusGeometry)) });
+    const preserveDiagnostic = async (name: string, data: unknown) => {
+      const path = test.info().outputPath(`${name}.json`);
+      await writeFile(path, JSON.stringify(data));
+      await test.info().attach(name, { contentType: 'application/json', path });
+    };
+    if (orderReview) await preserveDiagnostic('connection-focus-order',
+      await page.evaluate(() => {
+        const input = document.querySelector('input[aria-label="Connection label"]');
+        const ancestors = [];
+        for (let node = input?.parentElement; node; node = node.parentElement) ancestors.push({ tag: node.tagName,
+          class: node.className, scrollTop: node.scrollTop, clientHeight: node.clientHeight,
+          scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY,
+          rect: node.getBoundingClientRect().toJSON() });
+        return { order: (window as unknown as { __tutorialFocusOrder: unknown[] }).__tutorialFocusOrder,
+          rect: input?.getBoundingClientRect().toJSON(), ancestors, viewport: { width: innerWidth, height: innerHeight } };
+      }));
+    if (geometryReview) await preserveDiagnostic('connection-focus-geometry',
+      await page.evaluate(() => (window as unknown as { __tutorialFocusGeometry: unknown[] }).__tutorialFocusGeometry));
   }
   await label.fill('Keyboard project'); await page.keyboard.press('Tab');
   const credential = page.getByRole('textbox', { name: 'Injected credential reference' });
