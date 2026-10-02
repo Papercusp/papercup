@@ -104,6 +104,8 @@ function makeFakes(
     spawnStatuses?: Array<'ok' | 'error' | 'no-proof' | 'exit-2'>;
     /** What the launch-log reader reports for a failed rank. */
     logReason?: string | null;
+    /** Durable log path returned for a failed spawn. */
+    errorLogPath?: string;
     /** The source's persisted dispatch walks the cool-down reads (WI-10003198). */
     sourceRecords?: PersistedDispatchRecord[];
   } = {},
@@ -138,7 +140,14 @@ function makeFakes(
     spawnHeadless: async (o: Fakes['calls']['spawn'][number]) => {
       calls.spawn.push(o);
       const status = statuses[spawnSeq++] ?? 'ok';
-      if (status === 'error') return { status: 'error', code: 500, error: 'fixture spawn failure' };
+      if (status === 'error') {
+        return {
+          status: 'error',
+          code: 500,
+          error: 'fixture spawn failure',
+          ...(opts.errorLogPath ? { logPath: opts.errorLogPath } : {}),
+        };
+      }
       return {
         status: 'ok',
         pid: 42,
@@ -429,6 +438,29 @@ describe('dispatchConsultResponder — the walk', () => {
       [1, 'failed', 'launch-failed'],
       [2, 'dispatched', undefined],
     ]);
+  });
+
+  it('records the failed spawn log path and launcher reason before trying the next rank', async () => {
+    const reason = 'psu: refusing unmanaged fork su-answer-1: could not recover adv row #29351';
+    const { deps, calls } = makeFakes({}, {
+      spawnStatuses: ['error', 'ok'],
+      logReason: reason,
+      errorLogPath: '/logs/x-1.log',
+    });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(calls.logReads).toEqual(['/logs/x-1.log']);
+    expect(r.attempts[0]).toMatchObject({
+      outcome: 'failed',
+      reason: 'launch-failed',
+      launchError: reason,
+      launchLogPath: '/logs/x-1.log',
+    });
+    expect(r.attempts[0]!.detail).toContain(`launcher said: ${reason}`);
+    expect(calls.recorded[0]!.result.attempts[0]).toMatchObject({
+      launchError: reason,
+      launchLogPath: '/logs/x-1.log',
+    });
+    expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
   });
 
   it('treats an unpersisted kickoff as a FAILED rank — an unsubmitted brief is a phantom responder', async () => {
@@ -1029,6 +1061,7 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
           reason: 'launch-exited',
           detail: 'y'.repeat(5000),
           launchError: 'z'.repeat(1000),
+          launchLogPath: '/logs/failed-launch.log',
         },
         { rank: 2, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'skipped', detail: 'short' },
       ],
@@ -1046,6 +1079,7 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
     expect(e.detail.endsWith('…')).toBe(true);
     expect((e.attempts[0]!.detail as string).length).toBe(DISPATCH_RECORD_TEXT_MAX);
     expect((e.attempts[0]!.launchError as string).length).toBe(300);
+    expect(e.attempts[0]!.launchLogPath).toBe('/logs/failed-launch.log');
   });
 
   it('omits reason and launchError when a rank has none, rather than writing null', () => {

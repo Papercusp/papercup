@@ -167,6 +167,8 @@ export interface ConsultDispatchAttempt {
    * Absent when the log holds no recognisable failure line.
    */
   launchError?: string;
+  /** The durable launch log used to identify a failed spawned rank. */
+  launchLogPath?: string;
 }
 
 export interface ConsultDispatchResult {
@@ -311,6 +313,7 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
       ...(a.reason ? { reason: a.reason } : {}),
       detail: clip(a.detail),
       ...(a.launchError ? { launchError: clip(a.launchError, 300) } : {}),
+      ...(a.launchLogPath ? { launchLogPath: clip(a.launchLogPath) } : {}),
     })),
   };
 }
@@ -476,7 +479,15 @@ export interface PersistedDispatchRecord {
   at: string;
   sourceOwnerId?: string;
   dispatched?: boolean;
-  attempts?: Array<{ outcome?: string; reason?: string; agent?: string; model?: string; launchError?: string; detail?: string }>;
+  attempts?: Array<{
+    outcome?: string;
+    reason?: string;
+    agent?: string;
+    model?: string;
+    launchError?: string;
+    launchLogPath?: string;
+    detail?: string;
+  }>;
 }
 
 export interface SourceCooldown {
@@ -1291,7 +1302,21 @@ async function launchAnsweringSession(
     kickoffProof: true,
   });
   if (spawn.status !== 'ok') {
-    return failed('launch-failed', `spawn failed (code ${spawn.code}): ${spawn.error}`);
+    const launchError = await d.readLaunchLogReason(spawn.logPath);
+    const result = failed(
+      'launch-failed',
+      `spawn failed (code ${spawn.code}): ${spawn.error}` +
+        (spawn.logPath ? `; log ${spawn.logPath}` : '') +
+        (launchError ? `; launcher said: ${launchError}` : ''),
+    );
+    return {
+      ...result,
+      record: {
+        ...result.record,
+        ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
+        ...(launchError ? { launchError } : {}),
+      },
+    };
   }
   // A detached spawn can report `ok` after the shell starts even when the
   // command never submitted the brief. Require the host's parent-visible native
@@ -1308,7 +1333,14 @@ async function launchAnsweringSession(
         `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'}); ${stopped}` +
         (launchError ? `; launcher said: ${launchError}` : ''),
     );
-    return launchError ? { ...result, record: { ...result.record, launchError } } : result;
+    return {
+      ...result,
+      record: {
+        ...result.record,
+        ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
+        ...(launchError ? { launchError } : {}),
+      },
+    };
   }
   // The first-turn wait below is bounded from this instant (WI-10004645).
   const kickoffSeenAtMs = d.nowMs();
@@ -1349,6 +1381,7 @@ async function launchAnsweringSession(
               `${failure} before ${answeringOwnerId} registered a live host (log ${spawn.logPath ?? '?'})` +
               (launchError ? `; launcher said: ${launchError}` : ''),
             ...(launchError ? { launchError } : {}),
+            ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
           },
           answeringOwnerId: null,
           verified: false,
