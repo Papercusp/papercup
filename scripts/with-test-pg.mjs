@@ -209,12 +209,30 @@ if (operatorApi) {
     import { join } from 'node:path';
     import { saveHarnessRegistry, loadHarnessRegistry } from './packages/operator-core/lib/harness-registry.ts';
     import { createEmbedSidecarServer } from './packages/operator-core/lib/memory/embed-sidecar-server.ts';
+    import { getOrgPg, upsertRoutine } from '@papercusp/db-org';
+    import { releaseGateTile } from './packages/operator-core/lib/device-monitoring.ts';
     const id = process.env.PAPERCUSP_WORKSPACE_ID;
     const home = join(process.env.PAPERCUSP_WORKSPACES_ROOT, id, 'operator-home');
     await mkdir(home, { recursive: true });
     await saveHarnessRegistry({ projects: [{ slug: id, path: home, harness_kind: 'hive' }] }, id);
     const registry = await loadHarnessRegistry(id, { fresh: true });
     if (!registry.projects.some(p => p.slug === id && p.path === home)) throw new Error('private home harness was not registered');
+    // Inbox refuses an unmeasured system source. An empty disposable database
+    // has no pipeline at all, so register an explicitly PAUSED fixture through
+    // the maintained routine store. Never manufacture a green verdict or arm
+    // a release action against the developer's checkout.
+    const { sql } = getOrgPg();
+    await upsertRoutine(sql, { workspaceId: id, installSlug: id,
+      name: 'green-checkpoint', triggerKind: 'api', triggerConfig: {},
+      targetRole: 'operator', active: false, nextFireAt: null }, () => null);
+    const pause = { reason: 'Disposable operator-api fixture; publication disabled',
+      pausedBy: id, pausedAtMs: Date.now() };
+    await sql\`UPDATE harness_shared.routines SET metadata = \${sql.json({ pause })}
+      WHERE workspace_id = \${id} AND install_slug = \${id} AND name = 'green-checkpoint'\`;
+    const gate = await releaseGateTile(id);
+    if (!gate || gate.gate !== 'wedged' || !gate.red) {
+      throw new Error('private paused pipeline was not measured; refusing request journey');
+    }
     const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false });
     const port = await sidecar.listening;
     process.on('SIGTERM', async () => { await sidecar.close(); process.exit(0); });
@@ -245,7 +263,7 @@ if (operatorApi) {
       throw new Error('operator-api private embedding sidecar failed capability/owner preflight');
     }
     runtimeEnv.PAPERCUSP_EMBED_SIDECAR_URL = ready.url;
-    console.log('[with-test-pg] operator-api preflight ready — private home harness and embedding sidecar; background/DBOS disabled');
+    console.log('[with-test-pg] operator-api preflight ready — private home harness, measured paused pipeline and embedding sidecar; background/DBOS disabled');
   } catch (error) {
     console.error('[with-test-pg] operator-api preflight failed: ' + (error?.stack ?? error));
     await cleanup();
