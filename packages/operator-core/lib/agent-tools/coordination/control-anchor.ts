@@ -19,6 +19,7 @@ import { getLoopStatus, type LoopStatus } from '../../harness/routines/loop';
 import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief';
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
+import { buildConsumerView, type ConsumerView } from '../../consumer-view';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 import { stackRefsForSession } from '../../stack-binding-channel';
 import { trackDetached } from '../../detached-imports';
@@ -208,13 +209,35 @@ export interface ControlTransitionDelivery extends ControlTransition {
      */
     overBudget?: true;
   };
+  /**
+   * EI-23770243810745552: present ONLY when the enforcement port's read of the activation
+   * differs from what this write intended. Absence means the read agreed (or this anchor
+   * did not come from a write) — it is an exception report, not a per-write receipt.
+   */
+  consumerView?: ActivationConsumerView;
 }
+
+/**
+ * The path the identity-activation ENFORCEMENT port reads (see the activation CAS
+ * predicates below: `control_state->'activation'`). It is NOT the transition snapshot
+ * `control_transition->'state'->'activation'`, which holds the activation as of the
+ * last REAL change and goes stale across a no-op write (WI-10002021).
+ */
+export const ACTIVATION_CONSUMER_READ_PATH = 'harness_shared.session_briefs.control_state->activation';
+
+type ActivationConsumerView = ConsumerView<SessionActivation | null>;
 
 interface PersistedControlAnchor {
   generation: number;
   state: ControlAnchorState;
   updatedAt: string;
   transition: ControlTransition | null;
+  /**
+   * Consumer-attested write (EI-23770243810745552): what the enforcement port's read
+   * path returned for the activation this write intended. Always present here;
+   * `renderControlAnchor` surfaces it only when `divergedFromWrite` is true.
+   */
+  consumerView: ActivationConsumerView;
 }
 
 interface ScopeClaimRow {
@@ -499,6 +522,7 @@ export function renderControlAnchor(input: {
   generation: number;
   state: ControlAnchorState;
   updatedAt: string;
+  consumerView?: ActivationConsumerView;
 }): ControlAnchor {
   const state = normalizeControlAnchorState(input.state);
   const base = {
@@ -540,6 +564,8 @@ export function renderControlAnchor(input: {
       maxTokens: CONTROL_ANCHOR_MAX_TOKENS,
       ...(overBudget ? { overBudget: true as const } : {}),
     },
+    // Exception-only (see ControlAnchor.consumerView): an agreeing read adds zero bytes.
+    ...(input.consumerView?.divergedFromWrite ? { consumerView: input.consumerView } : {}),
   };
 }
 
@@ -629,11 +655,21 @@ export async function persistControlAnchor(
   // `generation` equals `control_generation` in BOTH cases.
   const persistedAt = row.control_transition?.provenance?.recordedAt;
   if (persistedAt === provenance.recordedAt) await notifyAgentOrdersChanged(input.ownerId);
+  const persistedState = normalizeControlAnchorState(row.control_state);
   return {
     generation: Number(row.control_generation),
-    state: normalizeControlAnchorState(row.control_state),
+    state: persistedState,
     updatedAt: new Date(row.control_updated_at).toISOString(),
     transition: row.control_transition ?? null,
+    // EI-23770243810745552: attest the CONSUMER's read, not just the write. RETURNING
+    // hands back the row exactly as the enforcement port will read it, so this costs no
+    // extra query — and a write that lands on a different path than the one consumers
+    // read (the WI-10002021 decoy-column class) now says so instead of reporting ok.
+    consumerView: buildConsumerView({
+      readPath: ACTIVATION_CONSUMER_READ_PATH,
+      written: state.activation ?? null,
+      consumed: persistedState.activation ?? null,
+    }),
   };
 }
 
