@@ -81,12 +81,17 @@
  *                          epoch key still in the keychain (load-only — a missing one is warned, never
  *                          minted), so ops sealed under past epochs decrypt too. Ships the hive READABLE
  *                          — deliberate, flag-gated. Needs an epoch context (--workspace-id or --epoch).
+ *   --redact-findings <file> --redact-finding-digests <sha256,...>
+ *                          reviewed private gitleaks report: exclude exact credential literals through
+ *                          the existing seed projection. Requires a fresh corestore; never logs values.
  *   --json                 print the manifest + size report as JSON
  */
 
 import { resolve, join, dirname, basename } from 'node:path';
 import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 import { constants, existsSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
@@ -99,7 +104,7 @@ import {
 } from './seed-hostname-neutralization.js';
 import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
 export { mergeReleaseSeedRedactionValues } from './seed-identity-guard.js';
-import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp } from 'node:fs/promises';
+import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, realpath } from 'node:fs/promises';
 import Corestore from 'corestore';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -241,6 +246,69 @@ export function resolveReleaseSeedRedactionValuesForCut(input: {
   readonly load: () => readonly string[];
 }): readonly string[] {
   return input.wantCorestore || input.reuseCorestoreDir ? input.load() : [];
+}
+
+/** WI-10005568: reuse the provider's literal projection without putting a credential
+ * in argv, source, or logs. Approval selects exact finding digests; the private scan
+ * must still match its report, plaintext source and detector config identities. */
+export async function readSeedFindingRedactions(
+  reportPath: string,
+  digests: readonly string[],
+  configPath: string,
+): Promise<readonly string[]> {
+  const refused = () => new Error('seed credential redaction evidence invalid');
+  const wanted = new Set(digests);
+  if (!wanted.size || wanted.size !== digests.length || digests.some((d) => !/^[0-9a-f]{64}$/.test(d))) {
+    throw refused();
+  }
+  const hashFile = async (file: string) => {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(file)) hash.update(chunk);
+    return hash.digest('hex');
+  };
+  const privateFile = async (file: string) => {
+    const [info, parent] = await Promise.all([lstat(file), lstat(dirname(file))]);
+    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) ||
+        !parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o077) ||
+        await realpath(file) !== resolve(file)) throw refused();
+  };
+  try {
+    if (!reportPath.endsWith('.json')) throw refused();
+    const metaPath = reportPath.replace(/\.json$/, '.meta.json');
+    await Promise.all([privateFile(reportPath), privateFile(metaPath)]);
+    const [reportText, metaText] = await Promise.all([readFile(reportPath, 'utf8'), readFile(metaPath, 'utf8')]);
+    const rows: unknown = JSON.parse(reportText);
+    const meta = JSON.parse(metaText) as { scannerExit?: number; findings?: number; reportSha256?: string;
+      identity?: { blobSha256?: string; configSha256?: string } };
+    if (!Array.isArray(rows) || rows.length !== meta.findings || ![0, 1].includes(meta.scannerExit ?? -1) ||
+        createHash('sha256').update(reportText).digest('hex') !== meta.reportSha256 ||
+        await hashFile(configPath) !== meta.identity?.configSha256) throw refused();
+    const found = new Set<string>();
+    const literals = new Set<string>();
+    const sources = new Set<string>();
+    for (const raw of rows) {
+      if (!raw || typeof raw !== 'object') throw refused();
+      const row = raw as Record<string, unknown>;
+      const fields = [row.RuleID, row.Match, row.Secret];
+      if (fields.some((v) => typeof v !== 'string' || v === 'REDACTED')) throw refused();
+      if (typeof row.File !== 'string') throw refused();
+      sources.add(row.File);
+      const digest = createHash('sha256').update(JSON.stringify(fields)).digest('hex');
+      if (wanted.has(digest)) {
+        if ((row.Secret as string).length < 12) throw refused();
+        found.add(digest);
+        literals.add((row.Secret as string).trim());
+      }
+    }
+    if (found.size !== wanted.size || sources.size !== 1) throw refused();
+    const source = [...sources][0];
+    await privateFile(source);
+    if (await hashFile(source) !== meta.identity?.blobSha256) throw refused();
+    return [...literals];
+  } catch {
+    // Parsing and filesystem errors must not echo any private report content.
+    throw refused();
+  }
 }
 
 export interface PickGitEncryptionInput {
@@ -1383,11 +1451,23 @@ async function main(): Promise<void> {
   const reuseCorestoreDir = reuseCorestoreRaw ? resolve(reuseCorestoreRaw) : undefined;
   const emitEpochKey = args['emit-epoch-key'] === true;
   const wantCorestore = args['no-corestore'] !== true && !reuseCorestoreDir;
-  const releaseRedactionValues = resolveReleaseSeedRedactionValuesForCut({
+  const releaseRedactionValues = [...resolveReleaseSeedRedactionValuesForCut({
     wantCorestore,
     ...(reuseCorestoreDir ? { reuseCorestoreDir } : {}),
     load: () => releaseSeedRedactionValues(root),
-  });
+  })];
+  const redactReport = str(args, 'redact-findings');
+  const redactDigests = str(args, 'redact-finding-digests');
+  if (redactReport || redactDigests) {
+    if (!redactReport || !redactDigests || !wantCorestore) {
+      throw new Error('exact finding redaction requires report, digests and a fresh corestore');
+    }
+    const literals = await readSeedFindingRedactions(
+      resolve(redactReport), redactDigests.split(','),
+      join(root, 'papercusp-desktop', 'bin', 'release-gitleaks.toml'),
+    );
+    releaseRedactionValues.push(...literals);
+  }
   const asJson = args['json'] === true;
 
   // P-004 sparse cut: ship only [snapshotIndex,len) of each core (drops the ~2GB history
