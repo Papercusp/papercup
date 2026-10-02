@@ -30,6 +30,11 @@ WORKDIR=${WORKDIR:-overlay}
 # AGENT_ENV='KEY=VALUE;...' is load-driver.ts --agent-env: variables every session gets (the driver's
 # env scrub drops PAPERCUSP_*, so e.g. the hosted tsc-service template must be passed here).
 AGENT_ENV=${AGENT_ENV:-}
+# PARKED=M (P-015) is load-driver.ts --parked: M extra claude sessions per step that idle mid-session
+# on a held reply and all wake together PARK_RELEASE_SEC into the step (default 60% of it).
+PARKED=${PARKED:-}
+PARK_AT_REQUEST=${PARK_AT_REQUEST:-4}
+PARK_RELEASE_SEC=${PARK_RELEASE_SEC:-$((DUR * 6 / 10))}
 S="scripts/agent-capacity"
 uid=$(id -u)
 SLICE=${CAPDRV_SLICE_DIR:-/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/capdrv.slice}
@@ -68,7 +73,8 @@ for n in $STEPS; do
   echo "RAMP_STEP_START $run n=$n $(ts)"
   t0=$(date +%s)
   npx tsx "$S/load-driver.ts" --agents "$n" --duration-sec "$DUR" --stagger-ms 1000 "${sel[@]}" "${tasks[@]}" \
-    --run-id "$run" --isolation systemd --workdir "$WORKDIR" ${AGENT_ENV:+--agent-env "$AGENT_ENV"} >"$FP/$run.driver.log" 2>&1
+    --run-id "$run" --isolation systemd --workdir "$WORKDIR" ${AGENT_ENV:+--agent-env "$AGENT_ENV"} \
+    ${PARKED:+--parked "$PARKED" --park-at-request "$PARK_AT_REQUEST" --release-at-sec "$PARK_RELEASE_SEC"} >"$FP/$run.driver.log" 2>&1
   rc=$?
   # A shared tree keeps every session's edits; record how far it has drifted from its checkout.
   [ "$WORKDIR" != shared ] || echo "RAMP_SHARED_TREE run=$run dirty=$(git -C "$CACHE/prepared/papercusp" status --porcelain 2>/dev/null | wc -l)"

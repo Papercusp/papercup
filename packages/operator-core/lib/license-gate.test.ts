@@ -360,6 +360,21 @@ describe('installer leg — validateComponents', () => {
     for (const k of ['first-party', 'program', 'model', 'os-image']) expect(kinds.has(k), k).toBe(true);
   });
 
+  it('covers the lowercase Windows desktop binary while keeping unknown executables unreviewed', () => {
+    const file = JSON.parse(readFileSync(COMPONENTS_PATH, 'utf8'));
+    const r = attributeInstaller({
+      components: file.components,
+      payloads: [
+        { path: 'app/papercusp-desktop.exe', kind: 'native' },
+        { path: 'wrapped/app/papercusp-desktop.exe', kind: 'native' },
+        { path: 'app/unreviewed.exe', kind: 'native' },
+      ],
+    });
+    expect(r.components.find((c: { kind: string }) => c.kind === 'first-party')?.hits).toBe(2);
+    expect(r.unreviewed.map((u: { path: string }) => u.path)).toEqual(['app/unreviewed.exe']);
+    expect(r.denied).toEqual([]);
+  });
+
   // Defect #10 (open-source-release R-15 build8): the GTK/gdk-pixbuf plugin modules were
   // listed only under usr/lib/x86_64-linux-gnu/, but linuxdeploy flattens them to usr/lib/,
   // so the finished AppImage reported 26 UNREVIEWED payloads. Both layouts must match.

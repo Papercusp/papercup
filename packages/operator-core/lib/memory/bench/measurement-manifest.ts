@@ -337,6 +337,25 @@ export function assertMeasuredExecution(arm: MeasurementArm, actual: { device: s
     || !worker.alive || worker.disabled) throw new Error('unverified/mismatched device, threads or worker fallback');
 }
 
+/** A no-CUDA smoke capture only qualifies file import, not the decoder used by
+ * a native CUDA measurement. A saved report may also contain partial events
+ * after importer failure. This guard qualifies decoding; PID/sequence binding
+ * and model acceptance still require their own retained evidence. */
+export function assertNativeProfilerQualification(importer: { exitCode: number; output: string },
+  capture: { databaseIntegrity: string; cudaApiRecords: number; cudaKernelRecords: number }): void {
+  const fatalMarkers = ['processeventserror', 'unknown driver api function index:',
+    'cannot find string for an exterior index', 'errors occurred while processing the raw events'];
+  if (importer.exitCode !== 0 || typeof importer.output !== 'string'
+    || importer.output.split('\n').some((line) => {
+      const text = line.trimStart().toLowerCase();
+      return text.startsWith('error {') || fatalMarkers.some((marker) => text.includes(marker));
+    })) throw new Error('native CUDA profiler import failed; retain capture and repair decoder before inference');
+  if (capture.databaseIntegrity !== 'ok'
+    || [capture.cudaApiRecords, capture.cudaKernelRecords].some((count) => !Number.isSafeInteger(count) || count <= 0)) {
+    throw new Error('native CUDA profiler preflight lacks decoded CUDA activity');
+  }
+}
+
 export interface CellOutcome { cellId: string; manifestSha256: string; status: 'measured' | 'incompatible';
   artifacts: Array<{ path: string; sha256: string; bytes: number }>; defect?: { owner: string; item: string; rootCause: string; guard: string } }
 /** Coverage is an exact partition of promised cells. Unknown/skipped is unfinished. */

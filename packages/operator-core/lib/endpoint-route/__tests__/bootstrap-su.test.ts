@@ -495,6 +495,26 @@ vi.mock('../../agent-tools/coordination/presence', async (orig) => ({
   writePresence: (...args: unknown[]) =>
     writePresenceMock(...(args as [unknown, unknown, unknown])),
 }));
+type PendingCarryRespawnTestSlot = {
+  nonce: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  firstPrompt: string;
+  systemPromptAddendum: string;
+};
+const consumePendingCarryRespawnMock = vi.fn(
+  async (_ownerId: string): Promise<PendingCarryRespawnTestSlot | null> => null,
+);
+const restorePendingCarryRespawnMock = vi.fn(
+  async (_ownerId: string, _workspaceId: string, _slot: PendingCarryRespawnTestSlot) => true,
+);
+vi.mock('../../session-brief', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  consumePendingCarryRespawn: (...args: unknown[]) =>
+    consumePendingCarryRespawnMock(...(args as [string])),
+  restorePendingCarryRespawn: (...args: unknown[]) =>
+    restorePendingCarryRespawnMock(...(args as [string, string, PendingCarryRespawnTestSlot])),
+}));
 // EI-21442511412659661: bootstrap must consult the shared liveness oracle and
 // treat an absent/rejected read as unknown (therefore blocking). Keep the route
 // suite PG-free while asserting the exact hydrated call shape.
@@ -582,6 +602,8 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  consumePendingCarryRespawnMock.mockReset().mockResolvedValue(null);
+  restorePendingCarryRespawnMock.mockReset().mockResolvedValue(true);
   resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   claimAgentLaunchMock.mockReset().mockResolvedValue({
@@ -906,6 +928,60 @@ describe('bootstrap-su', () => {
     expect(noPlan.kickoffPrompt).toBeNull();
   });
 
+  it('consumes a validated owner carry slot into the next launch prompt and system prompt', async () => {
+    const now = Date.now();
+    const slot: PendingCarryRespawnTestSlot = {
+      nonce: 'carry-bootstrap-nonce',
+      createdAtMs: now,
+      expiresAtMs: now + 60_000,
+      firstPrompt: 'Test-only saved first turn prompt.',
+      systemPromptAddendum: 'Test-only persisted system carry addendum.',
+    };
+    consumePendingCarryRespawnMock.mockResolvedValueOnce(slot);
+
+    const response = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      owner_id: 'su-carry-bootstrap',
+    });
+
+    expect(response.status).toBe(200);
+    expect(consumePendingCarryRespawnMock).toHaveBeenCalledWith('su-carry-bootstrap');
+    const body = await response.json();
+    expect(body.kickoffPrompt).toBe(slot.firstPrompt);
+    const compiledPrompt = (compileLaunchSpecificationArtifactMock.mock.calls[0]?.[0] as { promptText: string })
+      .promptText;
+    expect(compiledPrompt).toContain(slot.systemPromptAddendum);
+    expect(compiledPrompt.indexOf('PLAYBOOK + CTX BODY')).toBeLessThan(
+      compiledPrompt.indexOf(slot.systemPromptAddendum),
+    );
+    expect(restorePendingCarryRespawnMock).not.toHaveBeenCalled();
+  });
+
+  it('restores a consumed carry slot when fresh bootstrap fails before completion', async () => {
+    const now = Date.now();
+    const slot: PendingCarryRespawnTestSlot = {
+      nonce: 'carry-restore-nonce',
+      createdAtMs: now,
+      expiresAtMs: now + 60_000,
+      firstPrompt: 'Test-only saved first turn prompt.',
+      systemPromptAddendum: 'Test-only persisted system carry addendum.',
+    };
+    consumePendingCarryRespawnMock.mockResolvedValueOnce(slot);
+    recordAdvSessionMock.mockRejectedValueOnce(new Error('session write failed'));
+
+    await expect(callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      owner_id: 'su-carry-restore',
+    })).rejects.toThrow('session write failed');
+
+    expect(restorePendingCarryRespawnMock).toHaveBeenCalledWith('su-carry-restore', 'default', slot);
+    expect(restorePendingCarryRespawnMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      recordAdvSessionMock.mock.invocationCallOrder[0],
+    );
+  });
+
   it('EI-155: claude gets a per-session CLAUDE_CONFIG_DIR keyed by the minted sid', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     const sid = json.envelopeEnv.PAPERCUSP_SID;
@@ -960,6 +1036,7 @@ describe('bootstrap-su', () => {
       }),
     );
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
     expect(recordSessionPortBootstrapReceiptMock).toHaveBeenCalledWith(
       expect.objectContaining({
         portId: SESSION_PORT_ID,

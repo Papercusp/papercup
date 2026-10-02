@@ -172,6 +172,472 @@
     "logHashVerified": true,
     "sourceDrift": "goal-launch-settings changed; no current acceptance reuse"
   },
+  "claimCurrentProof": {
+    "verifiedAt": "2026-10-02T09:08:41Z",
+    "nativeSession": "01a0fbd1-f11e-7870-a2fe-e6433007e6b4",
+    "specId": "WOE-P001-CLAIM",
+    "revision": 3,
+    "specFingerprint": "2b61e5e90764abbdc15f639e5f70cd09b19fe334ca75f4ea513835287afcb0df",
+    "scope": "Four calibrated maintained fault controls and unchanged clean positive unit/real-PG proof. CLAIM@3 selected replacement and governing acceptance PASS; P006 broader acceptance remains open.",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_CLAIM_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts -t <calibration plus exact named assertion>",
+    "sourceReadback": "All six canonical and retained-clone source/test fingerprints equal the original pin; clone git status empty before controls. Exact positive ledger20499866/20500782 still pass, clean/no scratch. Four new exact mutation-probe rows likewise clean/no scratch; assertions and calibration read from logs.",
+    "controls": [
+      {
+        "scenario": "expired-lease",
+        "testRunId": 20502794,
+        "counterexampleBindingId": 21439,
+        "recurrenceBindingId": 21432,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-expired-lease-20261002-current.log",
+        "logSha256": "85fb33919df9b19b5d6a5d5af81850c63aec25a7e7aab43ee09cdae735ddca88",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "leader-only",
+        "testRunId": 20502792,
+        "counterexampleBindingId": 21440,
+        "recurrenceBindingId": 21434,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-leader-only-20261002-current.log",
+        "logSha256": "37d7222a2dbecf86f8a1b43aea2c40fb9831a7bcc31b58bf5353d12a8eebb3d0",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "member-claim-and-lease",
+        "testRunId": 20502793,
+        "counterexampleBindingId": 21441,
+        "recurrenceBindingId": 21436,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-member-claim-and-lease-20261002-current.log",
+        "logSha256": "625f743a7a0d7b45fa5819474e90f5acde3e4fd2016701875acfd6e62d83ecd3",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "wrong-member-or-filter",
+        "testRunId": 20502795,
+        "counterexampleBindingId": 21442,
+        "recurrenceBindingId": 21438,
+        "recurrenceTestRunId": 20499866,
+        "log": "/tmp/p006-claim-wrong-member-or-filter-20261002-current.log",
+        "logSha256": "2b52819de5a3567d875b68c65d1e2787d8ada8969fc848d75083878db7739824",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 13,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "integrationBindingId": 21430,
+    "uniqueIntegrationBindingId": 21443,
+    "integrationTestRunId": 20500782,
+    "selectedReplacement": {
+      "governing": false,
+      "verdict": "pass",
+      "wouldBlock": [],
+      "bindingIds": [
+        21443,
+        21439,
+        21432,
+        21440,
+        21434,
+        21441,
+        21436,
+        21442,
+        21438
+      ]
+    },
+    "withdrawals": {
+      "staleBindingIds": [
+        19029,
+        19030,
+        19031,
+        19032,
+        19033,
+        19034,
+        19035,
+        19036,
+        19037
+      ],
+      "callerMistypedBindingIds": [
+        21431,
+        21433,
+        21435,
+        21437
+      ],
+      "reason": "First negative binding call omitted explicit evidenceKind and derived ordinary tests. Corrected by binding exact counterexample rows, then selected replacement PASS before binding-only withdrawal. Nine old bindings independently read as source-stale;19029 also test-stale. Immutable test-run/audit records and D003 baseline preserved.",
+      "ok": 13
+    },
+    "governingClaim": {
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "f52b2457ba",
+        "version": "0.0.0"
+      },
+      "verdict": "pass",
+      "wouldBlock": [],
+      "filters": "specIds only; no workItemIds/evidenceRefs"
+    },
+    "receipts": [
+      {
+        "path": "/tmp/p006-claim-bindings-mcp3170-20261002.json",
+        "sha256": "541d8db3f457f3a738aaa623591685ce18babdbbc52079a4f28bcc39319f1c47",
+        "ok": 9
+      },
+      {
+        "path": "/tmp/p006-claim-counterexamples-mcp3170-20261002.json",
+        "sha256": "4c5a5e84db0ac13914c00e0e68435207f909806c77d35ba4a17446e2d2308670",
+        "ok": 4
+      },
+      {
+        "path": "/tmp/p006-claim-integration-unique-20261002.json",
+        "sha256": "09b9b498a848894a91d265c5b3525fc779c4389cbd2bd22b5066c17b2c0a3367",
+        "ok": 1
+      },
+      {
+        "path": "/tmp/p006-claim-withdrawals-20261002.json",
+        "sha256": "3d0e507c8c688021cc3b37db7dfa9b322ce4d1a4c35410855dee74c9d8db9d55",
+        "ok": 13
+      }
+    ],
+    "wholeCensus": {
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "247b9ed162",
+        "version": "0.0.0"
+      },
+      "rows": [
+        {
+          "specId": "WOE-P001-BLOCKER",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-CLAIM",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-EXCLUSIONS",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P001-IDEMPOTENCE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P001-ORDER",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P001-TERMINAL",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P002-AUTHORITY",
+          "specRevision": 3,
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-ELECTION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ]
+        },
+        {
+          "specId": "WOE-P003-BREACH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-MEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-NUMERATOR",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P003-WINDOW",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-CUSTODY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-REAL-CALL",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-SCHEDULER-DIAGNOSIS",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-SLOW-BOOT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P004-WAKE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-HAND-DISPATCH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-MATERIALIZATION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-SOVEREIGNTY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-REAL-CARD",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-SHIPMENT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        }
+      ],
+      "count": 28,
+      "verdicts": {
+        "pass": 3,
+        "fail": 24,
+        "unknown": 1
+      }
+    },
+    "finalBindingReadback": {"count":10,"truncatedByLimit":false,"ids":[21443,21442,21441,21440,21439,21438,21436,21434,21432,21430],"currentness":"All ten live rows current; thirteen withdrawn identities absent from the complete current-revision read."},
+    "censusLimits": "Staging evaluator247b9ed162 observed28 clauses:3pass/24fail/1unknown. AUTHORITY changed from datedPASS to freshnessunknown; no earlier PASS reused as current. Complete emitted rows embedded here; no scratch TTL dependency.",
+    "limits": "No independent rubric review/ratification, real-goal scorecard reuse, whole P006 acceptance, historical root cause or final shipment claim. D003/D013/D016 re-read; no product source, clause, BAR or baseline edited. Named file provenance does not measure the whole import graph."
+  },
   "governingCensus": {
   "observedAt": "2026-10-02T08:49:35Z",
   "query": "plans:evaluate-spec-test-adequacy slug work-on-everything-stewardship-remediation-2026-08-30 classRef plan-class-feature-ship, without workItemIds/evidenceRefs",

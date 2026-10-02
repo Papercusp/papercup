@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
+import { assertNativeProfilerQualification, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
 const roots: string[] = [];
@@ -51,5 +51,47 @@ describe('independent relevance evaluator inputs', () => {
     expect(() => loadIndependentMeasurementInputs(p, 'prose')).toThrow('corpus/cell');
     p.manifest.datasets[0].queryIds.reverse();
     expect(() => loadIndependentMeasurementInputs(p, 'memory')).toThrow('order');
+  });
+});
+
+describe('native CUDA profiler qualification', () => {
+  const decodedCuda = { databaseIntegrity: 'ok', cudaApiRecords: 12, cudaKernelRecords: 36 };
+
+  it('accepts a clean importer and decoded CUDA activity without treating API names as errors', () => {
+    expect(() => assertNativeProfilerQualification({ exitCode: 0, output: '0 errors; cudaGetLastError\nSaved report file' }, decodedCuda))
+      .not.toThrow();
+  });
+
+  it('rejects a saved report from the observed failing CUDA event importer', () => {
+    const output = 'Error {\n Type: RuntimeError\n Type: ProcessEventsError\n'
+      + 'Unknown driver API function index: 752\nCannot find string for an exterior index\nSaved report file';
+    expect(() => assertNativeProfilerQualification({ exitCode: 3, output }, decodedCuda)).toThrow('profiler import failed');
+  });
+
+  it.each([
+    'Error {\n Type: RuntimeError',
+    'Type: ProcessEventsError',
+    'Unknown driver API function index: 752',
+    'Cannot find string for an exterior index',
+    '**** Errors occurred while processing the raw events. ****',
+  ])('rejects partial decoding even when the importer exit code is zero: %s', (output) => {
+    expect(() => assertNativeProfilerQualification({ exitCode: 0, output }, decodedCuda)).toThrow('profiler import failed');
+  });
+
+  it('rejects the previous no-CUDA preflight despite SQLite integrity passing', () => {
+    expect(() => assertNativeProfilerQualification({ exitCode: 0, output: 'Saved report file' },
+      { databaseIntegrity: 'ok', cudaApiRecords: 0, cudaKernelRecords: 0 })).toThrow('decoded CUDA activity');
+  });
+
+  it('rejects a damaged exported database', () => {
+    expect(() => assertNativeProfilerQualification({ exitCode: 0, output: '' },
+      { ...decodedCuda, databaseIntegrity: 'malformed database' })).toThrow('decoded CUDA activity');
+  });
+
+  it.each([0, -1, 0.5, NaN, Infinity])('requires measured positive integer API and kernel counts: %s', (count) => {
+    for (const field of ['cudaApiRecords', 'cudaKernelRecords'] as const) {
+      expect(() => assertNativeProfilerQualification({ exitCode: 0, output: '' },
+        { ...decodedCuda, [field]: count })).toThrow('decoded CUDA activity');
+    }
   });
 });

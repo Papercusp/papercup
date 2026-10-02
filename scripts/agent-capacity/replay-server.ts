@@ -713,6 +713,34 @@ export interface ServedRecord {
   taskOutputIds?: Record<string, string>;
   /** Background-task ids this response names that the replay never reported (no prefix rewrite either when none was reported). */
   taskOutputUnmapped?: string[];
+  /** ms this reply was held before release (HoldPlan); absent for an unheld reply. */
+  heldMs?: number;
+}
+
+/**
+ * P-015 parked agents: hold ONE streamed reply per matching instance until `releaseHolds()`, so its
+ * CLI sits idle mid-session with its whole heap (an agent waiting on the model), then wake every
+ * held agent at once. A held reply sends its headers at once and an SSE comment every
+ * `keepaliveMs`: SSE parsers ignore `:` lines, and the steady bytes keep the client's
+ * headers/body timeouts (undici's are 300 s) from firing during a long hold.
+ */
+export interface HoldPlan {
+  /** Instances whose name starts with this are held. */
+  instancePrefix: string;
+  /** Hold the instance's first streamed reply at or after this request number (1-based). */
+  atRequest: number;
+  /** Default 15000. */
+  keepaliveMs?: number;
+}
+
+/** Whether this request is the one to hold: once per instance, streamed replies only, never after release. */
+export function shouldHold(
+  plan: HoldPlan | undefined,
+  h: { instance: string; requestNumber: number; contentType: string | null | undefined; alreadyHeld: boolean; released: boolean },
+): boolean {
+  if (!plan || h.released || h.alreadyHeld) return false;
+  if (!h.instance.startsWith(plan.instancePrefix) || h.requestNumber < plan.atRequest) return false;
+  return /event-stream/i.test(h.contentType ?? '');
 }
 
 export interface ReplayServerOptions {
@@ -722,6 +750,7 @@ export interface ReplayServerOptions {
   /** Delay divisor: 1 = recorded timing, 2 = twice as fast, 0 = no delays. */
   speed?: number;
   logFile?: string;
+  hold?: HoldPlan;
 }
 
 export interface ReplayServer {
@@ -732,6 +761,10 @@ export interface ReplayServer {
   /** Serve this instance its recording with `rw.from` (the recorded work dir) rewritten to `rw.to`. */
   rewritePaths(sessionId: string, instance: string, rw: PathRewrite): void;
   states(): ReplayState[];
+  /** Replies held right now (see HoldPlan). */
+  held(): number;
+  /** Release every held reply at once and stop holding; returns how many were held. Idempotent. */
+  releaseHolds(): number;
   close(): Promise<void>;
 }
 
@@ -745,6 +778,13 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
   const log: WriteStream | null = opts.logFile ? createWriteStream(opts.logFile, { flags: 'a' }) : null;
   const inflight = new Set<Promise<void>>();
   const rewrites = new Map<string, PathRewrite>();
+  // HoldPlan: one shared release; `heldKeys` makes the hold once per instance.
+  let released = false;
+  let releaseAll!: () => void;
+  const releasedSignal = new Promise<void>((r) => (releaseAll = r));
+  const heldKeys = new Set<string>();
+  let heldNow = 0;
+  const keepaliveMs = opts.hold?.keepaliveMs ?? 15_000;
   // Exchanges already found not to mention a given `from`: every later instance skips the parse.
   const untouched = new WeakMap<RecordedExchange, string>();
   const served = (ex: RecordedExchange, rw: PathRewrite | undefined): RecordedExchange => {
@@ -868,6 +908,15 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           return;
         }
         const { tier } = picked;
+        const requestNumber = st.counts.exact + st.counts.shape + st.counts.path + st.counts.exhausted;
+        const hold = shouldHold(opts.hold, {
+          instance: parsed.instance,
+          requestNumber,
+          contentType: picked.exchange.contentType,
+          alreadyHeld: heldKeys.has(key),
+          released,
+        });
+        if (hold) heldKeys.add(key);
         let ex = served(picked.exchange, rewrites.get(key));
         const rewritten = ex !== picked.exchange;
         let sessions: Pick<ServedRecord, 'execSessionIds' | 'execSessionUnmapped' | 'execSessionPairing'> = {};
@@ -903,12 +952,25 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           res.on('close', () => {
             if (!res.writableFinished) aborted = true;
           });
-          const first = ex.chunks[0];
-          if (first) await sleep(delayOf(first.t));
-          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks });
           const headers: http.OutgoingHttpHeaders = {};
           if (ex.contentType) headers['content-type'] = ex.contentType;
-          res.writeHead(ex.status, headers);
+          let held: { heldMs?: number } = {};
+          if (hold) {
+            // Parked: headers now, keepalive comments until the shared release, then the recording.
+            const t0 = Date.now();
+            res.writeHead(ex.status, headers);
+            heldNow++;
+            while (!released && !aborted) {
+              await Promise.race([sleep(keepaliveMs), releasedSignal]);
+              if (!released && !aborted) res.write(': papercusp-capacity hold\n\n');
+            }
+            heldNow--;
+            held = { heldMs: Date.now() - t0 };
+          }
+          const first = ex.chunks[0];
+          if (first) await sleep(delayOf(first.t));
+          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks, ...held });
+          if (!hold) res.writeHead(ex.status, headers);
           let prevT = first?.t ?? 0;
           for (const c of ex.chunks) {
             const gap = c.t - prevT;
@@ -920,7 +982,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           const tail = ex.totalMs - prevT;
           if (!aborted && tail > 0 && ex.chunks.length === 0) await sleep(delayOf(tail));
           res.end();
-          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks });
+          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks, ...held });
         })();
       });
     });
@@ -938,7 +1000,21 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     baseUrl: (sessionId, instance) => `${url}/r/${sessionId}/${instance}`,
     rewritePaths: (sessionId, instance, rw) => void rewrites.set(`${sessionId}/${instance}`, rw),
     states:() => [...states.values()],
+    held: () => heldNow,
+    releaseHolds: () => {
+      const n = heldNow;
+      if (!released) {
+        released = true;
+        releaseAll();
+      }
+      return n;
+    },
     close: async () => {
+      // A held reply would otherwise keep its connection (and close()) waiting for a release.
+      if (!released) {
+        released = true;
+        releaseAll();
+      }
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await Promise.all([...inflight]);

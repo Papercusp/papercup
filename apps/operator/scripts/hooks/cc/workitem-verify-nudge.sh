@@ -106,6 +106,10 @@ except Exception:
 if not isinstance(ev, dict):
     sys.exit(0)
 
+hook_native_session_id = ev.get('session_id') or ev.get('sessionId')
+if not isinstance(hook_native_session_id, str) or not hook_native_session_id.strip():
+    hook_native_session_id = os.environ.get('PAPERCUSP_NATIVE_SESSION_ID') or ''
+
 name = (ev.get('hook_event_name') or ev.get('hookEventName') or '').strip()
 
 
@@ -191,11 +195,9 @@ def call_tool(tool, args, native_session_id=None):
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                        'params': {'name': tool, 'arguments': args}}).encode()
     url = operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client=' + urllib.parse.quote(sid, safe='')
-    if tool == 'activity:report':
-        url = with_native_session(
-            url,
-            native_session_id or args.get('session_id') or os.environ.get('PAPERCUSP_NATIVE_SESSION_ID') or '',
-        )
+    context_session_id = native_session_id or args.get('session_id') or hook_native_session_id
+    if context_session_id:
+        url = with_native_session(url, context_session_id)
     req = urllib.request.Request(
         url,
         data=body,
@@ -348,8 +350,7 @@ if not glance_fixture:
         cwd = ev.get('cwd')
         if isinstance(cwd, str) and cwd:
             a['cwd'] = cwd
-        native_session_id = sess if isinstance(sess, str) and sess else os.environ.get('PAPERCUSP_NATIVE_SESSION_ID')
-        call_tool('activity:report', a, native_session_id=native_session_id)
+        call_tool('activity:report', a, native_session_id=hook_native_session_id)
     except Exception:
         pass
 
