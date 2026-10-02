@@ -2981,6 +2981,11 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
         for (const candidate of candidates) {
           const { sessionId, owner } = adapter.meta(candidate.path);
           const indexed = indexedClaudeOwners.get(sessionId);
+          // The turn budget can stop the ingest loop before it visits every
+          // candidate. Build the repair map from the complete discovery set so
+          // a partial sweep cannot revert owners repaired by a full sweep.
+          const selected = indexed ?? owner;
+          if (selected) ownerBackfill.set(sessionId, selected);
           if (owner && indexed && owner !== indexed) conflictingClaudePartOwners.set(sessionId, indexed);
         }
       }
@@ -3011,7 +3016,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
               ? ompOwnersByAdvSession.get(meta.advSessionId) ?? null
               : null
           );
-          if (owner) ownerBackfill.set(meta.sessionId, owner);
+          if (owner && adapter.sourceKind !== 'claude') ownerBackfill.set(meta.sessionId, owner);
           // Collect metadata BEFORE the byte-offset short circuit. A paused
           // session commonly has no late transcript turn, but its already
           // indexed rollout still carries the native id/config needed to repair
