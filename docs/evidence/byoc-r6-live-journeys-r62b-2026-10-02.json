@@ -97,8 +97,17 @@
     "admittedMaxSpendCents": { "p318-j23a-20261001-r62b2": 2500, "p318-j23b-20261001-r62b2": 2500 },
     "billingExport": "active-alcove-504205-q3.papercusp_billing.gcp_billing_export_v1_0113AC_50E9A0_8BB71D",
     "measured": [
-      { "runId": "p318-canary-20260930-r62", "costUsd": 0.1887, "creditsUsd": -0.1887, "usage": "2026-09-30 11:00/13:00" }
+      { "runId": "p318-canary-20260930-r62", "costUsd": 0.1887, "creditsUsd": -0.1887, "usage": "2026-09-30 11:00/13:00" },
+      { "runId": "p318-j23a-20261001-r62b2", "costUsd": 0.0552, "creditsUsd": -0.055, "rows": 21, "usage": "2026-10-01 22:00/2026-10-02 01:00", "admittedMaxSpendCents": 2500, "withinCap": true },
+      { "runId": "p318-j23b-20261001-r62b2", "costUsd": 0.0034, "creditsUsd": -0.0033, "rows": 1, "usage": "2026-10-02 00:00/01:00", "admittedMaxSpendCents": 2500, "withinCap": true }
     ],
+    "j23Reconciliation": {
+      "queriedAt": "2026-10-02T12:16Z",
+      "queriedBy": "su-9b75fa7c",
+      "exportCoverage": { "maxExportTime": "2026-10-02 11:01:53", "maxUsageEndTime": "2026-10-02 08:00:00", "coversRunWindows": true },
+      "method": "bq query over the billing export; a row belongs to a run when ANY label value ends with the run id (papercusp_run_id or papercusp-host-id=host-pc-<run>), counted once per row. Summing per label double-counts and the run-id label alone undercounts j23a (0.0272) because some disk rows carry only the host-id label.",
+      "services": ["Compute Engine"]
+    },
     "note": "Queried 2026-10-02T00:33Z. The export had not yet ingested the 2026-10-01 J2/J3 runs. Their spend is bounded by the admitted 2500-cent cap per run; both hosts lived under two hours on e2-class machines."
   },
   "receiptRefs": [
@@ -120,7 +129,8 @@
   ],
   "limitations": [
     "Host A's destroy operation deleted every provider resource but ended failed with 'terminal evidence incomplete' (EI-24818981551847665). Zero residue for A rests on the gcloud census, not on a committed census receipt.",
-    "The billing export had not yet ingested the 2026-10-01 J2/J3 runs when this file was written; those runs are bounded by their admitted spend caps.",
+    "J2/J3 spend was reconciled at 2026-10-02T12:16Z after the billing export covered their windows (budget.j23Reconciliation): j23a 0.0552 USD, j23b 0.0034 USD, both within the 2500-cent admitted cap. The 00:33Z note in budget.note predates that reconciliation.",
+    "Host A's eight-kind zero-residue census is teardown.eightKindCensus (01:16:56Z, all eight GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS zero for p318-j23a-20261001-r62b2); it is an operator-run gcloud census, not the controller's terminal census receipt.",
     "J1 ran on the customer host avi-test, not on a fresh canary host."
   ]
 }

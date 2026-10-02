@@ -182,7 +182,11 @@ import {
   type EscalationRecord,
 } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import {
+  LOOP_TURN_START_MARKER,
+  SESSION_END_MARKER,
+  SESSION_START_MARKER,
+} from '../../agent-tools/activity/lifecycle-markers';
 import { classifySessionEnd, isMachineModelErrorText, type SessionEndReason } from '../../search/session-end-reason';
 import {
   parseUsageReset,
@@ -870,6 +874,10 @@ interface LoopRow {
   /** max(agent_activity.created_at) for a kind='lifecycle' 'started' marker after the fire —
    *  the cold reset-boundary guard (see completionSignal). */
   lifecycle_started_at: Date | string | null;
+  /** EI-24791346664119438: max(agent_activity.created_at) for the real-time
+   *  LOOP_TURN_START_MARKER after the fire — written at UserPromptSubmit when a
+   *  loop-fire prompt opens a turn. Optional: legacy/unit seams may omit it. */
+  loop_turn_started_at?: Date | string | null;
   /** payload_template->>'carry' — 'cold' marks a cold loop (reset/recycle wakes), which
    *  changes what counts as a settle (see completionSignal). */
   carry: string | null;
@@ -950,6 +958,19 @@ function deliveredWakeWithoutLoopTurn(
   if (loopTurnAtMs != null && loopTurnAtMs >= loopTurnFloorMs(row, wakeAtMs)) return null;
 
   const intervalMs = row.interval_sec * 1000;
+  // EI-24791346664119438: the strict clock above is derived from INGESTED transcripts, and a
+  // long loop turn is ingested after it ends — measured 2026-10-02: 64 of 334 settles in 24h
+  // were real loop turns (prompt ~70s after the fire, mean turn 329s) whose rows landed
+  // 500-600s AFTER this detector had already scored them 'retry' → recordFire('error').
+  // Presence cannot rescue them (1 of 64 had any activity in the 60s before the settle: a long
+  // silent Bash or text generation is quiet). The real-time turn-start stamp proves the fire
+  // DID become a turn, so hold until the turn ends — the Stop-hook journal then lifts the
+  // owner-wide suppression (see hasDeliveredWakeWithoutLoopTurn) and the ordinary ladder
+  // settles it. Bounded by the stuck-park dwell, like the two holds below, so a lost Stop hook
+  // cannot strand the loop: past the dwell the pre-existing ladder judges it as before.
+  if (loopTurnStartedAt(row, wakeAtMs) != null && nowMs - wakeAtMs < stuckParkMs(intervalMs)) {
+    return { kind: 'awaiting-turn' };
+  }
   // EI-22127560919383327: a 'suppressed-redundant' delivery was settled by the await engine
   // WITHOUT spending a turn because a turn was ALREADY IN FLIGHT; the psu-host stacks the queued
   // loop-fire prompt into the next turn once that one ends (measured 2026-09-02: fires 05:37:32Z
@@ -1021,6 +1042,14 @@ function deliveredWakeWithoutLoopTurn(
 function loopTurnFloorMs(row: LoopRow, wakeAtMs: number): number {
   const createdAtMs = tsMs(row.last_wake_created_at ?? null);
   return createdAtMs != null && createdAtMs < wakeAtMs ? createdAtMs : wakeAtMs;
+}
+
+/** EI-24791346664119438: the real-time loop-fire turn-start stamp, when it belongs to the
+ *  latest delivered wake (same dispatch-clock floor as the strict completion proof). A stamp
+ *  is proof the wake became a turn, never proof the turn COMPLETED. */
+function loopTurnStartedAt(row: LoopRow, wakeAtMs: number): number | null {
+  const startedMs = tsMs(row.loop_turn_started_at ?? null);
+  return startedMs != null && startedMs >= loopTurnFloorMs(row, wakeAtMs) ? startedMs : null;
 }
 
 /** Return the strict loop-origin assistant completion for this fire, when the
@@ -1338,6 +1367,12 @@ export async function reconcileLoopRoutines(
                AND a.kind = 'lifecycle'
                AND a.summary = ${SESSION_START_MARKER}
                AND a.created_at > r.last_fired_at) AS lifecycle_started_at,
+           (SELECT max(a.created_at)
+              FROM harness_shared.agent_activity a
+             WHERE a.owner_id = r.target_owner_id
+               AND a.kind = 'lifecycle'
+               AND a.summary = ${LOOP_TURN_START_MARKER}
+               AND a.created_at > r.last_fired_at) AS loop_turn_started_at,
            (SELECT a.id
               FROM harness_shared.adv_sessions a
              WHERE a.coord_owner_id = r.target_owner_id
@@ -1647,6 +1682,16 @@ export async function reconcileLoopRoutines(
       // 8/8 with zero post-fire loop-fire turns, averaging 17.5x their own interval, against
       // 1.8-5.2x for every other parked group.
       const presenceLastActiveMs = tsMs(row.presence_last_active_at);
+      // EI-24791346664119438: once the real-time loop-fire turn-start stamp proves this wake
+      // became a turn, a Stop-hook journal row at/after that stamp IS that turn's end — no
+      // longer "unrelated owner activity" — so the suppression below must lift and let the
+      // ordinary turn-journal layer settle the fire as 'ok', instead of holding until the
+      // ingest-derived strict clock catches up. A journal row BEFORE the stamp (a prior turn
+      // that ended while the loop-fire prompt was queued) is still excluded.
+      const loopTurnStartMs = wakeAtMs != null ? loopTurnStartedAt(row, wakeAtMs) : null;
+      const turnJournalMs = tsMs(row.turn_journal_completed_at);
+      const loopTurnEndedByJournal =
+        loopTurnStartMs != null && turnJournalMs != null && turnJournalMs >= loopTurnStartMs;
       const suppressedRedundantTurnEnded =
         row.last_wake_channel === 'suppressed-redundant' &&
         presenceLastActiveMs != null &&
@@ -1673,7 +1718,8 @@ export async function reconcileLoopRoutines(
         // the loop as 'ok' rather than letting it ride the retry leg's 'error' indefinitely.
         nowMs - wakeAtMs < stuckParkMs(intervalMs) &&
         // EI-22177872501023528 — see the note above this block.
-        !suppressedRedundantTurnEnded;
+        !suppressedRedundantTurnEnded &&
+        !loopTurnEndedByJournal;
       const signal = completionSignal(row, lastFiredMs, nowMs, {
         suppressOwnerWideSignals: hasDeliveredWakeWithoutLoopTurn,
       });

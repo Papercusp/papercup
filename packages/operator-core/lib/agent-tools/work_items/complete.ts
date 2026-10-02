@@ -634,6 +634,37 @@ function firstSpecAdequacyIssueMessage(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * EI-24866603915783845: the first FIELD-level issue (non-empty path) in the caller's matching
+ * branch, rendered as `<path>: <message>`. Without it, a well-formed close whose only defect is
+ * a wrong-typed field (e.g. `completion.addedTests` sent as a string array; it is a boolean)
+ * fell through to COMPLETE_CLOSE_SHAPE_MESSAGE, which tells the caller to pass the `state` and
+ * `assumptions` they had already passed. Root-level refinements (path []) are skipped on purpose:
+ * a genuinely missing `id`/`completion` still gets the full close shape. A MISSING leaf
+ * ("received undefined") is skipped too: those already have dedicated messages (the close shape,
+ * or rootCauseVerification's "Missing required fields"), so only a PRESENT value of the wrong
+ * type or shape is named here.
+ */
+function firstFieldIssueMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    for (const nested of value) {
+      const message = firstFieldIssueMessage(nested);
+      if (message) return message;
+    }
+    return undefined;
+  }
+  const record = value as { code?: unknown; message?: unknown; path?: unknown; errors?: unknown };
+  if (record.code === 'invalid_union') {
+    return Array.isArray(record.errors) ? firstFieldIssueMessage(record.errors) : undefined;
+  }
+  if (record.code === 'unrecognized_keys') return undefined;
+  const segments = Array.isArray(record.path) ? record.path.map(String) : [];
+  if (segments.length === 0 || typeof record.message !== 'string' || record.message.length === 0) return undefined;
+  if (/received undefined$/.test(record.message)) return undefined;
+  return `${segments.join('.')}: ${record.message}`;
+}
+
 function firstCompletionEnvelopeBranchMessage(value: unknown): string | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const record = value as { code?: unknown; input?: unknown; errors?: unknown };
@@ -643,7 +674,11 @@ function firstCompletionEnvelopeBranchMessage(value: unknown): string | undefine
   const input = record.input as Record<string, unknown>;
   const hasBulkItems = Object.prototype.hasOwnProperty.call(input, 'items') && input.items !== undefined;
   const matchingBranch = record.errors[hasBulkItems ? 1 : 0];
-  return firstSpecAdequacyIssueMessage(matchingBranch) ?? firstUnrecognizedKeyMessage(matchingBranch);
+  return (
+    firstSpecAdequacyIssueMessage(matchingBranch) ??
+    firstUnrecognizedKeyMessage(matchingBranch) ??
+    firstFieldIssueMessage(matchingBranch)
+  );
 }
 
 /**

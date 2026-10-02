@@ -728,6 +728,100 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
     );
   });
 
+  // EI-24791346664119438: session_turns is ingested AFTER a turn, so a long loop turn has no
+  // strict proof while it runs. Measured 2026-10-02: 64/334 settles in 24h were real loop turns
+  // scored 'delivered-wake-no-loop-turn' → error. The real-time turn-start stamp holds them.
+  it('holds a long loop turn whose real-time start stamp postdates the wake dispatch', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 1_500),
+            last_wake_channel: 'psu-socket-inject',
+            last_loop_turn_at: null, // not ingested yet: the turn is still running
+            loop_turn_started_at: pgString(T0 + 5_000),
+            turn_journal_completed_at: pgString(T0 + 3_000), // a PRIOR turn's end, before the stamp
+            presence_last_active_at: null, // a long silent Bash: presence is quiet
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000, // past the delivery grace, where the detector used to retry
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(recordFire).not.toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  it('settles a stamped loop turn as ok once the Stop-hook journal lands after the stamp', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 1_500),
+            last_wake_channel: 'psu-socket-inject',
+            last_loop_turn_at: null, // still not ingested
+            loop_turn_started_at: pgString(T0 + 5_000),
+            lifecycle_completed_at: null,
+            turn_journal_completed_at: pgString(T0 + 90_000), // the loop turn's own end
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'turn-journal' });
+    expect(recordFire).not.toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-loop-origin',
+      'loop-delivered-wake-no-loop-turn',
+      'error',
+    );
+  });
+
+  it('ignores a turn-start stamp that predates the wake dispatch clock', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          deliveredWarmRow({
+            last_wake_created_at: pgString(T0 + 1_000),
+            last_wake_at: pgString(T0 + 1_500),
+            last_wake_channel: 'psu-socket-inject',
+            last_loop_turn_at: null,
+            // An earlier loop-fire turn, before this wake was dispatched: not proof for it.
+            loop_turn_started_at: pgString(T0 + 500),
+            presence_last_active_at: null,
+          }),
+        ],
+        updates,
+      ),
+      nowMs: T0 + 3 * 60_000,
+      recordFire,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-loop-origin', via: 'delivered-wake-no-loop-turn' });
+  });
+
   it('does not suppress the legacy completion ladder for a non-delivered wake', async () => {
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});

@@ -50,6 +50,7 @@ import { coordSql, coordWorkspaceId, coordHasPgFastPath } from '../agent-tools/c
 import { WORK_ITEM_TAG_SRC_KIND } from '../agent-tools/coordination/coupled-topic-sources';
 import { EVENT_SUBSCRIPTION_KIND } from '../agent-tools/coordination/event-subscriptions';
 import type { Sql } from 'postgres';
+import { pgTimestampToIsoOrNull } from '../pg-timestamp';
 import {
   assessCriticalClaimProgressLease,
   CRITICAL_CLAIM_PROGRESS_LEASE_MS,
@@ -410,17 +411,11 @@ export async function findConditionObjects(
         title: r.title ?? null,
         status: r.status ?? null,
         takenBy: r.taken_by ?? null,
-        takenAt: r.taken_at ?? null,
-        lastProgressAt: r.last_progress_at ?? null,
-        expiresAt: r.expires_at ?? null,
-        checkpointAwaitCreatedAt:
-          r.checkpoint_await_created_at instanceof Date
-            ? r.checkpoint_await_created_at.toISOString()
-            : r.checkpoint_await_created_at ?? null,
-        checkpointAwaitExpiresAt:
-          r.checkpoint_await_expires_at instanceof Date
-            ? r.checkpoint_await_expires_at.toISOString()
-            : r.checkpoint_await_expires_at ?? null,
+        takenAt: pgTimestampToIsoOrNull(r.taken_at),
+        lastProgressAt: pgTimestampToIsoOrNull(r.last_progress_at),
+        expiresAt: pgTimestampToIsoOrNull(r.expires_at),
+        checkpointAwaitCreatedAt: pgTimestampToIsoOrNull(r.checkpoint_await_created_at),
+        checkpointAwaitExpiresAt: pgTimestampToIsoOrNull(r.checkpoint_await_expires_at),
         payload: r.payload ?? null,
       };
       if (list) list.push(row);

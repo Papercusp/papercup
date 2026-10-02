@@ -2562,5 +2562,36 @@
     },
     "limits": "P006 remains partial. P003-P006 proof, independent rubric review/ratification, D013 real-goal card acceptance, closure audit and final shipment remain open. P007 root/product/R7 and P008 historical cause/adoption/R8 are separate open acceptance. No product source/test, accepted-clause, BAR, immutable baseline, native, P2P, shared restart or LIVE_GATE_OPS change. Fire180 records above remain dated history."
   },
-  "next": "Continue remaining P003-P006 proof from the current governing census; read accepted P003 clauses, current fingerprints and existing calibrated controls before running only necessary proof. Reuse D013's completed real-goal grader/card, never parallel-monitor it. Independent rubric ratification, closure audit and final shipment remain required. Preserve separate P007/P008 checks and dated historical evidence; do not rebind/retract P002 again or rerun unchanged native diagnostics."
+  "p003PreparationFire183": {
+    "scope": "Read-only preparation; all six accepted P003 clauses remain FAIL. No P003 evidence binding, withdrawal, test execution or source change.",
+    "acceptedRevisions": "BREACH, MEASURED-ADMISSION, NUMERATOR, UNMEASURED, UNMEASURED-ADMISSION and WINDOW are revision3 with required unit+integration evidence and one-to-one causal scenarios.",
+    "existingBindingIds": [17377, 17378, 17379, 17380, 17381, 17382],
+    "existingCurrentness": "All six server reads report source-stale/test-stale and test-run-worktree-not-clean. Preserve them until exact current replacement proof is independently sufficient.",
+    "fingerprints": {
+      "packages/operator-core/lib/goal-launch-settings.ts": "0138c8c71bfa8ea4445fc13ffde0c29b20b9b653653548f45067a63c2a9cdadc",
+      "packages/operator-core/lib/goal-launch-settings.test.ts": "d5a4bee992dc7432f4571f4299fa77e36f783d6d20402102e02d65afa0621b75",
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "d93edb45244f33b2f1e3d262cb9cc8024c33f4dea055e41f4371da9b4ac8227c"
+    },
+    "retainedSubject": "All four canonical hashes equal the retained clean920030a3 checkout. Current source uses the authoritative goal-lineage figure and inclusive budget comparator. Existing boundary and under-budget tests plus maintained copy-out overlay mutation probe are available; no new parallel test harness is needed.",
+    "nextFocusedUnit": {
+      "specId": "WOE-P003-MEASURED-ADMISSION",
+      "requiredScenarios": ["at-ceiling-refused", "under-ceiling-admitted"],
+      "positiveSelector": "refuses at spent == budget|admits under budget",
+      "testPath": "packages/operator-core/lib/goal-launch-settings.test.ts",
+      "counterexamplePreparation": "Existing permanent exclusive-comparator control describes the off-by-one. A private overlay changing only budget.spentCents >= budget.budgetCents to > should fail the literal at-ceiling refusal while the under-budget calibration still passes. Read the maintained mutation-probe contract and exact current source before execution; do not edit the canonical tree or retained clone.",
+      "limits": "A fresh unit receipt alone cannot fulfill required integration evidence or every one-to-one scenario pair. Do not withdraw17377 or report governing PASS until the full unchanged contract is independently met."
+    },
+    "unmeasuredAdmissionBoundary": "Accepted UNMEASURED-ADMISSION@3 describes unconditional empty/no-snapshot refusal, whereas D014 explicitly permits the all-legs-empty zero-usage bootstrap. This is a recorded contract boundary requiring reconciliation; neither successful existing bootstrap tests nor an evaluator FAIL authorizes silently altering acceptance.",
+    "realGoalGraderReuse": {
+      "workItem": "WI-10004264",
+      "state": "done",
+      "terminalScorecard": "EI-24713330305263301",
+      "scorecardReadback": "FAIL; critical failure plan-fleet-materialization; critical unknown goal-mode-foundation; coverage15/15. This is dated real-holder evidence, not post-remediation acceptance.",
+      "currentRubric": "work-on-everything-stewardship-health revision42 active was read; independent review/ratification remains unverified.",
+      "limits": "Reuse the existing card and its exact evidence for D013. No new fixture goal or parallel monitor was created, and no successful P006 acceptance is inferred from the completed grading task."
+    },
+    "recoveryReceipts": ["/tmp/p006-fire183-p003-specs-decoded.json", "/tmp/p006-fire183-p003-evidence-decoded.json", "/tmp/p006-fire183-grader-full-decoded.json", "/tmp/p006-fire183-real-goal-card.json"]
+  },
+  "next": "Continue P003 MEASURED-ADMISSION from the prepared exact scenarios/current hashes with necessary clean unit and calibrated counterexample proof, then required integration evidence. Preserve stale17377 until selected replacement PASS; do not withdraw or rebind P002 again. Reconcile D014 versus UNMEASURED-ADMISSION acceptance explicitly, preserve D003 baseline, reuse D013's completed FAIL real-goal card and keep independent rubric ratification/closure audit/final shipment open. Preserve separate P007/P008 checks and dated historical evidence; no unchanged native rerun."
 }

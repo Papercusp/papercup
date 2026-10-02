@@ -444,6 +444,36 @@ describe('pending checkpoint outcome awaits preserve condition leases', () => {
   });
 });
 
+describe('database timestamp projection', () => {
+  it('normalizes session-local Postgres timestamptz text to explicit UTC ISO values', async () => {
+    const fakeSql = ((
+      _strings: TemplateStringsArray,
+      ..._values: unknown[]
+    ) => Promise.resolve([
+      {
+        condition_key: KEY,
+        work_item: 'EI-1',
+        title: 'gate is red',
+        status: 'open',
+        taken_by: 'su-abc',
+        taken_at: '2026-08-02 20:50:00.000000-04',
+        last_progress_at: '2026-08-02 20:59:00.000000-04',
+        expires_at: '2026-08-02 22:00:00.000000-04',
+        payload: null,
+        checkpoint_await_created_at: null,
+        checkpoint_await_expires_at: null,
+      },
+    ])) as unknown as Sql;
+
+    const got = await findConditionObjects([KEY], { harnessSlug: 'papercusp', sql: fakeSql, nowMs: NOW });
+    expect(got.get(KEY)).toMatchObject({
+      takenAt: '2026-08-03T00:50:00.000Z',
+      lastProgressAt: '2026-08-03T00:59:00.000Z',
+      expiresAt: '2026-08-03T02:00:00.000Z',
+    });
+  });
+});
+
 describe('openness is `status`, never `closed_ts` (recurrence guard)', () => {
   // This module originally filtered open items with `closed_ts IS NULL`. That is
   // wrong, and wrong in a way no unit test would have caught, because the pure

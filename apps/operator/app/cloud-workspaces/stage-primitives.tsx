@@ -113,7 +113,7 @@ export function useFocusLifecycle({
   useEffect(() => {
     const wasOpen = previousOpenRef.current;
     previousOpenRef.current = open;
-    if (open === wasOpen) return;
+    if (!open && !wasOpen) return;
 
     const resolve = open
       ? resolversRef.current.onOpenFocus
@@ -121,7 +121,8 @@ export function useFocusLifecycle({
     // Newly mounted forms/menus may be outside the scrollport. Reveal opening
     // focus, but keep the user's scroll position when returning to a trigger.
     const target = resolve?.();
-    if (!focusSafely(target, { preventScroll: !open }) || !open || !target) return;
+    if (open !== wasOpen && !focusSafely(target, { preventScroll: !open })) return;
+    if (!open || !target || document.activeElement !== target) return;
 
     // Docked rails can reserve width after this commit, wrapping the provider
     // rows above a newly focused field. Keep that field visible as its surface

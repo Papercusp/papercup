@@ -189,6 +189,21 @@ const turnStartMemory = defineTool({
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
 
+      // EI-24791346664119438: stamp a loop-fire turn start in real time, so the loop
+      // reconciler can tell a long-running loop turn from a wake that never became one
+      // (session_turns is ingested only after the turn). Never awaited, never throws.
+      void import('../../../harness/routines/loop-turn-start-stamp')
+        .then(({ recordLoopTurnStart }) =>
+          recordLoopTurnStart({
+            owner,
+            prompt,
+            workspaceId,
+            cwd: typeof body.cwd === 'string' ? body.cwd : null,
+            client: typeof body.client === 'string' ? body.client : null,
+          }),
+        )
+        .catch(() => undefined);
+
       /**
        * WI-37597: report THIS port's delivery coverage.
        *

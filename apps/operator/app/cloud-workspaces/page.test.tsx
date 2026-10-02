@@ -24,6 +24,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import {
@@ -974,7 +975,7 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
     const flush = () => act(() => { for (const [id, callback] of [...frames]) { frames.delete(id); callback(0); } });
     H.rows = [];
-    const view = render(<CloudWorkspacesPage />);
+    const view = render(<StrictMode><CloudWorkspacesPage /></StrictMode>);
     fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
     const input = screen.getByLabelText("Connection label");
     expect(observed).toContain(input.closest("form"));

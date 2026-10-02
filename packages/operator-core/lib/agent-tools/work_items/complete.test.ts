@@ -507,6 +507,50 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(String(missingLeaf.error)).not.toContain('expected string, received undefined');
   });
 
+  // EI-24866603915783845: a complete, well-formed close whose ONLY defect is a wrong-typed
+  // completion field used to fall through to the generic close-shape message, which tells
+  // the caller to pass `state` and `assumptions` they had already passed.
+  it('names a wrong-typed completion field instead of the generic close-shape message', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const closeShape = /to CLOSE a work-item, pass \{ id, state, assumptions/;
+
+    const single = safeParse({
+      id: 'WI-typed',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the ramp printer',
+        testsRun: 'p005-ramp.test.ts',
+        addedTests: ['p005-ramp.test.ts: prints na for a null slowdown'],
+      },
+    });
+    expect(single.success).toBe(false);
+    expect(String(single.error)).toContain('completion.addedTests');
+    expect(String(single.error)).toMatch(/boolean/);
+    expect(String(single.error)).not.toMatch(closeShape);
+
+    const bulk = safeParse({
+      state: 'done',
+      items: [
+        {
+          id: 'WI-typed',
+          assumptions: 'none',
+          completion: { summary: 'fixed it', addedTests: ['a.test.ts'] },
+        },
+      ],
+    });
+    expect(bulk.success).toBe(false);
+    expect(String(bulk.error)).toContain('addedTests');
+    expect(String(bulk.error)).not.toMatch(closeShape);
+
+    // Calibration: a payload genuinely missing `completion` still gets the full close shape.
+    const missingCompletion = safeParse({ id: 'WI-typed', state: 'done', assumptions: 'none' });
+    expect(missingCompletion.success).toBe(false);
+    expect(String(missingCompletion.error)).toMatch(closeShape);
+  });
+
   it('rejects a block whose structured predictions name the same observable', () => {
     const result = (
       complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
