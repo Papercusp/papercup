@@ -106,6 +106,18 @@ if adv_session_id:
             args['adv_session_id'] = value
     except (TypeError, ValueError):
         pass
+# WI-10005679: the wake executor stamps PAPERCUSP_WAKE_DELIVERY_ID on a child it
+# spawns as a one-turn `--resume <id> -p`. Forward it so activity:report can tell
+# that turn's SessionEnd (the session stays resumable) from a deliberate end.
+# The server verifies the id against the delivery ledger before trusting it.
+wake_delivery_id = os.environ.get('PAPERCUSP_WAKE_DELIVERY_ID') or ''
+if wake_delivery_id:
+    try:
+        value = int(wake_delivery_id)
+        if value > 0:
+            args['wake_delivery_id'] = value
+    except (TypeError, ValueError):
+        pass
 if agent:
     args['agent'] = agent
 if role:

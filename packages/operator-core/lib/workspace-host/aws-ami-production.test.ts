@@ -157,6 +157,26 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
   });
 });
 
+describe('SdkAwsAmiReleaseAdapter.scanImage', () => {
+  it('hands the scan child the same coldsnap the upload uses (WI-10005642)', async () => {
+    const runs: unknown[] = [];
+    const scanInput = { region: 'us-east-1', imageId: 'ami-0bbb', buildManifestIdentity: `sha256:${'c'.repeat(64)}`, releaseSha256: SHA };
+    const pinned = new SdkAwsAmiReleaseAdapter(
+      { ec2: () => fakeSender({}, []), ssm: () => fakeSender({}, []), childCredentials: async () => ({}), commands: fakeCommands('{}', runs) },
+      { coldsnapExecutable: '/home/u/.papercusp/tools/coldsnap/0.12.0/bin/coldsnap' },
+    );
+    await pinned.scanImage(scanInput as Parameters<SdkAwsAmiReleaseAdapter['scanImage']>[0]);
+    expect(runs[0]).toMatchObject({
+      command: 'papercusp-aws-ami-scan',
+      env: { AWS_REGION: 'us-east-1', PAPERCUSP_AWS_AMI_SCAN_COLDSNAP: '/home/u/.papercusp/tools/coldsnap/0.12.0/bin/coldsnap' },
+    });
+
+    // Positive control: with no override the scan child still gets the adapter's default, not nothing.
+    await adapterWith([], runs).scanImage(scanInput as Parameters<SdkAwsAmiReleaseAdapter['scanImage']>[0]).catch(() => undefined);
+    expect((runs[1] as { env: Record<string, string> }).env.PAPERCUSP_AWS_AMI_SCAN_COLDSNAP).toBe('coldsnap');
+  });
+});
+
 describe('SdkAwsAmiReleaseAdapter.inspectImage', () => {
   it('reads launch permissions, snapshot encryption/sharing and guest tools from the image itself', async () => {
     const calls: Call[] = [];
