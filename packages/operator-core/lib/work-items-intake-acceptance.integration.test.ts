@@ -25,7 +25,7 @@ import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb }
 import {
   ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
@@ -194,7 +194,7 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
   await db.sql.unsafe(WATCHDOG_TICKS_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
