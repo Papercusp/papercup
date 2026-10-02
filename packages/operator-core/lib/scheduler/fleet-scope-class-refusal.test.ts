@@ -302,7 +302,10 @@ describe('fleetScopeLeaderRemedy — how the class reading reaches the leader', 
     expect(body).toContain('without a spec revision');
     expect(body).toContain('LAST RESORT');
     expect(body).toContain('CONSEQUENCE');
-    expect(body).toContain('auto-resolves this work-item as residue');
+    // WI-10004362 reworded this consequence: completing the stamped row may reflect its plan
+    // item to done, and closing that item later MAY (not always) auto-resolve it as residue.
+    expect(body).toContain('may reflect its plan item to `done`');
+    expect(body).toContain('auto-resolve this work-item as residue');
     expect(body).not.toContain('POSSIBLE CLASS REFUSAL');
     expect(stampAt).toBeGreaterThanOrEqual(0);
     expect(widenAt).toBeGreaterThanOrEqual(0);
