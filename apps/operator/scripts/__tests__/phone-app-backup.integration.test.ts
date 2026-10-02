@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -41,6 +41,25 @@ it('backs up Phone rows and restores them in an isolated database without replac
     expect((await stat(archive)).mode & 0o777).toBe(0o600);
     expect((await stat(`${archive}.sha256`)).mode & 0o777).toBe(0o600);
     const original = await readFile(archive);
+    const backupStatus = () => run(['backup-status', '--archive', archive, '--max-age-hours', '24']);
+    expect(JSON.parse((await backupStatus()).stdout)).toMatchObject({
+      ok: true, action: 'backup-status', alerts: [],
+      scope: 'local-backup-integrity-and-freshness-only', restoreVerified: false,
+    });
+    await utimes(archive, new Date(Date.now() - 26 * 3_600_000), new Date(Date.now() - 26 * 3_600_000));
+    await expect(backupStatus()).rejects.toMatchObject({
+      stdout: expect.stringContaining('"condition":"backup-stale"'),
+    });
+    await utimes(archive, new Date(), new Date());
+    expect(JSON.parse((await backupStatus()).stdout).ok).toBe(true);
+    await chmod(archive, 0o644);
+    await expect(backupStatus()).rejects.toMatchObject({
+      stdout: expect.stringContaining('"condition":"backup-integrity-unavailable"'),
+    });
+    await chmod(archive, 0o600);
+    await expect(run(['backup-status', '--archive', join(work, 'missing.dump'), '--max-age-hours', '24']))
+      .rejects.toMatchObject({ stdout: expect.stringContaining('"condition":"backup-integrity-unavailable"') });
+    await expect(run(['backup-status', '--archive', archive, '--max-age-hours', '0'])).rejects.toThrow();
     await expect(run(['backup', '--out', archive])).rejects.toThrow();
     expect(await readFile(archive)).toEqual(original);
 
@@ -51,6 +70,9 @@ it('backs up Phone rows and restores them in an isolated database without replac
     expect(backup.stdout + backup.stderr + drill.stdout + drill.stderr).not.toContain(new URL(server.urls.admin).password);
 
     await writeFile(archive, Buffer.concat([original, Buffer.from('tamper')]));
+    await expect(backupStatus()).rejects.toMatchObject({
+      stdout: expect.stringContaining('"condition":"backup-integrity-unavailable"'),
+    });
     await expect(run(['restore-drill', '--archive', archive])).rejects.toThrow('digest mismatch');
 
     await sql.unsafe('DROP TABLE public.phone_calls');

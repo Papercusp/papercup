@@ -120,6 +120,7 @@ source tree and then restore it into a disposable embedded Postgres instance:
 ```bash
 node infra/phone-app/phone-db-backup.mjs backup --out /absolute/private/phone.dump
 node infra/phone-app/phone-db-backup.mjs restore-drill --archive /absolute/private/phone.dump
+node infra/phone-app/phone-db-backup.mjs backup-status --archive /absolute/private/phone.dump --max-age-hours 24
 ```
 
 The backup command reads `PHONE_APP_DATABASE_URL`, `PHONE_DATABASE_URL`, or
@@ -129,6 +130,12 @@ archive, and never prints the database password. The drill verifies the digest,
 restores into a fresh temporary database, and reads every restored public table.
 It never writes to the running Phone database. Keep archives in a protected,
 backed-up destination; a local archive alone does not cover host loss.
+The read-only `backup-status` check verifies private archive/receipt permissions,
+digest and age against an **operator-chosen** maximum; it emits a non-secret
+`phone-operations` action and nonzero exit on an absent, stale or corrupt point.
+Include it in the operator alert pipeline. A healthy status does **not** prove a
+restored database (`restoreVerified: false`) or set an approved recovery objective;
+run `restore-drill` separately and choose the age from that objective.
 
 Read the existing Phone usage-account ledger for an aggregate, non-secret cost
 policy alert without admitting or charging any calls:

@@ -190,6 +190,43 @@ async function usageStatus() {
   } finally { await sql.end({ timeout: 5 }).catch(() => {}); }
 }
 
+// A pinned restore point is useful only if its archive is still readable and
+// recent enough for the operator's chosen recovery objective. This does not
+// assert that a restore succeeded; that remains restore-drill's responsibility.
+async function backupStatus(archive, maxAgeHours) {
+  if (!isAbsolute(archive) || !Number.isSafeInteger(maxAgeHours) ||
+      maxAgeHours < 1 || maxAgeHours > 24 * 365) {
+    throw new Error('backup-status requires an absolute archive and a bounded --max-age-hours');
+  }
+  let condition;
+  try {
+    const [archiveStat, receiptStat, receipt] = await Promise.all([
+      stat(archive), stat(`${archive}.sha256`), readFile(`${archive}.sha256`, 'utf8'),
+    ]);
+    if (!archiveStat.isFile() || !receiptStat.isFile() ||
+        (archiveStat.mode & 0o077) || (receiptStat.mode & 0o077) ||
+        !/^[a-f0-9]{64}$/.test(receipt.trim()) ||
+        !timingSafeEqual(Buffer.from(receipt.trim(), 'hex'), Buffer.from(await digest(archive), 'hex'))) {
+      condition = 'backup-integrity-unavailable';
+    } else if (!Number.isFinite(archiveStat.mtimeMs) ||
+        archiveStat.mtimeMs > Date.now() + 60_000 ||
+        Date.now() - archiveStat.mtimeMs > maxAgeHours * 3_600_000) {
+      condition = 'backup-stale';
+    }
+  } catch {
+    // Paths and filesystem errors can contain private host details.
+    condition = 'backup-integrity-unavailable';
+  }
+  const result = { ok: !condition, action: 'backup-status',
+    alerts: condition ? [{ condition, owner: 'phone-operations',
+      action: condition === 'backup-stale'
+        ? 'Take and restore-drill a current private Phone backup before admitting changes.'
+        : 'Repair the missing, exposed or corrupt Phone backup and verify it with restore-drill.' }] : [],
+    scope: 'local-backup-integrity-and-freshness-only', restoreVerified: false };
+  console.log(JSON.stringify(result));
+  if (!result.ok) process.exitCode = 1;
+}
+
 async function freePort() {
   return new Promise((resolvePort, reject) => {
     const server = createServer();
@@ -257,15 +294,20 @@ async function drill(archive) {
 }
 
 try {
-  const [action, flag, path, ...rest] = process.argv.slice(2);
-  if (rest.length || (action === 'usage-status' ? flag !== undefined || path !== undefined :
-      !path || (action === 'backup' && flag !== '--out') ||
-      (action === 'restore-drill' && flag !== '--archive')) ||
-      !['backup', 'restore-drill', 'usage-status'].includes(action)) {
-    throw new Error('usage: phone-db-backup.mjs backup --out /absolute/path.dump | restore-drill --archive /absolute/path.dump | usage-status');
+  const [action, flag, path, maxAgeFlag, maxAge, ...rest] = process.argv.slice(2);
+  if (rest.length || !['backup', 'restore-drill', 'backup-status', 'usage-status'].includes(action) ||
+      (action === 'usage-status'
+        ? [flag, path, maxAgeFlag, maxAge].some(value => value !== undefined)
+        : !path || (action === 'backup' && flag !== '--out') ||
+          (action !== 'backup' && flag !== '--archive') ||
+          (action === 'backup-status'
+            ? maxAgeFlag !== '--max-age-hours' || !/^[0-9]+$/.test(maxAge ?? '')
+            : maxAgeFlag !== undefined || maxAge !== undefined))) {
+    throw new Error('usage: phone-db-backup.mjs backup --out /absolute/path.dump | restore-drill --archive /absolute/path.dump | backup-status --archive /absolute/path.dump --max-age-hours N | usage-status');
   }
   if (action === 'backup') await backup(path);
   else if (action === 'restore-drill') await drill(path);
+  else if (action === 'backup-status') await backupStatus(path, Number(maxAge));
   else await usageStatus();
 } catch (error) {
   // libpq URLs and secret values never enter diagnostic output.

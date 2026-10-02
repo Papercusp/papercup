@@ -185,6 +185,7 @@ import {
   reportSessionResumeReleased,
   describeResumeClaimRefusal,
   announceAdoptedCarryRespawn,
+  adoptedCarryRespawnFromHandoff,
   reportSessionRespawned,
   reportSessionRespawnedDurably,
   reportSessionPortDelivery,
@@ -14029,6 +14030,28 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
     // Positive control: the scan found the call sites at all.
     expect(callers.length).toBeGreaterThanOrEqual(2);
     expect(new Set(callers)).toEqual(new Set(["reportSessionRespawnedDurably"]));
+  });
+});
+
+describe("adoptedCarryRespawnFromHandoff (WI-10004791 late Codex id)", () => {
+  it("preserves a null Codex native id for pty-host proof and ignores non-carry handoffs", () => {
+    expect(adoptedCarryRespawnFromHandoff({ mode: "carry-respawn", nativeId: null }))
+      .toEqual({ nativeId: null });
+    expect(adoptedCarryRespawnFromHandoff({ mode: "carry-respawn", nativeId: "native-123" }))
+      .toEqual({ nativeId: "native-123" });
+    expect(adoptedCarryRespawnFromHandoff({ mode: "recycle", nativeId: "native-123" })).toBeNull();
+  });
+
+  it("routes adoption through pty-host first-turn proof before launcher-side re-anchor", () => {
+    const src = readFileSync(fileURLToPath(new URL("../scripts/psu-launcher.mjs", import.meta.url)), "utf8");
+    const handoffStart = src.indexOf("const hostHandoff =");
+    const handoffEnd = src.indexOf("adopted updated host code for", handoffStart);
+    const handoff = src.slice(handoffStart, handoffEnd);
+    expect(handoff).toContain("adoptedCarryRespawn = adoptedCarryRespawnFromHandoff(hostHandoff);");
+    expect(handoff).not.toContain("announceAdoptedCarryRespawn(");
+    const hostCallStart = src.indexOf("hostThroughPty({", handoffEnd);
+    const hostCallEnd = src.indexOf("}).catch((e)", hostCallStart);
+    expect(src.slice(hostCallStart, hostCallEnd)).toContain("adoptedCarryRespawn,");
   });
 });
 

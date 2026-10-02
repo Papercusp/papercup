@@ -521,9 +521,6 @@ created: 2026-08-21
 
   it('mints one PLACEABLE feature work-item per OPEN item, tied to the plan; done/dropped are skipped', async () => {
     h.plans.set(PLAN, {
-      // `readPlanBySlug` returns the plan-storage identity after resolving an app/install
-      // alias. Promotion must carry that identity into the lower-level acceptance snapshot read.
-      harnessSlug: 'resolved-plan-home',
       items: [
         { id: 'P-001', status: 'todo', text: 'Build the frontier gate' },
         { id: 'P-002', status: 'wip', text: 'Wire the runner' },
@@ -628,6 +625,9 @@ created: 2026-08-21
     expectTypeOf<NonNullable<PromotePlanItemsOptions['itemKind']>>().toEqualTypeOf<'feature'>();
 
     h.plans.set(PLAN, {
+      // `readPlanBySlug` returns the plan-storage identity after resolving an app/install
+      // alias. Promotion must carry that identity into the lower-level acceptance snapshot read.
+      harnessSlug: 'resolved-plan-home',
       items: [
         { id: 'P-001', status: 'todo', text: 'Read the triggering message' },
         { id: 'P-002', status: 'todo', text: 'Send the approved response', blockedBy: ['P-001'] },

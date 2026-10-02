@@ -10734,6 +10734,18 @@ export function handoffFirstTurnText(handoff) {
   return typeof text === "string" && text.length > 0 ? text : null;
 }
 
+/**
+ * Keep carry adoption explicit even when Codex has not assigned its native id
+ * yet. The successor pty host resolves that late id from exact kickoff proof.
+ */
+export function adoptedCarryRespawnFromHandoff(handoff) {
+  if (handoff?.mode !== "carry-respawn") return null;
+  const nativeId = typeof handoff.nativeId === "string" && handoff.nativeId.trim()
+    ? handoff.nativeId.trim()
+    : null;
+  return { nativeId };
+}
+
 export async function announceAdoptedCarryRespawn(
   ownerId,
   advSessionId,
@@ -11794,6 +11806,7 @@ export function runWrapper(options) {
   // self-validating; a null here is the ordinary cold-launch case.
   const hostHandoff =
     initialHostHandoff || (ownerId ? readHostHandoff(ownerId) : null);
+  let adoptedCarryRespawn = null;
   if (hostHandoff) {
     // Use the predecessor's argv VERBATIM. It was minted from an argv that had
     // already been through this launcher's whole normalization pass, so
@@ -11832,7 +11845,8 @@ export function runWrapper(options) {
     kickoff = handoffFirstTurnText(hostHandoff);
     kickoffFile = null;
     sessionPort = null;
-    if (hostHandoff.nativeId) {
+    adoptedCarryRespawn = adoptedCarryRespawnFromHandoff(hostHandoff);
+    if (!adoptedCarryRespawn && hostHandoff.nativeId) {
       // The in-process respawn re-anchors identity through `onRespawn` AFTER
       // spawning the child; the adopting predecessor exits before it ever gets
       // there, so the successor owes both halves of that hook. Skipping the
@@ -11842,21 +11856,13 @@ export function runWrapper(options) {
       recordSessionOwner(hostHandoff.nativeId, ownerId, {
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
       });
-      if (hostHandoff.mode === "carry-respawn") {
-        void announceAdoptedCarryRespawn(
-          ownerId,
-          env.PAPERCUSP_ADV_SESSION_ID || null,
-          hostHandoff.nativeId,
-        );
-      } else {
-        void reportSessionRespawnedDurably(
-          env.PAPERCUSP_ADV_SESSION_ID || null,
-          hostHandoff.nativeId,
-          {
-            coordOwnerId: ownerId,
-          },
-        );
-      }
+      void reportSessionRespawnedDurably(
+        env.PAPERCUSP_ADV_SESSION_ID || null,
+        hostHandoff.nativeId,
+        {
+          coordOwnerId: ownerId,
+        },
+      );
     }
     process.stderr.write(
       `psu: adopted updated host code for ${ownerId} (predecessor pid ${hostHandoff.fromPid ?? "?"}, ` +
@@ -11965,6 +11971,7 @@ export function runWrapper(options) {
         // the target backend's native transcript.
         kickoffFile,
         sessionPort,
+        adoptedCarryRespawn,
         onKickoffPersisted: (proof) =>
           reportSessionPortDelivery(sessionPort, proof),
         onRespawn: (freshId, { onConfirmed } = {}) => {
