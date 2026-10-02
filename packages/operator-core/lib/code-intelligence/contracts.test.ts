@@ -13,12 +13,18 @@
  * verdict. If that control ever passes trivially, the guard is measuring
  * nothing.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
+  GITNEXUS_START_LINE_BASE_BY_VERSION,
   KNOWN_INDEX_DISK_EXCEEDANCES,
+  LINE_INDEX_BASE,
   classifyIndexDisk,
+  gitnexusStartLineBase,
+  toOneIndexed,
   type KnownIndexDiskExceedance,
 } from './contracts';
 
@@ -124,5 +130,60 @@ describe('KNOWN_INDEX_DISK_EXCEEDANCES', () => {
     expect(gitnexus).toBeDefined();
     const v = classifyIndexDisk('gitnexus', (gitnexus as KnownIndexDiskExceedance).observedMb);
     expect(v.status).toBe('accepted-exceedance');
+  });
+});
+
+/**
+ * WI-10005091 (residue of gitnexus-selective-hardening-and-comparison D-002): GitNexus 1.6.9
+ * reports a 0-based `startLine`, 1.6.12 a 1-based one, and the production facade's
+ * `toOneIndexed('gitnexus', …)` adds +1 unconditionally. These guard that a GitNexus upgrade
+ * cannot ship without the line base being re-measured.
+ */
+describe('GitNexus startLine base is version-aware', () => {
+  // Measured on one source tree: getLongLivedAdminPool is declared on 1-based line 145.
+  const TRUE_LINE1 = 145;
+
+  it('maps the two measured versions to their measured raw base, and refuses anything else', () => {
+    expect(gitnexusStartLineBase('1.6.9')).toBe(0);
+    expect(gitnexusStartLineBase('1.6.12')).toBe(1);
+    // A banner line (`gitnexus analyze` prints one) parses; the first x.y.z wins.
+    expect(gitnexusStartLineBase('GitNexus Analyzer (1.6.12)')).toBe(1);
+    // UNMEASURED / unparseable is null — never a default that would silently be off by one.
+    expect(gitnexusStartLineBase('1.6.10')).toBeNull();
+    expect(gitnexusStartLineBase('2.0.0')).toBeNull();
+    expect(gitnexusStartLineBase('unknown (exit 1)')).toBeNull();
+    expect(gitnexusStartLineBase(undefined)).toBeNull();
+    expect(gitnexusStartLineBase(null)).toBeNull();
+  });
+
+  it('the measured raw lines normalise to the SAME grep -n line only through their own base', () => {
+    // 1.6.9 raw 144 (0-based) and 1.6.12 raw 145 (1-based) are the same declaration.
+    // The facade's +1 is right for the first and one late for the second — the failure this pins.
+    expect(toOneIndexed('gitnexus', 144)).toBe(TRUE_LINE1);
+    expect(toOneIndexed('gitnexus', 145)).toBe(TRUE_LINE1 + 1);
+    expect((145 + 1) - (gitnexusStartLineBase('1.6.12') as number)).toBe(TRUE_LINE1);
+  });
+
+  it('LINE_INDEX_BASE.gitnexus equals the measured base of the PINNED GitNexus version', () => {
+    // The pin lives in a submodule operator-core does not import, so read the literal. A pin bump
+    // (e.g. 1.6.9 -> 1.6.12) must either find the version already measured AND update
+    // LINE_INDEX_BASE.gitnexus (making toOneIndexed version-aware for the new pin), or fail here.
+    const bridge = fileURLToPath(
+      new URL('../../../../libs/papercusp/plugins/gitnexus-bridge/index.ts', import.meta.url),
+    );
+    const m = /PINNED_GITNEXUS_VERSION\s*=\s*'(\d+\.\d+\.\d+)'/.exec(readFileSync(bridge, 'utf8'));
+    expect(m, 'PINNED_GITNEXUS_VERSION literal not found in gitnexus-bridge/index.ts').not.toBeNull();
+    const pinned = m![1]!;
+    const measured = gitnexusStartLineBase(pinned);
+    expect(
+      measured,
+      `PINNED_GITNEXUS_VERSION ${pinned} has no entry in GITNEXUS_START_LINE_BASE_BY_VERSION — ` +
+        'measure its raw startLine on getLongLivedAdminPool (declared on 1-based line 145) first',
+    ).not.toBeNull();
+    expect(LINE_INDEX_BASE.gitnexus).toBe(measured);
+  });
+
+  it('the table is frozen so a caller cannot mutate a measurement', () => {
+    expect(Object.isFrozen(GITNEXUS_START_LINE_BASE_BY_VERSION)).toBe(true);
   });
 });

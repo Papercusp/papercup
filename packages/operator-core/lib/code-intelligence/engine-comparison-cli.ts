@@ -25,7 +25,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SELECTIVE_ACCEPTANCE_CORPUS } from './selective-corpus';
-import type { CodeIntelIntent } from './contracts';
+import { gitnexusStartLineBase, type CodeIntelIntent } from './contracts';
 import { gitnexusFacade, gitnexusOpForIntent } from './gitnexus-facade';
 import { createGitnexusArm, createRgBaselineArm, execTimed } from './engine-comparison-arms';
 import { createCodebaseMemoryArm } from './engine-comparison-cbm';
@@ -101,10 +101,19 @@ async function buildArm(id: CliArmId): Promise<EngineArm> {
     return createCodebaseMemoryArm({ id, version: `dev@${commit.stdout.trim() || 'unknown'}`, bin: CBM_BIN, treeRoot, home, cacheDir }, deps);
   }
   const bin = id === 'gitnexus-installed' ? INSTALLED_GITNEXUS_BIN : path.join(CANDIDATE_GITNEXUS_DIR, 'node_modules/.bin/gitnexus');
-  // Measured raw `startLine` base per pinned version (see GitnexusArmConfig.startLineBase): 1.6.9 (installed) is
-  // 0-based, 1.6.12 (candidate) is 1-based — the facade's unconditional +1 is only right for the former.
-  const startLineBase = id === 'gitnexus-installed' ? 0 : 1;
-  const live = createGitnexusArm({ id, version: await binVersion(bin), bin, treeRoot, home: path.join(armDir(id), 'home'), startLineBase }, deps, facade, opForIntent);
+  // Measured raw `startLine` base per VERSION (GITNEXUS_START_LINE_BASE_BY_VERSION in contracts.ts; see
+  // GitnexusArmConfig.startLineBase): 1.6.9 is 0-based, 1.6.12 is 1-based — the facade's unconditional +1 is only
+  // right for the former. Derived from the binary's reported version, never from the arm id, and an unmeasured
+  // version REFUSES rather than silently scoring every site one line off.
+  const version = await binVersion(bin);
+  const startLineBase = gitnexusStartLineBase(version);
+  if (startLineBase === null) {
+    throw new Error(
+      `gitnexus arm ${id}: version "${version}" has no measured startLine base — add it to ` +
+        'GITNEXUS_START_LINE_BASE_BY_VERSION (contracts.ts) after measuring getLongLivedAdminPool (1-based line 145).',
+    );
+  }
+  const live = createGitnexusArm({ id, version, bin, treeRoot, home: path.join(armDir(id), 'home'), startLineBase }, deps, facade, opForIntent);
   return withPrecomputedIndex(live, precomputed(id));
 }
 
