@@ -1269,6 +1269,28 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
+  it('carries a RefusalContract on identity_model_default_denied naming the harness, role and stack', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockRejectedValueOnce(new Error('unknown stack ref domain:nope'));
+    const res = await callPost({ agent: 'codex', harness_slug: 'papercup', su_role: 'planner',
+      stack: ['domain:nope', 'client:x'] });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'identity_model_default_denied', error: 'unknown stack ref domain:nope' });
+    expect(body.refusal.observed).toEqual({ harness: 'papercup', role: 'planner', stack: 'domain:nope,client:x' });
+    expect(body.refusal.liftsWhen).toMatch(/stack ref/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
+    expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('names a null harness, the default su role and a null stack when the launch supplied none', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockRejectedValueOnce(new Error('selected source unavailable'));
+    const res = await callPost({ agent: 'codex' });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.refusal.observed).toEqual({ harness: null, role: 'su', stack: null });
+  });
+
   it('fails closed before session/home creation when an unattended Codex bootstrap has no model authority', async () => {
     for (const body of [
       { agent: 'codex', headless: true },
