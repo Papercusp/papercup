@@ -202,6 +202,73 @@ describe('posttoolbatch-locks-release.sh', () => {
     expectClean('complete', ['tu-first', 'tu-second']);
   });
 
+  it('uses the stable authority and confirms the release when the primary response has no text', async () => {
+    const batchId = 'batch-empty-primary';
+    const toolUseId = 'tu-batch-empty-primary';
+    const fallbackRequests: Array<Record<string, any>> = [];
+    const fallbackServer = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        fallbackRequests.push(JSON.parse(body) as Record<string, any>);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: true,
+                released: ['src/first.ts', 'src/second.ts'],
+              }),
+            }],
+          },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => fallbackServer.listen(0, '127.0.0.1', resolve));
+    const address = fallbackServer.address();
+    if (!address || typeof address === 'string') throw new Error('fallback server did not bind');
+
+    writeBatch(batchId, 'granted', [toolUseId]);
+    primaryNoText = true;
+
+    try {
+      const out = await runHook(BATCH_HOOK, {
+        ...batchInput([toolUseId]),
+        tool_calls: [{
+          tool_use_id: toolUseId,
+          tool_name: 'Edit',
+          tool_response: { success: true },
+        }],
+      }, {
+        PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: 'http://127.0.0.1:' + address.port,
+      });
+
+      expect(out.status).toBe(0);
+      expect(releaseRequests).toHaveLength(1);
+      expect(fallbackRequests).toHaveLength(1);
+      expect(fallbackRequests[0]?.params?.arguments).toMatchObject({
+        lock_id: 'batch-lock',
+        paths: ['src/first.ts', 'src/second.ts'],
+        coordination_domain: '/repo',
+        native_edit_proof: {
+          success: true,
+          source: 'claude',
+          tools: ['Edit'],
+          paths: ['src/first.ts', 'src/second.ts'],
+        },
+      });
+      expectClean(batchId, [toolUseId]);
+      expect(fs.existsSync(join(cache, 'owner-batch-owner-last-success.json'))).toBe(true);
+      expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
+    } finally {
+      primaryNoText = false;
+      await new Promise<void>((resolve) => fallbackServer.close(() => resolve()));
+    }
+  });
+
   it('regenerates only an enrolled edited source before releasing the batch union', async () => {
     writeBatch('declaration', 'granted', ['tu-declaration'], {
       paths: ['scripts/input.mjs', 'src/not-enrolled.mjs'],

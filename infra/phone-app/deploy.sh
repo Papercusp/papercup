@@ -13,14 +13,16 @@
 #   deploy.sh --preflight      check public DNS + trusted TLS, no writes or restarts
 #   deploy.sh --rotate-secret  mint a fresh secret and restart both units
 #   deploy.sh --status         report only, change nothing
+#   deploy.sh --pin-artifacts  pin reviewed source and binary bytes, no restart
+#   deploy.sh --verify-artifacts  check the pin without changing anything
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONF_DIR="${PHONE_CONFIG_DIR:-$HOME/.config/papercusp-phone}"
 ENV_FILE="$CONF_DIR/livekit.env"
 UNIT_DIR="$HOME/.config/systemd/user"
-LK_BIN="$HOME/.local/bin/livekit-server"
-SIP_BIN="$HOME/.local/bin/livekit-sip"
+LK_BIN="${PHONE_LIVEKIT_BIN:-$HOME/.local/bin/livekit-server}"
+SIP_BIN="${PHONE_SIP_BIN:-$HOME/.local/bin/livekit-sip}"
 HEALTH_URL="http://127.0.0.1:7890/"
 UNITS=(papercusp-phone-livekit.service papercusp-phone-sip.service)
 
@@ -43,6 +45,7 @@ SIDECAR_DIR="${PHONE_SIDECAR_DIR:-$HOME/.papercusp-workspaces/papercusp-workspac
 # that file is the media credential of record and the portal must never be given
 # it, but the portal DOES need this one.
 PORTAL_ENV_FILE="$CONF_DIR/portal.env"
+PIN_FILE="$CONF_DIR/artifacts.sha256"
 
 # Capture caller overrides BEFORE sourcing the persisted file. `source` quite
 # correctly restores the last deployment, but without this snapshot it also
@@ -55,7 +58,7 @@ for key in "${MEDIA_KEYS[@]}"; do
   [[ ! -v "$key" ]] || REQUESTED_MEDIA[$key]="${!key}"
 done
 
-ROTATE=0; STATUS_ONLY=0; HOSTED=0; RENDER_ONLY=0; PREFLIGHT_ONLY=0
+ROTATE=0; STATUS_ONLY=0; HOSTED=0; RENDER_ONLY=0; PREFLIGHT_ONLY=0; PIN_ONLY=0; VERIFY_PIN_ONLY=0
 for a in "$@"; do
   case "$a" in
     --rotate-secret) ROTATE=1 ;;
@@ -63,6 +66,8 @@ for a in "$@"; do
     --hosted) HOSTED=1 ;;
     --render-only) RENDER_ONLY=1 ;;
     --preflight) PREFLIGHT_ONLY=1 ;;
+    --pin-artifacts) PIN_ONLY=1 ;;
+    --verify-artifacts) VERIFY_PIN_ONLY=1 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
@@ -94,7 +99,76 @@ report_status() {
   "$NODE_BIN" "$HERE/media-config.mjs" local-readiness
 }
 
+# Pin the maintained Phone git tree and the exact executable/config bytes that
+# deploy.sh will use. Credentials and rendered configs are deliberately excluded.
+# The phone tree is a separate repo; a clean commit pins its complete tracked
+# source, while the sha256 lines pin host binaries and this deployment source.
+phone_source_revision() {
+  [[ -d "$WORKER_DIR" && -d "$SIDECAR_DIR" ]] || die "Phone worker and sidecar source are required for an artifact pin"
+  local worker_root sidecar_root dirty revision
+  worker_root="$(git -C "$WORKER_DIR" rev-parse --show-toplevel)" || die "Phone worker is not in a git tree"
+  sidecar_root="$(git -C "$SIDECAR_DIR" rev-parse --show-toplevel)" || die "Phone sidecar is not in a git tree"
+  [[ "$worker_root" == "$sidecar_root" ]] || die "Phone worker and sidecar must share one source revision"
+  dirty="$(git -C "$worker_root" status --porcelain)" || die "cannot inspect Phone source changes"
+  [[ -z "$dirty" ]] || die "Phone source is not clean; pin a committed candidate"
+  revision="$(git -C "$worker_root" rev-parse HEAD)" || die "cannot resolve Phone source revision"
+  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || die "invalid Phone source revision"
+  printf '%s\n' "$revision"
+}
+
+artifact_files() {
+  ARTIFACT_FILES=(
+    "$HERE/deploy.sh" "$HERE/media-config.mjs" "$HERE/verify-media-plane.sh"
+    "$HERE/livekit-server.yaml.tmpl" "$HERE/livekit-sip.yaml.tmpl"
+    "$HERE/systemd/papercusp-phone-livekit.service"
+    "$HERE/systemd/papercusp-phone-sip.service"
+    "$HERE/systemd/$WORKER_UNIT.tmpl" "$HERE/systemd/$SIDECAR_UNIT.tmpl"
+    "$LK_BIN" "$SIP_BIN" "$NODE_BIN"
+  )
+  local file
+  for file in "${ARTIFACT_FILES[@]}"; do
+    [[ -f "$file" ]] || die "artifact missing: $file"
+  done
+}
+
+verify_artifacts() {
+  local manifest="${1:-$PIN_FILE}" marker revision actual pinned current
+  [[ -f "$manifest" ]] || die "artifact pin missing: $manifest; prepare it with --pin-artifacts"
+  read -r marker revision < "$manifest" || die "invalid artifact pin"
+  [[ "$marker" == PHONE_ARTIFACT_PIN_V1 && "$revision" =~ ^[0-9a-f]{40}$ ]] || die "invalid artifact pin header"
+  actual="$(phone_source_revision)" || exit 1
+  [[ "$actual" == "$revision" ]] || die "Phone source revision differs from artifact pin"
+  artifact_files
+  pinned="$(tail -n +2 "$manifest")" || die "cannot read artifact pin"
+  current="$(sha256sum -- "${ARTIFACT_FILES[@]}")" || die "cannot hash Phone artifacts"
+  # Exact ordered manifest equality also refuses a truncated/duplicate manifest;
+  # sha256sum -c alone would accept a file that simply omitted an artifact.
+  [[ "$current" == "$pinned" ]] || die "artifact bytes differ from pin"
+}
+
+pin_artifacts() {
+  local revision tmp
+  revision="$(phone_source_revision)" || exit 1
+  artifact_files
+  mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"
+  tmp="$(mktemp "$CONF_DIR/.artifacts.sha256.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
+  if ! { printf 'PHONE_ARTIFACT_PIN_V1 %s\n' "$revision"; sha256sum -- "${ARTIFACT_FILES[@]}"; } > "$tmp"; then
+    rm -f "$tmp"; die "could not hash Phone artifacts"
+  fi
+  chmod 600 "$tmp"
+  verify_artifacts "$tmp"
+  mv -f "$tmp" "$PIN_FILE"
+  trap - EXIT
+  say "pinned Phone source revision $revision and ${#ARTIFACT_FILES[@]} artifact files in $PIN_FILE"
+}
+
 if [[ $STATUS_ONLY == 1 ]]; then report_status; exit 0; fi
+if [[ $PIN_ONLY == 1 || $VERIFY_PIN_ONLY == 1 ]]; then
+  [[ $ROTATE == 0 && $RENDER_ONLY == 0 && $PREFLIGHT_ONLY == 0 && $STATUS_ONLY == 0 && $HOSTED == 0 && $PIN_ONLY != $VERIFY_PIN_ONLY ]] || die "artifact pin actions cannot be combined"
+  if [[ $PIN_ONLY == 1 ]]; then pin_artifacts; else verify_artifacts; say "Phone artifacts match pin"; fi
+  exit 0
+fi
 if [[ $PREFLIGHT_ONLY == 1 ]]; then
   [[ $ROTATE == 0 && $RENDER_ONLY == 0 ]] || die "preflight cannot render or rotate credentials"
   if [[ -f "$ENV_FILE" ]]; then
@@ -113,6 +187,10 @@ if [[ $RENDER_ONLY == 1 ]]; then
   [[ $ROTATE == 0 ]] || die "preparation/preflight cannot rotate credentials"
   [[ -f "$ENV_FILE" ]] || die "preparation/preflight requires an existing external livekit.env"
 fi
+
+# A live convergence (including secret rotation) is admitted only for the
+# reviewed Phone source and exact host binaries/config source pinned above.
+if [[ $RENDER_ONLY == 0 ]]; then verify_artifacts; fi
 
 # ---------------------------------------------------------------- preflight
 if [[ $RENDER_ONLY == 0 ]]; then

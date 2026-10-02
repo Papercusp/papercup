@@ -9,6 +9,7 @@ import type { GoalHolderLaunchCapacityVerdict } from '../goals/holder-launch-cap
 import {
   GOAL_HOLDER_CAPACITY_DEFER_ESCALATE_MS,
   GOAL_HOLDER_CAPACITY_DEFER_LOG_INTERVAL_MS,
+  GOAL_HOLDER_LOSS_CONFIRM_MS,
   GOAL_HOLDER_REKICK_INTERVAL_MS,
   GOAL_HOLDER_REKICK_MAX,
   GOAL_LIVENESS_GRACE_MS,
@@ -824,6 +825,10 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     }),
     escalateCapacityDeferral: async () => {},
     capacityDeferrals: new Map(),
+    // WI-10005559: these fixtures exercise recovery itself, so a first lost
+    // tick acts. The loss-confirmation window has its own tests below.
+    lossConfirmMs: 0,
+    lossObservations: new Map(),
     now: () => NOW,
     states: new Map(),
     ...overrides,
@@ -983,6 +988,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       rekicked: 0,
       partialFirstTurn: 0,
       deferredCapacity: 0,
+      lossUnconfirmed: 0,
       skipped: false,
     });
   });
@@ -2471,5 +2477,94 @@ describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821
       }),
     );
     expect(result).toMatchObject({ attempted: 0 });
+  });
+});
+
+// WI-10005559 (measured 2026-10-02): a holder's carry-respawn, cold-boot drill
+// cut or resume stamps adv_sessions.ended_at, and the oracle reads the owner
+// `ended` until its successor registers about two minutes later. Acting on the
+// first such tick re-elected goal 60d3a8 six times in 23 minutes and spent its
+// hourly cap. A loss must persist for GOAL_HOLDER_LOSS_CONFIRM_MS first.
+describe('runGoalHolderRespawnOnce — loss confirmation window (WI-10005559)', () => {
+  const sql = {} as never;
+  let info: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    info = vi.spyOn(console, 'info').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    info.mockRestore();
+  });
+
+  it('rides out a same-owner restart gap and acts only on a loss that persists', async () => {
+    let nowMs = NOW;
+    let state: SessionState = 'ended';
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const lossObservations: NonNullable<GoalHolderRespawnDeps['lossObservations']> = new Map();
+    const deps = respawnDeps({
+      lossConfirmMs: GOAL_HOLDER_LOSS_CONFIRM_MS,
+      lossObservations,
+      now: () => nowMs,
+      launch,
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', state)),
+    });
+
+    // The restart gap: two `ended` ticks, then the successor registers.
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    nowMs += 60_000;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    state = 'live';
+    nowMs += 60_000;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 0 });
+    expect(lossObservations.size).toBe(0);
+    expect(launch).not.toHaveBeenCalled();
+
+    // A genuine loss: the window restarts from this tick and recovery acts
+    // only once it has fully elapsed.
+    state = 'ended';
+    nowMs += 60_000;
+    const lostAt = nowMs;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    nowMs = lostAt + GOAL_HOLDER_LOSS_CONFIRM_MS - 1;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    nowMs = lostAt + GOAL_HOLDER_LOSS_CONFIRM_MS;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, lossUnconfirmed: 0 });
+    expect(launch).toHaveBeenCalledOnce();
+    // The reason trail: each loss episode is logged once, when it starts.
+    expect(info.mock.calls.filter((c) => String(c[0]).includes('judged lost'))).toHaveLength(2);
+  });
+
+  it('restarts the window when a different holder is elected', async () => {
+    let nowMs = NOW;
+    let elected = 'su-2c130be1';
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const target = respawnGoal();
+    const deps = respawnDeps({
+      lossConfirmMs: GOAL_HOLDER_LOSS_CONFIRM_MS,
+      lossObservations: new Map(),
+      now: () => nowMs,
+      launch,
+      readGoals: async () => ({ goals: [target], holders: [holder({ ownerId: elected })] }),
+      resolveLiveness: async () => vmap(verdict(elected, 'ended')),
+    });
+
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    elected = 'su-successor';
+    nowMs += GOAL_HOLDER_LOSS_CONFIRM_MS;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    expect(launch).not.toHaveBeenCalled();
+    nowMs += GOAL_HOLDER_LOSS_CONFIRM_MS;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1 });
+  });
+
+  it('applies the production window to a caller that does not set one', async () => {
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const { lossConfirmMs: _unset, ...rest } = respawnDeps({ launch, lossObservations: new Map() });
+    expect(await runGoalHolderRespawnOnce(sql, rest)).toMatchObject({ attempted: 0, lossUnconfirmed: 1 });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the window above the measured carry-respawn gap', () => {
+    // 2026-10-02: drill cut 16:49:10Z, successor's first tool call 16:51:00Z.
+    expect(GOAL_HOLDER_LOSS_CONFIRM_MS).toBeGreaterThanOrEqual(3 * 60_000);
   });
 });

@@ -183,3 +183,51 @@ describe('Phone deployer read-only local status', () => {
     }
   });
 });
+
+describe('Phone candidate artifact pin', () => {
+  it('pins a clean Phone revision and exact host artifact bytes before any live convergence', () => {
+    const conf = join(root, 'artifact-pin'); mkdirSync(conf);
+    const phone = join(conf, 'phone-source');
+    const worker = join(phone, 'worker'), sidecar = join(phone, 'apps', 'sidecar');
+    mkdirSync(worker, { recursive: true }); mkdirSync(sidecar, { recursive: true });
+    const livekit = join(conf, 'livekit-server'), sip = join(conf, 'livekit-sip');
+    writeFileSync(livekit, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    writeFileSync(sip, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    writeFileSync(join(conf, 'git'), `#!/bin/sh
+case "$3:$4" in
+  rev-parse:--show-toplevel) printf '%s\\n' "$PHONE_TEST_ROOT" ;;
+  rev-parse:HEAD) printf '%s\\n' "$PHONE_TEST_REVISION" ;;
+  status:--porcelain) exit 0 ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o700 });
+    const original = 'PHONE_LIVEKIT_API_SECRET=private-pin-fixture-secret\n';
+    writeFileSync(join(conf, 'livekit.env'), original, { mode: 0o600 });
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PHONE_'))),
+      PHONE_CONFIG_DIR: conf, PHONE_WORKER_DIR: worker, PHONE_SIDECAR_DIR: sidecar,
+      PHONE_LIVEKIT_BIN: livekit, PHONE_SIP_BIN: sip, PHONE_NODE_BIN: process.execPath,
+      PHONE_TEST_ROOT: phone, PHONE_TEST_REVISION: 'a'.repeat(40),
+      PATH: `${conf}:${process.env.PATH ?? ''}`,
+    };
+    const pinned = run(env, ['--pin-artifacts']);
+    expect(pinned.status, pinned.stderr).toBe(0);
+    const manifest = join(conf, 'artifacts.sha256');
+    expect(statSync(manifest).mode & 0o777).toBe(0o600);
+    expect(readFileSync(manifest, 'utf8')).toContain(`PHONE_ARTIFACT_PIN_V1 ${'a'.repeat(40)}`);
+    expect(readFileSync(manifest, 'utf8')).not.toContain('private-pin-fixture-secret');
+    expect(run(env, ['--verify-artifacts']).status).toBe(0);
+    const completePin = readFileSync(manifest, 'utf8');
+    writeFileSync(manifest, completePin.split('\n').slice(0, 3).join('\n') + '\n');
+    expect(run(env, ['--verify-artifacts']).status).toBe(1);
+    writeFileSync(manifest, completePin);
+    expect(run({ ...env, PHONE_TEST_REVISION: 'b'.repeat(40) }, ['--verify-artifacts']).status).toBe(1);
+    writeFileSync(livekit, '#!/bin/sh\nexit 7\n', { mode: 0o700 });
+    expect(run(env, ['--verify-artifacts']).status).toBe(1);
+    const refused = run(env, []);
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain('artifact bytes differ from pin');
+    expect(readFileSync(join(conf, 'livekit.env'), 'utf8')).toBe(original);
+    expect(refused.stdout + refused.stderr).not.toContain('private-pin-fixture-secret');
+  });
+});

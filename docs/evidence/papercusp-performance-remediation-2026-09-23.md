@@ -5242,3 +5242,67 @@ ended 17:17:56Z with **2/2 passes**, zero skips. This is red/green proof
 for the new fix, not a report that its final test remains red. The approved
 D-006 bg-host runtime owner received the final hashes and committed-byte
 receipt; loaded adoption of this newer map fix remains to be verified.
+
+### Coordinated owner-map adoption and first natural sweeps — October 2, 17:36Z
+
+The D-006 bg-host runtime owner reported a coordinated `dev:restart` and a
+17:31:45Z bundle build (coord receipts
+`coord-send-230c7c7519d92ce972991d8c50a8c263f03dfa49e6b0d59160a19059cad9d82d`
+and `coord-send-5e30fb6e6a1fee0a19f735b2a2989533309add1c9209e552f30769fb5696854d`).
+An independent read found `papercusp-bg-host.service` MainPID **2457467**,
+active since **17:32:06Z**. Its command is `node dist-host/hono-host.mjs`
+from the canonical `apps/operator` directory. The bundle mtime is
+**17:31:45.894Z**, SHA-256
+`8dacf0b733bf8d26871fc2aa4e42fe7e97169443e8914ca8e04251448cf58e82`;
+bundle line 225651 contains the pre-budget
+`ownerBackfill.set(sessionId, selected2)` code. The current source SHA-256
+still matches the verified and committed
+`017d2fc2c7ba534d7d56b672fc978a95dcae7108be278b06989147831a346719`.
+Esbuild strips the source comment used as the earlier requested marker, so
+the **code**, process identity and bundle timestamp are the loaded-source
+evidence. This does not claim a byte-for-byte source-to-bundle attestation.
+
+One bounded `logs:read` of this unit since its new start returned **two**
+`session-ingest` receipts, untruncated and without journal error. The
+**17:33:41.278Z** natural sweep scanned 148 files, inserted 67 turns and 665
+parts, reported zero errors and repaired **715** Claude turn owners from a
+3,637-session map in **37,099 ms**. Its ordered input hash is
+`3c47a9fce46f251efd101e688dbff496604cfede950b58844b87032a35ebdecc`.
+The **17:35:36.651Z** sweep scanned 457 files, inserted 38 turns and 490
+parts, reported zero errors and updated **zero** Claude turn owners from a
+3,638-session map in **108.8 ms**. Its input hash is
+`7cde5125fb0f9d692acfe22abc2938ec0171aeed0424e348098d8cc6c9e88bb7`.
+Both sweeps requested 709 Claude part-owner repairs and updated zero parts.
+The maps have different sizes and hashes; the receipts do not identify the
+715 repaired rows or prove that an identical map was replayed. They do show
+one successful post-adoption repair followed by an ordinary zero-update
+sweep on the loaded build. No new private test run was needed: the source/test
+bytes are unchanged from the 17:17:56Z passing two-child regression above.
+
+A bounded, read-only `pg_stat_statements` read matched query ID
+`-9170796359460262385` to this exact guarded
+`UPDATE session_turns ... FROM UNNEST` statement. With
+`track_io_timing=on`, the **17:36Z** cumulative row since its
+**14:58:47Z** per-query stats start reported 195 calls, **517,419.0 ms**
+total execution and **452,028.5 ms** shared-block read time, with
+1,658,613 shared blocks read. This is **aggregate** evidence that data-file
+reads occupied much of this statement class's recorded time after the
+2026-10-02 14:52:50Z stats reset. It is not per-call I/O attribution and
+cannot decompose the **October 1** 1,123,628 ms UPDATE, which predates the
+reset. Neither the two natural receipts nor the cumulative PG statistics
+measure application latency. The historical wait mechanism, exact repaired
+row identity, app impact and R-8 disposition remain open; **P-008/R-8 is not
+terminal**.
+
+A second bounded read at **17:41Z** saw the same one top-level statement row
+after 200 calls: `total_exec_time=517,687.880 ms`,
+`max_exec_time=165,560.693 ms`, `shared_blk_read_time=452,040.716 ms`,
+and zero parallel workers launched. With no parallel worker time to double
+count, the longest call had at least **99,913.529 ms** of shared-block read
+time: total read time minus the maximum possible execution time of all other
+calls (`452,040.716 - (517,687.880 - 165,560.693)`). This identifies
+data-file reads as a material part of **that current-window slowest call**.
+Its duration closely matches the 15:47Z natural 165,562.8 ms repair receipt,
+but the aggregate stats row has no per-call ID, so the two records are not
+joined as the same call. This still does not measure the October 1 statement
+or user-facing application latency.

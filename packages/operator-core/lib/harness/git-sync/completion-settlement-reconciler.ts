@@ -10,8 +10,13 @@ import {
   completionHeadBlobMap,
   completionWorkingTreeBlobSha,
   createCompletionBlobHistoryReader,
+  createPersistedCompletionHistorySearchMemo,
+  persistedCompletionHistorySearchMemo,
+  type CompletionHistoryMemoStore,
   type HeadBlobResolution,
+  type PersistedCompletionHistorySearchMemo,
 } from '../../agent-tools/work_items/completion-freshness';
+import { pgCompletionHistoryMemoStore } from './completion-history-memo-store';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
@@ -478,6 +483,13 @@ export interface CompletionSettlementReconcilerDeps {
    * nothing, so hermetic fixtures never reach the real coord log.
    */
   notifyStranded?: (notice: SettlementStrandedNotice) => Promise<void>;
+  /**
+   * WI-10005560: where the history reader's per-pair verdicts persist across restarts.
+   * Production (no `sql` injected) uses Postgres, shared by every pass in the process. An
+   * injected store gets a fresh memo per pass, as if the process restarted between passes;
+   * injected `sql` without this seam persists nothing, so fixtures stay hermetic.
+   */
+  historyMemoStore?: CompletionHistoryMemoStore;
 }
 
 type ReconcileResult = {
@@ -516,12 +528,17 @@ export async function reconcileProposedCompletionsAtCommit(
   // have been among the first rows this pass started). A close that lands mid-pass is
   // the NEXT pass's to attempt, so it must not count against this one.
   const passStartedAtMs = Date.now();
+  const historyMemo = settlementHistoryMemo(scope, deps);
+  if (historyMemo) {
+    await historyMemo.hydrate().catch((error: unknown) => warnHistoryMemo(scope, 'load', error));
+  }
   let result: ReconcileResult;
   try {
-    result = await reconcileProposedCompletionsCore(commitSha, scope, deps);
+    result = await reconcileProposedCompletionsCore(commitSha, scope, deps, historyMemo);
   } catch (error) {
     // The pass was cut short (budget / action timeout abort, or a failure), so its per-row
     // stats are unknown — the guard records that as null, never as a fabricated zero.
+    await flushHistoryMemo(scope, historyMemo);
     await observeSettlementFire(scope, deps, passStartedAtMs, {
       outcome: deps.signal?.aborted ? 'budget-exceeded' : 'error',
       neverAttemptedRemaining: null,
@@ -529,6 +546,7 @@ export async function reconcileProposedCompletionsAtCommit(
     });
     throw error;
   }
+  await flushHistoryMemo(scope, historyMemo);
   await observeSettlementFire(scope, deps, passStartedAtMs, {
     outcome: 'completed',
     inspected: result.inspected,
@@ -540,6 +558,43 @@ export async function reconcileProposedCompletionsAtCommit(
     neverAttemptedRemaining: null,
   });
   return result;
+}
+
+/**
+ * WI-10005560: the memo a pass's history reader keeps its verdicts in, or undefined for the
+ * process-local default. No reader runs when a lookup seam is injected, and injected `sql`
+ * without a store is a hermetic fixture.
+ */
+function settlementHistoryMemo(
+  scope: { workspaceId: string },
+  deps: CompletionSettlementReconcilerDeps,
+): PersistedCompletionHistorySearchMemo | undefined {
+  if (deps.historyLookup || deps.lookup) return undefined;
+  if (deps.historyMemoStore) return createPersistedCompletionHistorySearchMemo(deps.historyMemoStore);
+  if (deps.sql) return undefined;
+  return persistedCompletionHistorySearchMemo(scope.workspaceId, () =>
+    pgCompletionHistoryMemoStore(getOrgPg().sql, scope.workspaceId),
+  );
+}
+
+/**
+ * Write what the pass learned, even when it was cut short: every kept verdict is exact over
+ * its own range. Never throws: losing the write only costs the next boot a re-search.
+ */
+async function flushHistoryMemo(
+  scope: { installSlug: string },
+  memo: PersistedCompletionHistorySearchMemo | undefined,
+): Promise<void> {
+  if (!memo) return;
+  await memo.flush().catch((error: unknown) => warnHistoryMemo(scope, 'save', error));
+}
+
+function warnHistoryMemo(scope: { installSlug: string }, op: 'load' | 'save', error: unknown): void {
+  console.warn(
+    `[git-sync-completion-settlement] ${scope.installSlug}: could not ${op} the history search memo: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
 }
 
 /**
@@ -599,6 +654,7 @@ async function reconcileProposedCompletionsCore(
   commitSha: string,
   scope: { installSlug: string; workspaceId: string; repositoryRoot: string },
   deps: CompletionSettlementReconcilerDeps,
+  historyMemo?: PersistedCompletionHistorySearchMemo,
 ): Promise<ReconcileResult> {
   if (!SHA_RE.test(commitSha) || !scope.repositoryRoot.trim()) {
     return { inspected: 0, upgraded: [], residual: 0, unreadable: [], floorRejected: [], stranded: [], lookupUnavailable: [] };
@@ -609,8 +665,10 @@ async function reconcileProposedCompletionsCore(
   // contract. Tests opt into history explicitly; production uses the safe Git reader.
   // WI-10005357: production shares one gitlink-reading history reader across the pass, so the
   // per-path `ls-tree` reads collapse to about one per (commit, repository) instead of one per
-  // declared path per side. A fresh reader per pass keeps nothing across passes.
-  const historyReader = deps.historyLookup || deps.lookup ? undefined : createCompletionBlobHistoryReader();
+  // declared path per side. A fresh reader per pass keeps only its memo across passes, and
+  // WI-10005560 persists that memo across restarts.
+  const historyReader =
+    deps.historyLookup || deps.lookup ? undefined : createCompletionBlobHistoryReader(undefined, historyMemo);
   const historyLookup = deps.historyLookup ?? historyReader?.contains;
   const workingTreeLookup = deps.workingTreeLookup ?? (deps.lookup ? undefined : completionWorkingTreeBlobSha);
   const notifyStranded = deps.notifyStranded ?? (deps.sql ? undefined : notifySettlementStranded);

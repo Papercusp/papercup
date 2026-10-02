@@ -194,6 +194,22 @@ export const GOAL_HOLDER_REKICK_INTERVAL_MS = 5 * 60_000;
 export const GOAL_HOLDER_REKICK_MAX = 3;
 /** Give a new elected holder time to complete its first turn before recovery. */
 export const GOAL_HOLDER_FIRST_TURN_GRACE_MS = 15 * 60_000;
+/**
+ * WI-10005559: how long an elected holder must be CONTINUOUSLY judged lost
+ * before recovery acts (re-kick, damping restart, rate slot, launch).
+ *
+ * A same-owner restart — a carry-respawn (`session:request-compaction`), a
+ * cold-boot drill cut, a resume — stamps `adv_sessions.ended_at`, and the
+ * liveness oracle's recorded-ended leg reads the owner `ended` until the
+ * successor process registers, typically one to two minutes later. With no
+ * confirmation window a single such gap bought a replacement launch: on
+ * 2026-10-02 goal 60d3a8 was re-elected six times in 23 minutes while its
+ * holders were still making tool calls, and paused needs-human with its
+ * hourly cap spent. Any tick that reads the holder alive, or a change of
+ * elected holder, restarts the window; an `unknown` tick neither confirms nor
+ * clears it.
+ */
+export const GOAL_HOLDER_LOSS_CONFIRM_MS = 5 * 60_000;
 
 /**
  * How long a goal may show no live holder before it is called abandoned.
@@ -1483,7 +1499,20 @@ export interface GoalHolderRespawnSummary {
    * restart, no rate-cap slot, no launch.
    */
   deferredCapacity: number;
+  /**
+   * WI-10005559: lost holders whose recovery waited this tick because the loss
+   * has not yet persisted for GOAL_HOLDER_LOSS_CONFIRM_MS. Nothing was spent.
+   */
+  lossUnconfirmed: number;
   skipped: boolean;
+}
+
+/** Process-local record of ONE goal's unconfirmed holder loss (WI-10005559). */
+export interface GoalHolderLossObservation {
+  /** The elected holder judged lost, or null for a lost attachment with no elected row. */
+  ownerId: string | null;
+  /** ms epoch of the first tick in this continuous run that judged it lost. */
+  sinceMs: number;
 }
 
 /** Process-local record of ONE goal's ongoing capacity deferral episode. */
@@ -1588,6 +1617,13 @@ export interface GoalHolderRespawnDeps {
   ) => Promise<void>;
   /** Deferral episodes, keyed like `states`. */
   capacityDeferrals?: Map<string, GoalHolderCapacityDeferral>;
+  /**
+   * WI-10005559: minimum continuous-loss duration before recovery acts.
+   * Production wires GOAL_HOLDER_LOSS_CONFIRM_MS; 0 disables the window.
+   */
+  lossConfirmMs?: number;
+  /** Loss episodes, keyed like `states`. Defaults to the module-level map. */
+  lossObservations?: Map<string, GoalHolderLossObservation>;
   now: () => number;
   states: Map<string, FlapDampingState>;
 }
@@ -2035,6 +2071,7 @@ async function defaultEscalateHolderRespawnGiveUp(
 }
 
 const goalHolderRespawnStates = new Map<string, FlapDampingState>();
+const goalHolderLossObservations = new Map<string, GoalHolderLossObservation>();
 const goalHolderRekickStates = new Map<string, GoalHolderRekickState>();
 const goalHolderCapacityDeferrals = new Map<string, GoalHolderCapacityDeferral>();
 
@@ -2216,6 +2253,8 @@ function holderRespawnDeps(
     assessLaunchCapacity: async (goal) => await assessGoalHolderLaunchCapacityForGoal(goal),
     escalateCapacityDeferral: defaultEscalateHolderCapacityDeferral,
     capacityDeferrals: goalHolderCapacityDeferrals,
+    lossConfirmMs: GOAL_HOLDER_LOSS_CONFIRM_MS,
+    lossObservations: goalHolderLossObservations,
     now: Date.now,
     states: goalHolderRespawnStates,
     ...overrides,
@@ -2254,11 +2293,16 @@ export async function runGoalHolderRespawnOnce(
     rekicked: 0,
     partialFirstTurn: 0,
     deferredCapacity: 0,
+    lossUnconfirmed: 0,
     skipped: false,
   };
   if (!(await deps.flagEnabled())) return { ...summary, skipped: true };
   const rekickStates = deps.rekickStates ?? new Map<string, GoalHolderRekickState>();
   const capacityDeferrals = deps.capacityDeferrals ?? new Map<string, GoalHolderCapacityDeferral>();
+  // Never a fresh per-call map: a window measured against a map that dies with
+  // the tick could never elapse, and recovery would silently stop for good.
+  const lossObservations = deps.lossObservations ?? goalHolderLossObservations;
+  const lossConfirmMs = Math.max(0, deps.lossConfirmMs ?? 0);
 
   const { goals, holders } = await deps.readGoals();
   summary.scanned = goals.length;
@@ -2273,6 +2317,9 @@ export async function runGoalHolderRespawnOnce(
   }
   for (const key of rekickStates.keys()) {
     if (!eligibleKeys.has(key)) rekickStates.delete(key);
+  }
+  for (const key of lossObservations.keys()) {
+    if (!eligibleKeys.has(key)) lossObservations.delete(key);
   }
   for (const key of capacityDeferrals.keys()) {
     if (!eligibleKeys.has(key)) capacityDeferrals.delete(key);
@@ -2365,6 +2412,8 @@ export async function runGoalHolderRespawnOnce(
     }
 
     const previous = deps.states.get(key);
+    // A tick that reads the holder alive ends any loss episode (WI-10005559).
+    if (fold.liveness === 'held') lossObservations.delete(key);
     if (fold.liveness === 'held' && !partialFirstTurn) {
       // A holder that is alive again has spent nothing: a later idle spell
       // earns a fresh re-kick budget (a re-kick that WORKED is the whole point).
@@ -2379,6 +2428,31 @@ export async function runGoalHolderRespawnOnce(
       // deferral episode without a "capacity back" line (it was never lost).
       capacityDeferrals.delete(key);
       continue;
+    }
+
+    // WI-10005559 (measured 2026-10-02): a loss must PERSIST before any
+    // recovery is paid. A same-owner restart (carry-respawn, cold-boot drill,
+    // resume) reads `ended` until its successor registers; acting on the first
+    // such tick launched a duplicate holder per restart and spent the hourly
+    // cap in 23 minutes. The partial-first-turn case is exempt: it has already
+    // waited out GOAL_HOLDER_FIRST_TURN_GRACE_MS.
+    if (!partialFirstTurn && lossConfirmMs > 0) {
+      const lostOwnerId = fold.elected?.ownerId ?? null;
+      const nowMs = deps.now();
+      const observed = lossObservations.get(key);
+      const episode =
+        observed && observed.ownerId === lostOwnerId ? observed : { ownerId: lostOwnerId, sinceMs: nowMs };
+      if (episode !== observed) {
+        lossObservations.set(key, episode);
+        console.info(
+          `[goal-holder-respawner] ${goal.goalId}: holder ${lostOwnerId ?? '(none elected)'} judged lost ` +
+            `(${fold.liveness}); confirming for ${Math.round(lossConfirmMs / 1000)}s before recovery`,
+        );
+      }
+      if (nowMs - episode.sinceMs < lossConfirmMs) {
+        summary.lossUnconfirmed += 1;
+        continue;
+      }
     }
 
     // WI-2140573 finding 5 (measured 2026-09-02): before ANY recovery is paid,

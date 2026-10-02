@@ -81,6 +81,17 @@ The sidecar unit supervises the HTTP process directly and restarts it on failure
 After changing the out-of-repo sidecar source, converge through `deploy.sh`;
 the unit does not use Node's watcher, which can stay active after its child dies.
 
+Before a live converge or secret rotation, run `deploy.sh --pin-artifacts` from
+a reviewed, clean Phone source revision. This writes `artifacts.sha256` outside
+the repository in `PHONE_CONFIG_DIR` (mode 0600). It binds the Phone source
+commit and hashes the media binaries, Node executable, deployment script,
+config templates and unit files. `deploy.sh --verify-artifacts` checks the pin
+without changing services; normal deploys require the same check before any
+credential or unit write. A changed binary or Phone source requires a new pin.
+`PHONE_LIVEKIT_BIN` and `PHONE_SIP_BIN` select isolated candidate binaries;
+the default remains `~/.local/bin`. The pin excludes secret values and does not
+itself prove a recovery drill or public calling.
+
 The smoke test requires a positive received-audio packet row and a complete,
 error-free subscriber summary from `lk` 2.16. It refuses unknown output formats,
 missing tracks and zero traffic even when `lk` exits zero. It does not prove public,

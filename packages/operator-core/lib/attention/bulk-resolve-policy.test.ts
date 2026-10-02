@@ -135,16 +135,17 @@ describe('resolver brief — the D-001/D-002 policy it carries into the run', ()
       level: 'L0',
     });
     expect(reviewOnlyBrief).toContain('review-only under L0/review-all');
-    expect(reviewOnlyBrief).toMatch(/Never call inbox:bulk-run-act and never/);
-    expect(reviewOnlyBrief).toMatch(/never report auto_resolved/i);
+    expect(reviewOnlyBrief).toMatch(/Never call inbox:bulk-run-act and never\s+report auto_resolved/i);
     expect(reviewOnlyBrief).toContain('recommendation for every item instead');
+    expect(reviewOnlyBrief).toContain('report a recommendation and take no terminal action');
+    expect(reviewOnlyBrief).not.toContain('report auto_resolved only after');
   });
 
   it('treats the launch policy as a snapshot and trusts the live action gate', () => {
     expect(brief).toContain('This is the launch snapshot');
     expect(brief).toContain('rechecks current standing policy');
-    expect(brief).toContain('Mark auto_resolved only after this call reports success');
-    expect(brief).toContain('do not use another path');
+    expect(brief).toMatch(/Mark auto_resolved only after this call\s+reports success/);
+    expect(brief).toMatch(/do not use another path/);
   });
 
   it('encodes the D-002 consult loop: a bounded window, and a LAPSE downgrades confidence', () => {

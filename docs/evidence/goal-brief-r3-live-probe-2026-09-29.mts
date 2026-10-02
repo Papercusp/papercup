@@ -214,16 +214,35 @@ residualUnknowns.push('Fleet-leader side: fleet:leader-brief tool_invocations ca
 residualUnknowns.push('The span and transcript witnesses both derive from the launch-time identity (PAPERCUSP_SID names the per-owner session-claude dir and the activation span), so neither can catch a launcher that assigned the wrong identity. Transcript-only rows rest on the host transcript file or its ingested copy (D-040; session_turn_parts keeps 14 days); a session pruned from both falls back to foreign.');
 const transcriptOnlySessions = Object.entries(identityWitnesses).filter(([, w]) => w.spans.length === 0 && w.transcript.length > 0).map(([s]) => s);
 
+// R3_CENSORED_BY=D-042 (goal-brief D-042, su-cf569f3f ruling 2026-10-02): P3 is closed as BOUNDED evidence
+// because natural holder relaunches mint a new ownerId, so its precondition never occurs. Under this flag a
+// FAILED P3 is reported verbatim (passed:false) plus censored:true and is excluded from the exit gate only.
+// It never turns P3 into a pass, never applies to a counterexample run, and is stamped into command + summary.
+const CENSORED_BY = process.env.R3_CENSORED_BY ?? null;
+if (CENSORED_BY !== null && CENSORED_BY !== 'D-042') throw new Error(`unknown R3_CENSORED_BY=${CENSORED_BY}; only D-042 is recorded`);
+if (CENSORED_BY !== null && COUNTEREXAMPLE !== null) throw new Error('R3_CENSORED_BY cannot be combined with a counterexample run');
+const CENSORABLE = new Set(['r3-chain-survives-session-boundary']);
+for (const a of assertions as Array<Record<string, any>>) {
+  if (CENSORED_BY && CENSORABLE.has(a.id) && !a.passed) {
+    a.censored = true;
+    a.censoredBy = `goal-brief-to-claimed-plan-work-2026-09-23#${CENSORED_BY}`;
+  }
+}
+const gated = (assertions as Array<Record<string, any>>).filter((a) => !a.censored);
 const passed = assertions.filter((a) => a.passed).length;
+const gatedPassed = gated.filter((a) => a.passed).length;
+const censoredIds = (assertions as Array<Record<string, any>>).filter((a) => a.censored).map((a) => a.id);
+if (censoredIds.length > 0) residualUnknowns.push(`CENSORED (${CENSORED_BY}): ${censoredIds.join(', ')} failed and is excluded from the exit gate as bounded evidence. Cross-session continuity of one owner's chain is UNOBSERVED, not proven.`);
 process.stdout.write(`${JSON.stringify({
   schemaVersion: 1, kind: 'operational-test-evidence',
   name: COUNTEREXAMPLE ? `goal-brief R-3 live chain probe — counterexample ${COUNTEREXAMPLE}` : 'goal-brief R-3 live chain probe',
   framework: 'read-only-sql-probe',
   command: [...(COUNTEREXAMPLE ? ['env', `R3_COUNTEREXAMPLE=${COUNTEREXAMPLE}`] : []),
+    ...(CENSORED_BY ? ['env', `R3_CENSORED_BY=${CENSORED_BY}`] : []),
     'npx', 'tsx', 'docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts'],
-  exitCode: passed === assertions.length ? 0 : 1, startedAt, finishedAt: new Date().toISOString(),
-  summary: `${passed}/${assertions.length} assertions passed; ${transcriptOnlySessions.length} of ${Object.keys(identityWitnesses).length} sessions resolved by the transcript witness alone`, assertions,
+  exitCode: gatedPassed === gated.length ? 0 : 1, startedAt, finishedAt: new Date().toISOString(),
+  summary: `${passed}/${assertions.length} assertions passed${censoredIds.length ? `; ${censoredIds.length} censored per ${CENSORED_BY} (${censoredIds.join(', ')}), gate ${gatedPassed}/${gated.length}` : ''}; ${transcriptOnlySessions.length} of ${Object.keys(identityWitnesses).length} sessions resolved by the transcript witness alone`, assertions,
   plan: { slug: 'goal-brief-to-claimed-plan-work-2026-09-23', specIds: ['AUTO-BAR-R-3-P-004', 'AUTO-BAR-R-3-P-007'], specRevision: 4 },
   residualUnknowns, observations,
 }, null, 2)}\n`);
-process.exitCode = passed === assertions.length ? 0 : 1;
+process.exitCode = gatedPassed === gated.length ? 0 : 1;

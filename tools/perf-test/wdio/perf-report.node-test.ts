@@ -703,7 +703,7 @@ test('native stack capture requires owned identity, real frames, detach and resu
   const f = nativeProcFixture();
   const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
   const validOutput = () => `NATIVE_STACK_STOP_EPOCH_MS=${Date.now()}\n` +
-    '0x1000 0x2000 0x1000 0x0 /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0\n' +
+    '0x1000 0x2000 0x1000 0x0 r-xp /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0.21.10\n' +
     '#0  0x123 in poll ()\n[Inferior 1 (process 30) detached]\n';
   const result = captureOwnedNativeStacks(f.options, target, f.proc, (pid) => {
     assert.equal(pid, 30);
@@ -723,7 +723,11 @@ test('native stack capture requires owned identity, real frames, detach and resu
   const noMap = captureOwnedNativeStacks(f.options, target, f.proc,
     () => `NATIVE_STACK_STOP_EPOCH_MS=${Date.now()}\n#0 poll\n[Inferior 1 (process 30) detached]\n`);
   assert.equal(noMap.status, 'unavailable');
-  if (noMap.status === 'unavailable') assert.match(noMap.error, /WebKit mapping/);
+  if (noMap.status === 'unavailable') {
+    assert.match(noMap.error, /WebKit mapping/);
+    assert.match(noMap.output ?? '', /NATIVE_STACK_STOP_EPOCH_MS=/);
+    assert(noMap.stoppedEpochMs);
+  }
   const stopped = captureOwnedNativeStacks(f.options, target, f.proc, () => {
     f.files.set('/proc/30/task/30/stat', f.stat(30, 25).replace(') S ', ') T '));
     return validOutput();
@@ -736,7 +740,7 @@ test('native stack attach refuses stale/peer targets and discards post-attach id
   const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
   let attaches = 0;
   const run = () => { attaches++; return `NATIVE_STACK_STOP_EPOCH_MS=${Date.now()}\n` +
-    '0x1000 0x2000 0x1000 0x0 /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0\n' +
+    '0x1000 0x2000 0x1000 0x0 r-xp /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0.21.10\n' +
     '#0 poll\n[Inferior 1 (process 30) detached]\n'; };
   assert.equal(captureOwnedNativeStacks(f.options, { ...target, pid: 90 }, f.proc, run).status, 'unavailable');
   f.files.set('/proc/30/stat', f.stat(30, 25, '101'));
@@ -748,6 +752,7 @@ test('native stack attach refuses stale/peer targets and discards post-attach id
     return run();
   });
   assert.equal(raced.status, 'unavailable');
+  if (raced.status === 'unavailable') assert.equal(raced.output, undefined);
   assert.equal(attaches, 1);
 });
 

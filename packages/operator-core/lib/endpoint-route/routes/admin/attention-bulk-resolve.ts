@@ -121,6 +121,9 @@ export function buildResolverBrief(
         '     dispatcher eligibility allow it. If the action is refused, do not route around the',
         '     refusal; report a recommendation for that item.',
       ];
+  const consultAuthorityGuidance = reviewOnly
+    ? '     A reply is evidence, not authority: report a recommendation and take no terminal action.'
+    : '     A reply is evidence, not authority: report auto_resolved only after an allowed action call succeeds.';
   const actionReportingGuidance = reviewOnly
     ? [
         '3. This run is review-only: do not call inbox:bulk-run-act or report auto_resolved. Report',
@@ -159,8 +162,7 @@ export function buildResolverBrief(
     '     why. Give them a bounded window (~10 min). A reply can support a recommendation with',
     '     confidence:"high"; a lapse means you recommend anyway with',
     '     confidence:"low" so the owner sees it is an inference, not evidence.',
-    '     A reply is evidence, not authority: report auto_resolved only after an allowed action call',
-    '     succeeds.',
+    consultAuthorityGuidance,
     '   - RECOMMEND otherwise: choose recommendationKind from owner_action, cleanup_candidate,',
     '     retry_needed, routed, or investigate; provide a concise label, evidenceBasis, responsibility,',
     '     confidence (high|medium|low|insufficient), and rationale. Include a proposed actionId only',

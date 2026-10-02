@@ -245,6 +245,9 @@ function drillDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): {
     }),
     escalateCapacityDeferral: async () => {},
     capacityDeferrals: new Map(),
+    // WI-10005559: the drill measures recovery on the first lost tick.
+    lossConfirmMs: 0,
+    lossObservations: new Map(),
     states: new Map(),
     ...overrides,
   };

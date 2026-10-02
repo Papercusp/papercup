@@ -544,10 +544,124 @@ export function createCompletionHistorySearchMemo(capacity = 20_000): Completion
   };
 }
 
+/** A pair's memo key, as the reader builds it. Roots, paths and shas never contain NUL. */
+export function completionHistoryPairKey(root: string, fromHeadSha: string, path: string, blobSha: string): string {
+  return [root, fromHeadSha, path, blobSha].join('\0');
+}
+
+/** WI-10005560: one kept verdict with its pair spelled out, as a store holds it. */
+export type CompletionHistoryMemoRecord = {
+  readonly repositoryRoot: string;
+  readonly fromHeadSha: string;
+  readonly path: string;
+  readonly blobSha: string;
+  readonly value: CompletionHistorySearched;
+};
+
+export interface CompletionHistoryMemoStore {
+  /** The most recently written records, newest first, at most `limit`. */
+  load(limit: number): Promise<ReadonlyArray<CompletionHistoryMemoRecord>>;
+  /** Upserts each record by its pair; the last write wins. */
+  save(records: ReadonlyArray<CompletionHistoryMemoRecord>): Promise<void>;
+}
+
+export interface PersistedCompletionHistorySearchMemo extends CompletionHistorySearchMemo {
+  /** Loads the stored verdicts once per process. A failed load rejects and is retried by the next call. */
+  hydrate(): Promise<number>;
+  /** Writes every verdict set since the last flush and returns how many. A failed write keeps them pending. */
+  flush(): Promise<number>;
+}
+
+/**
+ * WI-10005560: the memo above, kept across restarts. bg-host restarts about every 33 min,
+ * and an in-process memo made the first rotation after each boot re-search every pair over
+ * its whole range (6,440 per-pair `git log` execs in the first 10 min vs 1,024 warm,
+ * measured 2026-10-02). Every kept verdict is exact over its own commit range, so an older
+ * stored verdict is still true, just less advanced, and last-writer-wins needs no locking.
+ */
+export function createPersistedCompletionHistorySearchMemo(
+  store: CompletionHistoryMemoStore,
+  base: CompletionHistorySearchMemo = createCompletionHistorySearchMemo(),
+  limit = 20_000,
+): PersistedCompletionHistorySearchMemo {
+  const pending = new Map<string, CompletionHistoryMemoRecord>();
+  let hydration: Promise<number> | null = null;
+  return {
+    get: (key) => base.get(key),
+    set(key, value) {
+      base.set(key, value);
+      const parts = key.split('\0');
+      if (parts.length !== 4) return;
+      const [repositoryRoot = '', fromHeadSha = '', path = '', blobSha = ''] = parts;
+      pending.delete(key);
+      pending.set(key, { repositoryRoot, fromHeadSha, path, blobSha, value });
+      // A store that keeps failing must not grow this without bound: drop the oldest.
+      for (const oldest of pending.keys()) {
+        if (pending.size <= limit) break;
+        pending.delete(oldest);
+      }
+    },
+    hydrate() {
+      hydration ??= store.load(limit).then(
+        (records) => {
+          let loaded = 0;
+          // Oldest first, so the newest records end up most recently used.
+          for (let index = records.length - 1; index >= 0; index -= 1) {
+            const record = records[index];
+            if (!record) continue;
+            const key = completionHistoryPairKey(record.repositoryRoot, record.fromHeadSha, record.path, record.blobSha);
+            // A verdict this process already holds is at least as recent as the stored one.
+            if (pending.has(key) || base.get(key) !== undefined) continue;
+            base.set(key, record.value);
+            loaded += 1;
+          }
+          return loaded;
+        },
+        (error: unknown) => {
+          hydration = null;
+          throw error;
+        },
+      );
+      return hydration;
+    },
+    async flush() {
+      if (pending.size === 0) return 0;
+      const batch = [...pending.entries()];
+      pending.clear();
+      try {
+        await store.save(batch.map(([, record]) => record));
+        return batch.length;
+      } catch (error) {
+        // Re-queue what no later set() replaced, so the next flush retries it.
+        for (const [key, record] of batch) if (!pending.has(key)) pending.set(key, record);
+        throw error;
+      }
+    },
+  };
+}
+
 /** The process-wide memo every pass's reader shares by default. */
 const historySearchState = pinModuleState('@papercusp/operator-core.completion-history-search', () => ({
   memo: createCompletionHistorySearchMemo(),
+  /** WI-10005560: per-scope persistence over the same process memo. */
+  persisted: new Map<string, PersistedCompletionHistorySearchMemo>(),
 }));
+
+/**
+ * WI-10005560: the process memo, persisted through `store` for `scope` (a workspace). One
+ * per scope per process, so hydration runs once and every pass flushes what it learned.
+ */
+export function persistedCompletionHistorySearchMemo(
+  scope: string,
+  store: () => CompletionHistoryMemoStore,
+): PersistedCompletionHistorySearchMemo {
+  let memo = historySearchState.persisted.get(scope);
+  if (!memo) {
+    memo = createPersistedCompletionHistorySearchMemo(store(), historySearchState.memo);
+    historySearchState.persisted.set(scope, memo);
+  }
+  return memo;
+}
 
 /** Pairs per batched history search: bounds argv and the per-field matching loop. */
 const HISTORY_SEARCH_BATCH = 256;
@@ -659,7 +773,7 @@ export function createCompletionBlobHistoryReader(
     fromHeadSha,
     path,
     blobSha,
-    id: [root, fromHeadSha, path, blobSha].join('\0'),
+    id: completionHistoryPairKey(root, fromHeadSha, path, blobSha),
   });
   const announcedPairs = new Map<string, Pair>();
   /** Range → its batched search, kept for the pass so a member asked later reuses it. */

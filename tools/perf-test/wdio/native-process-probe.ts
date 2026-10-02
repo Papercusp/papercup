@@ -366,6 +366,9 @@ export function captureOwnedNativeStacks(options: NativeProbeOptions, target: Na
   })) {
   const startedEpochMs = Date.now();
   const started = performance.now();
+  let output: string | undefined;
+  let postValidated = false;
+  let stoppedEpochMs: number | undefined;
   const validate = () => {
     const current = collectOwnedWebKitSample(options, proc).processes.find(({ pid }) => pid === target.pid);
     if (!current || current.kind !== 'webkit' || current.identity !== target.identity ||
@@ -377,9 +380,10 @@ export function captureOwnedNativeStacks(options: NativeProbeOptions, target: Na
   };
   try {
     validate();
-    const output = run(target.pid);
+    output = run(target.pid);
     if (Buffer.byteLength(output) > 256 * 1024) throw new Error('Native stack output exceeds byte bound');
     const after = validate();
+    postValidated = true;
     if (after.state === 'T' || after.state === 't') throw new Error('Native stack target remained stopped');
     // GDB can exit zero after a refused attach; exit status alone is not proof.
     if (!/\[Inferior .* detached\]/.test(output) || !/^#0\s+/m.test(output)) {
@@ -387,12 +391,12 @@ export function captureOwnedNativeStacks(options: NativeProbeOptions, target: Na
     }
     const stopMarkers = [...output.matchAll(/^NATIVE_STACK_STOP_EPOCH_MS=(\d{13})$/gm)];
     if (stopMarkers.length !== 1) throw new Error('Native stack capture has no unique post-attach clock');
-    const stoppedEpochMs = Number(stopMarkers[0][1]);
+    stoppedEpochMs = Number(stopMarkers[0][1]);
     if (!Number.isSafeInteger(stoppedEpochMs) || stoppedEpochMs < startedEpochMs ||
         stoppedEpochMs > Date.now()) throw new Error('Native stack post-attach clock is outside capture');
     const mappingLines = output.split('\n').filter((line) =>
       /^\s*0x[0-9a-f]+\s+0x[0-9a-f]+/.test(line) &&
-      /\/(?:libwebkit2gtk|libjavascriptcoregtk)-4\.1\.so\.0\s*$/.test(line));
+      /\/(?:libwebkit2gtk|libjavascriptcoregtk)-4\.1\.so\.0(?:\.[0-9]+)*(?:\s+\(deleted\))?\s*$/.test(line));
     if (!mappingLines.some((line) => line.includes('/libwebkit2gtk-4.1.so.0'))) {
       throw new Error('Native stack capture has no WebKit mapping for offline symbols');
     }
@@ -402,10 +406,15 @@ export function captureOwnedNativeStacks(options: NativeProbeOptions, target: Na
       observerEffect: 'debugger attachment stops target; diagnostic, not latency acceptance',
       mappingLines: mappingLines.slice(0, 40), output };
   } catch (error) {
+    // Keep bounded debugger evidence only after the owned identity was checked
+    // again. A post-attach PID/ancestry race must never retain a peer's stack.
+    const retainedOutput = postValidated && output && Buffer.byteLength(output) <= 256 * 1024
+      ? output : undefined;
     return { kind: 'native-stack' as const, status: 'unavailable' as const,
       startedEpochMs, completedEpochMs: Date.now(), durationMs: performance.now() - started,
       pid: target.pid, identity: target.identity, ancestry: target.ancestry,
-      error: String(error).slice(0, 500) };
+      stoppedEpochMs: postValidated ? stoppedEpochMs : undefined,
+      error: String(error).slice(0, 500), output: retainedOutput };
   }
 }
 
