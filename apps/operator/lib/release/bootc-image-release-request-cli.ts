@@ -36,7 +36,7 @@
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 import {
@@ -129,6 +129,16 @@ async function readBytes(path: string, label: string): Promise<Buffer> {
 
 async function readText(path: string, label: string): Promise<string> {
   return (await readBytes(path, label)).toString("utf8");
+}
+
+async function readJsonIfPresent(path: string, label: string): Promise<Record<string, unknown> | null> {
+  try {
+    await stat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  return readJson(path, label);
 }
 
 async function readJson(path: string, label: string): Promise<Record<string, unknown>> {
@@ -473,7 +483,9 @@ export interface BootcTrustBuild {
   trustReport: ArtifactTrustReport;
   bake: ReturnType<typeof parseWorkspaceHostBootcBakeManifest>;
   sourceRevision: string;
-  excluded: { unfixed: number; genericKernelCpe: number };
+  excluded: { unfixed: number; genericKernelCpe: number; vendorPending: number };
+  /** D-027: the vendor-pending findings' ids, reported beside the verdict, never dropped. */
+  vendorPendingIds: string[];
 }
 
 /** Build the trust report for the bake's OCI digest from the evidence its tools left behind. */
@@ -509,7 +521,25 @@ export async function buildBootcTrustReport(
   if (sbom.manifestDigest !== digest) fail(`syft SBOM describes ${sbom.manifestDigest}, not ${digest}`);
   const sbomSha256 = digestOf(sbomBytes);
 
-  const narrowed = actionableGrypeReport(await readJson(resolve(supplyChain, "vulns.json"), "grype report"));
+  // D-027: vendor-updates.json exists only when the bake had RPM-owned findings to ask about; its
+  // absence proves nothing, so nothing becomes vendor-pending.
+  const vendorUpdates = await readJsonIfPresent(resolve(supplyChain, "vendor-updates.json"), "vendor-updates record");
+  const narrowed = actionableGrypeReport(await readJson(resolve(supplyChain, "vulns.json"), "grype report"), {
+    ownedPaths: rpmOwnedPaths(sbomDoc),
+    vendorShipsNothingNewer: vendorUpdates !== null && vendorShipsNothingNewer(vendorUpdates, digest),
+  });
+  // The bake's shell copy of the same rule recorded its own count: the two copies must agree, so a
+  // drift between them refuses at release instead of silently widening one side.
+  if (
+    summary.vendorPending !== undefined &&
+    summary.vendorPending !== "skipped" &&
+    Number(summary.vendorPending) !== narrowed.excludedVendorPending
+  ) {
+    fail(
+      `supply-chain summary records ${String(summary.vendorPending)} vendor-pending findings but the release gate derives ` +
+        `${narrowed.excludedVendorPending} (D-027 copies disagree)`,
+    );
+  }
   const vulnerabilities = parseVulnerabilityFacts(narrowed.report);
 
   const scanFacts = parseBootcSecretScan(
@@ -570,7 +600,12 @@ export async function buildBootcTrustReport(
     trustReport,
     bake,
     sourceRevision,
-    excluded: { unfixed: narrowed.excludedUnfixed, genericKernelCpe: narrowed.excludedGenericKernelCpe },
+    excluded: {
+      unfixed: narrowed.excludedUnfixed,
+      genericKernelCpe: narrowed.excludedGenericKernelCpe,
+      vendorPending: narrowed.excludedVendorPending,
+    },
+    vendorPendingIds: narrowed.vendorPendingIds,
   };
 }
 
@@ -777,9 +812,10 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   if (args.emit === "trust-report") {
     const trust = await buildBootcTrustReport(args);
     process.stderr.write(
-      `trusted=${trust.trustReport.trusted} excluded unfixed=${trust.excluded.unfixed} genericEl9KernelCpe=${trust.excluded.genericKernelCpe}\n`,
+      `trusted=${trust.trustReport.trusted} excluded unfixed=${trust.excluded.unfixed} genericEl9KernelCpe=${trust.excluded.genericKernelCpe} ` +
+        `vendorPending=${trust.excluded.vendorPending}\n`,
     );
-    write({ trustReport: trust.trustReport });
+    write({ trustReport: trust.trustReport, vendorPending: trust.vendorPendingIds });
     return;
   }
   const built = await buildBootcImageArtifact(args);

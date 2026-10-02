@@ -33,7 +33,40 @@ import {
   parseBootcSecretScan,
   parseCosignVerifiedDigests,
   parseVerifiedProvenance,
+  rpmOwnedPaths,
+  VENDOR_MIN_AVAILABLE_PACKAGES,
+  vendorShipsNothingNewer,
 } from "./bootc-image-release-request-cli";
+
+// D-027 (WI-10005719). Shapes measured on the P-012 AWS bake: an INSTALLED rpm is located at the
+// rpmdb and lists its files in metadata.files; a Go module inside an RPM-owned binary is a
+// go-module located at that binary; stale base-layer copies sit in /sysroot/ostree objects.
+const RPMDB = "/usr/share/rpm/rpmdb.sqlite";
+const vendorSbomArtifacts = [
+  { name: "skopeo", type: "rpm", version: "3:1.22.2-4.el9", locations: [{ path: RPMDB }], metadata: { files: [{ path: "/usr/bin/skopeo" }] } },
+  // An .rpm ARCHIVE lying in the image: catalogued as type rpm, but not installed.
+  { name: "smuggled", type: "rpm", version: "1.0-1.el9", locations: [{ path: "/opt/papercusp/cache/smuggled.rpm" }], metadata: { files: [{ path: "/usr/bin/smuggled" }] } },
+];
+const goAt = (path: string, id: string, severity = "High") => ({
+  artifact: { name: "stdlib", type: "go-module", version: "go1.26.5", locations: [{ path }] },
+  vulnerability: { id, severity, namespace: "govulndb:language:go", fix: { state: "fixed", versions: ["1.26.6"] } },
+});
+const installedRpmFinding = {
+  artifact: { name: "openssl-libs", type: "rpm", version: "1:3.5.8-1.el9", locations: [{ path: RPMDB }] },
+  vulnerability: { id: "RHSA-9001", severity: "High", namespace: "redhat:distro:redhat:9", fix: { state: "fixed" } },
+};
+const vendorUpdatesRecord = (overrides: Record<string, unknown> = {}) => ({
+  digest: DIGEST_FOR_VENDOR,
+  checkedAt: "2026-10-02T23:00:00Z",
+  verdict: "no-updates",
+  containerExit: 0,
+  checkUpdateExit: 0,
+  enabledRepos: 5,
+  availablePackages: 65756,
+  availablePackagesFloor: 1000,
+  ...overrides,
+});
+const DIGEST_FOR_VENDOR = `sha256:${"9".repeat(64)}`;
 
 const HEX = "9".repeat(64);
 const DIGEST = `sha256:${HEX}`;
@@ -111,6 +144,51 @@ describe("bootc release request evidence readers", () => {
     });
     expect((narrowed.report.matches as { vulnerability: { id: string } }[]).map((match) => match.vulnerability.id)).toEqual(["CVE-2024-1086", "RHSA-4"]);
     expect(narrowed.excludedGenericKernelCpe).toBe(1);
+  });
+
+  it("moves only vendor-owned fixed Critical/High findings out when the vendor ships nothing newer (D-027)", () => {
+    const report = {
+      descriptor: { name: "grype", version: "0.117.0" },
+      matches: [
+        goAt("/usr/bin/skopeo", "GO-1"),
+        installedRpmFinding,
+        goAt("/sysroot/ostree/repo/objects/9e/eca1cb.file", "GO-2"),
+        goAt("/opt/papercusp/bin/connector", "GO-3"),
+        goAt("/usr/bin/smuggled", "GO-4"),
+        goAt("/usr/bin/skopeo", "GO-5", "Medium"),
+      ],
+    };
+    const owned = rpmOwnedPaths({ artifacts: vendorSbomArtifacts });
+    expect([...owned]).toEqual(["/usr/bin/skopeo"]);
+
+    const narrowed = actionableGrypeReport(report, { ownedPaths: owned, vendorShipsNothingNewer: true });
+    expect(narrowed.vendorPendingIds).toEqual(["GO-1", "RHSA-9001"]);
+    expect(narrowed.excludedVendorPending).toBe(2);
+    expect((narrowed.report.matches as { vulnerability: { id: string } }[]).map((m) => m.vulnerability.id)).toEqual(["GO-2", "GO-3", "GO-4", "GO-5"]);
+
+    // Without proof that the vendor ships nothing newer, nothing is pending.
+    const unproven = actionableGrypeReport(report, { ownedPaths: owned, vendorShipsNothingNewer: false });
+    expect(unproven.excludedVendorPending).toBe(0);
+    expect((unproven.report.matches as unknown[]).length).toBe(6);
+    expect(actionableGrypeReport(report).excludedVendorPending).toBe(0);
+  });
+
+  it("accepts a vendor-updates record only when it proves nothing newer for this digest (D-027)", () => {
+    expect(vendorShipsNothingNewer(vendorUpdatesRecord(), DIGEST_FOR_VENDOR)).toBe(true);
+    for (const overrides of [
+      { verdict: "updates-available", checkUpdateExit: 100 },
+      { checkUpdateExit: 1 },
+      { containerExit: 125 },
+      { enabledRepos: 0 },
+      { availablePackages: VENDOR_MIN_AVAILABLE_PACKAGES - 1 },
+      // A bake run with a lowered floor does not lower the release gate's own.
+      { availablePackages: 12, availablePackagesFloor: 10 },
+      { checkUpdateExit: null },
+    ]) {
+      expect(vendorShipsNothingNewer(vendorUpdatesRecord(overrides), DIGEST_FOR_VENDOR), JSON.stringify(overrides)).toBe(false);
+    }
+    expect(() => vendorShipsNothingNewer(vendorUpdatesRecord({ digest: `sha256:${"1".repeat(64)}` }), DIGEST_FOR_VENDOR))
+      .toThrow(/vendor-updates record is for/);
   });
 
   it("reads a clean secret scan only when record, log and coverage all agree", () => {
@@ -243,6 +321,55 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
     expect(built.trustReport.trusted).toBe(true);
     expect(built.trustReport.subject.sha256).toBe(HEX);
     expect(built.excluded.unfixed).toBe(1);
+  });
+
+  describe("vendor-pending findings (D-027, WI-10005719)", () => {
+    function vendorFixture(opts: { vendorUpdates?: unknown; summaryVendorPending?: string } = {}) {
+      const f = fixture();
+      const sc = join(f.root, "out", "supply-chain");
+      writeFileSync(join(sc, "sbom.syft.json"), JSON.stringify({
+        descriptor: { name: "syft", version: "1.30.0" },
+        source: { type: "image", metadata: { manifestDigest: DIGEST, imageSize: 2_000_000_000 } },
+        artifacts: [...vendorSbomArtifacts, { name: "bash" }],
+      }));
+      writeFileSync(join(sc, "vulns.json"), JSON.stringify({
+        descriptor: { name: "grype", version: "0.117.0" },
+        matches: [goAt("/usr/bin/skopeo", "GO-1")],
+      }));
+      if (opts.vendorUpdates !== undefined) writeFileSync(join(sc, "vendor-updates.json"), JSON.stringify(opts.vendorUpdates));
+      if (opts.summaryVendorPending !== undefined) {
+        writeFileSync(join(sc, "supply-chain-summary.json"), JSON.stringify({ digest: DIGEST, verifiedFromRegistry: true, vendorPending: opts.summaryVendorPending }));
+      }
+      return f;
+    }
+    const build = (f: ReturnType<typeof vendorFixture>) =>
+      buildBootcTrustReport({ inputFile: f.inputFile, repoRoot: f.repo, emit: "trust-report" }, NOW);
+
+    it("trusts an image whose only fixed High finding is vendor-pending, and reports it", async () => {
+      const built = await build(vendorFixture({ vendorUpdates: vendorUpdatesRecord({ digest: DIGEST }), summaryVendorPending: "1" }));
+      expect(built.trustReport.failures).toEqual([]);
+      expect(built.trustReport.trusted).toBe(true);
+      expect(built.excluded.vendorPending).toBe(1);
+      expect(built.vendorPendingIds).toEqual(["GO-1"]);
+    });
+
+    it("denies the same finding when the bake recorded no vendor check", async () => {
+      const built = await build(vendorFixture());
+      expect(built.trustReport.trusted).toBe(false);
+      expect(built.excluded.vendorPending).toBe(0);
+    });
+
+    it("denies it when the vendor already ships a newer RPM", async () => {
+      const built = await build(vendorFixture({ vendorUpdates: vendorUpdatesRecord({ digest: DIGEST, verdict: "updates-available", checkUpdateExit: 100 }) }));
+      expect(built.trustReport.trusted).toBe(false);
+    });
+
+    it("refuses a vendor record for another image, and a shell/TS count disagreement", async () => {
+      await expect(build(vendorFixture({ vendorUpdates: vendorUpdatesRecord({ digest: `sha256:${"1".repeat(64)}` }) })))
+        .rejects.toThrow(/vendor-updates record is for/);
+      await expect(build(vendorFixture({ vendorUpdates: vendorUpdatesRecord({ digest: DIGEST }), summaryVendorPending: "0" })))
+        .rejects.toThrow(/D-027 copies disagree/);
+    });
   });
 
   it("refuses an SBOM that describes a different image", async () => {
