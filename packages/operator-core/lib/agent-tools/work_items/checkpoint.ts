@@ -168,6 +168,7 @@ import {
   expandCurrentTurnSentinel,
   hasCurrentTurnSentinel,
   markUnverifiedOwnerAttribution,
+  normalizeUnverifiedOwnerAttributionMarkers,
   ownerAttributionEnforcement,
   retainedDirectiveMatches,
   retainedProvenanceText,
@@ -1984,6 +1985,7 @@ export default defineTool({
                   : shouldAppendRefresh
                     ? joinCheckpointNewestFirst(incomingBody, priorSplit.body)
                     : incomingBody;
+                body = normalizeUnverifiedOwnerAttributionMarkers(body) ?? body;
                 if (ownerEnforcement.unverified) body = markUnverifiedOwnerAttribution(body) ?? body;
                 if (shouldAppendRefresh) autoAppendedRefresh = true;
                 const patchedExistingChecks =
