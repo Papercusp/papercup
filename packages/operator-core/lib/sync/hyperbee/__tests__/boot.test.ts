@@ -424,7 +424,12 @@ describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
     expect(Math.min(...readIndexes)).toBeGreaterThanOrEqual(snapshot.coversUpTo);
   });
 
-  it('cold boot ON rejects OFF-stamped progress and re-folds the missed memory', async () => {
+  it('cold boot ON resumes from OFF-stamped progress and replays only the missed memory (WI-10005575)', async () => {
+    // WI-10005575: before, a stamp mismatch re-folded EVERY log from 0 (on the tower, an
+    // 8M-op own log re-walked for hours, re-applying 1.4M-row snapshot sets). Now the
+    // main fold resumes from the OFF-stamped position and only memory is replayed.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(() => warn.mockRestore());
     const workspaceRoot = tmpWorkspaceRoot();
     const persisted = bindingStore();
     let enabled = false;
@@ -473,7 +478,65 @@ describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
     await second.mergeNow();
 
     expect(secondApplied).toContain(MEMORY_TABLE);
+    expect(secondApplied).not.toContain(OTHER_TABLE);
     expect(persisted.loads).toContain('<none>::mem0-federation-egress=on');
+    expect(persisted.loads).toContain(null);
+    expect(
+      warn.mock.calls.some((args) => String(args[0]).includes('WI-10005575: seeded 1 log(s)')),
+    ).toBe(true);
+  });
+
+  it('cold boot whose flag read degrades to OFF resumes from ON-stamped progress (WI-10005575)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(() => warn.mockRestore());
+    const persisted = bindingStore();
+    const workspaceRoot = tmpWorkspaceRoot();
+    const first = await bootHarnessSubstrate({
+      workspaceRoot,
+      workspaceId: 'ws-wi10005575-degraded',
+      harnessSlug: 'wi10005575-degraded',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => true,
+      applyOverride: async () => true,
+    });
+    try {
+      await appendWitnessOps(first);
+      await first.mergeNow();
+      expect([...persisted.rows.values()]).toEqual([
+        expect.objectContaining({ binding: '<none>::mem0-federation-egress=on', position: 2 }),
+      ]);
+    } finally {
+      await first.close();
+    }
+
+    // The production read (getFlag) serves the dark default OFF when a fresh boot's
+    // override-store read times out; model that as a flag read that throws.
+    const secondApplied: string[] = [];
+    const second = await bootHarnessSubstrate({
+      workspaceRoot,
+      workspaceId: 'ws-wi10005575-degraded',
+      harnessSlug: 'wi10005575-degraded',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => {
+        throw new Error('flag backend timed out after 2000ms');
+      },
+      applyOverride: async (op) => {
+        secondApplied.push(op.table!);
+        return true;
+      },
+    });
+    cleanups.push(() => second.close());
+    await second.mergeNow();
+
+    expect(secondApplied).toEqual([]);
+    expect(persisted.loads).toEqual(expect.arrayContaining([null, '<none>::mem0-federation-egress=on']));
+    expect(
+      warn.mock.calls.some((args) => String(args[0]).includes("stamped '<none>::mem0-federation-egress=on'")),
+    ).toBe(true);
   });
 });
 

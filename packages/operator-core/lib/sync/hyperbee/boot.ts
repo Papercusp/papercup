@@ -2379,6 +2379,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       ? `${projectionBinding ?? '<none>'}::mem0-federation-egress=on`
       : projectionBinding;
   };
+  // WI-10005575: the same projection scope under the OTHER memory-federation state.
+  // A fresh boot whose flag read degrades (an empty override cache plus a timed-out
+  // store read serves the dark default) resolves the other stamp, finds no rows under
+  // its own, and used to re-fold every log from 0 for hours. Progress stamped ON is a
+  // superset of an OFF fold, so an OFF pass may resume from it outright; progress
+  // stamped OFF skipped memory applies, so an ON pass resumes from it and owes a
+  // memory-only replay (the same remedy as the live OFF→ON edge).
+  const memoryToggledApplyBinding = (): string | null => {
+    const projectionBinding = currentProjectionBinding();
+    return memoryFederationEnabledForPass
+      ? projectionBinding
+      : `${projectionBinding ?? '<none>'}::mem0-federation-egress=on`;
+  };
 
   // Keep lifecycle transitions in event order even when a caller deliberately
   // does not await the metadata write (the channel-2 drop path must stay
@@ -4204,7 +4217,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (pgMergeCursorStore && pgCursorSeedCache) {
         markMergeStage('pg-cursor-seed');
         try {
-          await pgCursorSeedCache.seed(mergeCursor, pgMergeCursorStore, currentApplyBinding(), logKeys);
+          const applyBinding = currentApplyBinding();
+          const fallbackBinding = memoryToggledApplyBinding();
+          const seededFromFallback = await pgCursorSeedCache.seed(
+            mergeCursor,
+            pgMergeCursorStore,
+            applyBinding,
+            logKeys,
+            fallbackBinding,
+          );
+          if (seededFromFallback.size > 0) {
+            const owesMemoryReplay = memoryFederationEnabledForPass;
+            if (owesMemoryReplay && !memoryReplayCursor) memoryReplayCursor = createMergeCursor();
+            console.warn(
+              `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] WI-10005575: seeded ` +
+                `${seededFromFallback.size} log(s) from cursor progress stamped '${fallbackBinding}' ` +
+                `(this pass binds '${applyBinding}'), instead of re-folding them from 0` +
+                (owesMemoryReplay ? '; started a memory-only replay for the memory ops that stamp skipped.' : '.'),
+            );
+          }
         } catch (e) {
           // F4: an unreadable durable cursor may be holding an unapplied entry
           // at zero. Snapshot skipping is unsafe until that state is known.
