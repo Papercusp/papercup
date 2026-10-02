@@ -786,9 +786,14 @@ dependency_generation_generation_token() {
 }
 
 dependency_generation_selector_token() {
-  local generation="$1"
+  local generation="$1" schema
   if dependency_generation_has_publication_contract "$generation"; then
-    dependency_generation_publication_token "$generation"
+    # Compute under the marker's OWN schema: a v2 marker hashed under the v3
+    # default never matches its recorded token, so every lease reads
+    # "replaced" and the gate exits 74 (WI-10005617).
+    schema="$(dependency_generation_read_field \
+      "$generation/.papercusp-dependency-generation" publication_schema)"
+    dependency_generation_publication_token "$generation" "${schema:-3}"
   else
     dependency_generation_generation_token "$generation"
   fi

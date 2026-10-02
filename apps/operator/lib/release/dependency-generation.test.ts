@@ -751,6 +751,42 @@ describe('immutable dependency generation', () => {
     expect(valid.stdout, valid.stderr).toContain('VALID');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('WI-10005617: the selector token of a legacy schema-2 marker is its own v2 token, not a v3 recompute', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    // Rewrite the marker IN PLACE (same inode) as a legacy schema-2
+    // publication, the shape every generation published before WI-10005569
+    // still carries on disk.
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'set -euo pipefail',
+          'source "$SCRIPT"',
+          'M="$GENERATION/.papercusp-dependency-generation"',
+          'chmod u+w "$M"',
+          `body="$(sed '/^publication_token=/d; s/^publication_schema=.*/publication_schema=2/' "$M")"`,
+          `printf '%s\\n' "$body" > "$M"`,
+          'tok="$(dependency_generation_publication_token "$GENERATION" 2)"',
+          `printf 'publication_token=%s\\n' "$tok" >> "$M"`,
+          'echo "RECORDED=$tok"',
+          'echo "SELECTOR=$(dependency_generation_selector_token "$GENERATION")"',
+          'dependency_generation_publication_is_valid "$GENERATION" && echo VALID',
+        ].join('\n'),
+      ],
+      { encoding: 'utf8', env: { ...process.env, SCRIPT, GENERATION: generation } },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const recorded = /RECORDED=(\S+)/.exec(result.stdout)?.[1];
+    const selector = /SELECTOR=(\S+)/.exec(result.stdout)?.[1];
+    expect(recorded).toMatch(/^v2:[0-9a-f]{64}$/);
+    expect(selector).toBe(recorded);
+    expect(result.stdout).toContain('VALID');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('P-003: validates an ordinary cache hit from the v3 publication token without a generation walk', () => {
     const integration = makeIntegration();
     const first = publish(integration);

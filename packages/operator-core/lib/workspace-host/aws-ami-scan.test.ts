@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AWS_AMI_DESCRIPTION_PATTERN,
+  GUEST_PACKAGE_PROBES,
   assertAwsAmiProvenance,
   buildAwsAmiScanEvidence,
   measureAwsAmiScan,
@@ -19,11 +20,17 @@ import {
   selectCandidateRoot,
 } from '../../bin/aws-ami-scan-measure.mjs';
 import { AWS_AMI_RELEASE_EXECUTABLES } from './aws-ami-production';
-import { awsAmiReleaseDescription, parseAwsAmiReleaseDescription } from './aws-ami-release';
+import {
+  AWS_AMI_REQUIRED_GUEST_TOOLS,
+  awsAmiReleaseDescription,
+  parseAwsAmiReleaseDescription,
+} from './aws-ami-release';
 import { AWS_IMAGE_SCAN_POLICY, evaluateImageScanPolicy } from './image-scan-policy';
 
 const BIN_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin');
 const RELEASE_SOURCE = join(dirname(fileURLToPath(import.meta.url)), 'aws-ami-release.ts');
+const BOOTC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..', 'infra', 'images', 'bootc');
+const CONTAINERFILE = join(BOOTC_DIR, 'workspace-host.Containerfile');
 
 const SHA = 'a'.repeat(64);
 const MANIFEST = `sha256:${'b'.repeat(64)}`;
@@ -68,6 +75,25 @@ describe('papercusp-aws-ami-scan input and provenance', () => {
     expect(() => parseAwsAmiScanInput({ ...REQUEST, imageId: 'snap-0abc' })).toThrow(/AMI id/);
     expect(() => parseAwsAmiScanInput({ ...REQUEST, buildManifestIdentity: 'b'.repeat(64) })).toThrow(/sha256:/);
     expect(() => parseAwsAmiScanInput({ ...REQUEST, releaseSha256: `sha256:${SHA}` })).toThrow(/64 lowercase hex/);
+  });
+
+  it('probes exactly the RPM guest tools the release contract requires, and the image installs them (WI-10005605)', () => {
+    expect([...GUEST_PACKAGE_PROBES].sort()).toEqual([...AWS_AMI_REQUIRED_GUEST_TOOLS].sort());
+    const containerfile = readFileSync(CONTAINERFILE, 'utf8');
+    // Every required tool is installed by name in the bootc image (ufw/unattended-upgrades
+    // were Ubuntu names that never existed there).
+    for (const tool of AWS_AMI_REQUIRED_GUEST_TOOLS) {
+      if (tool === 'amazon-ssm-agent') continue;
+      expect(containerfile).toMatch(new RegExp(`^\\s+${tool.replace(/[-+.]/g, '\\$&')}\\b`, 'm'));
+    }
+    // amazon-ssm-agent comes from AWS's standalone RPM: digest-pinned, enabled, EC2-gated.
+    expect(containerfile).toMatch(/^ARG AMAZON_SSM_AGENT_RPM_SHA256=[a-f0-9]{64}$/m);
+    expect(containerfile).toContain('sha256sum -c -');
+    expect(containerfile).toContain('systemctl enable amazon-ssm-agent.service');
+    expect(containerfile).toContain('/usr/lib/systemd/system/amazon-ssm-agent.service.d/papercusp-ec2-only.conf');
+    expect(readFileSync(join(BOOTC_DIR, 'papercusp-amazon-ssm-agent-ec2-only.conf'), 'utf8')).toMatch(
+      /^ConditionFirmware=smbios-field\(sys_vendor = "Amazon EC2"\)$/m,
+    );
   });
 
   it('mirrors the release Description pattern and tag keys written by aws-ami-release.ts', () => {
@@ -132,7 +158,10 @@ describe('papercusp-aws-ami-scan measurement', () => {
     expect(measurement.vulnerabilityByScope).toEqual({ 'inherited-base-image': 1, 'papercusp-bundled': 1 });
     expect(measurement.secretFindings).toBe(0);
     expect(measurement.sbomSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(measurement.guestPackages).toMatchObject({ curl: '7.76.1-31.el9', nftables: '1.0.9-3.el9', ufw: null, 'amazon-ssm-agent': null });
+    expect(measurement.guestPackages).toMatchObject({ curl: '7.76.1-31.el9', nftables: '1.0.9-3.el9', 'amazon-ssm-agent': null });
+    // Ubuntu-era names are no longer probed: they never existed on the bootc image (WI-10005605).
+    expect(measurement.guestPackages).not.toHaveProperty('ufw');
+    expect(measurement.guestPackages).not.toHaveProperty('unattended-upgrades');
   });
 
   it('reports secrets by rule and file without echoing the secret', () => {
