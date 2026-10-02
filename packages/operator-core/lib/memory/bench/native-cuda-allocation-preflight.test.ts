@@ -76,3 +76,26 @@ describe('model-free CUDA allocator diagnostic control', () => {
     expect(result.stdout).toContain('ABI_CALLS {"allocations": [], "frees": []}');
   });
 });
+
+describe('native allocator INFO logging preload', () => {
+  const preload = fileURLToPath(new URL('./fixtures/native-ort-allocator-logging.mjs', import.meta.url));
+  it('uses the supported logging hook without constructing a model or changing provider options', () => {
+    const result = spawnSync(process.execPath, ['--import', preload, '-e', ''], {
+      env: { ...process.env, TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../tsconfig.json', import.meta.url)) },
+      encoding: 'utf8', timeout: 10000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const line = result.stderr.split('\n').find(line => line.startsWith('PC_ORT_ALLOCATOR_LOGGING\t'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line!.split('\t')[1])).toMatchObject({ onnxLogLevel: 'info', transformersLogLevel: 20,
+      modelInferencePerformed: false, providerOptionsChanged: false, workerThreadId: 0 });
+  });
+
+  it('refuses an absent runtime configuration before importing native dependencies', () => {
+    const env = { ...process.env }; delete env.TSX_TSCONFIG_PATH;
+    const result = spawnSync(process.execPath, ['--import', preload, '-e', ''], { env, encoding: 'utf8', timeout: 10000 });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('allocator logging requires the bound runtime configuration path');
+    expect(result.stderr).not.toContain('PC_ORT_ALLOCATOR_LOGGING\t');
+  });
+});
