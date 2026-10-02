@@ -31,7 +31,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
 const { recordWorkspaceHostHealth, upsertWorkspaceHost } = await import('./observability-store');
-const { listWorkspaceHostStandingHealthTargets } = await import('./standing-health-store');
+const { listWorkspaceHostSpotReclaimTargets, listWorkspaceHostStandingHealthTargets } = await import(
+  './standing-health-store'
+);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const suffix = randomBytes(3).toString('hex');
@@ -40,7 +42,7 @@ const OTHER = `papercusp-workspace-host-controller:other-${suffix}`;
 const WS_A = `shs_a_${suffix}`;
 const WS_B = `shs_b_${suffix}`;
 
-function spec(hostId: string): WorkspaceHostDesiredSpec {
+function spec(hostId: string, provisioningModel?: 'spot' | 'standard'): WorkspaceHostDesiredSpec {
   return {
     hostId,
     target: 'gcp',
@@ -51,6 +53,8 @@ function spec(hostId: string): WorkspaceHostDesiredSpec {
     image: { id: 'projects/p/global/images/papercusp-host-v1' },
     data: { volumeGiB: 64, encrypted: true },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'cloud-resolver:v1' } },
+    // The GCP provider block, where a spot host records its model (gcp-provider.ts).
+    ...(provisioningModel ? { provider: { projectId: 'active-alcove-504205-q3', provisioningModel } } : {}),
   } as WorkspaceHostDesiredSpec;
 }
 
@@ -73,6 +77,7 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
     controllerId: string;
     desiredState: string;
     withSpec?: boolean;
+    provisioningModel?: 'spot' | 'standard';
   }): Promise<void> {
     await upsertWorkspaceHost({
       workspaceId: input.workspaceId,
@@ -89,7 +94,7 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
       desiredState: input.desiredState,
       observedState: input.desiredState,
       controllerAuthority: { controllerId: input.controllerId, fence: 1 },
-      ...(input.withSpec === false ? {} : { desiredSpec: spec(input.id) }),
+      ...(input.withSpec === false ? {} : { desiredSpec: spec(input.id, input.provisioningModel) }),
     });
   }
 
@@ -112,6 +117,20 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
       withSpec: false,
     });
     await seedHost({ workspaceId: WS_B, connectionId: connB, id: 'b-degraded', controllerId: MINE, desiredState: 'degraded' });
+    // Spot hosts (WI-10005210): the reclaim sweep's population, and still standing-health targets.
+    const spot = { provisioningModel: 'spot' as const };
+    await seedHost({ workspaceId: WS_A, connectionId: connA, id: 'a-spot', controllerId: MINE, desiredState: 'running', ...spot });
+    await seedHost({ workspaceId: WS_A, connectionId: connA, id: 'a-spot-stopped', controllerId: MINE, desiredState: 'stopped', ...spot });
+    await seedHost({ workspaceId: WS_A, connectionId: connA, id: 'a-spot-other', controllerId: OTHER, desiredState: 'running', ...spot });
+    await seedHost({
+      workspaceId: WS_A,
+      connectionId: connA,
+      id: 'a-standard',
+      controllerId: MINE,
+      desiredState: 'running',
+      provisioningModel: 'standard',
+    });
+    await seedHost({ workspaceId: WS_B, connectionId: connB, id: 'b-spot-degraded', controllerId: MINE, desiredState: 'degraded', ...spot });
   }, 180_000);
 
   afterAll(async () => {
@@ -122,8 +141,20 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
     const targets = await listWorkspaceHostStandingHealthTargets(MINE, db.adminSql);
     expect(targets).toEqual([
       { workspaceId: WS_A, hostId: 'a-running', healthAttestedAt: null },
+      { workspaceId: WS_A, hostId: 'a-spot', healthAttestedAt: null },
+      { workspaceId: WS_A, hostId: 'a-standard', healthAttestedAt: null },
       { workspaceId: WS_B, hostId: 'b-degraded', healthAttestedAt: null },
+      { workspaceId: WS_B, hostId: 'b-spot-degraded', healthAttestedAt: null },
     ]);
+  });
+
+  it('the spot-reclaim sweep lists only the live SPOT hosts this controller owns (absent or standard model excluded)', async () => {
+    expect(await listWorkspaceHostSpotReclaimTargets(MINE, db.adminSql)).toEqual([
+      { workspaceId: WS_A, hostId: 'a-spot' },
+      { workspaceId: WS_B, hostId: 'b-spot-degraded' },
+    ]);
+    // Positive control: the same rows are invisible to the RLS-subject role, so the admin pool is load-bearing.
+    expect(await listWorkspaceHostSpotReclaimTargets(MINE, db.appSql)).toEqual([]);
   });
 
   it('sees nothing through the RLS-subject app role, which is why the read must use the admin pool', async () => {
