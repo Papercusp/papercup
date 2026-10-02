@@ -248,7 +248,7 @@
   },
   "correctedFullPerformanceRecipe": {
     "runId": "performance-cpu-v5",
-    "status": "running; no full performance acceptance yet",
+    "status": "failed exit 1 at 2026-10-01T22:42:22Z after 11 of 15 cells; no full performance acceptance",
     "durableTaskId": "0muq20t71176jtva1di",
     "manifest": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v5.json", "sha256": "3f51a8e368a1e17482c2ed06130e893dbba2b3de41524f2139c1e7565c2895f1", "bytes": 111662 },
     "audit": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-v5-freeze-audit.json", "sha256": "2ef523400d089a682dbb05f6c22cc397995b58cd88f9f06cde70dd7a9d367fad", "bytes": 2611 },
@@ -269,6 +269,52 @@
       "rawDirectory": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v5",
       "fullComparisonComplete": false
     },
+    "fixedThresholdsChanged": false,
+    "modelAdoptionAuthorized": false
+  },
+  "sourceIsolationRepair": {
+    "workItem": "EI-24818909394662608",
+    "status": "declared-executable launcher verified; complete executable runtime and replacement full matrix pending",
+    "observedFailure": {
+      "cell": "performance-b3-mdenseon",
+      "layer": "prepareMeasurementCell before inference",
+      "input": "libs/generic/memory/src/local-embedder-worker.ts",
+      "declaredSha256": "39eec98a15f58a83c753ddb0145932a78fa94754eb56e217027ddc544b3121f2",
+      "observedSha256": "da99aa129297a948657ace744a339875abc787a3c9d0cac1386bfb5181f13774",
+      "immutableCellLogSha256": "297a176414a3bc7307d65b767f9433b99fbec98157f29cf8d648c6748b30f85d",
+      "retainedSuccessfulCells": 11,
+      "fullSummaryProduced": false,
+      "newTransportResetObserved": false
+    },
+    "rootCause": "The driver spawned the evaluator from the live shared tree for every fresh cell, despite its manifest declaring an evaluator fingerprint. A legitimate source edit between cells caused the strict identity guard to stop the matrix. The fingerprint refusal was correct; executable source isolation was missing.",
+    "behavior": "runPerformanceChild launches the declared evaluator, supports declared runtimeLoader and runtimeTsconfig input references, and rechecks every cell input after queued admission and before spawn. Invalid or changed pins still refuse execution.",
+    "verification": {
+      "runId": "36388aba-71b6-4957-a7db-50af16b9a8f6",
+      "testRunIds": [20454573, 20454574],
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "scopedTypecheck": "tsc-service: two changed files and measured related files clean, exit 0",
+      "recurrenceGuard": "Two real fresh synthetic children retain the original frozen worker bytes after the live source changes. A changed frozen worker refuses before spawn. Further guards cover evaluator drift during queued admission and declared loader/config references.",
+      "collectorSha256": "58ecfa0297cfe9ca11d6b8e09679fe7e0d145c426f6d7b243033d6e94a67aa5c",
+      "testSha256": "77d4d6f77cc4f424ba67e12cb908b35d5702437c84504be74e673b0c0dc86a72"
+    },
+    "privateSourceArtifact": {
+      "root": "cache:validation/mdenseon-performance-WI10004539-20261001/runtime-source-v1",
+      "sourceCommit": "09364fbb47734030fa639e00ca923e66652e6c63",
+      "submodules": 37,
+      "sourceFiles": 31403,
+      "sourceReceiptSha256": "893c0d8e4986567e804076b28403ac0ab658933961df121cfdf199f45fed958c",
+      "provenance": "Existing scripts/source-preview.mjs materializeCommit exports the committed tree and recorded submodule gitlinks. Two explicitly recorded, test-verified launcher source/test file versions are overlaid. The source commit is an ancestry anchor; exact executed bytes are identified by content hashes.",
+      "gitWorktreeCreated": false,
+      "dependencyGeneration": "v1-52a79f5301b4f403217bb09495982ff83af0febceb76b238b24bbef01a184c8d",
+      "dependencyMarkerSha256": "2943286afd69f2170b8de20059ec072460f38a5015d859889ac5be6167decacb",
+      "dependenciesMaterialized": false,
+      "completeExecutableRuntime": false
+    },
+    "reuse": "Uses the existing manifest input/parameter fields, performance child admission, source materializer and immutable dependency-generation independent copier. No additional service, tool, table or runtime configuration surface is introduced.",
+    "next": "Finish independent dependency copying and content verification, qualify the copied worker/native/loader/node identity with a fresh child, then freeze a new matching-route manifest. Preserve the historical V5 receipts and changed-source identity separately.",
+    "modelPerformanceAcceptance": false,
     "fixedThresholdsChanged": false,
     "modelAdoptionAuthorized": false
   },
