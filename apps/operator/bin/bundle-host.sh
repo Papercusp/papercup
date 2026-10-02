@@ -623,6 +623,15 @@ if [[ $worker_rc -ne 0 ]]; then
   exit 1
 fi
 
+# Build the maintained spawner beside real host entries. Custom fixture/worker
+# builds retain their own output set. Older installations lack this sibling and
+# the spawn resolver falls back to the full host divert.
+case "${ENTRY##*/}" in
+  hono-host.ts|serve.ts)
+    bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}" || exit 1
+    ;;
+esac
+
 # Stamp only after the bundle AND every runtime sibling/asset has published.
 # The helper refuses a dirty tree, a changed HEAD, a missing output, or an
 # incoherent dist-host tree. A stamp failure never makes an otherwise-good
