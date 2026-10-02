@@ -11,6 +11,7 @@ import {
   AWS_CUSTOMER_SETUP_CONNECTION_FIELDS,
   awsCustomerSetupTemplate,
 } from '../workspace-host/aws-customer-setup-template';
+import { AWS_SPOT_SERVICE_LINKED_ROLE_ACTION } from '../workspace-host/hosted-aws-host-stack';
 import { buildHostedProviderDelegationOnboarding } from '../workspace-host/hosted-provider-delegation';
 
 const REPO = new URL('../../../../', import.meta.url);
@@ -105,7 +106,10 @@ describe('Cloud workspaces docs page ↔ code', () => {
     const granted = (role.Policies ?? []).flatMap((policy) =>
       (policy.PolicyDocument?.Statement ?? []).flatMap((statement) => statement.Action as string[]),
     );
-    expect([...granted].sort()).toEqual([...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS].sort());
+    // The client's own action list, plus creating EC2's Spot service-linked role (WI-10005389).
+    expect([...granted].sort()).toEqual(
+      [...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS, AWS_SPOT_SERVICE_LINKED_ROLE_ACTION].sort(),
+    );
 
     const hostedAws = PAGE.slice(PAGE.indexOf('### From app.papercusp.com'), PAGE.indexOf('### From the desktop app'));
     expect(hostedAws.length, 'the AWS "From app.papercusp.com" steps').toBeGreaterThan(0);
