@@ -158,9 +158,9 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
 
   // These two isolate CLAUDE/AGENT_CMD resolution, so they use `reviewer` — a role
   // with NO committed ROLE_MODEL_DEFAULTS floor. spec()'s default `merge-resolver`
-  // now pins opus:xhigh (D-008 follow-up), which applyRoleModel appends as
-  // `--model opus --effort xhigh` even with AGENT_MODELS unset — the committed-floor
-  // twin of the env trap the beforeEach neutralizes.
+  // now pins opus:xhigh (D-008 follow-up), which applyRoleModel emits as
+  // `--model opus[1m] --effort max` for Claude Code — the committed-floor twin
+  // of the env trap the beforeEach neutralizes.
   it("CLAUDE defaults to 'omp -p' when neither AGENT_CMD nor CLAUDE is set", () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);
