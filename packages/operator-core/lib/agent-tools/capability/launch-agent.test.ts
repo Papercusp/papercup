@@ -649,6 +649,20 @@ describe('published launch args schema', () => {
     }
   });
 
+  it('documents ordinary resume defaults separately from successor runtime overrides', () => {
+    const descriptions = (launchAgent.args as unknown as {
+      shape: Record<string, { description?: string }>;
+    }).shape;
+
+    expect(descriptions.resume.description).toContain('For ordinary in-place continuation, send `{ resume, brief }`');
+    expect(descriptions.resume.description).toContain('Leave `carry` out because it is rejected for resume/fork');
+    expect(descriptions.resume.description).toContain('Normally omit `account` and `model` too');
+    expect(descriptions.account.description).toContain('For ordinary in-place resume, omit it');
+    expect(descriptions.model.description).toContain('For ordinary in-place resume, omit it');
+    expect(descriptions.carry.description).toContain('Do not set it with in-place `resume`/`fork`');
+    expect(descriptions.successor.description).toContain('explicit fresh-context `account`, `model`, or `carry` settings');
+  });
+
   it('does not impose a local agent-count ceiling before governed admission', () => {
     expect(launchAgent.args.safeParse({ brief: 'wide governed fan-out', count: 64 }).success).toBe(true);
     expect(

@@ -422,7 +422,7 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. Fresh plan-bound, per-member-with-briefs, and `successor` launches may omit it. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
+    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. For an ordinary in-place `resume`, send `{ resume, brief }` and normally omit fresh-context `account`/`model` overrides; omitted values preserve the target's profile. `carry` is rejected for in-place resume/fork. Use `successor` for a fresh context retaining the predecessor identity when you need explicit `account`/`model`/`carry` settings. Explicit account/model resume overrides are supported when intentional, subject to saved fleet profile checks. Fresh plan-bound and per-member-with-briefs launches may omit `brief`. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
   guidance: {
     when: 'AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.',
     notWhen:
@@ -530,7 +530,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume an existing session mid-thread — its full context comes back. A non-empty `brief` is required because it is the resumed session\'s actionable next turn. Pass EITHER agentId (usual) or sessionId (exact pin).',
+          'Resume an existing session mid-thread — its full context comes back. A non-empty `brief` is required because it is the resumed session\'s actionable next turn. For ordinary in-place continuation, send `{ resume, brief }`; omitted runtime settings use the target or saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; explicit resume overrides are intentional and may be refused when they conflict with a saved fleet profile. Use `successor` when recovery needs a fresh context with explicit runtime/carry settings while retaining identity. Pass EITHER agentId (usual) or sessionId (exact pin).',
         ),
       successor: z
         .object({
@@ -543,7 +543,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. A successor is visible by default when `headless` is omitted or `false`; set `headless: true` for no window. It cannot be combined with `restoreVisible`. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
+          'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. Use this when recovery needs explicit fresh-context `account`, `model`, or `carry` settings while preserving identity. A successor is visible by default when `headless` is omitted or `false`; set `headless: true` for no window. It cannot be combined with `restoreVisible`. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
         ),
       fork: z
         .boolean()
@@ -632,13 +632,13 @@ export default defineTool({
         .max(120)
         .optional()
         .describe(
-          "Account routing: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. Always resolved — a scripted launch must never block on the interactive account picker.",
+          "Account routing for a fresh launch or successor: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. For ordinary in-place resume, omit it to use the target's recorded or saved-fleet account. An explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile. Always resolved — a scripted launch must never block on the interactive account picker.",
         ),
       model: z
         .string()
         .max(80)
         .optional()
-        .describe('Model override for the launched agent (e.g. an opus/sonnet spec).'),
+        .describe('Model override for a fresh launch or successor (e.g. an opus/sonnet spec). For ordinary in-place resume, omit it to use the target session model; an explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile.'),
       extraArgs: z
         .array(z.string().max(200))
         .max(20)
@@ -668,7 +668,7 @@ export default defineTool({
           .enum(['warm', 'cold'])
           .optional()
           .describe(
-            "Warm/cold auto-mode carry for a FRESH launch or identity-preserving successor. `members[i].carry` overrides this flat value; an in-place resume/fork preserves the target session's loop/profile carry.",
+            "Warm/cold auto-mode carry for a FRESH launch or identity-preserving successor. `members[i].carry` overrides this flat value. Do not set it with in-place `resume`/`fork`: the schema rejects it and the target session's loop/profile carry is retained.",
           ),
       })
       .superRefine((value, refinement) => {
