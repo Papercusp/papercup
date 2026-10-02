@@ -553,6 +553,58 @@ export function resolveOperatorTarget({
       );
       return { url: stagingProxy, source, startedAt: null };
     }
+    // EI-24899559853673371: the background host has a dedicated :9271 → :3271
+    // proxy. Its operator process carries the proxy base + target port rather
+    // than the proxy listener port, so derive and probe that listener from the
+    // configured base. Route only local :3271 pins through an active local HTTP
+    // proxy explicitly pinned to the same runtime; the live :9071 proxy must
+    // never receive current-build traffic.
+    const backgroundProxyBase = String(env.PAPERCUSP_MCP_PROXY_BASE || "").trim();
+    const backgroundProxyTargetsPinnedRuntime =
+      String(env.PAPERCUSP_MCP_PROXY_TARGET_PORT || "").trim() === "3271";
+    const pinsBackgroundHost =
+      /^https?:\/\/(127\.0\.0\.1|localhost):3271$/.test(pinned);
+    if (
+      pinsBackgroundHost &&
+      !proxyOptedOut &&
+      backgroundProxyTargetsPinnedRuntime &&
+      backgroundProxyBase
+    ) {
+      try {
+        const parsedProxy = new URL(backgroundProxyBase);
+        const proxyPortNumber = Number(parsedProxy.port);
+        const validProxyPort = parsedProxy.port.length > 0 &&
+          Number.isInteger(proxyPortNumber) &&
+          proxyPortNumber > 0 &&
+          proxyPortNumber <= 65535 &&
+          proxyPortNumber !== 3271;
+        const localProxyHost = ["127.0.0.1", "localhost", "[::1]"].includes(
+          parsedProxy.hostname.toLowerCase(),
+        );
+        if (
+          parsedProxy.protocol === "http:" &&
+          localProxyHost &&
+          !parsedProxy.username &&
+          !parsedProxy.password &&
+          parsedProxy.pathname === "/" &&
+          !parsedProxy.search &&
+          !parsedProxy.hash &&
+          validProxyPort &&
+          probe(proxyPortNumber)
+        ) {
+          const backgroundProxy = parsedProxy.origin;
+          warn(
+            `psu: PAPERCUSP_OPERATOR_URL pins background ${pinned}; routing through the ` +
+              `configured same-vintage MCP proxy ${backgroundProxy} (upstream :3271) ` +
+              `so background-host restarts do not drop this launch or its sessions ` +
+              `(EI-24899559853673371). PAPERCUSP_MCP_PROXY=0 connects directly.`,
+          );
+          return { url: backgroundProxy, source, startedAt: null };
+        }
+      } catch {
+        // An invalid proxy base cannot safely replace the explicit operator pin.
+      }
+    }
     return {
       url: pinned,
       source,
