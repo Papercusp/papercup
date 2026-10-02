@@ -347,7 +347,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       // Populate the same canonical persisted observations production reads.
       // The actual gate must independently reject these uncontracted seed plans.
       const { evaluatePlanAcceptanceGate } = await import('../../../plan-acceptance-gate');
-      const observations = [];
+      const observations: Array<{ slug: string; code: string | undefined; satisfied: boolean; ms: number }> = [];
       report.closurePreflight = observations;
       for (const slug of slugs) {
         progress(`closure-preflight-start:${slug}`);
