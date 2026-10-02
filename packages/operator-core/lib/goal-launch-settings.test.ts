@@ -1961,6 +1961,110 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(placement.reconciliation.reason).toMatch(/draft.*cannot launch/i);
   });
 
+  it('WI-10005657: compiles a plan whose dependency-free frontier is only needs-human as owner-walled, never launchable', () => {
+    const args = {
+      plan: { harness: 'papercusp', slug: 'hud', ambiguousMatches: 1 },
+      status: 'active',
+      itemStatuses: ['done', 'needs-human'],
+      actionableItemId: null,
+      source: {},
+      now: NOW,
+    };
+    // Positive control: the SAME input without the wall evidence stays the generic
+    // repairable `blocked` — so the wall is the ONLY thing that changes the state.
+    expect(compileGoalPlanPlacement(args)).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'resolve-plan-blockers', toolCall: null },
+    });
+    const walled = compileGoalPlanPlacement({ ...args, ownerWalledItemIds: ['P-003'] });
+    expect(walled).toMatchObject({
+      state: 'owner-walled',
+      wall: { kind: 'owner', itemIds: ['P-003'] },
+      reconciliation: { action: 'none', consistent: true, toolCall: null },
+    });
+    expect(walled.reconciliation.reason).toMatch(/needs-human/);
+    // A wall never overrides a harder fact: an unstartable (draft) plan is still
+    // blocked on its lifecycle gate, and an ambiguous plan on its identity.
+    expect(compileGoalPlanPlacement({ ...args, status: 'draft', ownerWalledItemIds: ['P-003'] })).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'resolve-plan-blockers' },
+    });
+    expect(
+      compileGoalPlanPlacement({ ...args, plan: { ...args.plan, ambiguousMatches: 2 }, ownerWalledItemIds: ['P-003'] }),
+    ).toMatchObject({ state: 'blocked', reconciliation: { action: 'resolve-plan-identity' } });
+  });
+
+  it('WI-10005657: an owner-walled plan is named in the brief and never re-mandates a fleet launch', async () => {
+    const readBrief = (plans: readonly Record<string, unknown>[]) =>
+      readGoalPortfolioBrief({
+        workspaceId: WS,
+        goalId: 'goal-1',
+        sql: mockSql({ portfolio: { 'goal-1': { ...portfolioRow, plans } } }),
+        now: NOW,
+        launch,
+      });
+    const hud = {
+      ref: 'plan:papercusp/hud',
+      ordinal: 1,
+      harness: 'papercusp',
+      slug: 'hud',
+      title: 'Owner-reserved plan',
+      status: 'active',
+      ambiguousMatches: 1,
+      items: [
+        { id: 'P-001', text: 'Shipped', status: 'done', phase: 'Build', blockedBy: [], seq: 1 },
+        { id: 'P-003', text: 'Owner route change', status: 'needs-human', phase: 'Build', blockedBy: [], seq: 2 },
+      ],
+    };
+    const walledBrief = await readBrief([hud]);
+    expect(walledBrief?.worklist).toMatchObject([
+      { slug: 'hud', placement: { state: 'owner-walled', wall: { kind: 'owner', itemIds: ['P-003'] }, reconciliation: { toolCall: null } } },
+    ]);
+    const walledRendered = renderGoalPortfolioBrief(walledBrief!);
+    expect(walledRendered).toContain('OWNER-WALLED placement');
+    expect(walledRendered).toContain('plan:papercusp/hud (P-003)');
+    expect(walledRendered).not.toContain('MANDATORY NEXT PLAN PLACEMENT');
+
+    // Positive control 1: a needs-human item BESIDE a dependency-free todo is one of
+    // several open fronts, not a wall — the plan is still launchable.
+    const mixed = await readBrief([
+      { ...hud, items: [...hud.items, { id: 'P-004', text: 'Agent-doable', status: 'todo', phase: 'Build', blockedBy: [], seq: 3 }] },
+    ]);
+    expect(mixed?.worklist[0]?.placement).toMatchObject({ state: 'unplaced', reconciliation: { action: 'launch-plan-fleet' } });
+    expect(renderGoalPortfolioBrief(mixed!)).not.toContain('OWNER-WALLED placement');
+
+    // Positive control 2: a needs-human item that is itself still blocked by an open
+    // dependency is not the frontier — the dependency is, so nothing is walled yet.
+    const gated = await readBrief([
+      {
+        ...hud,
+        items: [
+          { id: 'P-001', text: 'Open dep', status: 'todo', phase: 'Build', blockedBy: [], seq: 1 },
+          { id: 'P-003', text: 'Owner route change', status: 'needs-human', phase: 'Build', blockedBy: ['P-001'], seq: 2 },
+        ],
+      },
+    ]);
+    expect(gated?.worklist[0]?.placement.state).not.toBe('owner-walled');
+
+    // The walled plan must not starve a later eligible plan: the launch mandate
+    // names the NEXT plan, not the wall.
+    const beta = {
+      ref: 'plan:papercusp/beta',
+      ordinal: 2,
+      harness: 'papercusp',
+      slug: 'beta',
+      title: 'Eligible plan',
+      status: 'active',
+      ambiguousMatches: 1,
+      items: [{ id: 'P-001', text: 'Launch me', status: 'todo', phase: 'Build', blockedBy: [], seq: 1 }],
+    };
+    const both = await readBrief([hud, beta]);
+    const bothRendered = renderGoalPortfolioBrief(both!);
+    expect(bothRendered).toContain('OWNER-WALLED placement');
+    expect(bothRendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
+    expect(bothRendered).toContain('plan:papercusp/beta is the highest-priority eligible worklist plan');
+  });
+
   it('skips a blocked first worklist plan and emits the next eligible launch', async () => {
     const brief = await readGoalPortfolioBrief({
       workspaceId: WS,

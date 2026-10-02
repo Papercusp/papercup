@@ -797,6 +797,67 @@ describe('plan placement preserves canonical launch evidence', () => {
     expect(result).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
     expect(result.action).toBeUndefined();
   });
+
+  describe('owner-walled plans create no placement demand (WI-10005657)', () => {
+    const wall = { kind: 'owner' as const, itemIds: ['P-003'] };
+    const walled = (slug = 'plan-a') => worklistPlan(placement('owner-walled', 'none', { wall }), slug);
+    const observe = (worklist: GoalPortfolioBrief['worklist'], alert: ReturnType<typeof planAlert> | null = null) =>
+      planPlacementObligation(planInput(knownPlacement({
+        portfolio: portfolio(worklist), launch: launch(), alert, evidenceRef: 'cohort:owner-walled',
+      })));
+
+    it('treats a worklist of only owner-walled plans as zero demand with no launch mandate', () => {
+      const result = observe([walled()]);
+      expect(result).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
+      expect(result.episode).toBe(`owner-walled:${base.sourceGeneration}`);
+      expect(result.reason).toContain('plan:papercusp/plan-a (P-003)');
+      expect(result.action).toBeUndefined();
+    });
+
+    it('keeps the wall quiet when the cohort watchdog alert names the walled plan', () => {
+      // The watchdog legitimately sees an unstaffed started plan; the wall is the more
+      // specific writer, so this must neither conflict nor re-mandate a launch.
+      const result = observe([walled()], planAlert('started-plan-no-live-targeting-fleet'));
+      expect(result).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
+      expect(result.measurementFailure).toBeUndefined();
+      expect(result.action).toBeUndefined();
+    });
+
+    it('does not let a wall starve a later eligible plan, and does not count the wall as its demand', () => {
+      const laterLaunch = placement('unplaced', 'launch-plan-fleet', {
+        reconciliation: {
+          consistent: false,
+          action: 'launch-plan-fleet',
+          reason: 'canonical repair: launch-plan-fleet',
+          toolCall: {
+            tool: 'fleet:launch-on-plan',
+            args: { name: 'plan-b-fleet', plan: 'plan-b', harness: 'papercusp', leader: 'spawn', headless: true },
+          },
+        },
+      });
+      const result = observe([walled('plan-a'), worklistPlan(laterLaunch, 'plan-b')],
+        planAlert('started-plan-no-live-targeting-fleet'));
+      expect(result).toMatchObject({
+        status: 'due',
+        applicableDemand: 1,
+        action: { tool: 'fleet:launch-on-plan', args: { plan: 'plan-b' } },
+      });
+      expect(result.measurementFailure).toBeUndefined();
+    });
+
+    it('CONTROL: the same plan without the wall is still demand, and its alert still conflicts', () => {
+      // Positive controls — without these the three tests above would also pass if
+      // every `blocked`/`working` plan were silently treated as walled.
+      const blocked = observe([worklistPlan(placement('blocked', 'resolve-plan-blockers'))]);
+      expect(blocked.applicableDemand).toBe(1);
+      expect(blocked.episode).not.toMatch(/^owner-walled:/);
+      expect(blocked.status).not.toBe('not-applicable');
+      expect(observe([worklistPlan(placement('working', 'none')), worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'plan-b')],
+        planAlert('started-plan-no-live-targeting-fleet'))).toMatchObject({
+        status: 'unknown', measurementFailure: { code: 'plan-placement-writer-conflict' },
+      });
+    });
+  });
 });
 
 describe('frozen provider matrix: owner reporting (6 opportunities)', () => {
