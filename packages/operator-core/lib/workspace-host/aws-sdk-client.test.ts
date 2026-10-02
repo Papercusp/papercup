@@ -20,7 +20,7 @@ import {
   type AwsSdkClientConfig,
   type AwsSdkClientSet,
 } from './aws-sdk-client';
-import { createAwsWorkspaceHostProvider } from './aws-provider';
+import { AWS_SPOT_MARKET_OPTIONS, createAwsWorkspaceHostProvider } from './aws-provider';
 import { AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC, renderAwsHostBootstrapPush } from './aws-host-bootstrap-push';
 import { planAwsSdkCredentialProvider, preflightAwsWorkspaceHostConnection } from './aws-connection';
 
@@ -117,7 +117,7 @@ class FakeAws {
   readonly overrides = new Map<string, (input: any) => unknown>();
   private seq = 0;
   readonly volumes = new Map<string, { id: string; state: string; token?: string; tags: { Key: string; Value: string }[]; attachedTo?: string }>();
-  readonly instances = new Map<string, { id: string; token: string }>();
+  readonly instances = new Map<string, { id: string; token: string; spotRequestId?: string }>();
   readonly snapshots = new Map<string, { id: string; tags: { Key: string; Value: string }[] }>();
 
   readonly createClients = (config: AwsSdkClientConfig): AwsSdkClientSet => {
@@ -189,8 +189,21 @@ class FakeAws {
       case 'ec2:RunInstancesCommand': {
         const existing = [...this.instances.values()].find((i) => i.token === input.ClientToken);
         const id = existing?.id ?? this.next('i');
-        if (!existing) this.instances.set(id, { id, token: input.ClientToken });
+        if (!existing) {
+          this.instances.set(id, {
+            id,
+            token: input.ClientToken,
+            ...(input.InstanceMarketOptions ? { spotRequestId: `sir-${id}` } : {}),
+          });
+        }
         return { Instances: [{ InstanceId: id }] };
+      }
+      case 'ec2:CancelSpotInstanceRequestsCommand': {
+        const known = new Set([...this.instances.values()].map((i) => i.spotRequestId).filter(Boolean));
+        if (input.SpotInstanceRequestIds.some((id: string) => !known.has(id))) {
+          throw awsError('InvalidSpotInstanceRequestID.NotFound', 'not found');
+        }
+        return { CancelledSpotInstanceRequests: input.SpotInstanceRequestIds.map((id: string) => ({ SpotInstanceRequestId: id, State: 'cancelled' })) };
       }
       case 'ec2:DescribeInstancesCommand': {
         const filter = input.Filters?.find((f: { Name: string }) => f.Name === 'client-token');
@@ -206,6 +219,9 @@ class FakeAws {
                 ImageId: 'ami-0abc',
                 State: { Name: this.instanceState },
                 ...(this.instanceStateReason ? { StateReason: this.instanceStateReason } : {}),
+                ...((i as { spotRequestId?: string }).spotRequestId
+                  ? { SpotInstanceRequestId: (i as { spotRequestId?: string }).spotRequestId }
+                  : {}), // DescribeInstances' own field name
                 BlockDeviceMappings: [{ DeviceName: '/dev/sda1', Ebs: { VolumeId: 'vol-root' } }],
               },
             ],
@@ -810,6 +826,51 @@ describe('seam methods send the expected SDK command and input (AUTO-BAR-R-2-P-0
 
     await client.terminateInstances([instanceId]);
     expect(await client.waitForInstanceState(instanceId, 'terminated')).toMatchObject({ state: 'terminated' });
+  });
+
+  it('spot (WI-10005389): sends the market options, observes the spot request, and cancels it idempotently', async () => {
+    const { aws, client } = setup();
+    const { instanceId } = await client.runInstances({
+      ClientToken: 'spot-tok',
+      MinCount: 1,
+      MaxCount: 1,
+      LaunchTemplate: { LaunchTemplateId: 'lt-1' },
+      NetworkInterfaces: [
+        { DeviceIndex: 0, SubnetId: 'subnet-1', Groups: ['sg-1'], DeleteOnTermination: true, AssociatePublicIpAddress: false },
+      ],
+      IamInstanceProfile: { Arn: 'arn:aws:iam::1:instance-profile/p' },
+      BlockDeviceMappings: [
+        { DeviceName: '/dev/sda1', Ebs: { DeleteOnTermination: true, Encrypted: true, KmsKeyId: 'k', VolumeSize: 20, VolumeType: 'gp3' } },
+      ],
+      InstanceMarketOptions: AWS_SPOT_MARKET_OPTIONS,
+      TagSpecifications: [
+        { ResourceType: 'instance', Tags: [] },
+        { ResourceType: 'volume', Tags: [] },
+        { ResourceType: 'spot-instances-request', Tags: [] },
+      ],
+    });
+    const [run] = aws.commands('RunInstancesCommand');
+    expect(run!.input.InstanceMarketOptions).toEqual({
+      MarketType: 'spot',
+      SpotOptions: { SpotInstanceType: 'persistent', InstanceInterruptionBehavior: 'stop' },
+    });
+    expect(run!.input.TagSpecifications.map((spec: { ResourceType: string }) => spec.ResourceType)).toEqual([
+      'instance',
+      'volume',
+      'spot-instances-request',
+    ]);
+    const observed = await client.describeInstance(instanceId);
+    expect(observed?.spotInstanceRequestId).toBe(`sir-${instanceId}`);
+
+    await client.cancelSpotInstanceRequests([`sir-${instanceId}`]);
+    expect(aws.commands('CancelSpotInstanceRequestsCommand')[0]!.input).toEqual({
+      SpotInstanceRequestIds: [`sir-${instanceId}`],
+    });
+    // A request EC2 no longer knows cannot relaunch anything: counted as cancelled, not an error.
+    await expect(client.cancelSpotInstanceRequests(['sir-unknown'])).resolves.toEqual({});
+    // Nothing to cancel sends nothing.
+    await client.cancelSpotInstanceRequests([]);
+    expect(aws.commands('CancelSpotInstanceRequestsCommand')).toHaveLength(2);
   });
 
   it('volumes and snapshots: find by token tag, wait, attach, delete, idempotent snapshot', async () => {
