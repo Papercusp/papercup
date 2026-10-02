@@ -24,6 +24,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
+import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import {
   setCarryNote,
   setCarryNoteWithPrior,
@@ -198,6 +199,13 @@ export async function setWorkItemCheckpointWithPrior(
      * {@link setCarryNoteWithPrior}; see its `transform` doc for the contract.
      */
     transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+    /**
+     * personal-data-reader-set-labels P-012 / D-006: the agent that authored this
+     * checkpoint. While it holds a restricted Personal Vault disclosure the stored
+     * note (and its journal entry) is a sealed stub; the text is opened with
+     * personal:open-sealed. Omit for system writers, which hold no disclosures.
+     */
+    writerOwnerId?: string | null;
   },
 ): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
@@ -299,6 +307,20 @@ export async function setWorkItemCheckpointWithPrior(
       ...(opts?.transform ? { transform: opts.transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
       ...(opts?.workItem ? { workItem: opts.workItem } : {}),
+      ...(opts?.writerOwnerId?.trim()
+        ? {
+            seal: async (tx, note) =>
+              (
+                await sealSharedTextInTxOrRefuse(tx, {
+                  workspaceId: ws,
+                  writerOwnerId: opts.writerOwnerId,
+                  store: 'work-item-checkpoint',
+                  text: note,
+                  context: { workItemId: ref.workItemId, harness: ref.harness ?? null },
+                })
+              ).text,
+          }
+        : {}),
       bounded: true,
     },
   );

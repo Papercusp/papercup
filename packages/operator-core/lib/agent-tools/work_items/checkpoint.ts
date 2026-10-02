@@ -2447,6 +2447,8 @@ export default defineTool({
             ...(typeof (joinAddendumStored ?? checkpointToStore) === 'string'
               ? { latestUpdate: (joinAddendumStored ?? checkpointToStore)! } : {}),
             ...(item ? { workItem: item as WorkItemSubject } : {}),
+            // P-012 / D-006: a writer holding a restricted disclosure stores a sealed stub.
+            writerOwnerId: ident.ownerId,
             ...(checksTransform ? { transform: checksTransform } : {}),
             guard: composeGuards(
               appendBaseGuard,
@@ -2495,6 +2497,7 @@ export default defineTool({
                 ...(typeof checkpointToStore === 'string' ? { latestUpdate: checkpointToStore } : {}),
                 ...(item ? { workItem: item as WorkItemSubject } : {}),
                 ...(checksTransform ? { transform: checksTransform } : {}),
+                writerOwnerId: ident.ownerId,
                 guard: composeGuards(bodyPreservationGuard, overflowGuard),
                 ...depsOpt,
               },

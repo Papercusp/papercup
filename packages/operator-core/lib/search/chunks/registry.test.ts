@@ -3,6 +3,7 @@ import { resolveChunkSurface, splitterVersionOf } from '@papercusp/search';
 import {
   CHUNK_SURFACES,
   CONSULT_QUESTIONS_CHUNK_SURFACE,
+  consultSettledPredicate,
   OPERATOR_TURNS_CHUNK_SURFACE,
   WORK_ITEMS_CHUNK_SURFACE,
   PLANS_CHUNK_SURFACE,
@@ -110,6 +111,15 @@ describe('chunk surface registry', () => {
     });
     // Escalations are not registered (D-018).
     expect(CHUNK_SURFACES.map((s) => s.surface)).not.toContain('escalations');
+  });
+
+  it("consult questions chunk only the reader's settled population (D-048)", () => {
+    // The same text peersKnowLookup filters its slice with, derived from one function.
+    expect(CONSULT_QUESTIONS_CHUNK_SURFACE.eligibleSql).toBe(consultSettledPredicate('p'));
+    expect(consultSettledPredicate('cs')).toBe(
+      "cs.state = 'closed_answered' AND (cs.outcome->>'source' IS DISTINCT FROM 'archive')",
+    );
+    expect(() => consultSettledPredicate("p; DROP TABLE x")).toThrow(/not a plain identifier/);
   });
 
   it('plan templates are never chunked (they are never searched)', () => {

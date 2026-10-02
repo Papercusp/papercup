@@ -87,6 +87,8 @@ interface BuilderCall {
   file: string;
   line: number;
   wrapped: boolean;
+  /** Whitespace-collapsed call text, so an exemption can name its call site. */
+  text: string;
 }
 
 function literalText(n: ts.Node): string | null {
@@ -131,7 +133,7 @@ function scanSource(file: string, text: string): { sites: Site[]; builderCalls: 
       ts.isCallExpression(n) &&
       BUILDER.test(n.expression.getText(sf))
     ) {
-      builderCalls.push({ file, line: lineOf(n), wrapped: insideWrapper(n, sf) });
+      builderCalls.push({ file, line: lineOf(n), wrapped: insideWrapper(n, sf), text: n.getText(sf).replace(/\s+/g, ' ') });
     }
     ts.forEachChild(n, visit);
   };
@@ -159,9 +161,9 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
     contains: 'hit.matched_anchor, 1 AS leg FROM (SELECT',
     reason:
       "The ANN chunk leg over the exact slice (scan 'exact', chunkScan 'ann'; generic-rag-chunking " +
-      'D-046) orders the chunk table by its vector so the partial HNSW index can serve it. Same ' +
-      'builder, same rule 2: every call site runs the fragment inside withIterativeScan, which is ' +
-      'what sets the iterative scan and ef_search this leg relies on.',
+      'D-046, D-048) orders the chunk table by its vector so the partial HNSW index can serve it. ' +
+      'Same builder, same rule 2: every call site runs the fragment inside withIterativeScan or ' +
+      'carries a BUILDER_EXEMPT entry saying why the default scan cap is safe for it.',
   },
   {
     file: 'packages/operator-core/lib/personal-vault/store.ts',
@@ -186,6 +188,25 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
     reason:
       'Benchmark arm A for consult: reproduces peersKnowLookup as of 9a9473af95, an unwrapped exact ' +
       'scan. It is a measurement of the pre-change query, never a production read.',
+  },
+];
+
+/**
+ * chunkAwareVectorLegSql call sites that run OUTSIDE withIterativeScan on purpose.
+ * Keyed by file plus a substring of the whitespace-collapsed call text. An entry
+ * that stops matching an unwrapped call fails the guard, so the list cannot rot.
+ */
+const BUILDER_EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> = [
+  {
+    file: 'packages/operator-core/lib/consult/peers-know.ts',
+    contains: 'surface: CONSULT_QUESTIONS_CHUNK_SURFACE',
+    reason:
+      'generic-rag-chunking D-048. The consult surface chunks only settled questions (eligibleSql is ' +
+      "the reader's own slice predicate), and the ANN chunk leg filters only by workspace, so " +
+      'nearly every HNSW candidate passes and there is little for an iterative scan to recover. ' +
+      'The wrapper and its transaction cost the lookup its 3.5 ms latency budget (D-047 record: ' +
+      '+8.0 ms at p95). A chunk the default ef_search misses leaves its question to the parent ' +
+      'leg: a recall loss, never a wrong answer.',
   },
 ];
 
@@ -277,7 +298,9 @@ describe('ordered vector queries run under withIterativeScan (WI-10004138)', () 
 
     it('requires builder call sites to be inside withIterativeScan (trap 5)', () => {
       const bare = scanSource('caller.ts', 'await sql`WITH best AS (${chunkAwareVectorLegSql(sql, opts)}) SELECT 1`;');
-      expect(bare.builderCalls).toEqual([{ file: 'caller.ts', line: 1, wrapped: false }]);
+      expect(bare.builderCalls).toEqual([
+        { file: 'caller.ts', line: 1, wrapped: false, text: 'chunkAwareVectorLegSql(sql, opts)' },
+      ]);
       const wrapped = scanSource(
         'caller.ts',
         'await withIterativeScan(sql, (h) => h`WITH best AS (${chunkAwareVectorLegSql(h, opts)}) SELECT 1`);',
@@ -318,9 +341,21 @@ describe('ordered vector queries run under withIterativeScan (WI-10004138)', () 
       expect(stale.map((e) => `${e.file} :: ${e.contains}`)).toEqual([]);
     });
 
-    it('runs every chunkAwareVectorLegSql call inside withIterativeScan', () => {
+    it('runs every chunkAwareVectorLegSql call inside withIterativeScan, or names why not', () => {
       expect(builderCalls.length).toBeGreaterThan(0);
-      expect(builderCalls.filter((c) => !c.wrapped).map((c) => `${c.file}:${c.line}`)).toEqual([]);
+      const exempt = (c: BuilderCall) => BUILDER_EXEMPT.some((e) => e.file === c.file && c.text.includes(e.contains));
+      expect(
+        builderCalls.filter((c) => !c.wrapped && !exempt(c)).map((c) => `${c.file}:${c.line}`),
+        'Run the fragment inside withIterativeScan, or add a BUILDER_EXEMPT entry saying why the default scan cap is safe',
+      ).toEqual([]);
+    });
+
+    it('has no stale or unexplained builder exemption', () => {
+      for (const e of BUILDER_EXEMPT) expect(e.reason.length, e.contains).toBeGreaterThan(60);
+      const stale = BUILDER_EXEMPT.filter(
+        (e) => !builderCalls.some((c) => !c.wrapped && c.file === e.file && c.text.includes(e.contains)),
+      );
+      expect(stale.map((e) => `${e.file} :: ${e.contains}`)).toEqual([]);
     });
   });
 });

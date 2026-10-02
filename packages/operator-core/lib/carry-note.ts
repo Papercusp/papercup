@@ -2952,6 +2952,15 @@ export async function setCarryNoteWithPrior(
      */
     transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
     /**
+     * personal-data-reader-set-labels P-012 / D-006: replace the note about to be
+     * stored with what may be shared (a sealed stub when the writer holds a
+     * restricted disclosure). Runs AFTER `guard` and `transform` — so the guards
+     * judge the authored text, not the stub — and BEFORE journaling, so neither the
+     * note nor its journal entry keeps the text. It receives this transaction, so
+     * the sealed row commits or rolls back with the note. Not called for a clear.
+     */
+    seal?: (tx: Sql | TransactionSql, note: string) => Promise<string>;
+    /**
      * Optimistic-CAS baseline for a replace/patch. `undefined` keeps the legacy
      * unconditional write contract; `null` asserts that no note existed. The
      * comparison runs after SELECT FOR UPDATE and before guard/transform, so a
@@ -3024,7 +3033,8 @@ export async function setCarryNoteWithPrior(
     // write must not transform — and BEFORE journaling, so the ring records what was
     // actually stored rather than the caller's pre-merge draft.
     const effectiveNote = opts?.transform ? opts.transform(priorNote, note) : note;
-    const trimmed = (effectiveNote ?? '').trim();
+    let trimmed = (effectiveNote ?? '').trim();
+    if (trimmed && opts?.seal) trimmed = (await opts.seal(tx, trimmed)).trim();
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now, opts?.workItem) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;

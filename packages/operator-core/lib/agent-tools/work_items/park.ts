@@ -17,6 +17,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { disclosureSubject } from '../_disclosure-subject';
 import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { setWorkItemCheckpointWithPrior } from '../../work-item-checkpoint';
@@ -136,6 +137,8 @@ export default defineTool({
           return merged.length > CHECKPOINT_BODY_CAP_CHARS ? 'checkpoint_capacity_exceeded' : null;
         },
         transform: (prior) => appendParkCheckpoint(prior, args.checkpoint),
+        // P-012 / D-006: a parker holding a restricted disclosure stores a sealed stub.
+        writerOwnerId: disclosureSubject(c),
       },
     );
     if (blockedReason) {
