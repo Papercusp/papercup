@@ -837,7 +837,11 @@ export async function expandTestRunBinding(
   if (result.ok && !asCommitted) {
     const { testPaths, sourcePaths } = result.binding.measurement;
     const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
-    const changed = await measuredFileModifiedAfterRun(root, measured, row.started_at);
+    const changed = await measuredFileModifiedAfterRun(
+      root,
+      measured,
+      measurementLowerBound(row.started_at, row.execution_details),
+    );
     if (changed) {
       return {
         ok: false,

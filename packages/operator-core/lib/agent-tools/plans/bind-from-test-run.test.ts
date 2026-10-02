@@ -12,6 +12,7 @@ import {
   FROM_TEST_RUN_MAX_SOURCE_PATHS,
   isTestInfrastructurePath,
   measuredFileModifiedAfterRun,
+  measurementLowerBound,
   repoRelativeTestPath,
   recordedTestPath,
   testRunBindingSchema,
@@ -342,6 +343,56 @@ describe('expandTestRunBinding: harness attribution', () => {
         error: 'test_run_source_modified_after_run',
         message: expect.stringContaining(GUARD_TEST),
       });
+    });
+
+    // EI-24827834166866368: started_at is finished_at - duration, so it postdates collection.
+    // An edit after vitest read the subject but before the file's tests started sits between
+    // the run-wide start and started_at, and only the run-wide start can see it.
+    describe('an edit during collection (between the run start and started_at)', () => {
+      const RUN_STARTED = '2026-09-23T14:30:00.000Z';
+      const duringCollection = new Date('2026-09-23T14:45:00Z');
+
+      it('is refused when the row records the run-wide start, judged against that start', async () => {
+        await stamp(duringCollection);
+        const row = run({
+          file_path: GUARD_TEST,
+          source: 'mutation-probe',
+          worktree_dirty: true,
+          started_at: STARTED,
+          execution_details: { mutationPhase: 'mutant', runStartedAt: RUN_STARTED },
+        });
+        const out = await expandTestRunBinding(input(), SCOPE, deps(row).d);
+        expect(out).toMatchObject({ ok: false, error: 'test_run_source_modified_after_run', testRunId: 42 });
+        if (!out.ok) {
+          expect(out.message).toContain(GUARD_SUBJECT);
+          expect(out.message).toContain(RUN_STARTED);
+          expect(out.message).toContain(duringCollection.toISOString());
+        }
+      });
+
+      it('still passes on a legacy row without the run-wide start (the known blind spot, pinned)', async () => {
+        await stamp(duringCollection);
+        expect(await expandTestRunBinding(input(), SCOPE, deps(dirtyMutant()).d)).toMatchObject({ ok: true });
+      });
+    });
+
+    it('measurementLowerBound takes the earlier readable instant and ignores unreadable ones', () => {
+      expect(measurementLowerBound(STARTED, { runStartedAt: '2026-09-23T14:30:00.000Z' })?.toISOString()).toBe(
+        '2026-09-23T14:30:00.000Z',
+      );
+      // A run start LATER than started_at is never allowed to narrow the window.
+      expect(measurementLowerBound(STARTED, { runStartedAt: '2026-09-23T16:00:00.000Z' })?.toISOString()).toBe(STARTED);
+      // The jsonb-string storage shape is read too.
+      expect(
+        measurementLowerBound(STARTED, JSON.stringify({ runStartedAt: '2026-09-23T14:30:00.000Z' }))?.toISOString(),
+      ).toBe('2026-09-23T14:30:00.000Z');
+      expect(measurementLowerBound(STARTED, { runStartedAt: 'garbage' })?.toISOString()).toBe(STARTED);
+      expect(measurementLowerBound(new Date(STARTED), null)?.toISOString()).toBe(STARTED);
+      expect(measurementLowerBound(null, { runStartedAt: '2026-09-23T14:30:00.000Z' })?.toISOString()).toBe(
+        '2026-09-23T14:30:00.000Z',
+      );
+      expect(measurementLowerBound(undefined, { runStartedAt: 42 })).toBeNull();
+      expect(measurementLowerBound('not-a-date', undefined)).toBeNull();
     });
 
     it('cannot judge without a start time, and leaves a missing file to the store', async () => {
