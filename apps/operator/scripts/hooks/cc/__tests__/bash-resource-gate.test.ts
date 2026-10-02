@@ -2706,6 +2706,20 @@ bar" work_items/`)));
     expectAllow(runGate(at('grep -rn foo work_items 2>/dev/null')));
   });
 
+  it("preserves grep's -- pattern terminator before a stderr redirect", () => {
+    const command =
+      "grep -rn -- '--run=' .papercusp/scratch/wi5384/*.sh scripts/agent-capacity/vm/*.sh 2>/dev/null | grep -i teardown | head";
+    const out = runGate(at(command));
+    expect(out.status).toBe(0);
+    if (out.stdout.trim()) {
+      expect(parseDecision(out).hookSpecificOutput.permissionDecision).toBe('allow');
+    }
+  });
+
+  it('still checks a numeric path operand after -- when no redirect follows', () => {
+    expectFalseAbsenceDeny(runGate(at('grep -rn -- foo 2')));
+  });
+
   it('silent when the search appears only as PROSE inside quotes', () => {
     expectAllow(runGate(at('echo "grep -rn foo no-such-dir/"')));
   });
