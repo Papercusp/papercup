@@ -33,6 +33,8 @@ import {
   BLIND_COHORT_CONTRACT,
   collectIndependentCohort,
   parseBlindChunkVotes,
+  parseBlindTargetBudget,
+  selectBlindSourceTargets,
   type JudgedQueryOutcome,
 } from './judged';
 import type { BackendCtx } from './run-bench';
@@ -149,6 +151,83 @@ describe('blind label collection through the injected stateless transport', () =
     await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('fixture judge interruption');
     return out;
   }
+  it('exhausts unequal snapshot partitions and accepts explicit per-corpus budgets without changing source assignment', async () => {
+    const f = fixture(3);
+    try {
+      const snapshot = JSON.parse(fs.readFileSync(f.snapshot, 'utf8'));
+      snapshot.suites.prose.entries.splice(0, 1);
+      fs.writeFileSync(f.snapshot, JSON.stringify(snapshot));
+      const all = selectBlindSourceTargets(snapshot, parseBlindTargetBudget('all'));
+      expect(all.memory.chosen.calibration).toHaveLength(3); expect(all.memory.chosen.test).toHaveLength(3);
+      expect(all.prose.chosen.calibration).toHaveLength(2); expect(all.prose.chosen.test).toHaveLength(3);
+      const explicit = parseBlindTargetBudget('{"memory":{"calibration":2,"test":3},"prose":{"calibration":1,"test":2}}');
+      const picked = selectBlindSourceTargets(snapshot, explicit);
+      expect(picked.memory.chosen.calibration).toEqual(all.memory.chosen.calibration.slice(0, 2));
+      expect(picked.prose.chosen.test).toEqual(all.prose.chosen.test.slice(0, 2));
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'all'), llm: f.llm, targetsPerPartition: 'all' });
+      const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
+      expect(labels.memory).toHaveLength(24); expect(labels.prose).toHaveLength(20);
+      expect(f.calls).toBe(15);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('refuses a later-corpus budget or source-provenance defect before any paid call or output creation', async () => {
+    const f = fixture();
+    try {
+      const budget = { memory: { calibration: 1, test: 1 }, prose: { calibration: 2, test: 1 } };
+      const out = path.join(f.root, 'invalid');
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: f.llm, targetsPerPartition: budget })).rejects.toThrow('prose/calibration');
+      expect(f.calls).toBe(0); expect(fs.existsSync(out)).toBe(false);
+      const snapshot = JSON.parse(fs.readFileSync(f.snapshot, 'utf8'));
+      const foreign = structuredClone(snapshot); foreign.suites.prose.entries[0].metadata.partition = 'wrong';
+      expect(() => selectBlindSourceTargets(foreign, 'all')).toThrow('partition');
+      for (const input of ['0', '-1', '1.5', 'null', '[]', '{}', '{"memory":{"calibration":1,"test":1},"prose":{"calibration":1,"test":1,"extra":1}}']) {
+        expect(() => selectBlindSourceTargets(snapshot, parseBlindTargetBudget(input))).toThrow('budget');
+      }
+      expect(parseBlindTargetBudget('2')).toBe(2);
+      expect(() => parseBlindTargetBudget('typo')).toThrow();
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('joins bounded local question indices across every document chunk and both passes without omitting targets', async () => {
+    const f = fixture(34);
+    try {
+      let judges = 0;
+      const llm: LlmCallFn = async (opts) => {
+        const input = JSON.parse(opts.messages[0].content);
+        if (input.questions) {
+          judges++; expect(input.questions.length).toBeLessThanOrEqual(64); expect(input.sources.length).toBeLessThanOrEqual(64);
+          expect(input.questions.map((q: { index: number }) => q.index)).toEqual(input.questions.map((_: unknown, i: number) => i));
+        }
+        return f.llm(opts);
+      };
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'batches'), llm, targetsPerPartition: 'all' });
+      const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
+      const proofs = JSON.parse(fs.readFileSync(receipt.judgments.path, 'utf8'));
+      for (const corpus of ['memory', 'prose']) {
+        expect(labels[corpus]).toHaveLength(272); expect(new Set(labels[corpus].map((q: { group: string }) => q.group)).size).toBe(68);
+        expect(proofs[corpus].excluded).toEqual([]); expect(proofs[corpus].agreement).toBe(1);
+        const pass = JSON.parse(fs.readFileSync(path.join(path.dirname(receipt.labels.path), `${corpus}-judge-1-pass.json`), 'utf8'));
+        expect(pass.calls).toHaveLength(10); expect(pass.votes).toHaveLength(272);
+      }
+      expect(judges).toBe(40); expect(f.calls).toBe(176);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('recovers an interrupted question batch from exact immutable calls without repeating finished chunks', async () => {
+    const f = fixture(9);
+    try {
+      const out = path.join(f.root, 'interrupted-batch'); let attemptedJudges = 0;
+      const interrupt: LlmCallFn = async (opts) => {
+        if (JSON.parse(opts.messages[0].content).questions && ++attemptedJudges === 2) throw new Error('fixture second question batch interruption');
+        return f.llm(opts);
+      };
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: interrupt, targetsPerPartition: 'all' })).rejects.toThrow('second question batch');
+      expect(f.calls).toBe(19); // 18 memory authors + the first completed judge batch.
+      const first = path.join(out, 'memory-judge-1-0-q0.json'); const pin = await fingerprintFile(first);
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out, llm: f.llm, targetsPerPartition: 'all' });
+      expect(await fingerprintFile(first)).toEqual(pin);
+      expect(f.calls).toBe(44); // 36 authors plus 8 judge batches, exactly once per successful call.
+      expect(JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8')).memory).toHaveLength(72);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
   it('recovers authors by reference, preserves original invocation IDs and makes fresh independent judge calls', async () => {
     const f = fixture();
     try {
