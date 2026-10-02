@@ -3131,6 +3131,89 @@
       "modelAdoptionAuthorized": false
     }
   },
+  "retainedSourceOverlay": {
+    "status": "frozen-module-and-actual-cli-preflight-qualified-no-inference",
+    "workItem": "WI-10004537",
+    "supersedes": "incrementalExecutionPreparation.executionIdentityBoundary: the source overlay now exists and has passed scoped admission; new-label measurement is still unperformed",
+    "sourceReceipt": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v1/source-overlay-receipt.json",
+      "sha256": "6ab06c02d9876b1a67f61ff76101aef36d26d00b2bc84b10a9a1340cdaeeb282",
+      "bytes": 1486380
+    },
+    "moduleQualification": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v1/runtime-module-qualification.json",
+      "sha256": "58c1f2e6cc693c1571b4c11eb039a9eea22f3a85ed2a7c172444a0edbcb6ce7d",
+      "bytes": 37578
+    },
+    "cliPreflight": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v1/cli-preflight-assessment.json",
+      "sha256": "8f031af78e774989622c2ccaf6ba3d89a14fd2676cf47c95c7b2afdf5ad5d918",
+      "bytes": 1955,
+      "manifestSha256": "40a7d247037ea68dfccccf89e032b9f506fc8accc5e66f3bbfe04a3f0bb1e3ea",
+      "actualCLIExit": 1,
+      "expectedRefusal": "retained relevance has no new queries; use offline scoring rather than starting a worker",
+      "rawResultPresent": false,
+      "vectorsPresent": false,
+      "runningClaimPresent": false,
+      "embeddingBranchEntered": false,
+      "postprocessorCorrection": "The first assessment wrapper mistook the typed error object for a string. Read failMeasurementCell's writer and retained failure.error.message; finalized the assessment from the unchanged actual log/receipt without rerunning the CLI. EI-24912102883488587 records this caller-side observation."
+    },
+    "derivation": {
+      "regularSourceFilesWritten": 2,
+      "sourceLinksVerified": 3136,
+      "wholeRuntimeCopied": false,
+      "originalTreeWritten": false,
+      "evaluatorSha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+      "loaderSha256": "0635f37e7ad8f04187560f9f67ee70cd957ccf9ddb63b9bb6431fcbb6320f3c9",
+      "maintainedReuseBlockSha256": "9859490c06731d6e547a7b2271b4a37c27bcb7b3b480ebe7c743ae445618a488",
+      "maintainedReuseBlockBytes": 7917,
+      "evaluatorWithoutIncrementalDeltaEqualsDonor": true,
+      "loaderWithoutReuseBlockEqualsDonor": true,
+      "unrelatedNativeInstrumentationTransplanted": false,
+      "actualWorkerSha256": "754f42bb37e7bc41ff4692b3239d5a454f6fc0b324afc050d1ac5a79b86bd95b",
+      "actualWorkerResolvesToOriginalRuntime": true,
+      "armMetadataChanged": false
+    },
+    "observedAdmission": {
+      "measuredFrozenNodeUsed": true,
+      "retainedDependencyAliasesUsed": true,
+      "actualPackageVersions": {
+        "@huggingface/transformers": "4.2.0",
+        "@huggingface/tokenizers": "0.1.3",
+        "tokenizers": "0.23.2"
+      },
+      "unchangedArmsChecked": 3,
+      "retainedCellViewsChecked": 6,
+      "exactRetainedDocumentVectors": 3081,
+      "exactRetainedQueryVectors": 324,
+      "workerStarted": false,
+      "modelCalls": 0,
+      "collectorBoundSourcesPreserved": 4,
+      "originalCollectorPinsPreserved": 341,
+      "recoveryReferencesPreserved": 342,
+      "scope": "Actual module admission checks each donor cell view with its own vector reference. Actual CLI admission checks one all-reused mDenseOn/memory cell. Neither is a new-label measurement or a multi-cell shared-manifest execution."
+    },
+    "multiCellManifestPreparation": {
+      "observation": "The maintained loader currently hardcodes a single global reuseVectors input. The six V5 completed cells have six distinct vector fingerprints. Per-cell vector-input selection is required before freezing their joint incremental matrix under one manifest identity.",
+      "existingSeamToExtend": "measurement-manifest.ts: loadRetainedRelevanceVectors; retain default reuseVectors behavior and all arm/completion/fingerprint guards",
+      "sharedManifestReuseQualified": false
+    },
+    "reproduction": {
+      "deriver": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/prepare-retained-source-overlay-v1.mjs",
+      "deriverSha256": "d9ca2b962241b017d532ee05ab3a461c79ba4269f29bf7575f270f694d46e241",
+      "qualifier": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/qualify-retained-source-overlay-v1.mjs",
+      "qualifierSha256": "0771d850509fecd7f90b0167062f200197da8bdd2a6bae9b4b1b3dd13b5cc018",
+      "policy": "Immutable outputs: do not rerun either writer into its existing output. Re-resolve and verify saved receipts for recovery; a revised helper requires a new overlay identity/root. No full-runtime copy or old matrix replay."
+    },
+    "acceptance": {
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "p003Complete": false,
+      "p004Complete": false,
+      "fullAccessibleCensusExhausted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
   "limitations": [
     "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
