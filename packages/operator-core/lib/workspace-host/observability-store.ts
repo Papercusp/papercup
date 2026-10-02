@@ -837,6 +837,14 @@ export async function beginWorkspaceHostOperation(input: WorkspaceHostOperationI
               AND NOT EXISTS (
                 SELECT 1 FROM harness_shared.workspace_host_operations prior
                 WHERE prior.workspace_id = ${input.workspaceId} AND prior.host_id = ${input.hostId}
+                  -- A first operation that FAILED, with no recovery in flight, never brought the
+                  -- host into existence, so a retry is still the host's first operation. Counting
+                  -- it fenced every retry of a failed first provision forever (WI-10005307).
+                  AND NOT (
+                    prior.action IN ('provision', 'restore')
+                    AND prior.status = 'failed'
+                    AND prior.recovery_state = 'none'
+                  )
               )
             )
           )

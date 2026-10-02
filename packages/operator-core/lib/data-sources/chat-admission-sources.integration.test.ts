@@ -46,7 +46,7 @@ async function makeSource(opts: { scope?: 'personal' | 'pot'; scopeRef?: string;
     ? await org.adminSql<{ id: string }[]>`
         INSERT INTO harness_shared.data_sources
           (workspace_id, kind, permission_mapping, scope, scope_ref, owner_user_id, provider_account_id)
-        VALUES (${WS}, 'slack', ${org.adminSql.json({ mode: opts.scope === 'personal' ? 'owner' : 'pot' })},
+        VALUES (${WS}, 'slack', ${org.adminSql.json({ mode: 'owner' })},
                 ${opts.scope}, ${opts.scopeRef ?? null}, ${opts.ownerUserId ?? null}::uuid,
                 ${opts.scope === 'personal' ? 'T1:UALICE' : null})
         RETURNING id`

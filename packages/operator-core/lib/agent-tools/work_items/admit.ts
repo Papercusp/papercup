@@ -29,6 +29,8 @@ import {
 } from '../../work-admission/admission-rules';
 // Side effect: registers the `record` admission source (ingested ticket records).
 import '../../work-admission/record-source';
+// P-021: registers the 'chat-message' and 'chat-thread' admission resolvers (D-030).
+import '../../data-sources/chat-admission-sources';
 
 const OPS = ['admit', 'write-back', 'rules-set', 'rules-list', 'rules-disable', 'rules-apply'] as const;
 

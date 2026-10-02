@@ -112,6 +112,57 @@ describe("capture-signals.py IO-stall attribution", () => {
     ]);
   });
 
+  // WI-10005308: cgroupIo sums across devices, so an incident could not name the stalled disk.
+  it("disk_stats reports per-disk rates, waits, queue depth and mounts for whole disks only", () => {
+    const out = runPy([
+      "put('sys/block/nvme0n1', 'size', '1')",
+      "put('sys/block/nvme1n1/nvme1n1p2', 'partition', '2')",
+      "put('sys/block/sdb', 'size', '1')",
+      "put('sys/block/loop0', 'size', '1')",
+      "put('sys/block/nbd0', 'size', '1')",
+      "put('proc', 'mounts', '/dev/nvme1n1p2 / ext4 rw 0 0\\n/dev/nvme0n1 /tmp xfs rw 0 0\\n/dev/nvme0n1 /mnt/data xfs rw 0 0\\ntmpfs /run tmpfs rw 0 0\\n')",
+      "put('proc', 'diskstats', ''.join([",
+      "  ' 259 0 nvme0n1 100 0 1000 50 200 0 4000 400 0 100 0 0 0 0 0 0 0\\n',",
+      "  ' 259 1 nvme1n1 100 0 1000 50 200 0 4000 400 0 100 0 0 0 0 0 0 0\\n',",
+      "  ' 259 3 nvme1n1p2 100 0 1000 50 200 0 4000 400 0 100 0 0 0 0 0 0 0\\n',",
+      "  '   8 16 sdb 500 0 5000 0 500 0 5000 0 0 0 0\\n',",
+      "  '   7 0 loop0 1 0 1 0 0 0 0 0 0 0 0\\n',",
+      "  '  43 0 nbd0 0 0 0 0 0 0 0 0 0 0 0\\n']))",
+      "clock = [0.0]",
+      "def sleep(_s):",
+      "    clock[0] += 2.0",
+      "    put('proc', 'diskstats', ''.join([",
+      "      ' 259 0 nvme0n1 100 0 1000 50 210 0 4020 410 0 120 0 0 0 0 0 0 0\\n',",
+      "      ' 259 1 nvme1n1 300 0 401000 2050 600 0 204000 200400 329 2100 0 0 0 0 0 0 0\\n',",
+      "      ' 259 3 nvme1n1p2 300 0 401000 2050 600 0 204000 200400 329 2100 0 0 0 0 0 0 0\\n',",
+      "      '   8 16 sdb 10 0 100 0 500 0 5000 0 0 0 0\\n',",
+      "      '   7 0 loop0 9 0 9 0 0 0 0 0 0 0 0\\n',",
+      "      '  43 0 nbd0 0 0 0 0 0 0 0 0 0 0 0\\n']))",
+      "r = cs.disk_stats(proc_root=os.path.join(root, 'proc'), sys_block_root=os.path.join(root, 'sys/block'), monotonic_fn=lambda: clock[0], sleep_fn=sleep)",
+      "print(json.dumps(r))",
+    ].join("\n")) as { available: boolean; sampleSec: number; devices: Array<Record<string, unknown>> };
+
+    expect(out).toMatchObject({ available: true, sampleSec: 2, wholeDisksKnown: true });
+    // nvme1n1p2 is a partition (not in sys/block), loop0 is skipped by prefix, sdb's
+    // read counter went BACKWARDS (reset) and nbd0 is idle + unmounted: none may appear.
+    expect(out.devices.map((row) => row.device)).toEqual(["nvme1n1", "nvme0n1"]);
+    expect(out.devices[0]).toEqual({
+      device: "nvme1n1", devno: "259:1", mounts: ["/"],
+      readMBps: 102.4, writeMBps: 51.2, readIops: 100, writeIops: 200,
+      readAwaitMs: 10, writeAwaitMs: 500, inFlight: 329, utilPct: 100,
+    });
+    expect(out.devices[1]).toEqual({
+      device: "nvme0n1", devno: "259:0", mounts: ["/mnt/data", "/tmp"],
+      readMBps: 0, writeMBps: 0.01, readIops: 0, writeIops: 5,
+      readAwaitMs: null, writeAwaitMs: 1, inFlight: 0, utilPct: 1,
+    });
+  });
+
+  it("disk_stats reports an unreadable /proc/diskstats as unavailable, never as idle disks", () => {
+    const out = runPy("print(json.dumps(cs.disk_stats(proc_root=os.path.join(root, 'missing'))))");
+    expect(out).toEqual({ available: false, devices: null });
+  });
+
   it("dstate_tasks reports an unreadable /proc as unavailable, never as zero D-state tasks", () => {
     const out = runPy("print(json.dumps(cs.dstate_tasks(proc_root=os.path.join(root, 'missing'))))");
     expect(out).toEqual({ available: false, dStateTasks: null, partial: true });

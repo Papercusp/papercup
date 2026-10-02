@@ -110,6 +110,51 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:trace'] });
   });
 
+  it('accepts optional result reads protected by short-circuit guards and fallbacks', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const card = await tools.scorecards.get({ issueId: "scorecard-1" });\n' +
+        'const criteria = (card.scorecard && card.scorecard.criteria || [])[0];\n' +
+        'const evidence = card.evidenceRead || {};\n' +
+        'const found = await tools.tools.find({ query: "plans:evaluate-spec-test-adequacy" });\n' +
+        'return { criteria: criteria || null, next: evidence.next, toolCount: (found.hits || []).length };',
+      [
+        tool('scorecards:get', {
+          type: 'object',
+          properties: { issueId: { type: 'string' } },
+          required: ['issueId'],
+          additionalProperties: false,
+        }, {
+          type: 'object',
+          properties: {
+            scorecard: {
+              type: 'object',
+              properties: { criteria: { type: 'array', items: { type: 'object' } } },
+              required: [],
+            },
+            evidenceRead: { type: 'object', properties: { next: { type: 'object' } }, required: [] },
+          },
+          required: [],
+        }),
+        tool('tools:find', {
+          type: 'object',
+          properties: { query: { type: 'string' } },
+          required: ['query'],
+          additionalProperties: false,
+        }, {
+          type: 'object',
+          properties: { hits: { type: 'array', items: { type: 'object' } } },
+          required: [],
+        }),
+      ],
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      issues: [],
+      staticToolNames: ['scorecards:get', 'tools:find'],
+    });
+  });
+
   it('checks result reads from identifiers destructured out of Promise.all', async () => {
     const result = await validateRecipeScriptAgainstCatalog(
       'const [trace] = await Promise.all([tools.release.trace({ path: "packages/example" })]);\nreturn trace.gate;',

@@ -1186,6 +1186,7 @@ import './work_items/checkpoint';
 import './work_items/amend';
 import './work_items/expand';
 import './work_items/promote';
+import './work_items/admit'; // enterprise-data-sources P-020: data -> work admission
 // work-queue-admission-and-bulk-dedup P-006 — model-backed staged corpus pass,
 // reusing the admission census + promoter charter under a transactional ratchet.
 import './work_items/bulk_dedup';

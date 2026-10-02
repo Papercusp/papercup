@@ -133,11 +133,16 @@ interface OutputPathFailure {
 }
 
 /** Return the first result-path segment the current output schema cannot guarantee. */
-function outputPathFailure(schema: JsonSchema, path: string[], offset = 0): OutputPathFailure | null {
+function outputPathFailure(
+  schema: JsonSchema,
+  path: string[],
+  safeOptionalPaths: string[][] = [],
+  offset = 0,
+): OutputPathFailure | null {
   const alternatives = schema.anyOf ?? schema.oneOf;
   if (alternatives?.length) {
     for (const alternative of alternatives) {
-      const failure = outputPathFailure(alternative, path, offset);
+      const failure = outputPathFailure(alternative, path, safeOptionalPaths, offset);
       if (failure) return failure;
     }
     return null;
@@ -149,7 +154,7 @@ function outputPathFailure(schema: JsonSchema, path: string[], offset = 0): Outp
       ...schema.allOf.flatMap((part) => part.required ?? []),
       ...(schema.required ?? []),
     ])];
-    return outputPathFailure({ ...schema, allOf: undefined, properties, required }, path, offset);
+    return outputPathFailure({ ...schema, allOf: undefined, properties, required }, path, safeOptionalPaths, offset);
   }
 
   const segment = path[offset];
@@ -162,7 +167,10 @@ function outputPathFailure(schema: JsonSchema, path: string[], offset = 0): Outp
       return { reason: 'missing', path: path.slice(0, offset + 1) };
     }
     if ((schema.minItems ?? 0) <= index) {
-      return { reason: 'optional', path: path.slice(0, offset + 1) };
+      const optionalPath = path.slice(0, offset + 1);
+      if (!safeOptionalPaths.some((safePath) => safePath.length === optionalPath.length && safePath.every((segment, i) => segment === optionalPath[i]))) {
+        return { reason: 'optional', path: optionalPath };
+      }
     }
     child = schema.items;
   } else {
@@ -171,13 +179,18 @@ function outputPathFailure(schema: JsonSchema, path: string[], offset = 0): Outp
       return { reason: 'missing', path: path.slice(0, offset + 1) };
     }
     if (!(schema.required ?? []).includes(segment)) {
-      return { reason: 'optional', path: path.slice(0, offset + 1) };
+      const optionalPath = path.slice(0, offset + 1);
+      if (!safeOptionalPaths.some((safePath) => safePath.length === optionalPath.length && safePath.every((part, i) => part === optionalPath[i]))) {
+        return { reason: 'optional', path: optionalPath };
+      }
     }
     child = properties[segment];
   }
 
   if (offset === path.length - 1) return null;
-  return child ? outputPathFailure(child, path, offset + 1) : { reason: 'missing', path: path.slice(0, offset + 1) };
+  return child
+    ? outputPathFailure(child, path, safeOptionalPaths, offset + 1)
+    : { reason: 'missing', path: path.slice(0, offset + 1) };
 }
 
 const mcpName = (tool: ProjectedTool): string | undefined => tool.expose.mcp?.name;
@@ -237,7 +250,7 @@ export async function validateRecipeScriptAgainstCatalog(
     const outputSchema = tool.outputJsonSchema as JsonSchema | undefined;
     if (!outputSchema || !call.resultReads?.length) continue;
     for (const read of call.resultReads) {
-      const failure = outputPathFailure(outputSchema, read.path);
+      const failure = outputPathFailure(outputSchema, read.path, read.safeOptionalPaths ?? []);
       if (!failure) continue;
       const readPath = `result.${read.path.join('.')}`;
       const unsafePrefix = `result.${failure.path.join('.')}`;

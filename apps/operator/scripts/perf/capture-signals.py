@@ -811,6 +811,127 @@ def cgroup_io(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
     }
 
 
+_DISKSTATS_SKIP_PREFIXES = ("loop", "ram", "zram")
+
+
+def _read_diskstats(path):
+    """Parse ``/proc/diskstats`` into ``{name: counters}``; None if unreadable.
+
+    Field positions (kernel Documentation/admin-guide/iostats.rst, after the
+    major/minor/name columns): reads, reads merged, sectors read, ms reading,
+    writes, writes merged, sectors written, ms writing, I/Os in flight, ms doing
+    I/O, weighted ms. Sectors are always 512 bytes here regardless of the
+    device's logical block size.
+    """
+    out = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 14 or not all(p.isdigit() for p in parts[3:14]):
+                    continue
+                v = [int(p) for p in parts[3:14]]
+                out[parts[2]] = {
+                    "devno": f"{parts[0]}:{parts[1]}",
+                    "reads": v[0], "readSectors": v[2], "readMs": v[3],
+                    "writes": v[4], "writeSectors": v[6], "writeMs": v[7],
+                    "inFlight": v[8], "ioMs": v[9],
+                }
+    except Exception:
+        return None
+    return out
+
+
+def _disk_mounts(disk, sys_block_root, mounts_path):
+    """Mountpoints served by ``disk`` or one of its partitions (sorted, deduped)."""
+    try:
+        partitions = {name for name in os.listdir(os.path.join(sys_block_root, disk))
+                      if name.startswith(disk)}
+    except Exception:
+        partitions = set()
+    names = {disk} | partitions
+    points = set()
+    try:
+        with open(mounts_path) as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].startswith("/dev/") \
+                        and os.path.basename(parts[0]) in names:
+                    points.add(parts[1].replace("\\040", " "))
+    except Exception:
+        pass
+    return sorted(points)
+
+
+def disk_stats(proc_root=None, sys_block_root=None, sample_sec=CPU_SAMPLE_SEC,
+               monotonic_fn=time.monotonic, sleep_fn=time.sleep):
+    """Two-sample per-DISK IO rates, waits and queue depth (WI-10005308).
+
+    ``cgroup_io()`` names who moved bytes but sums across devices, so an incident
+    could not say WHICH disk was stalled (root NVMe vs data NVMe). This samples
+    ``/proc/diskstats`` twice over whole disks only (entries listed in
+    ``/sys/block``; loop/ram/zram skipped) and reports throughput, IOPS, average
+    read/write wait per completed I/O, the in-flight count at the second sample
+    and the busy share of the window. Each disk carries its mountpoints because
+    NVMe enumeration order is not stable across boots. A counter that went
+    backwards (reset/overflow) drops that disk rather than reporting a negative
+    rate; an unreadable ``/proc/diskstats`` is reported as unavailable, never as
+    an idle box.
+    """
+    proc_root = proc_root or os.environ.get("PAPERCUSP_PERF_PROC_ROOT", "/proc")
+    sys_block_root = sys_block_root or os.environ.get(
+        "PAPERCUSP_PERF_SYS_BLOCK_ROOT", "/sys/block")
+    stats_path = os.path.join(proc_root, "diskstats")
+    mounts_path = os.path.join(proc_root, "mounts")
+
+    first = _read_diskstats(stats_path)
+    if first is None:
+        return {"available": False, "devices": None}
+    started = monotonic_fn()
+    sleep_fn(max(0, sample_sec))
+    elapsed = max(0.0, monotonic_fn() - started)
+    second = _read_diskstats(stats_path)
+    if second is None or elapsed <= 0:
+        return {"available": False, "devices": None}
+
+    try:
+        whole_disks = set(os.listdir(sys_block_root))
+    except Exception:
+        whole_disks = None   # cannot tell disks from partitions: keep every row
+
+    rows = []
+    for name, before in first.items():
+        after = second.get(name)
+        if after is None or name.startswith(_DISKSTATS_SKIP_PREFIXES):
+            continue
+        if whole_disks is not None and name not in whole_disks:
+            continue
+        delta = {key: after[key] - before[key] for key in before if key not in ("devno", "inFlight")}
+        if any(value < 0 for value in delta.values()):
+            continue
+        mounts = _disk_mounts(name, sys_block_root, mounts_path)
+        # An unmounted disk that did nothing (idle nbd/virtual devices) is noise;
+        # an idle MOUNTED disk stays, because "this disk was quiet" is evidence.
+        if not mounts and not after["inFlight"] and not any(delta.values()):
+            continue
+        rows.append({
+            "device": name,
+            "devno": after["devno"],
+            "mounts": mounts,
+            "readMBps": round(delta["readSectors"] * 512 / elapsed / 1e6, 2),
+            "writeMBps": round(delta["writeSectors"] * 512 / elapsed / 1e6, 2),
+            "readIops": round(delta["reads"] / elapsed, 1),
+            "writeIops": round(delta["writes"] / elapsed, 1),
+            "readAwaitMs": round(delta["readMs"] / delta["reads"], 2) if delta["reads"] else None,
+            "writeAwaitMs": round(delta["writeMs"] / delta["writes"], 2) if delta["writes"] else None,
+            "inFlight": after["inFlight"],
+            "utilPct": round(min(100.0, delta["ioMs"] / (elapsed * 1000) * 100), 1),
+        })
+    rows.sort(key=lambda row: (-row["utilPct"], -(row["readMBps"] + row["writeMBps"]), row["device"]))
+    return {"available": True, "devices": rows, "sampleSec": elapsed,
+            "wholeDisksKnown": whole_disks is not None}
+
+
 def _dstate_comm_key(comm):
     """Group per-worker kernel threads: ``kworker/u256:3+flush-259:1`` keeps its
     work item (``+flush-259:1`` names the device) but drops the worker id."""
@@ -999,6 +1120,7 @@ def main():
             "cgroupMemory": cgroup_memory(),
             "cgroupCpu": cgroup_cpu(),
             "cgroupIo": cgroup_io(),
+            "diskStats": disk_stats(),
             "dState": dstate_tasks(),
             "inotify": inotify(),
             "sessionDirs": session_dirs(),

@@ -6,8 +6,10 @@ import { resolve } from 'node:path';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { assertFact } from '../../../agent-facts/store';
 import { runWithWorkspace } from '../../../workspace-als';
-import { resetOperatorCacheForTests } from '../../../cache';
-import { getL2Store } from '../../../cache/l2-tier';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { __setCachedReadEnabledForTests, resetOperatorCacheForTests } from '../../../cache';
+import { _refreshCacheLayerForTests } from '../../../cache/instance';
+import { _refreshL2FlagForTests, getL2Store } from '../../../cache/l2-tier';
 import { seedPlan } from '../../plans/__tests__/_pg-tool-fixture';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_baseline-coord-fixture';
 import { setMode } from '../../../modes/store';
@@ -279,6 +281,10 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       'packages/operator-core/lib/agent-tools/plans/plan-admission-preflight.ts',
       'packages/operator-core/lib/cache/instance.ts',
       'packages/operator-core/lib/cache/pg-l2-store.ts',
+      'packages/operator-core/lib/goals/plan-closure-observations.ts',
+      'packages/operator-core/lib/plan-acceptance-gate.ts',
+      'packages/operator-core/lib/cache/cached-read.ts',
+      'packages/operator-core/lib/cache/l2-tier.ts',
     ];
     const hashes = () => sources.map(path => ({ path,
       sha256: createHash('sha256').update(readFileSync(resolve(__dirname, '../../../../../..', path))).digest('hex'),
@@ -320,6 +326,17 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
         SELECT ${WS}, 'papercusp', ${key} || '-WI-' || n, 'Representative goal queue item ' || n,
           (ARRAY['open','blocked','done','needs-human'])[1 + (n % 4)], 'task', ${GOAL}
         FROM generate_series(1, 128) n`;
+      // Populate the same canonical persisted observations production reads.
+      // The actual gate must independently reject these uncontracted seed plans.
+      const { evaluatePlanAcceptanceGate } = await import('../../../plan-acceptance-gate');
+      const observations = [];
+      for (const slug of slugs) {
+        const gate = await runWithWorkspace(WS, () => evaluatePlanAcceptanceGate(slug, { harnessSlug: 'papercusp' }));
+        observations.push({ slug, code: gate.code, satisfied: gate.satisfied });
+        expect(gate.satisfied).toBe(false);
+        expect(gate.code).toBe('acceptance_bar_contract_not_ready');
+      }
+      report.closurePreflight = observations;
     };
     const fact = async (scope: 'owner' | 'harness', factKey: string, body: string, audienceScope?: string) => {
       const receipt = await assertFact({ workspaceId: WS, scope,
@@ -364,11 +381,22 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
         { ruleId: 'goal-planning-needed', status: paused ? 'not-applicable' : 'due' },
         { ruleId: 'owner-directive-disposition', status: 'not-applicable' },
         { ruleId: 'waiting-on-progress', status: 'not-applicable' },
+        ...slugs.map(() => ({ ruleId: 'plan-independent-verification', status: 'due' })),
       ].sort((a, b) => a.ruleId.localeCompare(b.ruleId)));
       expect(data.obligations.evaluations.every(row => row.scope.workspaceId === WS && row.scope.ownerId === OWNER)).toBe(true);
       expect(data.obligations.primary.map(row => row.ruleId).sort())
-        .toEqual(paused ? [] : ['goal-owner-report', 'goal-plan-placement', 'goal-planning-needed']);
+        .toEqual([...slugs.map(() => 'plan-independent-verification'),
+          ...(paused ? [] : ['goal-owner-report', 'goal-plan-placement', 'goal-planning-needed'])].sort());
       const byRule = new Map(data.obligations.evaluations.map(row => [row.ruleId, row]));
+      const verification = data.obligations.evaluations.filter(row => row.ruleId === 'plan-independent-verification');
+      expect(verification.map(row => row.scope.planSlug).sort()).toEqual([...slugs].sort());
+      for (const row of verification) {
+        expect(row.action).toEqual({ kind: 'repair', targetRef: row.scope.planSlug,
+          summary: 'repair acceptance_bar_contract_not_ready before requesting a grader' });
+        expect(row.authority).toMatchObject({ kind: 'policy', sourceRef: 'plan-acceptance-gate' });
+        expect(row.clearsWhen).toMatchObject({ evidenceKind: 'verdict', sourceRef: 'evaluatePlanAcceptanceGate' });
+        expect(row.evidence.map(e => e.ref)).toEqual([`plan-acceptance:${row.scope.planSlug}:${row.sourceGeneration}`]);
+      }
       for (const row of data.obligations.evaluations) {
         expect(row.responsibleOwnerId).toBe(OWNER);
         expect(row.measurementFailure).toBeUndefined();
@@ -401,8 +429,20 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       }
       return ms;
     };
+    const pendingL2: Promise<unknown>[] = [];
+    const settleL2 = async () => { await Promise.all(pendingL2.splice(0)); };
     publish();
     try {
+      setFlagOverridesForTest({ 'papercusp-cache-layer': true, 'papercusp-cache-l2': true });
+      resetOperatorCacheForTests();
+      __setCachedReadEnabledForTests(true);
+      await _refreshCacheLayerForTests();
+      await _refreshL2FlagForTests();
+      const store = getL2Store();
+      const set = store.set.bind(store);
+      vi.spyOn(store, 'set').mockImplementation((...args) => {
+        const pending = set(...args); pendingL2.push(pending); return pending;
+      });
       await seedPopulation();
       await fact('owner', key, expectedFacts(false).find(row => row.body.startsWith('R-5 ordinary'))!.body);
       await fact('owner', `guard-rail:${key}`, `R-5 owner guard rail ${key}`);
@@ -418,6 +458,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       await read('independent-source-guard', true);
       report.phaseGuardsPassed = true;
       const cold = async () => {
+        await settleL2();
         resetOperatorCacheForTests();
         await getL2Store().clearWorkspace(WS);
       };
@@ -455,13 +496,18 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       throw error;
     } finally {
       publish();
+      await settleL2();
+      await getL2Store().clearWorkspace(WS);
       await fx.admin`UPDATE harness_shared.goals SET status = 'active' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
       await fx.admin`DELETE FROM harness_shared.agent_facts WHERE created_by = ${OWNER} AND key IN (${key}, ${`guard-rail:${key}`}, ${`hidden-${key}`})`;
       await fx.admin`UPDATE harness_shared.goals SET properties = COALESCE(properties, '{}'::jsonb) - 'worklist' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
       await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND goal_id = ${GOAL}`;
       await fx.admin`DELETE FROM harness_shared.plan_items WHERE workspace_id = ${WS} AND plan_slug = ANY(${slugs})`;
+      await fx.admin`DELETE FROM harness_shared.plan_closure_observations WHERE workspace_id = ${WS} AND plan_slug = ANY(${slugs})`;
       for (const slug of slugs) await fx.admin`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`;
       resetOperatorCacheForTests();
+      __setCachedReadEnabledForTests(false);
+      setFlagOverridesForTest(null);
     }
   }, 600_000);
 

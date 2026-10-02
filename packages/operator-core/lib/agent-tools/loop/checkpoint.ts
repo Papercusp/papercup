@@ -593,18 +593,12 @@ export default defineTool({
                 ).optional(),
                 falsifier: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.falsifier,
-                  'The concrete result or observation that means this claim is false and must be retracted or corrected ' +
-                    '(same contract as facts:assert `falsifier`). A probe says how to LOOK; the falsifier says what would ' +
-                    'mean you are WRONG — without one, any non-contradicting sample reads as confirmation.',
+                  'Result that would mean this claim is FALSE (as facts:assert `falsifier`). A probe says how to look; this says what refutes it.',
                 ).optional(),
                 sampleAdequate: z
                   .boolean()
                   .optional()
-                  .describe(
-                    'Set `false` when you probed but the sample could NOT discriminate the claim from its negation ' +
-                      '(e.g. both samples sat under the very threshold the claim is about). The evidence is kept as ' +
-                      'context and the row renders ? PREDICTED, never ✓. Omit when the sample was adequate.',
-                  ),
+                  .describe('`false` = probed, but the sample could not discriminate the claim from its negation; renders ? not ✓.'),
                 verified: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.verified,
                   'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +

@@ -662,7 +662,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(24156);
+    expect(JSON.stringify(json)).toHaveLength(24670);
 
     const hasSchemaField = (value: unknown, field: string): boolean => {
       value = resolveRef(value);
@@ -2766,6 +2766,78 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
     });
 
+    describe('EI-23771449112267271: a checks row carries a FALSIFIER and a sample-adequacy state', () => {
+      it('accepts `falsifier` and `sampleAdequate` on BOTH checkpoint tools (same verdict, so the contracts cannot drift)', async () => {
+        const loopCheckpoint = (await import('../loop/checkpoint')).default as {
+          args: { parse: (x: unknown) => unknown };
+        };
+        const row = { claim: 'queue stays shallow', recheck: 'probe queue', falsifier: 'depth >= 500', sampleAdequate: false };
+        expect(() => parse({ id: 'WI-7', checkpoint: 'body', checks: [row] })).not.toThrow();
+        expect(() => loopCheckpoint.args.parse({ checks: [row] })).not.toThrow();
+      });
+
+      it('CONTROL: `sampleAdequate` is a boolean on both tools — a string is rejected, so the accept above is not a silent strip', async () => {
+        const loopCheckpoint = (await import('../loop/checkpoint')).default as {
+          args: { parse: (x: unknown) => unknown };
+        };
+        const row = { claim: 'queue stays shallow', sampleAdequate: 'no' };
+        expect(() => parse({ id: 'WI-7', checkpoint: 'body', checks: [row] })).toThrow();
+        expect(() => loopCheckpoint.args.parse({ checks: [row] })).toThrow();
+      });
+
+      it('persists the falsifier in the stored checkpoint, and a re-sent claim that omits it inherits it', async () => {
+        withPrior(null);
+        await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'X holds', recheck: 'probe X', falsifier: 'X reads 0 twice', verified: 'saw X' }],
+        });
+        const prior = await lastStored();
+        expect(prior).toContain('falsifier: X reads 0 twice');
+
+        withPrior(prior);
+        await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', verified: 'saw X again' }] });
+        expect(await lastStored()).toContain('falsifier: X reads 0 twice');
+      });
+
+      it('warns (falsifierMissing) for a verified row written WITHOUT a falsifier, and stays silent when it has one', async () => {
+        type Receipt = { falsifierMissing?: { flagged: true; note: string; rows: string[] } };
+        withPrior(null);
+        const bare = (await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }],
+        })) as Receipt;
+        expect(bare.falsifierMissing?.flagged).toBe(true);
+        expect(bare.falsifierMissing?.rows).toEqual(['X holds']);
+
+        withPrior(null);
+        const withOne = (await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'X holds', recheck: 'probe X', falsifier: 'X reads 0 twice', verified: 'saw X' }],
+        })) as Receipt;
+        expect(withOne.falsifierMissing).toBeUndefined();
+      });
+
+      it('sampleAdequate:false stores the evidence as CONTEXT on a ? row — never a verified tick — and is exempt from the advisory', async () => {
+        type Receipt = { falsifierMissing?: unknown };
+        withPrior(null);
+        const r = (await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw 3 and 4, both under the threshold', sampleAdequate: false }],
+        })) as Receipt;
+        const stored = await lastStored();
+        expect(stored).toContain('sample inconclusive: saw 3 and 4, both under the threshold');
+        // Judge the ROW line, not the whole body: the checks legend itself contains a tick.
+        const row = (stored ?? '').split('\n').find((line) => line.includes('X holds'));
+        expect(row).toMatch(/^- \? /);
+        expect(row).not.toContain('✓');
+        expect(r.falsifierMissing).toBeUndefined();
+      });
+    });
+
     // P-013 (EI-20281899810081153) moved the DEFAULT to rowsMode:'merge' on BOTH
     // checkpoint tools, under which an empty list is a documented NO-OP — the tool says
     // so in its own `rowsModeNote`. Clearing is therefore an explicit-replace act now.
@@ -4717,6 +4789,32 @@ describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', 
       claims: [{ claim: expect.stringContaining('no reader'), recheck: expect.any(String) }],
     });
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+  });
+
+  it('does not warn on a no-pickup condition, while preserving main-clause absence claims', async () => {
+    const conditional = "If no such pickup occurs, verify the target's progress/liveness before retrying.";
+    getWorkItem.mockResolvedValue({ id: 'WI-CONDITIONAL-ABSENCE', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: conditional, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(conditional);
+
+    const conditionalResult = await one({ id: 'WI-CONDITIONAL-ABSENCE', checkpoint: conditional });
+
+    expect(conditionalResult.ok).toBe(true);
+    expect(conditionalResult).not.toHaveProperty('absenceLint');
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+
+    const mainClause = 'If the wake is delayed, there is no receipt to verify the target progress.';
+    getWorkItem.mockResolvedValue({ id: 'WI-MAIN-CLAUSE-ABSENCE', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: mainClause, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(mainClause);
+
+    const mainClauseResult = await one({ id: 'WI-MAIN-CLAUSE-ABSENCE', checkpoint: mainClause });
+
+    expect(mainClauseResult.ok).toBe(true);
+    expect(mainClauseResult.absenceLint).toMatchObject({
+      flagged: true,
+      claims: [{ claim: expect.stringContaining('no receipt'), recheck: expect.any(String) }],
+    });
   });
 
   it('stays absent for an ordinary progress checkpoint', async () => {

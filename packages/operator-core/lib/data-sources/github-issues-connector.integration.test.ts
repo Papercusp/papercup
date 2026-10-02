@@ -262,6 +262,8 @@ describe('GitHub Issues ticket connector (P-019)', () => {
     expect(result).toEqual({
       status: 'progressed', tickets: { created: 2, updated: 0 }, statusChanges: 3,
       comments: { written: 1, skipped: 1 }, nextAt: null,
+      // No admission rule exists, so no ticket becomes work (P-020, ticket-admission.integration.test.ts).
+      admissions: { matched: 0, admitted: 0, existing: 0, refused: 0, refreshed: 0, failed: 0, lastError: null },
     });
 
     const rows = await connectorRows();
@@ -389,6 +391,7 @@ describe('GitHub Issues ticket connector (P-019)', () => {
     expect(again).toEqual({
       status: 'progressed', tickets: { created: 0, updated: 2 }, statusChanges: 0,
       comments: { written: 1, skipped: 1 }, nextAt: null,
+      admissions: { matched: 0, admitted: 0, existing: 0, refused: 0, refreshed: 0, failed: 0, lastError: null },
     });
     const rows = await connectorRows();
     expect(rows).toHaveLength(5);

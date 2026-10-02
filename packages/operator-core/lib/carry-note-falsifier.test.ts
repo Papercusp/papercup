@@ -9,7 +9,9 @@
  * Kept in its own file (not carry-note.test.ts) so it does not re-stale proofs other plans have bound
  * to that file's bytes. Pure — no DB.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 import {
   CARRY_ROW_SOFT_CAPS,
   FALSIFIER_MISSING_NOTE,
@@ -145,5 +147,36 @@ describe('checksMissingFalsifier — the warn-only advisory population (EI-23771
   it('the note names both remedies so it is actionable', () => {
     expect(FALSIFIER_MISSING_NOTE).toContain('falsifier');
     expect(FALSIFIER_MISSING_NOTE).toContain('sampleAdequate:false');
+  });
+});
+
+// Both checkpoint surfaces take the same `checks` rows, so they must carry the same falsifier
+// contract. The handler suites mock heavily (and other plans bind proofs to their bytes), so the
+// cross-surface PARITY is guarded here against the comment-stripped sources instead.
+describe('falsifier wiring parity across loop:checkpoint and work_items:checkpoint (EI-23771449112267271)', () => {
+  const REQUIRED_TOKENS = [
+    'falsifier:',
+    'sampleAdequate:',
+    'CARRY_ROW_SOFT_CAPS.falsifier',
+    'checksMissingFalsifier',
+    'falsifierMissing',
+  ] as const;
+  const gaps = (src: string): string[] => REQUIRED_TOKENS.filter((token) => !src.includes(token));
+  const live = (rel: string): string => {
+    const url = new URL(rel, import.meta.url);
+    return stripCommentsOnly(readFileSync(url, 'utf8'), url.pathname) as string;
+  };
+
+  it.each([
+    ['loop:checkpoint', './agent-tools/loop/checkpoint.ts'],
+    ['work_items:checkpoint', './agent-tools/work_items/checkpoint.ts'],
+  ])('%s accepts, caps, and advises on the falsifier in LIVE code (not just a comment)', (_name, rel) => {
+    expect(gaps(live(rel))).toEqual([]);
+  });
+
+  it('the detector is not vacuous: a surface missing the wiring, or only mentioning it in a comment, is reported', () => {
+    expect(gaps('const checks = z.object({ recheck: z.string() });')).toEqual([...REQUIRED_TOKENS]);
+    const commentOnly = stripCommentsOnly(`// falsifier: sampleAdequate: falsifierMissing\nconst x = 1;`, 'x.ts') as string;
+    expect(gaps(commentOnly)).toEqual([...REQUIRED_TOKENS]);
   });
 });
