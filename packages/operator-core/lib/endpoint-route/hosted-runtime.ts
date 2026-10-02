@@ -429,12 +429,16 @@ export async function createHostedRuntime(
   // so without it the browser route forwards the raw body to the controller and loses the
   // server-derived actor and D-015 bring-up (measured: canary host-0f9b1ba8db30d143becc130a
   // retries r2..r6 all reached the workflow with neither).
-  const provisioning = dependencies.hostedBrowser?.provisioning ?? (configuration.provisioningDbosAppVersion
+  // The same client also enqueues lifecycle actions and destroy for the browser action route
+  // (WI-10005363): forwarding those raw lost the actor and answered a false 504.
+  const dbosClient = configuration.provisioningDbosAppVersion
     ? createWorkspaceHostProvisioningClient({
         systemDatabaseUrl: getHarnessAdminUrlWithSource().url,
         appVersion: configuration.provisioningDbosAppVersion,
       })
-    : undefined);
+    : undefined;
+  const provisioning = dependencies.hostedBrowser?.provisioning ?? dbosClient;
+  const operations = dependencies.hostedBrowser?.operations ?? dbosClient;
   const firstWorkspace = dependencies.hostedBrowser?.firstWorkspace ?? createHostedFirstWorkspace(
     createHostedFirstWorkspaceDependencies({
       controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
@@ -461,6 +465,7 @@ export async function createHostedRuntime(
       runTenant: dependencies.hostedBrowser?.runTenant ?? runTenant,
       firstWorkspace,
       ...(provisioning ? { provisioning } : {}),
+      ...(operations ? { operations } : {}),
       issueSessionCookie:
         dependencies.hostedBrowser?.issueSessionCookie ??
         ((sessionId, expiresAt) => sessionCookies.serialize(sessionId, expiresAt, new Date())),
