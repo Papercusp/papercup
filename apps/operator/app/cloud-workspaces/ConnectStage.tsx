@@ -376,9 +376,9 @@ export function ConnectStage({
                 label="AWS setup template"
                 hint="Enter your account ID and region to download the CloudFormation template. Create the stack in your AWS account, then copy its Outputs into the resource fields below. Use OperatorRoleArn with the Assume an IAM role credential source."
               >
-                {setupTemplateUrl ? <Button asChild variant="ghost">
+                {setupTemplateUrl ? <Button asChild variant="ghost" aria-label="Download AWS setup template">
                   <a href={setupTemplateUrl} download>Download AWS setup template</a>
-                </Button> : <Button variant="ghost" disabled>Download AWS setup template</Button>}
+                </Button> : <Button variant="ghost" disabled aria-label="Download AWS setup template">Download AWS setup template</Button>}
               </Field> : null}
               <Field label="Credential source" hint="Credentials resolve on this machine using the AWS SDK.">
                 {(hintId) => <Select value={draft.credentialMethod} ariaLabel="AWS credential source" describedBy={hintId}
