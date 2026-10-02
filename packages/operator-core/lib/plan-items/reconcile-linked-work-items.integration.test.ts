@@ -158,6 +158,7 @@ const {
   reconcileOrphanedPlanItemWorkItems,
   reconcilePlanAuthoredDependenciesNow,
   resyncPlanItemLaneNow,
+  syncLinkedWorkItemsToPlanLane,
   planLaneBlockerRef,
   PLAN_AUTHORED_BLOCKERS_KEY,
 } = await import('./reconcile-linked-work-items');
@@ -1216,6 +1217,31 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   });
 });
 
+describe('syncLinkedWorkItemsToPlanLane failure reporting (WI-10003685)', () => {
+  it('returns a structured read failure when linked-item lookup throws', async () => {
+    const originalSql = h.sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.sql = (() => {
+      throw new Error('injected: linked-item lookup unavailable');
+    }) as unknown as postgres.Sql;
+
+    try {
+      const result = await syncLinkedWorkItemsToPlanLane(
+        { planSlug: 'p-read-failure', itemId: 'P-FAIL', harnessSlug: 'sheets' },
+        'blocked',
+      );
+
+      expect(result.failures).toEqual([
+        { stage: 'linked-work-item-read', message: 'injected: linked-item lookup unavailable' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"plan_lane_sync_failure"'));
+    } finally {
+      h.sql = originalSql;
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocked-by (EI-18732669095544832)', () => {
   beforeEach(() => {
     h4.mergeWorkItemPayload.mockClear();
@@ -1536,6 +1562,9 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
 
     expect(failed).not.toBeNull();
     expect(failed!.ungated).toEqual([]);
+    expect(failed!.failures).toEqual([
+      { stage: 'apply-gate', workItemId: 'WI-retry', message: 'concurrent lifecycle guard' },
+    ]);
     expect((row.payload?.externalBlockers as Array<{ status: string }>).some((b) => b.status === 'active')).toBe(true);
     expect(h4.mergeWorkItemPayload).not.toHaveBeenCalled();
 
