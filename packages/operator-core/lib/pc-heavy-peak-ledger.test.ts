@@ -5,6 +5,9 @@
  * and appends one peak line per job to a bounded ledger
  * (<PC_HEAVY_DIR>/job-peaks.tsv), which a later slice derives the reserve from.
  *
+ * The derive half: with PC_HEAVY_MEM_PER_SLOT_GIB unset, the admission clamp
+ * reads the ledger and budgets max-of-recent-peaks + 10% per slot.
+ *
  * The property guarded first is that the measurement covers the WHOLE job tree:
  * the allocation happens in a grandchild, and the leader alone holds far less
  * than the asserted floor, so a leader-only (or cgroup-of-the-caller)
@@ -108,6 +111,84 @@ describe.skipIf(process.platform !== 'linux')('pc-heavy per-job peak ledger (WI-
     const peaks = readLedger(ledger);
     expect(peaks.map((p) => p.label)).toEqual(['old-3', 'newest']);
   }, 30_000);
+
+  describe('derived per-slot memory reserve', () => {
+    /** Admission with a fixed 6-slot ask against 28 GiB free; PC_HEAVY_DEBUG prints the decision. */
+    function admit(env: Record<string, string> = {}) {
+      const run = spawnSync('bash', [SCRIPT, '--', 'true'], {
+        ...pcHeavyFixtureOptions(dir, {
+          PATH: process.env.PATH ?? '',
+          PC_HEAVY_NO_SELF_COPY: '1',
+          PC_HEAVY_DIR: dir,
+          PC_HEAVY_DEBUG: '1',
+          PC_HEAVY_SLOTS: '6',
+          PC_HEAVY_IONICE: '',
+          PC_HEAVY_PREEMPTIBLE: '0',
+          PC_HEAVY_PSI_ADMISSION: '0',
+          PC_HEAVY_MEM_PSI_OVERRIDE: '0',
+          PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '28',
+          ...env,
+        }), encoding: 'utf8', timeout: 20_000,
+      });
+      expect(run.status, run.stderr).toBe(0);
+      const m = /\[pc-heavy\] slots=(\d+) .* mem_per_slot=(\d+)GiB source=(\S+)/.exec(run.stderr);
+      if (!m) throw new Error(`no debug decision line in:\n${run.stderr}`);
+      return { slots: Number(m[1]), perSlotGib: Number(m[2]), source: m[3] };
+    }
+    /** Rows one hour apart by default, so 12 rows span 11 h. */
+    function seed(rows: Array<{ anon: number; samples?: number; label?: string }>, stepSec = 3600) {
+      writeFileSync(join(dir, 'job-peaks.tsv'), rows.map((r, i) =>
+        `at=${1_790_000_000 + i * stepSec} anon_mib=${r.anon} rss_mib=${r.anon} samples=${r.samples ?? 5} secs=10 exit=0 label=${r.label ?? 'seeded'}`,
+      ).join('\n') + '\n');
+    }
+    // These cases exercise the statistic, so the one-day cold-start span is
+    // lowered to what the seeded rows cover; the span itself has its own case.
+    const SPAN = { PC_HEAVY_MEM_PER_SLOT_MIN_SPAN_SEC: '3600' };
+
+    it('keeps 14 GiB until the ledger spans a full day of the host\'s jobs (cold-start guard)', () => {
+      // 39 installs inside one hour is exactly the dev tower's first ledger (2026-10-02).
+      seed(Array.from({ length: 39 }, () => ({ anon: 3595 })), 60);
+      expect(admit()).toMatchObject({ slots: 2, perSlotGib: 14, source: 'default' });
+      seed(Array.from({ length: 39 }, () => ({ anon: 3595 })), 2400); // ~25 h
+      expect(admit()).toMatchObject({ slots: 6, perSlotGib: 4, source: 'derived:q100-of-3595MiB' });
+    }, 30_000);
+
+    it('uses the measured peaks, so a host whose jobs are small admits more than the fixed 14 GiB allows', () => {
+      // Control: an empty ledger keeps the measured constant: 28 / 14 => 2 slots.
+      expect(admit(SPAN)).toEqual({ slots: 2, perSlotGib: 14, source: 'default' });
+      // 12 jobs peaking at most 1,800 MiB => ceil(1800 * 1.1 / 1024) = 2 GiB => 28 / 2 = 14, capped by the 6 asked.
+      seed(Array.from({ length: 12 }, (_, i) => ({ anon: 700 + i * 100 })));
+      expect(admit(SPAN)).toEqual({ slots: 6, perSlotGib: 2, source: 'derived:q100-of-1800MiB' });
+    }, 30_000);
+
+    it('raises the reserve above 14 GiB when the host really runs bigger jobs', () => {
+      seed(Array.from({ length: 12 }, () => ({ anon: 20_000 })));
+      // ceil(20000 * 1.1 / 1024) = 22 GiB => 28 / 22 = 1 slot.
+      expect(admit(SPAN)).toMatchObject({ slots: 1, perSlotGib: 22 });
+    }, 30_000);
+
+    it('ignores single-sample rows and words inside the label', () => {
+      seed([
+        ...Array.from({ length: 12 }, () => ({ anon: 1000, label: 'tsc anon_mib=900000 samples=9' })),
+        { anon: 900_000, samples: 1 },
+      ]);
+      expect(admit(SPAN)).toMatchObject({ perSlotGib: 2, source: 'derived:q100-of-1000MiB' });
+    }, 30_000);
+
+    it('falls back to 14 below the minimum job count, and an explicit PC_HEAVY_MEM_PER_SLOT_GIB always wins', () => {
+      seed(Array.from({ length: 9 }, () => ({ anon: 1000 })));
+      expect(admit(SPAN)).toMatchObject({ perSlotGib: 14, source: 'default' });
+      seed(Array.from({ length: 12 }, () => ({ anon: 1000 })));
+      expect(admit({ PC_HEAVY_MEM_PER_SLOT_GIB: '7' })).toEqual({ slots: 4, perSlotGib: 7, source: 'env' });
+      expect(admit({ ...SPAN, PC_HEAVY_PEAK_LEDGER: 'off' })).toMatchObject({ perSlotGib: 14, source: 'default' });
+    }, 30_000);
+
+    it('applies a lower quantile when asked', () => {
+      seed(Array.from({ length: 10 }, (_, i) => ({ anon: (i + 1) * 1000 })));
+      // q50 of 1000..10000 is the 5th value, 5000 MiB => ceil(5000 * 1.1 / 1024) = 6 GiB.
+      expect(admit({ ...SPAN, PC_HEAVY_MEM_PER_SLOT_QUANTILE: '50' })).toMatchObject({ perSlotGib: 6, source: 'derived:q50-of-5000MiB' });
+    }, 30_000);
+  });
 
   it('labels a job from its command words through the ordinary admission route, without leaking the label to the job', () => {
     const job = join(dir, 'probe-job.sh');

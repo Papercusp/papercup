@@ -46,10 +46,16 @@
 #                         scarce. Applies to a FIXED PC_HEAVY_SLOTS too, never
 #                         clamps below 1, and fails open on any unreadable
 #                         input. off/false/no also disable.
-#   PC_HEAVY_MEM_PER_SLOT_GIB  GiB budgeted per admitted heavy run (default 14 —
-#                         measured `tsc -p packages/operator-core` peak RSS
-#                         12.74 GiB on 2026-09-27; plan
+#   PC_HEAVY_MEM_PER_SLOT_GIB  GiB budgeted per admitted heavy run. When unset
+#                         it is DERIVED from this host's job-peaks ledger (see
+#                         PC_HEAVY_PEAK_LEDGER and _mem_per_slot_resolve;
+#                         WI-10005184), falling back to 14 — the measured
+#                         `tsc -p packages/operator-core` peak RSS 12.74 GiB on
+#                         2026-09-27 plus margin (plan
 #                         host-memory-reduction-2026-09-27 P-003).
+#   PC_HEAVY_MEM_PER_SLOT_QUANTILE / _WINDOW / _MIN_JOBS / _MIN_SPAN_SEC
+#                         derivation knobs (defaults 100 = max / last 100 jobs /
+#                         at least 10 / spanning at least 86400 s).
 #   PC_HEAVY_MEM_PSI_BACKOFF  memory PSI full avg10 at or above which the
 #                         budget is HALVED (default 5, the threshold
 #                         infra-liveness already alerts on). A box in reclaim
@@ -2188,6 +2194,83 @@ _gate_recheck_refusal() {
 # heavy run is what a busy box does, not a deadlock. This is a safety reserve
 # like the gate clamp, so (unlike load adaptation) it applies to an explicit
 # PC_HEAVY_SLOTS too. Escape hatch: PC_HEAVY_MEM_CLAMP=0.
+#
+# The per-slot GiB is resolved ONCE per invocation by _mem_per_slot_resolve
+# (WI-10005184), in this order:
+#   1. env     — PC_HEAVY_MEM_PER_SLOT_GIB when set (a garbage value -> 14).
+#   2. derived — from this host's per-job peak ledger (PC_HEAVY_PEAK_LEDGER,
+#      written by the preemptible monitor): the PC_HEAVY_MEM_PER_SLOT_QUANTILE
+#      (default 100 = max) of the anonymous-memory peaks of the last
+#      PC_HEAVY_MEM_PER_SLOT_WINDOW (default 100) jobs that ran >= 3 samples,
+#      plus 10% headroom, rounded UP to whole GiB, clamped to [1, 64]. Needs at
+#      least PC_HEAVY_MEM_PER_SLOT_MIN_JOBS (default 10) such jobs, spanning at
+#      least PC_HEAVY_MEM_PER_SLOT_MIN_SPAN_SEC (default 86400 = one day of
+#      this host's workload) from oldest to newest.
+#   3. default — 14, the measured constant above.
+# Jobs under 3 samples are excluded because their only sample is taken just
+# after start, which understates a compile's peak. The default statistic is the
+# MAX, mirroring how the 14 was set (largest measured peak plus ~10%): the
+# ledger mixes job types (installs, compiles, test sweeps), and any lower
+# quantile of a mixture can undersize the reserve for its largest type.
+_mem_per_slot_gib=14
+_mem_per_slot_source=default
+_mem_per_slot_resolve() {
+  local _env="${PC_HEAVY_MEM_PER_SLOT_GIB:-}" _ledger='' _q='' _window='' _min='' _mib=''
+  if [ -n "$_env" ]; then
+    case "$_env" in
+      *[!0-9]*) _mem_per_slot_gib=14; _mem_per_slot_source=default ;;
+      *) _mem_per_slot_gib="$_env"; _mem_per_slot_source=env ;;
+    esac
+    return 0
+  fi
+  _ledger="${PC_HEAVY_PEAK_LEDGER-${_dir:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}/job-peaks.tsv}"
+  case "$_ledger" in ''|0|off|OFF|false|FALSE|no|NO) return 0 ;; esac
+  [ -r "$_ledger" ] || return 0
+  _q="${PC_HEAVY_MEM_PER_SLOT_QUANTILE:-100}"
+  _window="${PC_HEAVY_MEM_PER_SLOT_WINDOW:-100}"
+  _min="${PC_HEAVY_MEM_PER_SLOT_MIN_JOBS:-10}"
+  _span="${PC_HEAVY_MEM_PER_SLOT_MIN_SPAN_SEC:-86400}"
+  case "$_q" in ''|0|*[!0-9]*) _q=100 ;; esac
+  [ "$_q" -gt 100 ] && _q=100
+  case "$_window" in ''|0|*[!0-9]*) _window=100 ;; esac
+  case "$_min" in ''|0|*[!0-9]*) _min=10 ;; esac
+  case "$_span" in ''|*[!0-9]*) _span=86400 ;; esac
+  # Field parse stops at label=, so command words can never pose as numbers.
+  # The span guard (oldest-to-newest `at` of the windowed rows) is the
+  # cold-start rail: a fresh ledger holds whatever ran first, and measured
+  # 2026-10-02 on the dev tower its first 39 rows were all npm installs
+  # (max 3.6 GiB) with no test sweep, which would have loosened the clamp
+  # 3.5x on jobs it had never seen.
+  _mib="$(awk '
+      {
+        a = ""; s = ""; t = ""
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^label=/) break
+          if ($i ~ /^anon_mib=[0-9]+$/) a = substr($i, 10)
+          else if ($i ~ /^samples=[0-9]+$/) s = substr($i, 9)
+          else if ($i ~ /^at=[0-9]+$/) t = substr($i, 4)
+        }
+        if (a != "" && s != "" && t != "" && s + 0 >= 3) print t, a
+      }' "$_ledger" 2>/dev/null | tail -n "$_window" | sort -k2,2n | awk -v q="$_q" -v min="$_min" -v span="$_span" '
+      {
+        v[NR] = $2
+        if (NR == 1 || $1 < lo) lo = $1
+        if (NR == 1 || $1 > hi) hi = $1
+      }
+      END {
+        if (NR < min || hi - lo < span) exit 1
+        i = int((q * NR + 99) / 100); if (i < 1) i = 1; if (i > NR) i = NR
+        print v[i]
+      }')" || return 0
+  case "$_mib" in ''|*[!0-9]*) return 0 ;; esac
+  # +10% headroom, ceil to GiB: ceil(mib * 1.1 / 1024) == ceil(mib * 11 / 10240).
+  _mem_per_slot_gib=$(( (_mib * 11 + 10239) / 10240 ))
+  [ "$_mem_per_slot_gib" -lt 1 ] && _mem_per_slot_gib=1
+  [ "$_mem_per_slot_gib" -gt 64 ] && _mem_per_slot_gib=64
+  _mem_per_slot_source="derived:q${_q}-of-${_mib}MiB"
+  return 0
+}
+
 _mem_clamp_slots() {
   local _n="$1"
   case "${PC_HEAVY_MEM_CLAMP:-1}" in
@@ -2203,7 +2286,7 @@ _mem_clamp_slots() {
   # Unreadable/garbage MemAvailable ⇒ fail open, exactly as if no clamp existed.
   case "$_avail_gib" in ''|*[!0-9]*) echo "$_n"; return ;; esac
 
-  local _per="${PC_HEAVY_MEM_PER_SLOT_GIB:-14}"
+  local _per="${_mem_per_slot_gib:-14}"
   case "$_per" in ''|*[!0-9]*) _per=14 ;; esac
   [ "$_per" -lt 1 ] && _per=1
 
@@ -2258,6 +2341,7 @@ if [ -z "$_slots_base" ]; then
 fi
 _gate_active=0
 _gate_reserve_active && _gate_active=1
+_mem_per_slot_resolve
 _slots="$(_effective_slots)"
 _gate_phase=""
 _gate_proto=""
@@ -2345,7 +2429,7 @@ if [ "$_is_focused_command" = 1 ]; then
   fi
 fi
 if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
-  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active phase=${_gate_phase:-none} div=$_gate_div focused=$_focused_lane" >&2
+  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active phase=${_gate_phase:-none} div=$_gate_div focused=$_focused_lane mem_per_slot=${_mem_per_slot_gib}GiB source=$_mem_per_slot_source" >&2
 fi
 _slot_dir="$_dir"
 if [ "$_focused_lane" = 1 ]; then
@@ -3259,7 +3343,8 @@ if [ -z "$_held" ]; then
          "pid $$, waiting up to ${_timeout}s" >&2
   else
     echo "[pc-heavy] queued for a heavy slot (all $_slots slot(s) busy) —" \
-         "pid $$, waiting up to ${_timeout}s" >&2
+         "pid $$, waiting up to ${_timeout}s;" \
+         "memory reserve ${_mem_per_slot_gib} GiB/slot ($_mem_per_slot_source)" >&2
   fi
   _wait_start="${EPOCHSECONDS:-$(date +%s)}"  # EI-21894520557549786: fork-free clock read
   _fallback_deadline=$(( _wait_start + _timeout ))
