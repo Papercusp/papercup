@@ -67,8 +67,17 @@ describe("staging systemd drop-ins keep the serving alias and runtime generation
 
   it("builds from that same tree and enables proof-bound reuse before plain-node start", () => {
     expect(bundle).toContain("Environment=PAPERCUSP_BUNDLE_REUSE_FRESH=1");
+    // ExecStartPre builds from the stable alias under the shared staging-sync
+    // lock, through the lock-attribution helper when the generation ships it and
+    // through a bare shared flock otherwise (WI-10005456).
     expect(bundle).toContain(
-      "ExecStartPre=/usr/bin/flock -s /tmp/papercup-staging-sync.lock %h/papercupai-workspace/papercusp-staging.current/apps/operator/bin/bundle-host.sh",
+      `ExecStartPre=/usr/bin/bash -c 'root="%h/papercupai-workspace/papercusp-staging.current"; helper="$$root/apps/operator/scripts/systemd/staging-lock-attribution.sh"`,
+    );
+    expect(bundle).toContain(
+      'exec /usr/bin/bash "$$helper" api-pre /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"',
+    );
+    expect(bundle).toContain(
+      'exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"',
     );
     expect(bundle).toContain(
       'export PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"',
@@ -79,7 +88,8 @@ describe("staging systemd drop-ins keep the serving alias and runtime generation
 
   it("builds and marks an isolated candidate ready before publishing the alias", () => {
     const sync = readFileSync(STAGING_SYNC_SCRIPT, "utf8");
-    const acquire = sync.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
+    expect(sync).toContain('STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"');
+    const acquire = sync.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
     const prepare = sync.indexOf('prepare_staging_candidate "$target"');
     const build = sync.indexOf(
       'PAPERCUSP_INTEGRATION_ROOT="$SYNC_ROOT" PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$bundle_script"',
