@@ -44,9 +44,9 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
     } satisfies InteractiveUsageFreshness,
   };
 
-  const aggregate = (cost: string, samples: number) => ({
-    cost, samples: String(samples), priced_samples: String(samples),
-    unpriced_samples: '0', sessions: String(samples), inside_pot_cost: '0',
+  const aggregate = (cost: string, samples: number, unpricedSamples = 0) => ({
+    cost, samples: String(samples), priced_samples: String(samples - unpricedSamples),
+    unpriced_samples: String(unpricedSamples), sessions: String(samples), inside_pot_cost: '0',
   });
 
   // These are query results, not a substitute SQL implementation. The real-PG
@@ -55,6 +55,7 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
   function ledgerSql(
     potUsd: string | null, sessionUsd: string, lineageUsd: string, lineageSamples: number,
     observed?: Array<{ leg: string; numericParameters: unknown[] }>,
+    lineageUnpricedSamples = 0,
   ): Sql {
     const query = async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join('?');
@@ -63,7 +64,7 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
           : statement.includes('GROUP BY s.harness_slug') ? 'pot' : null;
       if (leg === null) throw new Error('Unexpected query in numerator fixture');
       observed?.push({ leg, numericParameters: values.filter(value => typeof value === 'number') });
-      if (leg === 'lineage') return [aggregate(lineageUsd, lineageSamples)];
+      if (leg === 'lineage') return [aggregate(lineageUsd, lineageSamples, lineageUnpricedSamples)];
       if (leg === 'session') return [aggregate(sessionUsd, Number(sessionUsd) === 0 ? 0 : 1)];
       if (statement.includes('GROUP BY s.harness_slug')) {
         return potUsd === null ? [] : [{ harness_slug: 'diagnostic-pot', ...aggregate(potUsd, 1) }];
@@ -128,6 +129,42 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
     expect(await goalSpend(sql, opts)).toMatchObject({ costUsd: 1.5, samples: 1 });
     expect(await sessionSpendForGoal(sql, opts)).toMatchObject({ costUsd: 0.55, samples: 1 });
     expect(await lineageSpendForGoal(sql, opts)).toMatchObject({ costUsd: 1.05, samples: 3 });
+  });
+
+  it('no-samples-null: an empty attributed population stays unmeasured despite priced diagnostics', async () => {
+    const result = await computeGoalSpendRollup(ledgerSql('1.50', '0.55', '0', 0), opts);
+    expect(result.spentCents).toBeNull();
+    expect(result.unmeasuredReason).toBe('no-lineage-samples');
+    expect(result.lineageCents).toBe(0);
+    expect(result.totalCents).toBe(205);
+  });
+
+  it('priced-zero-measured: an observed priced zero is a measured numeric zero', async () => {
+    const result = await computeGoalSpendRollup(ledgerSql(null, '0', '0', 1), opts);
+    expect(result.spentCents).toBe(0);
+    expect(result.unmeasuredReason).toBeNull();
+    expect(result.lineage.samples).toBe(1);
+    expect(result.lineage.pricedSamples).toBe(1);
+  });
+
+  it('unpriced-null: an incomplete attributed population keeps its priced floor and null snapshot', async () => {
+    const result = await computeGoalSpendRollup(ledgerSql(null, '0', '0.40', 2, undefined, 1), opts);
+    expect(result.spentCents).toBeNull();
+    expect(result.unmeasuredReason).toBe('unpriced-lineage-samples');
+    expect(result.lineageCents).toBe(40);
+    expect(result.lineage.unpricedSamples).toBe(1);
+  });
+
+  it('UNMEASURED CALIBRATION: the raw ledger reader distinguishes absence, priced zero and partial pricing', async () => {
+    expect(await lineageSpendForGoal(ledgerSql('1.50', '0.55', '0', 0), opts)).toMatchObject({
+      costUsd: 0, samples: 0, pricedSamples: 0, unpricedSamples: 0,
+    });
+    expect(await lineageSpendForGoal(ledgerSql(null, '0', '0', 1), opts)).toMatchObject({
+      costUsd: 0, samples: 1, pricedSamples: 1, unpricedSamples: 0,
+    });
+    expect(await lineageSpendForGoal(ledgerSql(null, '0', '0.40', 2, undefined, 1), opts)).toMatchObject({
+      costUsd: 0.4, samples: 2, pricedSamples: 1, unpricedSamples: 1,
+    });
   });
 });
 
