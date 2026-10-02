@@ -800,7 +800,7 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     reconcileStrandedLatch: async () => ({ kind: 'noop' }),
     // WI-10005573: same reason — the superseded-holder reaper runs for every
     // swept goal and would otherwise query the bare `{}` SQL stub.
-    retireSuperseded: async () => ({ retired: [], leftArmed: [] }),
+    retireSuperseded: async () => ({ retired: [], leftArmed: [], awaitsCancelled: 0 }),
     pauseNeedsHuman: async () => true,
     escalateGiveUp: async () => {},
     // Existing holder-recovery cases model a completed first turn. Without an

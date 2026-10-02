@@ -2397,7 +2397,7 @@ export async function runGoalHolderRespawnOnce(
         if (retirement.retired.length > 0 || retirement.leftArmed.length > 0) {
           console.info(
             `[goal-holder-respawner] ${goal.goalId}: retired superseded holder GOAL rows ` +
-              `[${retirement.retired.join(', ')}]` +
+              `[${retirement.retired.join(', ')}]; cancelled ${retirement.awaitsCancelled} goal-scoped await(s)` +
               (retirement.leftArmed.length > 0
                 ? `; refused (left armed) [${retirement.leftArmed.join(', ')}]`
                 : ''),

@@ -13,6 +13,8 @@ import { clearImpliedModes, setMode } from '../modes/store';
 import { GOAL_MODE } from '../modes/goal-session';
 import { deactivateLoop } from '../harness/routines/loop';
 import { notifyAgentOrdersChanged } from '../agent-orders-notify';
+import { goalPlanPlacementChangedKey, planAcceptanceChangedKey } from '../agent-obligations';
+import { cancelAwaitsForSubscribersOnKeys } from '../events/await/store';
 import { sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
@@ -154,6 +156,22 @@ export interface SupersededGoalHolderRetirement {
   retired: string[];
   /** Predecessors whose GOAL row setMode refused (e.g. an owner-directed row). Reported, never forced. */
   leftArmed: string[];
+  /** Pending goal-scoped event awaits cancelled for the retired predecessors. */
+  awaitsCancelled: number;
+}
+
+/**
+ * The event keys a goal holder arms BECAUSE it holds this goal: the goal's own
+ * plan-placement signal plus the acceptance signal of every plan attributed to the
+ * goal (`harness_plans.goal_id`). Both are built through the shared key builders the
+ * obligation providers and producers use, so the cancel targets exactly the keys a
+ * writer fires.
+ */
+async function goalScopedAwaitKeys(sql: Sql, workspaceId: string, goalId: string): Promise<string[]> {
+  const plans = await sql<Array<{ plan_slug: string }>>`
+    SELECT plan_slug FROM harness_shared.harness_plans
+     WHERE workspace_id = ${workspaceId} AND goal_id = ${goalId}`;
+  return [goalPlanPlacementChangedKey(goalId), ...plans.map((p) => planAcceptanceChangedKey(p.plan_slug))];
 }
 
 /**
@@ -236,5 +254,19 @@ export async function retireSupersededGoalHolderModes(
       setBy,
     });
   }
-  return { retired, leftArmed };
+  // The rows were not the only thing keeping a replaced holder busy: each one had
+  // re-armed `goal:plan-placement:<goal>` (and its plans' acceptance keys) on every
+  // turn, so the next placement change resumed all of them headless at once
+  // (measured 2026-10-02 18:03Z: one fire woke six superseded 60d3a8 holders, each
+  // of which re-armed within a minute). Cancel exactly those pending registrations,
+  // for exactly the owners just retired; a refused (leftArmed) owner keeps them.
+  let awaitsCancelled = 0;
+  if (retired.length > 0) {
+    awaitsCancelled = await cancelAwaitsForSubscribersOnKeys(
+      retired,
+      await goalScopedAwaitKeys(sql, workspaceId, goalId),
+      { client: sql as unknown as NonNullable<Parameters<typeof cancelAwaitsForSubscribersOnKeys>[2]>['client'] },
+    );
+  }
+  return { retired, leftArmed, awaitsCancelled };
 }

@@ -17,7 +17,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { boundedOrgTxn } from '../../pg-bounded-txn';
+import { boundedOrgTxn, type BoundedOrgTxnOptions } from '../../pg-bounded-txn';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
 import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
@@ -712,6 +712,13 @@ export async function cancelAwaitsForSubscribersOnKeys(
     includeNotePrefix?: string;
     /** Restrict cancellation to one-shot rows; standing watches remain armed. */
     onceOnly?: boolean;
+    /**
+     * Run the cancel + delivery settle on this client instead of the org pool — for a
+     * caller that already owns its connection (a sweep handed `sql`, or a fixture DB)
+     * so the retirement it performs and this cancel land on the same database
+     * (WI-10005573). Still bounded by the same txn timeouts.
+     */
+    client?: BoundedOrgTxnOptions['client'];
   } = {},
 ): Promise<number> {
   if (subscriberIds.length === 0 || eventKeys.length === 0) return 0;
@@ -752,7 +759,7 @@ export async function cancelAwaitsForSubscribersOnKeys(
       );
       return cancelled;
     },
-    AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
+    options.client ? { ...AWAIT_PRE_REGISTRATION_TXN_OPTIONS, client: options.client } : AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
   );
   return rows.length;
 }
