@@ -73,6 +73,39 @@ describe('Playwright execution ledger attribution', () => {
     expect(sql.json).toHaveBeenCalledWith(expect.objectContaining({ root: '/proof', commitSha: 'proof-sha', worktreeDirty: false }));
   });
 
+  it.each([
+    [{ commit: null, porcelain: '' }, { commit: 'sha', porcelain: '' }, 'HEAD unreadable'],
+    [{ commit: 'sha', porcelain: '' }, { commit: 'sha', porcelain: null }, 'git status unreadable after'],
+    [{ commit: 'before', porcelain: '' }, { commit: 'after', porcelain: '' }, 'HEAD moved before -> after'],
+    [{ commit: 'sha', porcelain: ' M source.ts' }, { commit: 'sha', porcelain: '' }, 'before the run:  M source.ts'],
+    [{ commit: 'sha', porcelain: '' }, { commit: 'sha', porcelain: '?? generated.json' }, 'after the run: ?? generated.json'],
+  ] as const)('retains dirty snapshot cause alongside the original error (%s)', async (before, after, reason) => {
+    rootMocks.captureWorktreeSnapshot.mockReturnValueOnce(before).mockReturnValueOnce(after);
+    const reporter = new Reporter();
+    reporter.onBegin({ rootDir: '/repo/e2e' });
+    reporter.onTestEnd({ location: { file: '/repo/e2e/reader.spec.ts' } } as TestCase,
+      { status: 'failed', startTime: new Date(0), duration: 1, errors: [{ message: 'original assertion failure' }] } as unknown as TestResult);
+    reporter.onEnd();
+    await reporter.onExit();
+    const output = sql.mock.calls[0]!.slice(1)[5];
+    expect(output).toContain('original assertion failure');
+    expect(output).toContain(reason);
+    expect(output).toContain('[worktree provenance]');
+    expect(sql.json).toHaveBeenCalledWith(expect.objectContaining({ worktreeDirty: true }));
+    expect(sql.json.mock.calls[0]![0]).not.toHaveProperty('worktreeDirtyReason');
+  });
+
+  it('leaves a clean pass output empty', async () => {
+    rootMocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
+    const reporter = new Reporter();
+    reporter.onBegin({ rootDir: '/repo/e2e' });
+    reporter.onTestEnd({ location: { file: '/repo/e2e/reader.spec.ts' } } as TestCase,
+      { status: 'passed', startTime: new Date(0), duration: 1, errors: [] } as unknown as TestResult);
+    reporter.onEnd();
+    await reporter.onExit();
+    expect(sql.mock.calls[0]!.slice(1)[5]).toBeNull();
+  });
+
   it('reuses interactive scope aliases and preserves failed execution', async () => {
     vi.stubEnv('PAPERCUSP_HARNESS_SLUG', 'interactive-harness');
     vi.stubEnv('PAPERCUSP_WORKSPACE', 'interactive-workspace');
