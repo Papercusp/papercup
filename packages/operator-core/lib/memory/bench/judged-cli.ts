@@ -49,6 +49,7 @@ if (process.argv.includes('--label-cohort')) {
   if (!snapshot || !out) throw new Error('--label-cohort requires --snapshot and --label-out');
   const receipt = await collectIndependentCohort({ snapshot, out, llm: llmCall,
     ...(argValue('--reuse-authors-from') ? { reuseAuthorsFrom: argValue('--reuse-authors-from') } : {}),
+    ...(argValue('--reuse-calls-from') ? { reuseCallsFrom: argValue('--reuse-calls-from') } : {}),
     ...(argValue('--targets-per-partition') ? { targetsPerPartition: parseBlindTargetBudget(argValue('--targets-per-partition')!) } : {}),
     log: (message) => console.log(new Date().toISOString(), message) });
   // The receipt is a data-derived JSON dump that gets piped; process.exit() does not drain an
