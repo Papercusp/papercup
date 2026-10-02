@@ -1908,14 +1908,6 @@ export const BYPASS_REGISTRY = new Map([
   // Governing them would add an admission round-trip per call to operations whose
   // whole cost is less than the admission record they would write.
   [
-    "packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "defaultGitRunner awaits one local git plumbing read for a pinned measurement, with a 5-second timeout and 1 MiB output bound; it starts no resident worker or queue",
-    },
-  ],
-  [
     "packages/operator-core/lib/agent-tools/plans/audit.ts::resource-start-outside-admission",
     {
       disposition: "bypass",

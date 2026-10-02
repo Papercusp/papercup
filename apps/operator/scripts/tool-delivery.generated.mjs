@@ -9,17 +9,17 @@
 // registry in apps/operator/lib/tool-delivery-floors.ts. Editing this file
 // changes nothing durable: the next generator run overwrites it.
 //
-// Catalog measured: 941 tools.
+// Catalog measured: 942 tools.
 
-/** claude: 2 full + 63 compact = 99999 B of 100000 B. */
+/** claude: 1 full + 64 compact = 99994 B of 100000 B. */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99999,
+  spentBytes: 99994,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 2, compact: 63, deferred: 876 }),
+  counts: Object.freeze({ full: 1, compact: 64, deferred: 877 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
-    "activity:report": "full",
+    "activity:report": "compact",
     "build:typecheck": "compact",
     "capability:bash": "compact",
     "capability:bash_output": "compact",
@@ -221,15 +221,15 @@ export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** codex: 2 full + 63 compact = 99999 B of 100000 B. */
+/** codex: 1 full + 64 compact = 99994 B of 100000 B. */
 export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99999,
+  spentBytes: 99994,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 2, compact: 63, deferred: 876 }),
+  counts: Object.freeze({ full: 1, compact: 64, deferred: 877 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
-    "activity:report": "full",
+    "activity:report": "compact",
     "build:typecheck": "compact",
     "capability:bash": "compact",
     "capability:bash_output": "compact",
@@ -431,15 +431,15 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   ]),
 });
 
-/** omp: 2 full + 63 compact = 99999 B of 100000 B. */
+/** omp: 1 full + 64 compact = 99994 B of 100000 B. */
 export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
-  spentBytes: 99999,
+  spentBytes: 99994,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 2, compact: 63, deferred: 876 }),
+  counts: Object.freeze({ full: 1, compact: 64, deferred: 877 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
-    "activity:report": "full",
+    "activity:report": "compact",
     "build:typecheck": "compact",
     "capability:bash": "compact",
     "capability:bash_output": "compact",
