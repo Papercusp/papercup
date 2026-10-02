@@ -106,7 +106,7 @@ export interface ConditionWorkItemRow {
   /** Genuine item-scoped progress, distinct from the holder's process heartbeat. */
   lastProgressAt: string | null;
   expiresAt: string | null;
-  /** Latest capped deadline from a pending exact-run checkpoint:await by takenBy. */
+  /** Latest capped deadline from a pending same-holder checkpoint outcome await relevant to this condition. */
   checkpointAwaitCreatedAt?: string | null;
   checkpointAwaitExpiresAt?: string | null;
   /** Persisted work-item payload used to apply the claim-hold guard's provenance predicate. */
