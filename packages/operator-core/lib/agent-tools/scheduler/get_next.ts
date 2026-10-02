@@ -67,7 +67,7 @@ import {
   readFleetPauseState,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
-  diagnoseFleetScopeFeatureFamilyMatch,
+  diagnoseFleetScopeFeatureFamilyExclusions,
   diagnoseFleetScopeTerminalExhaustion,
   diagnoseFleetScopePlanTerminality,
   diagnoseFleetScopeLeaderLiveness,
@@ -1968,11 +1968,11 @@ export default defineTool({
     // === 0, the overwhelmingly common shape) never enters this block and pays nothing.
     let issueBreakdown: import('../../scheduler/get-next').IssueClaimExclusionBreakdown | null = null;
     let divergenceRecheck: 'resolved-by-retry' | 'confirmed-twice' | undefined;
-    // WI-7151 (EI-19318364531323846): the tier-1 (feature-family) match count, computed ONLY
+    // WI-7151 (EI-19318364531323846): the tier-1 (feature-family) breakdown, computed ONLY
     // when the issue-family breakdown would otherwise certify a false `spec_matches_nothing` —
-    // see diagnoseFleetScopeFeatureFamilyMatch's doc comment. Left null for every other miss
+    // Keep pre-floor matches as well as survivors; held features do not make the spec empty.
     // shape (zero extra cost on the common paths).
-    let featureFamilyMatched: number | null = null;
+    let featureBreakdown: import('../../scheduler/fleet-scope-admission').FeatureFamilyClaimExclusionBreakdown | null = null;
     let terminalExhaustion: import('../../scheduler/fleet-scope-admission').FleetScopeTerminalExhaustion | null = null;
     let planTerminality: import('../../scheduler/fleet-scope-admission').FleetScopePlanTerminality | null = null;
     let leaderLiveness: boolean | null = null;
@@ -2042,8 +2042,8 @@ export default defineTool({
         // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
         // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
         // spec whose promoted items are feature-family, per D-009).
-        [featureFamilyMatched, terminalExhaustion, planTerminality, leaderLiveness] = await Promise.all([
-          diagnoseFleetScopeFeatureFamilyMatch({
+        [featureBreakdown, terminalExhaustion, planTerminality, leaderLiveness] = await Promise.all([
+          diagnoseFleetScopeFeatureFamilyExclusions({
             scope: reconciliation.scope,
             harness: args.harness,
             workspaceId: ident.workspaceId,
@@ -2061,7 +2061,7 @@ export default defineTool({
             ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
           }),
         ]);
-        if (featureFamilyMatched && featureFamilyMatched > 0) {
+        if (featureBreakdown && featureBreakdown.claimable > 0) {
           // A genuine tier-1 candidate exists even though the claim (which just queried
           // this exact table) missed moments ago — retry once, same shape as the
           // claimable>0 divergence recheck above.
@@ -2093,7 +2093,7 @@ export default defineTool({
           );
           if (!retry.degraded && retry.value) {
             res = await arbitrateSchedulerClaim(retry.value);
-            featureFamilyMatched = null; // claimed on retry — nothing left to explain
+            featureBreakdown = null; // claimed on retry — nothing left to explain
           }
         }
       } else if (!issueBreakdown) {
@@ -2650,8 +2650,8 @@ export default defineTool({
     const issueBreakdownForMiss = !res && reconciliation.scope && !invalidHarnessKnownSlugs ? issueBreakdown : null;
     // WI-7151: same suppression as issueBreakdownForMiss — irrelevant once res is set (claimed
     // on a retry) or when the miss isn't fleet-scoped/is an invalid-harness miss.
-    const featureFamilyMatchedForMiss =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? featureFamilyMatched : null;
+    const featureBreakdownForMiss =
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? featureBreakdown : null;
     // EI-20186990913643457: same suppression as the other miss annotations — terminal
     // exhaustion only describes an actual fleet-scoped miss under a valid harness.
     const terminalExhaustionForMiss =
@@ -2723,7 +2723,7 @@ export default defineTool({
           ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
               cooldownDiag,
               issueBreakdown: issueBreakdownForMiss,
-              featureFamilyMatched: featureFamilyMatchedForMiss,
+              featureBreakdown: featureBreakdownForMiss,
               terminalExhaustion: terminalExhaustionForMiss,
               planTerminality: planTerminalityForMiss,
               leaderLiveness: leaderLivenessForMiss,
