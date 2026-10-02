@@ -15,7 +15,13 @@ import {
   type WorkspaceHostCleanRoomInstallSpec,
 } from "@papercusp/deployment-driver";
 import { WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { runGovernedOperation } from "@papercusp/operator-core/lib/resource-governor/execution";
+
+vi.mock("@papercusp/operator-core/lib/resource-governor/execution", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@papercusp/operator-core/lib/resource-governor/execution")>(),
+  runGovernedOperation: vi.fn(async (_input: unknown, operation: () => Promise<unknown>) => await operation()),
+}));
 
 import {
   BOOTC_TEMPLATE_PATH,
@@ -228,6 +234,17 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
   it("refuses when the Containerfile moved since the bake's recorded revision", async () => {
     const f = fixture({ containerfileDrift: true });
     await expect(buildBootcImageArtifact({ inputFile: f.inputFile, repoRoot: f.repo, emit: "artifact" }, NOW)).rejects.toThrow(/differs from its blob/);
+  });
+
+  it("refuses source verification when process admission is refused", async () => {
+    const f = fixture();
+    vi.mocked(runGovernedOperation).mockRejectedValueOnce(new Error("fixture admission refused"));
+    await expect(buildBootcImageArtifact({ inputFile: f.inputFile, repoRoot: f.repo, emit: "artifact" }, NOW))
+      .rejects.toThrow("fixture admission refused");
+    expect(runGovernedOperation).toHaveBeenLastCalledWith(expect.objectContaining({
+      namespace: "bootc-release-source-verification", admissionClass: "process", dedicatedClient: true,
+      demand: { fileDescriptors: 3 }, leaseTtlMs: 35000,
+    }), expect.any(Function));
   });
 
   it("composes an AWS request the release gate accepts, and refuses a report for another image", async () => {

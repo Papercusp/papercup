@@ -34,7 +34,7 @@
  * The emitted request is run through `evaluateWorkspaceHostReleaseGate` before it is written, so
  * a request this file emits is one the release will accept, or the refusal names the field.
  */
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -62,6 +62,8 @@ import {
 } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
+import { activeWorkspaceId } from "@papercusp/operator-core/lib/workspace-registry";
+import { governedExecutionLeaseTtlForTimeout, runGovernedOperation } from "@papercusp/operator-core/lib/resource-governor/execution";
 
 import {
   WORKSPACE_HOST_PUBLICATION_TRUST_POLICY,
@@ -467,10 +469,24 @@ export async function buildBootcTrustReport(
   };
 }
 
-function gitBlob(repoRoot: string, revision: string, path: string): Buffer {
-  const result = spawnSync("git", ["-C", repoRoot, "show", `${revision}:${path}`], { maxBuffer: 16 * 1024 * 1024 });
-  if (result.status !== 0) fail(`${path} is not readable at the bake's recorded revision ${revision}`);
-  return result.stdout;
+async function gitBlob(repoRoot: string, revision: string, path: string): Promise<Buffer> {
+  const timeoutMs = 30000;
+  return await runGovernedOperation({
+    workspaceId: activeWorkspaceId(),
+    namespace: "bootc-release-source-verification",
+    owner: process.env.PAPERCUSP_SID || `bootc-release-source:${process.pid}`,
+    admissionClass: "process",
+    demand: { fileDescriptors: 3 },
+    leaseTtlMs: governedExecutionLeaseTtlForTimeout(timeoutMs),
+    dedicatedClient: true,
+  }, async () => await new Promise<Buffer>((resolveBlob, rejectBlob) => {
+    execFile("git", ["-C", repoRoot, "show", `${revision}:${path}`], {
+      encoding: "buffer", maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs,
+    }, (error, stdout) => {
+      if (error) rejectBlob(new Error(`${path} is not readable at the bake's recorded revision ${revision}`));
+      else resolveBlob(stdout);
+    });
+  }));
 }
 
 export interface BootcArtifactBuild extends BootcTrustBuild {
@@ -511,7 +527,7 @@ export async function buildBootcImageArtifact(
   // The Containerfile the bake built FROM: refused if the working tree has moved since the
   // revision the supply chain recorded — then nobody can say which file the image came from.
   const containerfile = await readBytes(resolve(args.repoRoot, BOOTC_TEMPLATE_PATH), "bootc Containerfile");
-  if (!gitBlob(args.repoRoot, trust.sourceRevision, BOOTC_TEMPLATE_PATH).equals(containerfile)) {
+  if (!(await gitBlob(args.repoRoot, trust.sourceRevision, BOOTC_TEMPLATE_PATH)).equals(containerfile)) {
     fail(`${BOOTC_TEMPLATE_PATH} differs from its blob at the bake's revision ${trust.sourceRevision}; re-bake or check out that revision`);
   }
   const baseArg = /^ARG PAPERCUSP_BASE_IMAGE=(\S+)$/m.exec(containerfile.toString("utf8"))?.[1];
