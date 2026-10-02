@@ -86,6 +86,29 @@ describe('resource governor enforcement lint', () => {
     ).not.toContain('resource-start-outside-admission');
   });
 
+  it('detects called lazy promisify wrappers and preserves their reviewed start dispositions', () => {
+    const wrapper = `
+      let memo;
+      const invoke = ((...args: unknown[]) =>
+        Reflect.apply((memo ??= promisify(execFile)), undefined, args));
+    `;
+    expect(inspectGovernorSource(wrapper)).not.toContain('resource-start-outside-admission');
+    expect(inspectGovernorSource(wrapper + "\nawait invoke('git', []);")).toContain('resource-start-outside-admission');
+    expect(inspectGovernorSource(wrapper.replace('execFile', 'readFile') + "\nawait invoke('a');")).not.toContain('resource-start-outside-admission');
+    for (const path of [
+      'apps/operator/lib/release/desktop-perf-gate.ts',
+      'packages/operator-core/lib/sync/pot-git/physical-drill-preflight.ts',
+      'packages/operator-core/lib/harness/routines/dead-citation-sweep-action.ts',
+      'packages/operator-core/lib/harness/routines/dead-target-probe.ts',
+      'packages/operator-core/lib/release/sync-batch-delta-check-deps.ts',
+    ]) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      expect(inspectGovernorSource(source), path).toContain('resource-start-outside-admission');
+      expect(BYPASS_REGISTRY.has(`${path}::resource-start-outside-admission`), path).toBe(true);
+      expect(scanInventory([[path, source]], { validateRegistry: true }), path).toEqual([]);
+    }
+  });
+
   it('still flags a real start in a file that also has a same-named callback parameter', () => {
     // The anti-launder case: the callback narrowing must not become a way to hide a
     // genuine child-process start behind a decoy parameter of the same name.
