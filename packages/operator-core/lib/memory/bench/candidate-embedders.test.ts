@@ -11,7 +11,7 @@ vi.mock('@huggingface/transformers', () => ({
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, summarizeIncumbentReferences,
-  validateNativeBoundaryRequest, nativeBoundaryPopulation, nativeInferenceTraceVerified, nativeRunTraceVerified, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
+  validateNativeBoundaryRequest, nativeBoundaryPopulation, nativeInferenceTraceVerified, nativeRunTraceVerified, nativeRawClockTraceVerified, summarizeNativeBoundaries, qualifyMdenseOnBoundaries, MDENSEON_BOUNDARY_IDS,
   type NativeBoundaryRequest, type NativeBoundaryRow, type NativeBoundaryBatchRow, type CandidateVectors } from './candidate-embedders';
 import { nativeBenchmarkOutputPaths } from './candidate-embedders';
 import { moduleRepoRoot } from '../../module-repo-root';
@@ -273,6 +273,24 @@ describe('native mDenseOn boundary evidence', () => {
       expect(summarizeNativeBoundaries(request, [row], 'cpu', 'single-short-query')).toMatchObject({
         nativeRunTraceVerified: failure === 'valid', diagnosticCompatible: failure === 'valid',
       });
+    });
+  it.each(['valid', 'missing', 'wrong-clock', 'invalid', 'outside', 'reverse', 'changed-executable', 'probe-error'])
+    ('checks %s RAW clock anchors without assuming a Node-to-profiler offset', (failure) => {
+      const executable = { path: '/usr/bin/python3', bytes: 123, sha256: 'a'.repeat(64) };
+      const events: any[] = [
+        { phase: 'start', monotonicNs: '100', rawClock: { clock: 'linux-clock-monotonic-raw', rawNs: '40',
+          nodeBeforeNs: '10', monotonicBeforeNs: '50', monotonicAfterNs: '60', nodeAfterNs: '90', executable, pythonVersion: '3.12' } },
+        { phase: 'end', monotonicNs: '200', rawClock: { clock: 'linux-clock-monotonic-raw', rawNs: '240',
+          nodeBeforeNs: '210', monotonicBeforeNs: '250', monotonicAfterNs: '260', nodeAfterNs: '290', executable, pythonVersion: '3.12' } },
+      ];
+      if (failure === 'missing') delete events[0].rawClock;
+      if (failure === 'wrong-clock') events[0].rawClock.clock = 'UTC';
+      if (failure === 'invalid') events[0].rawClock.rawNs = 'unknown';
+      if (failure === 'outside') events[1].rawClock.nodeBeforeNs = '199';
+      if (failure === 'reverse') events[1].rawClock.rawNs = '39';
+      if (failure === 'changed-executable') events[1].rawClock.executable = { ...executable, sha256: 'b'.repeat(64) };
+      if (failure === 'probe-error') events[1].clockProbeError = 'clock sampler failed';
+      expect(nativeRawClockTraceVerified(events)).toBe(failure === 'valid');
     });
   it.each(['partial', 'fallback', 'unverified', 'disabled', 'nonfinite', 'truncation'])('refuses %s evidence', (failure) => {
     const { request, rows } = fixture();

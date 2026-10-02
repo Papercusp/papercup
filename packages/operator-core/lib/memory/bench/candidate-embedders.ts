@@ -146,6 +146,29 @@ export function nativeRunTraceVerified(inputs: WorkerInputTrace[] | undefined, g
   return true;
 }
 
+export function nativeRawClockTraceVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+  if (!events?.length || events.length % 2) return false;
+  let previousRaw = 0n, executable = '';
+  for (const event of events) {
+    const clock = event.rawClock;
+    if (!clock || event.clockProbeError !== undefined || clock.clock !== 'linux-clock-monotonic-raw'
+      || [event.monotonicNs, clock.rawNs, clock.monotonicBeforeNs, clock.monotonicAfterNs, clock.nodeBeforeNs, clock.nodeAfterNs]
+        .some((n) => typeof n !== 'string' || !/^[1-9]\d*$/.test(n))
+      || !clock.executable || typeof clock.executable.path !== 'string' || !Number.isSafeInteger(clock.executable.bytes)
+      || clock.executable.bytes < 1 || !/^[a-f0-9]{64}$/.test(clock.executable.sha256) || !clock.pythonVersion
+      || BigInt(clock.nodeBeforeNs) > BigInt(clock.monotonicBeforeNs)
+      || BigInt(clock.monotonicBeforeNs) > BigInt(clock.monotonicAfterNs)
+      || BigInt(clock.monotonicAfterNs) > BigInt(clock.nodeAfterNs)
+      || (event.phase === 'start' && BigInt(clock.nodeAfterNs) > BigInt(event.monotonicNs))
+      || (event.phase === 'end' && BigInt(clock.nodeBeforeNs) < BigInt(event.monotonicNs))
+      || BigInt(clock.rawNs) <= previousRaw) return false;
+    const identity = JSON.stringify({ ...clock.executable, pythonVersion: clock.pythonVersion });
+    if (executable && executable !== identity) return false;
+    executable = identity; previousRaw = BigInt(clock.rawNs);
+  }
+  return true;
+}
+
 export function nativeBoundaryPopulation(request: NativeBoundaryRequest, selectedCell?: string) {
   validateNativeBoundaryRequest(request);
   const population = [...request.cases.map((c) => `single-${c.id}`), ...request.batches.map((b) => b.id)];
@@ -177,6 +200,7 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
       workerInputTraceVerified: matchesWorkerInput(row.inputTraces, request.export, row.referenceInputIds, device),
       workerInferenceTraceVerified: nativeInferenceTraceVerified(row.inputTraces, row.inferenceTraces, request.export, row.referenceInputIds, device),
       nativeRunTraceVerified: nativeRunTraceVerified(row.inputTraces, row.inferenceTraces, row.nativeInferenceTraces, request.export, row.referenceInputIds, device),
+      nativeRawClockTraceVerified: nativeRawClockTraceVerified(row.nativeInferenceTraces),
       ...referenceVectorComparison(row.vector, row.referenceVector, 768) };
   });
   const ranks = (vectors: number[][]) => vectors.map((q) => vectors.map((d, i) => ({ i, score: q.reduce((s, v, j) => s + v * d[j], 0) }))
@@ -332,6 +356,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       if (!nativeRunTraceVerified(inputTraces, inferenceTraces, nativeInferenceTraces, request.export, references[i].referenceInputIds, device)) {
         throw new Error('native boundary synchronous Run evidence mismatch');
       }
+      if (process.platform === 'linux' && !nativeRawClockTraceVerified(nativeInferenceTraces)) throw new Error('native boundary RAW clock evidence mismatch');
     }
     for (const batch of selected.batches) {
       activeCell = batch.id;
@@ -360,6 +385,9 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       if (!nativeInferenceTracesByCase.every((item, i) => nativeRunTraceVerified(inputTracesByCase[i].traces,
         inferenceTracesByCase[i].traces, item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device))) {
         throw new Error('native boundary request-group synchronous Run evidence mismatch');
+      }
+      if (process.platform === 'linux' && !nativeInferenceTracesByCase.every((item) => nativeRawClockTraceVerified(item.traces))) {
+        throw new Error('native boundary request-group RAW clock evidence mismatch');
       }
       batches.push(result);
       fs.writeFileSync(`${output}.${batch.id}.json`, JSON.stringify({ ...identity, ...result }), { flag: 'wx', mode: 0o600 });
