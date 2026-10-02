@@ -33,6 +33,8 @@
  * remains a possible (riskier) follow-up if duplication resurfaces.
  */
 
+import { readFileSync } from 'node:fs';
+
 // ── bundled-vs-dev-tsx spawn-plan resolution ────────────────────────────────
 // esbuild bundles EVERY module into one serve.mjs; in a PACKAGED build
 // `import.meta.url` for the spawn module IS the bundle (no tsx, no .ts on
@@ -473,8 +475,12 @@ export function loopbackListenerUids(
 function readProcTable(path: string): string | null {
   try {
     return readFileSync(path, 'utf8');
-  } catch {
-    return null;
+  } catch (err) {
+    // Only a filesystem error (ENOENT on a non-Linux host, EACCES) means "no
+    // table". Anything else is a bug and must stay loud: a swallowed
+    // ReferenceError once made every ownership check here read "unknown".
+    if (err && typeof err === 'object' && typeof (err as { code?: unknown }).code === 'string') return null;
+    throw err;
   }
 }
 

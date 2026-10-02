@@ -10,7 +10,72 @@ import {
   _resetSidecarShutdownHookRegistryForTests,
   isSidecarEnabledFromEnv,
   verifySidecarFitness,
+  parseLoopbackListenerUids,
+  loopbackListenerUids,
+  loopbackListenerOwnedBy,
 } from './sidecar-spawn-shared';
+import { createServer } from 'node:net';
+
+describe('loopback listener ownership (P-530, WI-10005523)', () => {
+  // Real /proc/net/tcp shape: sl local rem st tx:rx tr:when retrnsmt uid timeout inode
+  const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+  const row = (local: string, st: string, uid: number) =>
+    `   0: ${local} 00000000:0000 ${st} 00000000:00000000 00:00000000 00000000  ${uid}        0 12345 1 0000000000000000 100 0 0 10 0`;
+  const port = 0x9c41; // 40001
+
+  it('reads the uid of LISTEN sockets reachable at 127.0.0.1:port only', () => {
+    const table = [
+      header,
+      row('0100007F:9C41', '0A', 1000), // 127.0.0.1, LISTEN
+      row('00000000:9C41', '0A', 1001), // 0.0.0.0, LISTEN — reachable via loopback
+      row('0100007F:9C42', '0A', 1002), // other port
+      row('0100007F:9C41', '01', 1003), // ESTABLISHED, not a listener
+      row('0A00000A:9C41', '0A', 1004), // 10.0.0.10 — not reachable at 127.0.0.1
+    ].join('\n');
+    expect(parseLoopbackListenerUids(table, port)).toEqual([1000, 1001]);
+  });
+
+  it('reads tcp6 dual-stack and v4-mapped loopback listeners', () => {
+    const table = [
+      header,
+      row('00000000000000000000000000000000:9C41', '0A', 1005),
+      row('0000000000000000FFFF00000100007F:9C41', '0A', 1006),
+    ].join('\n');
+    expect(parseLoopbackListenerUids(table, port)).toEqual([1005, 1006]);
+  });
+
+  it('null when no socket table is readable, [] when nothing listens', () => {
+    expect(loopbackListenerUids(port, () => null)).toBeNull();
+    expect(loopbackListenerUids(port, () => header)).toEqual([]);
+  });
+
+  it('owned only when every listener is the uid; unknown stays unknown', () => {
+    expect(loopbackListenerOwnedBy([1000], 1000)).toBe(true);
+    expect(loopbackListenerOwnedBy([1000, 1001], 1000)).toBe(false);
+    expect(loopbackListenerOwnedBy([], 1000)).toBe(false);
+    expect(loopbackListenerOwnedBy(null, 1000)).toBeNull();
+  });
+
+  // Positive control against the REAL host table: a listener this process
+  // opens must come back as this uid. Without it, a reader that silently
+  // fails (the helper once called readFileSync with no import, and the
+  // catch turned the ReferenceError into "no table") reads as "unknown" on
+  // every host and every ownership check quietly stops checking.
+  it.skipIf(process.platform !== 'linux' || typeof process.getuid !== 'function')(
+    'sees a listener this process opens, owned by this uid',
+    async () => {
+      const server = createServer();
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const addr = server.address();
+        const p = typeof addr === 'object' && addr ? addr.port : 0;
+        expect(loopbackListenerUids(p)).toEqual([process.getuid!()]);
+      } finally {
+        await new Promise((r) => server.close(r));
+      }
+    },
+  );
+});
 
 describe('verifySidecarFitness (EI-19314150478401738)', () => {
   const LEGACY = ['GET /healthz', 'POST /embed'];
