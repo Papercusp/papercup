@@ -8,13 +8,17 @@
  * must name its PID so a reused inspector port cannot silently sample a peer.
  * Opt-in host facts contain only cluster state and fixed, normalized boot flags;
  * they describe configuration, not request assignment or retained ownership.
+ * Opt-in allocation details come directly from V8's heap-space/code counters.
+ * Code, source, heap and external counters overlap; do not add or subtract them
+ * to infer retained-owner bytes or an unmeasured native-memory residual.
  * These counters are not a retainer graph or an estimate of total native bytes.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
- * @param {{ expectedPid?: number, hostFacts?: boolean }} [options]
+ * @param {{ expectedPid?: number, hostFacts?: boolean, allocationDetails?: boolean }} [options]
  */
-export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, hostFacts }?: {
+export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, hostFacts, allocationDetails }?: {
     expectedPid?: number;
     hostFacts?: boolean;
+    allocationDetails?: boolean;
 }): Promise<any>;
 /**
  * Inspect logical payloads reachable from existing module-singleton roots.

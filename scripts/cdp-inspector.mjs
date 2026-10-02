@@ -62,16 +62,21 @@ export class CdpTransportClosedError extends Error {
  * must name its PID so a reused inspector port cannot silently sample a peer.
  * Opt-in host facts contain only cluster state and fixed, normalized boot flags;
  * they describe configuration, not request assignment or retained ownership.
+ * Opt-in allocation details come directly from V8's heap-space/code counters.
+ * Code, source, heap and external counters overlap; do not add or subtract them
+ * to infer retained-owner bytes or an unmeasured native-memory residual.
  * These counters are not a retainer graph or an estimate of total native bytes.
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
- * @param {{ expectedPid?: number, hostFacts?: boolean }} [options]
+ * @param {{ expectedPid?: number, hostFacts?: boolean, allocationDetails?: boolean }} [options]
  */
-export async function readProcessMemory(client, { expectedPid, hostFacts = false } = {}) {
+export async function readProcessMemory(client, { expectedPid, hostFacts = false, allocationDetails = false } = {}) {
   if (!Number.isInteger(expectedPid) || expectedPid <= 0) {
     throw new TypeError('readProcessMemory requires a positive expectedPid');
   }
   if (typeof hostFacts !== 'boolean') throw new TypeError('hostFacts must be boolean');
+  if (typeof allocationDetails !== 'boolean') throw new TypeError('allocationDetails must be boolean');
   const result = await client.evaluate(String.raw`(() => {
+    if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
     if (typeof process.getBuiltinModule !== 'function') {
       throw new Error('This Node target does not support getBuiltinModule');
     }
@@ -98,6 +103,7 @@ export async function readProcessMemory(client, { expectedPid, hostFacts = false
     }
     return { pid: process.pid, at: Date.now(), uptime: process.uptime(),
       memory: process.memoryUsage(), heap: v8.getHeapStatistics(),
+      ...(${allocationDetails} ? { heapSpaces: v8.getHeapSpaceStatistics(), heapCode: v8.getHeapCodeStatistics() } : {}),
       ...(hostFacts ? { hostFacts } : {}) };
   })()`, { returnByValue: true });
   const sample = result?.result?.value;
