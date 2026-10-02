@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
+// @ts-expect-error -- same buildless plain-JS module family, no declaration file.
 import { installLockNameForRoot } from '../../../scripts/lib/install-lock-name.mjs';
-// @ts-expect-error -- plain-Node .mjs CLI, no declaration file.
 import { repoLockName } from '../../../scripts/npm-install-safe.mjs';
 import {
   acquireInstallBoundaryLease,
