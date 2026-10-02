@@ -37,6 +37,10 @@ vi.mock('../../task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../task-manager/store')>()),
   markSpawned: vi.fn(),
 }));
+vi.mock('../capability/bash-task-provenance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../capability/bash-task-provenance')>()),
+  resolveBashTaskProvenance: vi.fn(),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { unsafe: auditSqlM } }) as never,
@@ -64,10 +68,12 @@ vi.mock('node:child_process', async (importOriginal) => ({
 import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
 import { beginCutOperation } from '../../release-cut-operation';
 import { markSpawned } from '../../task-manager/store';
+import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { execFile } from 'node:child_process';
 const beginOpM = vi.mocked(beginCutOperation);
 const markSpawnedM = vi.mocked(markSpawned);
+const provenanceM = vi.mocked(resolveBashTaskProvenance);
 const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
@@ -175,6 +181,9 @@ beforeEach(() => {
     unit: 'pc-task1.service',
   });
   markSpawnedM.mockResolvedValue(undefined);
+  provenanceM.mockResolvedValue({
+    launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: null, planSlug: null, goalRef: null,
+  });
 });
 
 /**
@@ -948,6 +957,24 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(tool.args.safeParse({ ...runArgs, seedless: true }).success).toBe(true);
     expect(tool.args.safeParse({ ...runArgs, fullHistory: true }).success).toBe(true);
   });
+  it('attributes the whole cut to the explicit parent despite a stale subtask goal', async () => {
+    provenanceM.mockResolvedValue({
+      launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: 'WI-parent', planSlug: null, goalRef: 'WI-subtask',
+    });
+    const args = { ...runArgs, work_item_id: 'WI-parent', confirm: true };
+    expect(tool.args.safeParse(args).success).toBe(true);
+    const b = body(await tool.handler(args as never, { role: 'operator' } as never));
+    expect(b.ok).toBe(true);
+    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, { explicitWorkItemId: 'WI-parent' });
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-parent' }));
+  });
+  it('refuses an explicit unheld whole-cut item before opening or launching the task', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_not_held', 'WI-other is not held'));
+    const b = body(await tool.handler({ ...runArgs, work_item_id: 'WI-other', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'WI-other is not held' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
+  });
 
   it('refuses conflicting seed controls before resolving or launching a root', async () => {
     const b = body(await tool.handler(
@@ -1286,6 +1313,24 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
         identity: expect.objectContaining({ platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha }),
       }),
     );
+  });
+  it('attributes a leg to the explicit parent despite a stale subtask goal', async () => {
+    provenanceM.mockResolvedValue({
+      launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: 'WI-parent', planSlug: null, goalRef: 'WI-subtask',
+    });
+    const args = { ...legArgs, work_item_id: 'WI-parent', confirm: true };
+    expect(tool.args.safeParse(args).success).toBe(true);
+    const b = body(await tool.handler(args as never, { role: 'operator' } as never));
+    expect(b.ok).toBe(true);
+    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, { explicitWorkItemId: 'WI-parent' });
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-parent' }));
+  });
+  it('refuses an explicit unheld leg item before opening or launching the task', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_not_held', 'WI-other is not held'));
+    const b = body(await tool.handler({ ...legArgs, work_item_id: 'WI-other', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'WI-other is not held' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
   });
 
   it('refuses to launch when the task ledger cannot reserve a killable service unit', async () => {
