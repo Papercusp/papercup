@@ -957,7 +957,7 @@ function rerunRecipeFor(
   current: EvidenceCurrentInput[] | undefined,
   harness: string | undefined,
   classRef: PlanClassRubricRef,
-  selection: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] } | undefined,
+  selection: { workItemIds?: string[]; evidenceRefs?: string[]; bindingIds?: number[]; planItemIds?: string[] } | undefined,
 ): SpecTestAdequacyRerunRecipe {
   const evaluatorBuild = getBuildInfo();
   const selectedEvidence = [
@@ -981,6 +981,12 @@ function rerunRecipeFor(
     selectedEvidenceRefs.length > 0
       ? selectedEvidenceRefs
       : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
+  const replayBindingIds =
+    evidence.length > 0 && evidence.every((row) => Number.isSafeInteger(row.id) && row.id! > 0)
+      ? [...new Set(evidence.map((row) => row.id!))].sort((a, b) => a - b)
+      : selection?.bindingIds !== undefined
+        ? [...new Set(selection.bindingIds)].sort((a, b) => a - b)
+        : undefined;
   const currentByKey = new Map((current ?? []).map((row) => [evidenceCurrentInputKey(row), row]));
   const currentForEvidence = (row: SpecEvidenceForAdequacy): EvidenceCurrentInput | undefined => {
     const scopedCurrentKey = evidenceCurrentInputKey({
@@ -1055,6 +1061,7 @@ function rerunRecipeFor(
       // item. Reusing only the caller's optional evidenceRefs would let later
       // bindings silently widen a persisted scorecard's replay.
       ...(replayEvidenceRefs.length ? { evidenceRefs: replayEvidenceRefs } : {}),
+      ...(replayBindingIds !== undefined ? { bindingIds: replayBindingIds } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
       limit: SPEC_TEST_ADEQUACY_REPLAY_LIMIT,
@@ -1076,6 +1083,7 @@ function rerunRecipeFor(
       specRevision: clause.revision,
       specFingerprint: clause.contentHash,
       evidence: selectedEvidence,
+      ...(replayBindingIds !== undefined ? { bindingIds: replayBindingIds } : {}),
     },
     current: {
       supplied: current !== undefined,
@@ -1219,7 +1227,7 @@ export function evaluateSpecTestAdequacy(input: {
   /** The caller-attested current fingerprints used by listSpecEvidence. */
   current?: EvidenceCurrentInput[];
   /** Exact caller selectors that constrain the evidence population on replay. */
-  rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] };
+  rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; bindingIds?: number[]; planItemIds?: string[] };
   /** Work-item classification; `task` is the canonical non-code kind. */
   workItemKind?: string | null;
   now?: Date;

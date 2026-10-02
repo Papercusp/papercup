@@ -86,7 +86,8 @@ vi.mock('../search/filters', () => ({
 // it. Keep that separate write-side operation out of this read-path fixture;
 // the sessions:read → resolveSearchFilters → resolveSelfSession chain remains
 // real, and the indexed rows below are the read surface under test.
-vi.mock('../../search/session-ingest', () => ({
+vi.mock('../../search/session-ingest', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../search/session-ingest')>()),
   ingestFileNow: vi.fn(async () => ({ inserted: 0 })),
 }));
 

@@ -70,7 +70,25 @@ bash "$S/vm/install-heavy-shim.sh" "$PREP" || { echo "P529_ERROR shim install fa
 rm -rf "$TMPD/slots-$B"
 export PC_HEAVY_SLOTS="$K" PC_HEAVY_DIR="$TMPD/slots-$B" PC_HEAVY_MEM_CLAMP=0 PC_HEAVY_PSI_ADMISSION=0 \
   PC_HEAVY_COALESCE=0 PC_HEAVY_TIMEOUT_SEC=7200 PC_HEAVY_SHIM_LOG="$TMPD/shim-$B.jsonl"
-if [ -n "$MEMGIB" ]; then export PC_HEAVY_MEM_CLAMP=1 PC_HEAVY_MEM_PER_SLOT_GIB="$MEMGIB"; fi
+if [ "$MEMGIB" = derived ]; then
+  # WI-10005184 slice 4 (D-030): the clamp stays ON and pc-heavy derives the per-slot reserve from
+  # this pool's own job-peaks ledger. A fresh VM has no day of history, so the span rail is set to 0
+  # DELIBERATELY: the first 10 measured jobs run at the 14 GiB default, then the derived value
+  # applies. P529_PEAK_SEED=<tsv> pre-seeds the ledger from a prior run instead.
+  export PC_HEAVY_MEM_CLAMP=1 PC_HEAVY_MEM_PER_SLOT_MIN_SPAN_SEC=0 PC_HEAVY_PEAK_LEDGER="$PC_HEAVY_DIR/job-peaks.tsv"
+  mkdir -p "$PC_HEAVY_DIR" && chmod 1777 "$PC_HEAVY_DIR" 2>/dev/null || true
+  if [ -n "${P529_PEAK_SEED:-}" ]; then cp "$P529_PEAK_SEED" "$PC_HEAVY_PEAK_LEDGER" || exit 2; fi
+  echo "P529_DERIVED ledger=$PC_HEAVY_PEAK_LEDGER min_span_sec=0 seed=${P529_PEAK_SEED:-none}"
+elif [ -n "$MEMGIB" ]; then
+  export PC_HEAVY_MEM_CLAMP=1 PC_HEAVY_MEM_PER_SLOT_GIB="$MEMGIB"
+fi
+if [ -n "$OVERLAY" ]; then
+  # The prepared checkout is pinned at the recorded sha, so its own pc-heavy.sh can predate the
+  # admission change under test. Overlay it for this arm only; restored after the arm.
+  cp -p "$PREP/scripts/pc-heavy.sh" "$TMPD/pc-heavy.sh.orig" && cp "$OVERLAY" "$PREP/scripts/pc-heavy.sh" || exit 2
+  trap 'cp -p "$TMPD/pc-heavy.sh.orig" "$PREP/scripts/pc-heavy.sh" && echo P529_OVERLAY_RESTORED' EXIT
+  echo "P529_OVERLAY pc-heavy=$OVERLAY sha256=$(sha256sum "$OVERLAY" | cut -c1-16)"
+fi
 : >"$PC_HEAVY_SHIM_LOG"
 chmod 0666 "$PC_HEAVY_SHIM_LOG" 2>/dev/null || true
 # Preflight: a tool run inside Codex's workspace-write sandbox (bootstrap-agent-vm.sh's own probe
@@ -109,4 +127,22 @@ print(f"P529_SHIM requests={len(req)} admitted={len(adm)} unadmitted={len(set(re
       f"wait_p50={q(0.5)} wait_p90={q(0.9)} wait_max={w[-1] if w else None}")
 PY
 cp "$TMPD/shim-$B.jsonl" "$HOME/capacity/fp/p529-shim-$B.jsonl" 2>/dev/null || true
+if [ "$MEMGIB" = derived ]; then
+  # What the clamp actually budgeted: the ledger the derivation read (D-030 rule, recomputed here).
+  python3 - "$TMPD/slots-$B/job-peaks.tsv" <<'PY'
+import math, sys
+rows = []
+try:
+    for line in open(sys.argv[1]):
+        f = dict(kv.split("=", 1) for kv in line.split() if "=" in kv)
+        if int(f.get("samples", 0)) >= 3:
+            rows.append(int(f.get("anon_mib", 0)))
+except FileNotFoundError:
+    pass
+win = rows[-100:]
+gib = min(64, max(1, math.ceil(max(win) * 1.1 / 1024))) if len(win) >= 10 else None
+print(f"P529_LEDGER rows_ge3={len(rows)} window={len(win)} max_anon_mib={max(win) if win else None} derived_gib={gib}")
+PY
+  cp "$TMPD/slots-$B/job-peaks.tsv" "$HOME/capacity/fp/p529-peaks-$B.tsv" 2>/dev/null || true
+fi
 echo "P529_DONE $(ts)"

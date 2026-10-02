@@ -686,13 +686,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed upstream disposition for packages/operator-core/lib/harness/routines/release-actions.ts: this scheduled routine child is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; adding a second local receipt would double-count the same work.",
   },
   {
-    path: "packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts: this scheduled routine child is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
-  },
-  {
     path: "packages/operator-core/lib/harness/routines/task-reconcile-action.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",

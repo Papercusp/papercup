@@ -204,6 +204,29 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
 });
 
 describe('asStructuredObservation — read-side payload surfacing', () => {
+  it('preserves an awaiting-reemit grading audit and its source-card re-emit requirement', () => {
+    const gradingAudit = {
+      state: 'awaiting-reemit',
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-10-02T02:30:01.384Z',
+      rubricRevision: 7,
+      criteriaHash: 'criteria-hash-v7',
+      reemitRequired: {
+        code: 'grading_audit_evaluator_changed',
+        at: '2026-10-02T02:31:00.000Z',
+        reason: 'evaluator revision changed the replayed rating',
+      },
+    } as const;
+
+    const out = asStructuredObservation({
+      rubricRef: 'spec-test-adequacy',
+      ratings: { traceability: { rating: 'pass', evidence: 'exact replay passed' } },
+      gradingAudit,
+    });
+
+    expect(out?.gradingAudit).toEqual(gradingAudit);
+  });
+
   it('preserves a server-stamped vetting seat through the structured observation parser', () => {
     const seat = {
       succeededFrom: 'su-ended-author',

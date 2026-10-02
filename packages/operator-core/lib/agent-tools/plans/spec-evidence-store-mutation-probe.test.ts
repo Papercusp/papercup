@@ -55,8 +55,8 @@ describe('repo-file evidence mutation-probe fence', () => {
 
     expect(result.files.map((file) => file.path)).toEqual(['libs/papercusp/source.ts']);
     expect(lockState.calls).toEqual([
-      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'] },
-      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'] },
+      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'], includeWaiting: false },
+      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'], includeWaiting: false },
     ]);
   });
 
