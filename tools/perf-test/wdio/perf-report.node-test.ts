@@ -832,7 +832,7 @@ test('native diagnostic buffers during sampling, flushes on stop, and preserves 
     assert.equal(rows[0].maxSamples, 1200);
     assert.equal(rows[0].persistence, 'buffered-until-finish');
     assert.equal(rows[0].maxBufferedBytes, 16 * 1024 * 1024);
-    assert.equal(rows[0].schemaVersion, 'native-process-probe-v6');
+    assert.equal(rows[0].schemaVersion, 'native-process-probe-v7');
     assert.equal(rows[0].lifecycle.maxIdentities, 64);
     assert.equal(rows[0].lifecycle.maxStatBytes, 4096);
     assert(rows.filter((row) => row.kind === 'sample').every((row) => Array.isArray(row.lifecycle)));

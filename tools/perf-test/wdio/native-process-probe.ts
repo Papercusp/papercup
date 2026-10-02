@@ -505,7 +505,7 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
   const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks, stackDelayMs, environment: true,
     outputDescriptors: true, debugFile: process.env.GST_DEBUG_FILE };
   // Exclusive create prevents a rerun from overwriting earlier diagnostic evidence.
-  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v6',
+  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v7',
     options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: MAX_SAMPLES,
     persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES,
     environment: { keys: ENVIRONMENT_KEYS, maxBytes: MAX_ENVIRONMENT_BYTES,
@@ -520,7 +520,9 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
       limitation: 'missing procfs entries and PID replacement do not prove a signal or reaping; no wait receipt is available for non-child targets' },
     stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, afterFirstOwnedWebKitMs: stackDelayMs,
       trigger: 'first observation of this owned WebKit PID identity; reset delay on replacement',
-      debuggerTimeoutMs: 4_000, maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });
+      debuggerTimeoutMs: 4_000, maxOutputBytes: 256 * 1024, latencyAcceptance: false,
+      postAttachClock: 'Date.now via GDB Python before frames',
+      mappings: 'libwebkit2gtk and libjavascriptcoregtk process mappings for offline symbols' } : null })}\n`, { flag: 'wx', mode: 0o600 });
   return fork(__filename, [JSON.stringify(options), file], {
     execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
