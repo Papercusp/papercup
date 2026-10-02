@@ -2942,6 +2942,7 @@ export async function getNextWorkItem(
       ws,
       {
         client: sql,
+        operationClaimRead,
         signal: opts.signal,
         issueKinds,
         ids: idValues,
@@ -3166,6 +3167,7 @@ export async function getNextWorkItem(
       ws,
       {
         client: sql,
+        operationClaimRead,
         signal: opts.signal,
         issueKinds,
         ids: idValues,

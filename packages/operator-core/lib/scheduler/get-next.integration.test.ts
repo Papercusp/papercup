@@ -893,6 +893,20 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect(r?.claimedUnder).toEqual({ specId: 'kind-feature-issue-fallthrough', revision: 2 });
   });
 
+  it('reuses the bounded candidate authority read for the issue tier', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-one-authority-read', { state: 'open' });
+    const operationClaims = await import('../blueprint/operation-worker-binding');
+    const read = vi.spyOn(operationClaims, 'readActiveOperationWorkerClaimBinding');
+    try {
+      expect((await getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, { harness: H }))?.workItem.id)
+        .toBe('EI-one-authority-read');
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it('tier 3: an issue-kind spec narrows issue fallback instead of claiming an older task', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
     await seedIssue('WI-task-owner-reserved', { state: 'open', createdTs: 10, kind: 'task' });
