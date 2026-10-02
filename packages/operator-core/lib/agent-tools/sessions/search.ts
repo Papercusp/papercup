@@ -29,8 +29,10 @@ import {
 } from './_shared';
 import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
 import {
-  addTally, emptyTally, loadTranscriptExclusion, withheldReceipt, type TranscriptExclusion,
+  addTally, countRestrictedTurnsInScope, emptyTally, loadTranscriptExclusion, restrictedTurnSql, withheldReceipt,
+  type TranscriptExclusion, type WithheldTally,
 } from '../../personal-vault/transcript-exclusion';
+import { sessionTurnScopeSql } from '../search/sources';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-origin';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
@@ -187,6 +189,27 @@ export default defineTool({
     const refreshDegraded =
       liveRefresh.attempted > liveRefresh.refreshed || Boolean(liveRefresh.failureReasons);
 
+    // D-006 / P-013: turns another agent recorded inside its disclosure windows
+    // are excluded INSIDE every matching query below, so they never take a
+    // result slot. The count reported for them covers this search's whole scope
+    // and does not depend on the query — a per-query count would let a caller
+    // confirm a guess about a restricted turn's text. The count runs first, so
+    // an unreadable ledger refuses the search before anything is matched.
+    const selfChain = args.session === 'self' || args.owner === 'self' ? (filters?.owners ?? []) : [];
+    const selfOwnerIds = [callerOwnerId, ...selfChain].filter((owner): owner is string => Boolean(owner));
+    let inScope: WithheldTally;
+    try {
+      inScope = await countRestrictedTurnsInScope(tx, {
+        selfOwnerIds,
+        scope: sessionTurnScopeSql({ sql: tx, workspaceId, scopeFilter: args.harness_slug ?? null, filters }) as never,
+      });
+    } catch (error) {
+      if (error instanceof DisclosureRefused) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(disclosureRefusalData(error)) }], isError: true };
+      }
+      throw error;
+    }
+
     interface RawHit {
       sourceKind: string; sessionId: string; turnIdx: number;
       speaker: string | null; owner: string | null; harness_slug: string | null;
@@ -213,6 +236,7 @@ export default defineTool({
            AND (${f.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since ?? null}::timestamptz)
            AND (${f.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until ?? null}::timestamptz)
            AND text ILIKE '%' || ${args.query} || '%'
+           AND NOT ${restrictedTurnSql(tx, 'session_turns', selfOwnerIds)}
       ORDER BY COALESCE(ts, ingested_at) DESC
          LIMIT ${limit + 1}
         OFFSET ${offset}
@@ -247,7 +271,8 @@ export default defineTool({
         mode: 'hybrid',
         embedder,
         embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
-        filters,
+        // readerIds: the session_turn source excludes restricted turns in SQL.
+        filters: { ...(filters ?? {}), readerIds: selfOwnerIds },
         log: ctx.log,
       });
       for (const r of results) {
@@ -396,23 +421,14 @@ export default defineTool({
         const pf = filters ?? {};
         const pOwners = pf.owners && pf.owners.length ? pf.owners : null;
         // D-006 / P-013: a count over another agent's restricted tool parts is a
-        // substring ORACLE on its content, so those parts never count. Same rule
-        // as personal-vault/transcript-exclusion.ts, expressed in SQL; a ledger
-        // read failure fails the probe (caught below), which shows no caveat.
-        const partSelf = [
-          callerOwnerId,
-          ...(args.session === 'self' || args.owner === 'self' ? (filters?.owners ?? []) : []),
-        ].filter((owner): owner is string => Boolean(owner));
+        // substring ORACLE on its content, so those parts never count — the same
+        // SQL rule as the turn queries. A ledger read failure fails the probe
+        // (caught below), which shows no caveat.
         const [row] = await tx<Array<{ hits: string }>>`
           SELECT COUNT(*)::text AS hits
             FROM harness_shared.session_turn_parts p
            WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
-             AND NOT EXISTS (
-               SELECT 1 FROM harness_shared.personal_disclosures d
-                WHERE d.agent_owner_id <> ALL(${partSelf}::text[])
-                  AND (p.owner IS NULL OR d.agent_owner_id = p.owner)
-                  AND d.delivered_at <= COALESCE(p.ts, p.ingested_at)
-                  AND (d.released_at IS NULL OR COALESCE(p.ts, p.ingested_at) < d.released_at))
+             AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
              AND (${pOwners}::text[] IS NULL OR owner = ANY(${pOwners}::text[]))
              AND (${pf.sessionId ?? null}::text IS NULL OR session_id = ${pf.sessionId ?? null})
              AND (${pf.sourceKind ?? null}::text IS NULL OR source_kind = ${pf.sourceKind ?? null})
@@ -457,12 +473,12 @@ export default defineTool({
       }
     }
 
-    // D-006 / P-013: a turn another agent recorded inside its disclosure windows
-    // is withheld from this caller — the hit itself AND any ±context window turn —
-    // and counted on the result. Hybrid hits carry no owner/time, so stamp them
-    // from the index first; one ledger read then decides the whole page.
-    const selfChain = args.session === 'self' || args.owner === 'self' ? (filters?.owners ?? []) : [];
-    const selfOwnerIds = [callerOwnerId, ...selfChain];
+    // D-006 / P-013: restricted turns were already excluded from matching (and
+    // counted in `inScope`). The ±context window around a kept hit is read by
+    // POSITION, not by content, so a restricted window turn is withheld and
+    // counted here. The same per-turn check runs over the hits as a second line
+    // of defence. Hybrid hits carry no owner/time, so stamp them from the index
+    // first; one ledger read then decides the whole page.
     const turnHits = pageHits.filter((h) => h.source === 'session_turn');
     const stampByRef = await loadTurnStamps(
       tx,
@@ -502,7 +518,8 @@ export default defineTool({
       throw error;
     }
     // coord_message hits are not transcript turns: P-006 seals them at write.
-    const withheld = emptyTally();
+    const withheld = addTally(emptyTally(), inScope);
+    const fromWindows = emptyTally();
     const keptHits: RawHit[] = [];
     for (const h of pageHits) {
       const reason = h.source === 'session_turn' ? exclusion.withholds(hitStamp(h)) : null;
@@ -530,6 +547,7 @@ export default defineTool({
       if (stampedWindow) {
         const shownWindow = exclusion.partition(stampedWindow, (turn) => turn);
         addTally(withheld, shownWindow.withheld);
+        addTally(fromWindows, shownWindow.withheld);
         window = shownWindow.kept.map(toWindowTurn);
       }
       out.push(shapeSearchOutput({
@@ -609,7 +627,10 @@ export default defineTool({
           }
         : {}),
       // D-006 / P-013: hits and window turns withheld from this caller, counted.
-      ...withheldReceipt(withheld),
+      ...withheldReceipt(withheld, {
+        in_search_scope: inScope.turns,
+        from_context_windows: fromWindows.turns,
+      }),
     };
 
     const cursorFor = (resultCount: number, more: boolean): string | undefined => more
