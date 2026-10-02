@@ -45,7 +45,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 
 import { readIssueClaimability } from '../../scheduler/get-next';
-import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import {
   getClaimSpecRecord,
   resolveFleetClaimSpec,
@@ -332,7 +332,7 @@ describe('work_items:claimable handler', () => {
 
   describe('EI-23772523186892689: a per-agent spec that overrides the caller\'s fleet spec is named in-band', () => {
     const FLEET = 'goal-drain-work-on-everything-60d3a8';
-    const specWith = (specId: string, revision: number) => ({
+    const specWith = (specId: string, revision: number): ClaimSpec => ({
       ...DEFAULT_CLAIM_SPEC,
       specId,
       revision,

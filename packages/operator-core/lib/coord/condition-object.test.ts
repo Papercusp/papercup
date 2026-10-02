@@ -399,6 +399,49 @@ describe('pending exact-run checkpoint:await lease evidence', () => {
       ),
     ).toBe(true);
   });
+
+  it('extends for a pending same-holder await on the exact pipeline outcome key without runId', async () => {
+    let queryText = '';
+    const awaitCreatedAt = new Date(NOW - 10 * 60_000).toISOString();
+    const fakeSql = ((strings: TemplateStringsArray) => {
+      queryText = strings.join(' ');
+      return Promise.resolve([
+        {
+          condition_key: KEY,
+          work_item: 'EI-1',
+          title: 'gate is red',
+          status: 'open',
+          taken_by: 'su-abc',
+          taken_at: new Date(NOW - 31 * 60_000).toISOString(),
+          last_progress_at: new Date(NOW - 31 * 60_000).toISOString(),
+          expires_at: null,
+          payload: null,
+          checkpoint_await_created_at: awaitCreatedAt,
+          checkpoint_await_expires_at: new Date(NOW + 300 * 60_000).toISOString(),
+        },
+      ]);
+    }) as unknown as Sql;
+
+    const got = await findConditionObjects([KEY], { harnessSlug: 'papercusp', sql: fakeSql, nowMs: NOW });
+    const owner = got.get(KEY);
+    expect(owner?.claimState).toBe('held');
+    expect(owner?.expiresAt).toBe(
+      new Date(Date.parse(awaitCreatedAt) + CHECKPOINT_RUN_LOCK_STALE_MS).toISOString(),
+    );
+
+    const normalizedSql = queryText.replace(/\s+/g, ' ').toLowerCase();
+    const globalKeyClause = normalizedSql.indexOf('a.event_key = any(');
+    const exactRunGuard = normalizedSql.indexOf("jsonb_typeof(a.payload_filter -> 'runid') = 'string'");
+    const pipelineKeyClause = normalizedSql.indexOf('or a.event_key = any(array[');
+    expect(globalKeyClause).toBeGreaterThanOrEqual(0);
+    expect(exactRunGuard).toBeGreaterThan(globalKeyClause);
+    expect(pipelineKeyClause).toBeGreaterThan(exactRunGuard);
+    expect(normalizedSql).toContain("'release:green:' || split_part(l.dst_ref, ':', 2)");
+    expect(normalizedSql).toContain("'green-checkpoint:inconclusive:' || split_part(l.dst_ref, ':', 2)");
+    expect(normalizedSql).toContain('a.fired_at is null');
+    expect(normalizedSql).toContain('a.cancelled_at is null');
+    expect(normalizedSql).toContain('a.superseded_at is null');
+  });
 });
 
 describe('openness is `status`, never `closed_ts` (recurrence guard)', () => {
