@@ -4,6 +4,17 @@
   "plan": "mdenseon-adoption-measurements-2026-10-01",
   "status": "initial-independent-cohort-measured-power-unresolved",
   "p003Complete": false,
+  "serializedMeasurementLaunch": {
+    "runId": "independent-relevance-v5",
+    "status": "prepared; not launched",
+    "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+    "launchRecipe": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/launch-relevance-v5-after-v7.sh",
+    "prerequisite": "verifyCompletedPerformanceRun for complete controlled performance-cpu-v7, with all fifteen raw receipt fingerprints and rederived summary",
+    "decision": "mdenseon-adoption-measurements-2026-10-01#D-004",
+    "originalLabelsModelsAndRuntimeUnchanged": true,
+    "partialV4Preserved": true,
+    "acceptanceComplete": false
+  },
   "artifactPathConvention": "Paths beginning ~/ resolve against the executing account home; immutable hashes identify private artifacts.",
   "measuredAt": "2026-10-01T12:31:07.990Z",
   "sourceCommit": "f3e4afe03b4e4fcac1368b7e32bb4620045f5a5c",
