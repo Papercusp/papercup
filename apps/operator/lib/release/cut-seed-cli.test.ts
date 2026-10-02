@@ -11,6 +11,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, cp, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { chmod } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import {
   parseGitDepth,
   parseHeadSnapshotTimeoutMs,
@@ -34,7 +36,59 @@ import {
   deriveSourceStoreDirs,
   createFilteredSeedProgressReporter,
   withSeedOutput,
+  readSeedFindingRedactions,
 } from "./cut-seed-cli";
+
+describe('exact private finding redaction input', () => {
+  async function fixture() {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-private-redaction-'));
+    await chmod(dir, 0o700);
+    const source = join(dir, 'plaintext.jsonl');
+    const report = join(dir, 'findings.json');
+    const meta = join(dir, 'findings.meta.json');
+    const config = join(dir, 'detectors.toml');
+    const secret = ['fixture-view:', 'synthetic-only-pass'].join('');
+    const sourceText = JSON.stringify({ body: 'curl -u ' + secret }) + '\n';
+    const row = { RuleID: 'curl-auth-user', Match: 'curl -u ' + secret, Secret: secret, File: source };
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    const reportText = JSON.stringify([row]);
+    await Promise.all([
+      writeFile(source, sourceText, { mode: 0o600 }),
+      writeFile(report, reportText, { mode: 0o600 }),
+      writeFile(config, '[extend]\nuseDefault = true\n', { mode: 0o600 }),
+      writeFile(meta, JSON.stringify({ scannerExit: 1, findings: 1, reportSha256: hash(reportText),
+        identity: { blobSha256: hash(sourceText), configSha256: hash('[extend]\nuseDefault = true\n') } }), { mode: 0o600 }),
+    ]);
+    return { dir, source, report, config, secret, digest: hash(JSON.stringify([row.RuleID, row.Match, row.Secret])) };
+  }
+
+  it('resolves only the approved finding from an unchanged private scan', async () => {
+    const f = await fixture();
+    try {
+      expect(await readSeedFindingRedactions(f.report, [f.digest], f.config)).toEqual([f.secret]);
+      await expect(readSeedFindingRedactions(f.report, ['0'.repeat(64)], f.config)).rejects.toThrow('evidence invalid');
+      await expect(readSeedFindingRedactions(f.report, [f.digest, f.digest], f.config)).rejects.toThrow('evidence invalid');
+    } finally { await rm(f.dir, { recursive: true, force: true }); }
+  });
+
+  it('fails closed on changed source/config/report and public evidence permissions without exposing values', async () => {
+    for (const mutation of ['source', 'config', 'report', 'permissions']) {
+      const f = await fixture();
+      try {
+        if (mutation === 'permissions') await chmod(f.report, 0o644);
+        else await writeFile(f[mutation as 'source' | 'config' | 'report'], 'changed', { mode: 0o600 });
+        try {
+          await readSeedFindingRedactions(f.report, [f.digest], f.config);
+          throw new Error('expected refusal');
+        } catch (error) {
+          expect(String(error)).toContain('evidence invalid');
+          expect(String(error)).not.toContain(f.secret);
+          expect(String(error)).not.toContain(f.dir);
+        }
+      } finally { await rm(f.dir, { recursive: true, force: true }); }
+    }
+  });
+});
 
 describe('head-snapshot timeout override', () => {
   it('prefers the explicit CLI value over the environment', () => {

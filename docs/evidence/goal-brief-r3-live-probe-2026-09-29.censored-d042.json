@@ -11,8 +11,8 @@
     "docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-02T17:46:45.041Z",
-  "finishedAt": "2026-10-02T17:46:46.217Z",
+  "startedAt": "2026-10-02T17:49:07.114Z",
+  "finishedAt": "2026-10-02T17:49:08.391Z",
   "summary": "2/3 assertions passed; 1 censored per D-042 (r3-chain-survives-session-boundary), gate 2/2; 1 of 2 sessions resolved by the transcript witness alone",
   "assertions": [
     {
@@ -24,7 +24,9 @@
       "id": "r3-generation-to-effect-chain-exists",
       "passed": true,
       "evidence": "3 confirmed delivery->same-turn turn-end->effect chains: activity:6400376, activity:6512596, activity:6512617"
-    },
+    }
+  ],
+  "censoredAssertions": [
     {
       "id": "r3-chain-survives-session-boundary",
       "passed": false,

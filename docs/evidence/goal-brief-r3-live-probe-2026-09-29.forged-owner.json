@@ -11,8 +11,8 @@
     "docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts"
   ],
   "exitCode": 1,
-  "startedAt": "2026-10-02T17:46:47.048Z",
-  "finishedAt": "2026-10-02T17:46:47.809Z",
+  "startedAt": "2026-10-02T17:49:11.654Z",
+  "finishedAt": "2026-10-02T17:49:12.402Z",
   "summary": "0/3 assertions passed; 1 of 2 sessions resolved by the transcript witness alone",
   "assertions": [
     {
