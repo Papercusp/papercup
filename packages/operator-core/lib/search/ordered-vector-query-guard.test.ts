@@ -155,6 +155,15 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
       'this scan no longer sees it as a literal ORDER BY; the same rule 2 covers it.',
   },
   {
+    file: 'libs/generic/search/src/chunks/vector-leg.ts',
+    contains: 'hit.matched_anchor, 1 AS leg FROM (SELECT',
+    reason:
+      "The ANN chunk leg over the exact slice (scan 'exact', chunkScan 'ann'; generic-rag-chunking " +
+      'D-046) orders the chunk table by its vector so the partial HNSW index can serve it. Same ' +
+      'builder, same rule 2: every call site runs the fragment inside withIterativeScan, which is ' +
+      'what sets the iterative scan and ef_search this leg relies on.',
+  },
+  {
     file: 'packages/operator-core/lib/personal-vault/store.ts',
     contains: 'row_number() OVER (ORDER BY embedding <=>',
     reason:
