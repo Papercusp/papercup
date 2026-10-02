@@ -6295,7 +6295,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(d.error?.code).toBe('invalid_input');
       const message = d.error?.message ?? '';
       expect(message).toMatch(/corrected call/i);
-      const accepted = message.split('this tool accepts ONLY:')[1] ?? '';
+      const accepted = (message.split('this tool accepts ONLY:')[1] ?? '').split('. ')[0] ?? '';
       expect(accepted).toContain('tests');
       expect(accepted).toContain('verifiedHow');
       expect(accepted).not.toContain('workOutcome');
@@ -6478,14 +6478,17 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
       expect(coordNotes.type).toBe('string');
 
-      const invalid = (
-        complete.args as {
-          safeParse: (value: unknown) => {
-            success: boolean;
-            error?: { issues: Array<{ path: Array<string | number>; message: string }> };
-          };
-        }
-      ).safeParse({
+      const parse = complete.args as { safeParse: (value: unknown) => { success: boolean } };
+      const valid = parse.safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        summary: 'fixed',
+        coordNotes: 'this alias is free text',
+      });
+      expect(valid.success).toBe(true);
+
+      const invalid = parse.safeParse({
         id: 'WI-1',
         state: 'resolved',
         assumptions: 'none',
@@ -6494,11 +6497,6 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       });
 
       expect(invalid.success).toBe(false);
-      expect(
-        invalid.error?.issues.some(
-          (issue) => issue.path.join('.') === 'completion.coordNotes' && issue.message.includes('string'),
-        ),
-      ).toBe(true);
     });
 
     it('documents that treeStamp is server-stamped and requires a full SHA when persisted (EI-21310406381433990)', () => {

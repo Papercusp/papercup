@@ -170,7 +170,7 @@ impl<'de> Visitor<'de> for EdgeLookup<'_> {
     }
 }
 
-fn analyze(input: &[u8], limits: [usize; 4], phase: &mut &'static str) -> Result<Value, &'static str> {
+fn analyze(input: &[u8], limits: [usize; 4], object_ids: &[u64], phase: &mut &'static str) -> Result<Value, &'static str> {
     *phase = "decode-bytes";
     let graph = decode_reader(io::Cursor::new(input)).map_err(|_| "invalid-snapshot")?;
     if graph.nodes().is_empty() || (graph.root_index != 0 && graph.root_index != graph.nodes().len() - 1) {
@@ -182,6 +182,13 @@ fn analyze(input: &[u8], limits: [usize; 4], phase: &mut &'static str) -> Result
     let mut selected: Vec<_> = groups.iter().collect();
     selected.sort_by_key(|g| (std::cmp::Reverse(g.retained_size), g.index));
     let mut targets = HashMap::new();
+    let mut requested: HashMap<u64, Option<usize>> = object_ids.iter().map(|id| (*id, None)).collect();
+    for (index, node) in graph.nodes().iter().enumerate() {
+        if let Some(found) = requested.get_mut(&u64::from(node.weight.id)) {
+            if found.replace(index).is_some() { return Err("ambiguous-object-id"); }
+            targets.insert(index, Incoming::default());
+        }
+    }
     let mut rows = Vec::new();
     for group in selected.into_iter().take(top) {
         let raw = graph.get_node(group.index).ok_or("invalid-group")?.class_name();
@@ -206,8 +213,14 @@ fn analyze(input: &[u8], limits: [usize; 4], phase: &mut &'static str) -> Result
     Lookup { graph: &graph, targets: &mut targets, maximum }.deserialize(&mut deserializer)
         .map_err(|_| "invalid-edge-lookup")?;
     deserializer.end().map_err(|_| "invalid-trailing-input")?;
-    for group in &mut rows {
-        for node in group["nodes"].as_array_mut().ok_or("invalid-output")? {
+    let mut requested_nodes: Vec<Value> = object_ids.iter().map(|id| {
+        match requested[id] {
+            Some(index) => Ok(json!({"id": id, "status": "found", "node": node_row(&graph, index)?})),
+            None => Ok(json!({"id": id, "status": "missing"})),
+        }
+    }).collect::<Result<_, &'static str>>()?;
+    for node in rows.iter_mut().flat_map(|g| g["nodes"].as_array_mut().unwrap()).chain(
+        requested_nodes.iter_mut().filter(|r| r["status"] == "found").map(|r| &mut r["node"])) {
             let index = node["index"].as_u64().ok_or("invalid-output")? as usize;
             let incoming = targets.get(&index).ok_or("invalid-output")?;
             let mut parents = Vec::new();
@@ -219,11 +232,11 @@ fn analyze(input: &[u8], limits: [usize; 4], phase: &mut &'static str) -> Result
             node["retainers"] = json!(parents);
             node["retainerCount"] = json!(incoming.count);
             node["retainersTruncated"] = json!(incoming.count > maximum);
-        }
     }
     Ok(json!({"parser": "microsoft/vscode-v8-heap-tools native", "upstreamRevision": REVISION,
         "rootIndex": graph.root_index, "limits": {"top": top, "perClass": per_class,
-        "retainerDepth": depth, "maxRetainers": maximum}, "groups": rows,
+        "retainerDepth": depth, "maxRetainers": maximum, "objectIds": object_ids}, "groups": rows,
+        "requestedNodes": requested_nodes,
         "definition": "Node retained_size is dominator-owned V8 self_size; class retained sizes overlap. Not total native memory or production savings.",
         "retainerDefinition": "Depth-one unique incoming parents; excludes weak edges, non-root shortcuts, root and the queried node. First essential edge type per parent; no edge names.",
         "privacy": "String payloads, source text, filesystem names and edge/property names are omitted."}))
@@ -236,17 +249,28 @@ fn main() {
     if args == ["--version"] { println!("{VERSION}"); return; }
     let mut phase = "preflight";
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<Value, &'static str> {
-        if args.len() != 4 { return Err("invalid-limits"); }
+        if args.len() != 4 && args.len() != 5 { return Err("invalid-limits"); }
         let mut limits = [0; 4];
         for (index, (arg, maximum)) in args.iter().zip([30, 10, 1, 100]).enumerate() {
             limits[index] = arg.parse().map_err(|_| "invalid-limits")?;
             if limits[index] == 0 || limits[index] > maximum { return Err("invalid-limits"); }
         }
+        let object_ids = if args.len() == 5 {
+            let mut ids = Vec::new();
+            for value in args[4].split(',') {
+                let id: u64 = value.parse().map_err(|_| "invalid-object-ids")?;
+                if id == 0 || id > MAX_SAFE_INTEGER || ids.contains(&id) || ids.len() >= 64 {
+                    return Err("invalid-object-ids");
+                }
+                ids.push(id);
+            }
+            ids
+        } else { Vec::new() };
         phase = "read-input";
         let mut input = Vec::new();
         io::stdin().lock().take(2_147_483_649).read_to_end(&mut input).map_err(|_| "read-failed")?;
         if input.is_empty() || input.len() > 2_147_483_648 { return Err("invalid-input-size"); }
-        analyze(&input, limits, &mut phase)
+        analyze(&input, limits, &object_ids, &mut phase)
     }));
     match result {
         Ok(Ok(report)) => println!("{report}"),

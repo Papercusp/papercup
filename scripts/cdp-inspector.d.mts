@@ -20,6 +20,24 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
     hostFacts?: boolean;
     allocationDetails?: boolean;
 }): Promise<any>;
+/** Bind existing singleton values to a preceding snapshot's numeric V8 IDs.
+ * Remote handles are released before returning and never enter the report.
+ * Missing, unsafe and uncaptured roots stay explicit; no getter or proxy runs.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
+ * @param {{expectedPid: number, owners: string[]}} options
+ */
+export function readPinnedHeapObjectIds(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, owners }: {
+    expectedPid: number;
+    owners: string[];
+}): Promise<{
+    pid: number;
+    roots: {
+        owner: string;
+        status: string;
+        id?: number;
+    }[];
+    definition: string;
+}>;
 /**
  * Inspect logical payloads reachable from existing module-singleton roots.
  * No GC, queryObjects, getters, proxy traps or application iterators run.

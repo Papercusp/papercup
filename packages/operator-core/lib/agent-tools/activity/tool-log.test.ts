@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const h = vi.hoisted(() => ({
   rows: vi.fn(),
@@ -53,6 +54,17 @@ beforeEach(() => {
 });
 
 describe('activity:tool-log timestamp boundaries', () => {
+  it('advertises and enforces top_k as an integer in the range 1..25', () => {
+    const schema = z.toJSONSchema(argsSchema as never) as {
+      properties?: Record<string, { type?: string; minimum?: number; maximum?: number }>;
+    };
+
+    expect(schema.properties?.top_k).toMatchObject({ type: 'integer', minimum: 1, maximum: 25 });
+    expect(argsSchema.safeParse({ owner: 'self', top_k: 25 }).success).toBe(true);
+    expect(argsSchema.safeParse({ owner: 'self', top_k: 26 }).success).toBe(false);
+    expect(argsSchema.safeParse({ owner: 'self', top_k: 0 }).success).toBe(false);
+  });
+
   it('rejects relative durations before they reach the timestamptz query', () => {
     expect(argsSchema.safeParse({ owner: 'self', since: '-15 min' }).success).toBe(false);
     expect(argsSchema.safeParse({ owner: 'self', until: '10m' }).success).toBe(false);

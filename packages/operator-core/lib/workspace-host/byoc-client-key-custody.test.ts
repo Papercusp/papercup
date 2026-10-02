@@ -9,6 +9,7 @@ import {
 } from './byoc-client-key-custody';
 
 const stored = new Map<string, Buffer>();
+let failDelete = false;
 vi.mock('../identity/keychain', () => ({
   keychainStore: vi.fn(async (id: string, value: Buffer, service: string) => {
     stored.set(`${service}:${id}`, Buffer.from(value));
@@ -18,6 +19,7 @@ vi.mock('../identity/keychain', () => ({
     return value ? { kind: 'ok', value: Buffer.from(value) } : { kind: 'error', error: { kind: 'not_found' } };
   }),
   keychainDelete: vi.fn(async (id: string, service: string) => {
+    if (failDelete) throw new Error('local keychain unavailable');
     stored.delete(`${service}:${id}`);
   }),
 }));
@@ -27,6 +29,7 @@ const previousDesktop = process.env.PAPERCUSP_DESKTOP;
 
 beforeEach(() => {
   stored.clear();
+  failDelete = false;
   process.env.PAPERCUSP_DESKTOP = '1';
 });
 afterEach(() => {
@@ -108,5 +111,17 @@ describe('BYOC signed-desktop client key custody', () => {
     const complete = await rotateByocClientKey(scope, partial.publicKeyBase64, authorize, async () => {});
     expect(complete.status).toBe('complete');
     expect(stored.size).toBe(1);
+  });
+
+  it('distinguishes a completed host revocation from a failed local key deletion', async () => {
+    const old = await createByocClientKey(scope);
+    const revokeOnHost = vi.fn(async () => {
+      failDelete = true;
+    });
+    const partial = await rotateByocClientKey(scope, old.publicKeyBase64, async () => {}, revokeOnHost);
+    expect(partial.status).toBe('old-key-local-deletion-pending');
+    expect(revokeOnHost).toHaveBeenCalledOnce();
+    expect(revokeOnHost).toHaveBeenCalledWith(old.publicKeyBase64);
+    expect(stored.size).toBe(2);
   });
 });

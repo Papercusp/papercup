@@ -113,6 +113,52 @@ export async function readProcessMemory(client, { expectedPid, hostFacts = false
   return sample;
 }
 
+/** Bind existing singleton values to a preceding snapshot's numeric V8 IDs.
+ * Remote handles are released before returning and never enter the report.
+ * Missing, unsafe and uncaptured roots stay explicit; no getter or proxy runs.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
+ * @param {{expectedPid: number, owners: string[]}} options
+ */
+export async function readPinnedHeapObjectIds(client, { expectedPid, owners }) {
+  validatePinnedStateOptions({ expectedPid, owners });
+  if (!owners) throw new TypeError('Exact heap owners required');
+  const objectGroup = 'p011-heap-roots-' + randomUUID();
+  /** @type {{owner: string, status: string, id?: number}[]} */
+  const roots = [];
+  try {
+    for (const owner of owners) {
+      const remote = (await client.evaluate(`(() => {
+        if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
+        const types = process.getBuiltinModule('util').types;
+        const slots = Object.getOwnPropertyDescriptor(globalThis, Symbol.for('@papercusp/module-singleton.slots'))?.value;
+        if (!slots || types.isProxy(slots) || !types.isMap(slots)) return 'registry-unavailable';
+        if (!Map.prototype.has.call(slots, ${JSON.stringify(owner)})) return 'missing';
+        const slot = Map.prototype.get.call(slots, ${JSON.stringify(owner)});
+        if (!slot || types.isProxy(slot)) return 'unsafe';
+        const field = Object.getOwnPropertyDescriptor(slot, 'value');
+        if (!field || !Object.prototype.hasOwnProperty.call(field, 'value')) return 'unsafe';
+        const value = field.value;
+        if (!value || (typeof value !== 'object' && typeof value !== 'function')) return 'nonobject';
+        if (types.isProxy(value)) return 'unsafe';
+        return value;
+      })()`, { objectGroup })).result;
+      if (!remote.objectId) {
+        const status = ['registry-unavailable', 'missing', 'unsafe', 'nonobject'].includes(remote.value)
+          ? remote.value : 'unavailable';
+        roots.push({ owner, status }); continue;
+      }
+      const { heapSnapshotObjectId } = await client.send('HeapProfiler.getHeapObjectId', { objectId: remote.objectId });
+      if (heapSnapshotObjectId === '0') { roots.push({ owner, status: 'not-in-snapshot' }); continue; }
+      const id = Number(heapSnapshotObjectId);
+      if (!/^[1-9]\d*$/.test(heapSnapshotObjectId) || !Number.isSafeInteger(id))
+        throw new TypeError('Invalid heap object ID');
+      roots.push({ owner, status: 'found', id });
+    }
+    return { pid: expectedPid, roots,
+      definition: 'Numeric IDs bind existing singleton values to preceding snapshot nodes; no physical memory estimate.' };
+  } finally { await client.send('Runtime.releaseObjectGroup', { objectGroup }); }
+}
+
 /**
  * Inspect logical payloads reachable from existing module-singleton roots.
  * No GC, queryObjects, getters, proxy traps or application iterators run.

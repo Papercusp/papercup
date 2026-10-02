@@ -15,22 +15,24 @@ export function summarizeHeapSnapshot(snap: any, { top }?: {
     topClasses: any[];
     definition: string;
 };
-/** @typedef {{parser: string, rootIndex: number, limits: {top: number, perClass: number, retainerDepth: number, maxRetainers: number}, groups: {class: string, count: number, selfSizeBytes: number, retainedSizeBytes: number, nodes: {index: number, id: number, type: string, class: string, selfSizeBytes: number, retainedSizeBytes: number, children: number, retainers: {index: number, id: number, type: string, class: string, selfSizeBytes: number, retainedSizeBytes: number, children: number, retainsIndex: number, edgeType: string}[], retainerCount: number, retainersTruncated: boolean}[]}[], definition: string, privacy: string, upstreamRevision?: string, retainerDefinition?: string, native?: {executableSha256: string, inputBytes: number, inputSha256: string, elapsedMs: number, status: number|null, signal: NodeJS.Signals|null, stdoutBytes: number, stderrBytes: number, errorCode: string|null}}} HeapRetainerReport */
+/** @typedef {{index: number, id: number, type: string, class: string, selfSizeBytes: number, retainedSizeBytes: number, children: number, retainers: {index: number, id: number, type: string, class: string, selfSizeBytes: number, retainedSizeBytes: number, children: number, retainsIndex: number, edgeType: string}[], retainerCount: number, retainersTruncated: boolean}} HeapRetainerNode */
+/** @typedef {{parser: string, rootIndex: number, limits: {top: number, perClass: number, retainerDepth: number, maxRetainers: number, objectIds?: number[]}, groups: {class: string, count: number, selfSizeBytes: number, retainedSizeBytes: number, nodes: HeapRetainerNode[]}[], requestedNodes?: {id: number, status: string, node?: HeapRetainerNode}[], definition: string, privacy: string, upstreamRevision?: string, retainerDefinition?: string, native?: {executableSha256: string, inputBytes: number, inputSha256: string, elapsedMs: number, status: number|null, signal: NodeJS.Signals|null, stdoutBytes: number, stderrBytes: number, errorCode: string|null}}} HeapRetainerReport */
 /** Private snapshot analysis using the maintained Rust native/WASM dominator graph.
  * Input remains bytes: constructing a V8 string would reject large snapshots.
  * Returned names contain only constructor/function labels, never string values
  * or edge/property names. Class retained sizes overlap and must not be added.
  * @param {Uint8Array} input
- * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number, decoderControl?: string, nativeExecutable?: string }} [options]
+ * @param {{ top?: number, perClass?: number, retainerDepth?: number, maxRetainers?: number, decoderControl?: string, nativeExecutable?: string, objectIds?: number[] }} [options]
  * @returns {Promise<HeapRetainerReport>}
  */
-export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, nativeExecutable, retainerDepth, maxRetainers, decoderControl }?: {
+export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, nativeExecutable, retainerDepth, maxRetainers, decoderControl, objectIds }?: {
     top?: number;
     perClass?: number;
     retainerDepth?: number;
     maxRetainers?: number;
     decoderControl?: string;
     nativeExecutable?: string;
+    objectIds?: number[];
 }): Promise<HeapRetainerReport>;
 /** Compare the SAME bytes with the pinned upstream native v8-heap executable.
  * This is a decoder discriminator, not retainer attribution. --top 0 prevents
@@ -70,6 +72,28 @@ export function summarizeHeapSnapshotStream(input: import("node:stream").Readabl
         definition: string;
     };
 }>;
+export type HeapRetainerNode = {
+    index: number;
+    id: number;
+    type: string;
+    class: string;
+    selfSizeBytes: number;
+    retainedSizeBytes: number;
+    children: number;
+    retainers: {
+        index: number;
+        id: number;
+        type: string;
+        class: string;
+        selfSizeBytes: number;
+        retainedSizeBytes: number;
+        children: number;
+        retainsIndex: number;
+        edgeType: string;
+    }[];
+    retainerCount: number;
+    retainersTruncated: boolean;
+};
 export type HeapRetainerReport = {
     parser: string;
     rootIndex: number;
@@ -78,34 +102,19 @@ export type HeapRetainerReport = {
         perClass: number;
         retainerDepth: number;
         maxRetainers: number;
+        objectIds?: number[];
     };
     groups: {
         class: string;
         count: number;
         selfSizeBytes: number;
         retainedSizeBytes: number;
-        nodes: {
-            index: number;
-            id: number;
-            type: string;
-            class: string;
-            selfSizeBytes: number;
-            retainedSizeBytes: number;
-            children: number;
-            retainers: {
-                index: number;
-                id: number;
-                type: string;
-                class: string;
-                selfSizeBytes: number;
-                retainedSizeBytes: number;
-                children: number;
-                retainsIndex: number;
-                edgeType: string;
-            }[];
-            retainerCount: number;
-            retainersTruncated: boolean;
-        }[];
+        nodes: HeapRetainerNode[];
+    }[];
+    requestedNodes?: {
+        id: number;
+        status: string;
+        node?: HeapRetainerNode;
     }[];
     definition: string;
     privacy: string;

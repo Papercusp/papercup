@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createReadStream, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { summarizeHeapSnapshot, summarizeHeapSnapshotStream, summarizeHeapRetainers, checkNativeHeapDecode } from '../../../scripts/analyze-heap-snapshots.mjs';
+import { createCdpClient, readPinnedHeapObjectIds } from '../../../scripts/cdp-inspector.mjs';
 
 describe('private V8 heap snapshot census', () => {
   const repository = fileURLToPath(new URL('../../../', import.meta.url));
@@ -25,6 +26,84 @@ describe('private V8 heap snapshot census', () => {
     expect(version.status).toBe(0);
     expect(version.stdout.trim()).toBe('papercusp-heap-retainers 0.1.0');
   }, 130_000);
+
+  it('binds exact singleton IDs outside class rankings without retaining remote handles or invoking unsafe roots', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'p011-exact-heap-roots-'));
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '-e', String.raw`
+      class ExactHeapFixture { constructor(length) { this.values = Array(length).fill(23); } }
+      const exclusive = new ExactHeapFixture(250000);
+      const shared = Array(2000000).fill(31);
+      const left = new ExactHeapFixture(125000), right = new ExactHeapFixture(125000);
+      left.shared = shared; right.shared = shared;
+      globalThis.effects = 0;
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+        ['fixture.exclusive', { value: exclusive }], ['fixture.left', { value: left }],
+        ['fixture.right', { value: right }], ['fixture.alias', { value: left }],
+        ['fixture.accessor', { get value() { globalThis.effects++; return exclusive; } }],
+        ['fixture.proxy', { value: new Proxy({}, { getOwnPropertyDescriptor() { globalThis.effects++; throw Error('unsafe'); } }) }],
+        ['fixture.primitive', { value: 17 }]
+      ]);
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    try {
+      const deadline = Date.now() + 15000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null)
+        await new Promise(resolve => setTimeout(resolve, 20));
+      expect(stdout, stderr).toContain('ready');
+      const endpoint = stderr.match(/ws:\/\/127\.0\.0\.1:\d+\/[^\s]+/)?.[0];
+      expect(endpoint).toBeTruthy();
+      client = createCdpClient(endpoint!); await client.connect();
+      await client.send('HeapProfiler.enable');
+      const snapshot = join(directory, 'exact.heapsnapshot');
+      await client.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' + JSON.stringify(snapshot) + ')', { returnByValue: true });
+      const groups: string[] = [];
+      const probe = { evaluate: client.evaluate, send: async (method: string, params?: Record<string, unknown>) => {
+        if (method === 'Runtime.releaseObjectGroup') groups.push(String(params?.objectGroup));
+        return client!.send(method, params);
+      } };
+      const owners = ['fixture.exclusive', 'fixture.left', 'fixture.right', 'fixture.alias',
+        'fixture.accessor', 'fixture.proxy', 'fixture.primitive', 'fixture.absent'];
+      const binding = await readPinnedHeapObjectIds(probe, { expectedPid: child.pid!, owners });
+      expect(binding.roots.map(root => root.status)).toEqual(['found', 'found', 'found', 'found', 'unsafe', 'unsafe', 'nonobject', 'missing']);
+      expect(binding.roots[1].id).toBe(binding.roots[3].id);
+      expect(new Set(binding.roots.slice(0, 3).map(root => root.id)).size).toBe(3);
+      expect(JSON.stringify(binding)).not.toMatch(/objectId|objectGroup|heapsnapshot/);
+      expect((await client.evaluate('globalThis.effects', { returnByValue: true })).result.value).toBe(0);
+      const ids = binding.roots.slice(0, 3).map(root => root.id!);
+      const report = await summarizeHeapRetainers(readFileSync(snapshot), {
+        nativeExecutable, top: 1, perClass: 1, objectIds: [...ids, Number.MAX_SAFE_INTEGER],
+      });
+      expect(report.groups.flatMap(group => group.nodes).some(node => ids.includes(node.id))).toBe(false);
+      expect(report.requestedNodes?.map(row => row.id)).toEqual([...ids, Number.MAX_SAFE_INTEGER]);
+      expect(report.requestedNodes?.map(row => row.status)).toEqual(['found', 'found', 'found', 'missing']);
+      const nodes = report.requestedNodes!.slice(0, 3).map(row => row.node!);
+      expect(nodes.every(node => node.class === 'ExactHeapFixture')).toBe(true);
+      expect(nodes[0].retainedSizeBytes).toBeGreaterThan(2_000_000);
+      expect(nodes.slice(1).every(node => node.retainedSizeBytes > 1_000_000 && node.retainedSizeBytes < 2_000_000)).toBe(true);
+      expect(nodes.every(node => node.retainerCount > 0 && node.retainers.length <= 32)).toBe(true);
+      const bytes = readFileSync(snapshot);
+      for (const objectIds of [[], [0], [-1], [1.5], [1, 1], Array.from({ length: 65 }, (_, i) => i + 1)])
+        await expect(summarizeHeapRetainers(bytes, { nativeExecutable, objectIds })).rejects.toThrow('Invalid heap object IDs');
+      await expect(summarizeHeapRetainers(bytes, { objectIds: ids })).rejects.toThrow('native adapter');
+      await expect(readPinnedHeapObjectIds(probe, { expectedPid: child.pid! + 1, owners: ['fixture.left'] })).rejects.toThrow('PID mismatch');
+      expect(groups).toHaveLength(2); expect(new Set(groups).size).toBe(2);
+      const calls: string[] = [];
+      await expect(readPinnedHeapObjectIds({ evaluate: client.evaluate, send: async method => {
+        calls.push(method); if (method === 'HeapProfiler.getHeapObjectId') throw Error('injected ID failure'); return {};
+      } }, { expectedPid: child.pid!, owners: ['fixture.left'] })).rejects.toThrow('injected ID failure');
+      expect(calls).toEqual(['HeapProfiler.getHeapObjectId', 'Runtime.releaseObjectGroup']);
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGKILL'); await exited;
+      }
+      child.stdout.destroy(); child.stderr.destroy();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 75000);
 
   it('detects a real surviving large array without exporting private string payloads', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'p011-heap-census-'));

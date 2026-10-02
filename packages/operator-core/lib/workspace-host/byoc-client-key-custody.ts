@@ -27,7 +27,7 @@ export interface CreatedByocClientKey {
 }
 
 export type RotatedByocClientKey = CreatedByocClientKey & {
-  status: 'complete' | 'old-key-revocation-pending';
+  status: 'complete' | 'old-key-revocation-pending' | 'old-key-local-deletion-pending';
 };
 
 function requireInstalledDesktop(): void {
@@ -164,9 +164,10 @@ export async function revokeByocClientKey(
 
 /**
  * Authorize the replacement on the customer host, then revoke the old key.
- * A failed old-key revocation is an explicit pending state. The caller still
- * receives the new recovery material, so a partial rotation cannot strand the
- * customer, and must retry host revocation before calling rotation complete.
+ * A failed old-key revocation or local deletion is an explicit, distinct
+ * pending state. The caller still receives the new recovery material, so a
+ * partial rotation cannot strand the customer. Only a failed host revocation
+ * requires another host request; a failed local deletion must retry locally.
  */
 export async function rotateByocClientKey(
   scope: ByocClientKeyScope,
@@ -183,9 +184,14 @@ export async function rotateByocClientKey(
     throw error;
   }
   try {
-    await revokeByocClientKey(scope, oldPublicKeyBase64, revokeOnCustomerHost);
-    return { ...replacement, status: 'complete' };
+    await revokeOnCustomerHost(oldPublicKeyBase64);
   } catch {
     return { ...replacement, status: 'old-key-revocation-pending' };
+  }
+  try {
+    await keychainDelete(keychainId(scope, oldPublicKeyBase64), BYOC_CLIENT_KEY_SERVICE);
+    return { ...replacement, status: 'complete' };
+  } catch {
+    return { ...replacement, status: 'old-key-local-deletion-pending' };
   }
 }
