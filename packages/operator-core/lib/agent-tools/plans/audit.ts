@@ -71,6 +71,7 @@ import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
 import {
   MAX_BAR_PROJECTION_EDGES,
+  acceptanceBarProjectionConflictDetail,
   unexpectedAcceptanceBarProjectionIds,
   validateAcceptanceBarSource,
   acceptanceBarSourceContractProblems,
@@ -749,6 +750,7 @@ export default defineTool({
             projectionIdentities,
           );
           if (unexpected.length > 0) {
+            const detail = acceptanceBarProjectionConflictDetail(unexpected);
             return { data: {
               ok: false as const,
               slug: args.slug,
@@ -758,9 +760,9 @@ export default defineTool({
               error: 'bar_projection_conflict' as const,
               problems: [{
                 code: 'bar_projection_conflict' as const,
-                detail: `stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}`,
+                detail,
               }],
-              message: `1 BAR seed problem(s): stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}`,
+              message: `1 BAR seed problem(s): ${detail}`,
             } };
           }
           // P-003/P-029: mirror the writer's activation contract-completeness refusal.
