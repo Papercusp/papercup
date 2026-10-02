@@ -1313,5 +1313,119 @@
     "modelGpuCapacityBindingVerified": false,
     "fullGpuPopulationComplete": false
   },
+  "nativeLoaderClosurePreparation": {
+    "status": "File-backed glibc closure guard, kernel auxv/vDSO runtime observation and complete stderr receipt verified; native-model DLL/GPU acceptance remains open",
+    "workItem": "WI-10004540",
+    "reuse": "Extend existing measurement-manifest, worker runtime samples and three conventional Vitest suites. No new tool, service, configuration key, production model policy or native addon.",
+    "mechanism": "bindNativeLoaderClosure requires raw UTF-8-roundtrippable target stderr bytes, matching hash/byte-count/PID, a pipe installed before exec, EOF and successful unsignalled exit. It reuses generated-object/namespace/address joins, adds auxv-bound executable program headers/entry and interpreter base, resolves initialization aliases by inode/device before checking path/bytes/hash, and refuses unmatched mapped files or loader activity across selected request windows. vDSO is fingerprinted separately as kernel memory.",
+    "kernelAndLoaderSources": [
+      {
+        "url": "https://man7.org/linux/man-pages/man3/getauxval.3.html",
+        "use": "AT_PHDR/PHENT/PHNUM, AT_BASE, AT_ENTRY and AT_SYSINFO_EHDR identify kernel-provided exec/interpreter/vDSO metadata; /proc/pid/auxv exposes it."
+      },
+      {
+        "url": "https://man7.org/linux/man-pages/man7/vdso.7.html",
+        "use": "vDSO is kernel-mapped ELF memory, not an on-disk shared library."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/auxvec.h",
+        "use": "Auxv entry constants used by the sampler."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/bminor/glibc/master/elf/dl-init.c",
+        "use": "calling init/preinit diagnostics print the actual loader object names; the main executable may have no init diagnostic."
+      }
+    ],
+    "verification": {
+      "runGroup": "p006-loader-closure-20261002",
+      "testRunIds": [
+        20541381,
+        20541382,
+        20541384
+      ],
+      "passed": 215,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "perFile": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+          "passed": 95,
+          "testRunId": 20541382
+        },
+        {
+          "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+          "passed": 34,
+          "testRunId": 20541384
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+          "passed": 86,
+          "testRunId": 20541381
+        }
+      ],
+      "provenance": "Exact-file router pre/post stamp e358c3b1f703c59184c347997823b0c017d47ac3; named test paths clean, memory submodule903df0c9ae. Ledger worktreeDirty=true measures the shared tree, not those three path stamps. Six current source/test hashes re-read after final checks; these are local current-build results, not final release evidence.",
+      "actualGlibcControl": "Model-free compiled shared object loaded into two real dlmopen namespaces; actual hashed pre-Run maps, ELF PT_INTERP and /proc/self/auxv/mem bind the program/interpreter/vDSO. Complete child stderr and actual terminal status qualify the control with zero mapped-file residue, including symlinked interpreter initialization paths.",
+      "actualNativeWorker": "Real130-byte upstream CPU ORT fixture emits queued success/error observations with executable/header/entry/interpreter mappings and hashed vDSO inside each pre/post sampler bracket. Existing synchronous stderr marker equality, stdin-parent worker boot and capacity valid/invalid controls pass. Full closure of this Node worker's loader trace has not yet been claimed.",
+      "counterexamples": "Reject missing/late/failed/signalled/mismatched receipts, non-UTF8 bytes, missing process metadata, misbound header/entry/base, malformed vDSO/hash/ranges, map residue, unresolved or init-only files without identity, malformed/repeated control transfer, late loader errors, transient activity/preinit, and changed symlink-target bytes.",
+      "aliasRepair": "New adversarial alias test caught unrelated-path realpath traversal. Matching the alias descriptor's inode/device first avoids traversing unrelated mappings; only that candidate is resolved and hashed. The same conventional test verifies changed same-length bytes are refused.",
+      "typecheck": "Core requested source/test plus14-file service scope clean after alias repair; generic-memory requested source/input-test+imports clean. Plain ESM node --check and scoped superproject/submodule diff checks pass.",
+      "priorBaseTestRunIds": [
+        20541346,
+        20541347
+      ],
+      "priorBasePassed": 126,
+      "verificationHarnessAudit": "testing:run5284df02 exceeded its enforced45s foreground cap and automatic recovery7b4a93d2 was read to terminalfail. A later caller-relative custom reporter failed collection; corrected final runner uses built-in absolute evidence reporters and JSON with explicit harness/runGroup. No failed attempt is counted as final verification.",
+      "transportFriction": "EI-24882418765367812 (nonclaimable tool-failure probation; no generic repair lane claimed)"
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 30940,
+        "sha256": "fe4aa4f7ff106a643d4f19ee6bec45e1a33093456da733bb754ad0d5a7c143dd"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 57658,
+        "sha256": "4629f26f87cdc24a301540fc47c79b6c4e7acdfc9b4b20135373c40b0223678e"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 53516,
+        "sha256": "e8f415ebce2d3a753d37665c0589cf55566df1bfab4635809fa97aaf844c03c7"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 29749,
+        "sha256": "57c51b0dcfcf05deb12eeb37a369d28d6a24d9a09152efd32bb87a04397c1fb8"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 34640,
+        "sha256": "32c1975124278b0b0d45179dd62472d15bae84aac67b7f13815283b31e540672"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      }
+    ],
+    "supersedesCurrentPins": "These six pins supersede nativeMappedObjectPreparation's current-source pins. Earlier loader/resource/clock proofs and all immutable R4/V6/V7/V5/reference/export/Nsight captures remain historical and unchanged.",
+    "limitations": [
+      "The complete file-backed closure assertion is exercised by the real model-free glibc control, not by a pretrained native CUDA model. Native-model completeBeforeInferenceClosureVerified remains false.",
+      "The launcher owns the exec-to-EOF receipt and must retain its raw bytes/hash/PID/terminal evidence. A log tail, a successful profiler import, or booleans without that capture evidence cannot substitute.",
+      "ELF64 little-endian x64/arm64 only; unsupported interpreter, header-table, virtual-memory or alias layouts refuse qualification. vDSO is separately fingerprinted kernel memory.",
+      "Scope excludes arbitrary mmap/JIT code and does not establish CUDA kernel attribution, model GPU UUID/PCI capacity binding, vector parity, 8192/over-limit/mixed inference or complete rankings.",
+      "Next run the model-free actual FILE-parent Node worker closure preflight, then freeze immutable R5 with every current tested overlay and all source/dependency/executable pins; qualified CUDA/MONOTONIC preflight and terminal receipts remain mandatory before fresh model capture."
+    ],
+    "pretrainedModelInferencePerformed": false,
+    "nativeCudaModelInferencePerformed": false,
+    "modelFreeGlibcClosureVerified": true,
+    "completeBeforeInferenceClosureVerified": false,
+    "modelGpuCapacityBindingVerified": false,
+    "fullGpuPopulationComplete": false
+  },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
