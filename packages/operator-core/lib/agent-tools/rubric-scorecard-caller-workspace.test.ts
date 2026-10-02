@@ -124,7 +124,7 @@ describe('rubric/scorecard caller workspace binding (EI-22577140653575153)', () 
     await getRubricTool.handler({ rubricRef: rubric.rubricId } as never, ctx as never);
     await listRubricsTool.handler({} as never, ctx as never);
     const evaluated = await evaluateScorecardTool.handler({ rubricRef: rubric.rubricId } as never, ctx as never);
-    expect(evaluated.data).toMatchObject({ ok: true });
+    expect(evaluated).toMatchObject({ data: { ok: true } });
     await listScorecardsTool.handler({} as never, ctx as never);
 
     expect(observed).toEqual([

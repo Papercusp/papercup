@@ -897,7 +897,7 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
         .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
         .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 1, staged: 0 });
       const ensureWakeArmed = vi.fn(async () => false);
-      const armWakeForResume = vi.fn(async () => ({
+      const armWakeForResume = vi.fn(async (_req: { ownerId: string; note?: string }) => ({
         awaitId: 1,
         eventKey: 'coord:inbox-wake:su-pinned',
         handleNote: 'resumable',
