@@ -8,9 +8,9 @@
  * mismatch is terminal, so a relay cannot relabel ciphertext into another
  * allowlisted operation.
  */
-import { Duplex } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import SecretStream from '@hyperswarm/secret-stream';
+import { Duplex } from 'streamx';
 
 export const BYOC_SEALED_PROTOCOL = 'papercusp-byoc-noise-xx.v1' as const;
 
@@ -62,12 +62,14 @@ class RelayPacketDuplex extends Duplex {
     super();
   }
 
-  override _read(): void {}
+  override _read(callback: (error?: Error | null) => void): void {
+    callback(null);
+  }
 
-  override _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+  override _write(chunk: Buffer, callback: (error?: Error | null) => void): void {
     try {
-      this.emitPacket(Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk), this.contentType);
-      callback();
+      this.emitPacket(Buffer.from(chunk), this.contentType);
+      callback(null);
     } catch (error) {
       callback(error instanceof Error ? error : new Error(String(error)));
     }
