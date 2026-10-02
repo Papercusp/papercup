@@ -41,20 +41,20 @@ export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, nativ
  * @param {Uint8Array} input
  * @param {string} executable
  */
-export function checkNativeHeapDecode(input: Uint8Array, executable: string): {
+export function checkNativeHeapDecode(input: Uint8Array, executable: string): Promise<{
     parser: string;
     executableSha256: string;
     inputBytes: number;
     inputSha256: string;
     elapsedMs: number;
-    status: number | null;
-    signal: NodeJS.Signals | null;
+    status: any;
+    signal: any;
     decoded: boolean;
     stdoutBytes: number;
     stderrBytes: number;
     errorCode: any;
     definition: string;
-};
+}>;
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
  * @param {import('node:stream').Readable} input
  * @param {{ top?: number }} [options] top=0 keeps all classes for multi-snapshot aggregation.

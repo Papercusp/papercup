@@ -1118,7 +1118,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         fs.mkdirSync(process.env.TMPDIR, { recursive: true });
         require('node:v8').writeHeapSnapshot(snapshot);
         phase = 'native-decode';
-        const result = checkNativeHeapDecode(fs.readFileSync(snapshot), process.env.TEST_NATIVE_HEAP_DECODER);
+        const result = await checkNativeHeapDecode(fs.readFileSync(snapshot), process.env.TEST_NATIVE_HEAP_DECODER);
         console.log('NATIVE_DECODER_CONTROL ' + JSON.stringify(result));
         if (process.env.TEST_NATIVE_HEAP_ADAPTER) {
           phase = 'native-retainers';

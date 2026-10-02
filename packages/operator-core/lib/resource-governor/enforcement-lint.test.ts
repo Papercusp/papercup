@@ -225,7 +225,8 @@ describe('resource governor enforcement lint', () => {
       expect(scanInventory([[path, source]])).not.toContain(finding);
       expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
     }
-    expect(scanInventory([[heapPath, heap.replace('timeout: 60_000', 'timeout: undefined')]])).toContain(`${heapPath}:resource-start-outside-admission`);
+    expect(BYPASS_REGISTRY.has(`${heapPath}::resource-start-outside-admission`)).toBe(false);
+    expect(inspectGovernorSource(heap)).not.toContain('resource-start-outside-admission');
     expect(scanInventory([[nativePath, native.replace('await worker.terminate()', 'await ignoreWorker()')]])).toContain(`${nativePath}:resource-start-outside-admission`);
     expect(scanInventory([[nativePath, native.replace('71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10', 'other-graph')]])).toContain(`${nativePath}:resource-start-outside-admission`);
   });

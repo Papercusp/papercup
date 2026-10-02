@@ -108,6 +108,22 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
 }
 
 /**
+ * WI-10005570 (plan personal-data-reader-set-labels-2026-10-01, D-006): every
+ * agent-facing `session_turns` read consults the disclosure ledger
+ * (personal-vault/transcript-exclusion.ts `restrictedTurnSql`) and fails CLOSED,
+ * so a fixture that hand-rolls `session_turns` and drives one of those readers
+ * must stand the ledger up too. This applies the REAL migration 1302, never
+ * hand-written DDL. Its foreign keys need `harness_shared.users`; a fixture that
+ * has none gets an id-only stub (created only when absent).
+ */
+export async function applyDisclosureLedgerForTest(sql: postgres.Sql): Promise<void> {
+  await sql.unsafe(`
+    CREATE SCHEMA IF NOT EXISTS harness_shared;
+    CREATE TABLE IF NOT EXISTS harness_shared.users (id uuid PRIMARY KEY DEFAULT gen_random_uuid());`);
+  await applyMigrationForTest(sql, resolve(SQL_DIR, '1302-personal-disclosure-labels.sql'));
+}
+
+/**
  * ── EI-18808675015292160: the hand-maintained migration list, made self-checking
  *
  * Fixtures stand their schema up from a hardcoded list of migration filenames.

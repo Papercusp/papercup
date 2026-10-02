@@ -204,10 +204,10 @@ describe('private V8 heap snapshot census', () => {
       expect(result.status, result.stderr).toBe(0);
       const bytes = readFileSync(join(directory, 'owners.heapsnapshot'));
       if (process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER) {
-        const control = checkNativeHeapDecode(bytes, process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER);
+        const control = await checkNativeHeapDecode(bytes, process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER);
         expect(control.decoded).toBe(true);
         expect(control.inputSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
-        const invalid = checkNativeHeapDecode(Buffer.from('{"private":"DoNotExportThisPayload"}'), process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER);
+        const invalid = await checkNativeHeapDecode(Buffer.from('{"private":"DoNotExportThisPayload"}'), process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER);
         expect(invalid.decoded).toBe(false);
         expect(invalid.stderrBytes).toBeGreaterThan(0);
         expect(JSON.stringify(invalid)).not.toContain('DoNotExportThisPayload');

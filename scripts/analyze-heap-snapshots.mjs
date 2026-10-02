@@ -30,12 +30,12 @@
 //   strings[]                  — string table indexed by the 'name' field value
 
 import { readdirSync, createReadStream, readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createHash } from 'node:crypto';
 import { parser } from 'stream-json';
+import { executeGovernedByteProcess } from './lib/governed-test-process.mjs';
 
 const classLabel = (type, raw) => !type.includes('string') && typeof raw === 'string' && raw.length <= 80 &&
   (/^[A-Za-z_$][A-Za-z0-9_.$]*$/.test(raw) || /^\(object (?:elements|properties)\)$/.test(raw))
@@ -186,7 +186,7 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, na
     throw Object.assign(new Error('Heap retainer analysis failed at ' + phase + ' (' +
       (cause instanceof Error ? cause.name : 'unknown') + ')'), {
       diagnostic: { phase, inputBytes: input.byteLength, wasmMemoryBytes: wasm?.memory?.buffer?.byteLength ?? null, panic, wasmFrames,
-        ...(decoderControl && phase === 'decode-bytes' ? { nativeControl: checkNativeHeapDecode(input, decoderControl) } : {}) },
+        ...(decoderControl && phase === 'decode-bytes' ? { nativeControl: await checkNativeHeapDecode(input, decoderControl) } : {}) },
     });
   } finally { console.error = consoleError; graph?.free(); }
 }
@@ -196,16 +196,16 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, na
  * @param {Uint8Array} input
  * @param {string} executable
  * @param {{ top: number, perClass: number, retainerDepth: number, maxRetainers: number, objectIds?: number[] }} limits
- * @returns {HeapRetainerReport}
+ * @returns {Promise<HeapRetainerReport>}
  */
-function summarizeNativeHeapRetainers(input, executable, limits) {
+async function summarizeNativeHeapRetainers(input, executable, limits) {
   if (limits.retainerDepth !== 1) throw new TypeError('Native heap graph supports retainerDepth 1 only');
   const executableSha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
   const started = Date.now();
   const args = [limits.top, limits.perClass, limits.retainerDepth, limits.maxRetainers].map(String);
   if (limits.objectIds) args.push(limits.objectIds.join(','));
-  const result = spawnSync(executable, args,
-    { input, encoding: 'utf8', timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
+  const result = await executeGovernedByteProcess(executable, args, input,
+    { namespace: 'heap-retainer-analysis', timeoutMs: 120_000, maxBuffer: 16 * 1024 * 1024 });
   const receipt = { executableSha256, inputBytes: input.byteLength,
     inputSha256: createHash('sha256').update(input).digest('hex'), elapsedMs: Date.now() - started,
     status: result.status, signal: result.signal, stdoutBytes: Buffer.byteLength(result.stdout ?? ''),
@@ -229,11 +229,11 @@ function summarizeNativeHeapRetainers(input, executable, limits) {
  * @param {Uint8Array} input
  * @param {string} executable
  */
-export function checkNativeHeapDecode(input, executable) {
+export async function checkNativeHeapDecode(input, executable) {
   const started = Date.now();
   const executableSha256 = createHash('sha256').update(readFileSync(executable)).digest('hex');
-  const result = spawnSync(executable, ['-', '--no-retained', '--top', '0', '--format', 'json'],
-    { input, encoding: 'utf8', timeout: 60_000, maxBuffer: 16 * 1024 });
+  const result = await executeGovernedByteProcess(executable, ['-', '--no-retained', '--top', '0', '--format', 'json'], input,
+    { namespace: 'heap-decode-control', timeoutMs: 60_000, maxBuffer: 16 * 1024 });
   return { parser: 'microsoft/vscode-v8-heap-tools native decoder', executableSha256,
     inputBytes: input.byteLength, inputSha256: createHash('sha256').update(input).digest('hex'),
     elapsedMs: Date.now() - started, status: result.status, signal: result.signal,

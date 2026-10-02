@@ -10,6 +10,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 
 const EXECUTION_MODULE_URL = new URL(
   '../../packages/operator-core/lib/resource-governor/execution.ts',
@@ -543,6 +544,45 @@ export async function runGovernedTestProcess(options, run) {
       await sleep(delayMs);
     }
   }
+}
+
+/** Execute a finite byte-input diagnostic under the existing process lifecycle.
+ * The child starts only after admission, receives its typed context, and keeps
+ * the receipt until execFile has observed exit and pipe EOF. Output and input
+ * stay in memory; callers persist only their own redacted diagnostics.
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {Uint8Array} input
+ * @param {{ timeoutMs: number, maxBuffer: number, namespace: string, workspaceId?: string, owner?: string, env?: NodeJS.ProcessEnv, executionApi?: any }} options
+ */
+export async function executeGovernedByteProcess(executable, args, input, options) {
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 ||
+      !Number.isSafeInteger(options.maxBuffer) || options.maxBuffer < 1)
+    throw new TypeError('Native diagnostic requires finite timeout and output bounds');
+  const demand = { cpuWeight: 1,
+    memoryBytes: Math.max(GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES, input.byteLength + options.maxBuffer),
+    fileDescriptors: 3 };
+  return runGovernedTestProcess({
+    ...options, demand,
+    owner: options.owner ?? process.env.PAPERCUSP_SID ?? `native-diagnostic:${process.pid}`,
+    settle: result => result.error || result.status !== 0
+      ? { kind: 'cancel', reason: 'native diagnostic did not complete successfully' }
+      : { kind: 'release', actualDemand: result.actualDemand },
+  }, async (_context, childEnv) => await new Promise(resolveResult => {
+    const sampler = createGovernedProcessDemandSampler(demand);
+    let inputError;
+    const child = execFile(executable, args, {
+      env: childEnv, encoding: 'utf8', timeout: options.timeoutMs, maxBuffer: options.maxBuffer,
+    }, (error, stdout, stderr) => {
+      const failure = error ?? inputError;
+      resolveResult({ status: child.exitCode, signal: child.signalCode, stdout, stderr,
+        error: failure && typeof failure.code === 'string' ? { code: failure.code } : undefined,
+        actualDemand: sampler.stop() });
+    });
+    sampler.attach(child.pid);
+    child.stdin?.on('error', error => { inputError = error; });
+    child.stdin?.end(input);
+  }));
 }
 
 /** The contention code that made a rejection retryable, for the retry marker. */

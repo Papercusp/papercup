@@ -98,6 +98,24 @@ export function isRetryableAdmissionFailure(error: any, maxDepth?: number): bool
  * immediately regardless of how retryable the error looks.
  */
 export function runGovernedTestProcess(options: any, run: any): Promise<any>;
+/** Execute a finite byte-input diagnostic under the existing process lifecycle.
+ * The child starts only after admission, receives its typed context, and keeps
+ * the receipt until execFile has observed exit and pipe EOF. Output and input
+ * stay in memory; callers persist only their own redacted diagnostics.
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {Uint8Array} input
+ * @param {{ timeoutMs: number, maxBuffer: number, namespace: string, workspaceId?: string, owner?: string, env?: NodeJS.ProcessEnv, executionApi?: any }} options
+ */
+export function executeGovernedByteProcess(executable: string, args: string[], input: Uint8Array, options: {
+    timeoutMs: number;
+    maxBuffer: number;
+    namespace: string;
+    workspaceId?: string;
+    owner?: string;
+    env?: NodeJS.ProcessEnv;
+    executionApi?: any;
+}): Promise<any>;
 export const GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES: number;
 export const GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES: number;
 export const GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS: 16;

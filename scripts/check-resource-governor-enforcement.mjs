@@ -1855,20 +1855,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed semantic disposition for scripts/lib/graph-dependency-suggestions.mjs: this is a call-local traversal frontier, not queued background work. Both initial changed-path seeds and discovered importers are deduplicated in `seen` and limited by the existing MAX_VISITED_FILES bound; excess seeds set `truncated` and are omitted from suggestions, while the baseline selection remains untouched. The cursor-index walk retains at most that same bound and is discarded when the suggestion call returns.",
   },
-  {
-    path: "scripts/analyze-heap-snapshots.mjs",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for analyze-heap-snapshots.mjs: checkNativeHeapDecode runs one caller-specified native decoder over supplied snapshot bytes, with a 60-second timeout and 16 KiB output bound, and returns scalar/hash diagnostics. This attended diagnostic creates no detached child or resident work queue. The exception rejects additional starts or removed subprocess bounds.",
-    matchesSource: (source) => {
-      const code = stripCommentsAndStrings(source);
-      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
-        /\bspawnSync\s*\(\s*executable\s*,/.test(code) &&
-        /timeout:\s*60_000/.test(code) && /maxBuffer:\s*16\s*\*\s*1024/.test(code) &&
-        !START_NON_VERB.test(code) && !hasCalledResourceStartAlias(code);
-    },
-  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [

@@ -2880,11 +2880,18 @@ export async function getNextWorkItem(
   // cross-family priority preclaim and the existing tier-3 fallback use the same
   // issue floors/filter/rank. The feature-side comparator uses the widened feature
   // view because the ladder may fall through tier 2 before tier 3.
-  const widened = widenPastKind(spec.view.filter);
+  // WI-10002617: named fleet filters are hard scope boundaries. Widening past
+  // kind made a feature-only member atomically claim an adjacent issue, only
+  // for getNextForBee to reject and release it. Apply the complete filter before
+  // both issue doors (priority preclaim and tier 3), avoiding that doomed bounce.
+  // Solo callers retain WI-1407's adjacent-family fallback.
+  const widened = opts.fleetSlug ? spec.view.filter : widenPastKind(spec.view.filter);
   const issueKinds = issueKindsForFallback(spec.view.filter);
   const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
   const excludeIds = negativeIdExclusions(spec.view.filter);
-  const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
+  const specFilterSql = compileFilter(sql, opts.fleetSlug
+    ? spec.view.filter
+    : stripFeatureOnlyKindLeaves(spec.view.filter));
   const specOrderSql = compileRank(sql, spec, bee);
   const featurePriorityFilterSql = sql`${compileFilter(sql, widened)} AND
     ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
@@ -3100,7 +3107,7 @@ export async function getNextWorkItem(
         'caller-budget',
       );
     }
-    const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
+    // Reuse the same fleet-aware filter as the priority preclaim above.
     // EI-19497592871345016: thread the spec's compiled RANK down too, not just its filter.
     // Tier 3 is the ONLY tier the issue family ever reaches (tiers 1/2 query the
     // feature-family table), so without this every bug/change/task claim ignored spec.rank
