@@ -42,6 +42,7 @@ import {
 import { OperatorHttpChannel, type OperatorHttpFetch } from './hosted-operator-http';
 import { AppKeyMintChannel, createAppHttpChannel } from './hosted-app-relay';
 import { hostedPsuPtySpawnSpec, parseHostedPsuCustomerArgv } from './hosted-psu-session';
+import { ByocSealedChannel, isByocSealedPacket } from './byoc-sealed-channel';
 
 export const HOSTED_HOST_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const HOSTED_HOST_MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -143,6 +144,8 @@ export interface HostedHostRelayOpen {
   argv?: string[];
   /** `kind === 'app-http'` only: the portal relay's usage this month (P-328). Counts only. */
   relayUsage?: unknown;
+  /** Content on this channel is Noise-sealed end to end; relay.open remains control metadata. */
+  sealed?: true;
 }
 
 export interface HostedHostRelayMessage {
@@ -324,6 +327,11 @@ export interface HostedWorkspaceHostOptions {
    * A relay-linked local install passes {@link LOCAL_RELAY_CHANNEL_KINDS} (D-031 #7).
    */
   allowedChannelKinds?: ReadonlySet<HostedHostOpenKind>;
+  /** Independently provisioned endpoint keys. The relay never receives either secret. */
+  byocSealedChannel?: {
+    localKeyPair: { publicKey: Buffer; secretKey: Buffer };
+    expectedRemotePublicKey: Buffer;
+  };
 }
 
 type HostSession = {
@@ -803,6 +811,7 @@ function ptyHandleAdapter(handle: PtyHandle, scope: PtyAccessScope): HostedHostP
 export class HostedWorkspaceHostSessionAdapter {
   private readonly sessions = new Map<string, HostSession>();
   private readonly channels = new Map<string, Channel>();
+  private readonly sealedChannels = new Map<string, ByocSealedChannel>();
   private readonly desktopChannels = new Map<string, DesktopChannel>();
   /**
    * Only channels whose dial SUCCEEDED. Kept separate from `desktopChannels` (which
@@ -870,6 +879,8 @@ export class HostedWorkspaceHostSessionAdapter {
     this.desktopHeartbeat?.stop();
     this.desktopHeartbeat = null;
     this.channels.clear();
+    for (const sealed of this.sealedChannels.values()) sealed.close();
+    this.sealedChannels.clear();
   }
 
   /**
@@ -906,6 +917,8 @@ export class HostedWorkspaceHostSessionAdapter {
     this.desktopHeartbeat?.stop();
     this.desktopHeartbeat = null;
     this.channels.clear();
+    for (const sealed of this.sealedChannels.values()) sealed.close();
+    this.sealedChannels.clear();
     return handoff;
   }
 
@@ -1024,6 +1037,27 @@ export class HostedWorkspaceHostSessionAdapter {
     if (this.channels.has(channelId)) {
       this.options.send({ type: 'relay.close', channelId, reason: 'channel_already_open' });
       return;
+    }
+    const sealed = message.sealed === true;
+    if (this.options.binding.hosting === 'byoc' && !sealed) {
+      this.options.send({ type: 'relay.close', channelId, reason: 'byoc_plaintext_relay_refused' });
+      return;
+    }
+    if (sealed) {
+      const keys = this.options.byocSealedChannel;
+      if (!keys) {
+        this.options.send({ type: 'relay.close', channelId, reason: 'sealed_channel_unavailable' });
+        return;
+      }
+      const channel = new ByocSealedChannel({
+        initiator: false,
+        localKeyPair: keys.localKeyPair,
+        expectedRemotePublicKey: keys.expectedRemotePublicKey,
+        sendPacket: (packet) => this.options.send({ type: 'relay', channelId, payload: packet }),
+        onFrame: (frame) => { void this.acceptPayload(channelId, frame); },
+        onError: () => this.detach(channelId, 'sealed_channel_failed'),
+      });
+      this.sealedChannels.set(channelId, channel);
     }
 
     if (kind === 'operator-http') {
@@ -1244,6 +1278,17 @@ export class HostedWorkspaceHostSessionAdapter {
     if (!channel) return;
     const payload = object(message.payload);
     if (!payload) return;
+    const sealed = this.sealedChannels.get(channelId);
+    if (sealed) {
+      if (isByocSealedPacket(payload)) sealed.receive(payload);
+      return;
+    }
+    await this.acceptPayload(channelId, payload);
+  }
+
+  private async acceptPayload(channelId: string, payload: Record<string, unknown>): Promise<void> {
+    const channel = this.channels.get(channelId);
+    if (!channel) return;
     const type = string(payload.type, 64);
     if (!type) return;
 
@@ -1796,6 +1841,11 @@ export class HostedWorkspaceHostSessionAdapter {
   }
 
   private send(channelId: string, payload: unknown): void {
+    const sealed = this.sealedChannels.get(channelId);
+    if (sealed && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      void sealed.send(payload as Record<string, unknown>).catch(() => this.detach(channelId, 'sealed_channel_failed'));
+      return;
+    }
     this.options.send({ type: 'relay', channelId, payload });
   }
 

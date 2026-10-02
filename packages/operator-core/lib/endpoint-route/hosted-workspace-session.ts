@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { parseHostedPsuCustomerArgv } from '../workspace-host/hosted-psu-session';
 import { HOSTED_RELAY_FRAME_REGISTRY } from '../workspace-host/hosted-relay-confidentiality-registry';
+import { byocSealedContentType, isByocSealedPacket } from '../workspace-host/byoc-sealed-channel';
 import type {
   HostedConnectorBinding,
   HostedConnectorTicketBinding,
@@ -150,6 +151,8 @@ export interface HostedWorkspaceAttachRequest {
    * quietly becoming an empty one.
    */
   argv?: unknown;
+  /** The browser has an independently pinned Noise peer and will send only sealed packets. */
+  sealed?: boolean;
 }
 
 type BrowserSession = {
@@ -167,6 +170,7 @@ type BrowserSession = {
   controllerKey: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
   closed: boolean;
+  sealed: boolean;
 };
 
 function connectorKey(binding: Pick<HostedConnectorBinding,
@@ -506,6 +510,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       controllerKey: `${key}\u0000app:${channelId}`,
       idleTimer: null,
       closed: false,
+      sealed: false,
     };
     this.sessions.set(channelId, session);
     this.touch(session);
@@ -550,7 +555,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     }
     // Trust the connector's server-classified hosting mode, not a ticket or attach
     // parameter. No plaintext content channel may reach a customer-account VM.
-    if (this.connectorState.get(key)?.binding.hosting === 'byoc') {
+    const byoc = this.connectorState.get(key)?.binding.hosting === 'byoc';
+    if (byoc && attach.sealed !== true) {
       sendJson(socket, {
         type: 'session.denied',
         reason: 'byoc_plaintext_relay_refused',
@@ -615,6 +621,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       controllerKey: controlKey,
       idleTimer: null,
       closed: false,
+      sealed: byoc,
     };
     this.sessions.set(channelId, session);
     if (isTerminalKind(kind) && role === 'controller') this.controllers.set(controlKey, channelId);
@@ -657,6 +664,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
           : psuArgv?.ok
             ? { kind, argv: psuArgv.argv }
             : {}),
+      ...(byoc ? { sealed: true } : {}),
     });
     this.audit(binding, 'browser_attached', channelId, role);
 
@@ -669,7 +677,11 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       if (!raw) return;
       let payload: unknown;
       try { payload = JSON.parse(raw); } catch { return; }
-      const type = payloadType(payload);
+      if (session.sealed && !isByocSealedPacket(payload)) {
+        socket.close(4403, 'byoc_plaintext_relay_refused');
+        return;
+      }
+      const type = session.sealed ? byocSealedContentType(payload) : payloadType(payload);
       if (!type) return;
       this.touch(session);
       if (type === 'session.claim-control') {
