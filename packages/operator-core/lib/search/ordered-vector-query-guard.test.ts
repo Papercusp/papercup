@@ -161,6 +161,23 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
       'harness_shared.documents has no HNSW index and this ORDER BY is a window over a ' +
       'pre-filtered CTE, so Postgres sorts exactly; there is no ef_search cap to under-return.',
   },
+  // R-33's same-time A/B bench (generic-rag-chunking D-040). Arm A must be the
+  // pre-change query exactly as it ran at 9a9473af95, so the pair differs only in
+  // what the chunking work changed; wrapping it would time a query that never shipped.
+  {
+    file: 'packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts',
+    contains: 'AND template_slug IS NULL AND archived = false ORDER BY embedding <=>',
+    reason:
+      'Benchmark arm A for plans: reproduces queryTopPlansReal as of 9a9473af95, which ran under ' +
+      'withWorkspace only. It is a measurement of the pre-change query, never a production read.',
+  },
+  {
+    file: 'packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts',
+    contains: "AND state = 'closed_answered' AND query_embedding IS NOT NULL",
+    reason:
+      'Benchmark arm A for consult: reproduces peersKnowLookup as of 9a9473af95, an unwrapped exact ' +
+      'scan. It is a measurement of the pre-change query, never a production read.',
+  },
 ];
 
 /** Sites WI-10004138 wrapped. Each must still be DETECTED as wrapped, or the scan went blind. */

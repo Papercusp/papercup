@@ -96,6 +96,9 @@ export interface PairedSample {
   bRows: number;
   aError?: string;
   bError?: string;
+  /** Each arm's top result id (null = no result), when the CLI records one. */
+  aTop?: string | null;
+  bTop?: string | null;
 }
 
 export interface ArmStats {
@@ -125,6 +128,12 @@ export interface PairedSummary {
    * failing B arm would be fast and empty; this count is how such a run is caught.
    */
   bEmptyWhereAHadRows: number;
+  /**
+   * How often both arms ranked the same result first, over pairs that recorded
+   * both tops. A diagnostic, not part of the verdict: chunking is meant to change
+   * some rankings (a match past the parent's 2,000-character cut now counts).
+   */
+  topHitAgreement: { compared: number; same: number };
   firstErrors: string[];
 }
 
@@ -140,6 +149,7 @@ export function summarisePaired(samples: readonly PairedSample[]): PairedSummary
   const b = stats(ok.map((s) => s.bMs));
   const deltas = ok.map((s) => s.bMs - s.aMs);
   const ratios = ok.filter((s) => s.aMs > 0).map((s) => s.bMs / s.aMs);
+  const tops = ok.filter((s) => s.aTop !== undefined && s.bTop !== undefined);
   const median = (xs: number[]) => {
     const m = percentile(xs, 50);
     return m === null ? null : Math.round(m * 100) / 100;
@@ -155,6 +165,10 @@ export function summarisePaired(samples: readonly PairedSample[]): PairedSummary
     pairedMedianDeltaMs: median(deltas),
     pairedMedianRatio: median(ratios),
     bEmptyWhereAHadRows: ok.filter((s) => s.aRows > 0 && s.bRows === 0).length,
+    topHitAgreement: {
+      compared: tops.length,
+      same: tops.filter((s) => s.aTop === s.bTop).length,
+    },
     firstErrors: samples
       .flatMap((s) => [s.aError && `A: ${s.aError}`, s.bError && `B: ${s.bError}`])
       .filter((e): e is string => typeof e === 'string')

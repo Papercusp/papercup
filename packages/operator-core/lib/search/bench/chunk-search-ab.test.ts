@@ -75,6 +75,16 @@ describe('chunk-search same-time A/B (R-33, D-040)', () => {
     expect(s.firstErrors).toEqual(['B: connection reset']);
   });
 
+  it('top-hit agreement counts only pairs that recorded both tops', () => {
+    const samples = pairs(10, 12).map((p, i) => ({
+      ...p,
+      ...(i < 10 ? { aTop: `x${i}`, bTop: i < 7 ? `x${i}` : 'other' } : {}),
+    }));
+    samples[0] = { ...samples[0], aTop: null, bTop: null }; // both empty agree
+    expect(summarisePaired(samples).topHitAgreement).toEqual({ compared: 10, same: 7 });
+    expect(summarisePaired(pairs(1, 1)).topHitAgreement).toEqual({ compared: 0, same: 0 });
+  });
+
   it('counts pairs where B came back empty but A had rows', () => {
     const samples = pairs(10, 2);
     samples[3] = { ...samples[3], bRows: 0 };
