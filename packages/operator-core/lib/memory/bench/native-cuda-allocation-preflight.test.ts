@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { inspectNativeCudaAllocationFailure } from './measurement-manifest';
 
 const roots: string[] = [];
@@ -141,5 +142,44 @@ worker.on('exit',()=>restore());
     const result = spawnSync(process.execPath, ['--import', preload, '-e', ''], { env, encoding: 'utf8', timeout: 10000 });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).not.toContain('PC_ORT_ALLOCATOR_LOGGING\t');
+  });
+});
+
+describe('small native ORT teardown control', () => {
+  const controlFixture = fileURLToPath(new URL('./fixtures/native-ort-teardown-control.mjs', import.meta.url));
+  const fromTransformers = createRequire(createRequire(import.meta.url).resolve('@huggingface/transformers'));
+  const ortEntry = fromTransformers.resolve('onnxruntime-node');
+
+  it.each(['success', 'shape-error'] as const)('captures exact FILE-worker %s and process EOF after explicit release', outcome => {
+    const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root,
+      JSON.stringify({ ortEntry, device: 'cpu', outcome, release: 'dispose' })], { encoding: 'utf8', timeout: 15000 });
+    expect(child.status, child.stderr).toBe(0);
+    const terminal = JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'));
+    const receipt = JSON.parse(readFileSync(join(root, 'target.stdout.log'), 'utf8'));
+    expect(terminal).toMatchObject({ eof: true, exitCode: 0, signal: null, captureStartedBeforeExec: true });
+    expect(receipt).toMatchObject({ processId: terminal.processId, outcome, device: 'cpu', disposed: true,
+      embeddingModelInferencePerformed: false, graph: { bytes: 130,
+        sha256: '71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10' } });
+    if (outcome === 'success') expect(receipt.output).toEqual([1, 2, 3, 4, 5, 6]);
+    else expect(receipt.expectedError).toContain('Got invalid dimensions for input');
+  });
+
+  it('captures environment finalization separately from explicit session release', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root,
+      JSON.stringify({ ortEntry, device: 'cpu', outcome: 'success', release: 'environment' })], { encoding: 'utf8', timeout: 15000 });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(join(root, 'target.stdout.log'), 'utf8'))).toMatchObject({ disposed: false, release: 'environment' });
+    expect(JSON.parse(readFileSync(join(root, 'target-terminal.json'), 'utf8'))).toMatchObject({ eof: true, exitCode: 0, signal: null });
+  });
+
+  it('refuses an unsupported device before native session construction', () => {
+    const child = spawnSync(process.execPath, [controlFixture, 'target', JSON.stringify({
+      ortEntry, device: 'automatic', outcome: 'success', release: 'dispose',
+    })], { encoding: 'utf8', timeout: 15000 });
+    expect(child.status).not.toBe(0);
+    expect(child.stderr).toContain('invalid native teardown control configuration');
+    expect(child.stdout).toBe('');
   });
 });
