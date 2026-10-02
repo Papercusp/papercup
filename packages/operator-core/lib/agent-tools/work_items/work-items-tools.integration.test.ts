@@ -40,6 +40,7 @@ import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
+  applyClaimPathReadDeps,
 } from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { createWorkItem } from '../../work-items';
@@ -306,6 +307,9 @@ beforeAll(async () => {
   // production schema so a missing table cannot collapse the refusal envelope.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim trust-leg join (mig 276)
+  // The claim tool handlers reach claimNextWorkItem/claimIssue, which read adv_sessions,
+  // event_awaits and the other claim-path tables (WI-10005130 / WI-10005225).
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL); // work_item_deps + work_item_blocked readiness (migs 367/379) — claimNextWorkItem references them UNCONDITIONALLY
   // HFC_DDL (the shared _work-items-schema fixture) is the COMPLETE post-374 schema:
   // the work_items BASE table (with item_kind/assignee_rank/rank_writer/rank_updated_at),
