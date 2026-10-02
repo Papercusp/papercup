@@ -762,7 +762,10 @@ if [ "$IN_TREE" -eq 1 ]; then
   fi
 fi
 BASE="$SCRATCH/$(basename "$FILE").orig"
-cp "$FILE" "$BASE" || die "could not snapshot $FILE"
+# -p keeps the subject's mtime on BASE so an in-tree restore puts it back with the bytes.
+# plans:bind-spec-evidence refuses a run whose measured files changed after it started
+# (EI-24826121815486916), and a restored subject is byte-identical to what the baseline ran.
+cp -p "$FILE" "$BASE" || die "could not snapshot $FILE"
 
 # Keep a whitespace-normalized snapshot as well. A mis-escaped expression can
 # change bytes without changing any non-whitespace token (for example, by
@@ -841,7 +844,7 @@ finish() {
     # The only bytes on disk are the probe's own mutant, so restoring BASE is
     # safe. The caller's path lock remains the serialization boundary for this
     # in-tree write.
-    if cp -- "$BASE" "$FILE" 2>/dev/null &&
+    if cp -p -- "$BASE" "$FILE" 2>/dev/null &&
         git hash-object "$FILE" > "$SCRATCH/restored.sha" 2>/dev/null &&
         IFS= read -r now < "$SCRATCH/restored.sha" && [ "$now" = "$ORIG_SUM" ]; then
       RESTORE_STATUS="verified-identical"
