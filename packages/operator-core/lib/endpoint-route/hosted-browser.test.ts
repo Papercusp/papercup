@@ -399,7 +399,7 @@ describe('hosted browser route boundary', () => {
     }
 
     it('enqueues a hosted retry with its actor and bring-up instead of forwarding the bare body', async () => {
-      const enqueue = vi.fn(async () => ({ workflowId: 'wf' }));
+      const enqueue = vi.fn(async (_input: unknown) => ({ workflowId: 'wf' }));
       const response = await hostedRetry({ enqueue });
       expect(response.status).toBe(202);
       await expect(response.json()).resolves.toMatchObject({
