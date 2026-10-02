@@ -40,7 +40,7 @@ const PROBE_TIMEOUT_MS = 3_000;
 
 interface AppCase {
   app: ProducerApp;
-  /** The canonical `personal_documents.source` that maps to this app. */
+  /** The canonical `documents.source` that maps to this app. */
   source: string;
   baseUrl: string;
   secret: string;
@@ -225,7 +225,7 @@ describe.skipIf(CASES.length === 0)('P-008 producer → app round trip (live app
 // an executing assertion. This block is that assertion.
 //
 // It changes exactly ONE variable: the record is READ FROM the live
-// `personal_documents` vault (`source='gmail'` / `'calendar'` — the same rows
+// `documents` vault (`source='gmail'` / `'calendar'` — the same rows
 // the production producer reads) instead of being synthesized. The converter,
 // the batch builder, the delivery sink, the minted token and the app's own read
 // endpoint are all the identical production path already exercised above.
@@ -260,7 +260,7 @@ async function readRealSourceRecord(source: string): Promise<ProducerSourceRecor
     const { rows } = await client.query(
       `SELECT source, kind, external_id, occurred_at, title, text, metadata,
               source_id, provider_account_id
-         FROM harness_shared.personal_documents
+         FROM harness_shared.documents
         WHERE source = $1
           AND external_id IS NOT NULL
           AND btrim(external_id) <> ''
@@ -299,7 +299,7 @@ describe.skipIf(!REAL_GOOGLE_ENABLED || CASES.length === 0)(
           // Loud rather than vacuous: opting in asserts real data IS present.
           expect(
             record,
-            `no real '${c.source}' row in harness_shared.personal_documents — ` +
+            `no real '${c.source}' row in harness_shared.documents — ` +
               'this test cannot prove the real-data path without one. Connect the ' +
               'provider and let a sync land, or unset APP_LIVE_REAL_GOOGLE_E2E.',
           ).not.toBeNull();

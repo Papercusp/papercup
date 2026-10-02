@@ -56,6 +56,19 @@ let phases: Phase[] = [];
 let root: postgres.Sql | undefined;
 let privateDb: { uri: string; name: string } | undefined;
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const fingerprintSources = () => Object.fromEntries(['plan-item-coverage.ts','fleet/assignments.ts']
+  .map(path => [path, createHash('sha256').update(readFileSync(new URL(path, import.meta.url))).digest('hex')]));
+function verifyServingSources(sha: unknown, fingerprints: Record<string, string>,
+  readBlob = (revision: string, path: string) => execFileSync('git',
+    ['show', `${revision}:packages/operator-core/lib/${path}`])) {
+  if (typeof sha !== 'string' || !/^[a-f0-9]{7,64}$/.test(sha)) throw new Error('Invalid serving build SHA');
+  const sourceHashes: Record<string, string> = {};
+  for (const [path, expected] of Object.entries(fingerprints)) {
+    sourceHashes[path] = createHash('sha256').update(readBlob(sha, path)).digest('hex');
+    if (sourceHashes[path] !== expected) throw new Error(`Serving measured source changed: ${path}`);
+  }
+  return { sha, sourceHashes };
+}
 const confidenceMethod = { metric: 'per-window p95 reader wallMs, candidate minus control',
   method: 'percentile bootstrap of the mean paired difference', confidence: 0.95,
   seed: 0x10004889, resamples: 10_000, minimumCompletePairs: 10 };
@@ -160,6 +173,30 @@ afterAll(async () => {
 });
 
 describe('matched plan coverage phase benchmark', () => {
+  it('accepts a different serving commit only when the measured source bytes match', () => {
+    const files = { 'plan-item-coverage.ts': Buffer.from('reader'), 'fleet/assignments.ts': Buffer.from('assignments') };
+    const fingerprints = Object.fromEntries(Object.entries(files)
+      .map(([path, bytes]) => [path, createHash('sha256').update(bytes).digest('hex')]));
+    const readBlob = vi.fn((_sha: string, path: string) => files[path as keyof typeof files]);
+    const before = verifyServingSources('a'.repeat(40), fingerprints, readBlob);
+    const after = verifyServingSources('b'.repeat(40), fingerprints, readBlob);
+    expect(after.sha).not.toBe(before.sha);
+    expect(after.sourceHashes).toEqual(before.sourceHashes);
+    expect(readBlob.mock.calls.map(([sha]) => sha)).toEqual([before.sha, before.sha, after.sha, after.sha]);
+    // Even an unchanged health SHA cannot excuse changed measured bytes.
+    expect(() => verifyServingSources(before.sha, fingerprints, () => Buffer.from('changed')))
+      .toThrow('Serving measured source changed: plan-item-coverage.ts');
+  });
+  it('refuses unresolvable or invalid serving builds instead of accepting unknown provenance', () => {
+    expect(() => verifyServingSources('a'.repeat(40), { 'plan-item-coverage.ts': 'expected' }, () => {
+      throw new Error('missing git blob');
+    })).toThrow('missing git blob');
+    const readBlob = vi.fn();
+    for (const sha of [undefined, '', 'HEAD', 'a'.repeat(40) + ':other']) {
+      expect(() => verifyServingSources(sha, {}, readBlob)).toThrow('Invalid serving build SHA');
+    }
+    expect(readBlob).not.toHaveBeenCalled();
+  });
   it('reports changed fields without exposing their values', () => {
     const result = changedFields({ holder: { stale: false, goalText: 'private expected' } },
       { holder: { stale: true, goalText: 'private actual' } });
@@ -211,8 +248,8 @@ describe('matched plan coverage phase benchmark', () => {
     expect(Number.isInteger(windows) && windows >= 1 && windows <= 10).toBe(true);
     expect(Number.isInteger(requests) && requests >= 1 && requests <= 100).toBe(true);
     const samples: any[] = [];
-    const fingerprints = Object.fromEntries(['plan-item-coverage.ts','fleet/assignments.ts']
-      .map(path => [path, createHash('sha256').update(readFileSync(new URL(path, import.meta.url))).digest('hex')]));
+    const fingerprints = fingerprintSources();
+    let fingerprintsAfter: Record<string, string> | undefined;
     const startedAt = new Date().toISOString();
     const sourceSha = execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
     const testFingerprint = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
@@ -226,7 +263,7 @@ describe('matched plan coverage phase benchmark', () => {
     const progress = { expectedReads: 4 * windows * requests, completedReads: 0, completedArms: 0 };
     const report = () => ({ schemaVersion: 2, workItem: 'WI-10004889', startedAt, endedAt: new Date().toISOString(),
       mode: diagnostic ? 'live-read-only-diagnostic' : live ? 'live-read-only' : 'private-PG',
-      host: hostname(), plan, identity, serving, fingerprints, diagnostics,
+      host: hostname(), plan, identity, serving, fingerprints, fingerprintsAfter, diagnostics,
       incomplete: true, ...(preflightError ? { error: preflightError } : {}), progress: { ...progress },
       sourceSha, testFingerprint, confidenceMethod,
       control: 'full production coverage then exact plan selection', candidate: 'production planSlug restriction',
@@ -240,7 +277,8 @@ describe('matched plan coverage phase benchmark', () => {
       limitations: ['SQL wall includes queue/transfer/decoding; not database CPU or isolated JSON extraction.',
         'Shared PostgreSQL cache is not a cold-cache benchmark.',
         'This is the production reader on frozen data, not HTTP end-to-end timing.',
-        'Replay fixes exogenous liveness inputs; matrix timings exclude repeated oracle IO.'],
+        'Replay fixes exogenous liveness inputs; matrix timings exclude repeated oracle IO.',
+        'Serving source containment is checked at both endpoints; this does not freeze the HTTP runtime.'],
     });
     const persist = (complete = false) => {
       if (process.env.PAPERCUSP_P010_REPORT) writeFileSync(process.env.PAPERCUSP_P010_REPORT,
@@ -250,14 +288,10 @@ describe('matched plan coverage phase benchmark', () => {
     if (live) {
       const response = await fetch('http://127.0.0.1:3170/api/health', { signal: AbortSignal.timeout(5000) });
       expect(response.ok).toBe(true);
-      serving = await response.json();
-      expect(typeof serving.sha).toBe('string');
-      for (const [path, hash] of Object.entries(fingerprints)) {
-        const blob = execFileSync('git', ['show', `${serving.sha}:packages/operator-core/lib/${path}`]);
-        expect(createHash('sha256').update(blob).digest('hex')).toBe(hash);
-      }
+      const health = await response.json();
       // Retain only build provenance, never the entire health payload.
-      serving = { sha: serving.sha, endpoint: 'http://127.0.0.1:3170/api/health' };
+      serving = { sha: health.sha, endpoint: 'http://127.0.0.1:3170/api/health' };
+      serving.before = verifyServingSources(health.sha, fingerprints);
     }
     await root!.begin('isolation level repeatable read read only', async (tx) => {
       await tx`SET LOCAL statement_timeout = '30s'`;
@@ -381,9 +415,15 @@ describe('matched plan coverage phase benchmark', () => {
     });
     if (live) {
       const response = await fetch(serving.endpoint, { signal: AbortSignal.timeout(5000) });
+      expect(response.ok).toBe(true);
       const after = await response.json();
-      expect(after.sha).toBe(serving.sha);
+      serving.after = { sha: after.sha };
+      // This probe executes the local reader, not HTTP requests on the serving
+      // worker. Unrelated staging commits do not change its measured algorithm.
+      serving.after = verifyServingSources(after.sha, fingerprints);
     }
+    fingerprintsAfter = fingerprintSources();
+    expect(fingerprintsAfter).toEqual(fingerprints);
     } catch (error) {
       // Incomplete/failed measurements remain visible in the report. Never
       // replace a failed window or manufacture a completed comparison.

@@ -55,7 +55,7 @@ async function makeSource(
 /** Corpus rows of every scope, for the destination checks. */
 async function corpusRows(): Promise<Array<{ scope: string; user_id: string | null; pot_slug: string | null; dedupe_key: string; text: string }>> {
   return org.adminSql<Array<{ scope: string; user_id: string | null; pot_slug: string | null; dedupe_key: string; text: string }>>`
-    SELECT scope, user_id::text AS user_id, pot_slug, dedupe_key, text FROM harness_shared.personal_documents
+    SELECT scope, user_id::text AS user_id, pot_slug, dedupe_key, text FROM harness_shared.documents
      WHERE workspace_id = ${WS} ORDER BY scope, occurred_at`;
 }
 
@@ -81,7 +81,7 @@ const msg = (id: string, at: string, body: string, threadKey: string | null = nu
 
 async function docs(): Promise<Array<{ kind: string; external_id: string; text: string }>> {
   return org.adminSql<Array<{ kind: string; external_id: string; text: string }>>`
-    SELECT kind, external_id, text FROM harness_shared.personal_documents
+    SELECT kind, external_id, text FROM harness_shared.documents
      WHERE workspace_id = ${WS} AND scope = 'organization' ORDER BY occurred_at`;
 }
 
@@ -111,7 +111,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.data_source_legal_holds WHERE workspace_id = ${WS}`;
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.provider_identity_mappings WHERE workspace_id = ${WS}`;

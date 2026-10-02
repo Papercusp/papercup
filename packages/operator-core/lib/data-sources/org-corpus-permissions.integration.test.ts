@@ -86,7 +86,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.provider_identity_mappings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE workspace_id = ${WS}`;
@@ -176,15 +176,15 @@ describe('organization corpus permissions (R-8)', () => {
   it('the schema refuses an organization row that names an owner or omits its list', async () => {
     const listId = await seedChannel([]);
     await expect(org.adminSql`
-      INSERT INTO harness_shared.personal_documents
+      INSERT INTO harness_shared.documents
         (workspace_id, user_id, scope, permission_list_id, source, kind, dedupe_key)
       VALUES (${WS}, ${alice}, 'organization', ${listId}::uuid, 'slack', 'message', 'owned')`,
-    ).rejects.toThrow(/personal_documents_scope_chk/);
+    ).rejects.toThrow(/documents_scope_chk/);
     await expect(org.adminSql`
-      INSERT INTO harness_shared.personal_documents
+      INSERT INTO harness_shared.documents
         (workspace_id, user_id, scope, permission_list_id, source, kind, dedupe_key)
       VALUES (${WS}, NULL, 'organization', NULL, 'slack', 'message', 'listless')`,
-    ).rejects.toThrow(/personal_documents_scope_chk/);
+    ).rejects.toThrow(/documents_scope_chk/);
   });
 
   it('ad-hoc SQL against the access-control tables is refused', () => {

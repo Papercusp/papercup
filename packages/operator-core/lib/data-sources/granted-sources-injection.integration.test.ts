@@ -81,7 +81,7 @@ async function seedSource(
 
 async function seedPotDocument(potSlug: string, key: string, title: string, text: string): Promise<void> {
   await org.adminSql`
-    INSERT INTO harness_shared.personal_documents
+    INSERT INTO harness_shared.documents
       (workspace_id, user_id, scope, pot_slug, source, kind, external_id, occurred_at, title, text, dedupe_key)
     VALUES (${WS}, NULL, 'pot', ${potSlug}, 'slack', 'chat-thread', ${`${key}-1`},
             '2026-09-30T12:00:00Z', ${title}, ${text}, ${key})`;
@@ -133,7 +133,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.data_source_subscriptions WHERE workspace_id = ${WS}`;
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.provider_identity_mappings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE workspace_id = ${WS}`;

@@ -56,7 +56,7 @@ function fakeSql(options: { singleAccount?: boolean } = {}) {
   const sources = options.singleAccount ? allSources.slice(0, 1) : allSources;
   const query = async (parts: TemplateStringsArray, ...values: unknown[]) => {
     const text = parts.join(' ');
-    if (text.includes('FROM harness_shared.personal_documents')) {
+    if (text.includes('FROM harness_shared.documents')) {
       const requestedSourceId = typeof values[4] === 'string' ? values[4] : null;
       return requestedSourceId
         ? documents.filter((row) => row.sourceId === requestedSourceId)

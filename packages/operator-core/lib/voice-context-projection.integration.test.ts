@@ -28,7 +28,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${ownerUserId}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE user_id = ${ownerUserId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_vault_settings WHERE user_id = ${ownerUserId}`;
   await upsertPersonalDocuments(org.adminSql, WORKSPACE_ID, ownerUserId, [
     {

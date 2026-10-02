@@ -158,7 +158,7 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
     file: 'packages/operator-core/lib/personal-vault/store.ts',
     contains: 'row_number() OVER (ORDER BY embedding <=>',
     reason:
-      'harness_shared.personal_documents has no HNSW index and this ORDER BY is a window over a ' +
+      'harness_shared.documents has no HNSW index and this ORDER BY is a window over a ' +
       'pre-filtered CTE, so Postgres sorts exactly; there is no ef_search cap to under-return.',
   },
 ];

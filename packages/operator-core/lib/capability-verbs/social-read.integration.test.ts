@@ -65,7 +65,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_privacy_rules WHERE workspace_id = ${WS}`;
 });

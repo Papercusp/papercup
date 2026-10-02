@@ -154,8 +154,10 @@ export interface StackTransitionContextResult {
 }
 
 /**
- * The inject-now context for a control transition — '' when the stack did not move
- * (or nothing is bound on a full-resync). Never throws.
+ * The inject-now context for a control transition — '' when the stack did not move.
+ * An empty full-resync emits a revocation notice because its prior runtime binding is
+ * unknown, and still composes the addressed-guide replacement when a guide target exists.
+ * Never throws.
  */
 export async function renderStackTransitionContextResult(
   delivery: Partial<Pick<ControlTransition, 'state' | 'stackBefore'>> | null | undefined,
@@ -178,7 +180,13 @@ export async function renderStackTransitionContextResult(
   }
   const packagesMoved = packageError !== null || (packages !== null &&
     (before == null ? packages.after.length > 0 : !sameRefs(packages.before, packages.after)));
-  if (before == null && after.length === 0 && !packagesMoved) return { text: '', rendered: true, requiresFreshContext: false };
+  const emptyFullResync = before == null && after.length === 0;
+  const emptyStackResyncNotice =
+    '## Stack guidance — no runtime stack layers remain\n\n' +
+    '> This full resync contains no runtime stack layers. Any runtime layer text injected from an earlier stack state is no longer part of the current stack; treat it as VOID from this turn on.';
+  if (emptyFullResync && !opts.guide) {
+    return { text: emptyStackResyncNotice, rendered: true, requiresFreshContext: false };
+  }
   if (before != null && sameRefs(before, after) && !packagesMoved) return { text: '', rendered: true, requiresFreshContext: false };
   try {
     const bp = opts.blueprint ?? (await import('@papercusp/orchestrator/blueprint'));
@@ -232,6 +240,7 @@ export async function renderStackTransitionContextResult(
       }
     }));
     const parts: string[] = [];
+    if (emptyFullResync) parts.push(emptyStackResyncNotice);
     let preparedActivation: StackMutationActivation | undefined;
     let requiresFreshContext = false;
     let cursor = from;

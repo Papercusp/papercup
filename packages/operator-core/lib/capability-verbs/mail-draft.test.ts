@@ -38,7 +38,7 @@ function fakeSql(options: {
 }) {
   const query = async (parts: TemplateStringsArray) => {
     const text = parts.join(' ');
-    if (text.includes('FROM harness_shared.personal_documents')) {
+    if (text.includes('FROM harness_shared.documents')) {
       return options.vaultRows ?? [{ asContact: false, asParticipant: false, inBody: false }];
     }
     if (text.includes('FROM harness_shared.data_sources')) return options.sources;

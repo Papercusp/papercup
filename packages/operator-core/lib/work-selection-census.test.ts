@@ -135,9 +135,22 @@ describe('work-selection census (enterprise-data-sources P-007)', () => {
     }
   });
 
-  it('records the paths a non-work instance reaches today, so P-009 cannot close with one left', () => {
-    const reaching = WORK_SELECTION_CENSUS.filter((r) => r.reachesNonWork === 'yes').map((r) => r.id);
-    expect(reaching).toEqual(expect.arrayContaining(['by-id-claim', 'list-search-count', 'drain-mode']));
+  it('after P-009 no selection path reaches a non-work instance, and the listing paths that still can are named', () => {
+    const reaching = WORK_SELECTION_CENSUS.filter((r) => r.reachesNonWork === 'yes');
+    // P-009 (D-022, D-024): every claim and placement path applies the work predicate, so a
+    // selection row marked 'yes' is a regression, not a census fact.
+    expect(reaching.filter((r) => r.role === 'selection').map((r) => r.id)).toEqual([]);
+    // Reading a row is not claiming it. The listing rows still show human-audience work (D-021
+    // filters nature only), the auxiliary rows and the consolidated view read every row by
+    // design, and any claim they lead to is refused by the by-id gate. A new 'yes' row is a
+    // decision to record here, not a silent addition.
+    expect(reaching.map((r) => r.id).sort()).toEqual([
+      'drain-mode',
+      'embed-backfill',
+      'list-search-count',
+      'spec-enforcement-latency',
+      'sql-features-consolidated-view',
+    ]);
   });
 
   it('seed rows cover every nature with work_items instances plus human-audience work, and only agent work is claimable', () => {

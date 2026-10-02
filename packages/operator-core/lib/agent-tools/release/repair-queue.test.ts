@@ -85,6 +85,7 @@ const mocks = vi.hoisted(() => ({
   canonicalRoot: vi.fn(),
   transition: vi.fn(),
   gateOwnership: vi.fn(),
+  emitAwaitedEvent: vi.fn(),
   // WI-10004151 part 2: the admit door's dependency-generation prediction seam.
   predict: vi.fn(),
 }));
@@ -96,6 +97,7 @@ vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../coord/gate-ownership')>()),
   readGateOwnership: mocks.gateOwnership,
 }));
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: mocks.emitAwaitedEvent }));
 vi.mock('../../harness/routines/release-actions', () => ({
   applyFrozenCandidateRepairQueueTransition: mocks.transition,
   readFrozenCandidateRepairQueue: mocks.read,
@@ -1442,6 +1444,68 @@ describe('release:repair-queue', () => {
     const result = body(await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never));
     expect(mocks.retire).toHaveBeenCalledWith({ workspaceId: 'ws-1', installSlug: 'papercusp' }, queue);
     expect(result).toMatchObject({ ok: true, retired: true, auditRecorded: true });
+  });
+
+  it('emits exact-SHA inconclusive terminals after retiring an unjudged repairHead', async () => {
+    const result = body(await tool.handler({
+      op: 'retire',
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+      reason: 'terminal incident cleanup',
+      confirm: true,
+    } as never, { role: 'su' } as never)) as {
+      retired?: boolean;
+      inconclusiveTerminal?: { status: string; sha: string; emittedKeys: string[]; failedKeys: string[] };
+    };
+
+    expect(result.retired).toBe(true);
+    expect(mocks.retire).toHaveBeenCalledTimes(1);
+    expect(mocks.emitAwaitedEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.retire.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.emitAwaitedEvent.mock.invocationCallOrder[0],
+    );
+    expect(mocks.emitAwaitedEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      key: 'green-checkpoint:inconclusive',
+      payload: expect.objectContaining({
+        sha: queue.repairHead,
+        from: queue.candidate,
+        pipeline: 'papercusp',
+        reason: 'repair-queue-retired-before-verification',
+      }),
+      source: 'release:repair-queue-retire',
+    }));
+    expect(mocks.emitAwaitedEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      key: 'green-checkpoint:inconclusive:papercusp',
+      payload: expect.objectContaining({ sha: queue.repairHead }),
+    }));
+    expect(result.inconclusiveTerminal).toEqual({
+      status: 'emitted',
+      sha: queue.repairHead,
+      emittedKeys: ['green-checkpoint:inconclusive', 'green-checkpoint:inconclusive:papercusp'],
+      failedKeys: [],
+    });
+  });
+
+  it('does not emit inconclusive when a successfully retired repairHead already has a red verdict', async () => {
+    const judgedQueue = {
+      ...queue,
+      convergenceRounds: [{ round: 1, head: queue.repairHead, failingCount: 1, atMs: 3 }],
+    };
+    mocks.readState.mockResolvedValue({ status: 'value', queue: judgedQueue as typeof queue });
+
+    const result = body(await tool.handler({
+      op: 'retire',
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+      reason: 'terminal incident cleanup',
+      confirm: true,
+    } as never, { role: 'su' } as never)) as { retired?: boolean; inconclusiveTerminal?: unknown };
+
+    expect(result.retired).toBe(true);
+    expect(result.inconclusiveTerminal).toBeUndefined();
+    expect(mocks.emitAwaitedEvent).not.toHaveBeenCalled();
   });
 
   // WI-1105109 [owner 2026-08-30, OWNER-interactive]: "How can we make sure another

@@ -55,7 +55,7 @@ async function delivery(
 
 async function document(occurredAt: string | null): Promise<string> {
   const [row] = await sql<{ id: string }[]>`
-    INSERT INTO harness_shared.personal_documents
+    INSERT INTO harness_shared.documents
       (workspace_id, user_id, source, kind, dedupe_key, occurred_at)
     VALUES (${WS}, ${userId}, ${SOURCE}, 'calendar-event',
             ${`doc-${Math.random().toString(36).slice(2)}`}, ${occurredAt})
@@ -80,7 +80,7 @@ afterAll(async () => {
     await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${sourceId}`.catch(() => {});
     for (const id of [userId, neighbourId]) {
       if (id) {
-        await sql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS} AND user_id = ${id}`.catch(() => {});
+        await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND user_id = ${id}`.catch(() => {});
         await sql`DELETE FROM harness_shared.users WHERE id = ${id}`.catch(() => {});
       }
     }
@@ -90,7 +90,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ${sourceId}`;
-  await sql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS} AND user_id IN (${userId}, ${neighbourId})`;
+  await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND user_id IN (${userId}, ${neighbourId})`;
 });
 
 describe('readPushRollup (real SQL)', () => {
@@ -171,12 +171,12 @@ describe('countPendingRows (real SQL)', () => {
   it('does not count another user, or another source', async () => {
     await document('2026-03-01T00:00:00Z');
     await sql`
-      INSERT INTO harness_shared.personal_documents
+      INSERT INTO harness_shared.documents
         (workspace_id, user_id, source, kind, dedupe_key, occurred_at)
       VALUES (${WS}, ${neighbourId}, ${SOURCE}, 'calendar-event',
               ${`doc-${Math.random().toString(36).slice(2)}`}, '2026-03-01T00:00:00Z')`;
     await sql`
-      INSERT INTO harness_shared.personal_documents
+      INSERT INTO harness_shared.documents
         (workspace_id, user_id, source, kind, dedupe_key, occurred_at)
       VALUES (${WS}, ${userId}, 'gmail', 'email-message',
               ${`doc-${Math.random().toString(36).slice(2)}`}, '2026-03-01T00:00:00Z')`;

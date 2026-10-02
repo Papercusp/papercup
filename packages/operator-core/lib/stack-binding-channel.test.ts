@@ -103,7 +103,9 @@ describe('renderStackTransitionContext (P-012)', () => {
   it('delivers nothing when the stack did not move, or when a full-resync has nothing bound', async () => {
     expect(await renderStackTransitionContext({ state: state(), stackBefore: [] }, opts)).toBe('');
     expect(await renderStackTransitionContext({ state: state({ stack: [SU_POSTURE_REFS.member] }), stackBefore: [SU_POSTURE_REFS.member] }, opts)).toBe('');
-    expect(await renderStackTransitionContext({ state: state() }, opts)).toBe('');
+    const emptyResync = await renderStackTransitionContext({ state: state() }, opts);
+    expect(emptyResync).toContain('no runtime stack layers remain');
+    expect(emptyResync).toContain('treat it as VOID from this turn on');
   });
 
   it('a fleet join attaches the member posture: a ⟦stack⟧ payload carrying the real posture text, no seal', async () => {
@@ -212,6 +214,25 @@ describe('renderStackTransitionContext (P-012)', () => {
     expect(failed.text).toContain('## Addressed guidance — could not be read');
     expect(failed.text).toContain('relation missing');
     expect(warnings.some((w) => w.includes('addressed guide not read'))).toBe(true);
+  });
+
+  it('P-003: an empty full-resync replaces previously addressed guide parts with the empty set', async () => {
+    const rows = [
+      { part_key: 'member', body: 'MEMBER RULE.', ordinal: 1, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-member'] },
+    ];
+    const sql = {
+      unsafe: async (q: string, params: unknown[]) => q.includes('SELECT 1 AS present')
+        ? [{ present: 1 }]
+        : rows.filter((r) => r.stack_scope.some((t) => (params[3] as string[]).includes(t))),
+    } as never;
+    const result = await renderStackTransitionContextResult({ state: state() }, {
+      ...opts,
+      guide: { workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql },
+    });
+    expect(result.rendered).toBe(true);
+    expect(result.text).toContain('Addressed guidance — none for this session’s stack');
+    expect(result.text).toContain('no longer applies');
+    expect(result.text).not.toContain('MEMBER RULE.');
   });
 
   // portable-identity P-009 / D-022: a wearer's pack-doc keys move on a pack upgrade even
