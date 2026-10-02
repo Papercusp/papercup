@@ -1,6 +1,6 @@
-# Engine comparison — run engine-comparison-2026-10-01
+# Engine comparison — run engine-comparison-2026-10-02
 
-created 2026-10-01T21:23:27.645Z · seed 0 · prereg 7ff941b3e5366038
+created 2026-10-02T09:07:34.917Z · seed 0 · prereg 7ff941b3e5366038
 
 ## Summary (one row per arm)
 
@@ -87,4 +87,3 @@ decision: **keep**
 - The tool-level comparison spends ZERO LLM tokens; `estTokens` is bytes/4 for every arm. This measures the engines, not agent task outcomes.
 - gitnexus-installed graph size from its cold analyze: 161,962 nodes / 357,805 edges.
 - gitnexus-candidate graph size from its cold analyze: 370,204 nodes / 1,207,016 edges.
-- FAIRNESS AUDIT (fairness-audit.json) is `allClear: false` and is disclosed here, not hidden: C1 and C10 PASS; C3, C6 and C8 WARN; C2, C4, C5, C7 and C9 NEEDS-EVIDENCE; NO criterion FAILs. `decideDisposition` does not read the audit, so the keep verdict is not derived from it; the acceptance bar R-8 reads it separately (marker 2) and requires this disclosure to stay present. The WARN and NEEDS-EVIDENCE criteria are residue about the harness, not a measured advantage for any arm.

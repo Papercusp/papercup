@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
 import { AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS } from './aws-safety';
+import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS } from './gcp-safety';
 import {
+  HostedAwsHostingUnconfiguredError,
   hostedAwsHostingAdminRole,
   hostedAwsWorkspaceAccount,
   HOSTED_AWS_HOSTING_ADMIN_ROLE_ENV,
@@ -103,6 +105,15 @@ describe('Papercusp-hosted AWS hosting role (aws-byoc-gcp-parity D-017)', () => 
     }
   });
 
+  it('keeps cost accounting at GCP parity: priced like a customer host, attributed by the same identity tags', () => {
+    // The price estimate runs as the hosting role, so the Price List call must stay granted.
+    expect(list(statements().find((s) => s.Sid === 'Observe')!.Action)).toContain('pricing:GetProducts');
+    // GCP hosting attributes spend by its managed labels; AWS by the same three identities, as tags
+    // that can only be written at creation and only with this host's id.
+    expect(Object.keys(AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS).sort()).toEqual(Object.keys(GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS).sort());
+    expect(grants('ec2:CreateTags', `arn:aws:ec2:us-east-1:${ACCOUNT}:instance/`).map((s) => s.Sid)).toEqual(['TagOnlyAtCreation']);
+  });
+
   it('rewrites for each host: two hosts get disjoint conditions', () => {
     const other = (papercuspHostingPolicy({ organizationId: ORG, accountId: ACCOUNT, hostId: 'host-other' }) as { Statement: Statement[] }).Statement;
     expect(JSON.stringify(other)).not.toContain(HOST);
@@ -136,6 +147,9 @@ describe('hosting role identity', () => {
 
   it('reads the hosting account and optional admin role from the environment, refusing malformed values', () => {
     expect(() => hostedAwsWorkspaceAccount({})).toThrow(/unconfigured/);
+    // Typed, so first-workspace can tell "AWS is not offered here" from a fault worth retrying.
+    expect(() => hostedAwsWorkspaceAccount({})).toThrow(HostedAwsHostingUnconfiguredError);
+    expect(() => hostedAwsWorkspaceAccount({ [HOSTED_AWS_WORKSPACE_ACCOUNT_ENV]: 'abc' })).not.toThrow(HostedAwsHostingUnconfiguredError);
     expect(() => hostedAwsWorkspaceAccount({ [HOSTED_AWS_WORKSPACE_ACCOUNT_ENV]: 'abc' })).toThrow(/invalid/);
     expect(hostedAwsWorkspaceAccount({ [HOSTED_AWS_WORKSPACE_ACCOUNT_ENV]: ` ${ACCOUNT} ` })).toBe(ACCOUNT);
     expect(hostedAwsHostingAdminRole({})).toBeUndefined();

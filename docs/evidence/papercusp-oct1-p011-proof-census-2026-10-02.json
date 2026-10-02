@@ -4,11 +4,20 @@
   "plan": "papercusp-log-performance-remediation-2026-09-23",
   "spec": {
     "id": "PERF-OCT1-P011-MEMORY",
-    "revision": 1,
-    "fingerprint": "325a3240536eb81d70fc4fca6e7b8636db9f0b5e1e2dc3ae34fdb3b65f3faa31",
-    "requiredLayer": "live"
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010",
+    "requiredLayer": "integration",
+    "requiredEvidencePlane": "live",
+    "declarationRepair": "WI-10005390; plan decision D-020. Revision 1 put live in the executable-layer field; revision 2 preserves the behavior and falsifier and requires live separately as an evidence plane.",
+    "historicalRevision": {
+      "revision": 1,
+      "fingerprint": "325a3240536eb81d70fc4fca6e7b8636db9f0b5e1e2dc3ae34fdb3b65f3faa31",
+      "bindings": [21377, 21383, 21384],
+      "scope": "Existing bindings remain at revision 1; this census update does not rebind or promote their historical proof."
+    }
   },
   "recordedAt": "2026-10-02T08:27:23Z",
+  "qualificationUpdatedAt": "2026-10-02T09:05:34Z",
   "status": "partial-evidence-qualified-acceptance-open",
   "newTestRuns": [],
   "ordinaryBaseline": {
@@ -38,7 +47,7 @@
       "arrayBufferBytes": [72542031, 1115965],
       "interpretation": "A bounded observation of counters decreasing during idle. No GC-cause, native-allocation, leak, or intervention-reduction conclusion follows."
     },
-    "acceptance": "Supports the pinned private HTTP baseline only. Recorded integration layer does not fulfill the required live layer."
+    "acceptance": "Supports the pinned private HTTP baseline only. Its integration execution layer matches revision 2's layer taxonomy, but its private evidence plane does not fulfill actual live/current-build memory acceptance. The sampler test changed after R2, so R2's named-test currentness is stale."
   },
   "sourceDispositions": [
     {
@@ -82,6 +91,26 @@
       "falsifier": "A bounded-query non-defect disposition would be overturned by reachable completed results accumulating under equivalent calls while useful-context cardinality stays constant. No universal non-defect disposition is claimed here."
     },
     {
+      "source": "Background host freed-but-retained own-log pages",
+      "owner": "WI-10005291",
+      "state": "peer-reported-allocator-discriminator-durable-fix-open",
+      "evidence": "WI-10005291 comments 1155211, 1155215 and 1155216; .papercusp/scratch/p017/mem-probe.mts; .papercusp/scratch/p017/trim-guard.py",
+      "observedBy": "su-fa4c1948-0cb1-4552-a7a3-dc274c5e1b0a",
+      "observedAt": "2026-10-02T08:54:40Z/2026-10-02T08:54:56Z",
+      "identity": "bg-host PID 1496983, booted 07:57:15Z; peer reports unchanged main PID after intervention. No source/build fingerprint or startTicks supplied by this census.",
+      "measurement": {
+        "counter": "VmRSS",
+        "unit": "kernel kB",
+        "before": 12132104,
+        "immediatelyAfter": 3571284,
+        "tenSecondsAfter": 3557368,
+        "intervention": "Peer's guarded gdb call malloc_trim(0); result 1; 4853 ms wall time. No intervention or repeat measurement by this session."
+      },
+      "interpretation": "The trim discriminator supports freed-but-retained glibc pages for this instance. Raw own-log bytes in resident chunks did not establish that those chunks remained live. The earlier heap-ceiling and live-native interpretations were retracted. MALLOC_ARENA_MAX was already 2.",
+      "nextDistinguishingObservation": "The assigned owner must identify the boot pass and verify a durable intervention under equivalent boot/workload with build identity, allocation ownership, PSS and functionality measurements.",
+      "limits": "Peer-reported RSS mitigation is not P011's matched PSS reduction, production retained-root census, a durable fix, or attribution of the operator's historical parser/compiler memory. The separate allocation-rate sample overlapped the hourly sweep and does not establish steady state."
+    },
+    {
       "source": "Anonymous/native and cgroup remainder",
       "owner": "WI-10004890",
       "state": "unresolved-allocation-owner",
@@ -92,7 +121,7 @@
     }
   ],
   "acceptanceGaps": [
-    "Required live layer and ambient/current-build acceptance remain open.",
+    "Required live evidence plane and ambient/current-build acceptance remain open; integration is the executable layer.",
     "Historical compiler caller and remaining parser/native retained ownership remain unresolved.",
     "Complete executed-source currentness is unknown; seven named hashes are a bounded qualification.",
     "R8/R9 final comparison, independent acceptance and verified shipment remain open."

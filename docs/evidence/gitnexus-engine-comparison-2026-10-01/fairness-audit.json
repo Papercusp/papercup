@@ -1,6 +1,6 @@
 {
   "suite": "code-intel-engine-comparison",
-  "runId": "engine-comparison-2026-10-01",
+  "runId": "engine-comparison-2026-10-02",
   "arms": [
     "baseline-lsp-rg",
     "gitnexus-installed",

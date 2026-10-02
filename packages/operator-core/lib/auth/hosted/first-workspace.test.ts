@@ -18,7 +18,7 @@ import {
   type HostedAwsHostInfrastructure,
 } from '../../workspace-host/hosted-aws-host-stack';
 import { HostedGcpNotReadyError } from '../../workspace-host/hosted-gcp-hosting';
-import { HostedAwsNotReadyError } from '../../workspace-host/hosted-aws-hosting';
+import { HostedAwsHostingUnconfiguredError, HostedAwsNotReadyError } from '../../workspace-host/hosted-aws-hosting';
 import { HostedWorkspaceAdmissionError } from './workspace-admission';
 
 const GCP: HostedProviderDelegationConfiguration = {
@@ -645,6 +645,23 @@ describe("hosted first-workspace in Papercusp's AWS cloud (aws-byoc-gcp-parity P
     expect(pending).toMatchObject({ ok: false, code: 'papercusp_cloud_preparing', retryable: true });
     expect(pending).not.toHaveProperty('template');
     expect(building.ensureProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('tells the browser AWS is not offered, without retrying or recording anything, on a deployment with no AWS hosting account', async () => {
+    const unconfigured = harness({
+      delegationOrganization: (organizationId) => ({
+        ...harness().deps.delegationOrganization(organizationId),
+        awsPapercuspHosting: async () => {
+          throw new HostedAwsHostingUnconfiguredError();
+        },
+      }),
+    });
+    const result = await createHostedFirstWorkspace(unconfigured.deps).run(AWS_PAPERCUSP_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'papercusp_cloud_provider_unavailable', status: 503, retryable: false });
+    expect(unconfigured.deps.onboardPapercuspHostedDelegation).not.toHaveBeenCalled();
+    expect(unconfigured.ensureProvisioned).not.toHaveBeenCalled();
+    // GCP, the default, is unaffected by the missing AWS account.
+    expect((await createHostedFirstWorkspace(unconfigured.deps).run(PAPERCUSP_REQUEST)).ok).toBe(true);
   });
 
   it('refuses a spec for a host other than the one the hosting role is confined to', () => {

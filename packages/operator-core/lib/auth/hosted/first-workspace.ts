@@ -56,7 +56,11 @@ import {
   type PapercuspHostedProvider,
 } from '../../workspace-host/hosted-provider-delegation';
 import { HostedGcpNotReadyError, PAPERCUSP_HOSTED_GCP_LOCATION } from '../../workspace-host/hosted-gcp-hosting';
-import { HostedAwsNotReadyError, PAPERCUSP_HOSTED_AWS_LOCATION } from '../../workspace-host/hosted-aws-hosting';
+import {
+  HostedAwsHostingUnconfiguredError,
+  HostedAwsNotReadyError,
+  PAPERCUSP_HOSTED_AWS_LOCATION,
+} from '../../workspace-host/hosted-aws-hosting';
 import {
   HOSTED_AWS_DEFAULT_REGION,
   HOSTED_AWS_REGION,
@@ -158,6 +162,8 @@ export type HostedFirstWorkspaceFailureCode =
   | 'delegation_pending'
   /** Papercusp is still preparing the reserved host's permissions; retry shortly. */
   | 'papercusp_cloud_preparing'
+  /** The Papercusp cloud the browser picked (AWS) is not offered on this deployment; retrying will not help. */
+  | 'papercusp_cloud_provider_unavailable'
   | 'workspace_admission_failed'
   | 'session_selection_failed';
 
@@ -497,6 +503,10 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         // that is Papercusp's own cloud catching up, which the browser already waits out on its own.
         if (hosting === 'papercusp' && (error instanceof HostedGcpNotReadyError || error instanceof HostedAwsNotReadyError)) {
           return failure('papercusp_cloud_preparing', 409, true, { connectionId: identity.connectionId });
+        }
+        // No AWS hosting account on this deployment: nothing was written, and no retry will help.
+        if (hosting === 'papercusp' && error instanceof HostedAwsHostingUnconfiguredError) {
+          return failure('papercusp_cloud_provider_unavailable', 503, false);
         }
         console.error(`[hosted-first-workspace] delegation bind failed for host ${identity.hostId} (${hosting})`, error);
         return failure('delegation_source_unavailable', 503, true);

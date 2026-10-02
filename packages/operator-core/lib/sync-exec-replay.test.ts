@@ -10,7 +10,12 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { currentCheckpointCandidate } from './release-checkpoint-launch';
 import {
+  createGitReadMemo,
   execFileResult,
+  execFileResultShared,
+  GIT_READ_MEMO_TTL_MS,
+  gitReadMemoStats,
+  gitSubcommand,
   runSyncWithAsyncExec,
   SyncExecReplayExhaustedError,
   type ExecResult,
@@ -122,6 +127,150 @@ describe('real probe equivalence (currentCheckpointCandidate on a real repo)', (
     const replay = await runSyncWithAsyncExec((exec) => currentCheckpointCandidate(repo, exec), (cmd, args) => execFileResult(cmd, args));
     expect(sync.current_head).toMatch(/^[0-9a-f]{40}$/);
     expect(replay.value).toEqual(sync);
+  });
+});
+
+describe('createGitReadMemo (EI-24852529885337741)', () => {
+  /** A controllable exec: each call returns a promise the test settles, and is counted. */
+  function deferredExec() {
+    const calls: Array<{ key: string; resolve: (r: ExecResult) => void }> = [];
+    const exec = (cmd: string, args: string[]) =>
+      new Promise<ExecResult>((resolve) => {
+        calls.push({ key: [cmd, ...args].join(' '), resolve });
+      });
+    return { calls, exec };
+  }
+
+  it('gives concurrent identical read-only git calls ONE child, and every caller its result', async () => {
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => 1_000 });
+    const args = ['-C', '/r', 'rev-parse', 'HEAD'];
+    const a = memo.exec('git', args);
+    const b = memo.exec('git', args);
+    const c = memo.exec('git', args);
+    expect(calls).toHaveLength(1);
+    calls[0].resolve(ok('abc\n'));
+    expect(await Promise.all([a, b, c])).toEqual([ok('abc\n'), ok('abc\n'), ok('abc\n')]);
+    expect(memo.stats()).toMatchObject({ hits: 2, misses: 1 });
+  });
+
+  it('reuses a settled result inside the window and forks again once it has passed', async () => {
+    let t = 1_000;
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => t });
+    const args = ['-C', '/r', 'show', '-s', '--format=%ct', 'HEAD'];
+    const first = memo.exec('git', args);
+    calls[0].resolve(ok('1\n'));
+    await first;
+    t += GIT_READ_MEMO_TTL_MS - 1;
+    expect(await memo.exec('git', args)).toEqual(ok('1\n'));
+    expect(calls).toHaveLength(1);
+    t += 1;
+    const later = memo.exec('git', args);
+    expect(calls).toHaveLength(2);
+    calls[1].resolve(ok('2\n'));
+    expect(await later).toEqual(ok('2\n'));
+  });
+
+  it('never shares a different argv, a writing git subcommand, or a non-git command', async () => {
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => 1_000 });
+    void memo.exec('git', ['-C', '/r', 'rev-parse', 'HEAD']);
+    void memo.exec('git', ['-C', '/other', 'rev-parse', 'HEAD']);
+    void memo.exec('git', ['-C', '/r', 'commit', '-m', 'x']);
+    void memo.exec('git', ['-C', '/r', 'commit', '-m', 'x']);
+    void memo.exec('git', ['-C', '/r', 'fetch']);
+    void memo.exec('git', ['-C', '/r', 'fetch']);
+    void memo.exec('systemctl', ['--user', 'show', 'u']);
+    void memo.exec('systemctl', ['--user', 'show', 'u']);
+    expect(calls.map((c) => c.key)).toEqual([
+      'git -C /r rev-parse HEAD',
+      'git -C /other rev-parse HEAD',
+      'git -C /r commit -m x',
+      'git -C /r commit -m x',
+      'git -C /r fetch',
+      'git -C /r fetch',
+      'systemctl --user show u',
+      'systemctl --user show u',
+    ]);
+  });
+
+  it('shares a result with no exit status only while in flight, never afterwards', async () => {
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => 1_000 });
+    const args = ['-C', '/r', 'rev-parse', 'HEAD'];
+    const a = memo.exec('git', args);
+    const b = memo.exec('git', args);
+    const killed: ExecResult = { status: null, stdout: '', stderr: 'timeout' };
+    calls[0].resolve(killed);
+    expect(await Promise.all([a, b])).toEqual([killed, killed]);
+    void memo.exec('git', args);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('keeps a non-zero exit (a real answer, e.g. a missing ref) for the window', async () => {
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => 1_000 });
+    const args = ['-C', '/r', 'rev-parse', '--verify', 'ready'];
+    const a = memo.exec('git', args);
+    calls[0].resolve({ status: 128, stdout: '', stderr: 'fatal' });
+    await a;
+    expect((await memo.exec('git', args)).status).toBe(128);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('drops expired entries once the map grows, so time-keyed argv cannot accumulate', async () => {
+    let t = 1_000;
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => t });
+    for (let i = 0; i < 80; i++) {
+      const p = memo.exec('git', ['-C', '/r', 'rev-list', '-1', `--before=@${i}`, 'HEAD']);
+      calls[calls.length - 1].resolve(ok(`${i}\n`));
+      await p;
+      t += GIT_READ_MEMO_TTL_MS;
+    }
+    expect(memo.stats().entries).toBeLessThanOrEqual(65);
+  });
+
+  it('parses the subcommand past -C / -c / --no-pager', () => {
+    expect(gitSubcommand(['-C', '/r', 'rev-parse', 'HEAD'])).toBe('rev-parse');
+    expect(gitSubcommand(['-c', 'core.x=1', '--no-pager', 'log', '-1'])).toBe('log');
+    expect(gitSubcommand(['--version'])).toBeNull();
+    expect(gitSubcommand([])).toBeNull();
+  });
+});
+
+describe('execFileResultShared on a real repo (EI-24852529885337741)', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'ei24852529885337741-'));
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+
+  it('answers like execFileResult, and a concurrent duplicate is served by the same child', async () => {
+    const git = (...a: string[]) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe' });
+    git('init', '-q');
+    git('config', 'user.email', 't@example.invalid');
+    git('config', 'user.name', 't');
+    writeFileSync(join(repo, 'f.txt'), 'x');
+    git('add', 'f.txt');
+    git('commit', '-q', '-m', 'c1');
+    const args = ['-C', repo, 'rev-parse', 'HEAD'];
+    const before = gitReadMemoStats();
+    const [a, b] = await Promise.all([execFileResultShared('git', args), execFileResultShared('git', args)]);
+    const after = gitReadMemoStats();
+    expect(a).toEqual(await execFileResult('git', args));
+    expect(b).toEqual(a);
+    expect(after.misses - before.misses).toBe(1);
+    expect(after.hits - before.hits).toBe(1);
+  });
+});
+
+describe('checkpoint probes route through the shared git-read memo (EI-24852529885337741 guard)', () => {
+  it.each(['release-checkpoint-launch.ts', 'git-pipeline-position.ts'])('%s uses execFileResultShared, not a bare execFileResult', (file) => {
+    const code = readFileSync(join(HERE, file), 'utf8')
+      .split('\n')
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n');
+    expect(code).toMatch(/\bexecFileResultShared\b/);
+    expect(code.match(/\bexecFileResult\b/g) ?? []).toEqual([]);
   });
 });
 

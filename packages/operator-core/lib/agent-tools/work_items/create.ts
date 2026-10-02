@@ -52,6 +52,7 @@ import { withDrainBugAdmission } from './drain-flow';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveGoalContext } from '../../modes/goal-context';
+import { evaluateStewardHandDispatch } from '../../goals/steward-hand-dispatch';
 import { gateWorkScope } from '../../work-scope-policy';
 import { canonicalizeAssigneeOwnerId } from '../../work-item-holder-identity';
 
@@ -505,6 +506,33 @@ export default defineTool({
             assigneeResolutionDowngrade = { assigneeResolutionDowngrade: `FILED UNASSIGNED — ${canonical.message}` };
           }
         }
+        // WI-10005281 (recurrence of WI-10004867): a goal HOLDER files work UNASSIGNED
+        // and steers through claim specs/priority — it does not hand work to another
+        // agent. Downgrade (never refuse) so the finding stays durable and claimable;
+        // inherited goal context (fleet members/leaders) is deliberately NOT affected.
+        // No admissionBypass: a named assignment must not step around the screening floor.
+        let stewardHandDispatchDowngrade: Record<string, never> | { stewardHandDispatchDowngrade: string } = {};
+        if (spec.assign_to && resolvedGoalContext) {
+          const steward = await evaluateStewardHandDispatch({
+            workspaceId: ident.workspaceId,
+            ownerId: ident.ownerId,
+            assignTo: spec.assign_to,
+            goalContextId: resolvedGoalContext,
+          });
+          if (steward.handDispatch) {
+            spec.payload = {
+              ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
+              stewardHandDispatchDowngrade: {
+                requestedAssignee: steward.requestedAssignee,
+                reportedBy: ident.ownerId,
+                goalId: steward.goalId,
+                at: new Date().toISOString(),
+              },
+            };
+            spec.assign_to = undefined;
+            stewardHandDispatchDowngrade = { stewardHandDispatchDowngrade: steward.notice };
+          }
+        }
         let workScopeDowngrade: Record<string, never> | { workScopeDowngrade: string } = {};
         let fleetScopeDowngrade: Record<string, never> | { fleetScopeDowngrade: string } = {};
         if (spec.assign_to) {
@@ -763,6 +791,7 @@ export default defineTool({
           // EI-18784357226895330: filed, but the requested self-assignment was refused
           // by the fleet lane — the caller must see this on an ok:true result.
           ...assigneeResolutionDowngrade,
+          ...stewardHandDispatchDowngrade,
           ...workScopeDowngrade,
           ...fleetScopeDowngrade,
           // work-queue-admission-and-bulk-dedup-2026-08-24 P-002 (item d): the P-008

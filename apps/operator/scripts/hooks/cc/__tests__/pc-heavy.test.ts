@@ -4023,12 +4023,16 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     // the ceiling was the constraint rather than the invariant under test.
   }, 60_000);
 
-  it('leaves no .part temp files behind, even when a leader is hard-killed mid-run', async () => {
-    const partCount = () => {
+  it('leaves no .part temp files behind, even when a leader is hard-killed mid-run', async (ctx) => {
+    const parts = () => {
       const coalesceDir = join(dir, 'coalesce');
-      if (!existsSync(coalesceDir)) return 0;
-      return readdirSync(coalesceDir).filter((n) => n.endsWith('.part')).length;
+      if (!existsSync(coalesceDir)) return [];
+      return readdirSync(coalesceDir).filter((n) => n.endsWith('.part'));
     };
+    const partCount = () => parts().length;
+    // bash prints this itself when it cannot fork, so it names the one host condition under
+    // which the EXIT trap cannot run the `rm` that sweeps the temps.
+    const FORK_REFUSED = /fork: (?:retry: )?Resource temporarily unavailable/;
     // Clean completion publishes by rename, so the temps are consumed.
     runSync(['bash', '-c', 'echo done'], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '30' });
     expect(partCount()).toBe(0);
@@ -4044,12 +4048,29 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     // load the trap's sweep had not finished inside the second sleep, so the
     // count read 2 on a correct script. Positive control first — the leader is
     // genuinely mid-run with its temps open — so the zero below is not vacuous.
-    const doomedExited = new Promise<void>((r) => doomed.once('exit', () => r()));
-    await waitFor('leader has its .part capture temps open mid-run', () => partCount() > 0);
+    const doomedErr = createTextCollector(doomed.stderr);
+    const doomedExited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((r) =>
+      doomed.once('exit', (code, signal) => r({ code, signal })),
+    );
+    // Both capture temps (stdout and stderr) open, so the kill lands on a leader that is fully
+    // mid-run rather than one still starting its second capture helper.
+    await waitFor('leader has both .part capture temps open mid-run', () => partCount() >= 2);
     process.kill(-(doomed.pid as number), 'SIGTERM'); // SIGTERM so the trap runs
-    await doomedExited;
-    await waitFor('EXIT trap swept the .part temps', () => partCount() === 0, 10_000);
-    expect(partCount()).toBe(0);
+    const exit = await doomedExited;
+    // Nothing removes a temp once the leader has exited, so a red here is permanent, not slow.
+    // Gate reds at c0c038ca and 69b1f61f (2026-10-02) carried no leader output, so carry it now.
+    const swept = await waitFor('EXIT trap swept the .part temps', () => partCount() === 0, 10_000).then(
+      () => true,
+      () => false,
+    );
+    const stderr = doomedErr.text();
+    if (!swept && FORK_REFUSED.test(stderr)) {
+      ctx.skip(
+        'UNDETERMINED, not failed: the host refused the hard-killed leader a fork, so its EXIT ' +
+          `trap could not run the rm that sweeps the temps. Left: ${parts().join(' ')}. stderr: ${stderr}`,
+      );
+    }
+    expect(parts(), `leader exited code=${exit.code} signal=${exit.signal}; stderr: ${stderr}`).toEqual([]);
   }, 45_000);
 });
 

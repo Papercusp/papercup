@@ -54,9 +54,20 @@ const AWS_ACCOUNT_ID = /^\d{12}$/;
 const IAM_ROLE_ARN = /^arn:(aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
 const HOST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
+/**
+ * This deployment has no AWS hosting account, so Papercusp's cloud runs on GCP only. A state of
+ * the deployment, not a fault: the browser is told AWS is not offered here instead of "try again".
+ */
+export class HostedAwsHostingUnconfiguredError extends Error {
+  override readonly name = 'HostedAwsHostingUnconfiguredError';
+  constructor() {
+    super('aws_workspace_host_papercusp_hosting_account_unconfigured');
+  }
+}
+
 export function hostedAwsWorkspaceAccount(env: Env = process.env): string {
   const account = env[HOSTED_AWS_WORKSPACE_ACCOUNT_ENV]?.trim();
-  if (!account) throw new Error('aws_workspace_host_papercusp_hosting_account_unconfigured');
+  if (!account) throw new HostedAwsHostingUnconfiguredError();
   if (!AWS_ACCOUNT_ID.test(account)) throw new Error('aws_workspace_host_papercusp_hosting_account_invalid');
   return account;
 }

@@ -290,13 +290,28 @@ for (const existing of [false, true]) {
       await page.getByRole('button', { name: 'Connect and validate' }).click();
     }
     await expect(guide.getByRole('heading', { name: 'Review configuration and cost' })).toBeVisible();
-    await guide.getByRole('button', { name: 'Show me' }).click();
-    if (!existing) await page.getByRole('textbox', { name: 'Workspace name' }).fill('My workspace');
+    const showConfiguration = guide.getByRole('button', { name: 'Show me' });
+    await showConfiguration.focus(); await page.keyboard.press('Enter');
+    if (!existing) {
+      const name = page.getByRole('textbox', { name: 'Workspace name' });
+      await expect(name).toBeFocused();
+      // Atomic fill hides dropped intermediate updates in a controlled,
+      // URL-backed field. Exercise actual keystrokes after guide focus.
+      let entered = '';
+      for (const character of 'My workspace') {
+        await page.keyboard.type(character, { delay: 20 });
+        entered += character;
+        await expect(name).toHaveValue(entered);
+      }
+      await page.keyboard.press('Tab');
+      await expect(name).toHaveValue('My workspace');
+    }
     await page.getByRole('button', { name: "I've reviewed the configuration and cost" }).click();
     await expect(guide.getByRole('heading', { name: 'Wait for a healthy workspace' })).toBeVisible();
     if (!existing) {
       expect(fixture.writes.filter(write => write.path.endsWith('/provision'))).toHaveLength(0);
       await page.getByRole('button', { name: 'Provision workspace' }).click();
+      await expect.poll(() => fixture.writes.find(write => write.path.endsWith('/provision'))?.body.name).toBe('My workspace');
       await page.getByRole('button', { name: 'Show me', exact: true }).click();
       await page.getByRole('button', { name: 'My workspace', exact: false }).first().click();
     }

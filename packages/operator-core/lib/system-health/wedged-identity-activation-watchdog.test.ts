@@ -79,6 +79,7 @@ function row(overrides: Partial<CandidateRow> = {}): CandidateRow {
 function deps(overrides: Partial<WedgedIdentitySweepDeps> = {}): WedgedIdentitySweepDeps {
   return {
     loadCandidates: async () => [row()],
+    verdictCache: { verdicts: new Map(), lastReused: 0, lastScanned: 0 },
     resolveLiveness: async (ids) => new Map(ids.map((id) => [id, 'live' as WedgedLiveness])),
     escalateWedged: vi.fn(async () => {}),
     escalateNotMeasured: vi.fn(async () => {}),
@@ -326,6 +327,93 @@ describe('runWedgedIdentitySweepOnce — paged candidates', () => {
   it('a stream of only empty pages is not-measured, never clean', async () => {
     const out = await runWedgedIdentitySweepOnce(deps({ loadCandidates: () => pages([], []) }));
     expect(out).toMatchObject({ verdict: 'not-measured', escalated: 1 });
+  });
+});
+
+// ── WI-10005391: verdicts carried across sweeps ───────────────────────────
+
+describe('runWedgedIdentitySweepOnce — carried verdicts (WI-10005391)', () => {
+  type Cache = WedgedIdentitySweepDeps['verdictCache'];
+  const freshCache = (): Cache => ({ verdicts: new Map(), lastReused: 0, lastScanned: 0 });
+
+  /**
+   * Behaves like the SQL loader: a row whose key the sweep already holds comes
+   * back WITHOUT its launch record. If such a row were ever classified instead
+   * of reused, `launchSpec: undefined` would read as a malformed launch record
+   * and flag a healthy session — so a clean verdict below proves the reuse.
+   */
+  function omittingLoader(rows: CandidateRow[], seen: Array<readonly string[]> = []) {
+    return (known: readonly string[]) => {
+      seen.push(known);
+      return Promise.resolve(rows.map((r) =>
+        r.verdictKey && known.includes(r.verdictKey)
+          ? { ...r, launchSpec: undefined, launchSpecOmitted: true }
+          : r,
+      ));
+    };
+  }
+
+  it('reuses a carried verdict for an unchanged row instead of classifying it', async () => {
+    const verdictCache = freshCache();
+    const rows = [row({ verdictKey: '1:100:a' })];
+    const seen: Array<readonly string[]> = [];
+
+    const first = await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader(rows, seen) }));
+    expect(first).toEqual({ verdict: 'clean', scanned: 1, escalated: 0 });
+    expect(verdictCache).toMatchObject({ lastReused: 0, lastScanned: 1 });
+
+    const second = await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader(rows, seen) }));
+    expect(second).toEqual({ verdict: 'clean', scanned: 1, escalated: 0 });
+    expect(verdictCache).toMatchObject({ lastReused: 1, lastScanned: 1 });
+    expect(seen).toEqual([[], ['1:100:a']]);
+  });
+
+  it('keeps reporting a carried WEDGED verdict on every sweep', async () => {
+    const verdictCache = freshCache();
+    const rows = [row({ ownerId: 'su-wedged', launchSpec: {}, verdictKey: '2:7:b' })];
+    await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader(rows) }));
+    const again = await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader(rows) }));
+    expect(again).toMatchObject({
+      verdict: 'wedged',
+      wedged: [{ ownerId: 'su-wedged', reason: 'receipt-missing', liveness: 'live' }],
+    });
+    expect(verdictCache.lastReused).toBe(1);
+  });
+
+  it('re-classifies a row whose key changed (a new launch row version or activation)', async () => {
+    const verdictCache = freshCache();
+    await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader([row({ verdictKey: '3:1:c' })]) }));
+    const changed = await runWedgedIdentitySweepOnce(deps({
+      verdictCache,
+      loadCandidates: omittingLoader([row({ ownerId: 'su-wedged', launchSpec: {}, verdictKey: '3:2:c' })]),
+    }));
+    expect(changed).toMatchObject({ verdict: 'wedged', wedged: [{ ownerId: 'su-wedged', reason: 'receipt-missing' }] });
+    expect([...verdictCache.verdicts.keys()]).toEqual(['3:2:c']);
+  });
+
+  it('fails closed when the loader omits a launch record the sweep holds no verdict for', async () => {
+    const escalateNotMeasured = vi.fn(async () => {});
+    const out = await runWedgedIdentitySweepOnce(deps({
+      escalateNotMeasured,
+      loadCandidates: async () => [row({ launchSpec: undefined, launchSpecOmitted: true, verdictKey: '9:9:z' })],
+    }));
+    expect(out).toMatchObject({ verdict: 'not-measured', escalated: 1 });
+    expect(escalateNotMeasured).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed scan leaves the carried verdicts intact; a complete scan drops rows it no longer sees', async () => {
+    const verdictCache = freshCache();
+    await runWedgedIdentitySweepOnce(deps({
+      verdictCache,
+      loadCandidates: omittingLoader([row({ verdictKey: '4:1:d' }), row({ ownerId: 'su-gone', verdictKey: '5:1:e' })]),
+    }));
+    expect(verdictCache.verdicts.size).toBe(2);
+
+    await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: async () => { throw new Error('cursor reset'); } }));
+    expect(verdictCache.verdicts.size).toBe(2);
+
+    await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader([row({ verdictKey: '4:1:d' })]) }));
+    expect([...verdictCache.verdicts.keys()]).toEqual(['4:1:d']);
   });
 });
 

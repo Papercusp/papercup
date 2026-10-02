@@ -64,6 +64,7 @@
  */
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getOrgPg } from '@papercusp/db-org';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
@@ -112,6 +113,58 @@ export interface CandidateRow {
   advSessionId: string | null;
   /** Raw `control_state->'activation'`, normalized by the kernel's normalizer. */
   activation: unknown;
+  /**
+   * WI-10005391: identity of everything `classifyCandidate` reads for this
+   * row — the selected launch row's id and row version (xmin) plus a digest of
+   * the activation envelope. Null when there is no launch row.
+   */
+  verdictKey?: string | null;
+  /**
+   * True when the loader did NOT ship `launchSpec` because the sweep already
+   * holds a verdict for `verdictKey`. Such a row is never classified; its prior
+   * verdict is reused.
+   */
+  launchSpecOmitted?: boolean;
+}
+
+export type CandidateVerdict = { wedged: false } | { wedged: true; reason: string };
+
+/**
+ * WI-10005391 — verdicts carried from one sweep to the next.
+ *
+ * Every sweep used to stream the narrowed launch record of EVERY session that
+ * ever carried an activation (2,094 rows, 1.28 GB stored, on 2026-10-02, and
+ * growing with history) and replay each artifact twice. A main-thread CPU
+ * profile of one fire put 24.8% of a 30 s window into that replay. Most of
+ * those rows never change again (548 of 2,094 briefs moved in 24 h).
+ *
+ * A verdict is a pure function of the launch row and the activation, so it is
+ * keyed on exactly those: launch row id + xmin (a new tuple version on ANY
+ * update) + md5 of the activation jsonb. The SQL returns no launch record for a
+ * known key, so an unchanged row is neither detoasted, shipped, parsed nor
+ * replayed. A changed row gets a new key and is classified by the kernel's own
+ * resolver, exactly as before (DESIGN DECISION 1 is untouched). The map is
+ * replaced only after a COMPLETE scan, so it never outlives the rows it
+ * describes; a code change restarts the process, which empties it.
+ */
+export interface WedgedVerdictCache {
+  verdicts: Map<string, CandidateVerdict>;
+  /** Rows the last complete sweep reused rather than classified (observability). */
+  lastReused: number;
+  lastScanned: number;
+}
+
+const sweepVerdictCache = pinModuleState<WedgedVerdictCache>(
+  '@papercusp/operator-core.wedged-identity-verdict-cache',
+  () => ({ verdicts: new Map(), lastReused: 0, lastScanned: 0 }),
+);
+
+export function wedgedIdentityVerdictCacheStats(): { size: number; lastReused: number; lastScanned: number } {
+  return {
+    size: sweepVerdictCache.verdicts.size,
+    lastReused: sweepVerdictCache.lastReused,
+    lastScanned: sweepVerdictCache.lastScanned,
+  };
 }
 
 export interface WedgedSession {
@@ -121,8 +174,14 @@ export interface WedgedSession {
 }
 
 export interface WedgedIdentitySweepDeps {
-  /** One array, or a stream of pages (the default streams; WI-10004803). */
-  loadCandidates: () => Promise<CandidateRow[]> | AsyncIterable<CandidateRow[]>;
+  /**
+   * One array, or a stream of pages (the default streams; WI-10004803).
+   * `knownVerdictKeys` (WI-10005391) are the keys the sweep already holds a
+   * verdict for; the loader MAY omit the launch record of such a row and must
+   * then set `launchSpecOmitted`. A loader that ignores the argument stays correct.
+   */
+  loadCandidates: (knownVerdictKeys: readonly string[]) => Promise<CandidateRow[]> | AsyncIterable<CandidateRow[]>;
+  verdictCache: WedgedVerdictCache;
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, WedgedLiveness>>;
   escalateWedged: (wedged: WedgedSession[]) => Promise<void>;
   escalateNotMeasured: (info: { reason: string }) => Promise<void>;
@@ -181,29 +240,44 @@ export const CANDIDATE_PAGE_ROWS = 25;
  * (the gate narrows its own body read the same way). The rows selected, their
  * order, and the classification are unchanged.
  */
-async function* defaultLoadCandidates(): AsyncGenerator<CandidateRow[]> {
+async function* defaultLoadCandidates(knownVerdictKeys: readonly string[]): AsyncGenerator<CandidateRow[]> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
+  // WI-10005391: `n.known` short-circuits the CASE, so a row whose verdict the
+  // sweep already holds is never detoasted — the launch record stays a TOAST
+  // pointer through the LIMIT 1 subquery and is simply not returned.
   const query = sql<Array<{
     owner_id: string;
     launch_spec: unknown;
     adv_session_id: string | number | null;
     activation: unknown;
+    verdict_key: string | null;
+    launch_spec_omitted: boolean | null;
   }>>`
     SELECT b.owner_id,
            a.launch_spec,
            a.id AS adv_session_id,
-           b.control_state->'activation' AS activation
+           b.control_state->'activation' AS activation,
+           a.verdict_key,
+           a.launch_spec_omitted
       FROM harness_shared.session_briefs b
       LEFT JOIN LATERAL (
-        SELECT n.id, ${narrowedLaunchSpecToAppliedPairSql(sql)} AS launch_spec
+        SELECT n.id,
+               n.verdict_key,
+               n.known AS launch_spec_omitted,
+               CASE WHEN n.known THEN NULL ELSE ${narrowedLaunchSpecToAppliedPairSql(sql)} END AS launch_spec
           FROM (
-            SELECT s.id, s.launch_spec, b.control_state->'activation'->'applied' AS applied_pair
-              FROM harness_shared.adv_sessions s
-             WHERE s.coord_owner_id = b.owner_id
-               AND s.workspace_id = b.workspace_id
-             ORDER BY ${sql.unsafe(CANDIDATE_SQL_ORDER)}
-             LIMIT 1
+            SELECT k.id, k.launch_spec, k.applied_pair, k.verdict_key,
+                   k.verdict_key = ANY(${[...knownVerdictKeys]}::text[]) AS known
+              FROM (
+                SELECT s.id, s.launch_spec, b.control_state->'activation'->'applied' AS applied_pair,
+                       s.id::text || ':' || s.xmin::text || ':' || md5((b.control_state->'activation')::text) AS verdict_key
+                  FROM harness_shared.adv_sessions s
+                 WHERE s.coord_owner_id = b.owner_id
+                   AND s.workspace_id = b.workspace_id
+                 ORDER BY ${sql.unsafe(CANDIDATE_SQL_ORDER)}
+                 LIMIT 1
+              ) AS k
           ) AS n
       ) a ON true
      WHERE b.workspace_id = ${workspaceId}
@@ -215,6 +289,8 @@ async function* defaultLoadCandidates(): AsyncGenerator<CandidateRow[]> {
       launchSpec: r.launch_spec,
       advSessionId: r.adv_session_id == null ? null : String(r.adv_session_id),
       activation: r.activation,
+      verdictKey: r.verdict_key,
+      launchSpecOmitted: r.launch_spec_omitted === true,
     }));
   }
 }
@@ -309,6 +385,7 @@ async function defaultEscalateNotMeasured(info: { reason: string }): Promise<voi
 function sweepDeps(overrides: Partial<WedgedIdentitySweepDeps>): WedgedIdentitySweepDeps {
   return {
     loadCandidates: defaultLoadCandidates,
+    verdictCache: sweepVerdictCache,
     resolveLiveness: defaultResolveLiveness,
     escalateWedged: defaultEscalateWedged,
     escalateNotMeasured: defaultEscalateNotMeasured,
@@ -331,8 +408,13 @@ export async function runWedgedIdentitySweepOnce(
   // single read did: a partial scan must never report clean. Only the read is
   // guarded, so a classification error still propagates as before.
   let scanned = 0;
+  let reused = 0;
   const confirmed: Array<{ ownerId: string; reason: string }> = [];
-  const pages = candidatePages(() => deps.loadCandidates())[Symbol.asyncIterator]();
+  // WI-10005391: an immutable snapshot of the carried verdicts. A row the loader
+  // omitted is looked up HERE, never in a map this sweep is still building.
+  const prior = new Map(deps.verdictCache.verdicts);
+  const next = new Map<string, CandidateVerdict>();
+  const pages = candidatePages(() => deps.loadCandidates([...prior.keys()]))[Symbol.asyncIterator]();
   for (;;) {
     let page: IteratorResult<CandidateRow[]>;
     try {
@@ -345,7 +427,24 @@ export async function runWedgedIdentitySweepOnce(
     if (page.done) break;
     scanned += page.value.length;
     for (const row of page.value) {
-      const verdict = classifyCandidate(row);
+      let verdict: CandidateVerdict;
+      if (row.launchSpecOmitted) {
+        const carried = row.verdictKey ? prior.get(row.verdictKey) : undefined;
+        if (!carried) {
+          // The loader withheld a launch record the sweep holds no verdict for.
+          // Classifying the row without it would be a guess, so fail closed.
+          const reason =
+            `candidate read omitted the launch record for ${row.ownerId} ` +
+            `(verdict key ${row.verdictKey ?? 'null'}) that the sweep holds no verdict for`;
+          await deps.escalateNotMeasured({ reason });
+          return { verdict: 'not-measured', reason, escalated: 1 };
+        }
+        verdict = carried;
+        reused += 1;
+      } else {
+        verdict = classifyCandidate(row);
+      }
+      if (row.verdictKey) next.set(row.verdictKey, verdict);
       if (verdict.wedged) confirmed.push({ ownerId: row.ownerId, reason: verdict.reason });
     }
   }
@@ -359,6 +458,12 @@ export async function runWedgedIdentitySweepOnce(
     await deps.escalateNotMeasured({ reason });
     return { verdict: 'not-measured', reason, escalated: 1 };
   }
+
+  // A COMPLETE scan: carry exactly the verdicts of the rows it saw, so a deleted
+  // or re-selected launch row drops out instead of accumulating.
+  deps.verdictCache.verdicts = next;
+  deps.verdictCache.lastReused = reused;
+  deps.verdictCache.lastScanned = scanned;
 
   if (confirmed.length === 0) return { verdict: 'clean', scanned, escalated: 0 };
 

@@ -22,6 +22,8 @@
  */
 import { execFile, type ExecSyncOptions } from 'node:child_process';
 
+import { pinModuleState } from '@papercusp/module-singleton';
+
 export interface ExecResult {
   status: number | null;
   stdout: string;
@@ -105,4 +107,132 @@ export function execFileResult(cmd: string, args: string[], options: { timeout?:
       },
     );
   });
+}
+
+/**
+ * EI-24852529885337741: single-flight + short reuse window for READ-ONLY git calls.
+ *
+ * Every fork of the ~1.7 GB operator costs ~160 ms of synchronous main-thread time (libuv
+ * copies the page tables), however the child is awaited. A 600 s execve census of :3170
+ * (2026-10-02 08:02-08:12Z) counted 560 forks; 191 were these probes' git reads
+ * (`rev-parse HEAD`, `show -s --format=%ct`, `rev-list -1 --before=…`, `rev-parse --verify
+ * ready`), arriving in bursts of 4-9 identical calls within ~1 s from concurrent callers. Replaying
+ * the census through a 2 s memo keyed on the exact argv leaves 45 of the 191.
+ *
+ * A reused answer is at most `ttlMs` old. These probes already race the tree they read (git-sync
+ * can move HEAD between any two of their calls), so that staleness adds no new class of error.
+ * Only git subcommands that never write are shared, and a result with no exit status (timeout,
+ * kill, missing binary) is shared only while in flight, never reused afterwards.
+ */
+export const GIT_READ_MEMO_TTL_MS = 2_000;
+
+const GIT_READ_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'rev-parse',
+  'show',
+  'rev-list',
+  'log',
+  'merge-base',
+  'cat-file',
+  'ls-tree',
+  'for-each-ref',
+]);
+
+/** Above this many entries, a miss first drops every expired one (time-keyed argv never repeats). */
+const GIT_READ_MEMO_PRUNE_AT = 64;
+
+/** The git subcommand of `args` (after `-C <dir>` / `-c <k=v>` / `--no-pager`), or null. */
+export function gitSubcommand(args: readonly string[]): string | null {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-C' || a === '-c') {
+      i++;
+      continue;
+    }
+    if (a === '--no-pager' || a.startsWith('--git-dir=') || a.startsWith('--work-tree=')) continue;
+    return a.startsWith('-') ? null : a;
+  }
+  return null;
+}
+
+export interface GitReadMemoStats {
+  hits: number;
+  misses: number;
+  entries: number;
+}
+
+export interface GitReadMemo {
+  exec: AsyncExec;
+  stats: () => GitReadMemoStats;
+}
+
+interface MemoEntry {
+  promise: Promise<ExecResult>;
+  settledAt: number | null;
+}
+
+/** Wrap `exec` so identical read-only git calls share one child (see GIT_READ_MEMO_TTL_MS). */
+export function createGitReadMemo(
+  exec: AsyncExec,
+  opts: { ttlMs?: number; now?: () => number } = {},
+): GitReadMemo {
+  const ttlMs = opts.ttlMs ?? GIT_READ_MEMO_TTL_MS;
+  const now = opts.now ?? Date.now;
+  const entries = new Map<string, MemoEntry>();
+  let hits = 0;
+  let misses = 0;
+  const fresh = (e: MemoEntry, t: number) => e.settledAt === null || t - e.settledAt < ttlMs;
+
+  const memoExec: AsyncExec = (cmd, args, options) => {
+    const sub = cmd === 'git' ? gitSubcommand(args) : null;
+    if (!sub || !GIT_READ_SUBCOMMANDS.has(sub)) return exec(cmd, args, options);
+    const key = callKey(cmd, args);
+    const t = now();
+    const hit = entries.get(key);
+    if (hit && fresh(hit, t)) {
+      hits++;
+      return hit.promise;
+    }
+    misses++;
+    if (entries.size >= GIT_READ_MEMO_PRUNE_AT) {
+      for (const [k, e] of entries) if (!fresh(e, t)) entries.delete(k);
+    }
+    const entry: MemoEntry = { promise: Promise.resolve(PENDING), settledAt: null };
+    entry.promise = exec(cmd, [...args], options).then(
+      (r) => {
+        if (r.status === null) {
+          if (entries.get(key) === entry) entries.delete(key);
+        } else {
+          entry.settledAt = now();
+        }
+        return r;
+      },
+      (err: unknown) => {
+        if (entries.get(key) === entry) entries.delete(key);
+        throw err;
+      },
+    );
+    entries.set(key, entry);
+    return entry.promise;
+  };
+
+  return { exec: memoExec, stats: () => ({ hits, misses, entries: entries.size }) };
+}
+
+/** One memo per process, pinned so a split module graph cannot halve its hit rate. */
+const sharedGitReadMemo = pinModuleState('@papercusp/operator-core.sync-exec-replay.git-read-memo', () =>
+  createGitReadMemo((cmd, args, options) =>
+    execFileResult(cmd, args, { timeout: typeof options?.timeout === 'number' ? options.timeout : undefined }),
+  ),
+);
+
+/**
+ * `execFileResult` with read-only git calls shared through the process-wide memo. The default
+ * async exec for checkpoint probes (release-checkpoint-launch's runCheckpointProbe and
+ * git-pipeline-position's realResolveGateCandidates).
+ */
+export const execFileResultShared: AsyncExec = (cmd, args, options) => sharedGitReadMemo.exec(cmd, args, options);
+
+/** Hit/miss counters of the process-wide memo, for diagnostics. */
+export function gitReadMemoStats(): GitReadMemoStats {
+  return sharedGitReadMemo.stats();
 }

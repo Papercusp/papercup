@@ -4943,7 +4943,7 @@ export function mapCheckpointRunInFlight(
 export const realResolveGateCandidates = async (root: string): Promise<GateCandidates> => {
   try {
     const { checkActiveCheckpointRun, currentCheckpointCandidate } = await import('./release-checkpoint-launch');
-    const { runSyncWithAsyncExec, execFileResult } = await import('./sync-exec-replay');
+    const { runSyncWithAsyncExec, execFileResultShared } = await import('./sync-exec-replay');
     // WI-10005261: these probes are sync and exec-injected. A spawnSync exec here blocked the
     // operator main thread (98.6% of a measured sentinel stall), so they run under
     // record/replay: every git/systemctl call goes through async execFile, and the final pass
@@ -4967,7 +4967,9 @@ export const realResolveGateCandidates = async (root: string): Promise<GateCandi
           nextCandidateSha,
         };
       },
-      (cmd, args) => execFileResult(cmd, args, { timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS }),
+      // EI-24852529885337741: concurrent callers repeat these exact git reads in ~1 s bursts;
+      // the shared memo gives each argv one child per 2 s.
+      (cmd, args) => execFileResultShared(cmd, args, { timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS }),
     );
     return value;
   } catch {

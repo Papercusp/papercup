@@ -1185,7 +1185,7 @@ export default defineTool({
   guidance: {
     when: 'Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.',
     notWhen:
-      '`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed.',
+      '`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person\'s job.',
     chaining:
       'work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772).',
     seeAlso: [

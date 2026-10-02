@@ -69,7 +69,7 @@ import {
   type TestImplSplitRisk,
   type GitRead,
 } from './candidate-contains';
-import { execFileResult, runSyncWithAsyncExec, type AsyncExec } from './sync-exec-replay';
+import { execFileResultShared, runSyncWithAsyncExec, type AsyncExec } from './sync-exec-replay';
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `\\'"'"'`)}'`;
@@ -471,9 +471,12 @@ function defaultExecSync(
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
-/** `defaultExecSync`'s async twin: same result semantics, never blocks the event loop. */
+/** `defaultExecSync`'s async twin: same result semantics, never blocks the event loop.
+ *  EI-24852529885337741: read-only git calls share one child per argv for 2 s
+ *  (execFileResultShared), because concurrent callers issue identical bursts and each fork of
+ *  this process costs ~160 ms of main-thread time. */
 const defaultAsyncExec: AsyncExec = (cmd, args, options) =>
-  execFileResult(cmd, args, { timeout: typeof options?.timeout === 'number' ? options.timeout : undefined });
+  execFileResultShared(cmd, args, { timeout: typeof options?.timeout === 'number' ? options.timeout : undefined });
 
 /**
  * WI-10005268: run a sync, exec-injected probe (`checkActiveCheckpointRun`,
