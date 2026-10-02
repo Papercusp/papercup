@@ -445,7 +445,7 @@ export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned })
  * Forward the launched role as an admission hint for bounded judge calls;
  * signed principal verification remains the authorization boundary.
  */
-export function buildMcpSessionQuery({ client, workspace, harness, role, allWorkspaces = false }) {
+export function buildMcpSessionQuery({ client, workspace, harness, role, origin, allWorkspaces = false }) {
   const qs = new URLSearchParams({
     superuser: '1',
     client,
@@ -454,6 +454,7 @@ export function buildMcpSessionQuery({ client, workspace, harness, role, allWork
   });
   if (harness) qs.set('harness', harness);
   if (role) qs.set('role', role);
+  if (origin) qs.set('origin', origin);
   return qs;
 }
 
@@ -512,6 +513,25 @@ export function resolveMcpClientId(
     if (value) return value;
   }
   return `mcp-call-${pid}`;
+}
+
+/**
+ * The recovery helper uses a node user-agent and a one-shot URL, so the
+ * telemetry classifier cannot recognize model calls from transport shape.
+ * Declare agent only when the client is a managed Papercusp session/spawn
+ * identity; generic and system-script clients remain unclassified.
+ */
+export function resolveMcpCallOrigin(clientId, env = process.env) {
+  const client = String(clientId ?? '').trim();
+  if (!client || client.toLowerCase().startsWith('system-') || client === 'su-loopback') {
+    return undefined;
+  }
+  const sessionIds = [env.PAPERCUSP_SID, env.PAPERCUSP_SPAWN_ID]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  return sessionIds.includes(client) || /^(?:su|s|pus)-[a-z0-9][a-z0-9._-]*$/i.test(client)
+    ? 'agent'
+    : undefined;
 }
 
 /** Role is an admission routing hint; signed principal checks still run downstream. */
@@ -580,6 +600,7 @@ async function main() {
     workspace,
     harness: flags.harness,
     role: resolveMcpRole(),
+    origin: resolveMcpCallOrigin(client),
     allWorkspaces: flags.allWorkspaces,
   });
   // EI-20182275617587040: PAPERCUSP_HONO_PORT can OUTLIVE the process it described

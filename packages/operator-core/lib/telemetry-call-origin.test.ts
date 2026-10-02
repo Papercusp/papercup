@@ -50,6 +50,12 @@ const OMP_HOOK_CALL = {
 };
 
 describe("classifyCallOrigin — declaration wins", () => {
+  it("takes a caller-declared agent origin from the query param", () => {
+    expect(
+      classifyCallOrigin({ requestOrigin: { query: { [CALL_ORIGIN_QUERY_PARAM]: "agent" } } }),
+    ).toEqual({ origin: "agent", source: "declared" });
+  });
+
   it("takes the caller's declared origin from the query param", () => {
     expect(
       classifyCallOrigin({

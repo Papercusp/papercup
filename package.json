@@ -271,6 +271,7 @@
     "lint:narrowing-gated-assertions:report": "node scripts/check-narrowing-gated-assertions.mjs --report",
     "lint:narrowing-gated-assertions:census": "node scripts/check-narrowing-gated-assertions.mjs --census",
     "lint:no-hand-rolled-module-pin": "node scripts/check-no-hand-rolled-module-pin.mjs",
+    "lint:refusal-contracts": "node scripts/check-refusal-contracts.mjs",
     "lint:no-new-result-door-optout": "node scripts/check-result-door-optouts.mjs",
     "lint:no-new-result-door-optout:census": "node scripts/check-result-door-optouts.mjs --list",
     "lint:no-capacity-maxima": "node scripts/check-no-capacity-maxima.mjs",

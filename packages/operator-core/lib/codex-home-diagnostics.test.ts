@@ -129,7 +129,12 @@ describe('readCodexHomeDiagnostics', () => {
 
   it('has no synchronous filesystem read, and every request-path caller awaits it', () => {
     const reader = source('./codex-home-diagnostics.ts');
-    expect(reader).not.toMatch(/\b(existsSync|lstatSync|statSync|readdirSync|readFileSync|openSync)\b/);
+    // Asserts on code shape, not on words: the module's comments legitimately name
+    // the sync APIs it avoids. A value import from 'node:fs' (only `import type`
+    // is allowed) or any `…Sync(` call is the regression.
+    expect(reader).not.toMatch(/^import\s+(?!type\b)[^;]*from\s+'node:fs'/m);
+    expect(reader).not.toMatch(/\b\w+Sync\(/);
+    expect(reader).toMatch(/from 'node:fs\/promises'/);
 
     for (const caller of [
       './agent-tools/coordination/tools/orient.ts',

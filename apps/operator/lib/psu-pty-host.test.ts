@@ -153,6 +153,8 @@ const {
   startCodexStartupProcessTrace,
   collectCodexStuckProcessTree,
   collectCodexStartingStuckSnapshot,
+  collectProcSockets,
+  decodeProcNetAddress,
   readCodexTuiLogTail,
   redactSnapshotArgv,
   redactSnapshotText,

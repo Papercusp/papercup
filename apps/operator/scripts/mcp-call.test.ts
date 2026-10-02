@@ -19,6 +19,7 @@ import {
   jsonSourceKind,
   readJsonArgs,
   resolveMcpClientId,
+  resolveMcpCallOrigin,
   resolveMcpRole,
   resolveMcpWorkspace,
   resolveCandidatePorts,
@@ -267,6 +268,25 @@ describe('mcp-call fallback diagnostics', () => {
 
     expect(warning).toContain('The environment setting is canonical');
     expect(warning).not.toMatch(/port is STALE|may be stale/);
+  });
+});
+
+describe('mcp-call call-origin declaration', () => {
+  it('marks managed session identities as agent-origin and leaves system clients unmarked', () => {
+    const client = 'su-6ab684ac-35e9-4fd1-a992-169c86dfdda5';
+    const env = { PAPERCUSP_SID: client };
+    const origin = resolveMcpCallOrigin(client, env);
+    const query = buildMcpSessionQuery({ client, workspace: 'papercusp-workspace', origin });
+
+    expect(origin).toBe('agent');
+    expect(query.get('origin')).toBe('agent');
+    expect(resolveMcpCallOrigin('system-staging-sync-review-alarm', env)).toBeUndefined();
+    expect(resolveMcpCallOrigin('vm-rig-probe', {})).toBeUndefined();
+  });
+
+  it('uses the stable spawn identity when no session id is available', () => {
+    const client = 's-76543210-1234-5678-9abc-def012345678';
+    expect(resolveMcpCallOrigin(client, { PAPERCUSP_SPAWN_ID: client })).toBe('agent');
   });
 });
 

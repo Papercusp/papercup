@@ -1091,3 +1091,143 @@ export const COORD_REF_HOLDERS_DDL = `
     PRIMARY KEY (workspace_id, thread_id));
   CREATE UNIQUE INDEX IF NOT EXISTS coord_threads_parent_uq ON harness_shared.coord_threads
     (workspace_id, parent_kind, parent_ref);`;
+
+/**
+ * The four event-await relations, taken from a live `pg_dump --schema-only` of the
+ * fully-migrated schema (2026-10-02, WI-10005130) rather than replayed from the ~13
+ * migrations that built them (163, 183, 533, 550, 569, 572, 599, 632, 710, 1214-1216,
+ * 1274). A claim door emits awaited events (`emitAwaitedEvent`, lib/events/await), and
+ * that fire path reads `event_awaits`, upserts the `event_key_fires` latch, enqueues
+ * `event_wake_deliveries` and, for composed awaits, walks `event_await_nodes`. Without
+ * these tables the fire logs "key-fire latch record failed ... relation
+ * harness_shared.event_awaits does not exist" and the test measures a degraded path.
+ *
+ * Columns are the full live set. CHECK constraints are omitted, as elsewhere in this
+ * file. The three partial UNIQUE indexes on event_awaits are kept on purpose: they are
+ * ON CONFLICT targets of the await writers, and without them those INSERTs error.
+ */
+export const EVENT_AWAITS_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.event_await_nodes (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default',
+    root_id bigint NOT NULL,
+    parent_id bigint REFERENCES harness_shared.event_await_nodes(id) ON DELETE CASCADE,
+    subscriber_id text NOT NULL,
+    required_count integer NOT NULL,
+    fired_count integer NOT NULL DEFAULT 0,
+    fired_at timestamptz,
+    spec jsonb,
+    wake_handle jsonb,
+    note text,
+    expires_ts timestamptz,
+    timeout_behavior text NOT NULL DEFAULT 'expire',
+    cancelled_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now());
+  CREATE TABLE IF NOT EXISTS harness_shared.event_awaits (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default',
+    subscriber_id text NOT NULL,
+    event_key text NOT NULL,
+    policy text NOT NULL DEFAULT 'wake',
+    note text,
+    wake_handle jsonb,
+    timeout_behavior text NOT NULL DEFAULT 'expire',
+    expires_ts timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    fired_at timestamptz,
+    fired_reason text,
+    cancelled_at timestamptz,
+    once boolean NOT NULL DEFAULT true,
+    min_sleep_sec integer,
+    urgency boolean NOT NULL DEFAULT false,
+    payload_filter jsonb,
+    scope_kind text,
+    scope_ref text,
+    node_id bigint,
+    root_id bigint,
+    member_fired_at timestamptz,
+    member_payload jsonb,
+    causal_generation bigint,
+    expected_condition jsonb,
+    superseded_at timestamptz,
+    fired_by text,
+    fired_payload jsonb,
+    producer_health jsonb,
+    timeout_verification jsonb,
+    verification_claimed_at timestamptz,
+    bound_to jsonb,
+    cancel_reason text,
+    logical_gate_key text,
+    fired_delivery_intent_at timestamptz);
+  CREATE UNIQUE INDEX IF NOT EXISTS event_awaits_announce_generation_unique
+    ON harness_shared.event_awaits (workspace_id, event_key, causal_generation)
+    WHERE policy = 'announce' AND causal_generation IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS event_awaits_exact_one_shot_one_per_subscriber_key
+    ON harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+    WHERE policy <> 'announce' AND once = true AND root_id IS NULL AND payload_filter IS NULL
+      AND (note IS NULL OR note NOT LIKE '[fleet:bench] %')
+      AND event_key NOT LIKE '%*%' AND event_key NOT LIKE '@%'
+      AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS event_awaits_inbox_wake_one_per_agent
+    ON harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+    WHERE policy = 'wake' AND once = false AND cancelled_at IS NULL
+      AND event_key LIKE 'coord:inbox-wake:%';
+  CREATE TABLE IF NOT EXISTS harness_shared.event_key_fires (
+    workspace_id text NOT NULL DEFAULT 'default',
+    event_key text NOT NULL,
+    first_fired_at timestamptz NOT NULL DEFAULT now(),
+    last_fired_at timestamptz NOT NULL DEFAULT now(),
+    last_fired_by text,
+    last_payload jsonb,
+    fire_count bigint NOT NULL DEFAULT 1,
+    PRIMARY KEY (workspace_id, event_key));
+  CREATE TABLE IF NOT EXISTS harness_shared.event_wake_deliveries (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default',
+    await_id bigint NOT NULL,
+    subscriber_id text NOT NULL,
+    event_key text NOT NULL,
+    payload jsonb,
+    summary text,
+    status text NOT NULL DEFAULT 'pending',
+    channel text,
+    attempts integer NOT NULL DEFAULT 0,
+    last_error text,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    delivered_at timestamptz,
+    urgent boolean NOT NULL DEFAULT false,
+    min_sleep_sec integer,
+    coalesced_count integer NOT NULL DEFAULT 1,
+    source text);`;
+
+/**
+ * Every relation a claim door reads or writes BEYOND the base work-item tables
+ * (HARNESS_FEATURES_CONSOLIDATED_DDL or the test's own base schema), in apply order:
+ * the trust-admission LEFT JOIN, the dependency-readiness clause, the operation-worker
+ * claim binding (`adv_sessions`, fail-CLOSED when absent) and the event fire.
+ *
+ * WI-10005130: each of these was added to the claim path at a different time, and each
+ * time every hand-built claim-path fixture that lacked the new table went red, without
+ * anything in the gate radius noticing (integration files are outside it). Applying ONE
+ * list means the next claim-path read dependency is added here once.
+ * `claim-path-bootstrap-guard.test.ts` fails a fixture-built claim-path test that does
+ * not call `applyClaimPathReadDeps`.
+ */
+export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+  ADV_SESSIONS_CLAIM_MIN_DDL,
+  EVENT_AWAITS_MIN_DDL,
+];
+
+/**
+ * Apply {@link CLAIM_PATH_READ_DEPS_DDL}. `exec` must run a multi-statement string:
+ * postgres.js `(ddl) => sql.unsafe(ddl).simple()`, or node-pg `(ddl) => pool.query(ddl)`.
+ * Every statement is IF NOT EXISTS, so calling it after a test's own schema is safe.
+ */
+export async function applyClaimPathReadDeps(
+  exec: (ddl: string) => PromiseLike<unknown>,
+): Promise<void> {
+  for (const ddl of CLAIM_PATH_READ_DEPS_DDL) await exec(ddl);
+}

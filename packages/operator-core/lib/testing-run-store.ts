@@ -22,6 +22,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { getOrgPg } from '@papercusp/db-org';
 import { readFile, rm } from 'node:fs/promises';
 import { basename, isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
@@ -200,7 +201,6 @@ async function snapshotSql(sqlOverride?: SqlLike): Promise<SqlLike | null> {
   if (sqlOverride) return sqlOverride;
   if (!snapshotPersistenceEnabled()) return null;
   try {
-    const { getOrgPg } = await import('@papercusp/db-org');
     return getOrgPg().sql as unknown as SqlLike;
   } catch {
     return null;
@@ -1463,7 +1463,6 @@ async function persistFallbackRow(s: RunSnapshot, worktreeBefore: WorktreeGitSna
       process.env.PAPERCUSP_TEST_RUN_HARNESS || process.env.HARNESS_SLUG || process.env.PAPERCUSP_HARNESS_SLUG || null;
     const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || null;
     const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
-    const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
     await Promise.race([
       sql`
@@ -2277,7 +2276,6 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     const requestedFilePaths = params.filePaths ?? (params.filePath === undefined ? null : [params.filePath]);
@@ -2446,7 +2444,6 @@ export async function countUnattributedTestRunRows(params: {
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     const rows = await sql`
@@ -2473,7 +2470,6 @@ export async function findHarnessTestRunIds(params: HarnessTestRunIdQuery): Prom
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     const readIds = async (client: SqlLike): Promise<unknown[]> => {
@@ -2547,7 +2543,6 @@ async function persistHarnessTestRunsInternal(
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     for (const row of rows) {

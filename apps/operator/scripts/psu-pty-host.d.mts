@@ -701,6 +701,43 @@ export function redactSnapshotArgv(argv: any, { maxArgs, maxChars }?: {
     maxArgs?: number | undefined;
     maxChars?: number | undefined;
 }): string;
+/** Decode a /proc/net/tcp{,6} address ("0100007F:23C3") to "127.0.0.1:9155".
+ * The kernel prints each 32-bit word in host (little-endian) byte order.
+ * @param {string} value */
+export function decodeProcNetAddress(value: string): string;
+/**
+ * Socket inventory of one process (WI-10005178): which TCP peers it holds, in what
+ * state, plus a unix-socket count. A Codex child stuck at "Starting" logs nothing
+ * and is recycled within minutes, so the snapshot is the only place this evidence
+ * can be caught. Reads the process's fd links and its OWN network namespace's
+ * /proc/<pid>/net tables, parsed once per namespace via `netCache`. Never throws;
+ * null when the fd list is unreadable.
+ * @param {number} pid
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, netCache?: Map<string, { tcp: Map<string, { remote: string, state: string }>, unix: Set<string> }>, maxTcp?: number }} [options]
+ */
+export function collectProcSockets(pid: number, { readFile, readDir, readLink, netCache, maxTcp, }?: {
+    readFile?: SnapshotReadFile;
+    readDir?: SnapshotReadDir;
+    readLink?: (path: string) => unknown;
+    netCache?: Map<string, {
+        tcp: Map<string, {
+            remote: string;
+            state: string;
+        }>;
+        unix: Set<string>;
+    }>;
+    maxTcp?: number;
+}): {
+    unix: number;
+    other: number;
+    tcpTruncated?: number | undefined;
+    total: number;
+    tcp: {
+        remote: string;
+        state: string;
+        count: number;
+    }[];
+} | null;
 /** Walk the descendants of `rootPid` breadth-first. Children are read from
  * EVERY thread's /proc/PID/task/TID/children: the kernel lists a child under the
  * thread that forked it, and Codex (a multithreaded Rust runtime) forks its MCP
@@ -713,11 +750,12 @@ export function redactSnapshotArgv(argv: any, { maxArgs, maxChars }?: {
 /** @typedef {{ path: string, present: false } | { path: string, present: true, bytes: number, totalLinesInTail: number, lastTs: string | null, tail: string[] }} CodexTuiLogTail */
 /**
  * @param {number | undefined} rootPid
- * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, maxDepth?: number, maxProcs?: number }} [options]
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, maxDepth?: number, maxProcs?: number }} [options]
  */
-export function collectCodexStuckProcessTree(rootPid: number | undefined, { readFile, readDir, maxDepth, maxProcs, }?: {
+export function collectCodexStuckProcessTree(rootPid: number | undefined, { readFile, readDir, readLink, maxDepth, maxProcs, }?: {
     readFile?: SnapshotReadFile;
     readDir?: SnapshotReadDir;
+    readLink?: (path: string) => unknown;
     maxDepth?: number;
     maxProcs?: number;
 }): {
@@ -747,14 +785,15 @@ export function readCodexTuiLogTail(codexHome: string | undefined, { readTail, m
     maxBytes?: number;
 }): CodexTuiLogTail | null;
 /** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
- * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readTail?: SnapshotReadTail }} [options]
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail }} [options]
  */
-export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readTail, }?: {
+export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readLink, readTail, }?: {
     rootPid?: number;
     codexHome?: string;
     platform?: string;
     readFile?: SnapshotReadFile;
     readDir?: SnapshotReadDir;
+    readLink?: (path: string) => unknown;
     readTail?: SnapshotReadTail;
 }): {
     rootPid: number | null | undefined;

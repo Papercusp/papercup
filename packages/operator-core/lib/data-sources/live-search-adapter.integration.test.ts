@@ -15,6 +15,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { upsertPrivacyRule } from '../personal-vault/disclosure-ledger';
 import { createPersonalGrant } from '../personal-vault/store';
 import {
   ORGANIZATION_CORPUS_SCOPE,
@@ -130,6 +131,8 @@ afterAll(async () => {
   await org.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${AGENT}`.catch(() => {});
   await org.adminSql`DELETE FROM harness_shared.data_source_subscriptions WHERE workspace_id = ${WS}`.catch(() => {});
   await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`.catch(() => {});
+  await org.adminSql`DELETE FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`.catch(() => {});
+  await org.adminSql`DELETE FROM harness_shared.personal_privacy_rules WHERE workspace_id = ${WS}`.catch(() => {});
   for (const id of [alice, bob].filter(Boolean)) {
     await org.adminSql`DELETE FROM harness_shared.users WHERE id = ${id}`.catch(() => {});
   }
@@ -143,6 +146,8 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.provider_identity_mappings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.personal_privacy_rules WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${AGENT}`;
   await grantOrganization(alice);
   await grantOrganization(bob);
@@ -160,6 +165,12 @@ beforeEach(async () => {
 
 describe('live (federated) search through the injection path (R-12)', () => {
   it('injects a fenced live hit, queried as the mapped identity, and writes no corpus row', async () => {
+    // discloseDocuments ledgers only documents a privacy rule restricts, for live
+    // hits exactly as for stored ones; this rule makes the slack hit restricted.
+    await upsertPrivacyRule(org.adminSql, {
+      workspaceId: WS, userId: alice, matchKind: 'source', matchValue: 'slack',
+      level: 'participants', actor: 'owner', authorityRef: null,
+    });
     const before = await corpusRows();
     const block = (await build(alice))!;
     expect(block).toContain(`<${UNTRUSTED_FENCE_TAG} scope="live" source="slack" ref="${dataSourceId}"`);

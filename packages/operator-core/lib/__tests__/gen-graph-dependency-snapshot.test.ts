@@ -120,6 +120,12 @@ describe('parseCypherText', () => {
   it('refuses unparseable text', () => {
     expect(parseCypherText('<html>502</html>').kind).toBe('error');
   });
+  it('treats a bridge-truncated or door-spilled page as OVERSIZE — never as rows, never as a generic error', () => {
+    const bridge = '{\n  "markdown": "| importer | imported |\\n| --- | --- |\\n| a/x.ts | a/y\n\n… ⚠ TRUNCATED at 20000 of 219188 chars by the gitnexus bridge response budget.';
+    const door = JSON.stringify({ text: '{"markdown":"| importer | imported |"}', _projection: { kind: 'bounded-payload', truncated: true } });
+    expect(parseCypherText(bridge).kind).toBe('oversize');
+    expect(parseCypherText(door).kind).toBe('oversize');
+  });
 });
 
 describe('produceSnapshotFromGraph — happy path', () => {
@@ -177,6 +183,29 @@ describe('produceSnapshotFromGraph — fails closed', () => {
   it('refuses when no edge survives source corroboration (never writes an empty snapshot)', async () => {
     const b = scriptedBackend({});
     expect(await failCode(produceSnapshotFromGraph(baseDeps(b, { readSource: () => 'export const x = 1;\n' })))).toBe('empty');
+  });
+  it('halves an oversize page and still walks every edge exactly once', async () => {
+    const b = scriptedBackend({});
+    const door = JSON.stringify({ text: 'spill', _projection: { kind: 'bounded-payload' } });
+    const limits: number[] = [];
+    const runCypher = async (statement: string) => {
+      const m = /LIMIT (\d+)/.exec(statement);
+      if (m) {
+        limits.push(Number(m[1]));
+        if (Number(m[1]) > 4) return door;
+      }
+      return b.runCypher(statement);
+    };
+    const out = await produceSnapshotFromGraph(baseDeps(b, { runCypher, pageSize: 16 }));
+    expect(limits).toEqual([16, 8, 4]);
+    expect(out.rows).toBe(3);
+    expect(out.stats.kept).toBe(3);
+  });
+  it('refuses with code oversize when even the smallest page is over the response budget', async () => {
+    const b = scriptedBackend({});
+    const door = JSON.stringify({ text: 'spill', _projection: { kind: 'bounded-payload' } });
+    const runCypher = async (statement: string) => (/LIMIT \d+/.test(statement) ? door : b.runCypher(statement));
+    expect(await failCode(produceSnapshotFromGraph(baseDeps(b, { runCypher, pageSize: 16 })))).toBe('oversize');
   });
   it('rejects an invalid page size', async () => {
     const b = scriptedBackend({});

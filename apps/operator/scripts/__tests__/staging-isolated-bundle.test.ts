@@ -22,7 +22,7 @@ const STAGING_SYNC_SCRIPT = join(
   "apps/operator/bin/release/sync-staging-checkout.sh",
 );
 
-describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated tree", () => {
+describe("staging systemd drop-ins keep the serving alias and runtime generation aligned", () => {
   const checkout = readFileSync(
     join(DROPIN_ROOT, "50-staging-checkout.conf"),
     "utf8",
@@ -32,12 +32,15 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
     "utf8",
   );
 
-  it("points WorkingDirectory and PAPERCUSP_INTEGRATION_ROOT at papercusp-staging", () => {
+  it("points WorkingDirectory, SPA, and initial integration root at the stable alias", () => {
     expect(checkout).toContain(
-      "WorkingDirectory=%h/papercupai-workspace/papercusp-staging/apps/operator",
+      "WorkingDirectory=%h/papercupai-workspace/papercusp-staging.current/apps/operator",
     );
     expect(checkout).toContain(
-      "PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp-staging",
+      "Environment=PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp-staging.current",
+    );
+    expect(checkout).toContain(
+      "Environment=PAPERCUSP_SPA_DIST=%h/papercupai-workspace/papercusp-staging.current/apps/operator-vite/dist",
     );
     expect(checkout).not.toMatch(
       /papercupai-workspace\/papercusp\/apps\/operator/,
@@ -48,11 +51,16 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
   // naming the edit tree made every working-tree reader on :3170 describe the clean
   // mirror, so dev:pipeline_position reported an uncommitted edit as clean and live.
   it("declares the canonical EDIT tree separately from the served mirror", () => {
-    const envValue = (name: string): string | null =>
-      checkout.match(new RegExp(`^Environment=${name}=(\\S+)\\s*$`, "m"))?.[1] ?? null;
+    const envValue = (name: string): string | null => {
+      const prefix = "Environment=" + name + "=";
+      return checkout
+        .split("\n")
+        .find((line) => line.startsWith(prefix))
+        ?.slice(prefix.length) ?? null;
+    };
     const served = envValue("PAPERCUSP_INTEGRATION_ROOT");
     const edited = envValue("PAPERCUSP_CANONICAL_TREE");
-    expect(served).toBe("%h/papercupai-workspace/papercusp-staging");
+    expect(served).toBe("%h/papercupai-workspace/papercusp-staging.current");
     expect(edited).toBe("%h/papercupai-workspace/papercusp");
     expect(edited).not.toBe(served);
   });
@@ -60,25 +68,40 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
   it("builds from that same tree and enables proof-bound reuse before plain-node start", () => {
     expect(bundle).toContain("Environment=PAPERCUSP_BUNDLE_REUSE_FRESH=1");
     expect(bundle).toContain(
-      "ExecStartPre=/usr/bin/flock -s /tmp/papercup-staging-sync.lock %h/papercupai-workspace/papercusp-staging/apps/operator/bin/bundle-host.sh",
+      "ExecStartPre=/usr/bin/flock -s /tmp/papercup-staging-sync.lock %h/papercupai-workspace/papercusp-staging.current/apps/operator/bin/bundle-host.sh",
+    );
+    expect(bundle).toContain(
+      'export PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"',
     );
     expect(bundle).toContain("exec node dist-host/hono-host.mjs");
     expect(bundle).toContain("PAPERCUSP_BIND_HOST=127.0.0.1");
   });
 
-  it("blocks a bundle read until the in-place checkout finishes", () => {
+  it("builds and marks an isolated candidate ready before publishing the alias", () => {
     const sync = readFileSync(STAGING_SYNC_SCRIPT, "utf8");
     const acquire = sync.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
-    const setup = sync.indexOf(
-      '"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \\\n      --ref "$BRANCH"',
+    const prepare = sync.indexOf('prepare_staging_candidate "$target"');
+    const build = sync.indexOf(
+      'PAPERCUSP_INTEGRATION_ROOT="$SYNC_ROOT" PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$bundle_script"',
+    );
+    const ready = sync.indexOf('mark_staging_candidate_ready "$target"');
+    const publish = sync.indexOf(
+      'publish_staging_generation "$STAGING_CANDIDATE_ROOT"',
     );
     const downgrade = sync.indexOf("flock -s 9");
-    const prebuild = sync.indexOf('PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$STAGING_BUNDLE_SCRIPT"');
     expect(acquire).toBeGreaterThanOrEqual(0);
-    expect(setup).toBeGreaterThan(acquire);
-    expect(downgrade).toBeGreaterThan(setup);
-    expect(prebuild).toBeGreaterThan(downgrade);
-    expect(bundle).toContain("/usr/bin/flock -s /tmp/papercup-staging-sync.lock");
+    expect(prepare).toBeGreaterThan(acquire);
+    expect(sync).toContain(
+      'PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT"',
+    );
+    expect(sync).toContain('--release "$STAGING_CANDIDATE_ROOT"');
+    expect(build).toBeGreaterThan(prepare);
+    expect(ready).toBeGreaterThan(build);
+    expect(publish).toBeGreaterThan(ready);
+    expect(downgrade).toBeGreaterThan(publish);
+    expect(bundle).toContain(
+      "/usr/bin/flock -s /tmp/papercup-staging-sync.lock",
+    );
   });
 });
 

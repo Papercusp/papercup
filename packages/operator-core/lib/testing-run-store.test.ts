@@ -1347,8 +1347,8 @@ describe('durable detached snapshot lifecycle', () => {
     }) as unknown as Sql;
 
     try {
-      // Match the other persistence lifecycle fixtures: resolve the mocked
-      // database before the close callback enters its fail-soft import path.
+      // Verify this lifecycle uses the fixture's database rather than a live
+      // handle obtained by a separate dynamic module resolution.
       const database = await import('@papercusp/db-org');
       expect(database.getOrgPg().sql).toBe(persistSqlMock);
       expect(process.env.PAPERCUSP_TEST_RUNS_PERSIST).toBe('1');

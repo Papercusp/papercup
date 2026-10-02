@@ -29,7 +29,7 @@ export function parseCypherText(text: any): {
  *   sleep?: (ms: number) => Promise<void>,
  * }} deps
  */
-export function produceSnapshotFromGraph({ runCypher, fetchIndex, readSource, now, pageSize, retries, sleep, }: {
+export function produceSnapshotFromGraph({ runCypher, fetchIndex, readSource, now, pageSize, retries, sleep, onProgress, }: {
     runCypher: (statement: string) => Promise<string>;
     fetchIndex: () => Promise<{
         lastCommit: string;
@@ -110,7 +110,7 @@ export function parseArgs(argv: any): {
 };
 export function main(argv?: string[]): Promise<2 | 0 | 4 | 3>;
 export const DEFAULT_SNAPSHOT_REL: ".papercusp/graph-snapshot/dependency-snapshot.json";
-export const DEFAULT_PAGE_SIZE: 2000;
+export const DEFAULT_PAGE_SIZE: 50;
 /** Typed failure so the CLI (and tests) can tell WHY a read was refused. */
 export class GraphReadError extends Error {
     /** @param {string} code @param {string} message */

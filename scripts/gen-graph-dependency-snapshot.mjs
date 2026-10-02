@@ -34,9 +34,13 @@ import { buildSnapshot } from "./lib/graph-dependency-suggestions.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
 export const DEFAULT_SNAPSHOT_REL = ".papercusp/graph-snapshot/dependency-snapshot.json";
-export const DEFAULT_PAGE_SIZE = 2000;
+// Measured 2026-10-02: ~100-char rows against a 6000-char result-door budget fit ~55 rows a page,
+// and 57k edges therefore need ~1.1k pages. Start at the largest page that has been seen to fit
+// and let the oversize halving in produceSnapshotFromGraph find the real ceiling.
+export const DEFAULT_PAGE_SIZE = 50;
+const MIN_PAGE_SIZE = 4;
 const DEFAULT_RETRIES = 3;
-const MAX_PAGES = 400;
+const MAX_PAGES = 20000;
 const EDGE_MATCH = "MATCH (a:File)-[r:CodeRelation]->(b:File) WHERE r.type = 'IMPORTS'";
 
 /** Typed failure so the CLI (and tests) can tell WHY a read was refused. */
@@ -61,12 +65,24 @@ function splitRow(line) {
  * @returns {{ kind: "rows", rows: Record<string,string>[] } | { kind: "empty" } | { kind: "error", message: string }}
  */
 export function parseCypherText(text) {
+  // OVERSIZE is its own answer kind, not a generic error: the page was too big for a response
+  // budget, so the retry that helps is a SMALLER page, never the same statement again. Two
+  // budgets can cut a page (both measured, 2026-10-02): the gitnexus bridge caps a response at
+  // 20000 chars and appends a `⚠ TRUNCATED at` marker after the cut (leaving unterminated JSON),
+  // and the MCP result door (1500 tokens) replaces anything larger with a `{text,_projection}`
+  // spill envelope. Either one carries no complete page — never read partial rows out of it.
+  if (String(text).includes("⚠ TRUNCATED at")) {
+    return { kind: "oversize", message: "response truncated by the gitnexus bridge budget" };
+  }
   const body = String(text).split("\n\n---\n")[0].trim();
   let parsed;
   try {
     parsed = JSON.parse(body);
   } catch {
     return { kind: "error", message: `unparseable cypher answer: ${body.slice(0, 120)}` };
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.text === "string" && parsed._projection) {
+    return { kind: "oversize", message: "response spilled by the MCP result door" };
   }
   if (Array.isArray(parsed)) {
     return parsed.length === 0
@@ -112,6 +128,7 @@ export async function produceSnapshotFromGraph({
   pageSize = DEFAULT_PAGE_SIZE,
   retries = DEFAULT_RETRIES,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  onProgress = null,
 }) {
   if (!Number.isInteger(pageSize) || pageSize < 1) throw new GraphReadError("usage", "pageSize must be a positive integer");
 
@@ -129,6 +146,8 @@ export async function produceSnapshotFromGraph({
       }
       if (parsed.kind === "rows") return parsed.rows;
       if (parsed.kind === "empty" && emptyOk) return [];
+      // Re-asking an oversize page cannot help; surface it so the caller can shrink the page.
+      if (parsed.kind === "oversize") throw new GraphReadError("oversize", parsed.message);
       last = parsed.kind === "error" ? parsed.message : "empty answer";
     }
     throw new GraphReadError("backend-unavailable", `cypher refused after ${retries + 1} attempts: ${last}`);
@@ -147,19 +166,34 @@ export async function produceSnapshotFromGraph({
 
   const edges = [];
   let pages = 0;
+  // The page size SHRINKS (never grows) when a page is refused as oversize: the response budgets
+  // are measured in characters, so the right size depends on path lengths and cannot be known up
+  // front. Starting high and halving converges in a handful of extra calls.
+  let size = pageSize;
   while (edges.length < expected) {
     if (pages >= MAX_PAGES) throw new GraphReadError("inconsistent-count", `page cap ${MAX_PAGES} hit with ${edges.length}/${expected} rows`);
-    pages += 1;
-    // SKIP advances by rows ACTUALLY returned, so a backend that caps a page below `pageSize`
+    // SKIP advances by rows ACTUALLY returned, so a backend that caps a page below `size`
     // cannot make the walk skip or repeat rows; ORDER BY keeps the walk deterministic.
-    const rows = await ask(
-      `${EDGE_MATCH} RETURN a.filePath AS importer, b.filePath AS imported ORDER BY importer, imported SKIP ${edges.length} LIMIT ${pageSize}`,
-      { emptyOk: true },
-    );
+    let rows;
+    try {
+      rows = await ask(
+        `${EDGE_MATCH} RETURN a.filePath AS importer, b.filePath AS imported ORDER BY importer, imported SKIP ${edges.length} LIMIT ${size}`,
+        { emptyOk: true },
+      );
+    } catch (e) {
+      if (e instanceof GraphReadError && e.code === "oversize") {
+        if (size <= MIN_PAGE_SIZE) throw new GraphReadError("oversize", `a page of ${size} rows is still over the response budget: ${e.message}`);
+        size = Math.max(MIN_PAGE_SIZE, Math.floor(size / 2));
+        continue;
+      }
+      throw e;
+    }
+    pages += 1;
     if (rows.length === 0) {
       throw new GraphReadError("inconsistent-count", `page ${pages} was empty at ${edges.length}/${expected} rows`);
     }
     for (const r of rows) edges.push({ importer: r.importer, imported: r.imported });
+    if (onProgress) onProgress({ pages, rows: edges.length, expected, pageSize: size });
   }
   if (edges.length !== expected) {
     throw new GraphReadError("inconsistent-count", `paged ${edges.length} rows but the pre-count said ${expected}`);
@@ -297,6 +331,9 @@ export async function main(argv = process.argv.slice(2)) {
         now,
         pageSize: opts.pageSize,
         retries: opts.retries,
+        onProgress: ({ pages, rows, expected, pageSize }) => {
+          if (pages % 100 === 0) process.stderr.write(`GRAPH_SNAPSHOT_PROGRESS pages=${pages} rows=${rows}/${expected} pageSize=${pageSize}\n`);
+        },
       });
     }
   } catch (e) {
