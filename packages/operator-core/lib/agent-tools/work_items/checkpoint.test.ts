@@ -662,9 +662,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    // WI-10005640: 24670 -> 24340. items[] entries gained the 7 loop carry aliases
+    // WI-10005640: 24670 -> 24046. items[] entries gained the 4 canonical loop carry fields
     // (shared $defs ref) while the duplicated item-level append/unchanged prose was condensed.
-    expect(JSON.stringify(json)).toHaveLength(24340);
+    expect(JSON.stringify(json)).toHaveLength(24046);
 
     const hasSchemaField = (value: unknown, field: string): boolean => {
       value = resolveRef(value);
@@ -791,11 +791,20 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     // Drift guard: the root and each entry used to be two hand-kept field lists. Every
     // alias the root accepts MUST also be accepted by an entry, so a future alias added
     // at one level and forgotten at the other fails here instead of as ~40 prod refusals.
-    const ALIASES = ['did', 'left', 'insight', 'next', 'keyInsight', 'nextAction', 'goal'] as const;
+    // Entries take the four CANONICAL carry fields only (the exact keys of all ~40 measured
+    // refusals); keyInsight/nextAction/goal stay root-only compat aliases because every
+    // declared property costs ~80 B in COMPACT delivery of a floor tool already over budget.
+    const ENTRY_ALIASES = ['did', 'left', 'insight', 'next'] as const;
+    const ROOT_ONLY_ALIASES = ['keyInsight', 'nextAction', 'goal'] as const;
 
-    it.each(ALIASES)('parses `%s` on an items[] entry (and on the root)', (alias) => {
+    it.each(ENTRY_ALIASES)('parses `%s` on an items[] entry (and on the root)', (alias) => {
       expect(() => parse({ id: 'WI-7', [alias]: 'x' })).not.toThrow();
       expect(() => parse({ items: [{ id: 'WI-7', [alias]: 'x' }] })).not.toThrow();
+    });
+
+    it.each(ROOT_ONLY_ALIASES)('`%s` remains a root-only compat alias (entry refuses it)', (alias) => {
+      expect(() => parse({ id: 'WI-7', [alias]: 'x' })).not.toThrow();
+      expect(() => parse({ items: [{ id: 'WI-7', [alias]: 'x' }] })).toThrow();
     });
 
     it('still refuses root-level aliases combined with items[] (and names the entry-level route)', () => {

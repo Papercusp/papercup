@@ -1096,9 +1096,6 @@ const itemSpec = z.object({
   left: itemCarryAliasField,
   insight: itemCarryAliasField,
   next: itemCarryAliasField,
-  keyInsight: itemCarryAliasField,
-  nextAction: itemCarryAliasField,
-  goal: itemCarryAliasField,
   clear: looseBoolean().describe(
     'explicitly clear the checkpoint body. Equivalent to checkpoint:null and rejected with a non-blank checkpoint.',
   ),
