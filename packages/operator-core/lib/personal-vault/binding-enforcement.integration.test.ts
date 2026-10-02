@@ -15,8 +15,13 @@
  *     disclosure ledger through getOrgPg; the loopback route the PreToolUse hook
  *     calls returns the same verdicts; capability:bash refuses a restricted
  *     session's provider-bound command before anything runs.
+ *   - network layer (WI-10005589, D-012): the route reports the session's
+ *     restriction status; capability:bash runs a restricted session's command in
+ *     an empty network namespace, so even a host assembled at run time is
+ *     unreachable. The client-native Bash half (the PreToolUse rewrite) is proven
+ *     with real bwrap in apps/operator/scripts/hooks/cc/__tests__/restricted-egress-guard.test.ts.
  */
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type postgres from 'postgres';
@@ -37,7 +42,8 @@ vi.mock('../agent-tools/coordination/identity', async (importOriginal) => ({
 }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
-const { checkRestrictedEgress, EGRESS_REFUSAL_CODE } = await import('./binding-enforcement');
+const { checkRestrictedEgress, readSessionRestriction, EGRESS_REFUSAL_CODE } = await import('./binding-enforcement');
+const { capabilityBwrapWorks } = await import('../agent-tools/capability/exec-sandbox');
 const { scrubProviderCredentials, findProviderEgressTargets, providerEgressRules } = await import('./provider-egress.mjs');
 const { sanitizeInheritedWakeEnv } = await import('../inference-gateway/spawn-env');
 const { default: bashTool } = await import('../agent-tools/capability/bash');
@@ -228,4 +234,81 @@ describe('R-11 egress: a restricted session cannot name a provider; an unrestric
     expect(payload.targets).toContain('google-mail-calendar-api');
     expect(existsSync(marker)).toBe(false);
   });
+});
+
+// WI-10005589 / D-012: name matching cannot see a host built at run time, so a
+// restricted session's shell runs with NO network at all.
+describe('R-11 network layer: a restricted session’s shell has no network; an unrestricted one is unchanged', () => {
+  it('the hook route reports the restriction status even when no provider is named', async () => {
+    const status = async (owner: string) => {
+      const route = egressRoutes[0] as unknown as { handler(req: Request): Promise<Response> };
+      const res = await route.handler(
+        new Request('http://127.0.0.1/api/agent-mcp/restricted-egress-check', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ owner, tool: 'Bash', texts: ['ls -la'], status: true }),
+        }),
+      );
+      return (await res.json()) as Record<string, unknown>;
+    };
+    await expect(status(RESTRICTED)).resolves.toMatchObject({ ok: true, verdict: 'allow', restricted: true });
+    await expect(status(UNRESTRICTED)).resolves.toMatchObject({ ok: true, restricted: false });
+    await expect(status(RELEASED)).resolves.toMatchObject({ ok: true, restricted: false });
+  });
+
+  it('an unreadable ledger reads as unknown (null), which every caller treats as restricted', async () => {
+    const saved = holder.sql;
+    holder.sql = (() => Promise.reject(new Error('ledger down'))) as unknown as postgres.Sql;
+    try {
+      await expect(readSessionRestriction(UNRESTRICTED)).resolves.toBeNull();
+    } finally {
+      holder.sql = saved;
+    }
+    await expect(readSessionRestriction(null)).resolves.toBe(false); // D-004: never delivered, never restricted
+  });
+
+  it.skipIf(!capabilityBwrapWorks())(
+    'capability:bash: a restricted session runs in an empty network namespace — a host built at run time has no route (real bwrap)',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'binding-net-'));
+      // The job runs as a transient service in the HOST network namespace, not the
+      // test process's, so it reports on itself: its netns, its interfaces, and what
+      // a connect to an address assembled at run time (invisible to name matching) does.
+      writeFileSync(
+        join(dir, 'probe.py'),
+        [
+          'import os, socket',
+          "print('NETNS=' + os.readlink('/proc/self/ns/net'))",
+          "print('IFACES=' + ','.join(sorted(n for _, n in socket.if_nameindex())))",
+          'try:',
+          "    socket.create_connection(('1.1.1.' + '1', 443), 2)",
+          "    print('EGRESS=open')",
+          'except OSError as e:',
+          "    print('EGRESS=errno%d' % e.errno)",
+        ].join('\n'),
+      );
+      const ctx = { projectDir: dir, stateDir: dir, signal: new AbortController().signal, emit: () => {}, role: 'cup' };
+      const run = async (owner: string) => {
+        holder.ownerId = owner;
+        const result = (await bashTool.handler({ command: 'python3 probe.py', cwd: dir }, ctx as never)) as {
+          content: Array<{ text: string }>;
+        };
+        const text = result.content.map((c) => c.text).join('\n');
+        const field = (name: string) => new RegExp(`${name}=(\\S*)`).exec(text)?.[1] ?? null;
+        return { text, netns: field('NETNS'), ifaces: field('IFACES'), egress: field('EGRESS') };
+      };
+      const unrestricted = await run(UNRESTRICTED);
+      const released = await run(RELEASED);
+      const restricted = await run(RESTRICTED);
+      for (const r of [unrestricted, released, restricted]) expect(r.netns, r.text).toMatch(/^net:\[\d+\]$/);
+      // Unrestricted sessions keep the host network namespace and its interfaces.
+      expect(released.netns, released.text).toBe(unrestricted.netns);
+      expect(unrestricted.ifaces?.split(',').some((i) => i !== 'lo'), unrestricted.text).toBe(true);
+      // The restricted session: a different, empty namespace — loopback only, and no route off the machine.
+      expect(restricted.netns, restricted.text).not.toBe(unrestricted.netns);
+      expect(restricted.ifaces, restricted.text).toBe('lo');
+      expect(restricted.egress, restricted.text).toBe('errno101'); // ENETUNREACH
+    },
+    60_000,
+  );
 });
