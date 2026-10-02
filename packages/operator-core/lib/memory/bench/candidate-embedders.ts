@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { moduleRepoRoot } from '../../module-repo-root';
 import os from 'node:os';
-import { ORT_SESSION_OPTIONS, type WorkerInputTrace, type WorkerInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { ORT_SESSION_OPTIONS, type WorkerInputTrace, type WorkerInferenceTrace, type WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
   shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS, buildMdenseOnEmbedder,
   embedExecutionTarget, MDENSEON_MODEL, MDENSEON_REVISION } from '@papercusp/memory';
@@ -91,12 +91,14 @@ export interface NativeBoundaryRow {
   execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
   inputTraces?: WorkerInputTrace[];
   inferenceTraces?: WorkerInferenceTrace[];
+  nativeInferenceTraces?: WorkerNativeInferenceTrace[];
 }
 export interface NativeBoundaryBatchRow {
   id: string; submittedCaseIds: string[]; actualInferenceBatchSize: number; vectors: number[][];
   execution: { device: string; verified: boolean }; worker: { alive: boolean; disabled: boolean };
   inputTracesByCase?: { id: string; traces: WorkerInputTrace[] }[];
   inferenceTracesByCase?: { id: string; traces: WorkerInferenceTrace[] }[];
+  nativeInferenceTracesByCase?: { id: string; traces: WorkerNativeInferenceTrace[] }[];
 }
 
 function matchesWorkerInput(traces: WorkerInputTrace[] | undefined, model: string, ids: number[], device: string): boolean {
@@ -123,6 +125,25 @@ export function nativeInferenceTraceVerified(inputs: WorkerInputTrace[] | undefi
       && (['requestId', 'attempt', 'processId', 'workerThreadId', 'nativeThreadId'] as const)
         .every((key) => event[key] === request[key]))
     && BigInt(end.monotonicNs) >= BigInt(start.monotonicNs);
+}
+
+/** A request's synchronous addon calls must sit inside its outer graph interval.
+ * No profiler clock alignment or compute-kernel ownership is inferred here. */
+export function nativeRunTraceVerified(inputs: WorkerInputTrace[] | undefined, graph: WorkerInferenceTrace[] | undefined,
+  events: WorkerNativeInferenceTrace[] | undefined, model: string, ids: number[], device: string): boolean {
+  if (!nativeInferenceTraceVerified(inputs, graph, model, ids, device) || !events?.length || events.length % 2) return false;
+  const request = inputs![0].request!, begin = BigInt(graph![0].monotonicNs), end = BigInt(graph![1].monotonicNs);
+  let previous = begin;
+  for (let i = 0; i < events.length; i += 2) {
+    const pair = events.slice(i, i+2), index = i/2+1;
+    if (!nativeInferenceTraceVerified(inputs, pair, model, ids, device)
+      || pair.some((event) => event.runIndex !== index
+        || event.runTag !== `pc-embed:${request.processId}:${request.workerThreadId}:${request.requestId}:${request.attempt}:${index}`)) return false;
+    const startNs = BigInt(pair[0].monotonicNs), endNs = BigInt(pair[1].monotonicNs);
+    if (startNs < previous || endNs > end) return false;
+    previous = endNs;
+  }
+  return true;
 }
 
 export function nativeBoundaryPopulation(request: NativeBoundaryRequest, selectedCell?: string) {
@@ -155,6 +176,7 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
     return { id: row.id, tokenLength: length, tokenIdsEqual: JSON.stringify(row.inputIds) === JSON.stringify(row.referenceInputIds),
       workerInputTraceVerified: matchesWorkerInput(row.inputTraces, request.export, row.referenceInputIds, device),
       workerInferenceTraceVerified: nativeInferenceTraceVerified(row.inputTraces, row.inferenceTraces, request.export, row.referenceInputIds, device),
+      nativeRunTraceVerified: nativeRunTraceVerified(row.inputTraces, row.inferenceTraces, row.nativeInferenceTraces, request.export, row.referenceInputIds, device),
       ...referenceVectorComparison(row.vector, row.referenceVector, 768) };
   });
   const ranks = (vectors: number[][]) => vectors.map((q) => vectors.map((d, i) => ({ i, score: q.reduce((s, v, j) => s + v * d[j], 0) }))
@@ -165,6 +187,7 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
   const vectorCompatible = comparisons.every((c) => c.passed && c.tokenIdsEqual)
     && rows.every((row, i) => (!row.inputTraces || comparisons[i].workerInputTraceVerified)
       && (!row.inferenceTraces || comparisons[i].workerInferenceTraceVerified));
+  const nativeRunCompatible = rows.every((row, i) => !row.nativeInferenceTraces || comparisons[i].nativeRunTraceVerified);
   if ((batchRows.length || (selectedCell && selected.batches.length))
     && JSON.stringify(batchRows.map((b) => b.id)) !== JSON.stringify(selected.batches.map((b) => b.id))) {
     throw new Error('native boundary incomplete request-group population');
@@ -188,9 +211,14 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
       && batch.inferenceTracesByCase.every((item, i) => item.id === declared.caseIds[i]
         && nativeInferenceTraceVerified(batch.inputTracesByCase?.[i]?.traces, item.traces, request.export,
           rows.find((r) => r.id === item.id)!.referenceInputIds, device));
+    const nativeTraceVerified = batch.nativeInferenceTracesByCase?.length === declared.caseIds.length
+      && batch.nativeInferenceTracesByCase.every((item, i) => item.id === declared.caseIds[i]
+        && nativeRunTraceVerified(batch.inputTracesByCase?.[i]?.traces, batch.inferenceTracesByCase?.[i]?.traces,
+          item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device));
     return { id: batch.id, cases, inputTraceVerified: inputTraceVerified === true, inferenceTraceVerified: inferenceTraceVerified === true,
+      nativeRunTraceVerified: nativeTraceVerified === true,
       passed: cases.every((c) => c.single.passed && c.reference.passed) && (!batch.inputTracesByCase || inputTraceVerified)
-        && (!batch.inferenceTracesByCase || inferenceTraceVerified) };
+        && (!batch.inferenceTracesByCase || inferenceTraceVerified) && (!batch.nativeInferenceTracesByCase || nativeTraceVerified) };
   });
   const batchPopulationCompatible = batchRows.length === selected.batches.length && batchComparisons.every((b) => b.passed);
   return { comparisons, actualRankings, referenceRankings, rankingsEqual, diagnosticOnly: selected.diagnosticOnly,
@@ -199,9 +227,11 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
     requestGroupInputTraceVerified: batchPopulationCompatible && batchComparisons.every((b) => b.inputTraceVerified),
     workerInferenceTraceVerified: comparisons.every((c) => c.workerInferenceTraceVerified),
     requestGroupInferenceTraceVerified: batchPopulationCompatible && batchComparisons.every((b) => b.inferenceTraceVerified),
-    diagnosticCompatible: selected.diagnosticOnly && vectorCompatible && batchPopulationCompatible,
+    nativeRunTraceVerified: comparisons.every((c) => c.nativeRunTraceVerified),
+    requestGroupNativeRunTraceVerified: batchPopulationCompatible && batchComparisons.every((b) => b.nativeRunTraceVerified),
+    diagnosticCompatible: selected.diagnosticOnly && vectorCompatible && nativeRunCompatible && batchPopulationCompatible,
     passedFixedVectorGates: comparisons.every((c) => c.passed), tokenIdsEqual: comparisons.every((c) => c.tokenIdsEqual),
-    singlePopulationCompatible: !selected.diagnosticOnly && rankingsEqual === true && vectorCompatible };
+    singlePopulationCompatible: !selected.diagnosticOnly && rankingsEqual === true && vectorCompatible && nativeRunCompatible };
 }
 
 /** Extend incumbent qualification instead of adding a second executable. The
@@ -260,7 +290,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
     providerProof: 'worker-session-construction-report', computeKernelProfiling: 'not-exposed-by-shipped-worker',
     tokenIdsProof: 'independent qualification tokenizer and opt-in pre-graph worker tensors',
     actualWorkerTokenTrace: 'private per-cell JSONL, emitted before candidate inference',
-    actualWorkerInferenceTrace: 'private per-request graph-call start/end JSONL; profiler clock calibration and unique kernel joins remain separate' };
+    actualWorkerInferenceTrace: 'private graph-call and synchronous native Run start/end JSONL; profiler clock calibration and unique kernel joins remain separate' };
   fs.writeFileSync(`${output}.request.json`, JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
   const rows: NativeBoundaryRow[] = [], batches: NativeBoundaryBatchRow[] = [];
   const collectInput = (cell: string, caseId: string, traces: WorkerInputTrace[]) => (trace: WorkerInputTrace) => {
@@ -269,6 +299,10 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
   };
   const collectInference = (cell: string, caseId: string, traces: WorkerInferenceTrace[]) => (trace: WorkerInferenceTrace) => {
     fs.appendFileSync(`${output}.inference.jsonl`, JSON.stringify({ cell, caseId, trace }) + '\n', { mode: 0o600 });
+    traces.push(trace);
+  };
+  const collectNative = (cell: string, caseId: string, traces: WorkerNativeInferenceTrace[]) => (trace: WorkerNativeInferenceTrace) => {
+    fs.appendFileSync(`${output}.native-inference.jsonl`, JSON.stringify({ cell, caseId, trace }) + '\n', { mode: 0o600 });
     traces.push(trace);
   };
   let activeCell = 'tokenizer-load';
@@ -281,10 +315,12 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       const inputIds = (await tokenizer.encode(`${item.kind}: ${item.text}`)).getIds();
       const inputTraces: WorkerInputTrace[] = [];
       const inferenceTraces: WorkerInferenceTrace[] = [];
+      const nativeInferenceTraces: WorkerNativeInferenceTrace[] = [];
       const vector = await buildMdenseOnEmbedder({ kind: item.kind, model: request.export,
         onInputTrace: collectInput(activeCell, item.id, inputTraces),
-        onInferenceTrace: collectInference(activeCell, item.id, inferenceTraces) })(item.text);
-      const row = { id: item.id, inputIds, inputTraces, inferenceTraces, vector, ...references[i], execution: embedExecutionTarget(), worker: getWorkerState() };
+        onInferenceTrace: collectInference(activeCell, item.id, inferenceTraces),
+        onNativeInferenceTrace: collectNative(activeCell, item.id, nativeInferenceTraces) })(item.text);
+      const row = { id: item.id, inputIds, inputTraces, inferenceTraces, nativeInferenceTraces, vector, ...references[i], execution: embedExecutionTarget(), worker: getWorkerState() };
       rows.push(row);
       fs.writeFileSync(`${output}.${activeCell}.json`, JSON.stringify({ ...identity, ...row }), { flag: 'wx', mode: 0o600 });
       console.log('native boundary cell', activeCell, inputIds.length, row.execution.device);
@@ -293,6 +329,9 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       if (!nativeInferenceTraceVerified(inputTraces, inferenceTraces, request.export, references[i].referenceInputIds, device)) {
         throw new Error('native boundary worker inference evidence mismatch');
       }
+      if (!nativeRunTraceVerified(inputTraces, inferenceTraces, nativeInferenceTraces, request.export, references[i].referenceInputIds, device)) {
+        throw new Error('native boundary synchronous Run evidence mismatch');
+      }
     }
     for (const batch of selected.batches) {
       activeCell = batch.id;
@@ -300,15 +339,17 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       // not proof of a padded ONNX input tensor. Python retains that separate proof.
       const inputTracesByCase = batch.caseIds.map((id) => ({ id, traces: [] as WorkerInputTrace[] }));
       const inferenceTracesByCase = batch.caseIds.map((id) => ({ id, traces: [] as WorkerInferenceTrace[] }));
+      const nativeInferenceTracesByCase = batch.caseIds.map((id) => ({ id, traces: [] as WorkerNativeInferenceTrace[] }));
       const vectors = await Promise.all(batch.caseIds.map((id, i) => {
         const item = request.cases.find((c) => c.id === id)!;
         return buildMdenseOnEmbedder({ kind: item.kind, model: request.export,
           onInputTrace: collectInput(activeCell, id, inputTracesByCase[i].traces),
-          onInferenceTrace: collectInference(activeCell, id, inferenceTracesByCase[i].traces) })(item.text);
+          onInferenceTrace: collectInference(activeCell, id, inferenceTracesByCase[i].traces),
+          onNativeInferenceTrace: collectNative(activeCell, id, nativeInferenceTracesByCase[i].traces) })(item.text);
       }));
       const comparisons = vectors.map((vector, i) => ({ id: batch.caseIds[i],
         ...referenceVectorComparison(vector, rows.find((r) => r.id === batch.caseIds[i])!.vector, 768) }));
-      const result = { id: batch.id, submittedCaseIds: batch.caseIds, actualInferenceBatchSize: 1, vectors, comparisons, inputTracesByCase, inferenceTracesByCase,
+      const result = { id: batch.id, submittedCaseIds: batch.caseIds, actualInferenceBatchSize: 1, vectors, comparisons, inputTracesByCase, inferenceTracesByCase, nativeInferenceTracesByCase,
         execution: embedExecutionTarget(), worker: getWorkerState(), passed: comparisons.every((c) => c.passed) };
       if (!result.execution.verified || result.execution.device !== device || !result.worker.alive || result.worker.disabled) throw new Error('native boundary batch fallback');
       if (!inputTracesByCase.every((item) => matchesWorkerInput(item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device))) {
@@ -316,6 +357,10 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       }
       if (!inferenceTracesByCase.every((item, i) => nativeInferenceTraceVerified(inputTracesByCase[i].traces, item.traces,
         request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device))) throw new Error('native boundary request-group inference evidence mismatch');
+      if (!nativeInferenceTracesByCase.every((item, i) => nativeRunTraceVerified(inputTracesByCase[i].traces,
+        inferenceTracesByCase[i].traces, item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device))) {
+        throw new Error('native boundary request-group synchronous Run evidence mismatch');
+      }
       batches.push(result);
       fs.writeFileSync(`${output}.${batch.id}.json`, JSON.stringify({ ...identity, ...result }), { flag: 'wx', mode: 0o600 });
       console.log('native boundary request group', batch.id, 'single-text worker', result.passed);
