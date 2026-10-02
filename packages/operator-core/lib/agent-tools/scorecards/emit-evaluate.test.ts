@@ -2181,10 +2181,13 @@ describe('scorecards:evaluate input ownership is explicit', () => {
 
     expect(evaluateSourceHive).toContain('hive that produced/filed the scorecard');
     expect(evaluateSourceHive).toContain('not the harness that owns the rubric subject plan');
-    expect(emitSourceHive).toContain('grader/source hive');
-    expect(emitSourceHive).toContain('use targetHive for that subject hive');
-    expect(emitTargetHive).toContain("rubric subject plan's harness");
-    expect(emitTargetHive).toContain('does not change sourceHive');
+    // emit's descriptions were trimmed for tool prompt-weight (2787acd888); pin the same
+    // four semantics against the compact wording: grader hive, subject hive → targetHive,
+    // targetHive names the subject plan's hive, and the two are independent.
+    expect(emitSourceHive).toContain('grader hive');
+    expect(emitSourceHive).toContain("put the subject plan's hive in targetHive");
+    expect(emitTargetHive).toContain('Subject plan/repository hive');
+    expect(emitTargetHive).toContain('Independent of sourceHive');
   });
 });
 
