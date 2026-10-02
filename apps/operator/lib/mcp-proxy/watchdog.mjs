@@ -58,7 +58,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { EXTERNAL_SCHEDULES } from '../../../../packages/operator-core/lib/schedule-descriptors.mjs';
 
-const execFileAsync = promisify(execFile);
+// Lazy + memoized, NOT promisified at module scope (EI-10161): under a narrow
+// `vi.mock('node:child_process')` `execFile` is undefined, and an eager `promisify` throws at
+// IMPORT time — crashing every test file that reaches this module, even one that never calls it.
+let execFileAsyncMemo = null;
+const execFileAsync = (...args) => (execFileAsyncMemo ??= promisify(execFile))(...args);
 
 async function runCommand(command, args, options = {}) {
   try {

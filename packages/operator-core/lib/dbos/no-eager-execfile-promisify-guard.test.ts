@@ -26,6 +26,20 @@ describe('no-eager-execfile-promisify guard predicate (EI-10161)', () => {
     expect(usesEagerExecFilePromisify("export const pexec = promisify(execFile);")).toBe(true);
   });
 
+  it('does NOT flag the lazy memoized wrapper WI-10005282 applied to 14 files', () => {
+    const lazy = [
+      'let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;',
+      'const execFileAsync = ((...args: unknown[]) =>',
+      '  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;',
+    ].join('\n');
+    expect(usesEagerExecFilePromisify(lazy, 'x.ts')).toBe(false);
+  });
+
+  it('still FLAGS a column-0 eager call alongside other code (the raw pre-filter must not hide it)', () => {
+    const eager = ["import { promisify } from 'node:util';", 'const execFileP = promisify(execFile);'].join('\n');
+    expect(usesEagerExecFilePromisify(eager, 'x.ts')).toBe(true);
+  });
+
   it('does NOT flag a lazy (function-body, indented) promisify call', () => {
     const lazy = [
       'let cached = null;',
