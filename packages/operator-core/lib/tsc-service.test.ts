@@ -102,8 +102,9 @@ describe('tscServiceTemplateSocket', () => {
   type Call = { command: string; args: string[]; env: Record<string, string | undefined> };
   function fakeRun(results: Array<{ status: number | null; stdout?: string; stderr?: string }>) {
     const calls: Call[] = [];
-    const run = (command: string, args: string[], options: { env: Record<string, string | undefined> }) => {
-      calls.push({ command, args, env: options.env });
+    // `options: object` matches the client's injected `run` contract; the client always passes `{ env }`.
+    const run = (command: string, args: string[], options: object) => {
+      calls.push({ command, args, env: (options as { env: Record<string, string | undefined> }).env });
       return results[calls.length - 1] ?? { status: 1, stdout: '', stderr: 'unexpected call' };
     };
     return { calls, run };
