@@ -300,9 +300,20 @@ export async function refreshAdmittedFromSource(
   deps: { sql?: AdmissionDb; updateWorkItem?: typeof defaultUpdateWorkItem } = {},
 ): Promise<{ refreshed: string[]; skipped: Array<{ workItemId: string; reason: string }> }> {
   const update = deps.updateWorkItem ?? defaultUpdateWorkItem;
-  const admissions = await admissionsForSource(workspaceId, identity, deps.sql ?? getOrgPg().sql);
+  const sql = deps.sql ?? getOrgPg().sql;
+  const admissions = await admissionsForSource(workspaceId, identity, sql);
   const refreshed: string[] = [];
   const skipped: Array<{ workItemId: string; reason: string }> = [];
+  if (admissions.length === 0) return { refreshed, skipped };
+  // The current external-owned values, so an unchanged source writes nothing (the issue body
+  // lives in work_items.summary).
+  const current = new Map(
+    (
+      await sql<Array<{ feature_id: string; title: string | null; summary: string | null }>>`
+        SELECT feature_id, title, summary FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId} AND feature_id = ANY(${admissions.map((a) => a.workItemId)}::text[])`
+    ).map((r) => [r.feature_id, r] as const),
+  );
   for (const a of admissions) {
     const owned = new Set(a.fieldAuthority.external);
     const patch: { title?: string; body?: string; confirmShrink?: boolean } = {};
@@ -315,6 +326,20 @@ export async function refreshAdmittedFromSource(
     }
     if (!patch.title && patch.body === undefined) {
       skipped.push({ workItemId: a.workItemId, reason: 'nothing_external_owned' });
+      continue;
+    }
+    const now = current.get(a.workItemId);
+    if (!now) {
+      skipped.push({ workItemId: a.workItemId, reason: 'work_item_missing' });
+      continue;
+    }
+    if (patch.title === (now.title ?? '')) delete patch.title;
+    if (patch.body === (now.summary ?? '')) {
+      delete patch.body;
+      delete patch.confirmShrink;
+    }
+    if (!patch.title && patch.body === undefined) {
+      skipped.push({ workItemId: a.workItemId, reason: 'unchanged' });
       continue;
     }
     const res = await update(a.workItemId, patch, a.admittedBy, {});

@@ -166,8 +166,13 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
   }
   await show.focus(); await page.keyboard.press('Enter');
   const label = page.getByRole('textbox', { name: 'Connection label' });
-  await expect(label).toBeFocused(); await label.fill('Keyboard project'); await page.keyboard.press('Tab');
-  await expect(page.getByRole('textbox', { name: 'Injected credential reference' })).toBeFocused();
+  await expect(label).toBeFocused();
+  // Check before fill/Tab can scroll the newly mounted field into view.
+  await expect(label).toBeInViewport({ ratio: 1 });
+  await label.fill('Keyboard project'); await page.keyboard.press('Tab');
+  const credential = page.getByRole('textbox', { name: 'Injected credential reference' });
+  await expect(credential).toBeFocused();
+  await expect(credential).toBeInViewport({ ratio: 1 });
   await expect.poll(() => page.evaluate(() => (window as unknown as { __tutorialScrollBehaviors: string[] }).__tutorialScrollBehaviors.length)).toBeGreaterThan(0);
   expect(await page.evaluate(() => (window as unknown as { __tutorialScrollBehaviors: string[] }).__tutorialScrollBehaviors)).not.toContain('smooth');
   const audit = () => new AxeBuilder({ page }).include('[data-cloud-tutorial-guide]').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();

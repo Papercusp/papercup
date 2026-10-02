@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 941,
+  "count": 942,
   "tools": [
     {
       "name": "ablation:report",
@@ -33334,6 +33334,44 @@
         "when": "Adopting pre-cutover bug/change/task rows into implementation acceptance, or proving the current build before the enforcement cutover moves.",
         "notWhen": "Reviewing one item — that is the agent-review intake path. Counting stages — that is work_items:list / the readiness projection.",
         "chaining": "op:report → read eligible/protected → op:apply { reportRunId, confirm:true } within an hour → op:revert { applyRunId, confirm:true } if wrong. op:canary { confirm:true } → op:cutover-check { proposedCutover }."
+      }
+    },
+    {
+      "name": "work_items:admit",
+      "http": {
+        "path": "/api/agent-tools/work_items/admit",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Admit ingested data into work (D-004). op 'admit' turns a source (e.g. { kind:'record', recordId }) into one linked, attributed work item, idempotent per source. 'write-back' posts a note to the admitted item's source. 'rules-*' manage per-data-source rules that admit matching records on ingest.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A person promotes an ingested ticket, message or thread into work, writes a note back to its source, or sets a rule that admits matching records automatically.",
+        "notWhen": "Filing work that has no data source (work_items:create), or editing an admitted item (title/description belong to the source; update it there).",
+        "chaining": "work_items:admit { op:'rules-set', rule:{ dataSourceId, title, match:{ assignee:{ eq:'papercusp-agents' } } }, harness } → op:'rules-apply' { ruleId } backfills existing records."
       }
     },
     {

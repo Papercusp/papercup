@@ -80,6 +80,40 @@ function hostedIdentitySshArgs(tty: boolean): string[] {
 const HOSTED_IDENTITY = `${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}@127.0.0.1`;
 const HOSTED_SPAWN_ROOT = posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.papercusp', 'agent-spawns');
 
+/**
+ * Plan agent-capacity-and-cost-gcp-2026-09-30 D-031 ruling 2c: the FIXED env that activates
+ * heavy-job admission for a hosted agent (scripts/heavy-admission.cjs routes tsc/vitest/tsgo through
+ * pc-heavy), plus pc-heavy's hosted profile. Operator-set, never customer-controlled, and only when
+ * the published toolchain carries both files (the bootstrap copies them from the release when it
+ * has them); undefined otherwise, so an older host keeps today's behaviour.
+ *
+ * Profile: the dev-tower typecheck cgroup guard off (it would re-exec outside the agent's cgroup or
+ * refuse pointing at Papercusp tools), no release-gate reserve or gate refusal (no gate runs on a
+ * customer host), no cross-agent coalescing of identical commands, and a pool dir under the
+ * customer's home so the D-030 job-peak ledger that sizes each slot survives reboots.
+ */
+export function hostedHeavyAdmissionEnv(
+  toolchainBin: string,
+  exists: (path: string) => boolean = existsSync,
+): Record<string, string> | undefined {
+  const dir = posix.join(posix.dirname(toolchainBin), 'lib', 'heavy-admission');
+  const preload = posix.join(dir, 'heavy-admission.cjs');
+  const script = posix.join(dir, 'pc-heavy.sh');
+  if (!exists(preload) || !exists(script)) return undefined;
+  return {
+    NODE_OPTIONS: `--require=${preload}`,
+    PC_HEAVY_ADMISSION_SCRIPT: script,
+    // The chat path forwards request env that differs from the operator's; a forwarded
+    // PC_HEAVY_BYPASS=1 would silently switch admission off for the whole agent session.
+    PC_HEAVY_BYPASS: '',
+    PC_HEAVY_DIR: posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.local', 'state', 'pc-heavy'),
+    PC_HEAVY_TYPECHECK_GUARD: '0',
+    PC_HEAVY_GATE_RESERVE: '0',
+    PC_HEAVY_ALLOW_DURING_GATE: '1',
+    PC_HEAVY_COALESCE: '0',
+  };
+}
+
 /** The customer's PATH: its toolchain first; the operator's PATH is never forwarded. */
 function hostedRemotePath(toolchainBin: string): string[] {
   return [toolchainBin, posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.local', 'bin'), '/usr/local/bin', '/usr/bin', '/bin'];
@@ -104,7 +138,9 @@ export function hostedCustomerAgentIdentitySpec(options: HostedCustomerAgentIden
   const stateRoots = [join(localHome, '.papercusp')];
   const papercuspHome = (options.baseEnv ?? process.env).PAPERCUSP_HOME?.trim();
   if (papercuspHome && !stateRoots.includes(papercuspHome)) stateRoots.push(papercuspHome);
+  const heavy = hostedHeavyAdmissionEnv(toolchainBin, options.exists);
   return {
+    ...(heavy ? { fixedEnv: heavy } : {}),
     v: 1,
     identity: HOSTED_IDENTITY,
     stageTransport: { command: '/usr/bin/ssh', args: hostedIdentitySshArgs(false) },
@@ -138,7 +174,9 @@ export function hostedCustomerAgentSpawnTransform(
   const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
   const exists = options.exists ?? existsSync;
   const nodePath = posix.join(toolchainBin, 'node');
+  const heavy = hostedHeavyAdmissionEnv(toolchainBin, exists);
   const inner = buildLoopbackIdentitySpawn({
+    ...(heavy ? { fixedEnv: heavy } : {}),
     transportCommand: '/usr/bin/ssh',
     transportArgs: hostedIdentitySshArgs(false),
     identity: HOSTED_IDENTITY,

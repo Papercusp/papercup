@@ -17,6 +17,7 @@ import {
   hostedCustomerAgentCommand,
   hostedCustomerAgentIdentitySpec,
   hostedCustomerAgentSpawnTransform,
+  hostedHeavyAdmissionEnv,
   installHostedCustomerAgentIdentity,
   type HostedCustomerAgentIdentityOptions,
 } from './hosted-agent-identity';
@@ -218,5 +219,53 @@ describe('hosted New Session agent identity spec (D-424)', () => {
       `${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}@127.0.0.1`,
     );
     expect(agentSpawnTransformConfigured()).toBe(true);
+  });
+});
+
+// WI-10005296 (plan agent-capacity-and-cost-gcp-2026-09-30 D-031 ruling 2c): heavy-job admission is
+// activated by a FIXED operator-set env, and only when the published toolchain carries both files.
+describe('hosted heavy-job admission env (D-031)', () => {
+  const bin = '/opt/tc/bin';
+  const preload = '/opt/tc/lib/heavy-admission/heavy-admission.cjs';
+  const script = '/opt/tc/lib/heavy-admission/pc-heavy.sh';
+  const both = (p: string) => p === preload || p === script || p.startsWith(`${bin}/`);
+
+  it('is the preload NODE_OPTIONS plus the hosted pc-heavy profile when both files exist, else nothing', () => {
+    expect(hostedHeavyAdmissionEnv(bin, both)).toEqual({
+      NODE_OPTIONS: `--require=${preload}`,
+      PC_HEAVY_ADMISSION_SCRIPT: script,
+      PC_HEAVY_BYPASS: '',
+      PC_HEAVY_DIR: `${HOSTED_WORKSPACE_ACCOUNT_HOME}/.local/state/pc-heavy`,
+      PC_HEAVY_TYPECHECK_GUARD: '0',
+      PC_HEAVY_GATE_RESERVE: '0',
+      PC_HEAVY_ALLOW_DURING_GATE: '1',
+      PC_HEAVY_COALESCE: '0',
+    });
+    expect(hostedHeavyAdmissionEnv(bin, (p) => p !== script)).toBeUndefined();
+    expect(hostedHeavyAdmissionEnv(bin, (p) => p !== preload)).toBeUndefined();
+  });
+
+  it('the chat transform carries it to the customer agent, overriding a forwarded NODE_OPTIONS', () => {
+    const on = hostedCustomerAgentSpawnTransform(withToolchain({ toolchainBin: bin, exists: both }))(
+      codexRequest({ NODE_OPTIONS: '--max-old-space-size=99999', PC_HEAVY_BYPASS: '1' }),
+    );
+    const h = header(on.stdinPrelude);
+    expect(h.env.NODE_OPTIONS).toBe(`--require=${preload}`);
+    expect(h.env.PC_HEAVY_TYPECHECK_GUARD).toBe('0');
+    expect(h.env.PC_HEAVY_ADMISSION_SCRIPT).toBe(script);
+    expect(h.env.PC_HEAVY_BYPASS).toBe(''); // a forwarded bypass must not disable admission
+    expect(h.env.PATH.split(':')[0]).toBe(bin);
+
+    const off = hostedCustomerAgentSpawnTransform(withToolchain({ toolchainBin: bin, exists: (p) => p.startsWith(`${bin}/`) }))(codexRequest());
+    const o = header(off.stdinPrelude);
+    expect(Object.keys(o.env).filter((k) => k === 'NODE_OPTIONS' || k.startsWith('PC_HEAVY_'))).toEqual([]);
+  });
+
+  it('the psu spec carries it as fixedEnv (which the TTY host accepts) only when both files exist', () => {
+    const spec = hostedCustomerAgentIdentitySpec({ localHome: '/var/lib/papercusp', baseEnv: {}, toolchainBin: bin, exists: both });
+    expect(spec.fixedEnv).toEqual(hostedHeavyAdmissionEnv(bin, both));
+    expect(parseAgentIdentitySpec(JSON.stringify(spec)).fixedEnv?.NODE_OPTIONS).toBe(`--require=${preload}`);
+    const without = hostedCustomerAgentIdentitySpec({ localHome: '/var/lib/papercusp', baseEnv: {}, toolchainBin: bin, exists: () => false });
+    expect(without.fixedEnv).toBeUndefined();
   });
 });

@@ -20,7 +20,7 @@ import '../cell-registrations-wiring';
 // nothing to do with the assertions themselves. Typing the rest args as `unknown[]`
 // gives `.flat()` an `unknown[]`, which those guards narrow correctly. (WI-3616 drive-by:
 // these 5 were the entire operator-core typecheck overage, 228 vs baseline 224.)
-const { sqlMock, controlMock } = vi.hoisted(() => ({
+const { sqlMock, controlMock, resourceQueueMock, deadPidMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
   controlMock: vi.fn(async (spec: any, opts: any = {}) => {
     const prev = await spec.capturePrev();
@@ -29,7 +29,18 @@ const { sqlMock, controlMock } = vi.hoisted(() => ({
     const verify = spec.verify ? await spec.verify(next) : undefined;
     return { dryRun: false, applied: true, prev, next, verify, auditId: 'aud-1' };
   }),
+  resourceQueueMock: vi.fn(async (..._args: unknown[]) => ({
+    holders: [] as Array<{ owner: string; mode: 'shared' | 'exclusive'; status: 'held' | 'draining' }>,
+    draining: false,
+    queue: [],
+  })),
+  deadPidMock: vi.fn((_pid: number) => false),
 }));
+vi.mock('../locks/su-lock-store', () => ({
+  getTxPool: vi.fn(() => ({}) as never),
+  readResourceQueue: resourceQueueMock,
+}));
+vi.mock('../locks/resource-acquire-wait', () => ({ isPidDefinitivelyDead: deadPidMock }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getOrgPg: () => ({ sql: sqlMock }) }));
 vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'default' }));
 vi.mock('../../harness/operator-home-harness', async (orig) => ({ ...(await orig<Record<string, unknown>>()), operatorHomeHarnessSlug: () => 'home-harness' }));
@@ -109,8 +120,25 @@ const body = (o: unknown) => {
   return out.data !== undefined ? out.data : JSON.parse(out.content![0]!.text);
 };
 
+const gitSyncRoutineRow = (metadata: Record<string, unknown>) => ({
+  install_slug: 'home-harness',
+  name: 'git-sync',
+  trigger_kind: 'cron',
+  trigger_config: { cron: '0 */3 * * * *' },
+  target_role: 'system:git-sync',
+  active: true,
+  next_fire_at: new Date(Date.now() + 60_000),
+  last_fired_at: new Date(Date.now() - 60_000),
+  group_slug: null,
+  metadata,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  resourceQueueMock.mockReset();
+  resourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+  deadPidMock.mockReset();
+  deadPidMock.mockReturnValue(false);
   cronM.mockReturnValue(new Date('2030-01-01T00:00:00Z'));
   admissionM.mockResolvedValue({ status: 'clear' });
   serializerM.mockResolvedValue({ status: 'none', reason: 'routine-not-paused' });

@@ -2251,6 +2251,21 @@ type GitSyncSettlementProgress = {
   total: number;
   feature_id: string;
 };
+type GitSyncActivityMarker = {
+  active: boolean;
+  phase: GitSyncActivityPhase;
+  started_at: number;
+  updated_at: number;
+  completed_at: number | null;
+  outcome_status: GitSyncOutcome['status'] | null;
+  /** The per-fire lock owner ties this durable marker back to the live resource lease. */
+  owner: string;
+  owner_pid: number;
+  settlement_progress?: GitSyncSettlementProgress;
+  /** EI-24496143892913296: the post-legs leg that just started (e.g. 'git-sync:ref-announce'). */
+  leg?: string;
+};
+type GitSyncActivityFields = Omit<GitSyncActivityMarker, 'owner' | 'owner_pid'>;
 
 /**
  * Writer-backed liveness for the whole git-sync action, not just its local commit
@@ -2262,17 +2277,7 @@ type GitSyncSettlementProgress = {
 async function writeGitSyncActivity(
   slug: string,
   workspaceId: string,
-  activity: {
-    active: boolean;
-    phase: GitSyncActivityPhase;
-    started_at: number;
-    updated_at: number;
-    completed_at: number | null;
-    outcome_status: GitSyncOutcome['status'] | null;
-    settlement_progress?: GitSyncSettlementProgress;
-    /** EI-24496143892913296: the post-legs leg that just started (e.g. 'git-sync:ref-announce'). */
-    leg?: string;
-  },
+  activity: GitSyncActivityMarker,
 ): Promise<void> {
   await patchRoutineMetadata(slug, workspaceId, { git_sync_activity: activity });
 }
@@ -3140,6 +3145,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   });
   const acquired: GitSyncLockRequest[] = [];
   const lockOwner = newGitSyncLockOwner();
+  const withActivityOwner = (activity: GitSyncActivityFields): GitSyncActivityMarker => ({
+    ...activity,
+    owner: lockOwner,
+    owner_pid: process.pid,
+  });
+  const writeActivity = (activity: GitSyncActivityFields): Promise<void> =>
+    writeGitSyncActivity(slug, workspaceId, withActivityOwner(activity));
   const lock = await acquireLocks(cd, slug, resources, acquired, lockOwner);
   if (lock.state === 'held' || lock.state === 'contended') {
     const reason = lock.blockedReason ?? (lock.state === 'contended' ? 'lock_contended' : 'lock_held');
@@ -3289,14 +3301,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       local_sync_status: 'error',
       last_error: error.message,
       last_errors: [`git-sync action timeout (${error.timeoutKind}) during ${error.phase}`],
-      git_sync_activity: {
+      git_sync_activity: withActivityOwner({
         active: false,
         phase: 'error',
         started_at: activityStartedAt,
         updated_at: failedAt,
         completed_at: failedAt,
         outcome_status: null,
-      },
+      }),
     }).catch((metadataError) => {
       console.warn(
         `[git-sync] ${slug}: could not record action timeout metadata: ${
@@ -3326,7 +3338,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       .catch(() => {})
       .then(async () => {
         if (liveness.timedOut) return;
-        await writeGitSyncActivity(slug, workspaceId, {
+        await writeActivity({
           active: true,
           phase: 'local-sync',
           started_at: activityStartedAt,
@@ -3355,7 +3367,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   let prevHeadSha: string | null = null;
   try {
     await guarded('activity-start', () =>
-      writeGitSyncActivity(slug, workspaceId, {
+      writeActivity({
         active: true,
         phase: 'local-sync',
         started_at: activityStartedAt,
@@ -3436,14 +3448,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             last_lock_read_error: detail,
             last_error: `live lock read failed (fail-closed): ${detail}`,
             last_errors: [`live-lock-read: ${detail}`],
-            git_sync_activity: {
+            git_sync_activity: withActivityOwner({
               active: false,
               phase: 'error',
               started_at: activityStartedAt,
               updated_at: skippedAt,
               completed_at: skippedAt,
               outcome_status: null,
-            },
+            }),
           }),
         );
       } catch (metadataError) {
@@ -3580,7 +3592,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // the guarded promise rejects before that callback's microtask runs.
       await recordTimeoutActivity(error);
     } else {
-      await writeGitSyncActivity(slug, workspaceId, {
+      await writeActivity({
         active: false,
         phase: 'error',
         started_at: activityStartedAt,
@@ -3679,7 +3691,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       return;
     }
     postLegsMarker = { phase: 'post-legs', at: now };
-    await writeGitSyncActivity(slug, workspaceId, {
+    await writeActivity({
       active: true,
       phase: 'post-legs',
       started_at: activityStartedAt,
@@ -3729,7 +3741,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // `recordOutcome` writes the local stage's status before any GitHub bridge or
     // P2P post-leg runs. Keep that local result visible, but explicitly mark the
     // whole action non-terminal until every later leg has settled.
-    await writeGitSyncActivity(slug, workspaceId, {
+    await writeActivity({
       active: true,
       phase: 'post-legs',
       started_at: activityStartedAt,
@@ -3830,7 +3842,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
                       settlementProgressWrite = settlementProgressWrite
                         .catch(() => {})
                         .then(() =>
-                          writeGitSyncActivity(slug, workspaceId, {
+                          writeActivity({
                             active: true,
                             phase: 'completion-settlement',
                             started_at: activityStartedAt,
@@ -4025,7 +4037,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     if (error instanceof GitSyncActionTimeoutError) {
       await recordTimeoutActivity(error);
     } else {
-      await writeGitSyncActivity(slug, workspaceId, {
+      await writeActivity({
         active: false,
         phase: 'error',
         started_at: activityStartedAt,
@@ -4101,7 +4113,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       dependencyPrebuildQueued = await enqueueDependencyPrebuild(dependencyPrebuildRequest);
     } catch (error) {
       const failedAt = Date.now();
-      await writeGitSyncActivity(slug, workspaceId, {
+      await writeActivity({
         active: false,
         phase: 'error',
         started_at: activityStartedAt,
@@ -4115,7 +4127,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
 
   const completedAt = Date.now();
   try {
-    await writeGitSyncActivity(slug, workspaceId, {
+    await writeActivity({
       active: false,
       phase: 'complete',
       started_at: activityStartedAt,
@@ -4129,7 +4141,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // flight. Record an explicit terminal error marker before rethrowing so the
     // routine engine retries the failed tick without a stale `post-legs` state.
     const failedAt = Date.now();
-    await writeGitSyncActivity(slug, workspaceId, {
+    await writeActivity({
       active: false,
       phase: 'error',
       started_at: activityStartedAt,

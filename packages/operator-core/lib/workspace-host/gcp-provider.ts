@@ -320,6 +320,91 @@ export function gcpInstanceInsertPermissions(request: GcpInstanceInsertInput): s
   return [...permissions].sort();
 }
 
+type GcpCallPermissionTable = {
+  readonly [K in keyof GcpWorkspaceHostApiClient]: (
+    ...args: Parameters<GcpWorkspaceHostApiClient[K]>
+  ) => readonly string[];
+};
+
+const OPERATION_GET_PERMISSION: Readonly<Record<GcpOperationScope, string>> = {
+  zone: 'compute.zoneOperations.get',
+  region: 'compute.regionOperations.get',
+  global: 'compute.globalOperations.get',
+};
+
+/**
+ * The IAM permissions GCP checks for EACH call this provider's client makes, as a function of the
+ * call's own arguments: the method-level permission plus every field-level check for a field the
+ * call sets. Source: the "IAM Permissions" section and the per-field "Authorization requires"
+ * notes of docs.cloud.google.com/compute/docs/reference/rest/v1/<collection>/<method>, read
+ * 2026-10-02. The two notes that are easy to miss: `network` on subnetworks/firewalls/routers
+ * insert, and on routers update (the NAT add/remove is a router PATCH), needs
+ * `compute.networks.updatePolicy`; `disks.createSnapshot` also needs `compute.snapshots.create`.
+ *
+ * Typed over every client method, so a new call cannot compile until it declares what it needs.
+ * A test runs every lifecycle through a recording client and pins each role that drives this
+ * provider to the union. That test exists because the customer (BYOC) role was a hand-kept list
+ * that lacked `compute.networks.updatePolicy`, and the first live hosted BYOC provision failed at
+ * create-subnetwork with 403 (WI-10005297).
+ */
+export const GCP_WORKSPACE_HOST_CALL_PERMISSIONS: GcpCallPermissionTable = {
+  validateConnection: () => ['compute.projects.get'],
+  listScopes: () => [],
+  listRegions: () => ['compute.regions.list', 'compute.zones.list'],
+  listSizes: () => ['compute.machineTypes.list'],
+  listImages: () => ['compute.images.get'],
+  getImageDiskSizeGb: () => ['compute.images.get'],
+  estimatePrice: () => [],
+  inventoryManagedResources: () => [
+    'compute.instances.list',
+    'compute.disks.list',
+    'compute.snapshots.list',
+    'compute.networks.get',
+    'compute.subnetworks.get',
+    'compute.firewalls.get',
+    'compute.routers.get',
+  ],
+  getNetwork: () => ['compute.networks.get'],
+  getSubnetwork: () => ['compute.subnetworks.get'],
+  getFirewall: () => ['compute.firewalls.get'],
+  getRouter: () => ['compute.routers.get'],
+  getNat: () => ['compute.routers.get'],
+  getDisk: () => ['compute.disks.get'],
+  // The client also reads the boot disk to learn the image it was created from.
+  getInstance: () => ['compute.instances.get', 'compute.disks.get'],
+  getInstanceGuestAttributes: () => ['compute.instances.getGuestAttributes'],
+  getSnapshot: () => ['compute.snapshots.get'],
+  insertNetwork: () => ['compute.networks.create'],
+  insertSubnetwork: () => ['compute.subnetworks.create', 'compute.networks.updatePolicy'],
+  insertFirewall: () => ['compute.firewalls.create', 'compute.networks.updatePolicy'],
+  insertRouter: () => ['compute.routers.create', 'compute.networks.updatePolicy'],
+  // Reads the router, then PATCHes it with the NAT appended.
+  insertNat: () => ['compute.routers.get', 'compute.routers.update', 'compute.networks.updatePolicy'],
+  insertDisk: (_projectId, _zone, input) => [
+    'compute.disks.create',
+    ...(Object.keys(input.labels).length > 0 ? ['compute.disks.setLabels'] : []),
+    ...(input.sourceSnapshot ? ['compute.snapshots.useReadOnly'] : []),
+  ],
+  insertInstance: (_projectId, _zone, input) => gcpInstanceInsertPermissions(input),
+  createSnapshot: (_projectId, _zone, input) => [
+    'compute.disks.createSnapshot',
+    'compute.snapshots.create',
+    ...(Object.keys(input.labels).length > 0 ? ['compute.snapshots.setLabels'] : []),
+  ],
+  startInstance: () => ['compute.instances.start'],
+  stopInstance: () => ['compute.instances.stop'],
+  resetInstance: () => ['compute.instances.reset'],
+  setInstanceMetadata: () => ['compute.instances.setMetadata'],
+  deleteInstance: () => ['compute.instances.delete'],
+  deleteDisk: () => ['compute.disks.delete'],
+  deleteFirewall: () => ['compute.firewalls.delete', 'compute.networks.updatePolicy'],
+  deleteNat: () => ['compute.routers.get', 'compute.routers.update', 'compute.networks.updatePolicy'],
+  deleteRouter: () => ['compute.routers.delete'],
+  deleteSubnetwork: () => ['compute.subnetworks.delete'],
+  deleteNetwork: () => ['compute.networks.delete'],
+  waitForOperation: (operation) => [OPERATION_GET_PERMISSION[operation.scope]],
+};
+
 export interface GcpInstanceMetadataInput {
   fingerprint: string;
   items: readonly { key: string; value: string }[];

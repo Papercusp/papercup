@@ -21,6 +21,7 @@ import {
   GCP_WORKSPACE_HOST_TRANSPORTS,
   buildGcpWorkspaceHostTransportProfile,
   createGcpWorkspaceHostProvider,
+  GCP_WORKSPACE_HOST_CALL_PERMISSIONS,
   gcpInstanceInsertPermissions,
   gcpWorkspaceHostRequestUuid,
   type GcpComputeInstanceStatus,
@@ -2151,6 +2152,207 @@ describe('every role that creates a host holds what GCP checks on the instance i
     expect(missing(request, hosted.filter((p) => p !== 'compute.instances.setScheduling'))).toEqual([
       'compute.instances.setScheduling',
     ]);
+  });
+});
+
+describe('every role that drives the GCP provider holds what GCP checks on each call it makes (WI-10005297)', () => {
+  type CallPermissions = Record<string, (...args: unknown[]) => readonly string[]>;
+  const table = GCP_WORKSPACE_HOST_CALL_PERMISSIONS as unknown as CallPermissions;
+
+  /** Wraps the fake so every client call records the permissions GCP would check for it. */
+  function recordingProvider() {
+    const client = new FakeGcpWorkspaceHostApiClient();
+    const needed = new Map<string, Set<string>>();
+    const called = new Set<string>();
+    const recorded = new Proxy(client, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        if (typeof prop !== 'string' || typeof value !== 'function' || !(prop in table)) return value;
+        return (...args: unknown[]) => {
+          called.add(prop);
+          for (const permission of table[prop]!(...args)) {
+            if (!needed.has(permission)) needed.set(permission, new Set());
+            needed.get(permission)!.add(prop);
+          }
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const provider = createGcpWorkspaceHostProvider({ client: recorded, now: () => NOW });
+    return { client, provider, needed, called };
+  }
+
+  async function applyAll(
+    provider: ReturnType<typeof createGcpWorkspaceHostProvider>,
+    plan: Awaited<ReturnType<ReturnType<typeof createGcpWorkspaceHostProvider>['plan']>>,
+    resources: WorkspaceHostResourceRef[],
+  ): Promise<void> {
+    for (const step of plan.steps) {
+      const result = await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: [...resources] },
+        context(),
+      );
+      expect(['applied', 'destroyed', 'unchanged'], `${plan.operationId}/${step.id}`).toContain(result.state);
+      if ('resource' in result && result.resource) resources.push(result.resource);
+    }
+  }
+
+  /** Provision, every lifecycle action, a restore into a second host, then destroy both. */
+  async function driveEveryLifecycle(spec: WorkspaceHostDesiredSpec) {
+    const recording = recordingProvider();
+    const { client, provider } = recording;
+    const { host, resources } = await provision(client, provider, spec);
+    for (const action of ['stop', 'start', 'restart', 'snapshot', 'repair'] as const) {
+      const plan = await provider.plan(
+        action === 'snapshot'
+          ? { action, operationId: `op:${action}`, idempotencyKey: `op:${action}`, host, name: 'manual-snapshot' }
+          : { action, operationId: `op:${action}`, idempotencyKey: `op:${action}`, host },
+        context({}, '#!/usr/bin/env bash\necho bootstrap\n'),
+      );
+      await applyAll(provider, plan, resources);
+    }
+
+    client.seedSnapshot(`pc-${spec.hostId}-q3`, spec.hostId);
+    // The second host derives its own resource names; pinned names would collide with the first.
+    const { instanceName: _instance, dataDiskName: _disk, ...derivedNames } = (spec.provider ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const recovered = {
+      ...spec,
+      hostId: `${spec.hostId}-recovered`,
+      provider: { ...derivedNames, network: { mode: 'managed' } },
+    } as WorkspaceHostDesiredSpec;
+    const restore = await provider.plan(
+      {
+        action: 'restore',
+        operationId: 'op:restore',
+        idempotencyKey: 'op:restore',
+        host,
+        snapshot: {
+          target: 'gcp',
+          providerId: `projects/${spec.scope.id}/global/snapshots/pc-${spec.hostId}-q3`,
+          hostId: spec.hostId,
+        },
+        desired: recovered,
+      },
+      context(),
+    );
+    const restoredResources: WorkspaceHostResourceRef[] = [];
+    await applyAll(provider, restore, restoredResources);
+
+    for (const [target, targetResources] of [
+      [host, resources],
+      [{ hostId: recovered.hostId, target: 'gcp', resources: restoredResources } as WorkspaceHostRef, restoredResources],
+    ] as const) {
+      const destroy = await provider.plan(
+        {
+          action: 'destroy',
+          operationId: `op:destroy:${target.hostId}`,
+          idempotencyKey: `op:destroy:${target.hostId}`,
+          host: target,
+          disposition: 'discard',
+          confirmation: { expectedHostId: target.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+        },
+        context(),
+      );
+      await applyAll(provider, destroy, [...targetResources]);
+    }
+    return recording;
+  }
+
+  /** What the run needed that `granted` lacks, with the calls that needed it. actAs is checked on the account. */
+  function uncovered(needed: Map<string, Set<string>>, granted: Iterable<string>): Record<string, string[]> {
+    const held = new Set(granted);
+    return Object.fromEntries(
+      [...needed]
+        .filter(([permission]) => !permission.startsWith('iam.') && !held.has(permission))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([permission, calls]) => [permission, [...calls].sort()] as const),
+    );
+  }
+
+  const customerProjectSpec = () =>
+    gcpFirstWorkspaceDesiredSpec({
+      hostId: 'host-gcp-1',
+      record: {
+        credentialRef: 'delegation://workspace-gcp-1/conn-1',
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'service-account-impersonation',
+            projectId: 'papercusp-dev-123',
+            serviceAccountEmail: 'papercusp-host-operator@papercusp-dev-123.iam.gserviceaccount.com',
+          },
+        },
+      } as never,
+    });
+
+  it('the run is not vacuous: it reaches every mutating call the provider can make', async () => {
+    const { called } = await driveEveryLifecycle(customerProjectSpec());
+    const mutating = Object.keys(table).filter((method) => /^(insert|delete|create|start|stop|reset|set)/.test(method));
+    expect(mutating.filter((method) => !called.has(method))).toEqual([]);
+    expect(called).toContain('waitForOperation');
+  });
+
+  it('BYOC (customer project, hosted and desktop): the required list covers every call of every lifecycle', async () => {
+    for (const spec of [customerProjectSpec(), desired()]) {
+      const { needed } = await driveEveryLifecycle(spec);
+      expect(uncovered(needed, GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS)).toEqual({});
+    }
+  });
+
+  it('BYOC: calls whose permissions do not depend on their arguments are covered too', () => {
+    // driveEveryLifecycle reaches the argument-dependent calls; this reaches the read/catalog ones
+    // (inventory, regions, sizes, images) a lifecycle never makes.
+    const argumentFree = Object.entries(table).filter(([, permissionsFor]) => permissionsFor.length === 0);
+    expect(argumentFree.length).toBeGreaterThan(20);
+    const needed = new Map<string, Set<string>>();
+    for (const [method, permissionsFor] of argumentFree) {
+      for (const permission of permissionsFor()) needed.set(permission, new Set([method]));
+    }
+    expect(uncovered(needed, GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS)).toEqual({});
+  });
+
+  it('control: the list as it stood at the first live BYOC provision is caught at create-subnetwork', async () => {
+    const { needed } = await driveEveryLifecycle(customerProjectSpec());
+    const before = GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS.filter(
+      (permission) =>
+        ![
+          'compute.networks.updatePolicy',
+          'compute.instances.reset',
+          'compute.snapshots.create',
+          'compute.snapshots.setLabels',
+          'compute.snapshots.useReadOnly',
+        ].includes(permission),
+    );
+    expect(uncovered(needed, before)).toMatchObject({
+      'compute.networks.updatePolicy': expect.arrayContaining(['insertSubnetwork', 'insertFirewall', 'insertRouter']),
+      'compute.instances.reset': ['resetInstance'],
+      'compute.snapshots.create': ['createSnapshot'],
+    });
+  });
+
+  it('Papercusp-hosted: the host and observer roles cover every call of every lifecycle', async () => {
+    const spec = gcpFirstWorkspaceDesiredSpec({
+      hostId: 'host-gcp-1',
+      record: {
+        credentialRef: 'delegation://workspace-gcp-1/conn-1',
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'papercusp-hosted',
+            projectId: 'papercusp-dev-123',
+            serviceAccountEmail: 'pco-aaaa@papercusp-org-identity.iam.gserviceaccount.com',
+            hostId: 'host-gcp-1',
+          },
+        },
+      } as never,
+    });
+    const { needed } = await driveEveryLifecycle(spec);
+    expect(uncovered(needed, [...PAPERCUSP_HOSTED_HOST_PERMISSIONS, ...PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS])).toEqual(
+      {},
+    );
   });
 });
 

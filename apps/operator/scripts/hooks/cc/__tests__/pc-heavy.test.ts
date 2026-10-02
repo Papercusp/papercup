@@ -3089,6 +3089,28 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
     expect(existsSync(slots)).toBe(false); // refused before coalescing/slot acquisition
   });
 
+  // WI-10005296 (D-031): the hosted profile's PC_HEAVY_TYPECHECK_GUARD=0 turns the dev-tower guard
+  // off. The SAME inputs that refuse above must then neither refuse nor re-exec into a scope (that
+  // would escape a customer agent's cgroup memory limit): the typecheck runs under admission.
+  it('PC_HEAVY_TYPECHECK_GUARD=0 runs the typecheck in place: no refusal, no detached scope', () => {
+    const runner = join(dir, 'systemd-run-must-not-run');
+    writeFileSync(runner, `#!/usr/bin/env bash\necho scope-runner-invoked >> ${JSON.stringify(join(dir, 'runner.log'))}\nexit 99\n`);
+    chmodSync(runner, 0o755);
+    const r = runSync(['node', typecheckFixture()], {
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+      PAPERCUSP_TSC_HEAP_MB: '8192',
+      PC_HEAVY_SYSTEMD_RUN_BIN: runner,
+      PC_HEAVY_TYPECHECK_GUARD: '0',
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('typecheck-ran');
+    expect(r.stderr).not.toContain('REFUSED typecheck');
+    expect(r.stderr).not.toContain('detached user scope');
+    expect(existsSync(join(dir, 'runner.log'))).toBe(false);
+  });
+
   it('runs the same typecheck when a finite cgroup has enough headroom', () => {
     const r = runSync(['node', typecheckFixture()], {
       PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '12288',

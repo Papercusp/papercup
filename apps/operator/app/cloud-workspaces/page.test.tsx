@@ -307,6 +307,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -928,6 +929,7 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
        renders elsewhere in the DOM. */
     H.rows = [];
     render(<CloudWorkspacesPage />);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
 
     const trigger = screen.getByRole("button", {
       name: "Connect Google Cloud",
@@ -939,6 +941,8 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
       "Connection label",
     ) as HTMLInputElement;
     expect(document.activeElement).toBe(panelInput);
+    // The new form can grow below the scrollport. Opening focus must reveal it.
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: false });
 
     /* Closed: focus returns to the trigger, NOT to <body>. */
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -949,6 +953,9 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Connect Google Cloud" }),
     );
+    // Restoring focus must preserve the user's scroll position.
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+    focus.mockRestore();
   });
 
   it("control: removing a focused element really does drop focus to <body> here", () => {

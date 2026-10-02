@@ -337,7 +337,7 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
   const lifecycle = previouslyOwned.filter(({ pid, identity }) => !current.has(`${pid}:${identity}`))
     .map((target) => observeMissingOwnedProcess(target, boot, unavailable.length > 0, proc));
   if (proc.read('/proc/sys/kernel/random/boot_id').trim() !== boot ||
-      identity(options.driverPid) !== options.driverIdentity) throw new Error('Native diagnostic driver exited/reused');
+      identity(options.driverPid) !== options.driverIdentity) throw new Error('Native diagnostic driver exited/reused (identity/boot changed)');
   let runqueueMeasured = false;
   try { runqueueMeasured = proc.read('/proc/sys/kernel/sched_schedstats').trim() === '1'; } catch { /* unknown */ }
   return { readStartedEpochMs, readCompletedEpochMs: Date.now(), readDurationMs: performance.now() - started,

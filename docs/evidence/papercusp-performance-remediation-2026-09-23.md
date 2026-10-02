@@ -4,6 +4,46 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## Native disappearance detector — 2026-10-02, Fire147
+
+The maintained v4 sampler forgot previously observed identities when they
+disappeared from descendant discovery. That detector gap prevented distinguishing
+a missing procfs entry from an unreaped zombie, reparenting, PID replacement,
+or incomplete discovery after r169 lost its WebDriver session.
+
+The existing collector and sampler now retain at most 64 owned lifetime
+references and perform two stat reads, bounded to 4096 bytes each, for identities
+missing from the current sample. Their buffered observations distinguish
+`procfs-missing`, `identity-replaced`, `same-identity-present`, `zombie`, and
+`unavailable`. They preserve the last owned observation time. Signal and exit
+code remain unknown because this sampler cannot wait on those targets; only
+an observed zombie establishes `not-reaped`. Existing sample, byte, duration,
+environment and output-descriptor bounds remain in effect. The v5 header
+declares this evidence contract. No additional collector or service was added.
+
+The baseline passed 71 tests. Six new fixture guards failed against the old
+implementation. After the extension, one existing boot-race assertion still
+failed because the new refusal message omitted identity/boot wording; correcting
+that message preserved the refusal and restored the guard. The final maintained
+Node suite passed **78/78**, zero skips, exit 0. Separate package typechecking
+passed, exit 0. The real child-process regression observed a child before exit,
+received SIGTERM in its actual parent, and verified that the running sampler
+retained the exact missing identity while leaving signal and reaping unknown.
+
+An intermediate commentary overstated the first green result by reading the
+last typecheck command's shell status. That statement was immediately retracted;
+the retained logs record the single failing unit assertion and the separately
+run final checks. Commands, exact source/log fingerprints and the audit of the
+r168/r169 measurement gaps are in `nativeLifecycleGuardFire147` in
+`docs/evidence/p007-native-source-output-audit-2026-10-01.json`.
+
+This is detector verification only. No new native popup run was launched in this
+turn, and no crash cause, performance repair, R-7 acceptance or shipment is
+claimed. The prior r169 result remains historical evidence on its original
+sampler; its two changed sampler/test fingerprints now differ from current
+source. The next native preparation must bind the v5 source and its verified
+suite to a fresh owned artifact and manifest. P-007, P-006 and P-008 remain open.
+
 ## Paired callback result and native session failure — 2026-10-02, Fire146
 
 Recovered r169 completed with verifier and suite exit 1; it was not replayed.

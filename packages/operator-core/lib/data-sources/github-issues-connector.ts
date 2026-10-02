@@ -44,6 +44,9 @@ import {
 } from '../external-triggers/source-store';
 import { corpusRouteFor, ensurePermissionList, writeCorpusDocument } from './chat-retrieval-units';
 import { replacePermissionListMembers } from './documents-corpus';
+import { refreshAdmittedFromSource } from '../work-admission/admit';
+import { evaluateAdmissionRules, type RuleEvaluation } from '../work-admission/admission-rules';
+import { RECORD_SOURCE_KIND, recordSnapshot } from '../work-admission/record-source';
 
 export const GITHUB_ISSUES_PROVIDER = 'github';
 export const TICKET_DATATYPE = 'ticket';
@@ -108,6 +111,18 @@ export interface GitHubIssuesDeps {
   now?: () => Date;
   createWorkItem?: (input: CreateWorkItemInput) => Promise<unknown>;
   mergeWorkItemPayload?: (id: string, patch: Record<string, unknown>, opts: { harness?: string }) => Promise<unknown>;
+  /**
+   * P-020 / D-004: runs the data source's admission rules over a ticket record. A ticket no
+   * enabled rule matches stays DATA. Defaults to evaluateAdmissionRules on the poll's sql.
+   */
+  admitRecord?: (input: {
+    workspaceId: string;
+    recordId: string;
+    dataSourceId: string;
+    payload: Record<string, unknown>;
+  }) => Promise<RuleEvaluation>;
+  /** P-020: re-syncs the external-owned fields of work admitted from a changed ticket. */
+  refreshAdmitted?: typeof refreshAdmittedFromSource;
 }
 
 function text(value: unknown): string {
@@ -367,6 +382,19 @@ export interface GitHubIssuesPollResult {
   tickets: { created: number; updated: number };
   statusChanges: number;
   comments: { written: number; skipped: number };
+  /**
+   * P-020: what the admission rules did with this poll's tickets. A failed admission never fails
+   * the poll (the record is already ingested); it is counted in `failed` with the last error.
+   */
+  admissions: {
+    matched: number;
+    admitted: number;
+    existing: number;
+    refused: number;
+    refreshed: number;
+    failed: number;
+    lastError: string | null;
+  };
   nextAt: string | null;
 }
 
@@ -408,6 +436,7 @@ export async function pollGitHubIssuesOnce(
     tickets: { created: 0, updated: 0 },
     statusChanges: 0,
     comments: { written: 0, skipped: 0 },
+    admissions: { matched: 0, admitted: 0, existing: 0, refused: 0, refreshed: 0, failed: 0, lastError: null },
     nextAt: null,
   };
   const nextAtMs = Date.parse(text(cursor.nextAt));
@@ -423,8 +452,38 @@ export async function pollGitHubIssuesOnce(
   const client = await clientOf(deps);
   const create = (input: CreateWorkItemInput & { id: string }) => createOnce(sql, source.workspaceId, input, deps);
   const merge = deps.mergeWorkItemPayload ?? defaultMergeWorkItemPayload;
+  const admitRecord = deps.admitRecord ?? ((input) => evaluateAdmissionRules(input, { sql }));
+  const refreshAdmitted = deps.refreshAdmitted ?? refreshAdmittedFromSource;
   const next: TicketCursor = { ...cursor };
   delete next.nextAt;
+
+  // P-020 / D-004: a ticket becomes WORK only when an enabled admission rule of this data source
+  // matches it. Rules run on create AND on update (a ticket reassigned to the agents user later
+  // is admitted then); admission is idempotent on the record. An updated ticket also re-syncs
+  // the external-owned fields of anything already admitted from it. Admission is downstream of
+  // ingest, so a failure is counted on the result and never fails the poll.
+  const admit = async (recordId: string, payload: Record<string, unknown>, rowTitle: string, changed: boolean) => {
+    const counts = result.admissions;
+    try {
+      if (changed) {
+        const snap = recordSnapshot(payload, rowTitle);
+        const refreshed = await refreshAdmitted(source.workspaceId, { kind: RECORD_SOURCE_KIND, key: recordId }, snap, { sql });
+        counts.refreshed += refreshed.refreshed.length;
+      }
+      const evaluation = await admitRecord({ workspaceId: source.workspaceId, recordId, dataSourceId: source.id, payload });
+      counts.matched += evaluation.matched;
+      for (const { result: r } of evaluation.results) {
+        if (!r.ok) {
+          counts.refused += 1;
+          counts.lastError = `${recordId}: ${r.code}`;
+        } else if (r.reason === 'admitted') counts.admitted += 1;
+        else counts.existing += 1;
+      }
+    } catch (error) {
+      counts.failed += 1;
+      counts.lastError = `${recordId}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  };
 
   const statusChange = async (key: string, ticketExternalId: string, payload: Record<string, unknown>, title: string) => {
     if (!changeType || !changeDef) return;
@@ -491,6 +550,7 @@ export async function pollGitHubIssuesOnce(
           if (!merged) throw new Error(`ticket_merge_failed:${id}`);
           result.tickets.updated += 1;
         }
+        await admit(id, payload, title, !created);
       }
       if (data.length < GITHUB_ISSUES_PAGE) break;
     }

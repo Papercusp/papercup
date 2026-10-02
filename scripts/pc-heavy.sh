@@ -1732,6 +1732,12 @@ _caller_cgroup_headroom_mib() {
 }
 
 _guard_typecheck_cgroup_headroom() {
+  # WI-10005296 (plan agent-capacity-and-cost-gcp-2026-09-30 D-031): this guard is for THIS repo's
+  # dev tower. Its floor is the monorepo's own tsc heap, and its two outcomes (re-run outside the
+  # caller's cgroup, or refuse pointing at Papercusp agent tools) are wrong for a hosted customer
+  # agent, whose cgroup IS its memory limit and whose `tsc` is the customer's. The hosted profile
+  # sets PC_HEAVY_TYPECHECK_GUARD=0, so the typecheck simply waits for a slot like any heavy job.
+  case "${PC_HEAVY_TYPECHECK_GUARD:-1}" in 0|off|OFF|false|FALSE|no|NO) return 0 ;; esac
   _is_full_typecheck_command "$@" || return 0
 
   local _headroom _heap _overhead _needed _runner _reexec_rc _sentinel _child_rc

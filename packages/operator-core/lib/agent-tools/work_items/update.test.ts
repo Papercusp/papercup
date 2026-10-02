@@ -12,6 +12,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
+// P-020 field-authority guard: no admissions by default; workspace pinned so the guard never reads the registry.
+vi.mock('../../work-admission/admit', () => ({ refuseExternalOwnedPatch: vi.fn(async () => null) }));
+vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../work-items', () => ({
   updateWorkItem: vi.fn(),
   mergeWorkItemPayload: vi.fn(),
@@ -28,6 +31,8 @@ const floorsM = vi.mocked(explainIssueClaimFloors);
 const updateMod = await import('./update');
 const tool = updateMod.default;
 const { reservedPayloadKeys } = updateMod; // WI-41509 payload merge guard
+const { refuseExternalOwnedPatch } = await import('../../work-admission/admit');
+const refuseM = vi.mocked(refuseExternalOwnedPatch);
 
 type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
@@ -730,5 +735,33 @@ describe('work_items:update — body/summary alias + strict (WI-4492)', () => {
       expect(updM).not.toHaveBeenCalled();
       expect(mergeM).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('work_items:update field authority (enterprise-data-sources P-020)', () => {
+  it('refuses a title edit on an admitted item before any write', async () => {
+    refuseM.mockResolvedValueOnce({
+      code: 'field_owned_by_source',
+      message: 'title on EI-9 is owned by its source (record r-1)',
+      fields: ['title'],
+    });
+    const b = await body({ id: 'EI-9', title: 'renamed' });
+    expect(refuseM).toHaveBeenCalledWith('ws-test', 'EI-9', ['title']);
+    expect(updM).not.toHaveBeenCalled();
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-9' });
+    expect(String(b.results[0].error)).toContain('field_owned_by_source');
+  });
+
+  it('passes both title and body to the guard and writes when the item was not admitted', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', title: 't' } } as never);
+    await body({ id: 'EI-1', title: 't', body: 'b' });
+    expect(refuseM).toHaveBeenCalledWith('ws-test', 'EI-1', ['title', 'body']);
+    expect(updM).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consult admissions for an edit that touches neither title nor body', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1' } } as never);
+    await body({ id: 'EI-1', severity: 'major' });
+    expect(refuseM).not.toHaveBeenCalled();
   });
 });

@@ -1823,6 +1823,29 @@ function workspaceOmpRuntimeInstallLines(
  * and must NOT be able to read the Papercusp release or the platform agent home (D-043). A copy
  * that dragged a credential file along dies here instead of publishing it.
  */
+/**
+ * Plan agent-capacity-and-cost-gcp-2026-09-30 D-031 ruling 2: publish the heavy-job admission pair
+ * (the node --require preload and pc-heavy.sh, which is self-contained) into the customer toolchain,
+ * so hosted agents' tsc/vitest wait for a memory slot. One root-owned read-only script plus a
+ * preload: no runtime, no credential, no control-plane logic (D-031's reading of D-043). Copied
+ * only when the release carries BOTH files, and the bootstrap log says which way it went; the
+ * operator sets the activating env only when both are present in the published toolchain
+ * (<toolchain root>/lib/heavy-admission/, read by hostedHeavyAdmissionEnv in operator-core's
+ * workspace-host/hosted-agent-identity.ts).
+ */
+function customerHeavyAdmissionInstallLines(): string[] {
+  return [
+    'if [[ -f "$RELEASE_DIR/scripts/heavy-admission.cjs" && -f "$RELEASE_DIR/scripts/pc-heavy.sh" ]]; then',
+    '  install -d -m 0755 -o root -g root -- "$TOOLCHAIN_NEXT/lib" "$TOOLCHAIN_NEXT/lib/heavy-admission"',
+    '  install -m 0644 -o root -g root -- "$RELEASE_DIR/scripts/heavy-admission.cjs" "$TOOLCHAIN_NEXT/lib/heavy-admission/heavy-admission.cjs"',
+    '  install -m 0755 -o root -g root -- "$RELEASE_DIR/scripts/pc-heavy.sh" "$TOOLCHAIN_NEXT/lib/heavy-admission/pc-heavy.sh"',
+    '  echo "PAPERCUSP_HEAVY_ADMISSION status=installed"',
+    'else',
+    '  echo "PAPERCUSP_HEAVY_ADMISSION status=absent reason=release-lacks-scripts (hosted agents run heavy jobs unadmitted)"',
+    'fi',
+  ];
+}
+
 function customerAgentToolchainInstallLines(
   installs: readonly WorkspaceHostAgentRuntimeInstall[],
 ): string[] {
@@ -1861,6 +1884,7 @@ function customerAgentToolchainInstallLines(
   if (has('omp')) {
     lines.push('ln -s /usr/local/bin/omp "$TOOLCHAIN_NEXT/bin/omp"');
   }
+  lines.push(...customerHeavyAdmissionInstallLines());
   lines.push(
     'chown -R -h root:root -- "$TOOLCHAIN_NEXT"',
     'chmod -R go-w,a+rX -- "$TOOLCHAIN_NEXT"',

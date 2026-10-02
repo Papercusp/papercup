@@ -47,7 +47,11 @@ export const GCP_WORKSPACE_HOST_REQUIRED_SERVICES = [
   'oslogin.googleapis.com',
 ] as const;
 
-/** Project-scoped permissions exercised by the first isolated-host vertical slice. */
+/**
+ * Project-scoped permissions the customer's workspace-host role must hold. Every call the GCP
+ * provider makes is pinned to this list by test through GCP_WORKSPACE_HOST_CALL_PERMISSIONS
+ * (gcp-provider.ts), so add a permission there first, never only here.
+ */
 export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'resourcemanager.projects.get',
   'serviceusage.services.get',
@@ -60,6 +64,10 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'compute.networks.get',
   'compute.networks.list',
   'compute.networks.delete',
+  // Checked on the network by subnetworks/firewalls/routers insert, firewalls delete, and the
+  // router PATCH that adds or removes the NAT. Its absence failed the first live hosted BYOC
+  // provision at create-subnetwork (WI-10005297).
+  'compute.networks.updatePolicy',
   'compute.subnetworks.create',
   'compute.subnetworks.get',
   'compute.subnetworks.list',
@@ -98,6 +106,7 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'compute.instances.list',
   'compute.instances.start',
   'compute.instances.stop',
+  'compute.instances.reset',
   'compute.instances.delete',
   'compute.instances.setLabels',
   'compute.instances.setMetadata',
@@ -106,6 +115,11 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   // Checked on a spot insert (scheduling block), WI-10005210.
   'compute.instances.setScheduling',
   'compute.instances.osLogin',
+  // disks.createSnapshot needs snapshots.create and, for the labels it sets, snapshots.setLabels;
+  // restoring a disk from a snapshot needs snapshots.useReadOnly.
+  'compute.snapshots.create',
+  'compute.snapshots.setLabels',
+  'compute.snapshots.useReadOnly',
   'compute.snapshots.get',
   'compute.snapshots.list',
   'compute.snapshots.delete',

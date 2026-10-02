@@ -1,4 +1,37 @@
 {
+  "nativeLifecycleGuardFire147": {
+    "scope": "Current maintained sampler v5 and real Node suite only; no new native popup run, causal performance result or P007/R7 acceptance.",
+    "nativeSession": "01a0faf9-8eb8-7592-b491-7a32e2ee21e6",
+    "rootCause": "The v4 collector followed current descendants only. Previously observed owned identities were forgotten when absent from discovery, so empty samples could not distinguish disappearance, zombies, reparenting, PID reuse or incomplete discovery.",
+    "alternativeHypothesis": "A missing subtree row can be a still-present process with reparented ancestry or unavailable children discovery; a lost WebDriver session alone does not establish process death or signal.",
+    "distinguishingTest": "Six maintained Node fixture cases exercise two bounded stat reads on previously owned identities, including missing/appearing entries, zombies, reparenting, PID replacement, malformed/denied/oversized reads and reboot races. A real subprocess is observed by the running sampler, terminated by its actual parent with SIGTERM, reaped by that parent, then observed missing by the sampler.",
+    "predictedObservations": {
+      "hypothesis": "The old collector exposes no per-identity lifecycle evidence; the extended sampler retains the exact earlier identity and records procfs-missing after actual removal.",
+      "alternativeHypothesis": "Reparented or incompletely discovered same-lifetime processes remain same-identity-present; zombies are not-reaped; PID races and inaccessible reads never become a death or signal assertion."
+    },
+    "actualObservation": "Baseline71PASS; six new guards failed against old source (71PASS6FAIL). Initial implementation passed76/77; after the real-process guard77/78, both failures were the existing boot-race error-message assertion. Corrected message restores identity/boot wording. Final78PASS0skip exit0, separate typecheck exit0. Actual parent received SIGTERM; the sampler retained the old lifetime with signal/exitCode null and reaping unknown.",
+    "fix": "Extend collectOwnedWebKitSample and the existing separate sampler with at most64 previous-owned lifetime references and two4096-byte stat reads for missing identities. Buffer lifecycle observations with existing sample persistence/byte/time limits; no new collector/service. Header v5 declares provenance and non-child wait-status limits.",
+    "sourceHashes": {
+      "tools/perf-test/wdio/native-process-probe.ts": "1aca8f8ee8e53d2966138250711dac26482a029d1607f1c2281bbc2c6ca1efea",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "1c10d7aa9a6d51046d48597663109ca2cda90618a25157e67f0858a93c3f0084"
+    },
+    "commands": [
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "logHashes": {
+      "/tmp/p007-native-lifecycle-baseline-fire147.log": "1f50d74649b1f33fda166a0289440e9914f65f4bd80dfe6cddeb638396d48352",
+      "/tmp/p007-native-lifecycle-red-fire147.log": "99ae0c514944dcb2a146534636466fc658d4604762ec86550c7d5c22a33a9e4b",
+      "/tmp/p007-native-lifecycle-green-fire147.log": "6409f3b30c308612993876ae1ef44bbdb0aba4c946fbe1f5ccbd10ccc6a92c55",
+      "/tmp/p007-native-lifecycle-final-fire147.log": "3d7eb8b04bbf7a33a92bdd2fc7c724065e829fb84446c39035672091ccd5fd29",
+      "/tmp/p007-native-lifecycle-verified-fire147.log": "8a2f014ea34bd402449fee18e4445ec56a5f41584c57ad11d78adb7d8f2a7845",
+      "/tmp/p007-native-lifecycle-verified-tsc-fire147.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "verificationCorrection": "An intermediate commentary incorrectly called the first implementation green by reading the final typecheck shell status; immediately retracted. The retained unit logs show the actual single failure, and final unit/typecheck commands ran separately.",
+    "expensiveAttemptAudit": "r168 lacked late-total/phase-start evidence: the maintained attempt driver was repaired and verified in Fire142. r169 lost its session before popup navigation and lacked per-identity disappearance evidence: v5 now has the maintained recurrence guards above. Neither failed native run is replayed unchanged; a future changed r170 must bind current source and artifact identities before launch.",
+    "limits": "Procfs reads are observations, not waitpid receipts. Missing/replaced PID entries cannot identify signal, exit code, crash cause or completed reaping. Observer overhead is unpaired. Original frozen SPA graph, separate clocks, media-discovery restriction and changing private API remain confounds.",
+    "next": "Prepare an independent r170 artifact/raw baseline/current paired payload and attempt driver manifest binding v5 sampler and78PASS proof; verify source/payload/shell/index/assertion hashes, then one changed maintained native diagnostic and owned cleanup. No unchanged r169/older, P2P, shared restart or LIVE_GATE_OPS. P006/P008 acceptance remains separate."
+  },
   "r169PairedTerminalFire146": {
     "scope": "Recovered ONE changed cold r169 terminal failure; native paired scheduling evidence only, popup unmeasurable; no root/product/R7 acceptance.",
     "verifierRun": "20261002T043124Z-2539815",

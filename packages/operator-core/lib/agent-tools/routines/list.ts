@@ -21,6 +21,8 @@ import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-d
 import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
+import { isPidDefinitivelyDead } from '../locks/resource-acquire-wait';
+import { getTxPool, readResourceQueue } from '../locks/su-lock-store';
 
 const GIT_SYNC_FRESHNESS_INTERVALS = 3;
 
@@ -357,11 +359,99 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
  * every new skip reason subject to the same detector and avoids a second writer
  * whose state can drift from the underlying proof.
  */
+type GitSyncActivityOwnerReconciliation = {
+  status: 'stale' | 'unverified';
+  owner_pid: number | null;
+  lock_state: 'held' | 'absent' | 'unknown' | 'not-checked';
+  matching_owner_lock: boolean | null;
+  reason: string;
+};
+
+/**
+ * An active metadata bit is not proof that its writer still exists. A marker is
+ * stale only when its persisted per-fire PID is definitively gone AND the
+ * workspace lock plane shows no live exclusive lease for that git-sync resource.
+ * Every missing, mismatched, or unreadable piece of evidence remains fail-closed.
+ */
+async function reconcileGitSyncActivityOwner(
+  metadata: Record<string, unknown> | null,
+  coordinationDomain: string,
+  installSlug: string,
+): Promise<GitSyncActivityOwnerReconciliation | null> {
+  const markerRaw = metadata?.git_sync_activity;
+  const marker = markerRaw && typeof markerRaw === 'object' ? (markerRaw as Record<string, unknown>) : null;
+  if (marker?.active !== true) return null;
+
+  const owner = typeof marker.owner === 'string' ? marker.owner : null;
+  const ownerPid = typeof marker.owner_pid === 'number' ? marker.owner_pid : null;
+  if (
+    owner === null ||
+    ownerPid === null ||
+    !Number.isSafeInteger(ownerPid) ||
+    ownerPid <= 0 ||
+    !owner.startsWith(`system:git-sync:${ownerPid}:`)
+  ) {
+    return {
+      status: 'unverified',
+      owner_pid: ownerPid,
+      lock_state: 'unknown',
+      matching_owner_lock: null,
+      reason: 'The active marker is missing a valid, matching per-fire owner and PID; keep the restart verdict unsafe.',
+    };
+  }
+
+  if (!isPidDefinitivelyDead(ownerPid)) {
+    return {
+      status: 'unverified',
+      owner_pid: ownerPid,
+      lock_state: 'not-checked',
+      matching_owner_lock: null,
+      reason: `Owner PID ${ownerPid} is present or could not be proven dead; keep the active marker unsafe.`,
+    };
+  }
+
+  try {
+    const queue = await readResourceQueue(getTxPool(), {
+      coordinationDomain: coordinationDomain || '*',
+      resource: `git-sync:${installSlug}`,
+    });
+    const exclusiveHolders = queue.holders.filter((holder) => holder.mode === 'exclusive');
+    const matchingOwnerLock = exclusiveHolders.some((holder) => holder.owner === owner);
+    if (exclusiveHolders.length > 0) {
+      return {
+        status: 'unverified',
+        owner_pid: ownerPid,
+        lock_state: 'held',
+        matching_owner_lock: matchingOwnerLock,
+        reason: matchingOwnerLock
+          ? `Owner PID ${ownerPid} is gone, but its exclusive git-sync resource lease remains; keep the restart verdict unsafe.`
+          : `Owner PID ${ownerPid} is gone, but an exclusive git-sync resource lease remains; keep the restart verdict unsafe.`,
+      };
+    }
+    return {
+      status: 'stale',
+      owner_pid: ownerPid,
+      lock_state: 'absent',
+      matching_owner_lock: false,
+      reason: `Owner PID ${ownerPid} is definitively gone and no live exclusive git-sync resource lease remains.`,
+    };
+  } catch {
+    return {
+      status: 'unverified',
+      owner_pid: ownerPid,
+      lock_state: 'unknown',
+      matching_owner_lock: null,
+      reason: `Owner PID ${ownerPid} is gone, but the git-sync resource lock could not be read; keep the restart verdict unsafe.`,
+    };
+  }
+}
+
 export function deriveGitSyncFreshness(
   metadata: Record<string, unknown> | null,
   cron: string | null,
   active: boolean,
   nowMs: number = Date.now(),
+  ownerReconciliation: GitSyncActivityOwnerReconciliation | null = null,
 ): Record<string, unknown> {
   const lastSyncedAtMs = epochMs(metadata?.last_synced_at);
   const first = cron ? computeNextFireAt(cron, new Date(nowMs)) : null;
@@ -385,7 +475,7 @@ export function deriveGitSyncFreshness(
   const activityRaw = metadata?.git_sync_activity;
   const activity =
     activityRaw && typeof activityRaw === 'object' ? (activityRaw as Record<string, unknown>) : null;
-  const inFlightActive = activity?.active === true;
+  const inFlightActive = activity?.active === true && ownerReconciliation?.status !== 'stale';
   const inFlightStartedAtMs = inFlightActive ? epochMs(activity?.started_at) : null;
   const inFlightAgeMs = inFlightStartedAtMs === null ? null : Math.max(0, nowMs - inFlightStartedAtMs);
   // The writer heartbeats `updated_at` from the liveness guard's onProgress callback.
@@ -473,12 +563,12 @@ export function deriveGitSyncFreshness(
 
   const safeToRestartReason =
     executionStatus === 'idle'
-      ? 'No git-sync fire is in flight (the activity marker reports active:false), so a restart cannot interrupt one.'
+      ? ownerReconciliation?.status === 'stale'
+        ? `The active git-sync marker is stale: ${ownerReconciliation.reason}`
+        : 'No git-sync fire is in flight (the activity marker reports active:false), so a restart cannot interrupt one.'
       : executionStatus === 'unknown'
         ? 'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.'
-        : executionStatus === 'stuck'
-          ? `A git-sync fire has been in flight for ${mins(inFlightAgeMs)} with no recorded progress for ${mins(inFlightProgressAgeMs)}. There is a LIVE process holding the exclusive git-sync lock — inspect it (processes:list) rather than restarting blind; a restart drops that lock mid-write.`
-          : `A git-sync fire has been in flight for ${mins(inFlightAgeMs)} and is still recording progress. Restarting would drop the exclusive git-sync lock mid-write and destroy its uncommitted work.`;
+        : `${ownerReconciliation?.reason ?? 'An active git-sync marker has not been proven stale.'} Treat it as in-flight and do not restart (safe_to_restart is false).`;
 
   return {
     status,
@@ -510,12 +600,14 @@ export function deriveGitSyncFreshness(
       progress_age_ms: inFlightProgressAgeMs,
       holds_exclusive_locks: holdsExclusiveLocks,
       locks_reported: locksRaw !== null,
+      owner_reconciliation: ownerReconciliation,
     },
     safe_to_restart: safeToRestart,
     safe_to_restart_reason: safeToRestartReason,
     in_flight: activity
       ? {
           active: inFlightActive,
+          stale_marker: ownerReconciliation?.status === 'stale',
           phase: inFlightPhase,
           started_at: isoAt(inFlightStartedAtMs),
           age_ms: inFlightAgeMs,
@@ -529,22 +621,17 @@ export function deriveGitSyncFreshness(
       status !== 'degraded'
         ? null
         : inFlightStuck
-        ? `A git-sync fire has been in flight for ${mins(inFlightAgeMs)}` +
+        ? `The git-sync activity marker has been active for ${mins(inFlightAgeMs)}` +
             `${inFlightPhase ? ` (phase '${inFlightPhase}')` : ''}; its last recorded progress was ` +
-            `${mins(inFlightProgressAgeMs)} ago. Scheduled ticks skip while it holds ` +
-            'the git-sync lock, so nothing is being committed and the raw last_status still describes ' +
-            'the tick before it. There IS a live process holding that lock: inspect it before any ' +
-            'restart (safe_to_restart is false).'
+            `${mins(inFlightProgressAgeMs)} ago. The owner/lock check is unresolved: ` +
+            `${ownerReconciliation?.reason ?? 'the owner PID and exclusive lease have not both been proven stale.'} ` +
+            'Treat the marker as in-flight and inspect it before restart (safe_to_restart is false).'
           : executionStatus === 'in-flight'
-            ? // WI-10002019: the stale completed-outcome clock is EXPLAINED by a live fire.
-              // The generic "nothing has completed" wording below reads as a dead scheduler
-              // and points a reader straight at the one action that destroys the live fire.
-              `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals, ` +
-              `but a fire IS in flight (${mins(inFlightAgeMs)}` +
-              `${inFlightPhase ? `, phase '${inFlightPhase}'` : ''}) and is still recording progress. ` +
-              'The stale clock is explained by that live fire, NOT by a stalled scheduler: do not restart ' +
-              'or kill git-sync (safe_to_restart is false — a restart drops the exclusive git-sync lock ' +
-              'mid-write and destroys its uncommitted work).'
+            ? `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals, ` +
+              `and an active marker remains (${mins(inFlightAgeMs)}` +
+              `${inFlightPhase ? `, phase '${inFlightPhase}'` : ''}). ` +
+              `${ownerReconciliation?.reason ?? 'Owner liveness and lock state have not both been proven stale.'} ` +
+              'Keep the restart verdict unsafe until the marker is reconciled.'
             : `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
               'the raw last_status may describe an older successful tick.',
   };
@@ -816,6 +903,7 @@ export default defineTool({
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, long_running_age_ms, last_progress_at, progress_age_ms, stuck }, null when the row carries no git_sync_activity. `age_ms`/`long_running_age_ms` measure total fire duration; `progress_age_ms` measures time since the writer heartbeat. `stuck:true` means progress has been absent for longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`. Legacy active markers without a progress timestamp fall back to started_at.',
       '⛔ `health.git_sync_freshness.safe_to_restart` IS THE RESTART/KILL DECISION — never `status` (WI-10002019). `status:\'degraded\'` COMPOSES two legs whose remedies are opposite, so it indicates the destructive action in exactly the case that must not take it: a long fire freezes `last_synced_at`, so `scheduler.status` reads `not-firing` BECAUSE `execution.status` is `in-flight`, and a restart then drops the exclusive git-sync lock mid-write and destroys the sweep\'s uncommitted work. The legs are independent — `scheduler` { status: firing|not-firing|inactive|unknown, last_completed_at, age_ms, cadence_ms, stale_after_ms, missed_intervals, stalled_behind_in_flight_fire } and `execution` { status: idle|in-flight|stuck|unknown, phase, started_at, age_ms, last_progress_at, progress_age_ms, holds_exclusive_locks, locks_reported }. `stalled_behind_in_flight_fire:true` is the giveaway that a stale scheduler leg is EXPLAINED by a live fire rather than by a stalled engine.',
       '`health.git_sync_freshness.safe_to_restart` is derived from the EXECUTION leg ALONE and is true only for a provably idle one; `execution.status:\'unknown\'` (the row carries no git_sync_activity marker) reports UNSAFE on purpose, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart. `safe_to_restart_reason` names which case you are in, and `holds_exclusive_locks` is writer-reported only — `locks_reported:false` means UNMEASURED, never "holds no locks".',
+      '`health.git_sync_freshness.execution.owner_reconciliation` reports a marker as stale only when its stored owner PID is definitively gone and the live exclusive `git-sync:<installSlug>` lease is absent; missing/mismatched identity or an unreadable lock plane remains unverified and keeps `safe_to_restart:false`.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
@@ -1108,11 +1196,12 @@ export default defineTool({
         oldestPlanUpdatedAt: iso(backlog[0]?.oldest_plan_updated_at ?? null),
       };
     }
-    const routines = rows.map((r) => {
+    const routines = await Promise.all(rows.map(async (r) => {
       const cron = (r.trigger_config as { cron?: string } | null)?.cron ?? null;
       let health: Record<string, unknown> | null;
       if (r.target_role === 'system:git-sync') {
-        const freshness = deriveGitSyncFreshness(r.metadata, cron, r.active);
+        const ownerReconciliation = await reconcileGitSyncActivityOwner(r.metadata, ws || '*', r.install_slug);
+        const freshness = deriveGitSyncFreshness(r.metadata, cron, r.active, Date.now(), ownerReconciliation);
         const originFreshness = deriveOriginFreshness(r.metadata);
         // The derived verdict replaces the headline it contradicts, rather than sitting
         // beside it hoping to be read (EI-21807573331912223). Raw value preserved at
@@ -1158,7 +1247,7 @@ export default defineTool({
       // Papercusp's cell would turn a correct value into a cross-harness misattribution.
       const plane = r.install_slug === home ? statePlaneForDoor(routine, 'routines:list', args, ctx) : null;
       return { ...routine, ...(plane ? { plane } : {}) };
-    });
+    }));
     // {data} envelope so the payload-tier shaper applies.
     // `limit` bounds the rows only; `count` stays the true total so a narrowed read
     // is never mistaken for a smaller fleet (same contract as locks:list registryCount).

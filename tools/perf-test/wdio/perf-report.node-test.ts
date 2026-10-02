@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -669,6 +671,54 @@ test('native diagnostic buffers during sampling, flushes on stop, and preserves 
     assert.equal(readFileSync(file, 'utf8'), saved);
   } finally {
     await stopNativeProcessProbe(child);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('real native sampler retains a disappeared child identity without guessing its known parent-side signal', {
+  skip: process.platform !== 'linux', timeout: 10_000,
+}, async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'native-process-lifecycle-'));
+  const file = path.join(dir, 'sample.jsonl');
+  const target = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  let sampler: ReturnType<typeof startNativeProcessProbe> | null = null;
+  try {
+    await once(target, 'spawn');
+    sampler = startNativeProcessProbe(process.pid, process.execPath, file);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('native sampler did not start')), 5000);
+      sampler!.once('message', (message) => {
+        clearTimeout(timeout);
+        assert.deepEqual(message, { kind: 'sampling-started' });
+        resolve();
+      });
+    });
+    const exit = once(target, 'exit');
+    assert.equal(target.kill('SIGTERM'), true);
+    assert.deepEqual(await exit, [null, 'SIGTERM']);
+    // Allow the maintained 100ms sampler to observe the parent's completed reap.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await stopNativeProcessProbe(sampler);
+    assert.equal(sampler.exitCode, 0);
+    const samples = readFileSync(file, 'utf8').trim().split('\n')
+      .map((line) => JSON.parse(line)).filter((row) => row.kind === 'sample');
+    const before = samples.flatMap((row) => row.processes)
+      .find((row) => row.pid === target.pid);
+    assert(before, 'the actual child must have been observed before its exit');
+    const after = samples.flatMap((row) => row.lifecycle)
+      .find((row) => row.pid === target.pid && row.status === 'procfs-missing');
+    assert(after, 'the running sampler must retain the missing child lifetime');
+    assert.equal(after.identity, before.identity);
+    assert.equal(after.signal, null, 'the sampler has no parent-side wait receipt');
+    assert.equal(after.exitCode, null);
+    assert.equal(after.reaping, 'unknown');
+  } finally {
+    if (target.exitCode === null && target.signalCode === null) {
+      const exit = once(target, 'exit');
+      target.kill('SIGTERM');
+      await exit;
+    }
+    await stopNativeProcessProbe(sampler);
     rmSync(dir, { recursive: true, force: true });
   }
 });

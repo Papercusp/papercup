@@ -33,10 +33,13 @@ type FocusTargetResolver = () => HTMLElement | null | undefined;
  * Cloud Workspaces renders panels and menus conditionally, so a close action
  * can race a render that removes the element that held focus. Keeping this
  * guard in one place prevents every caller from accidentally focusing a stale
- * node (or throwing during server rendering) and preserves the user's scroll
- * position when focus is restored.
+ * node (or throwing during server rendering). Restoration preserves scroll by
+ * default; opening a surface can opt into revealing its newly mounted target.
  */
-export function focusSafely(target: HTMLElement | null | undefined): boolean {
+export function focusSafely(
+  target: HTMLElement | null | undefined,
+  options: FocusOptions = { preventScroll: true },
+): boolean {
   if (
     !target ||
     typeof document === "undefined" ||
@@ -45,7 +48,7 @@ export function focusSafely(target: HTMLElement | null | undefined): boolean {
     return false;
   }
 
-  target.focus({ preventScroll: true });
+  target.focus(options);
   return document.activeElement === target;
 }
 
@@ -115,7 +118,9 @@ export function useFocusLifecycle({
     const resolve = open
       ? resolversRef.current.onOpenFocus
       : resolversRef.current.onCloseFocus;
-    if (resolve) focusSafely(resolve());
+    // Newly mounted forms/menus may be outside the scrollport. Reveal opening
+    // focus, but keep the user's scroll position when returning to a trigger.
+    if (resolve) focusSafely(resolve(), { preventScroll: !open });
   }, [open]);
 }
 
