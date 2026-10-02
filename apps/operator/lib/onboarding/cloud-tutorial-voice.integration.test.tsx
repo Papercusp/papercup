@@ -26,10 +26,10 @@ const fixtureFetch: typeof fetch = async (url, options) => {
   const body = JSON.parse(options!.body as string); requests.push({ url: String(url), body, signal: options!.signal! });
   return String(url).includes('tutorial-speech') ? new Response(new Blob(['audio'], { type: 'audio/wav' })) : Response.json({ answer: 'Use the project permission checks in the connection form.' });
 };
-function Fixture({ workspaceId = scope.workspaceId }: { workspaceId?: string }) {
+function Fixture({ workspaceId = scope.workspaceId, onCheckAgain }: { workspaceId?: string; onCheckAgain?: () => void }) {
   const selected = { ...scope, workspaceId };
   const [state, dispatch] = useReducer(tutorialReducer, tutorialReducer(createTutorialState(selected), { type: 'observe', observation: { scope: selected, revision: 1, access: 'allowed' } }));
-  return <CloudTutorialGuide state={state} dispatch={dispatch} assistance={(step, status) => <CloudTutorialAssistance
+  return <CloudTutorialGuide state={state} dispatch={dispatch} onCheckAgain={onCheckAgain} assistance={(step, status) => <CloudTutorialAssistance
     key={`${workspaceId}:${step.id}`} scope={selected} step={step} status={status} />} />;
 }
 beforeEach(() => {
@@ -101,7 +101,8 @@ describe('Guide output-only voice lifecycle', () => {
     expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('tutorial-speech'))).toHaveLength(0);
   });
   it('times out slow help, keeps lesson controls usable and ignores a late answer', async () => {
-    render(<Fixture />); await waitFor(() => expect(audio.length).toBe(1));
+    const checkAgain = vi.fn();
+    render(<Fixture onCheckAgain={checkAgain} />); await waitFor(() => expect(audio.length).toBe(1));
     let resolveHelp!: (response: Response) => void;
     vi.mocked(fetch).mockImplementation((_url, options) => {
       if (!String(_url).includes('tutorial-help')) return fixtureFetch(_url, options);
@@ -109,11 +110,36 @@ describe('Guide output-only voice lifecycle', () => {
       return new Promise(resolve => { resolveHelp = resolve; });
     });
     fireEvent.click(screen.getByRole('button', { name: 'Ask about this step' }));
+    expect(screen.getByRole('button', { name: 'Ask about this step' })).toHaveProperty('disabled', true);
+    const check = screen.getByRole('button', { name: 'Check again' });
+    expect(check).toHaveProperty('disabled', false);
+    fireEvent.click(check);
+    expect(checkAgain).toHaveBeenCalledOnce();
+    expect(screen.getByText('0 of 6 steps confirmed')).toBeTruthy();
     await screen.findByText(/AI help is taking too long/, {}, { timeout: 17_000 });
     expect(requests.at(-1)!.signal.aborted).toBe(true);
     expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
     await act(async () => resolveHelp(Response.json({ answer: 'Late answer from obsolete request' })));
     expect(screen.queryByText('Late answer from obsolete request')).toBeNull();
     expect(screen.getByText('0 of 6 steps confirmed')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(screen.getByText('Your lesson is paused.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume guide' }));
+    expect(screen.getByRole('button', { name: 'Check again' })).toHaveProperty('disabled', false);
   }, 20_000);
+  it('keeps the fixed lesson operable after help provider failure without confirming a step', async () => {
+    const checkAgain = vi.fn();
+    vi.mocked(fetch).mockImplementation((url, options) => String(url).includes('tutorial-help')
+      ? Promise.resolve(new Response('', { status: 503 })) : fixtureFetch(url, options));
+    render(<Fixture onCheckAgain={checkAgain} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ask about this step' }));
+    await screen.findByText(/AI help is unavailable/);
+    const check = screen.getByRole('button', { name: 'Check again' });
+    expect(check).toHaveProperty('disabled', false);
+    fireEvent.click(check);
+    expect(checkAgain).toHaveBeenCalledOnce();
+    expect(screen.getByText('0 of 6 steps confirmed')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(screen.getByText('Your lesson is paused.')).toBeTruthy();
+  });
 });

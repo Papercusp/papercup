@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 import { StrictMode, useEffect, useState } from "react";
+import { readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
@@ -11,6 +15,51 @@ import { Button } from "@/app/harness/Button";
 import { Modal } from "@/app/harness/Modal";
 import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
 import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
+
+describe("Assessed walkthrough dependencies", () => {
+  it("pins the installed and locked stable MIT Joyride release and keeps Driver test-only", () => {
+    const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    const lock = JSON.parse(readFileSync(new URL("../../../../package-lock.json", import.meta.url), "utf8"));
+    const require = createRequire(import.meta.url);
+    const installed = JSON.parse(readFileSync(new URL("../package.json", pathToFileURL(require.resolve("react-joyride"))), "utf8"));
+    // D-014 assessed this exact release on React 19. A changed engine/version or
+    // license requires fresh assessment, rather than silently inheriting proof.
+    expect(manifest.dependencies["react-joyride"]).toBe("3.2.0");
+    expect(installed).toMatchObject({ name: "react-joyride", version: "3.2.0", license: "MIT",
+      peerDependencies: { react: "16.8 - 19", "react-dom": "16.8 - 19" } });
+    expect(lock.packages["node_modules/react-joyride"]).toMatchObject({ version: "3.2.0", license: "MIT" });
+    expect(lock.packages["apps/operator"].dependencies["react-joyride"]).toBe("3.2.0");
+    expect(manifest.dependencies["driver.js"]).toBeUndefined();
+    expect(manifest.devDependencies["driver.js"]).toBe("1.8.0");
+  });
+
+  it("uses one production engine and only assessed existing frontend dependencies", () => {
+    const directory = new URL("./", import.meta.url);
+    const imports = new Map<string, string[]>();
+    const files = readdirSync(directory).filter(file => file.includes("cloud-tutorial")
+      && /\.tsx?$/.test(file) && !file.includes(".test."));
+    expect(files).toContain("cloud-tutorial-adapter.tsx");
+    for (const file of files) {
+      const source = ts.createSourceFile(file, readFileSync(new URL(file, directory), "utf8"), ts.ScriptTarget.Latest, true);
+      const modules: string[] = [];
+      const visit = (node: ts.Node) => {
+        if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
+          && ts.isStringLiteral(node.moduleSpecifier)) modules.push(node.moduleSpecifier.text);
+        if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+          || (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+          && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) modules.push(node.arguments[0].text);
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      imports.set(file, modules);
+      for (const module of modules) {
+        if (module.startsWith(".") || module.startsWith("@/")) continue;
+        expect(module, `Unassessed tutorial dependency in ${file}`).toMatch(/^(?:react|react-joyride|motion\/react|@papercusp\/operator-core\/lib\/onboarding\/cloud-tutorial-lesson)$/);
+      }
+    }
+    expect(imports.get("cloud-tutorial-adapter.tsx")).toEqual(["react", "react-joyride"]);
+  });
+});
 
 const cloudBoundary = vi.hoisted(() => ({ mutate: vi.fn(), invalidate: vi.fn() }));
 // Only the authenticated data boundary is substituted; page, forms, Radix controls,
