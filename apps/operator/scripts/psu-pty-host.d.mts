@@ -716,6 +716,31 @@ export function shouldRetryLaunchKickoffOnFreshChild({ agent, reason, managedKic
     retryCount?: number | undefined;
     maxRetries?: number | undefined;
 }): boolean;
+/** EI-24818010361425604: should an undelivered launch kickoff be re-delivered to
+ *  the successor of a same-host respawn? `superseded` means THIS host replaced the
+ *  child the kickoff targeted (a managed carry-respawn, a loop recycle) while the
+ *  kickoff was in flight. The owner continues in the successor, so the kickoff
+ *  belongs there; publishing `kickoff-not-submitted:superseded` instead makes the
+ *  launching parent kill the task, successor included. Measured 2026-10-02
+ *  20:44Z: a resumed Codex thread's first turn tripped native auto-compaction,
+ *  the PreCompact bridge turned it into a managed carry-respawn 1s after the
+ *  kickoff was written, and capability:launch-agent stopped the healthy successor.
+ *  A host that is tearing down has no successor, and a managed kickoff's native
+ *  transcript proof owns its own verdict and child kill. Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.hostShuttingDown]
+ * @param {number} [opts.redeliveries]
+ * @param {number} [opts.maxRedeliveries]
+ */
+export function shouldRedeliverLaunchKickoffAfterRespawn({ reason, managedKickoff, hostShuttingDown, redeliveries, maxRedeliveries, }?: {
+    reason?: string | undefined;
+    managedKickoff?: boolean | undefined;
+    hostShuttingDown?: boolean | undefined;
+    redeliveries?: number | undefined;
+    maxRedeliveries?: number | undefined;
+}): boolean;
 /** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
  *  fresh-child retry remains, give up early on a child still at `Starting` after
  *  `stuckMs` so the host can replace it (the WI-10005106 carry remedy). The last
@@ -3141,6 +3166,10 @@ export const TURN_ROW_CLASSIFIERS: Readonly<{
  * matches the 64 MiB cap of the marker proof scan, so any transcript whose
  * marker the proof could find is one this probe can also read from the start. */
 export const NATIVE_KICKOFF_SCAN_BYTES: number;
+/** EI-24818010361425604: how many times one launch kickoff may follow its owner
+ *  into the successor of a same-host respawn. One: a successor that is itself
+ *  replaced before its kickoff lands is a respawn loop, not a delivery problem. */
+export const LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX: 1;
 /** The persona-refresh `reason` the operator returns when a restart would activate a
  *  priced Cupboard identity that has no funds behind it and cannot be dropped from the
  *  stack (agent-economy-flywheel P-016, D-012). The respawn is refused on it, never

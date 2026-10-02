@@ -146,6 +146,20 @@ afterEach(() => {
 });
 
 describe('R-16 — the portal relays an app call', () => {
+  it('refuses an offline BYOC workspace using the durable hosting classification', async () => {
+    connector.close();
+    const input = deps();
+    input.resolveCustomerWorkspaceHosting = async (id) => id === 'ws-1' ? 'byoc' : null;
+    const response = await handleHostedAppRelay(appCall(), input);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: 'byoc_plaintext_relay_refused',
+      alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+    });
+    expect(usage.rows.size).toBe(0);
+    expect(machineFetch).not.toHaveBeenCalled();
+  });
+
   it('refuses BYOC before parsing an app key or reading and forwarding the body', async () => {
     broker.attachConnector({ ...BINDING, hosting: 'byoc' }, connector);
     const response = await handleHostedAppRelay(appCall(), deps());

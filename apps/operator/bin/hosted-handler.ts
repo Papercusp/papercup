@@ -104,6 +104,8 @@ export interface HostedHandler {
 export interface HostedHandlerOptions {
   /** Server-side classification; an unavailable or unrecognized row refuses the socket. */
   resolveWorkspaceHosting: (binding: HostedConnectorBinding) => Promise<'byoc' | 'papercusp' | null>;
+  /** The same server-side classification when no connector is online. */
+  resolveCustomerWorkspaceHosting: (customerWorkspaceId: string) => Promise<'byoc' | 'papercusp' | null>;
   /**
    * Monthly app-relay usage (P-007, D-006). Production passes the Postgres store
    * (migration 1254); the in-memory default is for tests and hosts without one.
@@ -137,7 +139,7 @@ export function classifyHostedWorkspaceHosting(
   const delegation = (providerConfig as Record<string, unknown>).hostedDelegation;
   if (!delegation || typeof delegation !== 'object' || Array.isArray(delegation)) return null;
   const record = delegation as Record<string, unknown>;
-  if (record.workspaceId !== customerWorkspaceId || !record.configuration ||
+  if (record.status !== 'verified' || record.workspaceId !== customerWorkspaceId || !record.configuration ||
       typeof record.configuration !== 'object' || Array.isArray(record.configuration)) return null;
   const configuration = record.configuration as Record<string, unknown>;
   const source = configuration.source;
@@ -168,6 +170,28 @@ export async function readHostedWorkspaceHosting(
        LIMIT 1
     `;
     return classifyHostedWorkspaceHosting(rows[0]?.provider_config, binding.customerWorkspaceId);
+  });
+}
+
+/** Classify portal requests even when the customer's connector is offline. */
+export async function readCustomerWorkspaceHosting(
+  controlPlaneWorkspaceId: string,
+  customerWorkspaceId: string,
+): Promise<'byoc' | 'papercusp' | null> {
+  return withWorkspace(controlPlaneWorkspaceId, async (sql) => {
+    const rows = await sql<Array<{ provider_config: unknown }>>`
+      SELECT connection.provider_config
+        FROM harness_shared.customer_workspaces AS customer
+        JOIN harness_shared.workspace_hosts AS host
+          ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
+        JOIN harness_shared.workspace_host_connections AS connection
+          ON connection.workspace_id = host.workspace_id AND connection.id = host.connection_id
+       WHERE customer.workspace_id = ${controlPlaneWorkspaceId}
+         AND customer.id = ${customerWorkspaceId}
+         AND customer.state <> 'deleted'
+       LIMIT 1
+    `;
+    return classifyHostedWorkspaceHosting(rows[0]?.provider_config, customerWorkspaceId);
   });
 }
 
@@ -219,6 +243,7 @@ export function createHostedHandler(
   const appRelayLimits = options.appRelayLimits ?? DEFAULT_APP_RELAY_LIMITS;
   const appRelay: HostedAppRelayDependencies = {
     port: sessionBroker,
+    resolveCustomerWorkspaceHosting: options.resolveCustomerWorkspaceHosting,
     usage: options.appRelayUsage ?? new InMemoryHostedAppRelayUsageStore(),
     rate: new AppRelayRateLimiter(appRelayLimits.requestsPerMinute),
     limits: appRelayLimits,
@@ -241,6 +266,7 @@ export function createHostedHandler(
   const mcpOAuth: PortalMcpOAuthDependencies = {
     store: options.mcpOAuthStore ?? new InMemoryPortalOAuthStore(),
     port: sessionBroker,
+    resolveCustomerWorkspaceHosting: options.resolveCustomerWorkspaceHosting,
     resolvePrincipal: async (headers) =>
       resolveHostedPrincipal ? resolveHostedPrincipal(headers) : { ok: false, reason: "principal_resolver_unconfigured" },
   };
@@ -288,17 +314,16 @@ export function createHostedHandler(
       let hosting: 'byoc' | 'papercusp' | null = null;
       try { hosting = await options.resolveWorkspaceHosting(authenticated.binding); } catch { /* fail closed */ }
       if (!hosting) { socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"); socket.destroy(); return true; }
-      const binding = { ...authenticated.binding, hosting };
       websocketServer.handleUpgrade(request, socket, head, (websocket) => {
         const untrack = gateway.track(authenticated.binding, (reason) => websocket.close(4001, reason));
         websocket.once("close", untrack);
-        if (authenticated.role === "connector") sessionBroker.attachConnector(binding, websocket);
+        if (authenticated.role === "connector") sessionBroker.attachConnector({ ...authenticated.binding, hosting }, websocket);
         // P-013: which desktop a viewer wants rides on the upgrade query, alongside
         // the ticket. The TICKET authorizes the workspace; the id selects within it —
         // consistent with D-025 ruling 2, which records that the connector binding is
         // the authorization boundary and that no second, weaker per-user filter is
         // applied to what a viewer may see.
-        else sessionBroker.attachBrowser(binding, websocket, readAttachRequest(fetchRequest));
+        else sessionBroker.attachBrowser({ ...authenticated.binding, hosting }, websocket, readAttachRequest(fetchRequest));
         websocketServer.emit("connection", websocket, request);
       });
       return true;
@@ -330,6 +355,8 @@ export async function createHostedHandlerFromEnvironment(
   const runService = dependencies.runService ?? withHostedServiceContext;
   return createHostedHandler(plane, spa, {
     resolveWorkspaceHosting: readHostedWorkspaceHosting,
+    resolveCustomerWorkspaceHosting: (customerWorkspaceId) =>
+      readCustomerWorkspaceHosting(configuration.controlPlaneWorkspaceId, customerWorkspaceId),
     appRelayUsage: new PostgresHostedAppRelayUsageStore(runService),
     mcpOAuthStore: new PostgresPortalOAuthStore(runService),
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,

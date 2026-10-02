@@ -8,7 +8,7 @@ import { classifyHostedWorkspaceHosting, createHostedHandler, readAttachRequest 
 
 describe('hosted relay hosting classification', () => {
   const record = (configuration: Record<string, unknown>) => ({
-    hostedDelegation: { workspaceId: 'workspace-1', configuration },
+    hostedDelegation: { workspaceId: 'workspace-1', status: 'verified', configuration },
   });
   it('classifies customer GCP/AWS delegations as BYOC and explicit vendor hosts separately', () => {
     expect(classifyHostedWorkspaceHosting(record({ provider: 'gcp', source: { method: 'workload-identity' } }), 'workspace-1')).toBe('byoc');
@@ -19,6 +19,9 @@ describe('hosted relay hosting classification', () => {
   it('fails closed for missing or mismatched delegation records', () => {
     expect(classifyHostedWorkspaceHosting(null, 'workspace-1')).toBeNull();
     expect(classifyHostedWorkspaceHosting(record({ provider: 'gcp', source: { method: 'workload-identity' } }), 'other')).toBeNull();
+    expect(classifyHostedWorkspaceHosting({ hostedDelegation: {
+      workspaceId: 'workspace-1', status: 'pending', configuration: { provider: 'gcp', source: { method: 'papercusp-hosted' } },
+    } }, 'workspace-1')).toBeNull();
   });
 });
 
@@ -64,10 +67,34 @@ function fixture(connectorGateway?: HostedWorkspaceConnectorGateway) {
         headers: { "content-type": "text/html; charset=utf-8" },
       }),
   );
-  return createHostedHandler(plane, spa, { resolveWorkspaceHosting: async () => 'papercusp' });
+  return createHostedHandler(plane, spa, {
+    resolveWorkspaceHosting: async () => 'papercusp',
+    resolveCustomerWorkspaceHosting: async () => 'papercusp',
+  });
 }
 
 describe("hosted handler", () => {
+  it("refuses offline BYOC portal and OAuth content paths through the server hosting resolver", async () => {
+    const api = new Hono().basePath('/api');
+    const plane = { app: api, mounted: [], components: {} } as unknown as AssembledHostedControlPlane;
+    const resolved: string[] = [];
+    const hosted = createHostedHandler(plane, new Hono(), {
+      resolveWorkspaceHosting: async () => 'byoc',
+      resolveCustomerWorkspaceHosting: async (id) => { resolved.push(id); return 'byoc'; },
+    });
+    for (const path of ['/api/workspaces/workspace-1/mcp', '/api/workspaces/workspace-1/oauth/token']) {
+      const response = await hosted.handler(new Request(`https://app.papercusp.com${path}`, {
+        method: 'POST', body: 'BYOC_SECRET',
+      }));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: 'byoc_plaintext_relay_refused',
+        alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+      });
+    }
+    expect(resolved).toEqual(['workspace-1', 'workspace-1']);
+  });
+
   it("serves the hosted API and existing SPA from one origin", async () => {
     const hosted = fixture();
     const health = await hosted.handler(

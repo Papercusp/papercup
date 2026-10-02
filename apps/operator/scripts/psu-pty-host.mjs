@@ -2057,6 +2057,41 @@ export function shouldRetryLaunchKickoffOnFreshChild({
   return reason === 'codex-startup-still-starting';
 }
 
+/** EI-24818010361425604: how many times one launch kickoff may follow its owner
+ *  into the successor of a same-host respawn. One: a successor that is itself
+ *  replaced before its kickoff lands is a respawn loop, not a delivery problem. */
+export const LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX = 1;
+
+/** EI-24818010361425604: should an undelivered launch kickoff be re-delivered to
+ *  the successor of a same-host respawn? `superseded` means THIS host replaced the
+ *  child the kickoff targeted (a managed carry-respawn, a loop recycle) while the
+ *  kickoff was in flight. The owner continues in the successor, so the kickoff
+ *  belongs there; publishing `kickoff-not-submitted:superseded` instead makes the
+ *  launching parent kill the task, successor included. Measured 2026-10-02
+ *  20:44Z: a resumed Codex thread's first turn tripped native auto-compaction,
+ *  the PreCompact bridge turned it into a managed carry-respawn 1s after the
+ *  kickoff was written, and capability:launch-agent stopped the healthy successor.
+ *  A host that is tearing down has no successor, and a managed kickoff's native
+ *  transcript proof owns its own verdict and child kill. Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.hostShuttingDown]
+ * @param {number} [opts.redeliveries]
+ * @param {number} [opts.maxRedeliveries]
+ */
+export function shouldRedeliverLaunchKickoffAfterRespawn({
+  reason = '',
+  managedKickoff = false,
+  hostShuttingDown = false,
+  redeliveries = 0,
+  maxRedeliveries = LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX,
+} = {}) {
+  if (managedKickoff || hostShuttingDown) return false;
+  if (redeliveries >= maxRedeliveries) return false;
+  return reason === 'superseded';
+}
+
 /** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
  *  fresh-child retry remains, give up early on a child still at `Starting` after
  *  `stuckMs` so the host can replace it (the WI-10005106 carry remedy). The last
@@ -9562,6 +9597,45 @@ export function hostThroughPty(o) {
           break;
         }
         r = await injectLaunchKickoff();
+      }
+      // EI-24818010361425604: a same-host respawn replaced the child while this
+      // kickoff was in flight, so the owner now lives in the successor. Wait on
+      // the inject mutex (a gated respawn holds it through kill + spawn + carry
+      // inject, so the carry turn lands first), then give the successor the
+      // kickoff. A duplicate is possible when the carry tail already quoted the
+      // kickoff; losing it, and having the parent kill the successor over a
+      // terminal negative receipt, is the failure this replaces.
+      let respawnRedeliveries = 0;
+      while (
+        !r.delivered &&
+        shouldRedeliverLaunchKickoffAfterRespawn({
+          reason: r.reason,
+          managedKickoff: Boolean(managedKickoff),
+          hostShuttingDown: hostCleanedUp || shuttingDown,
+          redeliveries: respawnRedeliveries,
+        })
+      ) {
+        respawnRedeliveries += 1;
+        appendHostEvent(ownerId, 'launch-kickoff-respawn-redelivery', {
+          label,
+          attempt: respawnRedeliveries,
+          maxRedeliveries: LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX,
+        });
+        let releaseInject = null;
+        try {
+          releaseInject = await injectMutex.acquire();
+        } catch {
+          // Never block the redelivery on the mutex itself; the injector's own
+          // prompt and busy gates still order it after the carry turn.
+          releaseInject = null;
+        }
+        try {
+          r = hostCleanedUp || shuttingDown
+            ? { delivered: false, reason: 'host-shutting-down', attempts: 0 }
+            : await injectLaunchKickoff();
+        } finally {
+          releaseInject?.();
+        }
       }
       if (!managedKickoff) {
         if (!r.delivered) {

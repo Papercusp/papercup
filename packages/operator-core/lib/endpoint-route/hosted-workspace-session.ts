@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { parseHostedPsuCustomerArgv } from '../workspace-host/hosted-psu-session';
+import { HOSTED_RELAY_FRAME_REGISTRY } from '../workspace-host/hosted-relay-confidentiality-registry';
 import type {
   HostedConnectorBinding,
   HostedConnectorTicketBinding,
@@ -401,6 +402,14 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       if (!raw) return;
       let message: { type?: string; channelId?: string; payload?: unknown; reason?: string };
       try { message = JSON.parse(raw) as typeof message; } catch { return; }
+      if (binding.hosting === 'byoc' && message.type !== 'relay' && message.type !== 'relay.close') {
+        // A connector cannot add new control traffic by naming a frame type. Audit
+        // only a known type name; an unknown string may itself contain content.
+        const frame = typeof message.type === 'string' ? HOSTED_RELAY_FRAME_REGISTRY[message.type] : undefined;
+        this.audit(binding, 'byoc_control_frame_dropped', undefined,
+          frame?.sensitivity === 'control' ? message.type : 'unknown');
+        return;
+      }
       if (message.type !== 'relay' && message.type !== 'relay.close') return;
       if (typeof message.channelId !== 'string') return;
       const session = this.sessions.get(message.channelId);

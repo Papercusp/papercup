@@ -438,7 +438,7 @@ export class AppRelayRateLimiter {
 // ─── Portal side: the relay ─────────────────────────────────────────────────
 
 export interface AppRelayConnector {
-  binding: AppRelayWorkspace & { hostId: string; generation: number };
+  binding: AppRelayWorkspace & { hostId: string; generation: number; hosting?: 'byoc' | 'papercusp' };
   /** The last proof of life the broker saw from this connector socket. */
   lastSeenAt: Date;
 }
@@ -482,6 +482,8 @@ export interface HostedAppRelayAuditEvent {
 
 export interface HostedAppRelayDependencies {
   port: AppRelayPort;
+  /** Server-side hosting lookup for a workspace whose connector is offline. */
+  resolveCustomerWorkspaceHosting?: (customerWorkspaceId: string) => Promise<'byoc' | 'papercusp' | null>;
   usage: HostedAppRelayUsageStore;
   rate: AppRelayRateLimiter;
   limits?: AppRelayLimits;
@@ -539,7 +541,8 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
   // Classify from the broker's server-authenticated connector before inspecting
   // an app key or reading a body. The vendor portal cannot terminate BYOC content.
   const connector = deps.port.appConnector(target.customerWorkspaceId);
-  if (connector?.binding.hosting === 'byoc') {
+  const hosting = connector?.binding.hosting ?? await deps.resolveCustomerWorkspaceHosting?.(target.customerWorkspaceId).catch(() => null);
+  if (hosting === 'byoc') {
     audit('app_relay_refused', 'byoc_plaintext_relay_refused');
     return refuse(403, 'byoc_plaintext_relay_refused', {}, {
       alternatives: ['customer_controlled_ingress', 'sealed_channel'],

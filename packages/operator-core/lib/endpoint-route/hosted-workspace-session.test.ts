@@ -31,6 +31,24 @@ const ticket = (session = 'hosted-session-1'): HostedConnectorTicketBinding => (
 });
 
 describe('HostedWorkspaceSessionBroker', () => {
+  it('drops non-allowlisted BYOC connector control frames and audits type only', () => {
+    const audit = vi.fn();
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0, onAudit: audit });
+    const host = new FakeSocket();
+    broker.attachConnector({ ...connector, hosting: 'byoc' }, host);
+    host.message({ type: 'session.claim-control', payload: { secret: 'BYOC_SECRET' } });
+    host.message({ type: 'BYOC_SECRET', payload: { secret: 'BYOC_SECRET' } });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'byoc_control_frame_dropped', detail: 'session.claim-control',
+    }));
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'byoc_control_frame_dropped', detail: 'unknown',
+    }));
+    expect(JSON.stringify(audit.mock.calls)).not.toContain('BYOC_SECRET');
+    expect(host.sent).not.toContainEqual(expect.objectContaining({ type: 'relay.open' }));
+    broker.dispose();
+  });
+
   it.each(['pty', 'psu', 'operator-http', 'desktop'] as const)(
     'refuses a BYOC %s plaintext channel before opening it', (kind) => {
       const broker = new HostedWorkspaceSessionBroker({ randomId: () => 'forbidden' });
