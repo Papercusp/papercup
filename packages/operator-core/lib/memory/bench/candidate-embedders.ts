@@ -175,13 +175,16 @@ export function nativeRuntimeTraceVerified(events: WorkerNativeInferenceTrace[] 
   return !!events?.length && events.length % 2 === 0
     && events.every((event,i)=>event.phase === (i%2 ? 'end' : 'start') && validNativeRuntimeSample(event));
 }
-/** Observing a provider library only after Run does not qualify pre-inference
- * closure. Changes to bytes or mapped identity also invalidate the claim. */
-export function nativePreInferenceClosureVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
+/** Only the observed maps population is checked. A library loaded and unloaded
+ * within Run can evade the snapshots; complete closure needs loader evidence. */
+export function nativeObservedLibraryClosureVerified(events: WorkerNativeInferenceTrace[] | undefined): boolean {
   if (!nativeRuntimeTraceVerified(events)) return false;
   for (let i=0;i<events!.length;i+=2) {
-    const before = new Map(events![i].runtime!.libraries.map(f=>[f.path,JSON.stringify(f)]));
-    if (events![i+1].runtime!.libraries.some(f=>before.get(f.path)!==JSON.stringify(f))) return false;
+    const before = new Map(events![i].runtime!.libraries.map(f=>[f.path,f]));
+    if (events![i+1].runtime!.libraries.some(f=> {
+      const prior=before.get(f.path); return !prior || prior.bytes!==f.bytes || prior.sha256!==f.sha256
+        || prior.mappedDevice!==f.mappedDevice || prior.mappedInode!==f.mappedInode;
+    })) return false;
   }
   return true;
 }
@@ -221,6 +224,9 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
       workerInferenceTraceVerified: nativeInferenceTraceVerified(row.inputTraces, row.inferenceTraces, request.export, row.referenceInputIds, device),
       nativeRunTraceVerified: nativeRunTraceVerified(row.inputTraces, row.inferenceTraces, row.nativeInferenceTraces, request.export, row.referenceInputIds, device),
       nativeRawClockTraceVerified: nativeRawClockTraceVerified(row.nativeInferenceTraces),
+      nativeRuntimeTraceVerified: nativeRuntimeTraceVerified(row.nativeInferenceTraces),
+      observedLibraryClosureVerified: nativeObservedLibraryClosureVerified(row.nativeInferenceTraces),
+      gpuDeviceCapacityObserved: nativeGpuCapacityObserved(row.nativeInferenceTraces),
       ...referenceVectorComparison(row.vector, row.referenceVector, 768) };
   });
   const ranks = (vectors: number[][]) => vectors.map((q) => vectors.map((d, i) => ({ i, score: q.reduce((s, v, j) => s + v * d[j], 0) }))
@@ -261,6 +267,9 @@ export function summarizeNativeBoundaries(request: NativeBoundaryRequest, rows: 
           item.traces, request.export, rows.find((r) => r.id === item.id)!.referenceInputIds, device));
     return { id: batch.id, cases, inputTraceVerified: inputTraceVerified === true, inferenceTraceVerified: inferenceTraceVerified === true,
       nativeRunTraceVerified: nativeTraceVerified === true,
+      nativeRuntimeTraceVerified: batch.nativeInferenceTracesByCase?.every(item=>nativeRuntimeTraceVerified(item.traces)) === true,
+      observedLibraryClosureVerified: batch.nativeInferenceTracesByCase?.every(item=>nativeObservedLibraryClosureVerified(item.traces)) === true,
+      gpuDeviceCapacityObserved: batch.nativeInferenceTracesByCase?.every(item=>nativeGpuCapacityObserved(item.traces)) === true,
       passed: cases.every((c) => c.single.passed && c.reference.passed) && (!batch.inputTracesByCase || inputTraceVerified)
         && (!batch.inferenceTracesByCase || inferenceTraceVerified) && (!batch.nativeInferenceTracesByCase || nativeTraceVerified) };
   });
