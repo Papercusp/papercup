@@ -1971,10 +1971,10 @@ function completionIdentityMatchesChangedPath(
   });
 }
 
-function filterTrackedCompletionScratchReferences(
+async function filterTrackedCompletionScratchReferences(
   references: ReturnType<typeof detectEphemeralDeliverableReferences>,
   probe: CompletionEphemeralDeliverableProbe = {},
-): ReturnType<typeof detectEphemeralDeliverableReferences> {
+): Promise<ReturnType<typeof detectEphemeralDeliverableReferences>> {
   // An artifact URL is normally account/session-local, but it is a legitimate source
   // citation when the same completion also names a non-deleted repository path whose
   // server-observed working-tree and HEAD blobs match.  Do not infer this from
@@ -1995,24 +1995,35 @@ function filterTrackedCompletionScratchReferences(
   const roots = completionCandidateRoots(probe);
   const isTracked = probe.isTracked ?? isGitTrackedPath;
 
-  return references.filter((reference) => {
-    if (reference.kind === 'artifact-url') return !hasProvenDurableChangedPath;
-    if (reference.kind !== 'scratch-path') return true;
-    if (roots.length === 0) return true;
+  const kept: ReturnType<typeof detectEphemeralDeliverableReferences> = [];
+  for (const reference of references) {
+    if (reference.kind === 'artifact-url') {
+      if (!hasProvenDurableChangedPath) kept.push(reference);
+      continue;
+    }
+    if (reference.kind !== 'scratch-path' || roots.length === 0) {
+      kept.push(reference);
+      continue;
+    }
     // Suppress only a definite positive. A false result (untracked/ignored), an unknown
     // result, an exception, or a path that cannot be mapped to a candidate root all preserve
     // the original advisory warning.
+    let definitelyTracked = false;
     for (const root of roots) {
       const relativePath = repoRelativePathUnderRoot(reference.reference, root);
       if (!relativePath) continue;
       try {
-        if (isTracked(root, relativePath) === true) return false;
+        if (await isTracked(root, relativePath) === true) {
+          definitelyTracked = true;
+          break;
+        }
       } catch {
         // Unknown ownership is deliberately fail-open: leave this reference in the warning.
       }
     }
-    return true;
-  });
+    if (!definitelyTracked) kept.push(reference);
+  }
+  return kept;
 }
 
 /**
@@ -2024,11 +2035,11 @@ function filterTrackedCompletionScratchReferences(
  * suspect only in deliverable-facing fields; verification and causal prose
  * routinely quote those references as forensic evidence.
  */
-export function completionEphemeralDeliverableReferences(
+export async function completionEphemeralDeliverableReferences(
   completion: unknown,
   evidence: unknown,
   probe: CompletionEphemeralDeliverableProbe = {},
-) {
+): Promise<ReturnType<typeof detectEphemeralDeliverableReferences>> {
   const deliverableTextParts = (value: unknown): string[] => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
     const record = value as Record<string, unknown>;
@@ -4519,7 +4530,7 @@ async function completeOne(
   let ephemeralDeliverableWarning: string | undefined;
   let unretainedLiveUiPaths: string[] = [];
   try {
-    const references = completionEphemeralDeliverableReferences(it.completion, completionEvidenceToPersist, {
+    const references = await completionEphemeralDeliverableReferences(it.completion, completionEvidenceToPersist, {
       repoRoots: registeredRepoRoots ?? [completionRoot()],
       treeStamp: completionEvidenceToPersist?.treeStamp,
     });

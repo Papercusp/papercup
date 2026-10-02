@@ -4506,9 +4506,9 @@ describe('work_items:complete (keyed-array)', () => {
 });
 
 describe('work_items:complete ephemeral terminal-deliverable warning (EI-20268156880922192)', () => {
-  it('suppresses a scratch reference only when Git definitely tracks the repo-relative file', () => {
-    const isTracked = vi.fn((_root: string, relativePath: string) => relativePath.endsWith('/tracked-report.md'));
-    const references = completionEphemeralDeliverableReferences(
+  it('suppresses a scratch reference only when Git definitely tracks the repo-relative file', async () => {
+    const isTracked = vi.fn(async (_root: string, relativePath: string) => relativePath.endsWith('/tracked-report.md'));
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary:
           'Tracked source .papercusp/scratch/tracked-report.md; untracked source .papercusp/scratch/untracked-report.md.',
@@ -4524,8 +4524,8 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(isTracked).toHaveBeenCalledWith('/repo', '.papercusp/scratch/untracked-report.md');
   });
 
-  it.each(['untracked', 'ignored'])('keeps a definitely %s scratch path warning', (ownership) => {
-    const references = completionEphemeralDeliverableReferences(
+  it.each(['untracked', 'ignored'])('keeps a definitely %s scratch path warning', async (ownership) => {
+    const references = await completionEphemeralDeliverableReferences(
       { summary: `The ${ownership} report is at .papercusp/scratch/${ownership}-report.md.` },
       undefined,
       { repoRoot: '/repo', isTracked: () => false },
@@ -4536,13 +4536,13 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     ]);
   });
 
-  it('keeps the warning when ownership is unknown or the trackedness probe throws', () => {
-    const unknown = completionEphemeralDeliverableReferences(
+  it('keeps the warning when ownership is unknown or the trackedness probe throws', async () => {
+    const unknown = await completionEphemeralDeliverableReferences(
       { summary: 'The report is at .papercusp/scratch/unknown-report.md.' },
       undefined,
       { repoRoots: ['/repo'], isTracked: () => undefined },
     );
-    const throwing = completionEphemeralDeliverableReferences(
+    const throwing = await completionEphemeralDeliverableReferences(
       { summary: 'The report is at .papercusp/scratch/throwing-report.md.' },
       undefined,
       {
@@ -4557,9 +4557,9 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(throwing).toEqual([{ kind: 'scratch-path', reference: '.papercusp/scratch/throwing-report.md' }]);
   });
 
-  it('suppresses an artifact URL when a declared repository path has matching server blob identities', () => {
+  it('suppresses an artifact URL when a declared repository path has matching server blob identities', async () => {
     const blobSha = 'b'.repeat(40);
-    const references = completionEphemeralDeliverableReferences(
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary: 'Copied the report from https://claude.ai/artifacts/durable-source.',
         filesChanged: ['docs/report.md'],
@@ -4584,9 +4584,9 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(references).toEqual([]);
   });
 
-  it('keeps an artifact URL when the matching identity belongs to a different declared path', () => {
+  it('keeps an artifact URL when the matching identity belongs to a different declared path', async () => {
     const blobSha = 'b'.repeat(40);
-    const references = completionEphemeralDeliverableReferences(
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary: 'The source artifact is https://claude.ai/artifacts/unrelated-source.',
         filesChanged: ['docs/report.md'],
@@ -4636,8 +4636,8 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     ['mismatched blobs', { workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'c'.repeat(40) }],
     ['missing working-tree blob', { workingTreeBlobSha: null, headBlobSha: 'b'.repeat(40) }],
     ['deleted path', { workingTreeBlobSha: null, headBlobSha: null, deletion: true as const }],
-  ])('keeps an artifact URL when the server cannot prove a durable changed path (%s)', (_name, identity) => {
-    const references = completionEphemeralDeliverableReferences(
+  ])('keeps an artifact URL when the server cannot prove a durable changed path (%s)', async (_name, identity) => {
+    const references = await completionEphemeralDeliverableReferences(
       {
         summary: 'The source artifact is https://claude.ai/artifacts/unproven-source.',
         filesChanged: ['docs/report.md'],
