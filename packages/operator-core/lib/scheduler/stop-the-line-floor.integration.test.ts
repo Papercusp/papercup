@@ -33,7 +33,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   SUBSTRATE_OUTBOX_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
@@ -98,7 +98,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL).simple();
-  await db.sql.unsafe(USER_TRUST_LIST_DDL).simple();
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   // The explicit by-id assertion auto-subscribes the gate fixer to the item.
   await ensureCoordCapabilityTables(db.sql);
   await db.sql

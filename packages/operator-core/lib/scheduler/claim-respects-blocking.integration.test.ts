@@ -40,7 +40,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   SUBSTRATE_OUTBOX_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { FLAGS } from '@papercusp/flags';
@@ -138,7 +138,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('claim-respects-blocking');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the dep table the readiness clause reads
   // The cup_claim_specs store getNextForBee → getClaimSpec reads (absent bee ⇒ DEFAULT_CLAIM_SPEC).
   // 372 (base table) + 389 (id_only tripwire column) + 438 (harness_slug federation column) —

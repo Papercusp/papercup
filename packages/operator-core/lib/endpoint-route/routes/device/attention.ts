@@ -39,6 +39,8 @@ import {
 /** Feature-family states that mean "needs a human / stuck". */
 const FEATURE_ATTENTION_STATES = new Set(['needs-human', 'blocked', 'failing']);
 
+const unavailableAttention = () => Response.json({ error: 'attention_unavailable' }, { status: 503 });
+
 /** Is this work-item worth surfacing in the human's inbox? */
 function isAttentionWorkItem(wi: WorkItem): boolean {
   if (wi.family === 'feature') return FEATURE_ATTENTION_STATES.has(wi.state);
@@ -69,18 +71,21 @@ const attention = defineTool({
     };
 
     // 1. Canonical attention groups (plan items + coord + smoke + reviews).
-    let groups: unknown[] = [];
+    let groups: unknown[];
     const attentionTool = lookupByMcpName('plans:attention');
-    if (attentionTool) {
-      try {
-        const dispatched = await dispatchProjectedTool(attentionTool, 'plans:attention', {}, toolCtx, {});
-        const parsed = JSON.parse((dispatched.result?.content[0] as { text?: string })?.text ?? '{}') as {
-          groups?: unknown[];
-        };
-        groups = Array.isArray(parsed.groups) ? parsed.groups : [];
-      } catch (e) {
-        console.warn('[device/attention] plans:attention failed:', (e as Error)?.message ?? e);
-      }
+    if (!attentionTool) return unavailableAttention();
+    try {
+      const dispatched = await dispatchProjectedTool(attentionTool, 'plans:attention', {}, toolCtx, {});
+      if (dispatched.result?.isError) return unavailableAttention();
+      const parsed = JSON.parse((dispatched.result?.content[0] as { text?: string })?.text ?? '{}') as {
+        ok?: boolean;
+        groups?: unknown[];
+      };
+      if (parsed.ok === false || !Array.isArray(parsed.groups)) return unavailableAttention();
+      groups = parsed.groups;
+    } catch (e) {
+      console.warn('[device/attention] plans:attention failed:', (e as Error)?.message ?? e);
+      return unavailableAttention();
     }
 
     // 2. Work-items-native layer — attention-worthy items across the workspace.
@@ -90,19 +95,22 @@ const attention = defineTool({
       workItems = all.filter(isAttentionWorkItem);
     } catch (e) {
       console.warn('[device/attention] listWorkItems failed:', (e as Error)?.message ?? e);
+      return unavailableAttention();
     }
 
     // 3. System-health attention producers (P-007): release red-gate and
     //    inference-pool exhaustion are owner-attention conditions the fleet
     //    escalations / owner-questions above don't cover. Both tiles are
-    //    fail-soft (null on error) and `systemAlerts` emits nothing when the
-    //    conditions are healthy, so this never adds inbox noise.
+    //    return null on an unavailable measurement. Only measured healthy
+    //    conditions may produce an empty system-alert section.
     let systemAlertsOut: SystemAlert[] = [];
     try {
-      const [gate, pool] = await Promise.all([releaseGateTile(), poolTile()]);
+      const [gate, pool] = await Promise.all([releaseGateTile(), poolTile(principal.workspaceId)]);
+      if (!gate || !pool) return unavailableAttention();
       systemAlertsOut = systemAlerts({ gate, pool });
     } catch (e) {
       console.warn('[device/attention] systemAlerts failed:', (e as Error)?.message ?? e);
+      return unavailableAttention();
     }
 
     return Response.json({

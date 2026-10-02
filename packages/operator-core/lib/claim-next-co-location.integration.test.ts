@@ -19,7 +19,7 @@
  *      engages in the real tool path), and is affinity-blind when the flag is off.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { FLAGS } from '@papercusp/flags';
@@ -102,7 +102,7 @@ beforeAll(async () => {
     `CREATE TABLE IF NOT EXISTS harness_shared.user_trust_list (workspace_id text NOT NULL, trusted_github_user_id bigint NOT NULL, note text, created_ts bigint NOT NULL, PRIMARY KEY (workspace_id, trusted_github_user_id))`,
   );
   // claim path's P-005 readiness clause reads work_item_deps + engineer_issues (this test creates neither otherwise).
-  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(ENGINEER_ISSUES_MIN_DDL);
   // WI-2971 (SCHEDULER_SPEC_CLAIM, default-ON): the claim_next HANDLER now routes through
   // getNextForBee (claim-spec-store.ts), which SELECTs/UPSERTs harness_shared.cup_claim_specs

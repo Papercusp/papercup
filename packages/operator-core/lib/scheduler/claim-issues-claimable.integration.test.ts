@@ -32,7 +32,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
@@ -175,7 +175,7 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL); // base work_items + the hfc + engineer_issues views
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // the feature floor LEFT-JOINs the trust list
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // the feature floor LEFT-JOINs the trust list
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the readiness dep table
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   await db.sql.unsafe(`

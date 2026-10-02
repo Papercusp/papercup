@@ -61,7 +61,11 @@ const h = vi.hoisted(() => ({
     }),
   ),
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ msg_id: 'm-1' })),
-  refreshControlAnchorAfterMutation: vi.fn(async (_opts: unknown) => ({ generation: 1 })),
+  // `state.modes` is what the consumer reads back (WI-10005199); `null` is the
+  // fail-soft refresh outcome (bounded timeout / lock failure).
+  refreshControlAnchorAfterMutation: vi.fn(
+    async (_opts: unknown): Promise<{ generation: number; state?: { modes: string[] } } | null> => ({ generation: 1 }),
+  ),
   getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),
   deactivateLoopForGoal: vi.fn(async (..._args: unknown[]) => false),
   assertFact: vi.fn(async (_input: unknown) => ({ ok: true })),
@@ -220,7 +224,13 @@ beforeEach(() => {
   );
   h.setMode.mockClear().mockResolvedValue({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: false });
   h.sendMessage.mockClear().mockResolvedValue({ msg_id: 'm-1' });
-  h.refreshControlAnchorAfterMutation.mockClear().mockResolvedValue({ generation: 1 });
+  // Default: the projection LANDS and reflects the mode just written, so the
+  // pre-WI-10005199 tests observe exactly what they always did. The diverging
+  // outcomes are exercised in the dedicated describe below.
+  h.refreshControlAnchorAfterMutation.mockClear().mockImplementation(async () => {
+    const written = h.setMode.mock.calls.at(-1)?.[0] as { modeId: string; enabled: boolean } | undefined;
+    return { generation: 1, state: { modes: written?.enabled ? [written.modeId] : [] } };
+  });
   h.getLoopStatus.mockClear().mockResolvedValue(null);
   h.deactivateLoopForGoal.mockClear().mockResolvedValue(false);
   h.assertFact.mockClear().mockResolvedValue({ ok: true });
@@ -254,6 +264,48 @@ describe('GOAL holder cannot enter its own verifier mode', () => {
     const res = parse(await run({ mode: 'test', reason: 'verify delegated work' }));
     expect(res.ok).toBe(true);
     expect(h.setMode).toHaveBeenCalledWith(expect.objectContaining({ modeId: 'test' }));
+  });
+});
+
+// WI-10005199 (EI-23770243810745552): `agent_modes` is the write target; the consumer
+// reads the PROJECTED `control_state->modes`, and that projection is fail-soft.
+describe('mode:set — consumerView on the control-anchor projection', () => {
+  it('stays ABSENT when the projected modes reflect the write (exception-only)', async () => {
+    const res = parse(await run({ mode: 'auto', reason: 'agreeing projection' }));
+    expect(res.ok).toBe(true);
+    expect(res.controlGeneration).toBe(1);
+    expect(res).not.toHaveProperty('controlConsumerView');
+  });
+
+  it('DIVERGES when the fail-soft refresh returned null: ok:true but the consumer sees the OLD modes', async () => {
+    h.refreshControlAnchorAfterMutation.mockResolvedValueOnce(null);
+    const res = parse(await run({ mode: 'auto', reason: 'timed-out projection' }));
+    expect(res.ok).toBe(true);
+    expect(res).not.toHaveProperty('controlGeneration');
+    expect(res.controlConsumerView).toMatchObject({
+      readPath: 'harness_shared.session_briefs.control_state->modes',
+      value: { modeId: 'auto', present: null },
+      divergedFromWrite: true,
+    });
+  });
+
+  it('DIVERGES when the projection landed WITHOUT the mode that was written', async () => {
+    h.refreshControlAnchorAfterMutation.mockResolvedValueOnce({ generation: 7, state: { modes: ['ideate'] } });
+    const res = parse(await run({ mode: 'auto', reason: 'projection lost the mode' }));
+    expect(res.controlConsumerView).toMatchObject({ value: { modeId: 'auto', present: false }, divergedFromWrite: true });
+  });
+
+  it('DIVERGES when a cleared mode still lingers in the projection', async () => {
+    h.refreshControlAnchorAfterMutation.mockResolvedValueOnce({ generation: 8, state: { modes: ['auto'] } });
+    const res = parse(await run({ mode: 'auto', enabled: false, reason: 'exit auto' }));
+    expect(res.controlConsumerView).toMatchObject({ value: { modeId: 'auto', present: true }, divergedFromWrite: true });
+  });
+
+  it('is not attested at all for a store no-op (nothing was written, nothing projected)', async () => {
+    h.setMode.mockResolvedValueOnce({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: true });
+    const res = parse(await run({ mode: 'auto', reason: 're-assert' }));
+    expect(h.refreshControlAnchorAfterMutation).not.toHaveBeenCalled();
+    expect(res).not.toHaveProperty('controlConsumerView');
   });
 });
 
