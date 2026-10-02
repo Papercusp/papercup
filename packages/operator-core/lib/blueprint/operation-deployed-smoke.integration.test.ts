@@ -208,7 +208,8 @@ function resolveSmokeTokenSource(env: SmokeTokenEnvironment, home: string): stri
   return env.P015_SMOKE_TOKEN_FILE?.trim() || join(home, '.papercusp', 'superuser-token');
 }
 
-const TOKEN_SOURCE = resolveSmokeTokenSource(process.env, homedir());
+const HOST_HOME = homedir();
+const TOKEN_SOURCE = resolveSmokeTokenSource(process.env, HOST_HOME);
 function smokeToken(): string | null {
   try {
     const tok = readFileSync(TOKEN_SOURCE, 'utf8').trim();
@@ -273,12 +274,12 @@ describe('deployed smoke context defaults', () => {
   });
 
   it('uses the deployed host home token despite a workspace-scoped PAPERCUSP_HOME', () => {
-    expect(resolveSmokeTokenSource({ PAPERCUSP_HOME: '/workspace/.papercusp' }, '/home/builder'))
-      .toBe('/home/builder/.papercusp/superuser-token');
+    expect(resolveSmokeTokenSource({ PAPERCUSP_HOME: '/workspace/.papercusp' }, HOST_HOME))
+      .toBe(join(HOST_HOME, '.papercusp', 'superuser-token'));
   });
 
   it('honors an explicit deployed token file override', () => {
-    expect(resolveSmokeTokenSource({ P015_SMOKE_TOKEN_FILE: '  /host/token  ' }, '/home/builder'))
+    expect(resolveSmokeTokenSource({ P015_SMOKE_TOKEN_FILE: '  /host/token  ' }, HOST_HOME))
       .toBe('/host/token');
   });
 });
