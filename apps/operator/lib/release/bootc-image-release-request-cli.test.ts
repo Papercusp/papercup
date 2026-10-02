@@ -33,6 +33,7 @@ import {
   parseBootcSecretScan,
   parseCosignVerifiedDigests,
   parseVerifiedProvenance,
+  ostreeObjectIndex,
   rpmOwnedPaths,
   VENDOR_MIN_AVAILABLE_PACKAGES,
   vendorShipsNothingNewer,
@@ -67,6 +68,25 @@ const vendorUpdatesRecord = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 const DIGEST_FOR_VENDOR = `sha256:${"9".repeat(64)}`;
+
+// D-029 (WI-10005719). syft locates a base-layer binary the build did not replace at its ostree
+// object; release-supply-chain.sh's in-image probe records each object's live copies or proves it
+// has none. Shapes from the P-012 AWS bake's ostree-objects.json.
+const objectPath = (prefix: string, fill: string) => `/sysroot/ostree/repo/objects/${prefix}/${fill.repeat(62)}.file`;
+const OBJ_LIVE = objectPath("83", "d"); // its live copy is the RPM-owned /usr/bin/skopeo
+const OBJ_LIVE_UNOWNED = objectPath("aa", "b"); // its live copy is a file no RPM owns
+const OBJ_STALE = objectPath("9e", "e"); // no live copy anywhere in the deployed tree
+const OBJ_UNPROBED = objectPath("00", "a"); // the probe gave it no verdict
+const ostreeObjectsRecord = (overrides: Record<string, unknown> = {}) => ({
+  digest: DIGEST_FOR_VENDOR,
+  complete: true,
+  objects: [
+    { path: OBJ_LIVE, livePaths: ["/usr/bin/skopeo"], stale: false, sha256: null },
+    { path: OBJ_LIVE_UNOWNED, livePaths: ["/opt/papercusp/bin/connector"], stale: false, sha256: null },
+    { path: OBJ_STALE, livePaths: [], stale: true, sha256: "f".repeat(64) },
+  ],
+  ...overrides,
+});
 
 const HEX = "9".repeat(64);
 const DIGEST = `sha256:${HEX}`;
@@ -189,6 +209,59 @@ describe("bootc release request evidence readers", () => {
     }
     expect(() => vendorShipsNothingNewer(vendorUpdatesRecord({ digest: `sha256:${"1".repeat(64)}` }), DIGEST_FOR_VENDOR))
       .toThrow(/vendor-updates record is for/);
+  });
+
+  it("indexes the ostree-object probe only when it is complete and bound to this digest (D-029)", () => {
+    const index = ostreeObjectIndex(ostreeObjectsRecord(), DIGEST_FOR_VENDOR);
+    expect(index.get(OBJ_LIVE)).toEqual({ livePaths: ["/usr/bin/skopeo"], stale: false });
+    expect(index.get(OBJ_STALE)).toEqual({ livePaths: [], stale: true });
+    // An incomplete probe relocates nothing and proves nothing stale.
+    expect(ostreeObjectIndex(ostreeObjectsRecord({ complete: false }), DIGEST_FOR_VENDOR).size).toBe(0);
+    expect(() => ostreeObjectIndex(ostreeObjectsRecord({ digest: `sha256:${"1".repeat(64)}` }), DIGEST_FOR_VENDOR))
+      .toThrow(/ostree-objects record is for/);
+    expect(() => ostreeObjectIndex(ostreeObjectsRecord({ objects: [{ livePaths: [] }] }), DIGEST_FOR_VENDOR))
+      .toThrow(/without a path/);
+  });
+
+  it("relocates object-located findings to their live paths and lists stale base objects (D-029)", () => {
+    const connector = "/opt/papercusp/bin/connector";
+    const report = {
+      descriptor: { name: "grype", version: "0.117.0" },
+      matches: [
+        goAt(OBJ_LIVE, "GO-LIVE"),
+        goAt(OBJ_LIVE_UNOWNED, "GO-LIVE-UNOWNED"),
+        goAt(OBJ_STALE, "GO-STALE"),
+        goAt(OBJ_STALE, "GO-STALE-MEDIUM", "Medium"),
+        goAt(OBJ_UNPROBED, "GO-UNPROBED"),
+        // Stale only when EVERY location is a stale object.
+        { ...goAt(OBJ_STALE, "GO-MIXED"), artifact: { ...goAt(OBJ_STALE, "x").artifact, locations: [{ path: OBJ_STALE }, { path: connector }] } },
+        // A stale verdict for a path that is not an ostree object is not trusted.
+        goAt(connector, "GO-FORGED"),
+      ],
+    };
+    const owned = rpmOwnedPaths({ artifacts: vendorSbomArtifacts });
+    const forged = ostreeObjectsRecord();
+    const objects = ostreeObjectIndex(
+      { ...forged, objects: [...(forged.objects as unknown[]), { path: connector, livePaths: [], stale: true }] },
+      DIGEST_FOR_VENDOR,
+    );
+    const remaining = (narrowed: ReturnType<typeof actionableGrypeReport>) =>
+      (narrowed.report.matches as { vulnerability: { id: string } }[]).map((m) => m.vulnerability.id);
+
+    const narrowed = actionableGrypeReport(report, { ownedPaths: owned, vendorShipsNothingNewer: true, ostreeObjects: objects });
+    expect(narrowed.staleBaseObjectIds).toEqual(["GO-STALE"]);
+    expect(narrowed.excludedStaleBaseObject).toBe(1);
+    expect(narrowed.vendorPendingIds).toEqual(["GO-LIVE"]);
+    expect(remaining(narrowed)).toEqual(["GO-LIVE-UNOWNED", "GO-STALE-MEDIUM", "GO-UNPROBED", "GO-MIXED", "GO-FORGED"]);
+
+    // A stale base object needs no vendor proof; relocation alone never makes a finding pending.
+    const unproven = actionableGrypeReport(report, { ownedPaths: owned, vendorShipsNothingNewer: false, ostreeObjects: objects });
+    expect(unproven.staleBaseObjectIds).toEqual(["GO-STALE"]);
+    expect(unproven.excludedVendorPending).toBe(0);
+    // Without the probe's index nothing relocates and nothing is stale.
+    const unindexed = actionableGrypeReport(report, { ownedPaths: owned, vendorShipsNothingNewer: true });
+    expect(unindexed.excludedStaleBaseObject).toBe(0);
+    expect(unindexed.excludedVendorPending).toBe(0);
   });
 
   it("reads a clean secret scan only when record, log and coverage all agree", () => {
@@ -324,7 +397,15 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
   });
 
   describe("vendor-pending findings (D-027, WI-10005719)", () => {
-    function vendorFixture(opts: { vendorUpdates?: unknown; summaryVendorPending?: string } = {}) {
+    function vendorFixture(
+      opts: {
+        vendorUpdates?: unknown;
+        ostreeObjects?: unknown;
+        matches?: unknown[];
+        summaryVendorPending?: string;
+        summaryStaleBaseObjects?: string;
+      } = {},
+    ) {
       const f = fixture();
       const sc = join(f.root, "out", "supply-chain");
       writeFileSync(join(sc, "sbom.syft.json"), JSON.stringify({
@@ -334,11 +415,17 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
       }));
       writeFileSync(join(sc, "vulns.json"), JSON.stringify({
         descriptor: { name: "grype", version: "0.117.0" },
-        matches: [goAt("/usr/bin/skopeo", "GO-1")],
+        matches: opts.matches ?? [goAt("/usr/bin/skopeo", "GO-1")],
       }));
       if (opts.vendorUpdates !== undefined) writeFileSync(join(sc, "vendor-updates.json"), JSON.stringify(opts.vendorUpdates));
-      if (opts.summaryVendorPending !== undefined) {
-        writeFileSync(join(sc, "supply-chain-summary.json"), JSON.stringify({ digest: DIGEST, verifiedFromRegistry: true, vendorPending: opts.summaryVendorPending }));
+      if (opts.ostreeObjects !== undefined) writeFileSync(join(sc, "ostree-objects.json"), JSON.stringify(opts.ostreeObjects));
+      if (opts.summaryVendorPending !== undefined || opts.summaryStaleBaseObjects !== undefined) {
+        writeFileSync(join(sc, "supply-chain-summary.json"), JSON.stringify({
+          digest: DIGEST,
+          verifiedFromRegistry: true,
+          vendorPending: opts.summaryVendorPending,
+          staleBaseObjects: opts.summaryStaleBaseObjects,
+        }));
       }
       return f;
     }
@@ -369,6 +456,40 @@ describe("bootc release request assembly (end to end over a fixture bake)", () =
         .rejects.toThrow(/vendor-updates record is for/);
       await expect(build(vendorFixture({ vendorUpdates: vendorUpdatesRecord({ digest: DIGEST }), summaryVendorPending: "0" })))
         .rejects.toThrow(/D-027 copies disagree/);
+    });
+
+    describe("ostree-object findings (D-029)", () => {
+      const objectBake = (overrides: { ostreeObjects?: unknown; summaryStaleBaseObjects?: string; summaryVendorPending?: string } = {}) =>
+        vendorFixture({
+          matches: [goAt(OBJ_STALE, "GO-STALE"), goAt(OBJ_LIVE, "GO-LIVE")],
+          vendorUpdates: vendorUpdatesRecord({ digest: DIGEST }),
+          ostreeObjects: ostreeObjectsRecord({ digest: DIGEST }),
+          ...overrides,
+        });
+
+      it("trusts an image whose findings are a stale base object and a relocated vendor binary, and reports both", async () => {
+        const built = await build(objectBake({ summaryVendorPending: "1", summaryStaleBaseObjects: "1" }));
+        expect(built.trustReport.failures).toEqual([]);
+        expect(built.trustReport.trusted).toBe(true);
+        expect(built.excluded).toMatchObject({ staleBaseObject: 1, vendorPending: 1 });
+        expect(built.staleBaseObjectIds).toEqual(["GO-STALE"]);
+        expect(built.vendorPendingIds).toEqual(["GO-LIVE"]);
+      });
+
+      it("denies both when the probe was incomplete, or the bake recorded no probe", async () => {
+        for (const ostreeObjects of [ostreeObjectsRecord({ digest: DIGEST, complete: false }), undefined]) {
+          const built = await build(objectBake({ ostreeObjects }));
+          expect(built.trustReport.trusted).toBe(false);
+          expect(built.excluded).toMatchObject({ staleBaseObject: 0, vendorPending: 0 });
+        }
+      });
+
+      it("refuses a probe record for another image, and a shell/TS stale-count disagreement", async () => {
+        await expect(build(objectBake({ ostreeObjects: ostreeObjectsRecord({ digest: `sha256:${"1".repeat(64)}` }) })))
+          .rejects.toThrow(/ostree-objects record is for/);
+        await expect(build(objectBake({ summaryVendorPending: "1", summaryStaleBaseObjects: "0" })))
+          .rejects.toThrow(/D-029 copies disagree/);
+      });
     });
   });
 

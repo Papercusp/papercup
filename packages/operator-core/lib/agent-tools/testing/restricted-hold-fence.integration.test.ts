@@ -161,6 +161,18 @@ describe('restricted-write fence on the production census (real Postgres + git)'
     expect(result.stdout).not.toContain('ROUTE cwd=');
   }, 120_000);
 
+  // WI-10005724 acceptance falsifier: vitest invoked DIRECTLY (what `npx vitest` and every
+  // per-workspace task of `npm run test:affected` do) reaches no router. The libs/test-config
+  // host-preflight globalSetup must refuse the held file before any test executes. Baseline before
+  // the fix (measured 2026-10-02 23:30Z): this exact command ran it, 17 passed, exit 0.
+  it('direct vitest refuses a held restricted write before any test executes', () => {
+    const result = directVitest();
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(output).toContain('VITEST_RESTRICTED_HOLD_REFUSED error=restricted_write_held measured=none');
+    expect(result.status).not.toBe(0);
+    expect(output).not.toMatch(/Tests\s+\d+ passed/);
+  }, 120_000);
+
   it('admits both once the disclosure is released', async () => {
     await sql`
       UPDATE harness_shared.personal_disclosures
@@ -177,4 +189,22 @@ describe('restricted-write fence on the production census (real Postgres + git)'
       verdict: 'admit',
     });
   }, 120_000);
+
+  // Calibration for the direct-vitest falsifier: the same command runs the file once released, so
+  // the refusal above was the hold, not a config that can no longer load.
+  it('direct vitest runs the same file once the disclosure is released', () => {
+    const result = directVitest();
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/Tests\s+\d+ passed/);
+    expect(result.status).toBe(0);
+  }, 120_000);
 });
+
+/** `vitest run <held test>` from its own workspace, as an unrestricted top-level caller. */
+function directVitest() {
+  return spawnSync(process.execPath, [join(REPO, 'node_modules/vitest/vitest.mjs'), 'run', HELD_REPO_TEST.replace('packages/operator-core/', '')], {
+    cwd: join(REPO, 'packages/operator-core'),
+    env: { ...routerEnv(), NO_COLOR: '1', FORCE_COLOR: '0' },
+    encoding: 'utf8',
+    timeout: 110_000,
+  });
+}
