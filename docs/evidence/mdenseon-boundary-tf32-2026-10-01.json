@@ -625,7 +625,7 @@
   },
   "notChecked": ["successful GPU single-full-8192 vector parity", "GPU single-over-limit", "GPU mixed-length tensor", "full-population GPU rankings", "native Node GPU batches/over-limit", "native worker input traces outside the selected padded diagnostic", "native worker compute-kernel/PID/sequence binding"],
   "nativeInputTracePreparation": {
-    "status": "pre-graph input evidence path and conventional guards verified locally; actual model/GPU validation pending",
+    "status": "Initial input-evidence guard proof retained; V6 actual inputs are recorded separately, and the request graph-lifecycle extension below is verified locally",
     "reuse": "Extend the existing embed worker messages and explicit qualification callback. The native boundary runner retains private per-cell JSONL before graph execution, including allocation failures. Normal calls request no input trace.",
     "verification": {
       "originRunId": "86dc64e4-c99f-4aea-81b5-83aaaf04016e",
@@ -654,8 +654,56 @@
     ],
     "realModelInferencePerformed": false,
     "frozenV7AndV5RuntimeChanged": false,
-    "nativeKernelTrace": "still not exposed; input evidence does not establish CUDA compute-kernel execution",
-    "gpuAcceptanceComplete": false
+    "nativeKernelTrace": "Input evidence alone does not establish kernel ownership; the later external V6 profile establishes process binding separately",
+    "gpuAcceptanceComplete": false,
+    "requestSequenceExtension": {
+      "status": "Request/attempt/thread identity and graph-call lifecycle guards verified; profiler clock calibration and unique kernel-to-request joins still open",
+      "reuse": "Extend the same opt-in worker protocol, pinned candidate builder and native qualifier. Ordinary calls request no trace. Retain pre-graph input JSONL and separate graph start/end JSONL; preserve concurrent single-text request-group submission.",
+      "retainedV6Audit": {
+        "profileDatabaseSha256": "0f163a3fa476d5013642d9e80a11dc44f99809f94adf800a8150d5108dadf74e",
+        "inputTraceSha256": "5589550ec860f1bc6f0cc60187ef3ca7cac2f01e5be1bd715ba6bb33431e7384",
+        "kernelRuntimeCorrelationJoins": 8644,
+        "kernelLaunchingNativeThreads": 1,
+        "inputRecords": 10,
+        "sameMillisecondGroupedInputRecords": 4,
+        "finding": "Retained inputs contain tensors/model/device/wall timestamp but no request ID or graph interval. Process and CUDA runtime correlations therefore do not establish a unique request-sequence join.",
+        "nineRetainedPinsUnchanged": true
+      },
+      "traceContract": {
+        "identity": ["requestId (zero-based)", "attempt", "processId", "workerThreadId (Node)", "nativeThreadId (Linux OS TID or null)"],
+        "clock": "node-hrtime decimal nanoseconds; not assumed equal to the profiler clock",
+        "phases": ["start", "end with success/error outcome"],
+        "failClosed": "Malformed, out-of-order, incomplete or unpersisted requested evidence rejects a successful vector. Failed CUDA and CPU fallback attempts retain separate identities. The qualifier rejects mismatched retained input/graph identities.",
+        "kernelAttribution": "Graph intervals can overlap. A complete interval alone is not a unique CUDA kernel join."
+      },
+      "verification": {
+        "runId": "b5b01b97-97ca-43cd-bd6f-6a58dcdb8702",
+        "testRunIds": [20518007, 20518008, 20518009, 20518010],
+        "passed": 110,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "scope": "Real file-worker/Rust-tokenizer fixture with fake graph verifies input-before-start, end-before-terminal, graph failure, and overlapping requests completing out of order; bridge, builder, retained-evidence and existing worker-state regressions pass. No model weights or CUDA inference used.",
+        "typecheck": "Six requested TypeScript source/test files and loaded imports clean; compiler exit 0",
+        "syntaxAndDiff": "Plain ESM worker node --check and scoped git diff --check pass"
+      },
+      "sources": [
+        { "path": "libs/generic/memory/src/local-embedder-worker.ts", "bytes": 47365, "sha256": "9844d0836b9a68b0d08392bd33c2f151fe2c3d61892a9f21fc815f7e06bfdf79" },
+        { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 13709, "sha256": "8a810f9032a50dc0c8707910084219b6f00a557e00b9540f65667fc0a5240895" },
+        { "path": "libs/generic/memory/src/mdenseon-embedder.ts", "bytes": 3367, "sha256": "082d6e2dff68e5267e9383ce5e3201f5bf5acff998cf0e3156cd142b79db5a32" },
+        { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "bytes": 46992, "sha256": "53a7dd0391ec7f4de7c7c9f4acfa6f7ce079b99e591e03a8acb19f9d2c7c566f" }
+      ],
+      "tests": [
+        { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 13718, "sha256": "9bbffebc5ad89a25eabe353d4d529fd2564508d084ced53d523a4e18edd0368f" },
+        { "path": "libs/generic/memory/src/mdenseon-embedder.test.ts", "bytes": 3975, "sha256": "87e69f33d835dc0fcb955330eb4579d602162fc8ff3a8d76bb871ea6670e2f57" },
+        { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "bytes": 23174, "sha256": "005aad596e8a5fac17ffe6e5f4b145d55d25e068dcfaeb1f3856afd84ada15ba" }
+      ],
+      "realModelInferencePerformed": false,
+      "frozenV6RuntimeChanged": false,
+      "kernelPidAndSequenceBindingVerified": false,
+      "completeBeforeInferenceClosureVerified": false,
+      "fullGpuPopulationComplete": false
+    }
   },
   "nativeRuntimeKernelPreparation": {
     "status": "fresh runtime v4 content, private-path semantics and actual file-parent worker boot qualified without model inference; native GPU/kernel/capacity acceptance remains open",
