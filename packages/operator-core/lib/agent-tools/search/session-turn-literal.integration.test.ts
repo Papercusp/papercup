@@ -318,7 +318,9 @@ describe('D-003 deadlines', () => {
         tiers: await retrieveSessionTurnLiteralTiers(sql, { workspaceId: WS, query: 'furnisedfinder' }, { policy: tight }),
       };
     });
-    expect(blocked.direct).toEqual({ hits: [], deadline: true });
+    // WI-10005294 (D-015): a deadline now carries an honest `partial` marker. Here the corpus is locked
+    // for the whole budget, so no recency slice ever completes → `completeSince: null` (nothing proven complete).
+    expect(blocked.direct).toEqual({ hits: [], deadline: true, partial: { completeSince: null } });
     expect(blocked.tiers.exact).toEqual([]);
     expect(blocked.tiers.receipt.exact.status).toBe('deadline');
     expect(blocked.tiers.receipt.fuzzy.status).toBe('deadline');
