@@ -24,6 +24,7 @@
     "qualificationWorkItem": "WI-10005427",
     "measurementWorkItem": "WI-10005423",
     "testRunId": 20506274,
+    "bindingId": 21632,
     "specRevision": 2,
     "recordedTestLayer": "integration",
     "evidencePlane": "live",
