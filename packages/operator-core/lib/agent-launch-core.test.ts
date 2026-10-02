@@ -119,6 +119,46 @@ describe('recordAgentLaunchResult durable completion evidence', () => {
 });
 
 describe('claimAgentLaunch crash recovery', () => {
+  it('stores a caller-supplied replay identity atomically with the claim', async () => {
+    const initialSummary = {
+      requestKind: 'goals:start',
+      requestFingerprint: 'fingerprint-1',
+      phase: 'claimed',
+    };
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ idempotency_key: 'goal-start:req-1' }]);
+
+    const claim = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'goal-start:req-1',
+      launchedBy: 'su-first',
+      initialSummary,
+      failClosed: true,
+    });
+
+    expect(claim.won).toBe(true);
+    const insert = launchCoreSql.mock.calls[1];
+    expect(String(insert?.[0]?.join(' '))).toContain('INSERT INTO harness_shared.agent_launch_idempotency');
+    expect(insert?.slice(1)).toContain(JSON.stringify(initialSummary));
+  });
+
+  it('can fail closed when a caller requires a durable idempotency claim', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    launchCoreSql.mockRejectedValueOnce(new Error('ledger unavailable'));
+    try {
+      await expect(claimAgentLaunch({
+        workspaceId: 'ws-test',
+        idempotencyKey: 'goal-start:req-2',
+        initialSummary: { requestKind: 'goals:start' },
+        failClosed: true,
+      })).rejects.toThrow('ledger unavailable');
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('atomically lets an honest retry win after an empty in-progress claim outlives its lease', async () => {
     const firstNow = 1_800_000_000_000;
     const retryNow = firstNow + AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS + 1;

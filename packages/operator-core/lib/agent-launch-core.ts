@@ -1294,6 +1294,10 @@ export async function claimAgentLaunch(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
   launchedBy?: string | null;
+  /** Stored atomically with a new claim so a replay can verify the request identity. */
+  initialSummary?: Record<string, unknown>;
+  /** Callers whose duplicate-launch safety depends on this ledger can refuse on write failure. */
+  failClosed?: boolean;
   now?: number;
 }): Promise<AgentLaunchClaim> {
   const key = opts.idempotencyKey?.trim();
@@ -1308,11 +1312,14 @@ export async function claimAgentLaunch(opts: {
     const won = await sql<Array<{ idempotency_key: string }>>`
       INSERT INTO harness_shared.agent_launch_idempotency AS existing
         (workspace_id, idempotency_key, launched_at, launched_by, summary)
-      VALUES (${opts.workspaceId}, ${key}, ${now}, ${opts.launchedBy ?? null}, '{}'::jsonb)
+      VALUES (
+        ${opts.workspaceId}, ${key}, ${now}, ${opts.launchedBy ?? null},
+        ${JSON.stringify(opts.initialSummary ?? {})}::text::jsonb
+      )
       ON CONFLICT (workspace_id, idempotency_key) DO UPDATE
          SET launched_at = EXCLUDED.launched_at,
              launched_by = EXCLUDED.launched_by,
-             summary = '{}'::jsonb
+             summary = EXCLUDED.summary
        WHERE existing.launched_at < ${now - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS}
          AND (
            existing.summary = '{}'::jsonb
@@ -1343,8 +1350,10 @@ export async function claimAgentLaunch(opts: {
     };
   } catch (e) {
     // The guard is a safety net, not a gate: a ledger outage must not block a
-    // launch the caller actually wants. Warn loudly and proceed unguarded.
+    // launch the caller actually wants. Warn loudly and proceed unguarded unless
+    // this caller explicitly makes the ledger part of its correctness contract.
     console.warn(`[agent-launch] idempotency claim failed (launching unguarded): ${(e as Error)?.message ?? e}`);
+    if (opts.failClosed) throw e;
     return { won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null };
   }
 }
