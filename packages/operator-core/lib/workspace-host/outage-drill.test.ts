@@ -1,8 +1,14 @@
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildEgressDenyRule,
   classifyConnections,
   evaluateOutageDrill,
+  GATE_RELEASED_MARKER,
+  gateReleaseCommand,
   normalizeAddress,
   parseEstablishedConnections,
   runOutageDrill,
@@ -119,7 +125,7 @@ function fakeHost(options: FakeOptions = {}) {
         if (options.agentNeverReadsGate || agentDone()) return { code: 124, stdout: '', stderr: '' };
         gateReadAt = clock;
         gateReadWhileBlocked = blocked;
-        return ok();
+        return ok(`${GATE_RELEASED_MARKER}\n`);
       }
       if (command.startsWith('rm -f')) return ok();
       if (command.startsWith('cat') && command.includes('.exit')) return ok(agentDone() ? `${options.agentExitCode ?? 0}\n` : '');
@@ -220,6 +226,28 @@ describe('runOutageDrill + evaluateOutageDrill', () => {
     // whole `&&` list holding the SSH channel open, so the launch call would return only when the agent exits.
     expect(launch).toMatch(/ && \{ nohup sh -c .* < \/dev\/null > \/dev\/null 2>&1 & \}$/);
     expect(evidence.agent.expected).toBe(sha256Hex(config.secret));
+  });
+
+  it('serves a reader that re-opens the gate path after its read, instead of leaving it blocked', async () => {
+    // Real FIFO, real shell. The reader reads the pipe, then opens the same path again: the Claude Code
+    // behaviour that stalled live run #4 for 5 minutes in the kernel's wait_for_partner.
+    const dir = mkdtempSync(join(tmpdir(), 'j5-gate-'));
+    try {
+      const gate = join(dir, 'drill.gate');
+      execFileSync('mkfifo', ['-m', '600', gate]);
+      const reader = spawn('sh', ['-c', `cat '${gate}'; echo; timeout 5 cat '${gate}' > /dev/null; echo reopen=$?`]);
+      let read = '';
+      reader.stdout.on('data', (chunk: Buffer) => { read += chunk.toString(); });
+      const exited = new Promise<number | null>((resolve) => reader.on('exit', resolve));
+      const released = execFileSync('sh', ['-c', `timeout 10 sh -c '${gateReleaseCommand(gate, 's3cret').replace(/'/g, `'\\''`)}'`]).toString();
+      expect(released).toContain(GATE_RELEASED_MARKER);
+      expect(await exited).toBe(0);
+      expect(read).toContain('s3cret');
+      // 124 here means the re-open blocked until `timeout` killed it.
+      expect(read).toContain('reopen=0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('fails, naming the cause, when the agent never opens its gate pipe', async () => {

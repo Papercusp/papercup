@@ -292,6 +292,32 @@ export function agentTaskPrompt(gatePath: string, outputPath: string): string {
   ].join(' ');
 }
 
+/** Printed by {@link gateReleaseCommand} only once the agent has taken its secret off the pipe. */
+export const GATE_RELEASED_MARKER = 'j5-gate-released';
+
+/**
+ * The host command that hands the agent its secret through the gate pipe.
+ *
+ * The write blocks until the agent's `cat` opens the pipe. After that the agent CLI may open the same path
+ * AGAIN: Claude Code re-reads a file it saw `cat` read, and opening a FIFO for reading blocks until a writer
+ * opens it. Measured 2026-10-02 on host-19ff2a97befd83b51d2306fd (drill run #4): with the writer gone, a
+ * Claude Code thread sat in the kernel's `wait_for_partner` for 5 minutes and the task never got its tool
+ * result; one extra open-for-write released it at once. So once the secret is taken, the pipe is renamed
+ * aside and a regular empty file takes its path (a later re-open reads that and never blocks), and a reader
+ * already waiting on the pipe itself is served end-of-file through the renamed path.
+ */
+export function gateReleaseCommand(gatePath: string, secret: string): string {
+  const gate = shellQuote(gatePath);
+  const served = shellQuote(`${gatePath}.served`);
+  return [
+    `printf %s ${shellQuote(secret)} > ${gate} && echo ${GATE_RELEASED_MARKER}`,
+    `mv -f ${gate} ${served}`,
+    `: > ${gate}`,
+    `timeout 2 sh -c ${shellQuote(`: > ${served}`)}`,
+    `rm -f ${served}`,
+  ].join('; ');
+}
+
 const FLAG_FILE = (dir: string, nonce: string, suffix: string) => `${dir}/.j5-drill-${nonce}.${suffix}`;
 
 /** Run the drill end to end. Never throws: failures land in `evidence.errors` for the verdict. */
@@ -405,9 +431,11 @@ export async function runOutageDrill(config: OutageDrillConfig, deps: OutageDril
     // `cat` opens the pipe, so a timeout means the agent never got as far as reading it.
     if (evidence.during.agentRunningWhenBlocked && !papercuspReachable) {
       const gateSeconds = config.gateTimeoutSeconds ?? 60;
-      const write = `printf %s ${shellQuote(config.secret)} > ${shellQuote(gatePath)}`;
+      const write = gateReleaseCommand(gatePath, config.secret);
       const released = await deps.hostExec(`timeout ${gateSeconds} sh -c ${shellQuote(write)}`);
-      if (released.code !== 0) throw new Error(`the agent never read its gate pipe within ${gateSeconds}s (exit ${released.code})`);
+      if (!released.stdout.includes(GATE_RELEASED_MARKER)) {
+        throw new Error(`the agent never read its gate pipe within ${gateSeconds}s (exit ${released.code})`);
+      }
       evidence.agent.gateReleasedAt = iso();
       log(`gate released to the agent at ${evidence.agent.gateReleasedAt}`);
     }
