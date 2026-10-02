@@ -701,6 +701,22 @@ const awsConnectionRow = {
 } satisfies CloudWorkspacesControlRow;
 
 describe("CloudWorkspacesPage — AWS parity", () => {
+  it("offers the existing setup-template download for a valid local account and region", () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Amazon Web Services" }));
+    expect((screen.getByRole("button", { name: "Download AWS setup template" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "AWS account ID" }), { target: { value: "123456789012" } });
+    const link = screen.getByRole("link", { name: "Download AWS setup template" });
+    expect(link.getAttribute("href")).toBe("/api/workspace-hosts/aws-setup-template?accountId=123456789012&region=us-east-1");
+    expect(link.hasAttribute("download")).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "AWS region" }), { target: { value: "eu-west-1" } });
+    expect(link.getAttribute("href")).toContain("region=eu-west-1");
+    fireEvent.change(screen.getByRole("textbox", { name: "AWS region" }), { target: { value: "cn-north-1" } });
+    expect(screen.queryByRole("link", { name: "Download AWS setup template" })).toBeNull();
+    expect(H.mutate).not.toHaveBeenCalled();
+  });
+
   it("dismisses the restore dialog through the Modal lifecycle callback", () => {
     H.rows = [awsConnectionRow, {
       ...workspaceRow, target: "aws", connectionId: awsConnectionRow.id,
