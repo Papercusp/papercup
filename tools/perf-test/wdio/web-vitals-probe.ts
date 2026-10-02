@@ -397,8 +397,13 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
     .sort((a, b) => b.duration - a.duration).slice(0, 12)
     .map((entry) => ({ path: new URL(entry.name, location.href).pathname, startMs: Math.round(entry.startTime),
       durationMs: Math.round(entry.duration), endMs: Math.round(entry.startTime + entry.duration), initiator: entry.initiatorType }));
+  const accountsImport = performance.getEntriesByName('accounts-tab-import', 'measure').at(-1);
   return {
     documentClock, storage, readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
+    startupImports: { accountsTab: accountsImport ? {
+      startMs: Math.round(accountsImport.startTime), durationMs: Math.round(accountsImport.duration),
+      endMs: Math.round(accountsImport.startTime + accountsImport.duration),
+    } : null },
     syncTrace: { unit: 'ms' as const, clock: 'performance.now' as const, startupQueries,
       planQueries: planQueries.map(compact), planStages },
     ...capturedAttribution,
