@@ -514,23 +514,8 @@ describe('ledger write/read/GC', () => {
     expect(await appendLedgerRow(row(), { dir: join(plainFile, 'sub'), nowMs: NOW })).toBe(false);
   });
 
-  // WI-10005327: the write path is async, so in-process writes to one file can
-  // now interleave. Compaction is read-then-rewrite; an append landing between
-  // those two steps would be wiped by the rewrite unless writes are serialized.
-  it('concurrent appends to one sid that trigger compaction lose no row', async () => {
-    const p = ledgerPathForSid(SID, dir);
-    const expiredLine = JSON.stringify(row({ ts: NOW - TTL - 60_000 })) + '\n';
-    // Past the 32 KiB compaction threshold, all expired: every append sees "compact first".
-    writeFileSync(p, expiredLine.repeat(Math.ceil((40 * 1024) / expiredLine.length)));
-    const nonces = Array.from({ length: 12 }, (_, i) => (i + 1).toString(16).padStart(16, '0'));
-    const results = await Promise.all(
-      nonces.map((nonce) => appendLedgerRow(row({ nonce, ts: NOW }), { dir, nowMs: NOW, ttlMs: TTL })),
-    );
-    expect(results.every(Boolean)).toBe(true);
-    const live = readLedgerRows(SID, { dir, nowMs: NOW, ttlMs: TTL });
-    expect(live.map((r) => r.nonce).sort()).toEqual([...nonces].sort());
-  });
-
+  // The serialization of concurrent writes (WI-10005327) is pinned
+  // deterministically in turn-provenance-write-serialization.test.ts.
   it('recreates the ledger dir when it is removed after this process created it', async () => {
     const sub = join(dir, 'ledger');
     expect(await appendLedgerRow(row({ nonce: '1'.repeat(16) }), { dir: sub, nowMs: NOW, ttlMs: TTL })).toBe(true);
