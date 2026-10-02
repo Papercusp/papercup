@@ -816,3 +816,84 @@ describe('EI-226378 legacy fleet-scope recovery propagation', () => {
     });
   });
 });
+
+// WI-10005197: the fail-closed dispatch skips that no caller can lift by retrying carry a
+// RefusalContract, so the recipient learns what was observed, what lifts the refusal and who
+// can lift it. The additive `refusal` field must never replace the existing code/reason.
+describe('dispatch skip refusal contracts (WI-10005197)', () => {
+  it('dependency_blocked names the unresolved blockers and when the refusal lifts', async () => {
+    const d = deps({ blockers: vi.fn(async () => [{ ref: 'WI-ROOT-A', kind: 'feature' }, { ref: 'WI-ROOT-B', kind: 'feature' }]) });
+
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['WI-BLOCKED'], targetAgent: 'agent-email-stable', harness: 'email' },
+      d,
+    );
+
+    expect(d.claim).not.toHaveBeenCalled();
+    const skipped = result.skipped[0];
+    expect(skipped).toMatchObject({ workItemId: 'WI-BLOCKED', code: 'dependency_blocked', blockers: ['WI-ROOT-A', 'WI-ROOT-B'] });
+    expect(skipped?.refusal?.observed).toEqual({ workItemId: 'WI-BLOCKED', unresolvedBlockers: 'WI-ROOT-A,WI-ROOT-B' });
+    expect(skipped?.refusal?.liftsWhen).toMatch(/terminal state|blocked-by link is removed/);
+    expect(skipped?.refusal?.whoCanMakeItTrue).toEqual(['another-agent', 'owner']);
+  });
+
+  it('plan_lane_blocked names the plan item and its effective status', async () => {
+    const d = deps({
+      observe: vi.fn(async (id) => ({
+        item: workItem(id),
+        available: false,
+        claimedBy: null,
+        planItemBlocked: {
+          reason: 'plan-item run#P-002 is effectively blocked (blocked-by: P-001)',
+          planSlug: 'run',
+          itemId: 'P-002',
+          effectiveStatus: 'blocked',
+        },
+      })),
+    });
+
+    const result = await assignActionableWorkItems({ workItemIds: ['WI-PLAN'], targetAgent: 'agent-email-stable' }, d);
+
+    expect(d.claim).not.toHaveBeenCalled();
+    const skipped = result.skipped[0];
+    expect(skipped).toMatchObject({
+      workItemId: 'WI-PLAN',
+      code: 'plan_lane_blocked',
+      reason: 'plan-item run#P-002 is effectively blocked (blocked-by: P-001)',
+    });
+    expect(skipped?.refusal?.observed).toEqual({
+      workItemId: 'WI-PLAN',
+      planSlug: 'run',
+      planItemId: 'P-002',
+      effectiveStatus: 'blocked',
+    });
+    expect(skipped?.refusal?.liftsWhen).toMatch(/no longer blocked/);
+    expect(skipped?.refusal?.whoCanMakeItTrue).toEqual(['another-agent', 'owner']);
+  });
+
+  it('authority_denied names the target and actor, and the claim spec that would admit the item', async () => {
+    const d = deps({
+      authorize: vi.fn(async () => ({ allowed: false as const, reason: 'effective member override denies this exact id' })),
+    });
+
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['WI-DENIED'], targetAgent: 'agent-email-stable', actor: 'su-leader', harness: 'email' },
+      d,
+    );
+
+    expect(d.claim).not.toHaveBeenCalled();
+    const skipped = result.skipped[0];
+    expect(skipped).toMatchObject({
+      workItemId: 'WI-DENIED',
+      code: 'authority_denied',
+      reason: 'effective member override denies this exact id',
+    });
+    expect(skipped?.refusal?.observed).toEqual({
+      workItemId: 'WI-DENIED',
+      targetAgent: 'agent-email-stable',
+      actor: 'su-leader',
+    });
+    expect(skipped?.refusal?.liftsWhen).toMatch(/scheduler:set_claim_spec/);
+    expect(skipped?.refusal?.whoCanMakeItTrue).toEqual(['another-agent', 'owner']);
+  });
+});
