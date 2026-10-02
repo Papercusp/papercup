@@ -31,7 +31,7 @@ import { createGitnexusArm, createRgBaselineArm, execTimed } from './engine-comp
 import { createCodebaseMemoryArm } from './engine-comparison-cbm';
 import { phaseCostFromTimeLogs, withPrecomputedIndex } from './engine-comparison-precomputed';
 import { runEngineArm, type ArmReport, type EngineArm, type EngineComparisonDeps, type EngineRunMeta } from './engine-comparison';
-import { ARM_ORDER, orderReports, parseCliArgs, preregHash, renderEvidence, type CliArmId } from './engine-comparison-report';
+import { ARM_ORDER, deriveRunMeta, orderReports, parseCliArgs, preregHash, renderEvidence, type CliArmId } from './engine-comparison-report';
 
 const BENCH = process.env.PAPERCUSP_ENGINE_BENCH_ROOT ?? path.join(os.homedir(), '.papercusp/bench/engine-comparison-2026-10');
 const ARM_DIR: Readonly<Record<CliArmId, string>> = {
@@ -137,8 +137,11 @@ const nodeCounts = (out: string): string | null => {
 
 async function aggregate(evidenceDir: string): Promise<void> {
   const reports: ArmReport[] = [];
+  const reportMtimesMs: number[] = []; // run identity comes from the INPUT reports, never the clock (deriveRunMeta)
   for (const id of ARM_ORDER) {
-    const raw = await fs.readFile(path.join(evidenceDir, `report-${id}.json`), 'utf8').catch(() => null);
+    const file = path.join(evidenceDir, `report-${id}.json`);
+    const raw = await fs.readFile(file, 'utf8').catch(() => null);
+    if (raw !== null) reportMtimesMs.push((await fs.stat(file)).mtimeMs);
     reports.push(
       raw === null
         ? { armId: id, version: 'n/a', unavailable: `no report-${id}.json — arm was not run`, treeFingerprint: null, coldIndex: null, indexBytes: null, cases: [], fixtures: [], error: null }
@@ -163,7 +166,7 @@ async function aggregate(evidenceDir: string): Promise<void> {
     if (counts) notes.push(`${id} graph size from its cold analyze: ${counts}.`);
   }
   const caseIds = SELECTIVE_ACCEPTANCE_CORPUS.map((c) => c.id);
-  const meta: EngineRunMeta = { runId: `engine-comparison-${new Date().toISOString().slice(0, 10)}`, seed: 0, createdAt: new Date().toISOString(), preregHash: preregHash(caseIds, 3) };
+  const meta: EngineRunMeta = deriveRunMeta(reportMtimesMs, preregHash(caseIds, 3));
   const bundle = renderEvidence(orderReports(reports), meta, notes);
   await fs.writeFile(path.join(evidenceDir, 'engine-comparison.md'), bundle.markdown);
   await fs.writeFile(path.join(evidenceDir, 'verdict.json'), bundle.verdictJson);

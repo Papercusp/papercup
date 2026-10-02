@@ -66,6 +66,21 @@ export function preregHash(caseIds: readonly string[], warmSamples: number): str
   return createHash('sha256').update(JSON.stringify({ caseIds: [...caseIds], warmSamples, bars: DISPOSITION_BARS })).digest('hex').slice(0, 16);
 }
 
+/**
+ * Run identity derived from the INPUT evidence, never from the clock (EI-24858052475884275).
+ *
+ * `aggregate` used to stamp `runId`/`createdAt` from `new Date()`, so re-aggregating the very same
+ * `report-*.json` files on another day rewrote every evidence file that embeds them (the markdown
+ * header, task-runs.json, fairness-audit.json) while verdict.json — which does not — stayed identical.
+ * The newest report's mtime is stable across re-aggregation and moves only when an arm run rewrites a
+ * report, which is exactly when the output SHOULD change. No usable report → a fixed epoch, never "now".
+ */
+export function deriveRunMeta(reportMtimesMs: readonly number[], prereg: string): EngineRunMeta {
+  const usable = reportMtimesMs.filter((t) => Number.isFinite(t) && t > 0);
+  const createdAt = new Date(usable.length === 0 ? 0 : Math.max(...usable)).toISOString();
+  return { runId: `engine-comparison-${createdAt.slice(0, 10)}`, seed: 0, createdAt, preregHash: prereg };
+}
+
 /** Canonical arm order; an unknown id sorts last (never dropped). */
 export function orderReports(reports: readonly ArmReport[]): ArmReport[] {
   const rank = (id: string): number => {

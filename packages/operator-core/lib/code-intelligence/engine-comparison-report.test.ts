@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ArmReport, CaseMeasurement, EngineRunMeta, PhaseCost, UpdateFixtureResult } from './engine-comparison';
-import { ARM_ORDER, orderReports, parseCliArgs, preregHash, renderEvidence } from './engine-comparison-report';
+import { ARM_ORDER, deriveRunMeta, orderReports, parseCliArgs, preregHash, renderEvidence } from './engine-comparison-report';
 
 const COST: PhaseCost = { wallMs: 60_000, peakRssKb: 2_048_000, ok: true, error: null, loadAvg1: 12 };
 const META: EngineRunMeta = { runId: 'run-1', seed: 0, createdAt: '2026-10-01T00:00:00.000Z', preregHash: 'abc' };
@@ -118,5 +120,79 @@ describe('renderEvidence', () => {
   it('marks a failed case NO and carries its error text', () => {
     const b = renderEvidence([report('baseline-lsp-rg', 'f', false)], META, []);
     expect(b.markdown).toMatch(/\| baseline-lsp-rg \| c1 \| callers \| NO \| 0\.00 \|/);
+  });
+});
+
+// EI-24858052475884275 — re-aggregating the same reports must be byte-stable. runId/createdAt used to
+// come from the wall clock, so every re-run on a new day rewrote the markdown header, task-runs.json and
+// fairness-audit.json while verdict.json (which does not embed them) stayed identical.
+describe('deriveRunMeta', () => {
+  afterEach(() => vi.useRealTimers());
+  const T1 = Date.UTC(2026, 9, 1, 12, 0, 0);
+  const T2 = Date.UTC(2026, 9, 2, 15, 14, 23);
+
+  it('is a pure function of the report mtimes: the wall clock never reaches it', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+    const a = deriveRunMeta([T1, T2], 'abc');
+    vi.setSystemTime(new Date('2031-06-15T00:00:00.000Z'));
+    const b = deriveRunMeta([T1, T2], 'abc');
+    expect(b).toEqual(a);
+    expect(a.createdAt).toBe(new Date(T2).toISOString());
+    expect(a.runId).toBe('engine-comparison-2026-10-02');
+    expect(a).toMatchObject({ seed: 0, preregHash: 'abc' });
+  });
+
+  it('is independent of arm/read order and moves only when a report is rewritten', () => {
+    expect(deriveRunMeta([T2, T1], 'p')).toEqual(deriveRunMeta([T1, T2], 'p'));
+    expect(deriveRunMeta([T1, T2 + 60_000], 'p').createdAt).not.toBe(deriveRunMeta([T1, T2], 'p').createdAt);
+  });
+
+  it('falls back to a FIXED epoch (never "now") when no usable report exists', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+    for (const none of [[], [Number.NaN, -1, 0, Number.POSITIVE_INFINITY]]) {
+      const m = deriveRunMeta(none, 'p');
+      expect(m.createdAt).toBe('1970-01-01T00:00:00.000Z');
+      expect(m.runId).toBe('engine-comparison-1970-01-01');
+    }
+  });
+
+  it('feeds renderEvidence deterministically: same reports + same mtimes => identical bytes on any day', () => {
+    vi.useFakeTimers();
+    const reports = [report('baseline-lsp-rg', 'f', true)];
+    vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+    const first = renderEvidence(reports, deriveRunMeta([T2], 'abc'), []);
+    vi.setSystemTime(new Date('2031-06-15T00:00:00.000Z'));
+    const second = renderEvidence(reports, deriveRunMeta([T2], 'abc'), []);
+    expect(second.markdown).toBe(first.markdown);
+    expect(second.taskRowsJson).toBe(first.taskRowsJson);
+    expect(second.fairnessJson).toBe(first.fairnessJson);
+    expect(second.verdictJson).toBe(first.verdictJson);
+  });
+});
+
+describe('engine-comparison-cli aggregate() — recurrence guard (EI-24858052475884275)', () => {
+  // Reads the CLI SOURCE (it runs at import time, so it cannot be imported by a test). The predicate is
+  // proven falsifiable against the exact pre-fix shape inside this same test, so it cannot pass vacuously.
+  const readsClock = (src: string): boolean => /new Date\(|Date\.now\(/.test(src);
+  const aggregateBody = (src: string): string => {
+    const start = src.indexOf('async function aggregate(');
+    const end = src.indexOf('\n}\n', start);
+    return start === -1 || end === -1 ? '' : src.slice(start, end);
+  };
+
+  it('the detector flags the pre-fix clock-derived meta (negative control)', () => {
+    const preFix = "async function aggregate(d: string) {\n  const meta = { runId: `x-${new Date().toISOString().slice(0, 10)}`, createdAt: new Date().toISOString() };\n}\n";
+    expect(aggregateBody(preFix)).not.toBe('');
+    expect(readsClock(aggregateBody(preFix))).toBe(true);
+  });
+
+  it('aggregate() derives run identity from deriveRunMeta and never reads the clock', () => {
+    const src = readFileSync(fileURLToPath(new URL('./engine-comparison-cli.ts', import.meta.url)), 'utf8');
+    const body = aggregateBody(src);
+    expect(body.length).toBeGreaterThan(200); // positive control: the slice really captured the function
+    expect(body).toContain('deriveRunMeta(');
+    expect(readsClock(body)).toBe(false);
   });
 });
