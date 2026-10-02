@@ -272,7 +272,9 @@ export function loadIndependentMeasurementInputs(prepared: PreparedMeasurement, 
 
 /** Extend the existing raw/vector receipt format, not a second vector cache.
  * Reuse is explicitly frozen on a relevance cell with reuseCellId plus three
- * declared inputs: reuseManifest, reuseCompletion, reuseVectors. Completion
+ * declared inputs: reuseManifest, reuseCompletion, reuseVectors. A cell may
+ * select another declared vector input with reuseVectorsInput; the default
+ * remains reuseVectors. Completion
  * binds vectors (which have no arm metadata themselves) to the measured arm.
  * New labels may change relevance, but a reused query's text/source may not. */
 export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement, corpus: 'memory' | 'prose') {
@@ -287,11 +289,18 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
     if (hashJson(await fingerprintFile(ref.path)) !== hashJson(ref)) throw new Error('retained relevance fingerprint mismatch');
     return JSON.parse(fs.readFileSync(ref.path, 'utf8'));
   };
-  const refs = Object.fromEntries(['reuseManifest', 'reuseCompletion', 'reuseVectors'].map((name) => {
-    if (!prepared.cell.inputIds.includes(name) || !prepared.manifest.inputs[name]) {
+  const vectorsInputId = prepared.cell.parameters.reuseVectorsInput === undefined
+    ? 'reuseVectors' : prepared.cell.parameters.reuseVectorsInput;
+  if (typeof vectorsInputId !== 'string' || !vectorsInputId.trim()) {
+    throw new Error('invalid retained relevance vector input');
+  }
+  const refs = Object.fromEntries([
+    ['reuseManifest', 'reuseManifest'], ['reuseCompletion', 'reuseCompletion'], ['reuseVectors', vectorsInputId],
+  ].map(([role, name]) => {
+    if (!prepared.cell.inputIds.includes(name) || !Object.hasOwn(prepared.manifest.inputs, name)) {
       throw new Error('retained relevance inputs must be declared on the cell');
     }
-    return [name, prepared.manifest.inputs[name]];
+    return [role, prepared.manifest.inputs[name]];
   }));
   const donor = validateMeasurementManifest(await readPinned(refs.reuseManifest));
   const cell = donor.cells.find((c) => c.id === donorId), arm = donor.arms.find((a) => a.id === cell?.armId);
@@ -356,7 +365,7 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
   });
   return { docVectors: vectors.docVectors as number[][], queryVectors, missingIndexes,
     evidence: { donorCellId: donorId, manifest: refs.reuseManifest, completion: refs.reuseCompletion,
-      raw: completed[0].raw, vectors: refs.reuseVectors, documentsReused: vectors.docVectors.length,
+      raw: completed[0].raw, vectors: refs.reuseVectors, vectorsInputId, documentsReused: vectors.docVectors.length,
       reusedQueryIds: current.queries.filter((_, i) => queryVectors[i] !== undefined).map((q) => q.id),
       newQueryIds: missingIndexes.map((i) => current.queries[i].id),
       scope: 'embedding reuse only; independent new labels, scoring and source-power acceptance remain required',
