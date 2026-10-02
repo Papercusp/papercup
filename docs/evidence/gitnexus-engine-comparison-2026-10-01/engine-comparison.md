@@ -1,13 +1,13 @@
 # Engine comparison — run engine-comparison-2026-10-02
 
-created 2026-10-02T09:07:34.917Z · seed 0 · prereg 7ff941b3e5366038
+created 2026-10-02T16:37:34.722Z · seed 0 · prereg 7ff941b3e5366038
 
 ## Summary (one row per arm)
 
 | arm | version | correct | recall | cold index s | peak RSS MB | index MB | warm med ms | resp KB | fixtures | fault |
 |---|---|---|---|---|---|---|---|---|---|---|
 | baseline-lsp-rg | rg rg | 1/5 | 0.30 | 0.0 | 0 | 0 | 55 | 40.9 | 2/3 | surfaced |
-| gitnexus-installed | 1.6.9 | 2/5 | 0.50 | 889.5 | 8158 | 2759 | 5615 | 75.5 | 1/3 | surfaced |
+| gitnexus-installed | 1.6.9 | 2/5 | 0.50 | 436.0 | 9903 | 2756 | 4412 | 75.2 | 1/3 | SILENT |
 | gitnexus-candidate | 1.6.12 | 1/5 | 0.43 | 1179.7 | 9458 | 3875 | 3910 | 464.6 | 3/3 | SILENT |
 | codebase-memory | dev@339b3f40 | 1/5 | 0.20 | 228.5 | 9368 | 941 | 14595 | 16.4 | 3/3 | surfaced |
 
@@ -20,11 +20,11 @@ created 2026-10-02T09:07:34.917Z · seed 0 · prereg 7ff941b3e5366038
 | baseline-lsp-rg | selective-external-consumer | callers | NO | 0.00 | 785 | 55 | 1677 | n/a |
 | baseline-lsp-rg | selective-route-boundary | text-search | NO | 0.00 | 52 | 54 | 290 | n/a |
 | baseline-lsp-rg | selective-exact-index-symbol | symbol-search | yes | 1.00 | 49 | 43 | 94 | n/a |
-| gitnexus-installed | selective-scheduler-edge | callees | yes | 1.00 | 6642 | 6303 | 33871 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. |
-| gitnexus-installed | selective-fingerprint-chain | callees | NO | 0.50 | 10099 | 9666 | 29309 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. |
-| gitnexus-installed | selective-external-consumer | callers | yes | 1.00 | 5833 | 5615 | 14042 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus callers returned 4 edge(s): 3 resolved call site(s) and 1 FILE-level edge(s) carrying no line. The file rows are listed last, with kind:"file". Do not count them as callers — the same file can appear both as a resolved site and as a file edge, so counting rows overstates the real total. |
+| gitnexus-installed | selective-scheduler-edge | callees | yes | 1.00 | 5312 | 4967 | 33871 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. |
+| gitnexus-installed | selective-fingerprint-chain | callees | NO | 0.50 | 6819 | 7187 | 29029 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. |
+| gitnexus-installed | selective-external-consumer | callers | yes | 1.00 | 4451 | 4412 | 14042 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus callers returned 4 edge(s): 3 resolved call site(s) and 1 FILE-level edge(s) carrying no line. The file rows are listed last, with kind:"file". Do not count them as callers — the same file can appear both as a resolved site and as a file edge, so counting rows overstates the real total. |
 | gitnexus-installed | selective-route-boundary | text-search | NO | 0.00 | 0 | 0 | 0 | declined: gitnexus facade does not route intent 'text-search' |
-| gitnexus-installed | selective-exact-index-symbol | symbol-search | NO | 0.00 | 2563 | 2669 | 59 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus context failed or returned an unrecognized status (missing): Symbol 'claimNextIssueWorkItem' not found. Use scoped rg or official LSP. |
+| gitnexus-installed | selective-exact-index-symbol | symbol-search | NO | 0.00 | 2104 | 2242 | 59 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus context failed or returned an unrecognized status (missing): Symbol 'claimNextIssueWorkItem' not found. Use scoped rg or official LSP. |
 | gitnexus-candidate | selective-scheduler-edge | callees | yes | 1.00 | 6521 | 5529 | 56079 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. |
 | gitnexus-candidate | selective-fingerprint-chain | callees | NO | 0.50 | 8260 | 6690 | 370181 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. |
 | gitnexus-candidate | selective-external-consumer | callers | NO | 0.67 | 3750 | 3910 | 49448 | gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus callers returned 5 edge(s): 4 resolved call site(s) and 1 FILE-level edge(s) carrying no line. The file rows are listed last, with kind:"file". Do not count them as callers — the same file can appear both as a resolved site and as a file edge, so counting rows overstates the real total. |
@@ -43,9 +43,9 @@ created 2026-10-02T09:07:34.917Z · seed 0 · prereg 7ff941b3e5366038
 | baseline-lsp-rg | edit | yes | n/a | 0.0 | all 1 expected site(s) present |
 | baseline-lsp-rg | delete | yes | n/a | 0.0 | no site from the deleted file is returned |
 | baseline-lsp-rg | refresh-failure | NO | yes | 0.0 | fault SURFACED; correct cold=1 while-broken=0 after-restore=1; recovery refresh ok=true |
-| gitnexus-installed | edit | NO | n/a | 1812.1 | missing packages/operator-core/lib/scheduler/get-next.ts:3112 [engine note: gitnexus dispatch threw: gitnexus context exit 1: de_modules/gitnexus/dist/cli/tool.js:116:20) at async Command.<anonymous> (~/.papercusp/vendor/gitnexus/node_modules/gitnexus/dist/cli/lazy-action.js:33:9) Node.js v25.9.0] |
-| gitnexus-installed | delete | NO | n/a | 1804.5 | query FAILED (error and no sites) [engine note: gitnexus dispatch threw: gitnexus context exit 139: ] |
-| gitnexus-installed | refresh-failure | yes | yes | 1627.6 | fault SURFACED; correct cold=2 while-broken=2 after-restore=2; recovery refresh ok=true |
+| gitnexus-installed | edit | NO | n/a | 1800.9 | missing packages/operator-core/lib/scheduler/get-next.ts:3108 [engine note: gitnexus dispatch threw: gitnexus context exit 139: GitNexus: found 90371 byte lbug.wal without lbug.shadow before read-only open; will rely on LadybugDB replay/recovery instead of deleting pending WAL data.] |
+| gitnexus-installed | delete | NO | n/a | 1811.9 | query FAILED (error and no sites) [engine note: gitnexus dispatch threw: gitnexus context exit 139: ] |
+| gitnexus-installed | refresh-failure | yes | NO | 0.8 | fault SILENT; correct cold=2 while-broken=2 after-restore=2; recovery refresh ok=true |
 | gitnexus-candidate | edit | yes | n/a | 519.0 | all 1 expected site(s) present [engine note: gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current.] |
 | gitnexus-candidate | delete | yes | n/a | 720.9 | no site from the deleted file is returned [engine note: gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus callers returned 5 edge(s): 4 resolved call site(s) and 1 FILE-level edge(s) carrying no line. The file rows are listed last, with kind:"file". Do not count them as callers — the same file can appear both as a resolved site and as a file edge, so counting rows overstates the real total.] |
 | gitnexus-candidate | refresh-failure | yes | NO | 3.7 | fault SILENT; correct cold=1 while-broken=1 after-restore=1; recovery refresh ok=true |
@@ -55,12 +55,12 @@ created 2026-10-02T09:07:34.917Z · seed 0 · prereg 7ff941b3e5366038
 
 ## Source parity
 
-identical tree fingerprint across arms: **NO**
+identical tree fingerprint across arms: **YES**
 
 ```json
 {
   "baseline-lsp-rg": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
-  "gitnexus-installed": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5+dirty",
+  "gitnexus-installed": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
   "gitnexus-candidate": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
   "codebase-memory": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5"
 }
@@ -70,8 +70,8 @@ identical tree fingerprint across arms: **NO**
 
 decision: **keep**
 
-- Codebase-Memory does not replace: correct 1/5 < installed 2/5; recall 0.20 < 0.50; warmMedianMs 2.60x installed
-- candidate does not upgrade: correct 1/5 < installed 2/5; recall 0.43 < 0.50; coldIndexMs 1.33x installed; indexBytes 1.40x installed
+- Codebase-Memory does not replace: correct 1/5 < installed 2/5; recall 0.20 < 0.50; warmMedianMs 3.31x installed
+- candidate does not upgrade: correct 1/5 < installed 2/5; recall 0.43 < 0.50; coldIndexMs 2.71x installed; indexBytes 1.41x installed
 
 ## Disclosures
 
@@ -82,8 +82,8 @@ decision: **keep**
 - Two grading defects in this harness were found AFTER attempt 1 and fixed for ALL arms by one rule — post-hoc, disclosed; the preregistered case ids, warm samples and disposition bars are untouched (preregHash unchanged). (1) `error` is a caveat channel, not a failure flag: graded as one, it zeroed both GitNexus arms on the edit/delete fixtures by construction, because the bench CLI dispatch has no `list_repos` and so EVERY GitNexus answer carries an "index health UNMEASURED" note. A query now counts as failed only when `error` is set AND no site came back (`answered()`); the note is kept in the fixture detail. (2) The refresh-failure fixture passed VACUOUSLY for an arm with no cold-correct case (`>= 0` holds for any engine); it now reports NOT MEASURABLE and is not a pass. The baseline and codebase-memory reports are invariant under both fixes (every case `error` is null and each has 1 cold-correct case), checked from their report JSON, so they were not rerun.
 - GitNexus `analyze` skipped files above its default 512 KB cap in BOTH GitNexus arms (packages/operator-core/lib/inference-gateway/gateway.ts and packages/operator-core/lib/work-items.ts); `selective-exact-index-symbol` expects a site in work-items.ts. `GITNEXUS_MAX_FILE_SIZE` was NOT raised (as-installed defaults), so whether raising it changes that case is untested residue, not a finding. `gitnexus analyze` also wrote AGENTS.md/CLAUDE.md/.claude into both GitNexus trees (untracked; symmetric across the two arms, absent in the baseline and CBM trees).
 - CANDIDATE LINE-BASE CORRECTION (post-hoc, disclosed, applied by engine VERSION not by arm preference): candidate ATTEMPT 2 graded 0/5 / recall 0.00 because GitNexus 1.6.12 reports a 1-based `startLine` while 1.6.9 reports 0-based and the production facade adds +1 unconditionally, so every 1.6.12 site was one line late. Measured, not assumed: `getLongLivedAdminPool` is declared on 1-based line 145 and the raw `startLine` is 144 on 1.6.9 vs 145 on 1.6.12 (same source tree). The bench adapter now skips the +1 for a 1-based engine; the installed arm's grades are unchanged by it (its report predates and is invariant under the change). The attempt-2 report is kept as `report-gitnexus-candidate.attempt2-facade-line-base.json`. The reported candidate numbers are ATTEMPT 3, a SOLO rerun on the restored index. The production facade's own +1 on a 1.6.12 upgrade is a separate finding for the upgrade work, not fixed here.
-- DISCLOSED TREE-PARITY DEFECT, installed arm only: `arms/gitnexus-installed/tree` carries a leftover MODIFICATION to the tracked file packages/operator-core/lib/scheduler/get-next.ts (an appended `engineBenchEditProbe` function, +4 lines at the file end, mtime 13:38 local) — the edit fixture of the killed ATTEMPT 2 never reached its `finally` restore, and the cold restore index was then built from that dirty tree. That is why `sourceParity.same` is false (`+dirty`). It does NOT move any graded case (the cases that matter sit at get-next.ts:2779 and spec-evidence-store/design-compare, far from the appended tail), and the installed edit/delete fixture failures are ENGINE crashes (node stack trace; exit 139 segfault), not grader outcomes — but the installed EDIT fixture ran on an already-appended file, so read its 1/3 as confounded and NOT as clean evidence either way. A clean installed rerun was not done (hours under load average 100–260) because no disposition input depends on it; it is residue, not a finding.
+- INSTALLED-ARM TREE PARITY — RESOLVED BY A CLEAN RERUN (disclosed history): an earlier installed run (ATTEMPT 3) was graded on `arms/gitnexus-installed/tree` carrying a leftover +4-line `engineBenchEditProbe` edit to packages/operator-core/lib/scheduler/get-next.ts from the killed ATTEMPT 2, so its `sourceParity.same` was false (`+dirty`) and its EDIT fixture was confounded; those artifacts are kept as `*.attempt3-dirty-tree.*`. The leftover was reverted (`git diff --quiet HEAD` clean), the installed index was rebuilt cold from the clean tree, and the installed arm was rerun SOLO; `sourceParity.same` is now true for all four arms. The clean rerun does not change the graded outcome (installed correct 2/5 in both runs) or the disposition. It DOES settle one question: the installed edit and delete fixture failures are ENGINE faults of GitNexus 1.6.9, not tree confounds — delete exited 139 (segfault) in both runs, and the edit fixture, which died with a node stack trace on the dirty tree, died with exit 139 on the clean tree (engine note: a lbug.wal was found without lbug.shadow before the read-only open). The refresh-failure fixture reported its fault SILENT on the clean rerun where the dirty-tree run reported it SURFACED; its answers were unchanged (cold=2, while-broken=2, after-restore=2). Latency and RSS from the rerun were taken on a shared, loaded host, so they remain upper bounds comparable only within load noise, as stated above.
 - The baseline arm is a scripted `rg` pass, not an LSP session (the arm id is historical). `rg` exits 2 on an unreadable directory and the arm reports that as a query error, which is what drives its refresh-failure fixture result.
 - The tool-level comparison spends ZERO LLM tokens; `estTokens` is bytes/4 for every arm. This measures the engines, not agent task outcomes.
-- gitnexus-installed graph size from its cold analyze: 161,962 nodes / 357,805 edges.
+- gitnexus-installed graph size from its cold analyze: 161,974 nodes / 357,816 edges.
 - gitnexus-candidate graph size from its cold analyze: 370,204 nodes / 1,207,016 edges.
