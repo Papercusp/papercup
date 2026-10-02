@@ -283,6 +283,12 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer token did not resolve to a principal' } };
   }
+  if (principal.allowedTools !== undefined && !principal.allowedTools.has(tool.name)) {
+    return {
+      ok: false,
+      error: { code: 'authorization_denied', message: `Principal ${principal.slug} is not allowed to call tool "${tool.name}"` },
+    };
+  }
   if (!principal.capabilities.has(tool.capability)) {
     return {
       ok: false,
@@ -511,6 +517,7 @@ export async function listResources(auth: ResourceAuth): Promise<ListResourcesRe
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
+  if (principal.allowedTools !== undefined) return { ok: true, resources: [] };
 
   const visible = getResourceCatalog().filter((r) =>
     principal.capabilities.has('*') || principal.capabilities.has(r.capability),
@@ -589,6 +596,12 @@ export async function readResource(opts: ReadResourceOptions): Promise<ReadResou
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
+  if (principal.allowedTools !== undefined) {
+    return {
+      ok: false,
+      error: { code: 'tool_scope_only', message: 'This principal is scoped to its exact MCP tool allowlist' },
+    };
+  }
   if (!principal.capabilities.has('*') && !principal.capabilities.has(matched.def.capability)) {
     return {
       ok: false,
@@ -655,6 +668,7 @@ export async function listPrompts(bearer: string): Promise<ListPromptsResult> {
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
   }
+  if (principal.allowedTools !== undefined) return { ok: true, prompts: [] };
   const visible = getPromptCatalog().filter(
     (p) => !p.capability || principal.capabilities.has(p.capability),
   );
@@ -677,6 +691,12 @@ export async function getPrompt(opts: GetPromptOptions): Promise<GetPromptResult
   const principal = await resolveBearer(opts.bearer);
   if (!principal) {
     return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
+  }
+  if (principal.allowedTools !== undefined) {
+    return {
+      ok: false,
+      error: { code: 'tool_scope_only', message: 'This principal is scoped to its exact MCP tool allowlist' },
+    };
   }
   if (def.capability && !principal.capabilities.has(def.capability)) {
     return {
@@ -746,7 +766,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
     const catalog = getCatalog();
     const tools = await Promise.all(
       catalog
-      .filter((t) => !principal || principal.capabilities.has(t.capability))
+      .filter((t) =>
+        !principal ||
+        ((principal.allowedTools === undefined || principal.allowedTools.has(t.name)) &&
+          principal.capabilities.has(t.capability)),
+      )
       .map(async (t) => {
         // GUARDED conversion, never a raw z.toJSONSchema (EI-10996 / WI-4596).
         // This runs inside the tools/list map, so an unrepresentable args schema
