@@ -4,7 +4,23 @@ import { serve } from "@hono/node-server";
 import { WebSocket } from "ws";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
 import { HostedWorkspaceConnectorGateway } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
-import { createHostedHandler, readAttachRequest } from "./hosted-handler";
+import { classifyHostedWorkspaceHosting, createHostedHandler, readAttachRequest } from "./hosted-handler";
+
+describe('hosted relay hosting classification', () => {
+  const record = (configuration: Record<string, unknown>) => ({
+    hostedDelegation: { workspaceId: 'workspace-1', configuration },
+  });
+  it('classifies customer GCP/AWS delegations as BYOC and explicit vendor hosts separately', () => {
+    expect(classifyHostedWorkspaceHosting(record({ provider: 'gcp', source: { method: 'workload-identity' } }), 'workspace-1')).toBe('byoc');
+    expect(classifyHostedWorkspaceHosting(record({ provider: 'aws', source: { method: 'customer-role' } }), 'workspace-1')).toBe('byoc');
+    expect(classifyHostedWorkspaceHosting(record({ provider: 'gcp', source: { method: 'papercusp-hosted' } }), 'workspace-1')).toBe('papercusp');
+    expect(classifyHostedWorkspaceHosting(record({ provider: 'aws', source: { method: 'customer-role' }, papercuspHosted: { hostId: 'host-1' } }), 'workspace-1')).toBe('papercusp');
+  });
+  it('fails closed for missing or mismatched delegation records', () => {
+    expect(classifyHostedWorkspaceHosting(null, 'workspace-1')).toBeNull();
+    expect(classifyHostedWorkspaceHosting(record({ provider: 'gcp', source: { method: 'workload-identity' } }), 'other')).toBeNull();
+  });
+});
 
 describe("readAttachRequest", () => {
   const read = (query: string) => readAttachRequest(new Request(`https://h.example/api/hosted/connectors/socket${query}`));
@@ -48,7 +64,7 @@ function fixture(connectorGateway?: HostedWorkspaceConnectorGateway) {
         headers: { "content-type": "text/html; charset=utf-8" },
       }),
   );
-  return createHostedHandler(plane, spa);
+  return createHostedHandler(plane, spa, { resolveWorkspaceHosting: async () => 'papercusp' });
 }
 
 describe("hosted handler", () => {
@@ -130,7 +146,7 @@ describe("hosted handler", () => {
       type: "bound",
       role: "connector",
       protocol: "papercusp-hosted-workspace.v1",
-      binding,
+      binding: { ...binding, hosting: 'papercusp' },
     }));
     await new Promise<void>((resolve) => {
       websocket.once("close", resolve);

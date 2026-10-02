@@ -386,6 +386,61 @@ export async function boundedRecordGoalPlacementTurnEndOutcome(
   }
 }
 
+/** Where a staged turn-start goal-placement delivery stopped short of a receipt. */
+export type GoalPlacementDeliveryOutcomeStage = 'confirm' | 'late-upgrade';
+
+function candidateFields(candidate: unknown): {
+  token: string | null; nativeSessionId: string | null; sourceKind: string | null;
+  unavailable: boolean; candidateReason: string | null; planSlugs: string[];
+} {
+  const value = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {};
+  const text = (key: string) => typeof value[key] === 'string' ? (value[key] as string).slice(0, 200) : null;
+  const rows = Array.isArray(value.rows) ? value.rows : [];
+  return {
+    token: text('token'), nativeSessionId: text('nativeSessionId'), sourceKind: text('sourceKind'),
+    unavailable: value.unavailable === true, candidateReason: text('reason'),
+    planSlugs: rows.slice(0, 3).flatMap((row) => row && typeof row === 'object' &&
+      typeof (row as Record<string, unknown>).planSlug === 'string'
+      ? [((row as Record<string, unknown>).planSlug as string).slice(0, 200)] : []),
+  };
+}
+
+/** Persist why a staged turn-start delivery produced no goalPlacementTurn receipt
+ * (WI-10005636). Before this, both drop sites discarded the reason, so a missing
+ * receipt could not be told apart from an absent opportunity. The row is a
+ * diagnostic under its own detail key and is never read as eligibility evidence. */
+export async function recordGoalPlacementDeliveryOutcome(input: {
+  ownerId: string; workspaceId: string; stage: GoalPlacementDeliveryOutcomeStage;
+  reason: string; candidate: unknown;
+}, deps: Pick<GoalPlacementTurnReceiptDeps, 'append' | 'now'> = defaults): Promise<boolean> {
+  const observedAt = new Date(deps.now()).toISOString();
+  const fields = candidateFields(input.candidate);
+  try {
+    await deps.append({
+      workspaceId: input.workspaceId,
+      owner: input.ownerId,
+      agent: fields.sourceKind,
+      sessionId: fields.nativeSessionId,
+      scope: fields.planSlugs[0] ?? null,
+      kind: 'lifecycle',
+      toolName: null,
+      phase: null,
+      toolUseId: `goal-placement-delivery-outcome:${input.stage}:${fields.token ?? 'no-token'}:${observedAt}`,
+      summary: 'Goal placement delivery produced no receipt',
+      status: null,
+      cwd: null,
+      detail: { goalPlacementDeliveryOutcome: {
+        version: 1, stage: input.stage, recorded: false, reason: input.reason.slice(0, 500), observedAt,
+        token: fields.token, unavailable: fields.unavailable, candidateReason: fields.candidateReason,
+        planSlugs: fields.planSlugs,
+      } },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The owner-free half of the receipt gate: a due, actionable goal placement row.
  * The turn-start composer reserves budget for exactly these rows, so it must ask
  * this same predicate — a composer that guessed would protect one set and the

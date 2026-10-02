@@ -1,7 +1,7 @@
 /** Restricted same-origin HTTP host for the hosted control-plane profile. */
 
 import { Hono } from "hono";
-import { withHostedServiceContext } from "@papercusp/db-org";
+import { withHostedServiceContext, withWorkspace } from "@papercusp/db-org";
 import {
   createHostedRuntime,
   readHostedRuntimeConfiguration,
@@ -15,6 +15,7 @@ import { WebSocketServer } from "ws";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { authenticateHostedConnectorSocket } from "@papercusp/operator-core/lib/endpoint-route/routes/hosted-workspace-connector";
+import type { HostedConnectorBinding } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
 import {
   HostedWorkspaceSessionBroker,
   type HostedWorkspaceAttachRequest,
@@ -101,6 +102,8 @@ export interface HostedHandler {
 }
 
 export interface HostedHandlerOptions {
+  /** Server-side classification; an unavailable or unrecognized row refuses the socket. */
+  resolveWorkspaceHosting: (binding: HostedConnectorBinding) => Promise<'byoc' | 'papercusp' | null>;
   /**
    * Monthly app-relay usage (P-007, D-006). Production passes the Postgres store
    * (migration 1254); the in-memory default is for tests and hosts without one.
@@ -125,10 +128,53 @@ export interface HostedHandlerOptions {
   membershipReport?: HostedWorkspaceSessionBrokerOptions["membershipReport"];
 }
 
+/** Only a verified delegation's explicit vendor-hosting marker permits the weaker route. */
+export function classifyHostedWorkspaceHosting(
+  providerConfig: unknown,
+  customerWorkspaceId: string,
+): 'byoc' | 'papercusp' | null {
+  if (!providerConfig || typeof providerConfig !== 'object' || Array.isArray(providerConfig)) return null;
+  const delegation = (providerConfig as Record<string, unknown>).hostedDelegation;
+  if (!delegation || typeof delegation !== 'object' || Array.isArray(delegation)) return null;
+  const record = delegation as Record<string, unknown>;
+  if (record.workspaceId !== customerWorkspaceId || !record.configuration ||
+      typeof record.configuration !== 'object' || Array.isArray(record.configuration)) return null;
+  const configuration = record.configuration as Record<string, unknown>;
+  const source = configuration.source;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  if (configuration.provider === 'gcp' && (source as Record<string, unknown>).method === 'papercusp-hosted') return 'papercusp';
+  if (configuration.provider === 'aws' && configuration.papercuspHosted &&
+      typeof configuration.papercuspHosted === 'object') return 'papercusp';
+  return 'byoc';
+}
+
+/** Read the existing delegation record, not a client-supplied hosting claim. */
+export async function readHostedWorkspaceHosting(
+  binding: HostedConnectorBinding,
+): Promise<'byoc' | 'papercusp' | null> {
+  return withWorkspace(binding.controlPlaneWorkspaceId, async (sql) => {
+    const rows = await sql<Array<{ provider_config: unknown }>>`
+      SELECT connection.provider_config
+        FROM harness_shared.customer_workspaces AS customer
+        JOIN harness_shared.workspace_hosts AS host
+          ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
+        JOIN harness_shared.workspace_host_connections AS connection
+          ON connection.workspace_id = host.workspace_id AND connection.id = host.connection_id
+       WHERE customer.workspace_id = ${binding.controlPlaneWorkspaceId}
+         AND customer.id = ${binding.customerWorkspaceId}
+         AND customer.organization_id = ${binding.organizationId}
+         AND customer.workspace_host_id = ${binding.hostId}
+         AND customer.state <> 'deleted'
+       LIMIT 1
+    `;
+    return classifyHostedWorkspaceHosting(rows[0]?.provider_config, binding.customerWorkspaceId);
+  });
+}
+
 export function createHostedHandler(
   plane: AssembledHostedControlPlane,
   spa: Hono,
-  options: HostedHandlerOptions = {},
+  options: HostedHandlerOptions,
 ): HostedHandler {
   const app = new Hono();
   const gateway = plane.components.connectorGateway;
@@ -239,16 +285,20 @@ export function createHostedHandler(
       const fetchRequest = new Request(`https://${host}${request.url}`, { headers });
       const authenticated = await authenticateHostedConnectorSocket(gateway, fetchRequest);
       if (!authenticated) { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); socket.destroy(); return true; }
+      let hosting: 'byoc' | 'papercusp' | null = null;
+      try { hosting = await options.resolveWorkspaceHosting(authenticated.binding); } catch { /* fail closed */ }
+      if (!hosting) { socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"); socket.destroy(); return true; }
+      const binding = { ...authenticated.binding, hosting };
       websocketServer.handleUpgrade(request, socket, head, (websocket) => {
         const untrack = gateway.track(authenticated.binding, (reason) => websocket.close(4001, reason));
         websocket.once("close", untrack);
-        if (authenticated.role === "connector") sessionBroker.attachConnector(authenticated.binding, websocket);
+        if (authenticated.role === "connector") sessionBroker.attachConnector(binding, websocket);
         // P-013: which desktop a viewer wants rides on the upgrade query, alongside
         // the ticket. The TICKET authorizes the workspace; the id selects within it —
         // consistent with D-025 ruling 2, which records that the connector binding is
         // the authorization boundary and that no second, weaker per-user filter is
         // applied to what a viewer may see.
-        else sessionBroker.attachBrowser(authenticated.binding, websocket, readAttachRequest(fetchRequest));
+        else sessionBroker.attachBrowser(binding, websocket, readAttachRequest(fetchRequest));
         websocketServer.emit("connection", websocket, request);
       });
       return true;
@@ -279,6 +329,7 @@ export async function createHostedHandlerFromEnvironment(
   // the portal's MCP OAuth clients and pending grants (migration 1260, P-325).
   const runService = dependencies.runService ?? withHostedServiceContext;
   return createHostedHandler(plane, spa, {
+    resolveWorkspaceHosting: readHostedWorkspaceHosting,
     appRelayUsage: new PostgresHostedAppRelayUsageStore(runService),
     mcpOAuthStore: new PostgresPortalOAuthStore(runService),
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,

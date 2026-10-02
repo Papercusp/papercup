@@ -31,6 +31,36 @@ const ticket = (session = 'hosted-session-1'): HostedConnectorTicketBinding => (
 });
 
 describe('HostedWorkspaceSessionBroker', () => {
+  it.each(['pty', 'psu', 'operator-http', 'desktop'] as const)(
+    'refuses a BYOC %s plaintext channel before opening it', (kind) => {
+      const broker = new HostedWorkspaceSessionBroker({ randomId: () => 'forbidden' });
+      const host = new FakeSocket();
+      const browser = new FakeSocket();
+      broker.attachConnector({ ...connector, hosting: 'byoc' }, host);
+      broker.attachBrowser(ticket(), browser, { kind, ...(kind === 'desktop' ? { desktopSessionId: 'desktop-1' } : {}) });
+      expect(browser.sent).toContainEqual({
+        type: 'session.denied', reason: 'byoc_plaintext_relay_refused',
+        alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+      });
+      expect(browser.closed).toEqual([[4403, 'byoc_plaintext_relay_refused']]);
+      expect(host.sent).not.toContainEqual(expect.objectContaining({ type: 'relay.open' }));
+      broker.dispose();
+    },
+  );
+
+  it('refuses both portal app channel kinds for BYOC', () => {
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0 });
+    const host = new FakeSocket();
+    const byoc = { ...connector, hosting: 'byoc' as const };
+    broker.attachConnector(byoc, host);
+    const app = broker.appConnector(byoc.customerWorkspaceId)!;
+    for (const kind of ['app-http', 'app-key-mint'] as const) {
+      expect(broker.openAppChannel(app, { onFrame: () => {}, onClose: () => {} }, kind)).toBeNull();
+    }
+    expect(host.sent).not.toContainEqual(expect.objectContaining({ type: 'relay.open' }));
+    broker.dispose();
+  });
+
   it('relays only through the exact generation-bound outbound connector', () => {
     const broker = new HostedWorkspaceSessionBroker({ randomId: () => 'channel-1' });
     const host = new FakeSocket();

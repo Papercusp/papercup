@@ -536,6 +536,16 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
   const audit = (action: HostedAppRelayAuditEvent['action'], detail: string) =>
     deps.onAudit?.({ action, customerWorkspaceId: target.customerWorkspaceId, detail });
 
+  // Classify from the broker's server-authenticated connector before inspecting
+  // an app key or reading a body. The vendor portal cannot terminate BYOC content.
+  const connector = deps.port.appConnector(target.customerWorkspaceId);
+  if (connector?.binding.hosting === 'byoc') {
+    audit('app_relay_refused', 'byoc_plaintext_relay_refused');
+    return refuse(403, 'byoc_plaintext_relay_refused', {}, {
+      alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+    });
+  }
+
   // P-017 (D-032 #4): a signed webhook carries no app key. The MACHINE checks its HMAC
   // signature, so the portal skips the key check here, and admits only POST. Every other
   // portal rule below (offline refusal, rate and bandwidth limits) still applies.
@@ -560,7 +570,6 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
 
   // D-008: an offline machine is refused at once. Nothing is queued, held or stored.
   const now = deps.now?.() ?? new Date();
-  const connector = deps.port.appConnector(target.customerWorkspaceId);
   if (!connector || !isHostedConnectorLive({ state: 'active', transport: 'websocket', heartbeatAt: connector.lastSeenAt }, now)) {
     audit('app_relay_refused', 'workspace_offline');
     return refuse(503, 'workspace_offline', { 'retry-after': '30' });

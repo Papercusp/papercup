@@ -346,6 +346,19 @@ describe('fresh-launch worker attestation — productive capacity is four distin
     });
   });
 
+  it('keeps missing custody unready when the call, scheduler, and wake all succeed', () => {
+    const attestation = deriveFreshLaunchWorkerAttestation(evidence({
+      schedulerDisposition: null,
+      claimedWorkItemId: null,
+    }));
+    expect(attestation.stages.agentCall.status).toBe('satisfied');
+    expect(attestation.stages.schedulerPull.status).toBe('satisfied');
+    expect(attestation.stages.durableWake.status).toBe('satisfied');
+    expect(attestation.stages.disposition).toEqual({ status: 'missing', kind: 'missing' });
+    expect(attestation.ready).toBe(false);
+    expect(attestation.failures.map((failure) => failure.code)).toEqual(['disposition-missing']);
+  });
+
   it('reports a tool-dark boot without letting presence or configuration substitute for work', () => {
     const attestation = deriveFreshLaunchWorkerAttestation(evidence({
       successfulCalls: 0,

@@ -463,6 +463,9 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     const connectorSocket = this.connectors.get(key);
     const state = this.connectorState.get(key);
     if (!connectorSocket || !open(connectorSocket) || !state) return null;
+    // The portal has no customer-held content key. This also fences OAuth key/token
+    // channels, whose request and answer carry secrets on the same app plane.
+    if (state.binding.hosting === 'byoc') return null;
     const channelId = this.randomId();
     let closed = false;
     const socket: HostedWorkspaceRelaySocket = {
@@ -534,6 +537,17 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     if (binding.kind !== 'session' || binding.transport !== 'websocket' || binding.state !== 'active' ||
         binding.audience !== 'workspace-operator' || !binding.userId || !binding.hostedSessionId) {
       socket.close(4403, 'session_binding_invalid');
+      return () => {};
+    }
+    // Trust the connector's server-classified hosting mode, not a ticket or attach
+    // parameter. No plaintext content channel may reach a customer-account VM.
+    if (this.connectorState.get(key)?.binding.hosting === 'byoc') {
+      sendJson(socket, {
+        type: 'session.denied',
+        reason: 'byoc_plaintext_relay_refused',
+        alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+      });
+      socket.close(4403, 'byoc_plaintext_relay_refused');
       return () => {};
     }
     const kind: HostedWorkspaceChannelKind =
@@ -769,7 +783,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     if (reported === mode) {
       this.audit(session.binding, `desktop_${mode}_started`, session.channelId, desktop);
     } else {
-      this.audit(session.binding, 'desktop_ready_mode_mismatch', session.channelId, `${desktop} reported=${String(reported)}`);
+      this.audit(session.binding, 'desktop_ready_mode_mismatch', session.channelId,
+        `${desktop} reported=${reported === 'watch' || reported === 'takeover' ? reported : 'invalid'}`);
     }
   }
 
