@@ -28,7 +28,11 @@ import {
   type AwsWorkspaceHostSelection,
 } from './aws-connection';
 import type { AwsWorkspaceHostSdkClient } from './aws-provider';
-import { createAwsSdkWorkspaceHostClient, type AwsSdkWorkspaceHostClientOptions } from './aws-sdk-client';
+import {
+  createAwsSdkWorkspaceHostClient,
+  type AwsConnectionCredentialSource,
+  type AwsSdkWorkspaceHostClientOptions,
+} from './aws-sdk-client';
 
 /**
  * The quota floor checked when an AWS connection is admitted. One on-demand standard-family vCPU
@@ -75,7 +79,7 @@ function credentialSourceOf(connection: WorkspaceHostProviderConnection): AwsWor
 export function createConfiguredAwsWorkspaceHostClient(
   connection: WorkspaceHostProviderConnection,
   options: ConfiguredAwsWorkspaceHostClientOptions = {},
-): AwsConnectionInspectionClient & AwsWorkspaceHostSdkClient {
+): AwsConnectionInspectionClient & AwsWorkspaceHostSdkClient & AwsConnectionCredentialSource {
   if (connection.target !== AWS_WORKSPACE_HOST_TARGET) {
     throw new Error(`AWS workspace-host provider cannot compose target '${connection.target}'`);
   }

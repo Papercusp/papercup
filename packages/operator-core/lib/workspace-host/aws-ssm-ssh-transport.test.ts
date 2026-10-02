@@ -5,9 +5,14 @@
  * GCP; only the ProxyCommand and the trust-pin alias differ. These tests pin both, and pin that the
  * GCP path through the seam is byte-for-byte what it was before AWS existed.
  */
+import type { spawn as nodeSpawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
+  NodeGcpIapWorkspaceHostInitializationCommandRunner,
   awsSsmHostKeyAlias,
+  awsSsmTunnelEnvironment,
   buildAwsSsmSshInvocation,
   buildGcpIapSshInvocation,
   buildGcpIapWorkspaceHostBootstrapReadinessProbe,
@@ -93,6 +98,83 @@ describe('AWS SSM SSH transport (P-005)', () => {
     expect(() => buildAwsSsmSshInvocation({ ...aws, identityFile: undefined }, invocation)).toThrow(
       /OpenSSH identity file is required/,
     );
+  });
+
+  // EI-24854807241461317: a role-chain connection's tunnel runs as the connection, never ambient.
+  const roleCredentials = async () => ({
+    accessKeyId: 'fake-tunnel-key-id',
+    secretAccessKey: 'fake-tunnel-secret',
+    sessionToken: 'fake-tunnel-session',
+  });
+
+  it('inherits the environment when the connection needs no injected credentials', () => {
+    expect(buildAwsSsmSshInvocation(aws, invocation)).not.toHaveProperty('resolveEnvironment');
+    expect(buildAwsSsmSshInvocation({ ...aws, awsProfile: 'papercusp-byoc' }, invocation)).not.toHaveProperty(
+      'resolveEnvironment',
+    );
+  });
+
+  it("runs a role-chain tunnel as the connection's credentials, with every ambient identity selector removed", async () => {
+    const command = buildAwsSsmSshInvocation({ ...aws, awsCredentials: roleCredentials }, invocation);
+    // The secret never appears in the serializable part of the command.
+    expect(JSON.stringify(command)).not.toContain('fake-tunnel-secret');
+    expect(option(command.args, 'ProxyCommand')).not.toMatch(/--profile/);
+    const ambient = {
+      PATH: '/usr/bin',
+      AWS_PROFILE: 'operator-own',
+      AWS_DEFAULT_PROFILE: 'operator-default',
+      AWS_ACCESS_KEY_ID: 'ambient-key',
+      AWS_SECRET_ACCESS_KEY: 'ambient-secret',
+      AWS_ROLE_ARN: 'arn:aws:iam::111111111111:role/ambient',
+      AWS_WEB_IDENTITY_TOKEN_FILE: '/var/run/ambient-token',
+    };
+    const env = await awsSsmTunnelEnvironment(roleCredentials, ambient)();
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      AWS_ACCESS_KEY_ID: 'fake-tunnel-key-id',
+      AWS_SECRET_ACCESS_KEY: 'fake-tunnel-secret',
+      AWS_SESSION_TOKEN: 'fake-tunnel-session',
+    });
+    expect(command.resolveEnvironment).toBeTypeOf('function');
+    await expect(command.resolveEnvironment!()).resolves.toMatchObject({ AWS_ACCESS_KEY_ID: 'fake-tunnel-key-id' });
+  });
+
+  it('refuses a profile carrying both a CLI profile and injected credentials', () => {
+    expect(() =>
+      buildAwsSsmSshInvocation({ ...aws, awsProfile: 'papercusp-byoc', awsCredentials: roleCredentials }, invocation),
+    ).toThrow(/both a CLI profile and injected credentials/);
+  });
+
+  it('reports a credential failure by error name only, never its text', async () => {
+    const failing = async () => {
+      const error = new Error('could not assume role with fake-leaked-material');
+      error.name = 'CredentialsProviderError';
+      throw error;
+    };
+    const resolve = awsSsmTunnelEnvironment(failing, {});
+    await expect(resolve()).rejects.toThrow('AWS SSM tunnel credentials could not be resolved (CredentialsProviderError)');
+    await expect(resolve()).rejects.not.toThrow(/fake-leaked-material/);
+    await expect(awsSsmTunnelEnvironment(async () => ({ accessKeyId: '', secretAccessKey: 'x' }), {})()).rejects.toThrow(
+      /incomplete/,
+    );
+  });
+
+  it('spawns the transport with the resolved environment, and inherits when there is none', async () => {
+    const seen: Array<NodeJS.ProcessEnv | undefined> = [];
+    const spawn = ((_command: string, _args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+      seen.push(options.env);
+      const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdin = new PassThrough();
+      child.kill = () => true;
+      queueMicrotask(() => child.emit('close', 0));
+      return child;
+    }) as unknown as typeof nodeSpawn;
+    const runner = new NodeGcpIapWorkspaceHostInitializationCommandRunner({ spawn });
+    await runner.run({ command: 'ssh', args: [], stdin: '', resolveEnvironment: async () => ({ ONLY: 'this' }) });
+    await runner.run({ command: 'ssh', args: [], stdin: '' });
+    expect(seen).toEqual([{ ONLY: 'this' }, undefined]);
   });
 });
 
