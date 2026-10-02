@@ -23,7 +23,12 @@ import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { pinModuleState } from '@papercusp/module-singleton';
 
-const execFileAsync = promisify(execFile);
+// Lazy + memoized, NOT promisified at module scope (EI-10161): under a narrow
+// `vi.mock('node:child_process')` `execFile` is undefined, and an eager `promisify` throws at
+// IMPORT time — crashing every test file that reaches this module, even one that never calls it.
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 /** Shell function that writes one frame: `f <tag> <exit>` (uses `$n`, the nonce). */
 export const HELPER_FRAME_FN = "f() { printf '\\000%s %s %d\\000' \"$n\" \"$1\" \"$2\"; }";

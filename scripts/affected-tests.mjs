@@ -2099,6 +2099,36 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "package.json",
   },
   {
+    // WI-10005282 — `lint:no-eager-execfile-promisify` (EI-10161) scans the whole tracked
+    // tree, but its only blocking runner was a GitHub Actions job that runs on `main` pushes
+    // and has failed on every run for days, so nobody acted on it. 14 new offenders landed
+    // unseen; WI-10005282 lazy-wrapped them. Registering it here makes the gate's own
+    // affected suite enforce it.
+    //
+    // COST, measured before registering: ~5.7 s for a whole-tree scan, because the shared
+    // stripper parses every file. A sound raw-text pre-filter in the guard (skip files with
+    // no `promisify(`) brought it to ~1.1 s.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-eager-execfile-promisify",
+    // MIRRORS `isExcluded` in scripts/check-no-eager-execfile-promisify.mjs (.ts/.mjs/.cjs,
+    // tests excluded, vendored and build output excluded) so the trigger set matches the scan.
+    appliesTo: (f) =>
+      (/\.(?:ts|mjs|cjs)$/.test(f) &&
+        !/\.(?:test|spec)\.[cm]?[tj]sx?$/.test(f) &&
+        !f.startsWith("_retired/") &&
+        !f.includes("/_retired/") &&
+        !f.includes("/node_modules/") &&
+        !f.includes("/dist/") &&
+        !f.includes("/dist-sidecar/") &&
+        !f.includes("/.next/") &&
+        !f.includes("/build/") &&
+        !f.includes("/spa/assets/") &&
+        !f.includes("/env-sidecars/")) ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json",
+  },
+  {
     // The packaged WDIO runner lives outside npm workspaces. Its Node unit
     // suite is part of the package's `test` script, but the affected-workspace
     // router cannot select that package from a runner-only source edit. Run the

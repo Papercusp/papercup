@@ -69,6 +69,12 @@ export const isExcluded = (f) =>
 
 /** The tell: a column-0 (module-scope) `const`/`let` assigned from `promisify(execFile...)`. */
 export function usesEagerExecFilePromisify(text, fileName) {
+  // Raw-text pre-filter (WI-10005282). It is SOUND: the stripper only blanks characters in
+  // place (offset-preserving), so it cannot create a `promisify(` the raw text lacks. A file
+  // without one cannot match, and skipping it avoids the stripper's per-file parse, which
+  // made a whole-tree scan cost ~5.7 s. That cost matters because affected-tests.mjs now
+  // runs this guard on every gate pass that touches a scanned file.
+  if (!text.includes('promisify(')) return false;
   return /^(export\s+)?(const|let)\s+\w+\s*=\s*promisify\(\s*execFile\w*\s*\)/m.test(
     stripCommentsAndStrings(text, fileName),
   );

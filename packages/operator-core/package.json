@@ -54,6 +54,7 @@
     "lint:recovery-timers-declared": "vitest run lib/system-health/recovery-dependency-audit.test.ts",
     "lint:no-unenrolled-mjs-imports": "node ../../scripts/check-unenrolled-mjs-imports.mjs",
     "lint:no-unenrolled-spawn": "node ../../scripts/check-no-unenrolled-detached-spawn.mjs",
+    "lint:no-eager-execfile-promisify": "node ../../scripts/check-no-eager-execfile-promisify.mjs",
     "lint:host-bundle-builds": "node ../../scripts/check-host-bundle-builds.mjs",
     "lint:sidecar-fallback-reported": "node ../../scripts/check-sidecar-fallback-reported.mjs",
     "lint:no-unhosted-remote-core": "node ../../scripts/check-no-unhosted-remote-core.mjs",
