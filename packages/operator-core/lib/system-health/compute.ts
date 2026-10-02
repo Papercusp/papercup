@@ -135,7 +135,7 @@ const DEAD_ROUTINE_OVERDUE_MS = 10 * 60_000;
  */
 export const FAST_ROUTINE_MAX_CADENCE_SEC = 60;
 export const FAST_ROUTINE_CADENCE_MULTIPLE = 10;
-export const FAST_ROUTINE_FLOOR_FRACTION = 0.5;
+export const FAST_ROUTINE_BASE_FRACTION = 0.5;
 /** WI-4310: the WIDENED dead-routine overdue threshold used only while a green-checkpoint
  *  run's known, self-recovering resource footprint (GREEN_CHECKPOINT_MAX_FORKS forked vitest
  *  workers sharing this box's PG pool + CPU with routinesTick) is active or just finished —
@@ -775,7 +775,7 @@ export async function readDeadRoutines(
                   THEN LEAST(
                     ${overdueMs / 1000}::float8,
                     GREATEST(
-                      ${(overdueMs / 1000) * FAST_ROUTINE_FLOOR_FRACTION}::float8,
+                      ${(overdueMs / 1000) * FAST_ROUTINE_BASE_FRACTION}::float8,
                       ${FAST_ROUTINE_CADENCE_MULTIPLE}::float8 * extract(epoch FROM next_fire_at - last_fired_at)::float8))
                 ELSE ${overdueMs / 1000}::float8
               END)) AS is_overdue
