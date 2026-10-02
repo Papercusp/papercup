@@ -2152,5 +2152,273 @@
     "limits": "Accepted clauses, BARs, D-003 immutable baseline, D-013 real-goal route and D-016 history unchanged. No native/P2P/sharedrestart/LIVE_GATE_OPS work or final shipment claim.",
     "controlCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_ORDER_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-order-proof.test.ts -t 'order calibration:|repaired portfolio order contract: <scenario>'"
   },
-  "next": "Continue P002 freshness: AUTHORITY@3/ELECTION@3/HANDOFF@3/RESPAWN@4/STALE-RESPAWN@3/UNKNOWN@3, then broader P003-P006 proof. First read canonical specs, exact stale bindings and saved current evidence; compare canonical/retained pin tests and changed writers before any new test. ORDER@4 now governs PASS on five current bindings; latest dated whole28 census sixPASS,21FAIL,oneUNKNOWN. Preserve six P001 proofs and all24WI/12loop checks. Independent rubric ratification, D013 existing real-goal card, closure audit and final shipment remain separate; no unchangednative/P2P/sharedrestart/LIVE_GATE_OPS."
+  "p002CurrentProof": {
+    "observedAt": "2026-10-02T10:53:49.653650+00:00",
+    "nativeSession": "01a0fc26-307a-7712-bf87-dbb00875e596",
+    "scope": "Current clean P002 integration/PID renewal is verified. P002 governing completion remains OPEN because saved unit provenance is not clean under the current staging evaluator.",
+    "sourceReadback": "All seventeen canonical/retained clone fingerprints match. Production and test bytes unchanged; private bwrap mutation overlay removed.",
+    "fingerprints": {
+      "packages/operator-core/lib/agent-tools/coordination/liveness-oracle-recorded-pid-death.test.ts": "71b5703fae364a72152d0cd9838729b4aff8f127250c1ff309e3290605676194",
+      "packages/operator-core/lib/agent-tools/coordination/liveness-oracle.ts": "0020bfe8bca9cb3f22d9938e774adf061922a2f07f4e4c4ca9e05ad70c4150df",
+      "packages/operator-core/lib/agent-tools/goals/arm-schedule.ts": "6c6b954f16ba5ecc5a382b3d662e3b8ba9565130f54c4e49deb7309a810ead61",
+      "packages/operator-core/lib/agent-tools/goals/set-schedule.ts": "358150d057a949a39d3a9099ea71567bcfee54eb00d3d47d1da73cec40542a5e",
+      "packages/operator-core/lib/agent-tools/goals/write-authority-door-coverage.integration.test.ts": "995953d03664b95343635f61e096c1b721112e7ef758cf75235bc8f681213ed9",
+      "packages/operator-core/lib/agent-tools/goals/write-authority-door-coverage.test.ts": "3ff18abe232e70e6320b3c37d7405ca064c00789ac7e4a2b51ec0f60978b8037",
+      "packages/operator-core/lib/goals/activity.ts": "fab642369c022e167379d0177a8a0086a21109b14f7a086ccb3441bef3b13909",
+      "packages/operator-core/lib/goals/goal-holder-killed-pid.integration.test.ts": "09f38537a6c67ebb096cd3f56f134ca8b7b438f81fa3435256e36fcac9438d59",
+      "packages/operator-core/lib/goals/holder.test.ts": "a8cae7f138fc0596c7b3aeb8d14913f5fb7acbb875a5d62f7d425ad22e736855",
+      "packages/operator-core/lib/goals/holder.ts": "3e427ebc893cf0ec0d06f831e9af15e4b8e9180f27c6b7cbdfe6aa025ac268c2",
+      "packages/operator-core/lib/goals/start-goal-by-id.ts": "edbcbe6622edb19e40c2196b3d13ecb14982859b7d773ee4797f5f1f1575925a",
+      "packages/operator-core/lib/goals/write-authority.ts": "9e7d5a7f4e15bb32acf8770eb636a127aafa151a3f9f133aa7dfa0e7404855ec",
+      "packages/operator-core/lib/harness/routines/materialize-goal-schedule.ts": "3815c8282ce98b5aa26c516b7f18cf57decee155baa9bb1e54efeb30f1f54f68",
+      "packages/operator-core/lib/modes/store.ts": "9fd3fabf7e40e2b0ab3aa9d1e287a799ca57e1ac86c0e3ebedf81e980962c6e4",
+      "packages/operator-core/lib/system-health/goal-holder-respawn.integration.test.ts": "f03dfd35d3846de22fbb0526edbe1cf6c5f1b6b885b873027f52d5ea7f7d9717",
+      "packages/operator-core/lib/system-health/goal-liveness-watchdog.test.ts": "dafeef2d124e4f0fae3a107726134bcc88a1c5a0ba032dece9be76010e3d0f97",
+      "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts": "a8264e382a36ec5e1950b45b4e4a24afef99f4da04212b277cba3611835de44f"
+    },
+    "positiveIntegration": {
+      "testRunIds": {
+        "packages/operator-core/lib/system-health/goal-holder-respawn.integration.test.ts": 20511413,
+        "packages/operator-core/lib/goals/goal-holder-killed-pid.integration.test.ts": 20511412
+      },
+      "passed": 7,
+      "filteredSkipped": 22,
+      "exitCode": 0,
+      "summary": {
+        "startedAt": "2026-10-02T10:36:01.210Z",
+        "clone": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+        "selector": "concurrent GOAL entries atomically elect one successor and persist a bounded handoff|respawns the lost elected lease even when an older historical GOAL row is still live|refuses and neutralizes a stale respawn attach after a concurrent legitimate takeover|an UNRESOLVABLE holder|kill its session|resolves as lost, relaunches|genuinely RUNNING",
+        "dataDir": "/tmp/papercusp-native-pg-4cNtpy",
+        "port": 39937,
+        "pid": 3332625,
+        "exitCode": 0,
+        "dataDirRemoved": true,
+        "portCheck": "ECONNREFUSED",
+        "finishedAt": "2026-10-02T10:37:38.360Z"
+      },
+      "log": "/tmp/p006-fire176-p002-pg.log",
+      "logSha256": "714d0cb9ef8f99824a9d44b67f1fe9b478acf07d9e680ecd9c1001ecfb46e03a"
+    },
+    "pidUnit": {
+      "positiveRun": 20511411,
+      "positivePassed": 2,
+      "filteredSkipped": 7,
+      "positiveExit": 0,
+      "counterexampleRun": 20511426,
+      "intendedFailed": 1,
+      "calibrationPassed": 1,
+      "counterexampleExit": 1,
+      "scenario": "real-pid-loss"
+    },
+    "unknownIntegrationControl": {
+      "baselineRun": 20512924,
+      "relocatedBaselineRun": 20513152,
+      "baselineEachPassed": 2,
+      "counterexampleRun": 20514426,
+      "intendedFailed": 1,
+      "calibrationPassed": 1,
+      "filteredSkippedEach": 21,
+      "mutationWrapperExit": 0,
+      "scenario": "no-spawn-on-unknown",
+      "summary": {
+        "startedAt": "2026-10-02T10:39:58.112Z",
+        "clone": "/tmp/papercusp-lint-as-committed-920030a3b9-SBbhnS",
+        "file": "packages/operator-core/lib/system-health/goal-liveness-watchdog.ts",
+        "mutate": "s/if \\(fold\\.liveness === 'unknown'\\) continue;/if (false) continue;/",
+        "test": "test -f {} && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/system-health/goal-holder-respawn.integration.test.ts -t \"an UNRESOLVABLE holder|kill its session\"",
+        "relocation": "overlay",
+        "dataDir": "/tmp/papercusp-native-pg-2GhFib",
+        "port": 45307,
+        "pid": 3527047,
+        "exitCode": 0,
+        "dataDirRemoved": true,
+        "portCheck": "ECONNREFUSED",
+        "finishedAt": "2026-10-02T10:44:02.933Z"
+      },
+      "log": "/tmp/p006-fire176-unknown-overlay.log",
+      "logSha256": "8fbfde7c5707628fc433c5d4b47f6bfe11e61a9c9f9da47f24c8e58dc3649d8c"
+    },
+    "currentBindingIds": [
+      21646,
+      21647,
+      21648,
+      21649,
+      21650,
+      21651,
+      21652,
+      21653,
+      21654,
+      21655
+    ],
+    "staleHistoricalBindingIdsRetained": [
+      17958,
+      17957,
+      17578,
+      17550,
+      17549,
+      17548,
+      17547,
+      17540,
+      17522
+    ],
+    "authorityGoverningRead": "Release evaluator freshly read AUTHORITY@3 PASS; not a whole-plan or staging governing verdict.",
+    "replacementSelection": {
+      "route": "Attributed staging :3170 evaluator",
+      "evaluatorBuild": {
+        "sha": "20e1477d62",
+        "version": "0.0.0"
+      },
+      "bindingIdsSupportedByCurrentStagingSchema": true,
+      "governing": false,
+      "rows": [
+        {
+          "specId": "WOE-P002-ELECTION",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17528,
+              17529,
+              17558,
+              17559
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17525,
+              17526,
+              17527,
+              17560,
+              17561,
+              17562
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17950,
+              17952,
+              17962,
+              17963
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17954,
+              17956,
+              17964,
+              17965
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17523,
+              17524,
+              17563,
+              17564
+            ]
+          },
+          "freshnessReason": "test-run-worktree-not-clean in saved unit evidence",
+          "ratings": {
+            "traceability": "pass",
+            "fixture-calibration": "not-applicable",
+            "falsifiability": "pass",
+            "correct-layer": "pass",
+            "oracle-independence": "pass",
+            "execution-integrity": "pass",
+            "freshness": "unknown",
+            "plan-class-risk-floor": "pass",
+            "disclosed-gap": "not-applicable"
+          }
+        }
+      ]
+    },
+    "toolRouting": "canonicalTestPath is reserved for mutation-probe copy-out; seven positive/one counterexample first generic batch reached seven writes and one targeted refusal after removing the unsupported path. Scenario-based counterexample targeted values real-pid-loss/no-spawn-on-unknown then succeeded. Current staging exposes bindingIds, unlike earlier release schema; temporary duplicate reference aliases are unnecessary and withdrawn separately. Read spilled envelopes, not CLI exit0, for partial mutation outcomes.",
+    "limits": "No stale historical binding withdrawal, accepted-spec/BAR/source/test edit, independent rubric ratification, real-goal card, final shipment, native UI, P2P, shared restart, or LIVE_GATE_OPS claim.",
+    "redundantAliasesWithdrawn": [
+      21660,
+      21661,
+      21662,
+      21663,
+      21664
+    ]
+  },
+  "next": "Renew P002 saved unit provenance in retained clean 920030a3 clone: existing holder contract positives plus seven calibrated controls, existing watchdog contract positives plus four calibrated controls. Read saved checks/claims and strict staging evaluator first; reuse fresh integration/PID proof from p002CurrentProof. After all replacement-only clauses PASS, conditionally withdraw only exact superseded bindings while preserving historical ledger, then governing whole-plan evaluation. Broader P003-P006, independent rubric ratification/D013 card/closure audit/final shipment remain OPEN."
 }

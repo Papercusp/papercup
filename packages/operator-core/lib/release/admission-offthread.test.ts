@@ -112,6 +112,7 @@ describe('admission off-thread host (WI-10005223)', () => {
   }, 60_000);
 
   it('reaps an idle worker and starts a fresh worker for later work', async () => {
+    // idle-window-ok: the test needs the idle reap to fire; vi.waitFor below tolerates load.
     configureAdmissionOffthread({ idleMs: 10 });
     await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
       status: 0,

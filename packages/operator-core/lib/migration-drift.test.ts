@@ -229,6 +229,61 @@ describe('classifyContentDrift', () => {
     for (const d of many) expect(d.classificationDetail.length).toBeGreaterThan(0);
   });
 
+  it('batches applied-text reads in bounded groups and preserves result order', async () => {
+    const many = Array.from({ length: 35 }, (_, i) => ({
+      ...entry,
+      filename: `migration-${i}.sql`,
+    }));
+    const batchSizes: number[] = [];
+    const classified = await classifyContentDrift(
+      many,
+      () => {
+        throw new Error('the batch reader should serve every entry');
+      },
+      () => 'SELECT 1; -- current comment',
+      {
+        readAppliedTexts: async (batch) => {
+          batchSizes.push(batch.length);
+          return batch.map(() => ({
+            ok: true as const,
+            text: 'SELECT 1;',
+            commit: 'e786f7391c46dd32ec2a53b7e819289e087f3e86',
+          }));
+        },
+      },
+    );
+
+    expect(batchSizes).toEqual([32, 3]);
+    expect(classified.map((d) => d.filename)).toEqual(many.map((d) => d.filename));
+    expect(classified.every((d) => d.classification === 'comments-only')).toBe(true);
+  });
+
+  it('fails closed when a batched history read runs past the classifier budget', async () => {
+    let time = 0;
+    const classified = await classifyContentDrift(
+      [entry, { ...entry, filename: '728-b.sql' }],
+      () => {
+        throw new Error('the batch reader should serve every entry');
+      },
+      () => 'SELECT 1;',
+      {
+        budgetMs: 100,
+        now: () => time,
+        readAppliedTexts: async (batch) => {
+          time = 101;
+          return batch.map(() => ({
+            ok: true as const,
+            text: 'SELECT 1;',
+            commit: 'e786f7391c46dd32ec2a53b7e819289e087f3e86',
+          }));
+        },
+      },
+    );
+
+    expect(classified.map((d) => d.classification)).toEqual(['unclassified', 'unclassified']);
+    expect(classified[0]?.classificationDetail).toMatch(/100ms classification budget was exhausted/);
+  });
+
   it('stops spending past the budget and marks the REST unclassified, never benign', async () => {
     // Injected clock: the first entry is classified, then time jumps past the
     // budget, so everything after it must degrade to unclassified rather than

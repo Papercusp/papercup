@@ -3300,9 +3300,47 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
       limit: 100,
       kinds: ['tool', 'coord'],
       include_auto: true,
+      projection: { pick: ['entries[].ts'] },
     }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('sessions:timeline');
+  });
+  it('admits bounded sessions:timeline calls with parsed projections through tools:invoke under critical pressure', async () => {
+    const commonArgs = {
+      owner: 'self',
+      since: '2026-10-02T07:04:17.197Z',
+      limit: 100,
+      kinds: ['tool'],
+      goalRef: 'WI-10005166',
+      group_repeated: true,
+    };
+    for (const pick of [
+      ['entries[].ts', 'entries[].tool_name', 'entries[].status', 'entries[].text'],
+      ['ts', 'tool_name', 'status'],
+    ]) {
+      const targetArgs = { ...commonArgs, projection: { pick } };
+      const req = post(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 46,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__sessions_timeline',
+            args: targetArgs,
+          },
+        },
+      }));
+      expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+      expect(JSON.parse(await req.text()).params.arguments.args).toEqual(targetArgs);
+    }
+  });
+  it('keeps invalid sessions:timeline projections outside the critical-pressure diagnostic reserve', () => {
+    expect(isBoundedSessionsTimelineArgs({
+      owner: 'self',
+      limit: 100,
+      projection: { pick: [] },
+    })).toBe(false);
   });
   it('still sheds an unbounded sessions:timeline read under critical pressure', async () => {
     const shed = await evaluateAdmission(

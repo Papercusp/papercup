@@ -1,0 +1,208 @@
+/**
+ * chunk-search-ab.ts — the pure half of the same-time A/B latency bench that
+ * instruments acceptance BAR R-33 of plan generic-rag-chunking-2026-09-29
+ * (Decision D-040; the runnable half is `chunk-search-ab-cli.ts`).
+ *
+ * WHY AN A/B, NOT A TIME-SEPARATED READING
+ * R-33 first compared each site's end-to-end p95 with the p95 D-024 recorded on
+ * 2026-09-29, before chunking. On a shared box under fleet load the rest of the
+ * path (MCP door, embedding, lexical legs) drifted by 900-1,400 ms between the two
+ * readings, while the chunking change itself adds 6-67 ms; a time-separated
+ * reading cannot tell the two apart, load-matched or not (D-038, D-039). D-040
+ * re-instruments R-33 as a paired comparison taken at the same instant:
+ *
+ *   arm A  the site's pre-change vector query (its SQL as of 9a9473af95)
+ *   arm B  the site's current, chunk-aware code
+ *
+ * Both arms get the same precomputed query vector, run back to back for every
+ * (round, query) with alternating order, and the reading is what B ADDS:
+ * `B p95 - A p95`. A site passes when that is at most
+ * `max(0.25 x its D-024 baseline p95, 10 ms)` — D-024's 1.25x budget, charged only
+ * with what the change adds. The 10 ms floor is D-040's one loosening and exists
+ * for consult, whose 0.25 x 14 ms = 3.5 ms would be under one scheduler hiccup.
+ *
+ * work_items:search has no fair pre-change arm (its pre-change feature leg was
+ * broken; D-033), so its A arm is the same search with the semantic legs off and
+ * its reading is the whole semantic-leg cost — an upper bound on the added cost.
+ *
+ * This module has no I/O so the test can import it without starting a run.
+ */
+import { D024_BASELINE_P95_MS, R33_RATIO, percentile } from './chunk-search-latency';
+
+/** The commit whose search SQL the A arms reproduce (before any chunk-aware leg). */
+export const R33_AB_PRE_CHANGE_REF = '9a9473af95';
+
+/** D-040's floor under each site's added-latency budget, in milliseconds. */
+export const R33_AB_FLOOR_MS = 10;
+
+/** The sites R-33 covers, in report order. Keys match D024_BASELINE_P95_MS. */
+export const R33_AB_SITES = ['plans', 'turns', 'work_item', 'work_items_search', 'consult'] as const;
+export type R33AbSite = (typeof R33_AB_SITES)[number];
+
+/** What each site's A and B arm are, written into the evidence file. */
+export const R33_AB_ARMS: Readonly<Record<R33AbSite, { a: string; b: string; limit: number }>> = {
+  plans: {
+    a: `harness_plans.embedding ordered scan under withWorkspace (semantic-leg.ts @ ${R33_AB_PRE_CHANGE_REF})`,
+    b: 'queryTopPlansReal (chunk-aware leg + matched-section lateral)',
+    limit: 30,
+  },
+  turns: {
+    a: `operator_turns.text_embedding HNSW joined to operator_conversations (sources.ts @ ${R33_AB_PRE_CHANGE_REF})`,
+    b: "SEARCH_SOURCES 'turns'.embedding (chunk-aware leg)",
+    limit: 30,
+  },
+  work_item: {
+    a: `engineer_issues.embedding HNSW (sources.ts @ ${R33_AB_PRE_CHANGE_REF})`,
+    b: "SEARCH_SOURCES 'work_item'.embedding (chunk-aware leg)",
+    limit: 30,
+  },
+  work_items_search: {
+    a: 'searchWorkItems { limit: 10, semantic: false } (lexical legs only; no fair pre-change arm, D-033)',
+    b: 'searchWorkItems { limit: 10, semantic: true } (query vector precomputed)',
+    limit: 10,
+  },
+  consult: {
+    a: `consult_state.query_embedding exact scan, peersKnowLookup body @ ${R33_AB_PRE_CHANGE_REF}`,
+    b: "peersKnowLookup (chunk-aware leg, scan 'exact')",
+    limit: 1,
+  },
+};
+
+const round1 = (x: number) => Math.round(x * 10) / 10;
+
+/** A site's added-latency budget: max(0.25 x D-024 baseline p95, 10 ms). */
+export function r33AbBudgetMs(site: R33AbSite): number {
+  const baseline = D024_BASELINE_P95_MS[site];
+  if (typeof baseline !== 'number') throw new Error(`no D-024 baseline for site ${site}`);
+  return round1(Math.max((R33_RATIO - 1) * baseline, R33_AB_FLOOR_MS));
+}
+
+/**
+ * Which arm runs first for a (round, query) pair. Alternating per pair means each
+ * arm goes first in half the pairs, so neither always inherits the other's warm
+ * cache or pays the first-touch cost.
+ */
+export function armOrder(round: number, queryIndex: number): readonly ['A', 'B'] | readonly ['B', 'A'] {
+  return (round + queryIndex) % 2 === 0 ? (['A', 'B'] as const) : (['B', 'A'] as const);
+}
+
+/** One (round, query) pair: both arms' wall time and how many rows each returned. */
+export interface PairedSample {
+  round: number;
+  q: number;
+  aMs: number;
+  bMs: number;
+  aRows: number;
+  bRows: number;
+  aError?: string;
+  bError?: string;
+}
+
+export interface ArmStats {
+  p50: number | null;
+  p95: number | null;
+  max: number | null;
+}
+
+export interface PairedSummary {
+  /** Pairs taken. */
+  n: number;
+  /** Pairs where both arms answered; only these enter the percentiles. */
+  pairs: number;
+  aErrors: number;
+  bErrors: number;
+  a: ArmStats;
+  b: ArmStats;
+  /** The R-33 reading: B p95 - A p95, ms. Null when no pair completed. */
+  addedP95: number | null;
+  /** Median over pairs of (B - A), ms: the per-query cost, robust to drift. */
+  pairedMedianDeltaMs: number | null;
+  /** Median over pairs of B / A. */
+  pairedMedianRatio: number | null;
+  /**
+   * Pairs where A returned rows and B returned none. The B arms are current code
+   * that may catch its own errors (peersKnowLookup returns null on any throw), so a
+   * failing B arm would be fast and empty; this count is how such a run is caught.
+   */
+  bEmptyWhereAHadRows: number;
+  firstErrors: string[];
+}
+
+function stats(xs: readonly number[]): ArmStats {
+  const r = (v: number | null) => (v === null ? null : round1(v));
+  return { p50: r(percentile(xs, 50)), p95: r(percentile(xs, 95)), max: xs.length ? round1(Math.max(...xs)) : null };
+}
+
+/** Summarise one site's paired samples. A pair with an error in either arm is not a reading. */
+export function summarisePaired(samples: readonly PairedSample[]): PairedSummary {
+  const ok = samples.filter((s) => s.aError === undefined && s.bError === undefined);
+  const a = stats(ok.map((s) => s.aMs));
+  const b = stats(ok.map((s) => s.bMs));
+  const deltas = ok.map((s) => s.bMs - s.aMs);
+  const ratios = ok.filter((s) => s.aMs > 0).map((s) => s.bMs / s.aMs);
+  const median = (xs: number[]) => {
+    const m = percentile(xs, 50);
+    return m === null ? null : Math.round(m * 100) / 100;
+  };
+  return {
+    n: samples.length,
+    pairs: ok.length,
+    aErrors: samples.filter((s) => s.aError !== undefined).length,
+    bErrors: samples.filter((s) => s.bError !== undefined).length,
+    a,
+    b,
+    addedP95: a.p95 === null || b.p95 === null ? null : round1(b.p95 - a.p95),
+    pairedMedianDeltaMs: median(deltas),
+    pairedMedianRatio: median(ratios),
+    bEmptyWhereAHadRows: ok.filter((s) => s.aRows > 0 && s.bRows === 0).length,
+    firstErrors: samples
+      .flatMap((s) => [s.aError && `A: ${s.aError}`, s.bError && `B: ${s.bError}`])
+      .filter((e): e is string => typeof e === 'string')
+      .slice(0, 3),
+  };
+}
+
+export interface R33AbVerdict {
+  site: R33AbSite;
+  addedP95: number | null;
+  budget: number;
+  /**
+   * True when the added p95 is within budget, false when over it, and null when
+   * the run is not a valid reading for this site (see `invalidReason`). A site
+   * whose reading is invalid can never read as a pass.
+   */
+  withinBudget: boolean | null;
+  invalidReason?: string;
+}
+
+/**
+ * Judge each site. A reading is invalid when the site has no summary, when any
+ * call errored (a pair missing from the percentiles would bias them), or when B
+ * came back empty where A returned rows (a silently failing B arm).
+ */
+export function r33AbVerdicts(summaries: Readonly<Partial<Record<R33AbSite, PairedSummary>>>): R33AbVerdict[] {
+  return R33_AB_SITES.map((site) => {
+    const budget = r33AbBudgetMs(site);
+    const s = summaries[site];
+    const invalid = (invalidReason: string): R33AbVerdict => ({
+      site,
+      addedP95: s?.addedP95 ?? null,
+      budget,
+      withinBudget: null,
+      invalidReason,
+    });
+    if (!s || s.pairs === 0 || s.addedP95 === null) return invalid('no completed pair');
+    if (s.aErrors > 0 || s.bErrors > 0) {
+      return invalid(`${s.aErrors} A and ${s.bErrors} B call(s) errored: ${s.firstErrors.join('; ')}`);
+    }
+    if (s.bEmptyWhereAHadRows > 0) {
+      return invalid(`B returned no rows in ${s.bEmptyWhereAHadRows} pair(s) where A returned rows`);
+    }
+    return { site, addedP95: s.addedP95, budget, withinBudget: s.addedP95 <= budget };
+  });
+}
+
+/** True only when every site has a valid reading within its budget. */
+export function r33AbPasses(verdicts: readonly R33AbVerdict[]): boolean {
+  return verdicts.length === R33_AB_SITES.length && verdicts.every((v) => v.withinBudget === true);
+}

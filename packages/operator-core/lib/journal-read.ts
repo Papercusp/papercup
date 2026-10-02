@@ -536,7 +536,12 @@ export function buildJournalctlArgs(opts: JournalReadOptions): string[] {
   const args: string[] = [...journalScopeArgs(scope)];
   args.push('--no-pager', '-o', 'json');
   args.push(`--output-fields=${JOURNAL_OUTPUT_FIELDS.join(',')}`);
-  for (const unit of opts.units ?? []) args.push('-u', unit);
+  for (const unit of opts.units ?? []) {
+    args.push('-u', unit);
+    // Without --user, -u selects only system units. In the all-journal
+    // stream, include the user-unit arm in journalctl's unit OR filter too.
+    if (scope === 'all') args.push('--user-unit', unit);
+  }
   if (opts.identifier) args.push('-t', opts.identifier);
   args.push('--since', normalizeJournalWindow(opts.since ?? JOURNAL_READ_DEFAULT_SINCE));
   if (opts.until) args.push('--until', normalizeJournalWindow(opts.until));

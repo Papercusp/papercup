@@ -321,6 +321,30 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).not.toContain('spawn_id');
   });
 
+  it('deduplicates owner/session keys before the lateral session lookup', async () => {
+    const { queries } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T13:30:00Z',
+        until: '2026-07-13T14:30:00Z',
+      },
+      [[]],
+    );
+
+    const sql = queries[0];
+    const mapStart = sql.indexOf('session_map AS MATERIALIZED');
+    const distinctKeys = sql.indexOf('SELECT DISTINCT owner_id, session_id', mapStart);
+    const lateralLookup = sql.indexOf('LEFT JOIN LATERAL', distinctKeys);
+    const eventRejoin = sql.indexOf('FROM raw_events e', lateralLookup);
+
+    expect(mapStart).toBeGreaterThanOrEqual(0);
+    expect(distinctKeys).toBeGreaterThan(mapStart);
+    expect(lateralLookup).toBeGreaterThan(distinctKeys);
+    expect(eventRejoin).toBeGreaterThan(lateralLookup);
+    expect(sql).toContain('a.raw_session_id IS NOT DISTINCT FROM e.session_id');
+    expect(sql).toContain('count(*)::int AS event_count');
+  });
+
   it('supports the historical compatibility alias while retaining the same bounds', async () => {
     const { parsed } = await run(
       {

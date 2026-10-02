@@ -214,7 +214,13 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     evidence: 'code+live',
     note: 'Live 2026-10-01: work_items:list { notTerminal:true } shows the 129 open email-draft-proposal rows beside real work. This is the surface a drain enumerates from.',
     sites: [
-      { file: 'packages/operator-core/lib/agent-tools/work_items/list.ts', anchor: 'const rows = await listWorkItems({', via: 'listWorkItems' },
+      { file: 'packages/operator-core/lib/agent-tools/work_items/list.ts', anchor: 'listWorkItems(filter),', via: 'listWorkItems' },
+      // D-041 (2547a3d8eb) added the withheld-count pair; countWorkItems applies the same featureFamilyKindClause decider.
+      {
+        file: 'packages/operator-core/lib/agent-tools/work_items/list.ts',
+        anchor: 'countable ? countWorkItems(filter) : Promise.resolve(null),',
+        via: 'countWorkItems',
+      },
       { file: 'packages/operator-core/lib/agent-tools/work_items/search.ts', anchor: 'await searchWorkItems(args.query, {', via: 'searchWorkItems' },
       {
         file: 'packages/operator-core/lib/agent-tools/work_items/export.ts',

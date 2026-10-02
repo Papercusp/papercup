@@ -3,8 +3,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { describe, it, expect, afterEach } from 'vitest';
-import { recoverAppliedMigrationText } from './migration-applied-text';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import * as gitBatch from './git-batch';
+import { recoverAppliedMigrationText, recoverAppliedMigrationTexts } from './migration-applied-text';
 
 /**
  * EI-19408574209859155: the applied BYTES of a migration are not stored in the
@@ -17,6 +18,7 @@ describe('recoverAppliedMigrationText', () => {
   const tmpRoots: string[] = [];
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const p of tmpRoots.splice(0)) fs.rmSync(p, { recursive: true, force: true });
   });
 
@@ -24,7 +26,7 @@ describe('recoverAppliedMigrationText', () => {
 
   /** A repo with `sqlDir` nested inside it, seeded with the given versions of
    *  one migration file (oldest first, one commit each). */
-  function makeRepo(filename: string, versions: string[]): string {
+  function makeRepoWithMigrations(files: Record<string, string[]>): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'applied-text-'));
     tmpRoots.push(root);
     const sqlDir = path.join(root, 'libs/db/sql');
@@ -39,12 +41,19 @@ describe('recoverAppliedMigrationText', () => {
     git('config', 'user.email', 'test@example.com');
     git('config', 'user.name', 'Test');
     git('config', 'commit.gpgsign', 'false');
-    for (const [i, text] of versions.entries()) {
-      fs.writeFileSync(path.join(sqlDir, filename), text);
+    const commitCount = Math.max(0, ...Object.values(files).map((versions) => versions.length));
+    for (let i = 0; i < commitCount; i += 1) {
+      for (const [filename, versions] of Object.entries(files)) {
+        if (versions[i] !== undefined) fs.writeFileSync(path.join(sqlDir, filename), versions[i]!);
+      }
       git('add', '-A');
       git('commit', '-q', '-m', `v${i}`);
     }
     return sqlDir;
+  }
+
+  function makeRepo(filename: string, versions: string[]): string {
+    return makeRepoWithMigrations({ [filename]: versions });
   }
 
   it('recovers the exact bytes that ran, from a historical commit', async () => {
@@ -91,6 +100,55 @@ describe('recoverAppliedMigrationText', () => {
 
     expect(got?.ok).toBe(true);
     expect(timerRanDuringRecovery).toBe(true);
+  });
+
+  it('batches log and blob reads across files by history depth', async () => {
+    const files = Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => {
+        const filename = `${710 + i}-batch.sql`;
+        return [filename, [`SELECT ${i};\n`, `SELECT ${i}; -- current edit\n`]];
+      }),
+    );
+    const sqlDir = makeRepoWithMigrations(files);
+    const requests = Object.entries(files).map(([filename, versions]) => ({
+      filename,
+      recordedSha256: sha256(versions[0]!),
+    }));
+    const batchSpy = vi.spyOn(gitBatch, 'runGitBatch');
+
+    const got = await recoverAppliedMigrationTexts(sqlDir, requests);
+
+    expect(got.map((result) => result.ok)).toEqual(Array(12).fill(true));
+    expect(got.map((result) => (result.ok ? result.text : null))).toEqual(
+      Object.values(files).map((versions) => versions[0]),
+    );
+    // One log batch, then one batch for each of the two history depths. The
+    // number of migrations no longer multiplies host-side child-process forks.
+    expect(batchSpy).toHaveBeenCalledTimes(3);
+    expect(batchSpy.mock.calls.map(([commands]) => commands.length)).toEqual([12, 12, 12]);
+  });
+
+  it('caches only successful content-addressed recoveries', async () => {
+    const applied = 'ALTER TABLE t ADD COLUMN cached int;\n';
+    const sqlDir = makeRepo('711-cache.sql', [applied, `${applied}-- edited\n`]);
+    const recordedSha256 = sha256(applied);
+    const batchSpy = vi.spyOn(gitBatch, 'runGitBatch');
+
+    const first = await recoverAppliedMigrationText(sqlDir, '711-cache.sql', recordedSha256);
+    expect(first.ok).toBe(true);
+    expect(batchSpy).toHaveBeenCalledTimes(3);
+
+    // Once proven, the exact (dir, filename, sha) result remains useful even
+    // if the local checkout is no longer available. A different hash is not
+    // covered by that proof and must still attempt Git, then fail closed.
+    fs.rmSync(path.resolve(sqlDir, '../../../.git'), { recursive: true, force: true });
+    const cached = await recoverAppliedMigrationText(sqlDir, '711-cache.sql', recordedSha256);
+    expect(cached).toEqual(first);
+    expect(batchSpy).toHaveBeenCalledTimes(3);
+
+    const uncachedHash = await recoverAppliedMigrationText(sqlDir, '711-cache.sql', sha256('other;\n'));
+    expect(uncachedHash.ok).toBe(false);
+    expect(batchSpy).toHaveBeenCalledTimes(4);
   });
 
   it('fails (never guesses) when no version matches the recorded hash', async () => {

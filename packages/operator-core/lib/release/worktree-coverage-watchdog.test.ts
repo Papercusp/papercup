@@ -16,6 +16,8 @@ import {
   checkGitSyncCoverage,
   matchTriagedScopeOut,
   TRIAGED_CHECKOUT_SCOPE_OUTS,
+  runWatchdogGit,
+  type WatchdogGitSeams,
   type WorktreeInfo,
   type CheckoutInfo,
   type TriagedCheckoutScopeOut,
@@ -508,5 +510,54 @@ describe('triaged per-checkout scope-outs (WI-38888)', () => {
   it('real patterns do not match an unrelated sibling that merely shares a prefix', () => {
     expect(matchTriagedScopeOut(`${WS_ROOT}/papercusp-registry-experiments`, 2)).toBeNull();
     expect(matchTriagedScopeOut(`${WS_ROOT}/templates-mirror-backup`, 1)).toBeNull();
+  });
+});
+
+// WI-10005446: the default runner must run git in the spawner sidecar, not fork the big host.
+describe('runWatchdogGit (sidecar routing)', () => {
+  const ARGS = ['status', '--porcelain'];
+  const CWD = '/repo';
+
+  function seams(over: WatchdogGitSeams = {}) {
+    const local = vi.fn(async () => 'local-out');
+    const onFallback = vi.fn();
+    return { local, onFallback, sidecarEnabled: () => true, ...over };
+  }
+
+  it('runs git in the sidecar and never forks locally when the sidecar answers', async () => {
+    const viaSidecar = vi.fn(async () => ({ code: 0, stdout: ' M a.ts\n', stderr: '' }));
+    const s = seams({ viaSidecar });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe(' M a.ts\n');
+    expect(viaSidecar).toHaveBeenCalledWith(ARGS, CWD);
+    expect(s.local).not.toHaveBeenCalled();
+    expect(s.onFallback).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a local spawn when the sidecar is unreachable', async () => {
+    const s = seams({ viaSidecar: vi.fn(async () => { throw new Error('circuit open'); }) });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
+    expect(s.local).toHaveBeenCalledWith(ARGS, CWD);
+    expect(s.onFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats the sidecar's own infrastructure fault as a fallback, not as git's answer", async () => {
+    const viaSidecar = vi.fn(async () => ({ code: -1, stdout: '', stderr: 'spawner sidecar could not spawn' }));
+    const s = seams({ viaSidecar });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
+    expect(s.onFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects on a real non-zero git exit, like the local path, without re-running it locally', async () => {
+    const viaSidecar = vi.fn(async () => ({ code: 128, stdout: '', stderr: 'fatal: not a git repository\n' }));
+    const s = seams({ viaSidecar });
+    await expect(runWatchdogGit(ARGS, CWD, s)).rejects.toThrow('fatal: not a git repository');
+    expect(s.local).not.toHaveBeenCalled();
+  });
+
+  it('spawns locally when the sidecar is not enabled for this process', async () => {
+    const viaSidecar = vi.fn();
+    const s = seams({ viaSidecar, sidecarEnabled: () => false });
+    await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
+    expect(viaSidecar).not.toHaveBeenCalled();
   });
 });

@@ -71,6 +71,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { resolveIdentityArtifact } from '../capability-envelope/identity-grants-port';
+import { cooperativeYield } from '../event-loop-lag-monitor';
 import { narrowedLaunchSpecToAppliedPairSql } from '../capability-envelope/identity-receipt-narrowing';
 import { normalizeSessionActivation } from '../session-activation';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -182,6 +183,16 @@ export interface WedgedIdentitySweepDeps {
    */
   loadCandidates: (knownVerdictKeys: readonly string[]) => Promise<CandidateRow[]> | AsyncIterable<CandidateRow[]>;
   verdictCache: WedgedVerdictCache;
+  /**
+   * Called after each row the sweep CLASSIFIES (never after a reused one) with
+   * the running count, returning the next count. The default yields one
+   * macrotask per classified row. Measured 2026-10-02 against the live table
+   * (2,104 rows): a cold sweep spends 54.9 s of CPU, about 26 ms per row, and a
+   * 25-row page classified without yielding blocks the bg-host main thread for
+   * about 650 ms, about 84 times in a row. bg-host restarts so often that 19 of
+   * 23 hourly ticks in one day were cold (WI-10005444).
+   */
+  yieldAfterClassified: (classifiedSoFar: number) => Promise<number>;
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, WedgedLiveness>>;
   escalateWedged: (wedged: WedgedSession[]) => Promise<void>;
   escalateNotMeasured: (info: { reason: string }) => Promise<void>;
@@ -386,6 +397,7 @@ function sweepDeps(overrides: Partial<WedgedIdentitySweepDeps>): WedgedIdentityS
   return {
     loadCandidates: defaultLoadCandidates,
     verdictCache: sweepVerdictCache,
+    yieldAfterClassified: (classifiedSoFar) => cooperativeYield(classifiedSoFar, 1),
     resolveLiveness: defaultResolveLiveness,
     escalateWedged: defaultEscalateWedged,
     escalateNotMeasured: defaultEscalateNotMeasured,
@@ -409,6 +421,7 @@ export async function runWedgedIdentitySweepOnce(
   // guarded, so a classification error still propagates as before.
   let scanned = 0;
   let reused = 0;
+  let classified = 0;
   const confirmed: Array<{ ownerId: string; reason: string }> = [];
   // WI-10005391: an immutable snapshot of the carried verdicts. A row the loader
   // omitted is looked up HERE, never in a map this sweep is still building.
@@ -443,6 +456,7 @@ export async function runWedgedIdentitySweepOnce(
         reused += 1;
       } else {
         verdict = classifyCandidate(row);
+        classified = await deps.yieldAfterClassified(classified);
       }
       if (row.verdictKey) next.set(row.verdictKey, verdict);
       if (verdict.wedged) confirmed.push({ ownerId: row.ownerId, reason: verdict.reason });

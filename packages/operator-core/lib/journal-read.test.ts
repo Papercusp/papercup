@@ -583,6 +583,41 @@ describe('readJournal', () => {
   });
 });
 
+describe('readJournal — all-journal unit selection', () => {
+  it.each<{ scope: JournalScope; messages: string[] }>([
+    { scope: 'user', messages: ['user scope marker'] },
+    { scope: 'system', messages: ['system scope marker'] },
+    { scope: 'all', messages: ['system scope marker', 'user scope marker'] },
+  ])('reads the requested unit in scope $scope', async ({ scope, messages }) => {
+    const unit = 'papercup-mcp-proxy-staging.service';
+    // journalctl -u selects system units unless --user remaps it. Without a
+    // scope flag, --user-unit adds the user-unit arm to the same OR query.
+    const exec: JournalExec = async (args) => {
+      const selects = (option: string) => args.some((arg, index) =>
+        arg === option && args[index + 1] === unit);
+      const rows: string[] = [];
+      if (!args.includes('--user') && selects('-u')) {
+        rows.push(jsonLine({ _SYSTEMD_UNIT: unit, MESSAGE: 'system scope marker' }));
+      }
+      if ((args.includes('--user') && selects('-u')) || selects('--user-unit')) {
+        rows.push(jsonLine({
+          _SYSTEMD_UNIT: 'user@1000.service',
+          _SYSTEMD_USER_UNIT: unit,
+          MESSAGE: 'user scope marker',
+          __REALTIME_TIMESTAMP: '1785110001000000',
+        }));
+      }
+      return { stdout: rows.join('\n') };
+    };
+    const out = await readJournal({ units: [unit], scope }, exec, noUnknownUnits);
+
+    expect(out.entries.map((entry) => entry.message)).toEqual(messages);
+    expect(out.entries.every((entry) => entry.unit === unit)).toBe(true);
+    expect(out.unitsUnknown).toEqual([]);
+    expect(out.matched).toBe(messages.length);
+  });
+});
+
 describe('readJournal — canonical systemd unit names', () => {
   it('queries the systemd Id for an alias instead of returning a false clean zero', async () => {
     const requestedUnit = 'papercup-bg-host.service';

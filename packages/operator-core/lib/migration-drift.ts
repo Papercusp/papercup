@@ -23,6 +23,8 @@ import { resolveReleaseRoot } from './release/release-root';
 import { selectNewContentDrift } from './migration-content-drift-acknowledged';
 import {
   recoverAppliedMigrationText,
+  recoverAppliedMigrationTexts,
+  type AppliedMigrationTextRequest,
   type AppliedMigrationTextResult,
 } from './migration-applied-text';
 
@@ -339,7 +341,14 @@ export interface ClassifyContentDriftOptions {
   budgetMs?: number;
   /** Injectable clock, for testing the budget without sleeping. */
   now?: () => number;
+  /** Batch history lookups so each Git-history depth costs one host fork per bounded group. */
+  readAppliedTexts?: (
+    entries: ReadonlyArray<MigrationContentDrift>,
+    remainingBudgetMs: number,
+  ) => ReadonlyArray<AppliedMigrationTextResult> | Promise<ReadonlyArray<AppliedMigrationTextResult>>;
 }
+
+const CLASSIFY_APPLIED_TEXT_BATCH_SIZE = 32;
 
 /**
  * Pure classifier for byte-level content drift — exported for tests, with both
@@ -369,86 +378,133 @@ export async function classifyContentDrift(
   const now = () => opts.now?.() ?? Date.now();
   const classified: ClassifiedMigrationContentDrift[] = [];
 
-  // Keep the history reads sequential: each one yields to the event loop while
-  // bounding child-process fan-out and preserving the classifier's time budget.
-  for (const d of raw) {
-    const unclassified = (why: string): ClassifiedMigrationContentDrift => ({
-      ...d,
-      classification: 'unclassified',
-      classificationDetail: why,
-    });
+  // Batch a bounded group across files. Each Git-history depth now costs one
+  // host fork for the group, while the classifier still checks its original
+  // wall-clock budget and reports anything unfinished as hazardous.
+  for (let offset = 0; offset < raw.length;) {
+    const batchEnd = opts.readAppliedTexts
+      ? Math.min(raw.length, offset + CLASSIFY_APPLIED_TEXT_BATCH_SIZE)
+      : offset + 1;
+    const batch = raw.slice(offset, batchEnd);
 
-    // The corpus only grows: 68 drifted files cost ~13s today, so an unbounded
-    // walk becomes expensive at 200. Past the budget, stop spending and mark
-    // the rest unclassified — which counts as HAZARDOUS, so running out of time
-    // can never make drift look benign.
     if (now() - startedAt > budgetMs) {
-      classified.push(
-        unclassified(
-          `not classified — the ${budgetMs}ms classification budget was exhausted before reaching ` +
+      for (let i = offset; i < raw.length; i += 1) {
+        const d = raw[i]!;
+        classified.push({
+          ...d,
+          classification: 'unclassified',
+          classificationDetail:
+            `not classified — the ${budgetMs}ms classification budget was exhausted before reaching ` +
             `this file (${raw.length} drifted files); re-run with a larger budgetMs to classify it`,
-        ),
-      );
-      continue;
+        });
+      }
+      break;
     }
 
-    let applied: AppliedMigrationTextResult;
-    try {
-      applied = await readAppliedText(d);
-    } catch (err) {
-      classified.push(
-        unclassified(`applied text unrecoverable: ${(err as Error)?.message ?? 'unknown error'}`),
-      );
-      continue;
-    }
-    if (!applied.ok) {
-      classified.push(unclassified(`applied text unrecoverable: ${applied.reason}`));
-      continue;
+    let batchAppliedTexts: ReadonlyArray<AppliedMigrationTextResult> | null = null;
+    let batchReadError: string | null = null;
+    if (opts.readAppliedTexts) {
+      const remainingBudgetMs = Math.max(1, budgetMs - (now() - startedAt));
+      try {
+        batchAppliedTexts = await opts.readAppliedTexts(batch, remainingBudgetMs);
+      } catch (err) {
+        batchReadError = (err as Error)?.message ?? 'unknown error';
+      }
     }
 
-    let disk: string | null;
-    try {
-      disk = readDiskText(d.filename);
-    } catch (err) {
-      classified.push(
-        unclassified(`on-disk text unreadable: ${(err as Error)?.message ?? 'unknown error'}`),
-      );
-      continue;
-    }
-    if (disk === null) {
-      classified.push(unclassified('on-disk text unreadable'));
-      continue;
-    }
+    for (let batchIndex = 0; batchIndex < batch.length; batchIndex += 1) {
+      const d = batch[batchIndex]!;
+      const unclassified = (why: string): ClassifiedMigrationContentDrift => ({
+        ...d,
+        classification: 'unclassified',
+        classificationDetail: why,
+      });
 
-    const appliedNorm = normalizeMigrationSql(applied.text);
-    if (!appliedNorm.ok) {
-      classified.push(unclassified(`applied SQL unparseable: ${appliedNorm.reason}`));
-      continue;
-    }
-    const diskNorm = normalizeMigrationSql(disk);
-    if (!diskNorm.ok) {
-      classified.push(unclassified(`on-disk SQL unparseable: ${diskNorm.reason}`));
-      continue;
-    }
-
-    const at = applied.commit.slice(0, 12);
-    classified.push(
-      appliedNorm.normalized === diskNorm.normalized
-        ? {
-            ...d,
-            classification: 'comments-only',
+      // A batch can finish after the remaining allowance. Fail closed for that
+      // result and the untouched suffix instead of trusting a late verdict.
+      if (opts.readAppliedTexts && now() - startedAt > budgetMs) {
+        for (let i = offset + batchIndex; i < raw.length; i += 1) {
+          const remainder = raw[i]!;
+          classified.push({
+            ...remainder,
+            classification: 'unclassified',
             classificationDetail:
-              `executable SQL is identical to the applied blob (${at}); only comments/whitespace ` +
-              `differ, so the live schema still matches this file`,
-          }
-        : {
-            ...d,
-            classification: 'executable',
-            classificationDetail:
-              `executable SQL DIFFERS from the applied blob (${at}) — the edit never ran and never ` +
-              `will; repair with a NEW migration re-applying the intended state`,
-          },
-    );
+              `not classified — the ${budgetMs}ms classification budget was exhausted before reaching ` +
+              `this file (${raw.length} drifted files); re-run with a larger budgetMs to classify it`,
+          });
+        }
+        return classified;
+      }
+
+      let applied: AppliedMigrationTextResult;
+      if (opts.readAppliedTexts) {
+        applied = batchReadError
+          ? { ok: false, reason: `batched applied text read failed: ${batchReadError}` }
+          : batchAppliedTexts?.[batchIndex] ?? {
+              ok: false,
+              reason: 'batched applied text read did not return a result for this file',
+            };
+      } else {
+        try {
+          applied = await readAppliedText(d);
+        } catch (err) {
+          classified.push(
+            unclassified(`applied text unrecoverable: ${(err as Error)?.message ?? 'unknown error'}`),
+          );
+          continue;
+        }
+      }
+      if (!applied.ok) {
+        classified.push(unclassified(`applied text unrecoverable: ${applied.reason}`));
+        continue;
+      }
+
+      let disk: string | null;
+      try {
+        disk = readDiskText(d.filename);
+      } catch (err) {
+        classified.push(
+          unclassified(`on-disk text unreadable: ${(err as Error)?.message ?? 'unknown error'}`),
+        );
+        continue;
+      }
+      if (disk === null) {
+        classified.push(unclassified('on-disk text unreadable'));
+        continue;
+      }
+
+      const appliedNorm = normalizeMigrationSql(applied.text);
+      if (!appliedNorm.ok) {
+        classified.push(unclassified(`applied SQL unparseable: ${appliedNorm.reason}`));
+        continue;
+      }
+      const diskNorm = normalizeMigrationSql(disk);
+      if (!diskNorm.ok) {
+        classified.push(unclassified(`on-disk SQL unparseable: ${diskNorm.reason}`));
+        continue;
+      }
+
+      const at = applied.commit.slice(0, 12);
+      classified.push(
+        appliedNorm.normalized === diskNorm.normalized
+          ? {
+              ...d,
+              classification: 'comments-only',
+              classificationDetail:
+                `executable SQL is identical to the applied blob (${at}); only comments/whitespace ` +
+                `differ, so the live schema still matches this file`,
+            }
+          : {
+              ...d,
+              classification: 'executable',
+              classificationDetail:
+                `executable SQL DIFFERS from the applied blob (${at}) — the edit never ran and never ` +
+                `will; repair with a NEW migration re-applying the intended state`,
+            },
+      );
+    }
+
+    offset = batchEnd;
   }
 
   return classified;
@@ -679,6 +735,23 @@ export async function checkMigrationDrift(
           } catch {
             return null;
           }
+        },
+        {
+          readAppliedTexts: (entries, remainingBudgetMs) => {
+            if (!contentDriftSqlDir) {
+              return entries.map(() => ({
+                ok: false as const,
+                reason: 'no sql dir resolved to search history in',
+              }));
+            }
+            const requests: AppliedMigrationTextRequest[] = entries.map((entry) => ({
+              filename: entry.filename,
+              recordedSha256: entry.recordedSha256,
+            }));
+            return recoverAppliedMigrationTexts(contentDriftSqlDir, requests, {
+              budgetMs: remainingBudgetMs,
+            });
+          },
         },
       )
     : rawContentDrift.map((d) => ({

@@ -109,15 +109,18 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(guidance?.notWhen).toContain('dev:pg_query');
     // The claim that earns the redirect: the shell cannot see DB credentials.
     expect(guidance?.notWhen).toMatch(/strips (?:database|DB) credential env(?:ironment)? var(?:iable)?s/);
-    expect(guidance?.when).toContain('fixed-string searches');
+    expect(guidance?.when).toContain('Fixed strings');
     expect(guidance?.when).toContain('`rg -F`');
     expect(guidance?.when).toContain('`grep -F`');
-    // Quote the argument, because an unmatched backtick fails before the search runs.
-    expect(guidance?.when).toMatch(/single-quot(?:e|ed)/);
-    expect(guidance?.when).toContain('unmatched backtick');
-    expect(guidance?.when).toMatch(/fails before either (?:search )?tool runs/);
+    expect(guidance?.when).toContain('quote backticks before shell use');
+    expect(guidance?.when).toContain('Apostrophes break single-quoted regexes');
+    expect(guidance?.when).toContain('`-e`');
+    expect(guidance?.when).toContain('quoted input');
     expect(guidance?.when).toContain('do not shell-background child');
     expect(guidance?.when).toContain('without `wait`');
+    expect(guidance?.when).toContain('For `systemd-run`');
+    expect(guidance?.when).toContain('`-- executable argv` after options');
+    expect(guidance?.when).toContain('`&&` starts another command');
   });
 
   it('gives a code-mode caller an OBJECT whose output field carries the real output', async () => {

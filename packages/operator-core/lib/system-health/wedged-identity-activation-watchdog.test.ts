@@ -80,6 +80,7 @@ function deps(overrides: Partial<WedgedIdentitySweepDeps> = {}): WedgedIdentityS
   return {
     loadCandidates: async () => [row()],
     verdictCache: { verdicts: new Map(), lastReused: 0, lastScanned: 0 },
+    yieldAfterClassified: async (classifiedSoFar) => classifiedSoFar + 1,
     resolveLiveness: async (ids) => new Map(ids.map((id) => [id, 'live' as WedgedLiveness])),
     escalateWedged: vi.fn(async () => {}),
     escalateNotMeasured: vi.fn(async () => {}),
@@ -414,6 +415,50 @@ describe('runWedgedIdentitySweepOnce — carried verdicts (WI-10005391)', () => 
 
     await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader([row({ verdictKey: '4:1:d' })]) }));
     expect([...verdictCache.verdicts.keys()]).toEqual(['4:1:d']);
+  });
+
+  it('yields after each CLASSIFIED row and never after a reused one', async () => {
+    const verdictCache = freshCache();
+    const counts: number[] = [];
+    const yieldAfterClassified = async (n: number) => {
+      counts.push(n);
+      return n + 1;
+    };
+    const rows = [row({ verdictKey: '6:1:f' }), row({ ownerId: 'su-other', verdictKey: '7:1:g' })];
+
+    await runWedgedIdentitySweepOnce(deps({ verdictCache, yieldAfterClassified, loadCandidates: omittingLoader(rows) }));
+    expect(counts).toEqual([0, 1]);
+
+    // The second sweep reuses both verdicts, so it must not pay a single yield.
+    await runWedgedIdentitySweepOnce(deps({ verdictCache, yieldAfterClassified, loadCandidates: omittingLoader(rows) }));
+    expect(counts).toEqual([0, 1]);
+    expect(verdictCache.lastReused).toBe(2);
+  });
+
+  it('the default yield lets a queued macrotask run before the sweep finishes classifying', async () => {
+    // A cold sweep classifies ~26 ms per row (measured 2026-10-02). Every await in
+    // the sweep is otherwise a microtask, so without a real macrotask yield a
+    // timer or IO callback queued before the sweep cannot run until it ends.
+    async function order(yieldOverride?: WedgedIdentitySweepDeps['yieldAfterClassified']): Promise<string[]> {
+      const seen: string[] = [];
+      const { yieldAfterClassified: _testYield, ...rest } = deps({
+        loadCandidates: async () => [row({ ownerId: 'su-w1', launchSpec: {} }), row({ ownerId: 'su-w2', launchSpec: {} })],
+        escalateWedged: async () => {
+          seen.push('escalated');
+        },
+      });
+      setImmediate(() => seen.push('macrotask'));
+      await runWedgedIdentitySweepOnce(yieldOverride ? { ...rest, yieldAfterClassified: yieldOverride } : rest);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return seen;
+    }
+
+    // Control: a yield that never leaves the microtask queue keeps the macrotask
+    // waiting until the sweep is done. If this ordering ever flips, the test
+    // below no longer proves anything.
+    expect(await order(async (n) => n + 1)).toEqual(['escalated', 'macrotask']);
+    // The production default yields a real macrotask turn.
+    expect(await order()).toEqual(['macrotask', 'escalated']);
   });
 });
 
