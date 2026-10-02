@@ -115,7 +115,7 @@ describe('ensureOnboardingComplete (the first-run wizard blocks every interactiv
       JSON.stringify({ hasCompletedOnboarding: false, mcpServers: { 'papercusp-su': {} } }),
     );
 
-    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(await ensureOnboardingComplete(home)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
     // Never a foreign value: the repair touches exactly the one key.
     expect(read().mcpServers).toEqual({ 'papercusp-su': {} });
@@ -123,11 +123,11 @@ describe('ensureOnboardingComplete (the first-run wizard blocks every interactiv
 
   it('repairs a config that never carried the flag, and leaves a healthy one untouched', async () => {
     seedHome(home); // seeds a .claude.json with no onboarding key at all
-    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(await ensureOnboardingComplete(home)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
 
     // Idempotent — already-true means no rewrite (peers rewrite this file constantly).
-    expect(ensureOnboardingComplete(home)).toBe(false);
+    expect(await ensureOnboardingComplete(home)).toBe(false);
   });
 
   it('WI-4431: materializes a minimal onboarding-complete config when NONE exists at all', async () => {
@@ -136,19 +136,19 @@ describe('ensureOnboardingComplete (the first-run wizard blocks every interactiv
     // .claude.json in when one exists, so leaving this a no-op would still
     // wedge a headless launch at the first-run wizard by a different door.
     expect(existsSync(join(home, '.claude.json'))).toBe(false);
-    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(await ensureOnboardingComplete(home)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
     // Deliberately bare: no mcpServers (psu supplies MCP via --mcp-config argv,
     // never this file) and no theme key (see the doc comment above).
     expect(read().mcpServers).toBeUndefined();
     expect(read().theme).toBeUndefined();
     // Idempotent on the next call — already-true means no rewrite.
-    expect(ensureOnboardingComplete(home)).toBe(false);
+    expect(await ensureOnboardingComplete(home)).toBe(false);
   });
 
   it('fails open on an unparseable config — a launch never dies here', async () => {
     writeFileSync(join(home, '.claude.json'), '{ not json');
-    expect(ensureOnboardingComplete(home)).toBe(false);
+    expect(await ensureOnboardingComplete(home)).toBe(false);
   });
 });
 
@@ -166,7 +166,7 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
 
   it('adds a full trust entry for a cwd with NO prior projects[] entry at all', async () => {
     seedHome(home); // seeds a .claude.json with mcpServers but no `projects` key
-    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(await ensureProjectTrust(home, cwd)).toBe(true);
     expect(read().projects[cwd]).toEqual({
       hasTrustDialogAccepted: true,
       hasClaudeMdExternalIncludesApproved: true,
@@ -192,7 +192,7 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
         },
       }),
     );
-    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(await ensureProjectTrust(home, cwd)).toBe(true);
     const p = read().projects[cwd];
     expect(p.hasClaudeMdExternalIncludesApproved).toBe(true);
     expect(p.hasClaudeMdExternalIncludesWarningShown).toBe(true);
@@ -218,19 +218,19 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
         },
       }),
     );
-    expect(ensureProjectTrust(home, cwd)).toBe(false);
+    expect(await ensureProjectTrust(home, cwd)).toBe(false);
   });
 
   it('WI-4431-style: materializes a minimal trusted config when NO .claude.json exists at all', async () => {
     expect(existsSync(join(home, '.claude.json'))).toBe(false);
-    expect(ensureProjectTrust(home, cwd)).toBe(true);
+    expect(await ensureProjectTrust(home, cwd)).toBe(true);
     expect(read().hasCompletedOnboarding).toBe(true);
     expect(read().projects[cwd].hasClaudeMdExternalIncludesApproved).toBe(true);
   });
 
   it('fails open on an unparseable config — a launch never dies here', async () => {
     writeFileSync(join(home, '.claude.json'), '{ not json');
-    expect(ensureProjectTrust(home, cwd)).toBe(false);
+    expect(await ensureProjectTrust(home, cwd)).toBe(false);
   });
 });
 
@@ -1099,16 +1099,16 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
   it('a rematerialized (transcript-only) dir is NOT ready — the exact repro', async () => {
     const dir = seedRematerializedDir('su-remat');
     expect(existsSync(join(dir, '.claude.json'))).toBe(false);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
   });
 
-  it("a bee's creds-symlink-only dir (writeSpawnClaudeConfig shape) is NOT ready", () => {
+  it("a bee's creds-symlink-only dir (writeSpawnClaudeConfig shape) is NOT ready", async () => {
     const dir = sessionClaudeConfigDir('su-bee');
     mkdirSync(dir, { recursive: true });
     symlinkSync(join(home, '.claude', '.credentials.json'), join(dir, '.credentials.json'));
     // A VALID credential + no account state is precisely the trap: auth looks fine.
     expect(existsSync(join(dir, '.credentials.json'))).toBe(true);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
   });
 
   it('the stub .claude.json claude mints on a first-run boot is NOT ready (an account, but no MCP)', async () => {
@@ -1120,7 +1120,7 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
       join(dir, '.claude.json'),
       JSON.stringify({ oauthAccount: { emailAddress: 'owner@example.com' }, userID: 'abc' }),
     );
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
   });
 
   it('ensure repairs a rematerialized dir into a launch-ready one — account state, hooks, MCP, transcript kept', async () => {
@@ -1128,7 +1128,7 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
     const { configDir, repaired } = await ensureInteractiveClaudeConfig({ sid: 'su-fix', home });
     expect(configDir).toBe(dir);
     expect(repaired).toBe(true);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(true);
     // .claude.json — the file that gates the wizard AND carries the user-level
     // MCP servers — is linked to the user's real config.
     expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(true);
@@ -1155,7 +1155,7 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
   it('a healthy mirror is ready → ensure no-ops (byte-identical, no re-link churn)', async () => {
     await writeInteractiveClaudeConfig({ sid: 'su-healthy', home });
     const dir = sessionClaudeConfigDir('su-healthy');
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(true);
     const before = lstatSync(join(dir, '.claude.json')).mtimeMs;
     expect((await ensureInteractiveClaudeConfig({ sid: 'su-healthy', home })).repaired).toBe(false);
     expect(lstatSync(join(dir, '.claude.json')).mtimeMs).toBe(before);
@@ -1168,19 +1168,19 @@ describe('EI-12938: interactive resume needs a LAUNCH-READY config dir, not just
     // The pruned copy is a REAL file (it lost write-passthrough on purpose) that
     // still carries mcpServers — complete, just filtered.
     expect(lstatSync(json).isSymbolicLink()).toBe(false);
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(true);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(true);
     expect((await ensureInteractiveClaudeConfig({ sid: 'su-pruned', home })).repaired).toBe(false);
     expect(lstatSync(json).isSymbolicLink()).toBe(false); // still pruned, not re-linked
     expect(JSON.parse(readFileSync(json, 'utf8')).mcpServers).not.toHaveProperty('playwright');
   });
 
   it('never throws on a hopeless dir — a launch must never fail on config repair', async () => {
-    expect(isInteractiveClaudeConfigReady('/nope/does/not/exist')).toBe(false);
+    expect(await isInteractiveClaudeConfigReady('/nope/does/not/exist')).toBe(false);
     // A dangling .claude.json symlink (the source config was deleted under it).
     const dir = sessionClaudeConfigDir('su-dangle');
     mkdirSync(dir, { recursive: true });
     symlinkSync(join(home, 'gone.json'), join(dir, '.claude.json'));
-    expect(isInteractiveClaudeConfigReady(dir)).toBe(false);
+    expect(await isInteractiveClaudeConfigReady(dir)).toBe(false);
     await expect(ensureInteractiveClaudeConfig({ sid: 'su-dangle', home })).resolves.toMatchObject({
       configDir: expect.any(String),
     });

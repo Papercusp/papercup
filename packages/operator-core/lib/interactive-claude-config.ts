@@ -85,16 +85,10 @@
  * Server-only.
  */
 import {
-  existsSync,
   lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
   readlinkSync,
-  renameSync,
   rmSync,
   symlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import {
   access as accessAsync,
@@ -831,10 +825,11 @@ async function writeRecoveryArtifacts(
  * plain human `claude` invocation), so forcing onboarding-complete here is
  * always correct, not a UX shortcut taken on someone's behalf.
  */
-export function ensureOnboardingComplete(home: string): boolean {
+export async function ensureOnboardingComplete(home: string): Promise<boolean> {
   const path = join(home, '.claude.json');
-  try {
-    if (!existsSync(path)) {
+  return serializeByKey(claudeJsonMutationQueue, path, async () => {
+    try {
+    if (!(await existsAsync(path))) {
       // WI-4431: a box that has NEVER run claude interactively has nothing to
       // repair here, but the mirror below only symlinks `.claude.json` IN when
       // one already exists (`if (existsSync(srcJson))`) — with none, the session
@@ -848,19 +843,20 @@ export function ensureOnboardingComplete(home: string): boolean {
       // `mcpServers` (psu supplies MCP servers via `--mcp-config` argv, never
       // this file) and no `theme` key (see the doc comment above — the working
       // backups never carry one either, so it is not what gates the wizard).
-      writeFileSync(path, JSON.stringify({ hasCompletedOnboarding: true }, null, 2), { mode: 0o600 });
+      await writeFileAsync(path, JSON.stringify({ hasCompletedOnboarding: true }, null, 2), { mode: 0o600 });
       return true;
     }
-    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    const cfg = JSON.parse(await readFileAsync(path, 'utf8')) as Record<string, unknown>;
     if (!cfg || typeof cfg !== 'object' || cfg.hasCompletedOnboarding === true) return false;
     cfg.hasCompletedOnboarding = true;
     const tmp = `${path}.psu-onboarding.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    renameSync(tmp, path);
+    await writeFileAsync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    await renameAsync(tmp, path);
     return true;
-  } catch {
-    return false; // a wizard-blocked session is louder than a failed repair
-  }
+    } catch {
+      return false; // a wizard-blocked session is louder than a failed repair
+    }
+  });
 }
 
 /**
@@ -894,7 +890,7 @@ export function ensureOnboardingComplete(home: string): boolean {
  * live sessions write it); idempotent (no-ops once every flag already reads
  * true); fail-open (a launch must never die on a repair hiccup).
  */
-export function ensureProjectTrust(home: string, cwd: string): boolean {
+export async function ensureProjectTrust(home: string, cwd: string): Promise<boolean> {
   const path = join(home, '.claude.json');
   const trustFlags = {
     hasTrustDialogAccepted: true,
@@ -902,19 +898,20 @@ export function ensureProjectTrust(home: string, cwd: string): boolean {
     hasClaudeMdExternalIncludesWarningShown: true,
     hasCompletedProjectOnboarding: true,
   };
-  try {
-    if (!existsSync(path)) {
+  return serializeByKey(claudeJsonMutationQueue, path, async () => {
+    try {
+    if (!(await existsAsync(path))) {
       // Mirrors ensureOnboardingComplete's WI-4431 leg: a box with no global
       // config yet still needs THIS launch's cwd pre-trusted, not just the
       // global onboarding flag.
-      writeFileSync(
+      await writeFileAsync(
         path,
         JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { ...trustFlags } } }, null, 2),
         { mode: 0o600 },
       );
       return true;
     }
-    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    const cfg = JSON.parse(await readFileAsync(path, 'utf8')) as Record<string, unknown>;
     if (!cfg || typeof cfg !== 'object') return false;
     const projects = (cfg.projects && typeof cfg.projects === 'object' ? cfg.projects : {}) as Record<
       string,
@@ -933,12 +930,13 @@ export function ensureProjectTrust(home: string, cwd: string): boolean {
     projects[cwd] = { ...existing, ...trustFlags };
     cfg.projects = projects;
     const tmp = `${path}.psu-project-trust.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    renameSync(tmp, path);
+    await writeFileAsync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    await renameAsync(tmp, path);
     return true;
-  } catch {
-    return false; // a wizard-blocked session is louder than a failed repair
-  }
+    } catch {
+      return false; // a wizard-blocked session is louder than a failed repair
+    }
+  });
 }
 
 /** True if a path already exists as a real file/dir OR as a (possibly dangling)
@@ -957,6 +955,33 @@ function linkInto(src: string, dest: string): void {
   if (present(dest)) return; // idempotent — a resume re-materialize must not double-link
   try {
     symlinkSync(src, dest);
+  } catch {
+    /* best-effort — claude surfaces a missing entry the same as a fresh user */
+  }
+}
+
+async function existsAsync(path: string): Promise<boolean> {
+  try {
+    await accessAsync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function presentAsync(path: string): Promise<boolean> {
+  try {
+    await lstatAsync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function linkIntoAsync(src: string, dest: string): Promise<void> {
+  if (await presentAsync(dest)) return;
+  try {
+    await symlinkAsync(src, dest);
   } catch {
     /* best-effort — claude surfaces a missing entry the same as a fresh user */
   }
@@ -1032,9 +1057,20 @@ export async function writeInteractiveClaudeConfig(opts: {
    */
   cwd?: string;
 }): Promise<InteractiveClaudeConfig> {
-  const home = opts.home ?? homedir();
   const configDir = sessionClaudeConfigDir(opts.sid);
-  mkdirSync(configDir, { recursive: true });
+  return serializeByKey(interactiveMaterializationQueue, configDir, () =>
+    materializeInteractiveClaudeConfig(opts, configDir),
+  );
+}
+
+type InteractiveClaudeConfigOptions = Parameters<typeof writeInteractiveClaudeConfig>[0];
+
+async function materializeInteractiveClaudeConfig(
+  opts: InteractiveClaudeConfigOptions,
+  configDir: string,
+): Promise<InteractiveClaudeConfig> {
+  const home = opts.home ?? homedir();
+  await mkdirAsync(configDir, { recursive: true });
 
   // Seed-from-newest: converge the global file (and any forks) on the newest
   // OAuth bundle BEFORE mirroring, so the `.credentials.json` symlink below
@@ -1059,7 +1095,7 @@ export async function writeInteractiveClaudeConfig(opts: {
       // CLI login — on a fresh box too. Idempotent; an API-key-only box just
       // gets an empty dir claude would have created on first global use anyway.
       // (psu-login-inherit: fresh-box credential promotion.)
-      mkdirSync(join(home, '.claude'), { recursive: true });
+      await mkdirAsync(join(home, '.claude'), { recursive: true });
       // WI-10005186: awaited, async — this runs on the operator main thread
       // (bootstrap/resume request routes), and a propagating pass renames one
       // temp file per credential fork; synchronous, that froze the event loop
@@ -1071,20 +1107,20 @@ export async function writeInteractiveClaudeConfig(opts: {
     // Same "claude rewrote a file we depend on" class as the credential fork
     // above: repair the onboarding flag the mirror is about to symlink in, or
     // this session boots into the first-run wizard and never reaches a prompt.
-    ensureOnboardingComplete(home);
+    await ensureOnboardingComplete(home);
     // EI-16574: also pre-trust THIS launch's cwd (see ensureProjectTrust) so a
     // brand-new project directory (no prior `projects[cwd]` entry) can't wedge
     // a headless member forever on the external-CLAUDE.md-imports / trust-dialog
     // prompts — a genuinely separate, per-cwd gate from the global onboarding
     // flag repaired just above.
-    if (opts.cwd) ensureProjectTrust(home, opts.cwd);
+    if (opts.cwd) await ensureProjectTrust(home, opts.cwd);
   }
 
   // Mirror every top-level `~/.claude` entry EXCEPT the transcript store.
   const srcClaude = join(home, '.claude');
   let entries: string[] = [];
   try {
-    entries = readdirSync(srcClaude); // includes dotfiles (.credentials.json, …)
+    entries = await readdirAsync(srcClaude); // includes dotfiles (.credentials.json, …)
   } catch {
     /* no ~/.claude on this box — fall through to a fresh projects/ only */
   }
@@ -1097,21 +1133,21 @@ export async function writeInteractiveClaudeConfig(opts: {
     // P-020 fleet plugin prune: `plugins` becomes a REAL dir whose children
     // symlink through, except installed_plugins.json which is a filtered copy.
     if (opts.prunePlugins && name === 'plugins') {
-      writePrunedPluginsDir(join(srcClaude, name), join(configDir, name));
+      await writePrunedPluginsDir(join(srcClaude, name), join(configDir, name));
       continue;
     }
     // WI-3278: settings.json is a REAL merged copy with the bypassPermissions
     // grant baked in — see writeSessionSettings.
     if (name === 'settings.json') {
-      writeSessionSettings(join(srcClaude, name), join(configDir, name));
+      await writeSessionSettings(join(srcClaude, name), join(configDir, name));
       continue;
     }
-    linkInto(join(srcClaude, name), join(configDir, name));
+    await linkIntoAsync(join(srcClaude, name), join(configDir, name));
   }
   // WI-3278: a box with no global settings.json (the fresh Windows VM) still
   // needs the session-level bypass grant.
   if (!entries.includes('settings.json')) {
-    writeSessionSettings(null, join(configDir, 'settings.json'));
+    await writeSessionSettings(null, join(configDir, 'settings.json'));
   }
 
   // WI-3280: the SessionStart recovery hook (always) + the parked playbook
@@ -1121,7 +1157,7 @@ export async function writeInteractiveClaudeConfig(opts: {
   // The isolated conversation-transcript store — a REAL dir, never a symlink, so
   // `/resume` + `claude --resume <uuid>` see only this session's transcripts.
   // mkdir is idempotent and never clobbers an existing (resumed) transcript.
-  mkdirSync(join(configDir, ISOLATED_ENTRY), { recursive: true });
+  await mkdirAsync(join(configDir, ISOLATED_ENTRY), { recursive: true });
 
   // The sibling `~/.claude.json` also relocates under CLAUDE_CONFIG_DIR on
   // current claude — symlink it so the session keeps the user-level MCP servers
@@ -1129,13 +1165,13 @@ export async function writeInteractiveClaudeConfig(opts: {
   // (no re-onboarding), theme, and MCP approvals. Writes pass through to the real
   // file, exactly as a non-isolated session shares it today.
   const srcJson = join(home, '.claude.json');
-  if (existsSync(srcJson)) {
+  if (await existsAsync(srcJson)) {
     if (opts.prunePlugins) {
       // P-020: a filtered REAL copy — the playwright mcpServer dropped
       // (papercusp-su + everything else kept verbatim).
-      writePrunedClaudeJson(srcJson, join(configDir, '.claude.json'));
+      await writePrunedClaudeJson(srcJson, join(configDir, '.claude.json'));
     } else {
-      linkInto(srcJson, join(configDir, '.claude.json'));
+      await linkIntoAsync(srcJson, join(configDir, '.claude.json'));
     }
   }
 
@@ -1181,11 +1217,11 @@ export async function writeInteractiveClaudeConfig(opts: {
  *   - absent/unreadable ⇒ NOT ready.
  * Pure + never throws — `home` is not needed (the dir speaks for itself).
  */
-export function isInteractiveClaudeConfigReady(configDir: string): boolean {
+export async function isInteractiveClaudeConfigReady(configDir: string): Promise<boolean> {
   try {
     const path = join(configDir, '.claude.json');
-    const entry = lstatSync(path); // throws when absent
-    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> | null; // throws when dangling
+    const entry = await lstatAsync(path); // throws when absent
+    const cfg = JSON.parse(await readFileAsync(path, 'utf8')) as Record<string, unknown> | null; // throws when dangling
     if (!cfg || typeof cfg !== 'object') return false;
     return entry.isSymbolicLink() || cfg.mcpServers != null;
   } catch {
@@ -1223,21 +1259,23 @@ export async function ensureInteractiveClaudeConfig(opts: {
   home?: string;
 }): Promise<{ configDir: string; repaired: boolean }> {
   const configDir = sessionClaudeConfigDir(opts.sid);
-  if (isInteractiveClaudeConfigReady(configDir)) return { configDir, repaired: false };
-  try {
-    // Clear the `.claude.json` we just judged NOT launch-ready, or the mirror
-    // cannot replace it: `linkInto` is `present()`-skipped (deliberately — a
-    // re-materialize must not double-link), so claude's own first-run stub would
-    // BLOCK its own repair and the dir would stay tool-less forever. Only ever
-    // reached for a dir the ready-check rejected: a stub (claude's, not the
-    // user's — losing its accrued state is the point), a dangling link, or a
-    // corrupt file. A healthy or pruned dir returned above, untouched.
-    rmSync(join(configDir, '.claude.json'), { force: true });
-    await writeInteractiveClaudeConfig({ sid: opts.sid, home: opts.home });
-    return { configDir, repaired: true };
-  } catch {
-    return { configDir, repaired: false };
-  }
+  return serializeByKey(interactiveMaterializationQueue, configDir, async () => {
+    if (await isInteractiveClaudeConfigReady(configDir)) return { configDir, repaired: false };
+    try {
+      // Clear the .claude.json we just judged NOT launch-ready, or the mirror
+      // cannot replace it: linkIntoAsync is presentAsync-skipped (deliberately
+      // — a re-materialize must not double-link), so claude's own first-run stub
+      // would BLOCK its own repair and the dir would stay tool-less forever.
+      // Only reached for a dir the ready-check rejected: a stub (claude's, not
+      // the user's — losing its accrued state is the point), a dangling link,
+      // or a corrupt file. A healthy or pruned dir returns above, untouched.
+      await rmAsync(join(configDir, '.claude.json'), { force: true });
+      await materializeInteractiveClaudeConfig({ sid: opts.sid, home: opts.home }, configDir);
+      return { configDir, repaired: true };
+    } catch {
+      return { configDir, repaired: false };
+    }
+  });
 }
 
 /**
@@ -1258,11 +1296,11 @@ export async function ensureInteractiveClaudeConfig(opts: {
  * fresh global hooks; a pre-fix dir's SYMLINK is removed first so the write
  * lands in the session dir, never through the link into the user's real file.
  */
-function writeSessionSettings(srcSettings: string | null, dest: string): void {
+async function writeSessionSettings(srcSettings: string | null, dest: string): Promise<void> {
   let cfg: Record<string, unknown> = {};
   if (srcSettings) {
     try {
-      cfg = JSON.parse(readFileSync(srcSettings, 'utf8')) as Record<string, unknown>;
+      cfg = JSON.parse(await readFileAsync(srcSettings, 'utf8')) as Record<string, unknown>;
     } catch {
       /* no/unparseable global settings — write the grant alone */
     }
@@ -1290,7 +1328,7 @@ function writeSessionSettings(srcSettings: string | null, dest: string): void {
   });
   hooks.SessionStart = sessionStart;
   try {
-    if (present(dest) && lstatSync(dest).isSymbolicLink()) rmSync(dest);
+    if (await presentAsync(dest) && (await lstatAsync(dest)).isSymbolicLink()) await rmAsync(dest);
     // EI-12086: claude 2.1.209+ gates `--dangerously-skip-permissions` behind an
     // interactive "Bypass Permissions mode" accept prompt (❯ 1. No, exit / 2. Yes,
     // I accept) that a HEADLESS member can never answer — it wedges forever,
@@ -1306,7 +1344,7 @@ function writeSessionSettings(srcSettings: string | null, dest: string): void {
     // WI-6603: the fleet-policy setting defaults land AFTER `...cfg` so they win
     // over a stale/personal value in the user's global settings — see
     // PAPERCUSP_SESSION_SETTING_DEFAULTS for why each stock default is wrong here.
-    writeFileSync(
+    await writeFileAsync(
       dest,
       JSON.stringify(
         {
@@ -1329,17 +1367,17 @@ function writeSessionSettings(srcSettings: string | null, dest: string): void {
  *  through except `installed_plugins.json`, which is written as a FILTERED
  *  real copy (FLEET_PRUNED_PLUGIN_NAMES dropped). Best-effort: any failure
  *  falls back to the plain symlink (a full plugin surface, never a broken one). */
-function writePrunedPluginsDir(srcPlugins: string, destPlugins: string): void {
-  if (present(destPlugins)) return; // idempotent (resume)
+async function writePrunedPluginsDir(srcPlugins: string, destPlugins: string): Promise<void> {
+  if (await presentAsync(destPlugins)) return; // idempotent (resume)
   try {
-    mkdirSync(destPlugins, { recursive: true });
-    for (const child of readdirSync(srcPlugins)) {
+    await mkdirAsync(destPlugins, { recursive: true });
+    for (const child of await readdirAsync(srcPlugins)) {
       if (child === 'installed_plugins.json') continue;
-      linkInto(join(srcPlugins, child), join(destPlugins, child));
+      await linkIntoAsync(join(srcPlugins, child), join(destPlugins, child));
     }
     const regPath = join(srcPlugins, 'installed_plugins.json');
-    if (existsSync(regPath)) {
-      const reg = JSON.parse(readFileSync(regPath, 'utf8')) as {
+    if (await existsAsync(regPath)) {
+      const reg = JSON.parse(await readFileAsync(regPath, 'utf8')) as {
         plugins?: Record<string, unknown>;
       };
       if (reg.plugins && typeof reg.plugins === 'object') {
@@ -1350,25 +1388,25 @@ function writePrunedPluginsDir(srcPlugins: string, destPlugins: string): void {
           }),
         );
       }
-      writeFileSync(join(destPlugins, 'installed_plugins.json'), JSON.stringify(reg, null, 1));
+      await writeFileAsync(join(destPlugins, 'installed_plugins.json'), JSON.stringify(reg, null, 1));
     }
   } catch {
     // Fall back to the full symlink — never a broken plugins dir.
     try {
-      rmSync(destPlugins, { recursive: true, force: true });
+      await rmAsync(destPlugins, { recursive: true, force: true });
     } catch {
       /* best-effort */
     }
-    linkInto(srcPlugins, destPlugins);
+    await linkIntoAsync(srcPlugins, destPlugins);
   }
 }
 
 /** P-020: write a filtered real copy of `~/.claude.json` with the pruned
  *  mcpServers removed. Best-effort: any failure falls back to the symlink. */
-function writePrunedClaudeJson(srcJson: string, destJson: string): void {
-  if (present(destJson)) return; // idempotent (resume)
+async function writePrunedClaudeJson(srcJson: string, destJson: string): Promise<void> {
+  if (await presentAsync(destJson)) return; // idempotent (resume)
   try {
-    const j = JSON.parse(readFileSync(srcJson, 'utf8')) as {
+    const j = JSON.parse(await readFileAsync(srcJson, 'utf8')) as {
       mcpServers?: Record<string, unknown>;
     };
     if (j.mcpServers && typeof j.mcpServers === 'object') {
@@ -1376,8 +1414,8 @@ function writePrunedClaudeJson(srcJson: string, destJson: string): void {
         Object.entries(j.mcpServers).filter(([name]) => !FLEET_PRUNED_MCP_SERVERS.has(name)),
       );
     }
-    writeFileSync(destJson, JSON.stringify(j, null, 1));
+    await writeFileAsync(destJson, JSON.stringify(j, null, 1));
   } catch {
-    linkInto(srcJson, destJson);
+    await linkIntoAsync(srcJson, destJson);
   }
 }
