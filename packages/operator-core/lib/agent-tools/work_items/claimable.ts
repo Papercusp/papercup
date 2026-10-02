@@ -64,6 +64,76 @@ export interface ClaimableHarnessScope {
   resolution: 'requested' | 'hive-home';
 }
 
+/**
+ * EI-23772523186892689: the caller-effective spec vs the spec the caller's FLEET stores.
+ * A per-agent (`cup`) claim-spec row always outranks the fleet-inherited one, so a fleet
+ * leader/member holding such a row reads a count for a lane that is NOT their fleet's —
+ * and `claimableCallerScope` alone only said peers' COUNTS may differ, never that they may
+ * be on a different SPEC. That framing invited reading a 0 as "my fleet has no work" and
+ * rewriting a correct fleet claim spec (the destructive remedy).
+ */
+export interface CallerFleetSpecComparison {
+  fleetSlug: string;
+  callerSpecId: string;
+  /** The fleet's stored spec id; null when the fleet's sentinel row could not be read. */
+  fleetSpecId: string | null;
+  fleetSpecRevision: number | null;
+  /** true = different specs; false = same spec id; null = the fleet's spec was unreadable. */
+  diverges: boolean | null;
+}
+
+async function compareCallerSpecToFleet(args: {
+  workspaceId: string | undefined;
+  ownerId: string;
+  callerSpecId: string;
+}): Promise<CallerFleetSpecComparison | undefined> {
+  if (!args.workspaceId) return undefined;
+  try {
+    const { latestFleetMembership } = await import('../../fleet-membership-store');
+    const membership = await latestFleetMembership(args.workspaceId, args.ownerId);
+    const fleetSlug = membership?.fleetSlug;
+    // Not in a fleet (or an explicit leave): a per-agent spec has no fleet to diverge from.
+    if (!fleetSlug) return undefined;
+    const resolved = await resolveFleetClaimSpec({ spec: fleetSlug, workspaceId: args.workspaceId }).catch(
+      () => null,
+    );
+    // Only a match on the fleet-slug namespace is THIS fleet's spec; a specId/revN hit would
+    // be some other fleet's row wearing a coincident name.
+    if (!resolved || resolved.matchedBy !== 'fleet-slug') {
+      return { fleetSlug, callerSpecId: args.callerSpecId, fleetSpecId: null, fleetSpecRevision: null, diverges: null };
+    }
+    const fleetSpecId = resolved.record.spec.specId ?? null;
+    return {
+      fleetSlug,
+      callerSpecId: args.callerSpecId,
+      fleetSpecId,
+      fleetSpecRevision: resolved.record.revision,
+      diverges: fleetSpecId === null ? null : fleetSpecId !== args.callerSpecId,
+    };
+  } catch {
+    // A comparison that could not be made is simply absent — never a reason to fail the read.
+    return undefined;
+  }
+}
+
+function describeCallerFleetSpecNote(c: CallerFleetSpecComparison | undefined): string {
+  if (!c || c.diverges === false) return '';
+  if (c.diverges === null) {
+    return (
+      ` ⚠ CALLER SPEC MAY DIFFER FROM YOUR FLEET'S: this count is the caller-effective lane (a per-agent spec ` +
+      `'${c.callerSpecId}' that overrides fleet '${c.fleetSlug}'), and that fleet's own spec could not be read. ` +
+      `Read the fleet lane with spec:'${c.fleetSlug}' before concluding anything about its backlog.`
+    );
+  }
+  return (
+    ` ⚠ CALLER SPEC ≠ YOUR FLEET'S SPEC: this count is the caller-effective lane — a per-agent spec ` +
+    `'${c.callerSpecId}' that overrides fleet '${c.fleetSlug}' (spec '${c.fleetSpecId}'` +
+    `${c.fleetSpecRevision !== null ? ` rev ${c.fleetSpecRevision}` : ''}). It says NOTHING about that fleet's ` +
+    `claimable backlog: a 0 here does not mean the fleet has no work, and is no reason to rewrite its claim spec. ` +
+    `Read the fleet lane with spec:'${c.fleetSlug}'.`
+  );
+}
+
 export default defineTool({
   name: 'work_items:claimable',
   profile: 'engineer',
@@ -241,6 +311,8 @@ export default defineTool({
       state: 'active',
       reason: null,
     };
+    // EI-23772523186892689: set only when a per-agent spec overrides the caller's fleet spec.
+    let callerFleetSpec: CallerFleetSpecComparison | undefined;
     if (args.spec) {
       const resolved = await resolveFleetClaimSpec({ spec: args.spec, workspaceId: ws }).catch(() => undefined);
       if (resolved === undefined) {
@@ -351,6 +423,15 @@ export default defineTool({
           ...(callerRecord.fleetSlug ? { fleetSlug: callerRecord.fleetSlug } : {}),
           matchedBy: 'caller-effective',
         };
+        // A per-agent row outranks the fleet-inherited one; say so when the caller leads or
+        // belongs to a fleet whose own spec is therefore NOT the lane this count describes.
+        if (callerRecord.source === 'cup') {
+          callerFleetSpec = await compareCallerSpecToFleet({
+            workspaceId: ws,
+            ownerId: assignee,
+            callerSpecId: callerRecord.spec.specId,
+          });
+        }
         if (callerRecord.source === 'fleet' && callerRecord.fleetSlug) {
           const pause = await readFleetPauseState(
             {
@@ -578,6 +659,9 @@ export default defineTool({
         callerRelative: true,
         filingGraceSeconds,
         peerReadinessMayDiffer: filingGraceSeconds > 0,
+        /** EI-23772523186892689: present only when a per-agent spec overrides the caller's
+         * fleet spec — names BOTH lanes so a fleet leader cannot read this count as the fleet's. */
+        ...(callerFleetSpec ? { fleetSpecComparison: callerFleetSpec } : {}),
       },
       /** The authoritative count: rows passing spec_match AND every claim floor, MINUS any
        *  plan-linked row this page found to be owner-gated in plan prose (EI-21834285144372521;
@@ -638,6 +722,9 @@ export default defineTool({
         (fleetWindingDown
           ? ` ⚠ FLEET WINDING DOWN${fleetControl.reason ? `: ${fleetControl.reason}` : ''} — the caller-effective spec is still reported above, but fleet control blocks NEW work, so claimableCount/rows are forced to zero; matchedByFilter is diagnostic only.`
           : '') +
+        // EI-23772523186892689: like WI-7316 below, this changes the reader's CONCLUSION about
+        // an empty result (it is a different lane's count), so it leads the warning block.
+        describeCallerFleetSpecNote(callerFleetSpec) +
         // WI-7316: leads the warning block on purpose — it is the only one that changes the
         // reader's CONCLUSION about an empty result rather than qualifying a number in it.
         staleBlockedNote +
