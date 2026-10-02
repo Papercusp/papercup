@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { RunSummary } from '@papercusp/testing-shell/llm';
 
+import { notAgentWorkClaimHint, notAgentWorkDoorHint } from '../../../work-nature/not-agent-work-hint';
 import {
+  listedRows,
   makeS36World,
   S36_AGENT_ROWS,
   S36_NON_AGENT_ROWS,
@@ -66,8 +68,39 @@ describe('SU-S36 drain world and asserts', () => {
 
   it('calibration: an engineer that only lists and claims nothing fails', async () => {
     const { summary, outputs } = await run([['work_items:list', { harness: 'papercup' }]]);
-    expect((outputs[0] as { count: number }).count).toBe(S36_AGENT_ROWS.length + S36_NON_AGENT_ROWS.length);
+    expect((outputs[0] as { count: number }).count).toBe(S36_AGENT_ROWS.length + 1);
     expect(s36TookAgentWork.eval(summary)).toHaveLength(1);
+  });
+
+  it('lists like production (D-039): nature work by default, natures or a named kind for the rest', async () => {
+    const ids = (o: unknown) => (o as { items: Array<{ id: string }> }).items.map((r) => r.id);
+    const { outputs } = await run([
+      ['work_items:list', { harness: 'papercup' }],
+      ['work_items:search', { harness: 'papercup', natures: ['record', 'document', 'event'] }],
+      ['tools:invoke', { name: 'work_items:list', args: { kind: 'slack-message' } }],
+    ]);
+    // The default view still carries the human-audience reply: the discipline test survives it.
+    expect(ids(outputs[0])).toEqual([...S36_AGENT_ROWS.map((r) => r.id), 'WI-97015']);
+    expect(ids(outputs[1])).toEqual(['WI-97011', 'WI-97012', 'WI-97013', 'WI-97014']);
+    expect(ids(outputs[2])).toEqual(['WI-97014']);
+    expect(listedRows({ natures: ['work'] }).map((r) => r.id)).toEqual(ids(outputs[0]));
+  });
+
+  it('refuses with the real doors\' hint text, so the world cannot drift from production', async () => {
+    const human = S36_NON_AGENT_ROWS.find((r) => r.audience === 'human')!;
+    const event = S36_NON_AGENT_ROWS.find((r) => r.nature === 'event')!;
+    const { outputs } = await run([
+      ['work_items:claim', { id: human.id }],
+      ['work_items:set_state', { id: event.id, state: 'done' }],
+      ['work_items:complete', { id: event.id }],
+      ['work_items:claim', { ids: [S36_AGENT_ROWS[0]!.id, event.id] }],
+    ]);
+    expect(outputs[0]).toMatchObject({ ok: false, error: 'not_agent_work', hint: notAgentWorkClaimHint('work', 'human') });
+    expect(outputs[1]).toMatchObject({ ok: false, door: 'work_items:set_state', hint: notAgentWorkDoorHint('work_items:set_state', 'event', null) });
+    expect(outputs[2]).toMatchObject({ ok: false, door: 'work_items:complete', hint: notAgentWorkDoorHint('work_items:complete', 'event', null) });
+    expect((outputs[0] as { hint: string }).hint).toContain('Do not retry');
+    // A mixed batch claims the agent row and refuses the event per item, as the bulk door does.
+    expect(outputs[3]).toMatchObject({ ok: false, results: [{ ok: true, id: S36_AGENT_ROWS[0]!.id }, { ok: false, id: event.id, error: 'not_agent_work' }] });
   });
 
   it('each run gets a fresh world', () => {
