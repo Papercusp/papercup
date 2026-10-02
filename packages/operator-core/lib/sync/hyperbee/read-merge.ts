@@ -756,14 +756,21 @@ function loadSnapshotApplyMark(
  *  - `coversUpTo` 0: there is no prefix to be redundant with. The seed core
  *    (`produceFilteredSnapshotIntoLog`) is exactly this. It is a fresh core whose
  *    only content is a set summarizing ANOTHER log, anchored at 0.
- *  - `excludeTables`: the filtered producers. A filtered set written into a
- *    separate core summarizes that other log, never this one's prefix.
+ *  - `excludeTables` WITHOUT `ownPrefix`: a filtered set written into a separate
+ *    core summarizes that other log, never this one's prefix. Unmarked legacy
+ *    filtered sets land here too, since nothing says which kind they are.
+ *
+ * WI-10005425: a filtered set marked `ownPrefix` IS eligible. The release cut writes
+ * one into the live own log (`produceLogSnapshot` with `SEED_EXCLUDED_TABLES`), and
+ * it summarizes exactly the prefix a crossing cursor already folded op by op, so the
+ * excluded tables are already in that cursor's state. Applying it anyway re-applied
+ * every row of the set (~968k on the tower) for each cut.
  */
 function isSkipEligibleSnapshot(payload: SnapshotPayload | undefined, pos: number): boolean {
   if (!payload) return false;
   const c = payload.coversUpTo;
   if (typeof c !== 'number' || !Number.isFinite(c) || c <= 0 || c > pos) return false;
-  return !payload.excludeTables?.length;
+  return !payload.excludeTables?.length || payload.ownPrefix === true;
 }
 
 /**

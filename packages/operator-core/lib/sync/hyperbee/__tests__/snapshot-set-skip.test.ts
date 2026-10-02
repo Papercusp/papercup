@@ -60,7 +60,14 @@ interface TestLog extends AdmittedLog {
   history: PeerLogOp[];
   append(...batch: PeerLogOp[]): void;
   /** Append one snapshot set over `history` at the current tail; returns its coversUpTo. */
-  appendSet(opts?: { maxChunkBytes?: number; excludeTables?: string[]; ts?: number; schemaVersion?: number }): {
+  appendSet(opts?: {
+    maxChunkBytes?: number;
+    excludeTables?: string[];
+    /** Mark the set as summarizing this log's own prefix (WI-10005425). */
+    ownPrefix?: boolean;
+    ts?: number;
+    schemaVersion?: number;
+  }): {
     coversUpTo: number;
     chunkCount: number;
     rowCount: number;
@@ -99,6 +106,7 @@ function testLog(keyHex = KEY, knownSchemaVersion = Number.POSITIVE_INFINITY): T
         schema_version: opts?.schemaVersion ?? 1,
         ...(opts?.maxChunkBytes ? { maxChunkBytes: opts.maxChunkBytes } : {}),
         ...(opts?.excludeTables ? { excludeTables: opts.excludeTables } : {}),
+        ...(opts?.ownPrefix ? { ownPrefix: true } : {}),
       });
       log.ops.push(...set);
       const rowCount = set.reduce((n, op) => n + (op.value as SnapshotPayload).rows.length, 0);
@@ -391,6 +399,67 @@ describe('P-008 (e) sets that do not summarize this log\'s own prefix always app
     await fold([log], createMergeCursor(), new Map(), { budget: log.length, store });
     const set = log.appendSet({ excludeTables: ['presence'] });
     expect(await fold([log], await restart(store), new Map(), { budget: set.chunkCount })).toBe(set.rowCount);
+  });
+});
+
+/**
+ * WI-10005425. The release cut writes a FILTERED head snapshot (`excludeTables` =
+ * presence) into the live own log, and it summarizes exactly that log's prefix. Before
+ * the `ownPrefix` marker existed, `excludeTables` alone made every such set ineligible,
+ * so each reader re-applied ~968k rows per cut on the tower.
+ */
+describe('P-008 (e) a filtered set marked ownPrefix summarizes this log, so a reader that folded the prefix skips it', () => {
+  /** 40 queue keys plus one row of the excluded table, folded op by op, then "restart". */
+  async function foldedPrefixThenFilteredSet(ownPrefix: boolean) {
+    const log = testLog();
+    for (let i = 0; i < 40; i++) log.append(put(`K${i}`, { v: i }, 1 + i));
+    log.append({ type: 'put', table: 'presence', hbKey: 'P1', value: { at: 1 }, ts: 100, schema_version: 1, author_pubkey: 'me' });
+    const store = memStore();
+    const pg: Pg = new Map();
+    await fold([log], createMergeCursor(), pg, { budget: log.length, store });
+    const set = log.appendSet({ excludeTables: ['presence'], ownPrefix, maxChunkBytes: 400 });
+    return { log, set, store, pg };
+  }
+
+  it('applies ZERO rows of the marked set and still lands on the history-only oracle', async () => {
+    const { log, set, store, pg } = await foldedPrefixThenFilteredSet(true);
+    expect(set.chunkCount).toBeGreaterThan(1);
+    expect(set.rowCount).toBeGreaterThan(0);
+
+    const cursor = await restart(store);
+    expect(await fold([log], cursor, pg, { budget: set.chunkCount, store })).toBe(0);
+    expect(cursor.positions.get(KEY)).toBe(set.coversUpTo + set.chunkCount);
+    const skippedLine = `set@${set.coversUpTo}: SKIPPED ${set.chunkCount} chunk(s)`;
+    expect(infoSpy.mock.calls.some((call: unknown[]) => String(call[0]).includes(skippedLine))).toBe(true);
+
+    for (let i = 0; i < 5; i++) log.append(put(`T${i}`, { v: i }, 10_000 + i));
+    await fold([log], cursor, pg, { store });
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  it('CONTROL: the identical set WITHOUT the marker is applied in full', async () => {
+    const { log, set, store } = await foldedPrefixThenFilteredSet(false);
+    expect(await fold([log], await restart(store), new Map(), { budget: set.chunkCount })).toBe(set.rowCount);
+  });
+
+  it('the marker never makes a set summarizing ANOTHER log skippable (coversUpTo 0 still applies)', async () => {
+    const source = testLog('cd'.repeat(32));
+    for (let i = 0; i < 30; i++) source.append(put(`S${i}`, { v: i }, 1 + i));
+    const core = testLog('ef'.repeat(32));
+    core.ops.push(
+      ...buildSnapshotOps({
+        ops: source.history,
+        coversUpTo: 0,
+        author_pubkey: 'me',
+        ts: 1_000,
+        schema_version: 1,
+        excludeTables: ['presence'],
+        ownPrefix: true,
+      }),
+    );
+    const pg: Pg = new Map();
+    expect(await fold([core], createMergeCursor(), pg)).toBe(30);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(source));
   });
 });
 

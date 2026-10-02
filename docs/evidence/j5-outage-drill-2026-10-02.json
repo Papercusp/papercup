@@ -3,18 +3,18 @@
   "config": {
     "project": "pc-byoc-canary-1002",
     "network": "pc-host-19ff2a97befd83b51d2306fd-324ccce1-net",
-    "ruleName": "pc-j5-outage-drill-j5ae4c0939969e",
+    "ruleName": "pc-j5-outage-drill-j509baca93615b",
     "papercuspOrigin": "https://app.papercusp.com",
     "modelProviderOrigin": "https://api.anthropic.com",
     "serviceUnit": "papercusp-workspace.service",
     "agentCommand": "/home/papercusp-workspace/.papercusp/j5-claude",
     "workspaceDir": "/srv/papercusp/workspaces/papercusp-workspace",
-    "nonce": "j5ae4c0939969e",
-    "secret": "56f17abd6647495ec12a422e7972354c"
+    "nonce": "j509baca93615b",
+    "secret": "e0afa0eef954e9ab073789dab6220c3c"
   },
   "evidence": {
-    "startedAt": "2026-10-02T09:51:34.736Z",
-    "finishedAt": "2026-10-02T09:53:07.688Z",
+    "startedAt": "2026-10-02T09:58:45.277Z",
+    "finishedAt": "2026-10-02T10:05:57.134Z",
     "papercuspAddresses": [
       "172.67.145.145",
       "104.21.73.140"
@@ -27,8 +27,22 @@
         {
           "localAddress": "10.132.0.2",
           "localPort": 22,
-          "remoteAddress": "35.235.244.34",
-          "remotePort": 35849,
+          "remoteAddress": "35.235.249.250",
+          "remotePort": 35443,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 47390,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.50",
+          "remotePort": 44703,
           "class": "other"
         },
         {
@@ -42,7 +56,7 @@
           "localAddress": "127.0.0.1",
           "localPort": 5532,
           "remoteAddress": "127.0.0.1",
-          "remotePort": 33742,
+          "remotePort": 45990,
           "class": "other"
         },
         {
@@ -53,45 +67,10 @@
           "class": "papercusp"
         },
         {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.241.49",
-          "remotePort": 42093,
-          "class": "other"
-        },
-        {
           "localAddress": "127.0.0.1",
           "localPort": 5532,
           "remoteAddress": "127.0.0.1",
           "remotePort": 53032,
-          "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.249.249",
-          "remotePort": 43179,
-          "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.242.218",
-          "remotePort": 36875,
-          "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.244.32",
-          "remotePort": 40593,
-          "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.242.217",
-          "remotePort": 46291,
           "class": "other"
         },
         {
@@ -124,6 +103,13 @@
         },
         {
           "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.130",
+          "remotePort": 33515,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
           "localPort": 39964,
           "remoteAddress": "169.254.169.254",
           "remotePort": 80,
@@ -144,10 +130,10 @@
           "class": "other"
         },
         {
-          "localAddress": "127.0.0.1",
-          "localPort": 5532,
-          "remoteAddress": "127.0.0.1",
-          "remotePort": 35850,
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.216",
+          "remotePort": 41013,
           "class": "other"
         },
         {
@@ -159,51 +145,23 @@
         },
         {
           "localAddress": "127.0.0.1",
-          "localPort": 33742,
-          "remoteAddress": "127.0.0.1",
-          "remotePort": 5532,
-          "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.244.33",
-          "remotePort": 44517,
-          "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.244.32",
-          "remotePort": 36845,
-          "class": "other"
-        },
-        {
-          "localAddress": "127.0.0.1",
-          "localPort": 35850,
-          "remoteAddress": "127.0.0.1",
-          "remotePort": 5532,
-          "class": "other"
-        },
-        {
-          "localAddress": "127.0.0.1",
           "localPort": 5532,
           "remoteAddress": "127.0.0.1",
           "remotePort": 53092,
           "class": "other"
         },
         {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.241.16",
-          "remotePort": 43733,
+          "localAddress": "127.0.0.1",
+          "localPort": 45990,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
           "class": "other"
         },
         {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.249.248",
-          "remotePort": 36745,
+          "localAddress": "127.0.0.1",
+          "localPort": 47390,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
           "class": "other"
         },
         {
@@ -300,8 +258,8 @@
         {
           "localAddress": "10.132.0.2",
           "localPort": 22,
-          "remoteAddress": "35.235.245.129",
-          "remotePort": 42925,
+          "remoteAddress": "35.235.242.217",
+          "remotePort": 39301,
           "class": "other"
         },
         {
@@ -309,6 +267,13 @@
           "localPort": 5532,
           "remoteAddress": "127.0.0.1",
           "remotePort": 52942,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.129",
+          "remotePort": 39573,
           "class": "other"
         },
         {
@@ -321,8 +286,15 @@
         {
           "localAddress": "10.132.0.2",
           "localPort": 22,
-          "remoteAddress": "35.235.245.130",
-          "remotePort": 34905,
+          "remoteAddress": "35.235.244.32",
+          "remotePort": 44955,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.49",
+          "remotePort": 45071,
           "class": "other"
         },
         {
@@ -338,67 +310,36 @@
           "remoteAddress": "127.0.0.1",
           "remotePort": 52940,
           "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.244.33",
-          "remotePort": 34987,
-          "class": "other"
-        },
-        {
-          "localAddress": "10.132.0.2",
-          "localPort": 22,
-          "remoteAddress": "35.235.242.217",
-          "remotePort": 45075,
-          "class": "other"
         }
       ],
-      "connectorLastSeenAt": "2026-10-02T09:51:21.202Z"
+      "connectorLastSeenAt": "2026-10-02T09:58:21.206Z"
     },
-    "blockedAt": null,
+    "blockedAt": "2026-10-02T09:58:55.995Z",
     "during": {
-      "papercuspReachable": null,
-      "modelProviderReachable": null,
-      "agentRunningWhenBlocked": null,
-      "serviceActive": null,
-      "papercuspConnectionsWhileBlocked": null
+      "papercuspReachable": false,
+      "modelProviderReachable": true,
+      "agentRunningWhenBlocked": true,
+      "serviceActive": true,
+      "papercuspConnectionsWhileBlocked": 1
     },
     "agent": {
-      "exitCode": null,
-      "output": null,
-      "expected": "e427967b298067842a9d87d4b3b3425268e0f05412d9c44eec9c2e4fe18f71ec",
-      "gateReleasedAt": null,
-      "completedAt": null
+      "exitCode": 0,
+      "output": "2f12f0a79a6f2b14d33bf1f1bde34ce63dc0bb3934c6c0b842447f57728f98f8",
+      "expected": "2f12f0a79a6f2b14d33bf1f1bde34ce63dc0bb3934c6c0b842447f57728f98f8",
+      "gateReleasedAt": "2026-10-02T09:59:10.474Z",
+      "completedAt": "2026-10-02T10:04:55.097Z"
     },
-    "liftedAt": null,
+    "liftedAt": "2026-10-02T10:05:22.828Z",
     "after": {
-      "connectorLastSeenAt": null,
-      "papercuspConnections": null,
-      "serviceActive": null
+      "connectorLastSeenAt": "2026-10-02T10:05:51.212Z",
+      "papercuspConnections": 1,
+      "serviceActive": true
     },
-    "ruleDeleted": false,
-    "errors": [
-      "agent launch failed: "
-    ]
+    "ruleDeleted": true,
+    "errors": []
   },
   "verdict": {
-    "passed": false,
-    "failures": [
-      "drill error: agent launch failed: ",
-      "the egress block was never applied",
-      "Papercusp was still reachable from the host during the block",
-      "the model provider was not reachable during the block",
-      "the agent task was not running when the block landed",
-      "the host's Papercusp service was not active during the block",
-      "the agent was never handed its secret during the outage",
-      "the agent task exited never",
-      "the agent output is missing or not the expected digest",
-      "the agent task did not complete before the block was lifted",
-      "the egress block was not removed",
-      "the control plane did not hear from the host's connector after the block was lifted",
-      "after the lift the host held no connection to Papercusp",
-      "the host's Papercusp service was not active after the lift"
-    ]
+    "passed": true,
+    "failures": []
   }
 }
