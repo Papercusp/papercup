@@ -969,6 +969,7 @@ export class HostedWorkspaceHostSessionAdapter {
         this.options.send({ type: 'relay.close', channelId: appChannelId, reason: 'channel_already_open' });
         return;
       }
+      if (message.sealed === true && !this.openSealedChannel(appChannelId)) return;
       const identity = { userId: 'app-relay', hostedSessionId: appChannelId };
       const http = createAppHttpChannel({
         send: (payload) => this.send(appChannelId, payload),
@@ -1044,20 +1045,7 @@ export class HostedWorkspaceHostSessionAdapter {
       return;
     }
     if (sealed) {
-      const keys = this.options.byocSealedChannel;
-      if (!keys) {
-        this.options.send({ type: 'relay.close', channelId, reason: 'sealed_channel_unavailable' });
-        return;
-      }
-      const channel = new ByocSealedChannel({
-        initiator: false,
-        localKeyPair: keys.localKeyPair,
-        expectedRemotePublicKey: keys.expectedRemotePublicKey,
-        sendPacket: (packet) => this.options.send({ type: 'relay', channelId, payload: packet }),
-        onFrame: (frame) => { void this.acceptPayload(channelId, frame); },
-        onError: () => this.detach(channelId, 'sealed_channel_failed'),
-      });
-      this.sealedChannels.set(channelId, channel);
+      if (!this.openSealedChannel(channelId)) return;
     }
 
     if (kind === 'operator-http') {
@@ -1284,6 +1272,24 @@ export class HostedWorkspaceHostSessionAdapter {
       return;
     }
     await this.acceptPayload(channelId, payload);
+  }
+
+  private openSealedChannel(channelId: string): boolean {
+    const keys = this.options.byocSealedChannel;
+    if (!keys) {
+      this.options.send({ type: 'relay.close', channelId, reason: 'sealed_channel_unavailable' });
+      return false;
+    }
+    const channel = new ByocSealedChannel({
+      initiator: false,
+      localKeyPair: keys.localKeyPair,
+      expectedRemotePublicKey: keys.expectedRemotePublicKey,
+      sendPacket: (packet) => this.options.send({ type: 'relay', channelId, payload: packet }),
+      onFrame: (frame) => { void this.acceptPayload(channelId, frame); },
+      onError: () => this.detach(channelId, 'sealed_channel_failed'),
+    });
+    this.sealedChannels.set(channelId, channel);
+    return true;
   }
 
   private async acceptPayload(channelId: string, payload: Record<string, unknown>): Promise<void> {

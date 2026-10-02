@@ -377,7 +377,12 @@ async function runAssembledByoc() {
       if (!app.send(packet)) throw new Error('sealed app handshake packet was refused');
     }
     await settle(pending);
-    await appSealed.opened;
+    await Promise.race([
+      appSealed.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(
+        `app sealed handshake stalled: ${JSON.stringify({ captures: captures.slice(-12), hostWarnings })}`,
+      )), 1_000)),
+    ]);
     await appSealed.send({
         type: 'http.request',
         requestId: 'app-1',
