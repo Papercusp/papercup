@@ -1770,6 +1770,11 @@ export class HostedWorkspaceHostSessionAdapter {
 
   private detach(channelId: string | null, reason: string): void {
     if (!channelId) return;
+    const sealed = this.sealedChannels.get(channelId);
+    if (sealed) {
+      this.sealedChannels.delete(channelId);
+      sealed.close();
+    }
     const channel = this.channels.get(channelId);
     if (!channel) return;
     this.channels.delete(channelId);
