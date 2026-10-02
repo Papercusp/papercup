@@ -71,7 +71,7 @@ const m = vi.hoisted(() => ({
     _args: { harness?: string; [key: string]: unknown },
     _ctx: { harnessSlug?: string; workspaceId: string }, _options: Record<string, unknown>) => {
     if (name === 'plans:attention') {
-      return { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [{ planSlug: 'p1', items: [] }] }) }] } };
+      return { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [{ planSlug: 'p1', items: [{ id: 'attention-1' }] }] }) }] } };
     }
     if (name === 'plans:set-status') {
       return { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, newStatus: 'done', itemId: 'P-001' }) }] } };
@@ -311,6 +311,37 @@ describe('device/plans', () => {
 });
 
 describe('device/attention', () => {
+  it('does not count an empty pagination metadata carrier as actionable attention', async () => {
+    m.dispatchProjectedTool.mockResolvedValueOnce({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({
+      groups: [{ items: [], _meta: { total: 0, returned: 0, hasMore: false, nextOffset: null } }],
+    }) }] } });
+    m.readWorkItemsPageFromStore.mockResolvedValueOnce({ rows: [], hasMore: false, nextCursor: null });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      groups: [], workItems: [], systemAlerts: [], counts: { groups: 0, workItems: 0, systemAlerts: 0 },
+    });
+  });
+
+  it('retains real content after empty metadata carriers across canonical pages', async () => {
+    const items = [{ id: 'first' }, { id: 'second' }];
+    m.dispatchProjectedTool
+      .mockResolvedValueOnce({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [
+        { items: [], _meta: { total: 2, returned: 1, hasMore: true, nextOffset: 1 } },
+        { key: 'p1', planSlug: 'p1', items: items.slice(0, 1) },
+      ] }) }] } })
+      .mockResolvedValueOnce({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ groups: [
+        { items: [], _meta: { total: 2, returned: 1, hasMore: false, nextOffset: null } },
+        { key: 'p1', planSlug: 'p1', items: items.slice(1) },
+      ] }) }] } });
+    const def = routeByPath(deviceAttention as RouteDefinition<any>[], 'GET', '/device/attention');
+    const res = await def.handler(new Request('http://x.test/api/device/attention'), ctx());
+    expect(res.status).toBe(200);
+    expect((await res.json()).groups).toEqual([{ key: 'p1', planSlug: 'p1', items }]);
+    expect(m.dispatchProjectedTool.mock.calls[1]?.[2]).toEqual({ limit: 100, offset: 1, payloadTier: 'full' });
+  });
+
   it('satisfies the real canonical harness gate while preserving the paired workspace', async () => {
     // The prior permissive dispatch mock hid the live harness_required 503.
     // Exercise the exact resolver used by plans:attention, before any source
@@ -404,6 +435,8 @@ describe('device/attention', () => {
   it.each([
     [{ groups: [], _projection: { truncated: true } }, 'canonical_page_unavailable'],
     [{ groups: [{ items: [], _meta: { total: 1, returned: 0, hasMore: false } }] }, 'canonical_total_mismatch'],
+    [{ groups: [{ items: [], _meta: { total: 0, returned: 1, hasMore: false } }] }, 'canonical_returned_mismatch'],
+    [{ groups: [{ items: [], _meta: { total: 1, returned: 0, hasMore: true, nextOffset: 1 } }] }, 'canonical_page_cannot_advance'],
     [{ groups: [{ items: [{ id: 'a' }], _meta: { total: 2, returned: 1, hasMore: true, nextOffset: 0 } }] }, 'canonical_page_cannot_advance'],
   ])('returns unavailable for a truncated or inconsistent canonical group page %#', async (page, reason) => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
