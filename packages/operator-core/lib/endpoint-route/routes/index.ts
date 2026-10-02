@@ -214,6 +214,7 @@ import agentMcp_bootstrapRole from './agent-mcp/bootstrap-role';
 import agentMcp_sessionRecoveryBrief from './agent-mcp/session-recovery-brief';
 import agentMcp_contextEpochBump from './agent-mcp/context-epoch-bump';
 import agentMcp_turnEndDirectiveCheck from './agent-mcp/turn-end-directive-check';
+import agentMcp_restrictedEgressCheck from './agent-mcp/restricted-egress-check';
 import agentMcp_turnStartMemory from './agent-mcp/turn-start-memory';
 import agentMcp_midTurnContext from './agent-mcp/mid-turn-context';
 import agentMcp_identityHookSinks from './agent-mcp/identity-hook-sinks';
@@ -552,6 +553,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_sessionRecoveryBrief as AnyRoute[]),
   ...flatten(agentMcp_contextEpochBump as AnyRoute[]),
   ...flatten(agentMcp_turnEndDirectiveCheck as AnyRoute[]),
+  ...flatten(agentMcp_restrictedEgressCheck as AnyRoute[]),
   ...flatten(agentMcp_turnStartMemory as AnyRoute[]),
   ...flatten(agentMcp_midTurnContext as AnyRoute[]),
   ...flatten(agentMcp_identityHookSinks as AnyRoute[]),
