@@ -87,7 +87,37 @@ export interface GcpOperationRef {
 export interface GcpOperationObservation extends GcpOperationRef {
   status: 'PENDING' | 'RUNNING' | 'DONE';
   observedAt: string;
-  error?: { code?: string; message: string };
+  error?: {
+    code?: string;
+    message: string;
+    /**
+     * The HTTP status Google would have answered had the call been synchronous (the operation's
+     * `httpErrorStatusCode`). An operation that finished WITH an error is a settled outcome, not a
+     * lost response, and this is what lets the retry classifier tell a refusal (4xx) from a
+     * transient fault (5xx). Without it every failed operation read as `ambiguous` (WI-10005323).
+     */
+    status?: number;
+    /** A code that a backoff clears (rate limit, parent not ready). Outranks `status`. */
+    throttled?: boolean;
+  };
+}
+
+/**
+ * A GCE operation that finished with an error. Carries the same `status`/`throttled` signals as a
+ * synchronous API error, so `workspaceHostProviderRetryClass` classifies both the same way.
+ */
+export class GcpOperationFailedError extends Error {
+  readonly status?: number;
+  readonly throttled?: boolean;
+  readonly code?: string;
+
+  constructor(operationName: string, error: NonNullable<GcpOperationObservation['error']>) {
+    super(`GCP operation '${operationName}' failed: ${error.message}`);
+    this.name = 'GcpOperationFailedError';
+    if (error.status !== undefined) this.status = error.status;
+    if (error.throttled) this.throttled = true;
+    if (error.code !== undefined) this.code = error.code;
+  }
 }
 
 export interface GcpResourceObservation {
@@ -2766,7 +2796,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
 
   private async settled(operation: GcpOperationRef, signal?: AbortSignal): Promise<boolean> {
     const observed = await this.client.waitForOperation(operation, signal);
-    if (observed.error) throw new Error(`GCP operation '${operation.name}' failed: ${observed.error.message}`);
+    if (observed.error) throw new GcpOperationFailedError(operation.name, observed.error);
     return observed.status === 'DONE';
   }
 
