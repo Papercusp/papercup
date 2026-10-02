@@ -77,6 +77,7 @@ import {
 } from '../../work-items';
 import {
   CompletionRecordSchema,
+  CompletionVerificationEvidenceSchema,
   COMPLETION_COVERAGE_CONTRACT,
   COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
   ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
@@ -198,6 +199,7 @@ import {
   type CompletionEvidenceFindings,
 } from '../../work-item-completion-authority';
 import { evaluateCompletionClaims, repoSourceReader, type CompletionClaimsReport } from '../../completion-claims';
+import { attestCompletionConsumerView } from './complete-consumer-view';
 import { completionClaimBaseline } from '../../completion-claim-recheck';
 import { fabricatedPathsInCompletion } from './fabricated-paths';
 import { untouchedPathsInCompletion } from './untouched-paths';
@@ -318,6 +320,22 @@ const completionSpec = z
       // The preprocess above owns the default so Zod 4 does not publish this
       // defaulted field as required to completion callers.
       status: z.string().min(1).optional(),
+      // EI-24820676473298331: `treeStamp` and `settlementManifest` are SERVER-STAMPED.
+      // coerceCompletionShape deletes them before this schema runs, so publishing them
+      // in the caller INPUT schema only invited callers to send them and cost ~2.4 KB of
+      // tool-delivery floor bytes. The persisted record (CompletionRecordSchema) keeps them.
+      // The one-line describe keeps the caller contract EI-21310406381433990 pins
+      // (complete.test.ts) without re-publishing both subtrees.
+      verification: CompletionVerificationEvidenceSchema.omit({
+        treeStamp: true,
+        settlementManifest: true,
+      })
+        .describe(
+          'Server-stamped verification metadata: the server records `treeStamp` and `settlementManifest`; ' +
+            'callers must omit `treeStamp` and `settlementManifest`. Their persisted headSha is a full ' +
+            'lowercase 40- or 64-character commit SHA; short hashes are invalid.',
+        )
+        .optional(),
       // EI-20724228359175431: 'truncated-json' marks a
       // JSON-stringified completion whose tail was cut off and whose closers were
       // rebuilt, so the caller can be told the record may be missing a field that
@@ -4979,6 +4997,14 @@ async function completeOne(
       (completionEvidenceForGate?.filesChanged?.length ?? 0) + (completionEvidenceForGate?.filesDeleted?.length ?? 0),
     inProcessContentIdentityMissing: committedContentIdentityMissing,
   });
+  // WI-10005199 (EI-23770243810745552): attest the authority a CONSUMER reads back (the
+  // post-write row, after migration 972's floor trigger) against the one this call computed.
+  // Exception-only — `undefined` on agreement — so an ordinary close's response is unchanged.
+  const consumerAttestation = attestCompletionConsumerView({
+    stamped: !stateError && Boolean(finalState) && TERMINAL_WORK_ITEM_STATES.has(finalState),
+    computedAuthority: completionAuthority,
+    stampedAuthority,
+  });
   // The change is worthless if it is silent. An agent whose close just landed `proposed`
   // must be TOLD, in the response to the call that did it, what it costs and what would
   // have avoided it — otherwise the first they learn of it is a leader asking why their
@@ -5337,6 +5363,7 @@ async function completeOne(
           countsTowardBurnDown: countsTowardBurnDown(stampedAuthority, true, isAbandonedClose),
         }
       : {}),
+    ...(consumerAttestation ?? {}),
     ...(completionFleetSlug ? { fleetSlug: completionFleetSlug } : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
     completionContractVersion: WORK_ITEMS_COMPLETION_CONTRACT.version,
