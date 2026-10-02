@@ -9,7 +9,8 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { buildStartupStorageProbeScript, buildWebVitalsBundle, evaluateRequiredPageLoad, installStartupStorageProbe, readPageStartupTrace, writeStartupStorageDiagnosticIndex, type WebVitalsReading } from "./web-vitals-probe";
 import type { Browser } from "webdriverio";
-import { captureOwnedNativeStacks, collectOwnedWebKitSample, NativeSampleBuffer, parseSchedstat, schedstatDelta, startNativeProcessProbe,
+import { captureOwnedNativeStacks, collectOwnedWebKitSample, NativeSampleBuffer, NativeStackCaptureSchedule,
+  parseNativeStackDelayMs, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
 
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
@@ -746,6 +747,26 @@ test('native stack capture bounds output and reports debugger failures as unavai
   assert.match(failed.error, /attach deadline/);
 });
 
+test('native stack schedule waits for the owned WebKit lifetime and bounds captures', () => {
+  assert.equal(parseNativeStackDelayMs(undefined), 0);
+  assert.equal(parseNativeStackDelayMs('5500'), 5500);
+  for (const bad of ['', '-1', '1.5', '15001', '999999999999999999999']) {
+    assert.throws(() => parseNativeStackDelayMs(bad), /integer from 0 to 15000 ms/);
+  }
+  const schedule = new NativeStackCaptureSchedule(5500);
+  assert.equal(schedule.due(null, 1000), false);
+  assert.equal(schedule.due('30:linux:boot-A:100:linux:boot-A:25', 1000), false);
+  assert.equal(schedule.due('30:linux:boot-A:100:linux:boot-A:25', 6499), false);
+  assert.equal(schedule.due('30:linux:boot-A:100:linux:boot-A:25', 6500), true);
+  assert.equal(schedule.due('30:linux:boot-A:100:linux:boot-A:25', 7499), false);
+  assert.equal(schedule.due('30:linux:boot-A:100:linux:boot-A:25', 7500), true);
+  assert.equal(schedule.due('31:linux:boot-A:101:linux:boot-A:25', 7600), false,
+    'replacement must earn its own delay; old WebKit timing cannot be reused');
+  assert.equal(schedule.due('31:linux:boot-A:101:linux:boot-A:25', 13100), true);
+  assert.equal(schedule.due('31:linux:boot-A:101:linux:boot-A:25', 14100), false,
+    'a process replacement cannot bypass the global three-capture bound');
+});
+
 test('native sample memory has exact byte/sample bounds and reports work including serialization', () => {
   const f = nativeProcFixture();
   const sample = collectOwnedWebKitSample(f.options, f.proc);
@@ -796,7 +817,7 @@ test('native diagnostic buffers during sampling, flushes on stop, and preserves 
     assert.equal(rows[0].maxSamples, 1200);
     assert.equal(rows[0].persistence, 'buffered-until-finish');
     assert.equal(rows[0].maxBufferedBytes, 16 * 1024 * 1024);
-    assert.equal(rows[0].schemaVersion, 'native-process-probe-v5');
+    assert.equal(rows[0].schemaVersion, 'native-process-probe-v6');
     assert.equal(rows[0].lifecycle.maxIdentities, 64);
     assert.equal(rows[0].lifecycle.maxStatBytes, 4096);
     assert(rows.filter((row) => row.kind === 'sample').every((row) => Array.isArray(row.lifecycle)));
