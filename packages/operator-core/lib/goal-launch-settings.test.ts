@@ -23,6 +23,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
+import {
+  checkGoalInferenceAdmission,
+  evaluateGoalInferenceBudget,
+} from './goal-launch-settings';
+import type { GoalSpendRollup } from './goals/spend-rollup';
 
 // P-006: the budget gate reads its flag and opens its escalation through
 // DYNAMIC imports (the module keeps heavyweight deps out of the launch path's
@@ -155,6 +160,8 @@ interface MockOpts {
       standing?: boolean;
     }
   >;
+  /** Current lifecycle state for goal inference-admission fixtures. */
+  goalStatus?: Record<string, string>;
   /** headcount fixture by goal id. */
   headcount?: Record<string, { total: number; fleet: number }>;
   /** P-012 canonical portfolio projection row by goal id. */
@@ -245,6 +252,7 @@ function mockSql(opts: MockOpts = {}): Sql {
       const brief = opts.brief?.[goalId];
       return Promise.resolve([
         {
+          status: opts.goalStatus?.[goalId] ?? 'active',
           title: brief?.title ?? `Goal ${goalId}`,
           body: brief?.body ?? null,
           kill_criterion: brief?.kill_criterion ?? null,
@@ -2770,5 +2778,90 @@ describe('P-006: the budget launch gate', () => {
     expect(meta.dedupKind).toBe('goal-budget-exceeded');
     expect(meta.subjectSignature).toBe(`${WS}:g1`);
     expect((call.identity as { ownerId: string }).ownerId).toBe('su-goal');
+  });
+});
+
+describe('per-turn goal inference budget admission (WI-10003507)', () => {
+  const base = {
+    goalId: 'goal-1',
+    goalStatus: 'active',
+    budgetCents: 1000,
+    budgetWindowSec: 21600,
+  };
+  const rollup = (override: Record<string, unknown> = {}) =>
+    ({
+      spentCents: null,
+      unmeasuredReason: 'no-lineage-samples',
+      windowSec: 21600,
+      samples: 0,
+      pot: { samples: 0 },
+      session: { samples: 0 },
+      lineage: { samples: 0, unpricedSamples: 0 },
+      ...override,
+    }) as unknown as GoalSpendRollup;
+
+  it('allows bootstrap only while every usage leg is empty, and refuses a reached ceiling', () => {
+    expect(evaluateGoalInferenceBudget({ ...base, rollup: rollup() })).toMatchObject({
+      allowed: true,
+      reason: 'zero-usage-bootstrap',
+    });
+    expect(
+      evaluateGoalInferenceBudget({
+        ...base,
+        rollup: rollup({ samples: 1, session: { samples: 1 } }),
+      }),
+    ).toMatchObject({ allowed: false, status: 403, code: 'goal_budget_unmeasurable' });
+    expect(
+      evaluateGoalInferenceBudget({
+        ...base,
+        rollup: rollup({ spentCents: 1000, unmeasuredReason: null }),
+      }),
+    ).toMatchObject({ allowed: false, status: 403, code: 'goal_budget_exceeded', spentCents: 1000 });
+  });
+
+  it('resolves the active goal and measures current spend before allowing another turn', async () => {
+    budgetGateFlag.value = true;
+    budgetGateFlag.throws = false;
+    liveSpend.throws = false;
+    liveSpend.legs = { spentCents: 1001, lineage: 4, lineageUnpriced: 0, pot: 2, session: 2 };
+    const seen: string[] = [];
+    const before = liveSpend.calls;
+    const sql = mockSql({
+      modeSubject: { 'owner-1': 'goal-1' },
+      budget: { 'goal-1': { budget_cents: 1000 } },
+      brief: { 'goal-1': { budget_window_sec: 21600 } },
+      seen,
+    });
+
+    const decision = await checkGoalInferenceAdmission({ workspaceId: WS, ownerId: 'owner-1', sql });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      status: 403,
+      code: 'goal_budget_exceeded',
+      goalId: 'goal-1',
+      spentCents: 1001,
+    });
+    expect(liveSpend.calls).toBe(before + 1);
+    expect(seen.some((statement) => statement.includes('SELECT status, budget_cents, budget_window_sec'))).toBe(true);
+  });
+
+  it('fails closed when the live spend measurement fails', async () => {
+    budgetGateFlag.value = true;
+    budgetGateFlag.throws = false;
+    liveSpend.throws = true;
+    const sql = mockSql({
+      modeSubject: { 'owner-1': 'goal-1' },
+      budget: { 'goal-1': { budget_cents: 1000 } },
+      brief: { 'goal-1': { budget_window_sec: 21600 } },
+    });
+
+    const decision = await checkGoalInferenceAdmission({ workspaceId: WS, ownerId: 'owner-1', sql });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      status: 503,
+      code: 'goal_budget_unmeasurable',
+    });
   });
 });

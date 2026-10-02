@@ -3108,6 +3108,206 @@ async function measureGoalSpendAtLaunch(args: {
   }
 }
 
+export type GoalInferenceAdmissionDecision =
+  | { allowed: true; goalId: string | null; reason: 'no-goal' | 'no-budget' | 'budget-gate-disabled' | 'under-budget' | 'zero-usage-bootstrap' }
+  | {
+      allowed: false;
+      goalId: string;
+      status: 403 | 503;
+      code: string;
+      message: string;
+      budgetCents?: number;
+      spentCents?: number | null;
+      budgetWindowSec?: number | null;
+    };
+
+/** Pure decision for the gateway's pre-spool, per-turn goal budget admission. */
+export function evaluateGoalInferenceBudget(args: {
+  goalId: string;
+  goalStatus: string | null;
+  budgetCents: number | null;
+  budgetWindowSec: number | null;
+  rollup?: GoalSpendRollup | null;
+  measurementError?: string;
+}): GoalInferenceAdmissionDecision {
+  if (!args.goalStatus) {
+    return {
+      allowed: false,
+      goalId: args.goalId,
+      status: 503,
+      code: 'goal_status_unavailable',
+      message: `goal ${args.goalId} status could not be verified; inference is refused before provider dispatch`,
+    };
+  }
+  if (args.goalStatus !== 'active') {
+    return {
+      allowed: false,
+      goalId: args.goalId,
+      status: 403,
+      code: 'goal_inactive',
+      message: `goal ${args.goalId} is ${args.goalStatus}; inference is refused until the goal is active`,
+    };
+  }
+  if (args.budgetCents == null) return { allowed: true, goalId: args.goalId, reason: 'no-budget' };
+
+  const refuseUnmeasured = (
+    cause: BudgetUnmeasurableCause,
+    detail?: string,
+  ): GoalInferenceAdmissionDecision => {
+    const refusal = budgetUnmeasurableRefusal({
+      goalId: args.goalId,
+      budgetCents: args.budgetCents!,
+      count: 1,
+      cause,
+      ...(detail ? { detail } : {}),
+    });
+    return {
+      allowed: false,
+      goalId: args.goalId,
+      status: cause === 'measurement-failed' ? 503 : 403,
+      code: 'goal_budget_unmeasurable',
+      message: `${refusal.message} Model inference requests are refused before provider dispatch.`,
+      budgetCents: args.budgetCents!,
+      spentCents: null,
+      budgetWindowSec: args.budgetWindowSec,
+    };
+  };
+
+  if (args.measurementError) return refuseUnmeasured('measurement-failed', args.measurementError);
+  const rollup = args.rollup;
+  if (!rollup) return refuseUnmeasured('measurement-failed', 'the live spend rollup returned no result');
+  if (rollup.spentCents != null) {
+    if (rollup.spentCents >= args.budgetCents) {
+      const window = rollup.windowSec == null ? 'the goal lifetime' : `the trailing ${rollup.windowSec}s budget window`;
+      return {
+        allowed: false,
+        goalId: args.goalId,
+        status: 403,
+        code: 'goal_budget_exceeded',
+        message:
+          `goal ${args.goalId} has spent ${rollup.spentCents} of its ${args.budgetCents} cent budget over ${window}; ` +
+          'further model inference requests are refused before provider dispatch',
+        budgetCents: args.budgetCents,
+        spentCents: rollup.spentCents,
+        budgetWindowSec: args.budgetWindowSec,
+      };
+    }
+    return { allowed: true, goalId: args.goalId, reason: 'under-budget' };
+  }
+  if (rollup.unmeasuredReason === 'unpriced-lineage-samples') {
+    return refuseUnmeasured('unpriced-lineage-samples');
+  }
+  if (rollup.samples > 0 || rollup.lineage.samples > 0) {
+    return refuseUnmeasured(
+      'unattributed-goal-samples',
+      `the goal's pot/session legs carry ${rollup.samples} usage sample(s) ` +
+        `(${rollup.pot.samples} pot, ${rollup.session.samples} session)`,
+    );
+  }
+  // D-014: only a genuinely empty authoritative + diagnostic ledger may admit
+  // the first turn (or a goal whose entire budget window is quiet).
+  return { allowed: true, goalId: args.goalId, reason: 'zero-usage-bootstrap' };
+}
+
+/**
+ * Resolve current goal context and measure its current budget window for every
+ * inference turn. Unlike launch admission, this reads the source ledger rather
+ * than trusting the periodic metadata snapshot.
+ */
+export async function checkGoalInferenceAdmission(args: {
+  workspaceId: string;
+  ownerId: string;
+  sql?: Sql;
+}): Promise<GoalInferenceAdmissionDecision> {
+  let goalId: string | null;
+  try {
+    goalId = await resolveGoalContext(args.workspaceId, args.ownerId, args.sql);
+  } catch (error) {
+    const superseded = isGoalHolderAuthorityError(error) && error.code === 'goal_holder_superseded';
+    return {
+      allowed: false,
+      goalId: isGoalHolderAuthorityError(error) ? error.authority?.goalId ?? 'unknown' : 'unknown',
+      status: superseded ? 403 : 503,
+      code: superseded ? 'goal_holder_superseded' : 'goal_context_unavailable',
+      message: superseded
+        ? 'this session is no longer an authorized goal holder; inference is refused'
+        : 'goal context could not be verified; inference is refused before provider dispatch',
+    };
+  }
+  if (!goalId) return { allowed: true, goalId: null, reason: 'no-goal' };
+
+  let rows: Array<{ status?: unknown; budget_cents?: unknown; budget_window_sec?: unknown }>;
+  try {
+    rows = await pg(args.sql)<Array<{ status?: unknown; budget_cents?: unknown; budget_window_sec?: unknown }>>`
+      SELECT status, budget_cents, budget_window_sec
+        FROM harness_shared.goals
+       WHERE id = ${goalId} AND workspace_id = ${args.workspaceId}
+       LIMIT 1`;
+  } catch {
+    return {
+      allowed: false,
+      goalId,
+      status: 503,
+      code: 'goal_budget_read_unavailable',
+      message: `goal ${goalId} status and budget could not be read; inference is refused before provider dispatch`,
+    };
+  }
+  const row = rows[0];
+  if (!row) {
+    return {
+      allowed: false,
+      goalId,
+      status: 503,
+      code: 'goal_budget_read_unavailable',
+      message: `goal ${goalId} is missing from the current workspace; inference is refused before provider dispatch`,
+    };
+  }
+  const goalStatus = typeof row.status === 'string' ? row.status.trim() || null : null;
+  const budgetCents = asFiniteCents(row.budget_cents);
+  const budgetWindowSec = asFiniteNumber(row.budget_window_sec);
+  if ((row.budget_cents != null && budgetCents == null) || (row.budget_window_sec != null && budgetWindowSec == null)) {
+    return {
+      allowed: false,
+      goalId,
+      status: 503,
+      code: 'goal_budget_read_unavailable',
+      message: `goal ${goalId} budget or window is invalid; inference is refused before provider dispatch`,
+    };
+  }
+  if (!goalStatus || goalStatus !== 'active') {
+    return evaluateGoalInferenceBudget({ goalId, goalStatus, budgetCents, budgetWindowSec });
+  }
+  if (budgetCents == null) return { allowed: true, goalId, reason: 'no-budget' };
+
+  const gate = await budgetLaunchGateEnabled();
+  if (gate.infraError) {
+    return {
+      allowed: false,
+      goalId,
+      status: 503,
+      code: 'goal_budget_gate_unavailable',
+      message: `goal ${goalId} budget enforcement could not be verified; inference is refused before provider dispatch`,
+      budgetCents,
+      budgetWindowSec,
+    };
+  }
+  if (!gate.enabled) return { allowed: true, goalId, reason: 'budget-gate-disabled' };
+
+  const live = await measureGoalSpendAtLaunch({
+    workspaceId: args.workspaceId,
+    goalId,
+    windowSec: budgetWindowSec,
+    sql: args.sql,
+  });
+  return evaluateGoalInferenceBudget({
+    goalId,
+    goalStatus,
+    budgetCents,
+    budgetWindowSec,
+    ...(live.ok ? { rollup: live.rollup } : { measurementError: live.error }),
+  });
+}
+
 function escalateBudgetRefusal(args: {
   workspaceId: string;
   goalId: string;
