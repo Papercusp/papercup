@@ -199,7 +199,7 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
       unreadInbox: 0,
       rewakeGuaranteed: true,
       nextWakeFresh: false,
-      selfCompactionAvailable: false,
+      selfCompactionAvailable: true,
       activeLoopIntervalSec: 300,
       activeLoopGoal: 'drain the lane',
     });
@@ -210,8 +210,41 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).toContain(
       "loop:arm { intervalSec: 300, goal: \"drain the lane\", carry: 'cold' }",
     );
-    expect(v.guidance).toMatch(/no_live_pty_host/);
     expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
+  });
+
+  it('a hostless warm wake is not retuned to a cold path that may park', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 75,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+      selfCompactionAvailable: false,
+      activeLoopIntervalSec: 300,
+      activeLoopGoal: 'drain the lane',
+    });
+    expect(v.guidance).toMatch(/next wake is WARM/);
+    expect(v.guidance).toMatch(/fresh-context delivery is unavailable/i);
+    expect(v.guidance).toMatch(/cold wake.*may park/);
+    expect(v.guidance).toMatch(/Do not retune this warm loop to cold/);
+    expect(v.guidance).toMatch(/managed psu-pty host/);
+    expect(v.guidance).not.toContain("carry: 'cold'");
+    expect(v.guidance).not.toMatch(/cold wake starts from that durable carry-note/);
+  });
+
+  it('unknown host support does not claim a cold retune will create a fresh context', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 75,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+      selfCompactionAvailable: null,
+      activeLoopIntervalSec: 300,
+      activeLoopGoal: 'drain the lane',
+    });
+    expect(v.guidance).toMatch(/fresh-context delivery is unverified/i);
+    expect(v.guidance).not.toContain("carry: 'cold'");
+    expect(v.guidance).not.toMatch(/cold wake starts from that durable carry-note/);
   });
 
   it('requires a status read before rendering a cold retune when active-loop values are unavailable', () => {
@@ -220,7 +253,7 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
       unreadInbox: 0,
       rewakeGuaranteed: true,
       nextWakeFresh: false,
-      selfCompactionAvailable: false,
+      selfCompactionAvailable: true,
     });
     expect(v.guidance).toContain('read loop:status');
     expect(v.guidance).toContain('intervalSec: <status.intervalSec>');
@@ -233,11 +266,27 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
       unreadInbox: 0,
       rewakeGuaranteed: true,
       nextWakeFresh: true,
-      selfCompactionAvailable: false,
+      selfCompactionAvailable: true,
     });
     expect(v.nextWakeFresh).toBe(true);
     expect(v.guidance).toMatch(/the next wake re-opens the gate/);
     expect(v.guidance).not.toMatch(/next wake is WARM/);
+  });
+
+  it('an already-cold loop without a usable host restores the reachable warm path', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 75,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: true,
+      selfCompactionAvailable: false,
+      activeLoopIntervalSec: 300,
+      activeLoopGoal: 'drain the lane',
+    });
+    expect(v.guidance).toMatch(/configured for COLD carry/);
+    expect(v.guidance).toMatch(/fresh-context delivery is unavailable/);
+    expect(v.guidance).toMatch(/carry: 'warm'/);
+    expect(v.guidance).toMatch(/preserves this context and does not reset it/);
   });
 
   it('unknown (null/absent) re-wake keeps the base guidance — non-breaking', () => {
