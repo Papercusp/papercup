@@ -2080,6 +2080,35 @@ export async function advanceGradingCascadeOnCard(input: {
         };
       },
     );
+    // The shared cascade records its final answer but deliberately leaves the
+    // terminal transition to the trigger. Unlike consult:reply and the expiry
+    // sweep, this card trigger is fire-and-forget from the grader's perspective:
+    // they are told to emit the card and not reply. Close the row here when the
+    // selected menu is complete and its minimum was met, or it stays `active`
+    // until the four-hour expiry even though grading has finished.
+    if (result.exhausted && !result.raced && !result.underFilled) {
+      const closed = (await sql`
+        UPDATE harness_shared.consult_state
+           SET state = 'closed_answered',
+               closed_at = ${nowIso}::timestamptz,
+               expires_at = NULL,
+               updated_at = ${nowIso}::timestamptz,
+               outcome = jsonb_build_object(
+                 'source', 'acceptance-grader-card',
+                 'reason', 'cascade_complete',
+                 'answeredBy', ${input.graderOwnerId}::text,
+                 'answeredAt', ${nowIso}::text
+               )
+         WHERE workspace_id = ${input.workspaceId}
+           AND conversation_id = ${row.conversation_id}
+           AND responder_id = ${input.graderOwnerId}
+           AND cascade_cursor = ${row.cascade_cursor}
+           AND state IN ('awaiting_responder', 'active')
+           AND closed_at IS NULL
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      if (!closed[0]) return { advanced: false, reason: 'raced' };
+    }
     return {
       advanced: result.advanced,
       ...(result.next ? { next: result.next.ownerId } : {}),
