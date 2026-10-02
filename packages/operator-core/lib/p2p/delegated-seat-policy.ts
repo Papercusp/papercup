@@ -8,7 +8,7 @@
  * exact contract.
  */
 
-import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 
 export type DelegatedSeatTrustMode = 'trusted-host-agent' | 'untrusted-public';
 export type DelegatedCredentialRoute = 'default' | 'auto' | 'pinned';

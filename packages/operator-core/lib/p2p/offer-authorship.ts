@@ -42,7 +42,7 @@ import { verifyEd25519 } from '../identity/ed25519';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import type { WorkOffer } from './offer-budget';
 // Type-only: the contract SHAPE is shared with the identity gate; no runtime coupling.
-import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 
 /* ─────────────────────────────────────────────────────────────────────────
  * The signed authorship envelope that rides on an offer
