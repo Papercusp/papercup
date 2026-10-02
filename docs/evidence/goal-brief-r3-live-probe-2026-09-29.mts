@@ -241,7 +241,12 @@ process.stdout.write(`${JSON.stringify({
     ...(CENSORED_BY ? ['env', `R3_CENSORED_BY=${CENSORED_BY}`] : []),
     'npx', 'tsx', 'docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts'],
   exitCode: gatedPassed === gated.length ? 0 : 1, startedAt, finishedAt: new Date().toISOString(),
-  summary: `${passed}/${assertions.length} assertions passed${censoredIds.length ? `; ${censoredIds.length} censored per ${CENSORED_BY} (${censoredIds.join(', ')}), gate ${gatedPassed}/${gated.length}` : ''}; ${transcriptOnlySessions.length} of ${Object.keys(identityWitnesses).length} sessions resolved by the transcript witness alone`, assertions,
+  summary: `${passed}/${assertions.length} assertions passed${censoredIds.length ? `; ${censoredIds.length} censored per ${CENSORED_BY} (${censoredIds.join(', ')}), gate ${gatedPassed}/${gated.length}` : ''}; ${transcriptOnlySessions.length} of ${Object.keys(identityWitnesses).length} sessions resolved by the transcript witness alone`,
+  // testing:record-run derives its verdict from EVERY entry in `assertions`, so a censored assertion is moved
+  // out of that list into `censoredAssertions` (verbatim, passed:false) rather than relabelled. The ledger
+  // verdict therefore covers exactly the gated assertions, and the censored one stays visible beside it.
+  assertions: gated,
+  ...(censoredIds.length ? { censoredAssertions: (assertions as Array<Record<string, any>>).filter((a) => a.censored) } : {}),
   plan: { slug: 'goal-brief-to-claimed-plan-work-2026-09-23', specIds: ['AUTO-BAR-R-3-P-004', 'AUTO-BAR-R-3-P-007'], specRevision: 4 },
   residualUnknowns, observations,
 }, null, 2)}\n`);

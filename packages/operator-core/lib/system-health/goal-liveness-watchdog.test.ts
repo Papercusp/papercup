@@ -2487,7 +2487,7 @@ describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821
 // hourly cap. A loss must persist for GOAL_HOLDER_LOSS_CONFIRM_MS first.
 describe('runGoalHolderRespawnOnce — loss confirmation window (WI-10005559)', () => {
   const sql = {} as never;
-  let info: ReturnType<typeof vi.spyOn<Console, 'info'>>;
+  let info: { mock: { calls: unknown[][] }; mockRestore(): void };
   beforeEach(() => {
     info = vi.spyOn(console, 'info').mockImplementation(() => {});
   });
