@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
+import type { WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
 const roots: string[] = [];
@@ -74,6 +75,119 @@ print(json.dumps(dict(runTag='fixture',processId=os.getpid(),nativeThreadId=os.g
       expect.objectContaining({operation:'generating-map',object:library}),
       expect.objectContaining({operation:'destroying-map',object:library}),
     ]));
+  });
+});
+describe('generated loader object to retained file joins', () => {
+  const window = { runTag: 'first', processId: 123, nativeThreadId: 456, startMonotonicNs: '100', endMonotonicNs: '200' };
+  const marker = (phase: 'start'|'end') => 'PC_NATIVE_RUN\t'+JSON.stringify({ runTag: window.runTag,
+    processId: 123, nativeThreadId: 456, phase, monotonicNs: phase === 'start' ? '100' : '200' });
+  const object = (name='libsame.so', namespace='0', dynamic='0x1800', phdr='0x1040', bias='0x1000') =>
+    [`123: file=${name} [${namespace}];  generating link map`,
+      `123: dynamic: ${dynamic}  base: ${bias}  size: 0x1000`, `123: entry: 0x1000  phdr: ${phdr}  phnum: 9`];
+  const log = (...rows: string[]) => [...rows,'123: calling init: /alias/libsame.so',
+    '123: transferring control: /runtime/node',marker('start'),marker('end')].join('\n');
+  const sample = (): WorkerNativeInferenceTrace => ({ model:'/fixture', device:'cpu', observedAt:'2026-10-02T00:00:00.000Z',
+    requestId:1,attempt:1,workerThreadId:1,processId:123,nativeThreadId:456,runTag:'first',runIndex:1,
+    phase:'start',clock:'node-hrtime',monotonicNs:'100',runtime:{platform:'linux',clock:'node-hrtime',beforeNs:'80',afterNs:'90',
+      gpuMemory:{status:'not-applicable'},libraries:[{path:'/resolved/libsame.so.1',bytes:8192,sha256:'a'.repeat(64),
+        mappedDevice:'08:01',mappedInode:'123',mappedRanges:[{startAddress:'1000',endAddress:'2000',fileOffset:'0',permissions:'r--p'}]}]}});
+  it('joins actual addresses to resolved fingerprints, preserving load bias zero and scope', () => {
+    const result=bindNativeLoaderMappedObjects(log(...object(undefined,undefined,undefined,undefined,'0x0')),[window],sample());
+    expect(result.objectMapJoins).toHaveLength(1);
+    expect(result.objectMapJoins[0]).toMatchObject({object:'libsame.so',namespace:'0',loadBias:'0x0',
+      file:{path:'/resolved/libsame.so.1',mappedInode:'123',sha256:'a'.repeat(64)}});
+    expect(result.completeBeforeInferenceClosureVerified).toBe(false);
+  });
+  it('distinguishes identical basenames and namespaces by addresses, not names', () => {
+    const event=sample(), other=structuredClone(event.runtime!.libraries[0]);
+    other.path='/other/libsame.so.1';other.mappedInode='456';other.sha256='b'.repeat(64);
+    other.mappedRanges=[{startAddress:'3000',endAddress:'4000',fileOffset:'0',permissions:'r--p'}];
+    event.runtime!.libraries.push(other);
+    const result=bindNativeLoaderMappedObjects(log(...object(),...object('libsame.so','2','0x3800','0x3040','0x3000')),[window],event);
+    expect(result.objectMapJoins.map(join=>[join.namespace,join.file.path])).toEqual([
+      ['0','/resolved/libsame.so.1'],['2','/other/libsame.so.1']]);
+  });
+  it('reports retired objects and unjoined executable/interpreter mappings explicitly', () => {
+    const event=sample(), other=structuredClone(event.runtime!.libraries[0]);
+    other.path='/runtime/node';other.mappedRanges=[{startAddress:'5000',endAddress:'6000',fileOffset:'0',permissions:'r-xp'}];
+    event.runtime!.libraries.push(other);
+    const result=bindNativeLoaderMappedObjects(log(...object(),...object('transient.so','1','0x3800','0x3040'),
+      '123: file=transient.so [1];  destroying link map'),[window],event);
+    expect(result.retiredBeforeFirstRun.map(x=>x.object)).toEqual(['transient.so']);
+    expect(result.unjoinedMappedFiles.map(x=>x.path)).toEqual(['/runtime/node']);
+  });
+  it.each(['missing-ranges','bad-range','overlap','dynamic','header','split-file','missing-detail','namespace',
+    'repeated-object','unbound-destroy','wrong-sample','late-sample','bad-fingerprint','foreign-detail'])('refuses %s evidence', failure => {
+    const event=sample(); let rows=object();
+    if(failure==='missing-ranges') delete event.runtime!.libraries[0].mappedRanges;
+    if(failure==='bad-range') event.runtime!.libraries[0].mappedRanges![0].endAddress='1000';
+    if(failure==='overlap'||failure==='split-file') {
+      const other=structuredClone(event.runtime!.libraries[0]); other.path='/different.so';
+      if(failure==='split-file') {
+        event.runtime!.libraries[0].mappedRanges![0].endAddress='1800';
+        other.mappedRanges![0].startAddress='1800';
+      }
+      event.runtime!.libraries.push(other);
+    }
+    if(failure==='dynamic') rows=object(undefined,undefined,'0x2800');
+    if(failure==='header') rows=object(undefined,undefined,undefined,'0x2040');
+    if(failure==='missing-detail') rows.splice(1,1);
+    if(failure==='namespace') rows.push(...object('second.so','2'));
+    if(failure==='repeated-object') rows.push(...object());
+    if(failure==='unbound-destroy') rows.push('123: file=other.so [0];  destroying link map');
+    if(failure==='wrong-sample') event.nativeThreadId=999;
+    if(failure==='late-sample') event.runtime!.afterNs='101';
+    if(failure==='bad-fingerprint') event.runtime!.libraries[0].sha256='bad';
+    if(failure==='foreign-detail') rows[1]=rows[1].replace('123:','999:');
+    expect(()=>bindNativeLoaderMappedObjects(log(...rows),[window],event)).toThrow('native loader');
+  });
+  it.runIf(process.platform === 'linux')('joins real glibc object addresses to hashed pre-Run file maps', () => {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-loader-namespace-'));roots.push(root);
+    const library=path.join(root,'same-object.so');
+    const compiled=spawnSync('/usr/bin/cc',['-x','c','-shared','-fPIC','-nostdlib','-o',library,'-'],
+      {input:'int pc_loader_fixture(void) { return 7; }',encoding:'utf8',timeout:10000});
+    expect(compiled.status,compiled.stderr).toBe(0);
+    const program = `import os,json,time,hashlib,ctypes
+libc=ctypes.CDLL('libc.so.6')
+libc.dlmopen.argtypes=[ctypes.c_long,ctypes.c_char_p,ctypes.c_int]; libc.dlmopen.restype=ctypes.c_void_p
+handles=[libc.dlmopen(-1,${JSON.stringify(library)}.encode(),2) for _ in range(2)]
+assert all(handles) and handles[0]!=handles[1]
+rows={}
+before=str(time.clock_gettime_ns(time.CLOCK_MONOTONIC))
+for line in open('/proc/self/maps'):
+ fields=line.split(None,5)
+ if len(fields)<6 or not fields[5].startswith('/'): continue
+ address,permissions,offset,device,inode,file=fields; file=file.strip()
+ row=rows.setdefault(file,dict(path=file,mappedDevice=device,mappedInode=inode,mappedRanges=[],eligible=False))
+ row['eligible'] |= 'x' in permissions or '.so' in file
+ start,end=address.split('-'); row['mappedRanges'].append(dict(startAddress=start,endAddress=end,fileOffset=offset,permissions=permissions))
+libraries=[]
+for file,row in rows.items():
+ if not row.pop('eligible'): continue
+ stat=os.stat(file)
+ assert str(stat.st_ino)==row['mappedInode']
+ assert (os.major(stat.st_dev),os.minor(stat.st_dev))==tuple(int(x,16) for x in row['mappedDevice'].split(':'))
+ row.update(bytes=stat.st_size,sha256=hashlib.file_digest(open(file,'rb'),'sha256').hexdigest()); libraries.append(row)
+after=str(time.clock_gettime_ns(time.CLOCK_MONOTONIC))
+def marker(phase):
+ n=str(time.clock_gettime_ns(time.CLOCK_MONOTONIC)); os.write(2,('PC_NATIVE_RUN\\t'+json.dumps(dict(runTag='real',processId=os.getpid(),nativeThreadId=os.getpid(),phase=phase,monotonicNs=n))+'\\n').encode()); return n
+start=marker('start'); end=marker('end')
+print(json.dumps(dict(window=dict(runTag='real',processId=os.getpid(),nativeThreadId=os.getpid(),startMonotonicNs=start,endMonotonicNs=end),runtime=dict(platform='linux',clock='node-hrtime',beforeNs=before,afterNs=after,libraries=libraries,gpuMemory=dict(status='not-applicable')))))`;
+    const env: NodeJS.ProcessEnv={...process.env,LD_DEBUG:'files'};delete env.LD_DEBUG_OUTPUT;
+    const child=spawnSync('/usr/bin/python3',['-I','-S','-c',program],{env,encoding:'utf8',timeout:10000,maxBuffer:2*1024*1024});
+    expect(child.status,child.stderr).toBe(0);
+    const observed=JSON.parse(child.stdout), event={...sample(),...observed.window,runTag:'real',
+      monotonicNs:observed.window.startMonotonicNs,runtime:observed.runtime};
+    const result=bindNativeLoaderMappedObjects(child.stderr,[observed.window],event);
+    expect(result.objectMapJoins.length).toBeGreaterThan(3);
+    expect(result.objectMapJoins.some(join=>join.object==='libc.so.6')).toBe(true);
+    const namespaceJoins=result.objectMapJoins.filter(join=>join.file.path===library);
+    expect(namespaceJoins).toHaveLength(2);
+    expect(new Set(namespaceJoins.map(join=>join.namespace)).size).toBe(2);
+    expect(namespaceJoins.every(join=>join.namespace!=='0')).toBe(true);
+    expect(result.noLoaderActivityDuringPopulation).toBe(true);
+    expect(result.unjoinedMappedFiles.some(file=>file.path.includes('python3'))).toBe(true);
+    expect(result.completeBeforeInferenceClosureVerified).toBe(false);
   });
 });
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
