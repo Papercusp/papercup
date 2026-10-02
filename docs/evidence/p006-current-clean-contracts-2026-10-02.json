@@ -638,6 +638,696 @@
     "censusLimits": "Staging evaluator247b9ed162 observed28 clauses:3pass/24fail/1unknown. AUTHORITY changed from datedPASS to freshnessunknown; no earlier PASS reused as current. Complete emitted rows embedded here; no scratch TTL dependency.",
     "limits": "No independent rubric review/ratification, real-goal scorecard reuse, whole P006 acceptance, historical root cause or final shipment claim. D003/D013/D016 re-read; no product source, clause, BAR or baseline edited. Named file provenance does not measure the whole import graph."
   },
+  "exclusionsCurrentProof": {
+    "verifiedAt": "2026-10-02T09:33:12.191532+00:00",
+    "nativeSession": "01a0fbe6-d6b5-7e70-8cd9-dccaa841813f",
+    "specId": "WOE-P001-EXCLUSIONS",
+    "revision": 3,
+    "specFingerprint": "e08462ec1e978324a4a3b23f1b71aee434f666adce160fed069389c701aefcba",
+    "scope": "Fresh clean pinned five-test unit positive and three maintained calibrated fault controls; unchanged clean real-PG20500782 reused. Selected replacement PASS precedes seven binding-only withdrawals and governing EXCLUSIONS@3 PASS. Broader P006 acceptance remains open.",
+    "sourceReadback": "All six prior canonical/clone/pin source/test fingerprints plus exclusion-proof c4d162bc976fe0af63b53c0101ac7c0ded8123b906dd189d0d22b319ef924a61 matched. Clone HEAD920030a3b939abd0c2b828fdb1ade3e291fb1071, git status empty and Vitest available. Saved real-PG20500782 read pass, clean, no scratch, correct root/harness.",
+    "positive": {
+      "testRunId": 20506006,
+      "pass": 5,
+      "fail": 0,
+      "skip": 0,
+      "exit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "log": "/tmp/p006-exclusions-positive-20261002-fire170.log",
+      "logSha256": "f3d8a6de85b9e9e97c01465f2f0f007310f15efb113b696368b3f213b25a65fc"
+    },
+    "controlCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_MUTATION_PROBE=1 PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL=<scenario> npm run test:file -- packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts -t 'exclusion calibration:|repaired exclusion contract: <scenario>'",
+    "controls": [
+      {
+        "scenario": "drain-and-test-excluded",
+        "testRunId": 20506009,
+        "counterexampleBindingId": 21457,
+        "recurrenceBindingId": 21458,
+        "logSha256": "aa30649277cba6ff890ba2bda46cdc3f8098985d58690e6e7506c2ef58ea1153",
+        "recurrenceTestRunId": 20506006,
+        "log": "/tmp/p006-exclusions-drain-and-test-excluded-20261002-fire170.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "holder-not-independent",
+        "testRunId": 20506010,
+        "counterexampleBindingId": 21459,
+        "recurrenceBindingId": 21460,
+        "logSha256": "e1b79adea9bbe26b65c1f9e5e196036eda9ab9572daa31f10c07085f6410b5e5",
+        "recurrenceTestRunId": 20506006,
+        "log": "/tmp/p006-exclusions-holder-not-independent-20261002-fire170.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      {
+        "scenario": "independent-member-positive",
+        "testRunId": 20506011,
+        "counterexampleBindingId": 21461,
+        "recurrenceBindingId": 21462,
+        "logSha256": "ee6acf4c4b987c64b4187c245e7d2ce519e03f2dc1367b7b19c9434efece49ab",
+        "recurrenceTestRunId": 20506006,
+        "log": "/tmp/p006-exclusions-independent-member-positive-20261002-fire170.log",
+        "intendedAssertionFailed": true,
+        "calibrationPassed": true,
+        "failed": 1,
+        "passed": 1,
+        "filteredSkipped": 3,
+        "exit": 1,
+        "source": "mutation-probe",
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ],
+    "integrationBindingId": 21456,
+    "integrationTestRunId": 20500782,
+    "selectedReplacement": {
+      "governing": false,
+      "evaluatorBuild": {
+        "sha": "f52b2457ba",
+        "version": "0.0.0"
+      },
+      "verdict": "pass",
+      "wouldBlock": [],
+      "bindingIds": [
+        21456,
+        21457,
+        21458,
+        21459,
+        21460,
+        21461,
+        21462
+      ],
+      "evidenceRefs": [
+        "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts",
+        "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:drain-and-test-excluded",
+        "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:holder-not-independent",
+        "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:independent-member-positive",
+        "test-run 20506009 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+        "test-run 20506010 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+        "test-run 20506011 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939"
+      ]
+    },
+    "withdrawals": {
+      "staleBindingIds": [
+        19008,
+        19007,
+        19006,
+        19000,
+        18999,
+        18998,
+        18996
+      ],
+      "ok": 7,
+      "reason": "Exact WI/spec@3/evidence identities read as source-stale;19000 also test-stale. Selected current replacement adequacy PASS before binding-only withdrawal. No historical test-run/audit or D003 baseline changes.",
+      "historicalCheckedFieldsUnchanged": true,
+      "historicalTestRunIds": [
+        20403692,
+        20403929,
+        20403715,
+        20403717,
+        20403691
+      ],
+      "historicalCheckedFields": [
+        "id",
+        "status",
+        "source",
+        "worktreeDirty",
+        "commitSha",
+        "startedAt",
+        "finishedAt"
+      ]
+    },
+    "governing": {
+      "ok": true,
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "f52b2457ba",
+        "version": "0.0.0"
+      },
+      "rows": [
+        {
+          "specId": "WOE-P001-EXCLUSIONS",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": [],
+          "ratings": {
+            "traceability": {
+              "rating": "pass"
+            },
+            "fixture-calibration": {
+              "rating": "not-applicable"
+            },
+            "falsifiability": {
+              "rating": "pass"
+            },
+            "correct-layer": {
+              "rating": "pass"
+            },
+            "oracle-independence": {
+              "rating": "pass"
+            },
+            "execution-integrity": {
+              "rating": "pass"
+            },
+            "freshness": {
+              "rating": "pass"
+            },
+            "plan-class-risk-floor": {
+              "rating": "pass"
+            },
+            "disclosed-gap": {
+              "rating": "not-applicable"
+            }
+          }
+        }
+      ],
+      "count": 1
+    },
+    "finalReadback": {
+      "bounded": {
+        "limit": 100,
+        "truncatedByLimit": false
+      },
+      "evidence": [
+        {
+          "id": 21462,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:independent-member-positive",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21461,
+          "specRevision": 3,
+          "evidenceRef": "test-run 20506011 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21460,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:holder-not-independent",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21459,
+          "specRevision": 3,
+          "evidenceRef": "test-run 20506010 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21458,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts#fire170:drain-and-test-excluded",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21457,
+          "specRevision": 3,
+          "evidenceRef": "test-run 20506009 mutation-probe fail packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts @920030a3b939",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        },
+        {
+          "id": 21456,
+          "specRevision": 3,
+          "evidenceRef": "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts",
+          "currentness": {
+            "overall": "current",
+            "staleReasons": []
+          }
+        }
+      ]
+    },
+    "wholeCensus": {
+      "ok": true,
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "247b9ed162",
+        "version": "0.0.0"
+      },
+      "count": 28,
+      "rows": [
+        {
+          "specId": "WOE-P001-BLOCKER",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-CLAIM",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-EXCLUSIONS",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P001-IDEMPOTENCE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              19022,
+              19023,
+              19024,
+              19025,
+              19026,
+              19027,
+              19028
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P001-ORDER",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              19050,
+              19051,
+              19052,
+              19053,
+              19054
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P001-TERMINAL",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P002-AUTHORITY",
+          "specRevision": 3,
+          "verdict": "unknown",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17942,
+              17943,
+              17944,
+              17948,
+              17959,
+              17960,
+              17961
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-ELECTION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17547
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-HANDOFF",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17548
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-RESPAWN",
+          "specRevision": 4,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17549,
+              17578,
+              17957,
+              17958
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-STALE-RESPAWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17550
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P002-UNKNOWN",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17522,
+              17540
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-BREACH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17382
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-MEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17377
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-NUMERATOR",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17379
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17380
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED-ADMISSION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17378
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P003-WINDOW",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17381
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-CUSTODY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17386
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-REAL-CALL",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17389
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-SCHEDULER-DIAGNOSIS",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17388
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-SLOW-BOOT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17390
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P004-WAKE",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "falsifiability",
+            "correct-layer",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              17387
+            ]
+          }
+        },
+        {
+          "specId": "WOE-P005-HAND-DISPATCH",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-MATERIALIZATION",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P005-SOVEREIGNTY",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-REAL-CARD",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        },
+        {
+          "specId": "WOE-P006-SHIPMENT",
+          "specRevision": 3,
+          "verdict": "fail",
+          "wouldBlock": [
+            "traceability",
+            "falsifiability",
+            "correct-layer",
+            "oracle-independence",
+            "execution-integrity",
+            "freshness",
+            "plan-class-risk-floor"
+          ]
+        }
+      ]
+    },
+    "countsDerivedFromCensusRows": {
+      "pass": 4,
+      "fail": 23,
+      "unknown": 1
+    },
+    "receipts": [
+      {
+        "path": "/tmp/p006-exclusions-bindings-20261002-fire170.json",
+        "sha256": "96df4059d7ef0047c4f4b0841ef878b5e0405baeacedab5b4f0fe7fd90498235",
+        "ok": 7
+      },
+      {
+        "path": "/tmp/p006-exclusions-whole-census-20261002-fire170.json",
+        "sha256": "a58cd1cde8ff77bf662ab7ac297e2010948bdcd61c9947facbe5f1f520f31891",
+        "spillUri": "papercusp://scratch/papercusp-workspace/plans:evaluate-spec-test-adequacy/fece367a-6d3a-4aef-85c2-aa8aa74ac81f/result-door-1790933503790-801fd6a7.spill",
+        "payloadSha256": "4bf5ed2d5f58695c1048e1a33b25bf89ecad1f459512f5f187fdfe838953f85d"
+      }
+    ],
+    "limits": "28-clause current staging census has four PASS,23FAIL,oneUNKNOWN(AUTHORITY freshness). Prior censuses remain dated and distinct. No independent rubric ratification, D013 real-goal card, closure-audit or shipment claim.",
+    "callerFriction": "First seven-row binding call omitted required measurement.schemaVersion=1; whole call refused with no write. Corrected before successful receipt. Source/test/assertions/accepted clauses/BAR unchanged."
+  },
   "governingCensus": {
   "observedAt": "2026-10-02T08:49:35Z",
   "query": "plans:evaluate-spec-test-adequacy slug work-on-everything-stewardship-remediation-2026-08-30 classRef plan-class-feature-ship, without workItemIds/evidenceRefs",
@@ -1038,5 +1728,5 @@
     }
   ]
 },
-  "next": "At fresh context verify claims/source and continue CLAIM@3 freshness using current clean20499866/20500782 positives plus maintained claim negative controls. Reuse existing proof, do not repeat positive41. Remaining accepted-clause census is dated here. Rubric ratification, D013 real-goal card reuse and shipment remain separate; preserve D003 baseline and D016 history."
+  "next": "At fresh context verify held claims/source and continue IDEMPOTENCE@3 then ORDER@4 freshness with current clean pinned tests and maintained calibrated controls. EXCLUSIONS@3 governing PASS is verified in exclusionsCurrentProof; do not repeat unchanged positives/controls. Remaining accepted-clause census is dated here. Independent rubric ratification, D013 real-goal card reuse, closure audit and final shipment remain separate; preserve D003 baseline/D016 history and24WI/12loop checks."
 }

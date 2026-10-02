@@ -1,4 +1,220 @@
 {
+  "r172TerminalDiagnosticCurrent": {
+    "scope": "One changed cold r172 diagnostic after repaired schema preflight. Honest terminal FAIL; no product/root-cause/R7/shipment acceptance.",
+    "verifierRun": "20261002T080301Z-1987766",
+    "published": {
+      "id": "perfrun-1790928678733-efv34f",
+      "recorded": 25,
+      "status": "fail"
+    },
+    "metrics": {
+      "popupMs": 812,
+      "popupBudgetMs": 1500,
+      "fcpMs": 1351,
+      "fcpBudgetMs": 3000,
+      "lcpMs": 4819,
+      "lcpBudgetMs": 4000
+    },
+    "actualLcp": {
+      "tag": "P",
+      "className": "pclsb-acct__foot",
+      "startupCandidateMatches": true
+    },
+    "candidateIntervals": [
+      {
+        "selector": ".pclsb-acct__foot",
+        "matchesActualLcp": true,
+        "times": {
+          "firstObservedAtMs": 3162,
+          "firstFrameQueuedAtMs": 3162,
+          "firstFrameAtMs": 4692,
+          "firstFrameReadCompletedAtMs": 4693.000000000001,
+          "firstCompanionTimerAtMs": 4794.000000000001,
+          "firstFrameOutcome": "eligible",
+          "frameReads": 1,
+          "firstCompanionTimerStopReason": "completed",
+          "totalObserverWorkMs": 2.0000000000009095
+        },
+        "operationTotalsMs": {
+          "connection-check": 0,
+          "computed-style": 0,
+          "visibility-check": 1.0000000000009095,
+          "parent-element": 0,
+          "bounding-rect": 0,
+          "viewport-check": 0
+        },
+        "operationCount": 27
+      },
+      {
+        "selector": ".plans-pane__masthead-subtitle",
+        "matchesActualLcp": false,
+        "times": {
+          "firstObservedAtMs": 3162,
+          "firstFrameQueuedAtMs": 3162,
+          "firstFrameAtMs": 4693.000000000001,
+          "firstFrameReadCompletedAtMs": 4694,
+          "firstCompanionTimerAtMs": 4794.000000000001,
+          "firstFrameOutcome": "eligible",
+          "frameReads": 1,
+          "firstCompanionTimerStopReason": "completed",
+          "totalObserverWorkMs": 0.9999999999990905
+        },
+        "operationTotalsMs": {
+          "connection-check": 0,
+          "computed-style": 0,
+          "visibility-check": 0,
+          "parent-element": 0,
+          "bounding-rect": 0,
+          "viewport-check": 0
+        },
+        "operationCount": 33
+      }
+    ],
+    "collection": {
+      "status": "bound",
+      "path": "~/papercupai-workspace/papercusp/tools/perf-test/wdio/results/measures-48549371-7c47-464b-ac37-6fed1bf849f9.jsonl",
+      "retained": false,
+      "scope": "this launcher collection only; never legacy fallback"
+    },
+    "interpretation": "Actual footer queue-to-frame1530ms; frame read1ms at available clock resolution. This observation fits the small-read/large-queue alternative rather than style-read domination in this sample. It does not explain r170134ms, establish forced layout/product cause, or provide a paired observer-off comparison.",
+    "rawReferences": {
+      "~/.papercusp/perf/p007-native-current/r172-instrument-manifest.json": {
+        "sha256": "f5b7ead71668f65c00a37c6a76191ccafdbfcd6f0ca5b9fa1981453d69e074e6",
+        "bytes": 16838
+      },
+      "~/.papercusp/perf/p007-native-current/r172-run-assertion.sh": {
+        "sha256": "4a912cc21965d0251fdef130627fc8f2069d2f0696ec106490257d51a9133c95",
+        "bytes": 10274
+      },
+      "~/.papercusp/perf/p007-native-current/r172-owned-runtime-identity.json": {
+        "sha256": "033a031af7bc83850ce0f6c92da3008727ef037664d3b4ad2cf10af4a529921a",
+        "bytes": 4941
+      },
+      "~/.papercusp/perf/p007-native-current/run-172-diagnostic-result.json": {
+        "sha256": "a601081d019ed13d6118c190cb64f221dc00dcc963201d80499a61a938fd97f1",
+        "bytes": 1247
+      },
+      "~/.papercusp/perf/p007-native-current/run-172-popup-native-timing.log": {
+        "sha256": "4d88b217fd02f06129067e8b165309982e8facf53b7cf383b5bbff866f7fd112",
+        "bytes": 89304
+      },
+      "~/.papercusp/perf/p007-native-current/r172-native-process.jsonl": {
+        "sha256": "e6fe2d2e23bb2a8490415468836bf8ea74276a532cb2fe39fd8fd9871ff6e0b9",
+        "bytes": 827366
+      },
+      "~/.papercusp/perf/p007-native-current/r172-gstreamer-log-inventory.json": {
+        "sha256": "d1b5bbd615f4e318932aea77ff60b8ee237c3919837f47f3c6f634085653d184",
+        "bytes": 490
+      },
+      "~/.papercusp/perf/p007-native-current/run-172-owned-api-tauri.log": {
+        "sha256": "47b1f510a1f135735ba7332ed6f156f3d620f0b0743502fb0053684685a72347",
+        "bytes": 94226
+      },
+      "/tmp/p007-r172-verifier-current.log": {
+        "sha256": "c518359a324dbfa03ce6e2850d78f4c9d9bfca06aacc07295e77555574c4b3f3",
+        "bytes": 10757
+      },
+      "~/.local/state/verification-harness/verify-tauri-headless/20261002T080301Z-1987766/result.json": {
+        "sha256": "dbcd3d4beb4c5ceefcd5cb70e446e6e7307e97dde4ac6568f1597065eb2cbbce",
+        "bytes": 1677
+      }
+    },
+    "summaryRef": "~/.papercusp/perf/p007-native-current/r172-native-summary.json",
+    "summarySha256": "4b9b6d61b503f5fba13d82e6b76b7b2538c27046e5e8c5bdef8fabd2d1e88c37",
+    "cleanupRef": "~/.papercusp/perf/p007-native-current/r172-cleanup-receipt.json",
+    "cleanupSha256": "ae531c6b606b76bc44de51aefa9f55a7284870e4f83a0e9ad1ecef94442910c9",
+    "cleanup": {
+      "scope": "Only identity-bound r172 runtime/private roots; no global port or unrelated process claim",
+      "at": "2026-10-02T08:19:54.513426+00:00",
+      "remainingExactNonceOrPrivateHomeProcesses": [],
+      "sampledPidStates": {
+        "2320900": "absent",
+        "2331477": "absent",
+        "2501218": "absent",
+        "2502003": "absent",
+        "2502162": "absent",
+        "2505901": "absent",
+        "2507119": "absent"
+      },
+      "allSampledOwnedPidsAbsent": true,
+      "removedPrivateRoots": [
+        "~/.papercusp/perf/p007-native-current/r172-private-home",
+        "~/.papercusp/perf/p007-native-current/r172-profile-data",
+        "~/.papercusp/perf/p007-native-current/r172-profile-cache",
+        "~/.papercusp/perf/p007-native-current/r172-profile-config",
+        "/dev/shm/p007-r172-d1608f11-20261002T080116Z"
+      ],
+      "removedMatchedStaleIpc": [],
+      "defaultAdvertUntouched": true,
+      "sourceSnapshotAbsent": true,
+      "workSpaAbsent": true,
+      "workSmallLogsPreserved": "/tmp/verify-tauri-headless.ktBr2Z",
+      "rawHashesVerified": true,
+      "summarySha256": "4b9b6d61b503f5fba13d82e6b76b7b2538c27046e5e8c5bdef8fabd2d1e88c37"
+    },
+    "next": "Finish only identity-bound cleanup; preserve old r171 failure. No unchanged native rerun. Next use this read/queue partition to select a justified controlled follow-up; current P006 clean proof binding can progress independently.",
+    "limits": [
+      "Native/media-suppression diagnostic only; no product repair.",
+      "Frame/timer/read intervals and LCP are separate events; no CPU/load cause inferred.",
+      "Bound singleton unique measure collection was removed by the maintained launcher; rows/hash cannot be reconstructed from that missing JSONL. Published ledger/log remains separate evidence.",
+      "Boot passed but187556ms includes other startup activity; native-abort markers are not counted independent incidents or causal proof.",
+      "P006/P008 acceptance remains separate."
+    ]
+  },
+  "sharedSchemaReadinessFire161": {
+    "scope": "Read-only preflight and canonical source/fixture verification. No new native popup/LCP result or P007/R7 acceptance.",
+    "rootCause": "The existing dev PG probe only selected SELECT 1; the verifier copied dependencies and built its private API before boot could discover pending migrations and a backup rendezvous conflict.",
+    "reused": "Extend dev-operator-pg-probe.mjs with --require-applied-schema and invoke it from the maintained verifier before WORK allocation. Import defaultSkipFile and compareMigrationFilenames from the pure runner subpath; query the existing schema_migrations ledger. No shared DDL, new service, table or migration runner.",
+    "contract": "Normal dev-launcher reachability fallback is preserved. Readiness selects the launcher's sourced .env.local then the admin resolver precedence, reports only a URL fingerprint, and uses a read-only PG connection with statement_timeout=3000ms, connect_timeout=3s, a 5000ms probe deadline and 8s shell timeout/1s kill grace. Ready exits0, pending75, unavailable74. Isolated DB mode skips this shared target check and retains its existing migrated private PG route.",
+    "sourceSha256": {
+      "papercusp-desktop/bin/dev-operator-pg-probe.mjs": "c741bf150854d01cff52228ee5f97b192a07ae7cb4e6cdfc3198f3bf9ddf8aab",
+      "papercusp-desktop/test/dev-operator-pg-probe.test.js": "be7f4f83ea028e4865d4586db11be4fe772b394cfdb3e75f867a74726f005cd1",
+      "scripts/verify-tauri-headless.sh": "572a97da11a10d64bfa06d260543ef042399d354627f0b65860d53bf081940d3",
+      "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts": "a554416f6f7d8665d858daa4d00c07c6b8f78489402af9fa719ec920aeb29383",
+      "libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js": "e3deef8c81da9420e7401814cbf98b886ba010208a26189b681d0e41a6583cd5"
+    },
+    "verification": {
+      "nodeCommand": "node --test papercusp-desktop/test/dev-operator-pg-probe.test.js papercusp-desktop/test/test-registry-coverage.test.js",
+      "nodeResult": "19 PASS, 0 FAIL/skip, exit0; includes real probe CLI and real shell-preflight fixtures, migration selection/order, no DDL, exact sourced-env target, unavailable/missing corpus, deadline/client close, isolated skip and normal launcher fallback.",
+      "preFixNodeResult": "3 PASS, 8 FAIL, exit1 on old source before readiness implementation.",
+      "verifierCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/verify-tauri-headless-env.test.ts apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts apps/operator/lib/verify-tauri-headless-ready-seed.test.ts apps/operator/lib/verify-tauri-headless-isolated-db.test.ts apps/operator/lib/verify-tauri-headless-install-guard.test.ts apps/operator/lib/verify-tauri-headless-help.test.ts apps/operator/lib/verify-tauri-headless-build-budget.test.ts apps/operator/lib/verify-tauri-headless-assertion-preflight.test.ts",
+      "initialVerifierResult": "78 PASS, 4 FAIL. The existing snapshot fixtures omitted the current vh_probe_admitted_exec wrapper and assumed a one-line rsync command. No production admission behavior was changed to make those tests pass.",
+      "fixtureRepair": "Forward the actual rsync command through a fixture admission seam and remove shell line continuations in the ordering assertion. First recheck25PASS1FAIL revealed replacement whitespace; final focused26PASS0skip exit0.",
+      "terminalLedgerRows": {
+        "apps/operator/lib/verify-tauri-headless-env.test.ts": 20496591,
+        "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts": 20496615,
+        "apps/operator/lib/verify-tauri-headless-ready-seed.test.ts": 20496587,
+        "apps/operator/lib/verify-tauri-headless-isolated-db.test.ts": 20496590,
+        "apps/operator/lib/verify-tauri-headless-install-guard.test.ts": 20496592,
+        "apps/operator/lib/verify-tauri-headless-help.test.ts": 20496589,
+        "apps/operator/lib/verify-tauri-headless-build-budget.test.ts": 20496588,
+        "apps/operator/lib/verify-tauri-headless-assertion-preflight.test.ts": 20496594
+      },
+      "ledgerVerification": "testing:runs read all eight exact terminal rows as pass. Snapshot row20496615 commitf4e9ce8812d; other seven at5fdc5322753. Automatic git-sync moved HEAD during the final snapshot run, so its aggregate router provenance was unknown; use the terminal ledger and bound source hashes, not an exact whole-tree HEAD claim.",
+      "syntaxAndDiff": "bash -n verifier, node --check probe and both root/desktop git diff --check exit0. Desktop probe test remains registered in npm test via test:shell; registry guard passed.",
+      "logSha256": {
+        "/tmp/p007-schema-preflight-fire161-red.log": "fb48799494c81ad6878211134b82824b64b21e644abc194a250eb854e479f7ed",
+        "/tmp/p007-schema-preflight-fire161-final.log": "4c7fa301011e750e38d6836c431110ec5b4fa5029d22c87bc0338ba069cd636b",
+        "/tmp/p007-schema-preflight-fire161-verifier.log": "e386dfc11c156efcdec165eeaea4f8477c7d1305429128ffca8daf015974e2e4",
+        "/tmp/p007-schema-preflight-fire161-snapshot-fixed.log": "0dedc153320127667009f5a09a8edeb1bca9e7036c813139d12aee2a7124b54f",
+        "/tmp/p007-schema-preflight-fire161-snapshot-final.log": "6a651ec362ed1020eb11bb9644df274f057c32cf2827940389ec6c66bb9925ae"
+      }
+    },
+    "boundedCurrentSharedRead": {
+      "procedure": "Execute only the real shared_schema_readiness_preflight function with canonical REPO_DIR/DESKTOP_DIR and VERIFY_TAURI_ISOLATED_DB=0; no verifier preparation or native launch.",
+      "source": "env:DATABASE_URL",
+      "targetFingerprint": "c942ee8b9c119f1e62d4016bb52dc6cabbf6f15fa7a77bdf9da269f2ab70ece8",
+      "sqlDir": "~/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql",
+      "status": "ready",
+      "totalKnown": 1134,
+      "pendingCount": 0,
+      "pendingFiles": [],
+      "exit": 0,
+      "measuredDuring": "2026-10-02T07:43-07:44Z"
+    },
+    "limits": "Readiness is a dated ledger read, not permission to bypass backup or a future boot guarantee. Recheck before any expensive attempt; new migrations/env/source changes can invalidate it. No source corpus content-drift certificate, whole import-graph identity, historical backup-cause change, native collection adoption, popup/FCP/LCP or frozen cohort acceptance is claimed.",
+    "next": "At a fresh context verify claims, current source/manifest and schema readiness, then prepare one changed native diagnostic manifest. Preserve r171 boot failure; no unchanged native replay, P2P, shared restart or LIVE_GATE_OPS. Separate P006/P008 acceptance remains open."
+  },
   "r171BootFailureRecoveredFire160": {
     "scope": "Terminal verifier boot failure recovered from Fire159. WDIO never started; no popup, FCP, LCP, new operation-row or isolated-collection adoption result.",
     "runId": "20261002T064622Z-474152",
