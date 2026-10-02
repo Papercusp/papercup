@@ -82,6 +82,10 @@ import {
 import { FLEET_TYPES } from './agent-fleets-store';
 import { GOAL_KICKOFF_REQUIRED_READS } from './goals/kickoff-evidence';
 import {
+  evaluateInteractiveUsageFreshness,
+  isInteractiveUsageUnmeasuredReason,
+} from './interactive-usage/freshness';
+import {
   buildGoalOwnerReportDraft,
   type GoalOwnerReportDraft,
   type GoalOwnerReportDraftInput,
@@ -732,6 +736,9 @@ export interface GoalBudgetTruth {
    * unless the marker travels with the cents. It now does.
    */
   spentCentsSource: string | null;
+  /** Freshness recorded with the snapshot, re-evaluated against the current clock. */
+  interactiveUsageFreshnessStatus: 'fresh' | 'stale' | 'unavailable' | null;
+  interactiveUsageLastIngestedAtMs: number | null;
 }
 
 export type GoalPlanPlacementState =
@@ -2472,6 +2479,8 @@ export async function readGoalLaunchSettings(
              metadata->>'spentCentsUnmeasuredReason' AS spent_cents_unmeasured_reason,
              metadata->>'spentCentsAt' AS spent_cents_at,
              metadata->>'spentCentsSource' AS spent_cents_source,
+             metadata->'spentCentsFreshness'->>'status' AS interactive_usage_freshness_status,
+             metadata->'spentCentsFreshness'->>'lastIngestedAtMs' AS interactive_usage_last_ingested_at_ms,
              metadata->>'drainFleet' AS drain_fleet
         FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
     if (!rows.length) {
@@ -2489,11 +2498,18 @@ export async function readGoalLaunchSettings(
       spent_cents_unmeasured_reason?: unknown;
       spent_cents_at?: unknown;
       spent_cents_source?: unknown;
+      interactive_usage_freshness_status?: unknown;
+      interactive_usage_last_ingested_at_ms?: unknown;
       drain_fleet?: unknown;
     };
     const parsed = parseGoalLaunchSettings(row.launch_settings, `goal ${goalId} launch_settings`);
     const title = typeof row.title === 'string' && row.title.trim() ? row.title : null;
     const briefError = title ? null : `goal ${goalId} has no usable title for its holder kickoff`;
+    const rawFreshnessStatus = row.interactive_usage_freshness_status;
+    const interactiveUsageFreshnessStatus =
+      rawFreshnessStatus === 'fresh' || rawFreshnessStatus === 'stale' || rawFreshnessStatus === 'unavailable'
+        ? rawFreshnessStatus
+        : null;
     return {
       settings: parsed.settings,
       budget: {
@@ -2505,6 +2521,8 @@ export async function readGoalLaunchSettings(
         ),
         spentCentsAt: typeof row.spent_cents_at === 'string' ? row.spent_cents_at : null,
         spentCentsSource: typeof row.spent_cents_source === 'string' ? row.spent_cents_source : null,
+        interactiveUsageFreshnessStatus,
+        interactiveUsageLastIngestedAtMs: asFiniteNumber(row.interactive_usage_last_ingested_at_ms),
       },
       brief: title
         ? {
@@ -3118,7 +3136,13 @@ async function measureGoalSpendAtLaunch(args: {
 }
 
 export type GoalInferenceAdmissionDecision =
-  | { allowed: true; goalId: string | null; reason: 'no-goal' | 'no-budget' | 'budget-gate-disabled' | 'under-budget' | 'zero-usage-bootstrap' }
+  | {
+      allowed: true;
+      goalId: string | null;
+      reason:
+        | 'no-goal' | 'no-budget' | 'budget-gate-disabled' | 'under-budget' | 'zero-usage-bootstrap'
+        | 'interactive-usage-stale' | 'interactive-usage-unavailable';
+    }
   | {
       allowed: false;
       goalId: string;
@@ -3185,6 +3209,9 @@ export function evaluateGoalInferenceBudget(args: {
   if (args.measurementError) return refuseUnmeasured('measurement-failed', args.measurementError);
   const rollup = args.rollup;
   if (!rollup) return refuseUnmeasured('measurement-failed', 'the live spend rollup returned no result');
+  if (isInteractiveUsageUnmeasuredReason(rollup.unmeasuredReason)) {
+    return { allowed: true, goalId: args.goalId, reason: rollup.unmeasuredReason };
+  }
   if (rollup.spentCents != null) {
     if (rollup.spentCents >= args.budgetCents) {
       const window = rollup.windowSec == null ? 'the goal lifetime' : `the trailing ${rollup.windowSec}s budget window`;
@@ -3520,7 +3547,11 @@ export async function resolveGoalLaunchForGoal(args: {
     if (gate.infraError) {
       degradedReasons.push(`budget ceiling not enforced — flag read failed: ${gate.infraError}`);
     } else if (gate.enabled) {
-      if (budget.spentCents == null && budget.unmeasuredPricedSpend) {
+      const recordedFreshness = budget.interactiveUsageFreshnessStatus === 'fresh'
+        ? evaluateInteractiveUsageFreshness(budget.interactiveUsageLastIngestedAtMs)
+        : null;
+      const snapshotIsFresh = recordedFreshness?.status === 'fresh';
+      if (budget.spentCents == null && budget.unmeasuredPricedSpend && snapshotIsFresh) {
         // WI-10002052 / D-011 clause 3: a ceiling that cannot MEASURE must not
         // silently fail open. A null spentCents has two populations behind it,
         // and only this one is a hole: the goal's window holds attributed
@@ -3543,14 +3574,12 @@ export async function resolveGoalLaunchForGoal(args: {
           launcherOwnerId: args.launcherOwnerId,
           refusal,
         });
-      } else if (budget.spentCents == null) {
+      } else if (budget.spentCents == null || !snapshotIsFresh) {
         // The other null: no snapshot at all (the rollup has not ticked for this
-        // goal yet), or a window whose write-time-attributed stream is empty.
-        // Neither is evidence that nothing was spent. An empty authoritative
-        // stream beside non-empty goal usage is exactly what the stewardship
-        // plan was opened for (0 attributed samples while the session ledger
-        // measured 21,444 cents), so admitting here was the fail-open D-011
-        // clause 3 forbids. Measure now, with the rollup's own function.
+        // goal yet), a window whose write-time-attributed stream is empty, or a
+        // snapshot whose interactive-usage watermark is no longer fresh. None
+        // can safely enforce from cached cents, so re-measure with the rollup's
+        // own function before deciding.
         const live = await measureGoalSpendAtLaunch({
           workspaceId: args.workspaceId,
           goalId,
@@ -3565,6 +3594,11 @@ export async function resolveGoalLaunchForGoal(args: {
             cause: 'measurement-failed',
             detail: live.error,
           });
+        } else if (isInteractiveUsageUnmeasuredReason(live.rollup.unmeasuredReason)) {
+          degradedReasons.push(
+            `budget ceiling not enforced — goal ${goalId} has ${live.rollup.unmeasuredReason}; ` +
+              'spend is unmeasured and admitted as headroom at launch',
+          );
         } else if (live.rollup.spentCents != null) {
           if (live.rollup.spentCents >= budget.budgetCents) {
             refusal = budgetExceededRefusal({

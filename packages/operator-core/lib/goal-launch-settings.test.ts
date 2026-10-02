@@ -69,6 +69,7 @@ vi.mock('./goals/holder', async (importOriginal) => ({
 // Default: every leg empty (the zero-usage bootstrap).
 const liveSpend = vi.hoisted(() => ({
   legs: { spentCents: null as number | null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 0 },
+  freshnessStatus: 'fresh' as 'fresh' | 'stale' | 'unavailable',
   throws: false,
   calls: 0,
 }));
@@ -78,14 +79,24 @@ vi.mock('./goals/spend-rollup', async (importOriginal) => ({
     liveSpend.calls += 1;
     if (liveSpend.throws) throw new Error('ledger read failed');
     const l = liveSpend.legs;
+    const freshnessReason = liveSpend.freshnessStatus === 'fresh'
+      ? null
+      : `interactive-usage-${liveSpend.freshnessStatus}` as 'interactive-usage-stale' | 'interactive-usage-unavailable';
     return {
       spentCents: l.spentCents,
-      unmeasuredReason:
-        l.spentCents != null ? null : l.lineage === 0 ? 'no-lineage-samples' : 'unpriced-lineage-samples',
+      unmeasuredReason: freshnessReason ??
+        (l.spentCents != null ? null : l.lineage === 0 ? 'no-lineage-samples' : 'unpriced-lineage-samples'),
       samples: l.pot + l.session,
       pot: { samples: l.pot },
       session: { samples: l.session },
       lineage: { samples: l.lineage, unpricedSamples: l.lineageUnpriced },
+      interactiveUsageFreshness: {
+        status: liveSpend.freshnessStatus,
+        lastIngestedAtMs: liveSpend.freshnessStatus === 'fresh' ? Date.now() : null,
+        ageMs: liveSpend.freshnessStatus === 'fresh' ? 0 : null,
+        windowMs: 30 * 60_000,
+        reason: `test freshness ${liveSpend.freshnessStatus}`,
+      },
     };
   },
 }));
@@ -147,6 +158,8 @@ interface MockOpts {
       spent_cents_unmeasured_reason?: string | null;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
+      spent_cents_freshness_status?: 'fresh' | 'stale' | 'unavailable' | null;
+      spent_cents_freshness_last_ingested_at_ms?: number | string | null;
     }
   >;
   /** Goal-owned fields that share the launch-policy row read. */
@@ -264,6 +277,10 @@ function mockSql(opts: MockOpts = {}): Sql {
           spent_cents_unmeasured_reason: b?.spent_cents_unmeasured_reason ?? null,
           spent_cents_at: b?.spent_cents_at ?? null,
           spent_cents_source: b?.spent_cents_source ?? null,
+          interactive_usage_freshness_status:
+            b?.spent_cents_freshness_status ?? (b?.spent_cents != null ? 'fresh' : null),
+          interactive_usage_last_ingested_at_ms:
+            b?.spent_cents_freshness_last_ingested_at_ms ?? (b?.spent_cents != null ? Date.now() : null),
         },
       ]);
     }
@@ -2472,6 +2489,7 @@ describe('P-006: the budget launch gate', () => {
     budgetGateFlag.throws = false;
     escalated.calls.length = 0;
     liveSpend.legs = { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 0 };
+    liveSpend.freshnessStatus = 'fresh';
     liveSpend.throws = false;
     liveSpend.calls = 0;
   });
@@ -2484,6 +2502,8 @@ describe('P-006: the budget launch gate', () => {
       spent_cents_unmeasured_reason?: string | null;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
+      spent_cents_freshness_status?: 'fresh' | 'stale' | 'unavailable' | null;
+      spent_cents_freshness_last_ingested_at_ms?: number | string | null;
     },
     seen?: string[],
   ) =>
@@ -2547,6 +2567,8 @@ describe('P-006: the budget launch gate', () => {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: 'fresh',
+      interactiveUsageLastIngestedAtMs: expect.any(Number),
     });
     // Under budget the D-015 default ceilings still get their headcount.
     expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
@@ -2702,6 +2724,22 @@ describe('P-006: the budget launch gate', () => {
     expect(liveSpend.calls).toBe(1);
   });
 
+  it('re-measures a stale snapshot and admits stale live usage as unmeasured headroom', async () => {
+    liveSpend.freshnessStatus = 'stale';
+    liveSpend.legs = { spentCents: null, lineage: 1, lineageUnpriced: 0, pot: 0, session: 1 };
+    const r = await launchWithBudget({
+      budget_cents: 5000,
+      spent_cents: 6000,
+      spent_cents_source: 'goal-lineage-rollup',
+      spent_cents_freshness_status: 'fresh',
+      spent_cents_freshness_last_ingested_at_ms: Date.now() - 31 * 60_000,
+    });
+    expect(liveSpend.calls).toBe(1);
+    expect(r.refusal).toBeNull();
+    expect(r.degradedReasons.some((reason) => reason.includes('interactive-usage-stale') && reason.includes('unmeasured')))
+      .toBe(true);
+  });
+
   it('opens a distinctly-deduped owner escalation, so the refusal is never silent', async () => {
     await launchWithBudget({
       budget_cents: 50000,
@@ -2829,6 +2867,9 @@ describe('per-turn goal inference budget admission (WI-10003507)', () => {
       pot: { samples: 0 },
       session: { samples: 0 },
       lineage: { samples: 0, unpricedSamples: 0 },
+      interactiveUsageFreshness: {
+        status: 'fresh', lastIngestedAtMs: 1, ageMs: 0, windowMs: 30 * 60_000, reason: 'test fresh data',
+      },
       ...override,
     }) as unknown as GoalSpendRollup;
 
@@ -2850,6 +2891,25 @@ describe('per-turn goal inference budget admission (WI-10003507)', () => {
       }),
     ).toMatchObject({ allowed: false, status: 403, code: 'goal_budget_exceeded', spentCents: 1000 });
   });
+
+  it.each(['interactive-usage-stale', 'interactive-usage-unavailable'] as const)(
+    'admits %s live spend as unmeasured headroom even when usage rows exist', (unmeasuredReason) => {
+      const status = unmeasuredReason === 'interactive-usage-stale' ? 'stale' : 'unavailable';
+      expect(evaluateGoalInferenceBudget({
+        ...base,
+        rollup: rollup({
+          unmeasuredReason,
+          samples: 1,
+          pot: { samples: 1 },
+          session: { samples: 0 },
+          lineage: { samples: 1, unpricedSamples: 0 },
+          interactiveUsageFreshness: {
+            status, lastIngestedAtMs: null, ageMs: null, windowMs: 30 * 60_000, reason: unmeasuredReason,
+          },
+        }),
+      })).toEqual({ allowed: true, goalId: 'goal-1', reason: unmeasuredReason });
+    },
+  );
 
   it('resolves the active goal and measures current spend before allowing another turn', async () => {
     budgetGateFlag.value = true;
