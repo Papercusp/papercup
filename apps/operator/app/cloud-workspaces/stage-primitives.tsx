@@ -120,7 +120,41 @@ export function useFocusLifecycle({
       : resolversRef.current.onCloseFocus;
     // Newly mounted forms/menus may be outside the scrollport. Reveal opening
     // focus, but keep the user's scroll position when returning to a trigger.
-    if (resolve) focusSafely(resolve(), { preventScroll: !open });
+    const target = resolve?.();
+    if (!focusSafely(target, { preventScroll: !open }) || !open || !target) return;
+
+    // Docked rails can reserve width after this commit, wrapping the provider
+    // rows above a newly focused field. Keep that field visible as its surface
+    // resizes, only while it still holds focus. Scrolling alone never triggers
+    // this, so the user can scroll away or move to another control freely.
+    let frame: number | undefined;
+    let observer: ResizeObserver | undefined;
+    let stopped = false;
+    const stop = () => {
+      stopped = true;
+      observer?.disconnect();
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      window.removeEventListener("resize", revealAfterLayout);
+      target.removeEventListener("blur", stop);
+    };
+    const revealAfterLayout = () => {
+      if (stopped) return;
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        if (!target.isConnected || document.activeElement !== target) { stop(); return; }
+        const rect = target.getBoundingClientRect();
+        if (rect.top < 0 || rect.bottom > window.innerHeight || rect.left < 0 || rect.right > window.innerWidth)
+          target.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+      });
+    };
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(revealAfterLayout);
+      observer.observe(target.closest("form, [role=menu], [role=dialog]") ?? target.parentElement ?? target);
+    }
+    window.addEventListener("resize", revealAfterLayout);
+    target.addEventListener("blur", stop, { once: true });
+    return stop;
   }, [open]);
 }
 

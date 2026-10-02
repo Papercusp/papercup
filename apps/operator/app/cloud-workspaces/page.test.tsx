@@ -27,6 +27,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -956,6 +957,48 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     // Restoring focus must preserve the user's scroll position.
     expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
     focus.mockRestore();
+  });
+
+  it("keeps an opening field visible across layout changes until the user moves focus", () => {
+    const callbacks: Array<() => void> = [];
+    const observed: Element[] = [];
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { callbacks.push(callback); }
+      observe(element: Element) { observed.push(element); }
+      disconnect = disconnect;
+    });
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId; });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const flush = () => act(() => { for (const [id, callback] of [...frames]) { frames.delete(id); callback(0); } });
+    H.rows = [];
+    const view = render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+    const input = screen.getByLabelText("Connection label");
+    expect(observed).toContain(input.closest("form"));
+    expect(document.activeElement).toBe(input);
+    const scroll = vi.fn();
+    input.scrollIntoView = scroll;
+    let top = 20;
+    vi.spyOn(input, "getBoundingClientRect").mockImplementation(() => ({ x: 20, y: top, top, left: 20,
+      width: 200, height: 30, right: 220, bottom: top + 30, toJSON: () => ({}) }));
+    act(() => callbacks.forEach(callback => callback())); flush();
+    expect(scroll).not.toHaveBeenCalled();
+    top = window.innerHeight + 80;
+    act(() => callbacks.forEach(callback => callback())); flush();
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(input);
+    // A resize response must never take focus or scroll after the user leaves.
+    screen.getByLabelText("Injected credential reference").focus();
+    act(() => callbacks.forEach(callback => callback())); flush();
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(screen.getByLabelText("Injected credential reference"));
+    expect(disconnect).toHaveBeenCalled();
+    view.unmount();
+    expect(frames.size).toBe(0);
+    vi.unstubAllGlobals();
   });
 
   it("control: removing a focused element really does drop focus to <body> here", () => {
