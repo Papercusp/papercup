@@ -696,6 +696,32 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('retains canonical completion coverage when optional legacy fields grow', () => {
+    const { schemaByTool } = buildCorpus();
+    const schema = structuredClone(schemaByTool.get('work_items:complete')) as {
+      anyOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    const legacyFields = Object.fromEntries(Array.from({ length: 12 }, (_, index) => [
+      `legacyCompletionMetadataAlias${index}`,
+      { type: 'string' },
+    ]));
+    for (const branch of schema.anyOf) {
+      branch.properties = { ...legacyFields, ...branch.properties };
+    }
+
+    const compact = compactSchemaForResult(schema);
+    expect(compact).toContain('id?:string');
+    expect(compact).toContain('assumptions?');
+    expect(compact).toContain('validateOnly?');
+    expect(compact).toContain('specAdequacy?:object{current?:array');
+    expect(compact).toContain('completion?:object{rootCauseVerification?:object,verification?:object{coverage?:object{population:array(≥1)<string>');
+    expect(compact).toContain('residue?:array<string>');
+    expect(compact).toContain(
+      'constraint:items[].completion.verification.coverage (same as constraint:completion.verification.coverage)',
+    );
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+  });
+
   it('keeps the successful bug-close root-cause contract visible in bounded discovery', () => {
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('work_items:complete'));
