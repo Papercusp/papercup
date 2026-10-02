@@ -56,7 +56,11 @@ import type {
 } from '../dbos/workspace-host-provision-client';
 import type { WorkspaceHostOperationAcceptance } from '../workspace-host/admission-window';
 import { dbosStarted } from '../dbos/bootstrap';
-import { PAPERCUSP_HOSTED_BRING_UP_AGENTS, type WorkspaceHostBringUp } from '../workspace-host/hosted-bring-up';
+import {
+  PAPERCUSP_HOSTED_BRING_UP_AGENTS,
+  hostedBringUpSupportsHost,
+  type WorkspaceHostBringUp,
+} from '../workspace-host/hosted-bring-up';
 import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
 import { createHostedTutorialProgressRoutes, createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
@@ -360,7 +364,7 @@ async function readCustomerWorkspaceState(
  * Derived on the server only. The caller has already been authorized for exactly this host (the
  * one bound to the selected workspace), and a workspace in any other state gets none: the
  * bring-up's empty-source initialize must never run against a host that already serves a
- * workspace. GCP only, because the bring-up builder is (D-015 rule 3).
+ * workspace. Only for a host the bring-up builder supports (GCP project / AWS account, D-015 rule 3).
  */
 export async function hostedProvisionBringUp(
   input: StartWorkspaceHostProvisioningInput,
@@ -368,7 +372,7 @@ export async function hostedProvisionBringUp(
   readState: (customerWorkspaceId: string) => Promise<string | null>,
 ): Promise<WorkspaceHostBringUp | undefined> {
   if (!customerWorkspaceId) return undefined;
-  if (input.desired.target !== 'gcp' || input.desired.scope.kind !== 'project') return undefined;
+  if (!hostedBringUpSupportsHost(input.desired)) return undefined;
   if ((await readState(customerWorkspaceId)) !== 'provisioning') return undefined;
   return { customerWorkspaceId, requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS };
 }

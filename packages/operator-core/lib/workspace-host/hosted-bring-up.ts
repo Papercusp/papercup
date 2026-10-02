@@ -10,7 +10,8 @@
  * mark the customer workspace `active`.
  *
  * WHO MAY ASK FOR IT. Only the hosted (app.papercusp.com) doors set a bring-up: first-workspace,
- * for every GCP host whether it runs in Papercusp's project or the customer's own, and the hosted
+ * for every GCP and AWS host whether it runs in Papercusp's project/account or the customer's own
+ * (an AWS host is reached over SSM, as the connection's own role — never ambient), and the hosted
  * provision route, for the bound host of a customer workspace still 'provisioning' (a retry of a
  * failed first build). A portal customer has no controller and no initialize route of their own,
  * so without it their workspace never leaves 'provisioning' (aws-byoc-gcp-parity D-015). It is an
@@ -73,6 +74,41 @@ export function workspaceHostBringUpOperationIds(provisionOperationId: string): 
 }
 
 /**
+ * The machine's own cloud identity, as a workload: a GCP VM's service account in its project, or an
+ * EC2 instance's instance profile in its account (aws-byoc-gcp-parity D-015 rule 3). Either way the
+ * instance metadata service answers it on the machine, so nothing is delivered to disk.
+ */
+const HOSTED_BRING_UP_SCOPE_KINDS: Readonly<Record<string, string>> = { gcp: 'project', aws: 'account' };
+
+/**
+ * Whether a provider has a hosted bring-up. Both doors (first-workspace, the hosted provision route)
+ * ask this table instead of naming clouds themselves, so adding a cloud is one entry here.
+ */
+export function hostedBringUpSupportsProvider(provider: string): boolean {
+  return Object.hasOwn(HOSTED_BRING_UP_SCOPE_KINDS, provider);
+}
+
+/** Whether this host's target AND scope have a hosted bring-up. */
+export function hostedBringUpSupportsHost(desired: WorkspaceHostDesiredSpec): boolean {
+  const target = String(desired.target);
+  return hostedBringUpSupportsProvider(target) && HOSTED_BRING_UP_SCOPE_KINDS[target] === desired.scope.kind;
+}
+
+function hostedBringUpWorkload(desired: WorkspaceHostDesiredSpec): {
+  provider: string;
+  scopeId: string;
+  workloadId: string;
+} {
+  if (!hostedBringUpSupportsHost(desired)) {
+    throw new Error(
+      `hosted bring-up supports GCP project and AWS account hosts only (host ${desired.hostId}, ` +
+        `target ${String(desired.target)}, scope ${String(desired.scope.kind)})`,
+    );
+  }
+  return { provider: String(desired.target), scopeId: desired.scope.id, workloadId: desired.hostId };
+}
+
+/**
  * The initialization request for a freshly built hosted machine: an empty workspace and the
  * machine's own cloud identity (the instance metadata server answers it; nothing is delivered
  * to disk). A first build is the first binding, so the generation is 1.
@@ -85,10 +121,7 @@ export function hostedBringUpInitialization(input: {
   requestedAgents: readonly WorkspaceHostCanaryAgent[];
 }): WorkspaceHostInitializationAdmission {
   const { desired } = input;
-  if (desired.target !== 'gcp' || desired.scope.kind !== 'project') {
-    throw new Error(`hosted bring-up supports GCP project hosts only (host ${desired.hostId})`);
-  }
-  const workload = { provider: 'gcp', scopeId: desired.scope.id, workloadId: desired.hostId };
+  const workload = hostedBringUpWorkload(desired);
   const generation = 1;
   return {
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,

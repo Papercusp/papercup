@@ -36,6 +36,8 @@ import {
 import {
   enrollHostedWorkspaceConnector,
   hostedBringUpInitialization,
+  hostedBringUpSupportsHost,
+  hostedBringUpSupportsProvider,
   hostedConnectorRouteLabel,
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
   readHostedBringUpBinding,
@@ -111,10 +113,61 @@ describe('hosted bring-up (D-401)', () => {
     expect(PAPERCUSP_HOSTED_BRING_UP_AGENTS).toEqual(['omp']);
   });
 
-  it('refuses a host that is not a GCP project host', () => {
+  it('refuses a host that is neither a GCP project host nor an AWS account host', () => {
     expect(() => request({ ...HOSTED, scope: { kind: 'organization', id: 'org-1' } } as never)).toThrow(
-      /GCP project hosts only/,
+      /GCP project and AWS account hosts only/,
     );
+    expect(() => request({ ...HOSTED, target: 'aws', scope: { kind: 'project', id: 'p' } } as never)).toThrow(
+      /GCP project and AWS account hosts only/,
+    );
+    expect(() => request({ ...HOSTED, target: 'azure', scope: { kind: 'subscription', id: 's' } } as never)).toThrow(
+      /GCP project and AWS account hosts only/,
+    );
+  });
+
+  // aws-byoc-gcp-parity D-015 rule 3 (WI-10005354): an EC2 instance's instance profile is its
+  // provider identity, exactly as a GCP VM's service account is.
+  const AWS_HOST = {
+    ...HOSTED,
+    hostId: 'host-aws-0f9b1ba8db30d143',
+    target: 'aws',
+    scope: { kind: 'account', id: '123456789012' },
+    region: 'us-east-2',
+    zone: 'us-east-2a',
+    size: 't3.large',
+    image: { id: 'ami-0123456789abcdef0' },
+    provider: { network: { mode: 'managed' } },
+  } as unknown as WorkspaceHostDesiredSpec;
+
+  it("builds an AWS account host's request from its instance profile identity", () => {
+    expect(request(AWS_HOST)).toMatchObject({
+      hostId: AWS_HOST.hostId,
+      source: { kind: 'empty' },
+      requestedAgents: ['omp'],
+      credentialRefs: {
+        cloudCredentialRef: { kind: 'cloud', ref: 'pc-cloud-workload://aws/123456789012/host-aws-0f9b1ba8db30d143' },
+      },
+      credentialDelivery: {
+        cloud: {
+          kind: 'provider-identity',
+          generation: 1,
+          audience: AWS_HOST.hostId,
+          revocationRef: 'pc-cloud-workload-revocation://aws/123456789012/host-aws-0f9b1ba8db30d143/g1',
+        },
+      },
+    });
+    const admitted = { ...request(AWS_HOST), deliveryCapabilities: resolveWorkspaceHostDeliveryCapabilities(AWS_HOST) };
+    expect(planWorkspaceHostInitialization(admitted).steps.map((step) => step.kind)).toContain('bind-credential');
+    expect(() => assertWorkspaceHostSecretIsolation(admitted, 'hosted-bring-up.test.aws')).not.toThrow();
+  });
+
+  it('answers both doors from one table: GCP and AWS have a bring-up, nothing else does', () => {
+    expect(hostedBringUpSupportsProvider('gcp')).toBe(true);
+    expect(hostedBringUpSupportsProvider('aws')).toBe(true);
+    for (const other of ['azure', 'toString', '__proto__', '']) expect(hostedBringUpSupportsProvider(other)).toBe(false);
+    expect(hostedBringUpSupportsHost(HOSTED)).toBe(true);
+    expect(hostedBringUpSupportsHost(AWS_HOST)).toBe(true);
+    expect(hostedBringUpSupportsHost({ ...AWS_HOST, scope: { kind: 'project', id: 'p' } } as never)).toBe(false);
   });
 
   it('derives one stable, routable operation per stage from the provision', () => {

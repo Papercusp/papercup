@@ -342,10 +342,24 @@ describe('hosted browser route boundary', () => {
       }
     });
 
-    it('requests none for an AWS host or without a selected workspace, reading nothing', async () => {
+    it('owes an AWS account host the same bring-up (D-015 rule 3, WI-10005354)', async () => {
       const readState = vi.fn(async () => 'provisioning');
       const awsInput = { desired: { hostId: 'host-bound', target: 'aws', scope: { kind: 'account', id: '1' } } } as never;
-      await expect(hostedProvisionBringUp(awsInput, SELECTED_WORKSPACE, readState)).resolves.toBeUndefined();
+      await expect(hostedProvisionBringUp(awsInput, SELECTED_WORKSPACE, readState)).resolves.toEqual({
+        customerWorkspaceId: SELECTED_WORKSPACE,
+        requestedAgents: ['omp'],
+      });
+    });
+
+    it('requests none for an unsupported host or without a selected workspace, reading nothing', async () => {
+      const readState = vi.fn(async () => 'provisioning');
+      const azureInput = {
+        desired: { hostId: 'host-bound', target: 'azure', scope: { kind: 'subscription', id: 's' } },
+      } as never;
+      // A supported target with the wrong scope kind is not a bring-up host either.
+      const awsInProject = { desired: { hostId: 'host-bound', target: 'aws', scope: { kind: 'project', id: 'p' } } } as never;
+      await expect(hostedProvisionBringUp(azureInput, SELECTED_WORKSPACE, readState)).resolves.toBeUndefined();
+      await expect(hostedProvisionBringUp(awsInProject, SELECTED_WORKSPACE, readState)).resolves.toBeUndefined();
       await expect(hostedProvisionBringUp(gcpInput, undefined, readState)).resolves.toBeUndefined();
       expect(readState).not.toHaveBeenCalled();
     });
