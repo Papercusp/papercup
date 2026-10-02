@@ -567,16 +567,20 @@ export function bindNativeLoaderClosure(stderrBytes: Buffer, windows: NativeProf
     if (exact) return exact;
     if (!path.isAbsolute(name)) throw new Error('native loader initialization path unresolved');
     try {
-      const resolved=fs.realpathSync(name), candidates=files.filter(file=>fs.realpathSync(file.path)===resolved);
-      if(candidates.length!==1) throw new Error('ambiguous alias');
-      const file=candidates[0], descriptor=fs.openSync(name,'r');
+      const descriptor=fs.openSync(name,'r');
+      let file: typeof executable;
       try {
         const stat=fs.fstatSync(descriptor,{bigint:true});
         const major=((stat.dev>>8n)&0xfffn)|((stat.dev>>32n)&0xfffff000n);
         const minor=(stat.dev&0xffn)|((stat.dev>>12n)&0xffffff00n);
-        const [mappedMajor,mappedMinor]=file.mappedDevice.split(':').map(x=>BigInt('0x'+x));
-        if(stat.ino!==BigInt(file.mappedInode) || stat.size!==BigInt(file.bytes)
-          || major!==mappedMajor || minor!==mappedMinor) throw new Error('alias identity changed');
+        const candidates=files.filter(candidate=>{
+          const [mappedMajor,mappedMinor]=candidate.mappedDevice.split(':').map(x=>BigInt('0x'+x));
+          return stat.ino===BigInt(candidate.mappedInode) && major===mappedMajor && minor===mappedMinor;
+        });
+        if(candidates.length!==1) throw new Error('ambiguous alias');
+        file=candidates[0];
+        if(stat.size!==BigInt(file.bytes)
+          || fs.realpathSync('/proc/self/fd/'+descriptor)!==fs.realpathSync(file.path)) throw new Error('alias identity changed');
         const hash=crypto.createHash('sha256'), buffer=Buffer.allocUnsafe(1024*1024); let length,bytes=0;
         while((length=fs.readSync(descriptor,buffer,0,buffer.length,null))>0) {hash.update(buffer.subarray(0,length));bytes+=length;}
         const after=fs.fstatSync(descriptor,{bigint:true});
