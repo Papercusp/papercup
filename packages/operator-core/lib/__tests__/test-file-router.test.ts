@@ -59,7 +59,6 @@ import {
 } from '../../../../scripts/test-files.mjs';
 // @ts-expect-error — same plain-Node .mjs launcher, no declaration file.
 import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
-// @ts-expect-error — same plain-Node .mjs CLI, no declaration file.
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 // Tests of main() are harness-scoped even when a caller invokes test:file without
