@@ -989,6 +989,50 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect(r?.workItem.id).toBe('EI-fallthrough');
   });
 
+  it.each([false, true])('WI-10002617: a feature-only fleet never claims an adjacent change (priority=%s)', async (priority) => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-fleet-outside', { kind: 'change', featureOrder: 1 });
+    const s = spec({
+      specVersion: '1.0', specId: 'strict-feature-fleet', revision: 6,
+      view: { filter: { all: [
+        { field: 'kind', op: 'in', value: ['feature'] },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+      rank: { mode: 'lexicographic', terms: priority
+        ? [{ expr: 'priority', dir: 'desc' }, { expr: 'age', dir: 'asc' }]
+        : [{ expr: 'age', dir: 'asc' }] },
+    });
+    const opts = { harness: H, fleetSlug: 'strict-feature-fleet' };
+    expect(await getNextWorkItem(s, BEE, opts)).toBeNull();
+    const [outside] = await db.sql`SELECT taken_by FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'EI-fleet-outside'`;
+    expect(outside.taken_by).toBeNull();
+
+    await seedFeature('F-fleet-inside', { featureOrder: 100 });
+    expect((await getNextWorkItem(s, BEE, opts))?.workItem.id).toBe('F-fleet-inside');
+    const [stillOutside] = await db.sql`SELECT taken_by FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'EI-fleet-outside'`;
+    expect(stillOutside.taken_by).toBeNull();
+  });
+
+  it('WI-10002617: a fleet still claims an issue admitted by a nested mixed-family filter', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-fleet-admitted', { kind: 'change' });
+    const s = spec({
+      specVersion: '1.0', specId: 'mixed-family-fleet', revision: 1,
+      view: { filter: { all: [
+        { any: [
+          { field: 'kind', op: '=', value: 'feature' },
+          { field: 'id', op: '=', value: 'EI-fleet-admitted' },
+        ] },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect((await getNextWorkItem(s, BEE, { harness: H, fleetSlug: 'mixed-family-fleet' }))?.workItem.id)
+      .toBe('EI-fleet-admitted');
+  });
+
   // EI-10062 (and its duplicate trail: EI-9887/9888/9896/10002/10040): a leader's hand-curated
   // `id IN (...)` drain-list spec has NO `kind` leaf at all, so issueKindsForFallback found no
   // lane constraint to carry over and tier 3 widened to the ENTIRE unrestricted issue family —
