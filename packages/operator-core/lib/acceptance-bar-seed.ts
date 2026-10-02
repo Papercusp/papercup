@@ -624,6 +624,13 @@ export function unexpectedAcceptanceBarProjectionIds(
     .map((row) => row.spec_id);
 }
 
+export function acceptanceBarProjectionConflictDetail(unexpected: readonly string[]): string {
+  return `stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}. ` +
+    `To clear an intentionally removed mapping, use plans:set-specs on each current clause with ` +
+    `lifecycleStatus:'superseded' and sourceBar:null, then rerun the activation audit. ` +
+    `lifecycleStatus:'retired' with a retained sourceBar pin still counts as a live conflict.`;
+}
+
 export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): AcceptanceBarSeedBuildResult {
   const source = validateAcceptanceBarSource(input.planContent);
   if (!source.ok) return refusal(source.problems);
@@ -1204,9 +1211,7 @@ export async function seedAcceptanceBarsInTransaction(
   if (unexpected.length > 0) {
     throw new AcceptanceBarSeedAbort(refusal([{
       code: 'bar_projection_conflict',
-      detail:
-        `stored BAR projection(s) are outside the exact current map: ` +
-        unexpected.join(', '),
+      detail: acceptanceBarProjectionConflictDetail(unexpected),
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>);
   }
   const identityBySpec = new Map(identities.map((row) => [row.spec_id, row]));

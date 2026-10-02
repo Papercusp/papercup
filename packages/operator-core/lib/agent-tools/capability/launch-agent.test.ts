@@ -12,7 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dispatchProjectedTool, type ProjectedTool, type ToolResult, type UnifiedToolContext } from '@papercusp/tooldef';
+import { dispatchProjectedTool, listMcpProjections, type ProjectedTool, type ToolResult, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
 
@@ -543,6 +543,33 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
 describe('published launch args schema', () => {
   it('publishes the conditional non-empty brief requirement at the tool level', () => {
     expect(launchAgent.description).toContain('REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`');
+  });
+
+  it('publishes successor/restoreVisible mutual exclusion and the visible successor default', () => {
+    const published = listMcpProjections().find((tool) => /launch[-_:]?agent/i.test(tool.name));
+    expect(published).toBeDefined();
+    if (!published) throw new Error('capability:launch-agent was not registered in the MCP projection');
+
+    const schema = published.inputSchema as unknown as {
+      type?: string;
+      properties?: Record<string, { description?: string }>;
+      dependentSchemas?: Record<string, unknown>;
+    };
+    expect(schema.type).toBe('object');
+    expect(schema.dependentSchemas).toMatchObject({
+      successor: { not: { required: ['restoreVisible'] } },
+      restoreVisible: { not: { required: ['successor'] } },
+    });
+    expect(schema.properties?.successor?.description).toMatch(
+      /visible by default when `headless` is omitted or `false`/i,
+    );
+
+    expect(
+      launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' }, restoreVisible: true }).success,
+    ).toBe(false);
+    expect(
+      launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' }, restoreVisible: false }).success,
+    ).toBe(false);
   });
 
   it('rejects plan with resume or successor before handler dispatch', () => {

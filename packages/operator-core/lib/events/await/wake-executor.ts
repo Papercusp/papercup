@@ -2787,6 +2787,24 @@ export function quotaRecoveryPickupConfirmed(
 }
 
 /**
+ * WI-10005134: an ACKED `deferred-*` refusal (busy gate, pending carry-respawn,
+ * owner typing, quota wall) is the live psu host deciding "not now". The host is
+ * alive and owns the session, so the only safe outcome is a durable park. Treating
+ * it as a socket miss (null) let the executor fall through to `resume-headless`,
+ * which put a second `claude --resume` process on the live session.
+ */
+export function parkOnHostDeferral(
+  confirmation: InjectConfirmation | null | undefined,
+  reason: string | null | undefined,
+): WakeOutcome | null {
+  if (confirmation !== 'acked' || typeof reason !== 'string' || !reason.startsWith('deferred-')) return null;
+  return {
+    kind: 'park',
+    reason: `psu-host ${reason}: the live host deferred this wake; parked for a durable retry, never a second process`,
+  };
+}
+
+/**
  * Inject a wake into a live psu-pty host, forking WARM (default) vs COLD
  * (su-cold-auto-mode-2026-07-03 Phase 2). Shared by BOTH executeWake psu-host inject
  * branches (the handle-less always-armed path + the main adv-session path) so the
@@ -2801,8 +2819,9 @@ export function quotaRecoveryPickupConfirmed(
  * flag / carry-note error falls back to warm, and a failed COLD inject retries warm in
  * place — the cold path never drops or corrupts a wake.
  *
- * Returns the delivered WakeOutcome on a clean inject, or null on a socket miss (the
- * caller then falls through to the normal channels, exactly as before).
+ * Returns the delivered WakeOutcome on a clean inject, a park when the live host
+ * acknowledged and deferred it (WI-10005134), or null on a socket miss (the caller
+ * then falls through to the normal channels, exactly as before).
  */
 async function injectPsuHostWake(
   d: DeliveryWork,
@@ -2860,7 +2879,7 @@ async function injectPsuHostWake(
       : null;
     if (confirming) {
       const result = await confirming(sock, injectMsg);
-      if (!result.ok) return null;
+      if (!result.ok) return parkOnHostDeferral(result.confirmation, result.reason);
       if (result.reason === 'accepted' || result.reason === 'pending-delivery-id') {
         return {
           kind: 'park',
@@ -3218,6 +3237,10 @@ async function injectPsuHostWake(
             : 'psu-socket-reset';
       return { kind: 'delivered', channel };
     }
+    // WI-10005134: a live host that DEFERRED the cold inject is not a miss —
+    // re-injecting warm would only hit the same deferral.
+    const coldDeferral = parkOnHostDeferral(confirmation, confirmationReason);
+    if (coldDeferral) return coldDeferral;
     // Cold inject missed → warm in place rather than drop the wake. Deliberately
     // use the boolean injector here: the confirmation transport just failed, so
     // retrying that same seam would repeat the miss instead of exercising the
@@ -3976,6 +3999,23 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return {
         kind: 'park',
         reason: 'no recorded pid but presence is fresh — parking to avoid a concurrent resume of a live session',
+      };
+    }
+
+    // WI-10005134: every channel below STARTS A NEW PROCESS for this session
+    // (cold successor, hive fresh wake, fresh-context fork, backend re-home,
+    // resume-headless). The recorded pid above can be stale while the session
+    // is still alive: a psu host carry-respawns its CLI child under a new pid.
+    // A live, identity-verified psu host is the authoritative "this session is
+    // running" signal, so if the host ladder above did not take the wake, park.
+    // A parked delivery is retried; a second process on one session is not
+    // recoverable (measured 2026-10-01: three wakes for su-9dfd3ffc went
+    // resume-headless while its host was live and deferring them).
+    if (findPsuHost(d.subscriberId)) {
+      return {
+        kind: 'park',
+        reason:
+          'live psu host owns this session but did not take the wake inject; parked instead of starting a second process (WI-10005134)',
       };
     }
 

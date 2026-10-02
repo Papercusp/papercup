@@ -5942,8 +5942,8 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- Rows released by another agent remain eligible for this caller; a peer can
     -- no longer overwrite this caller's cooldown in the shared row stamp.
     AND ${releaseCooldownFloor}
-    -- Built-in placeable kinds + any generic-kind datatype that opted into placement
-    -- (the 'hive-placement' tag — frontierPlacementKindClause). DARK until a datatype opts in.
+    -- Feature-family agent work only: not issue-routed, and nature work / audience agent
+    -- through the single work predicate (frontierPlacementKindClause, P-009 / D-022).
     AND ${frontierPlacementKindClause(sql, opts.workspaceId)}
     -- G2 admission (shared-hive-trust-admission P-002): never self-select a remote,
     -- un-admitted item — the same gate the feature frontier enforces (P-010 trust leg,

@@ -1,4 +1,4 @@
-/** POST /workspace-hosts/provision — start or resume one durable GCP host provision. */
+/** POST /workspace-hosts/provision — start or resume one durable GCP or AWS host provision. */
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   isWorkspaceHostCanaryIdentityLabelKey,
@@ -15,9 +15,14 @@ import { workspaceHostAuditUrl } from '../../../workspace-host/admission-window'
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
+  listLiveWorkspaceHostIdsOnConnection,
   readWorkspaceHostConnection,
   type StoredWorkspaceHostConnection,
 } from '../../../workspace-host/observability-store';
+import {
+  decideWorkspaceHostInstanceCap,
+  workspaceHostConnectionInstanceCap,
+} from '../../../workspace-host/instance-cap';
 import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
@@ -30,6 +35,12 @@ import {
 } from '../../../workspace-host/controller-forwarding';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
+
+/**
+ * Targets with a registered provider factory (lib/dbos/bootstrap.ts → provider-factories.ts).
+ * Any other target is a typed 501 rather than a workflow failure deep inside the runner.
+ */
+export const WORKSPACE_HOST_PROVISIONABLE_TARGETS: ReadonlySet<string> = new Set(['gcp', 'aws']);
 
 interface ProvisionBody {
   connectionId?: unknown;
@@ -47,6 +58,11 @@ export interface WorkspaceHostProvisionRouteDependencies {
   activeWorkspaceId: () => string;
   provisioningAvailable: () => boolean;
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
+  /**
+   * Live hosts already on the connection, for the per-connection instance cap (instance-cap.ts).
+   * Absent = the store read; a tenant surface supplies its RLS-wrapped equivalent.
+   */
+  listLiveHostIds?: (workspaceId: string, connectionId: string) => Promise<string[]>;
   startProvisioning: (
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
@@ -179,7 +195,7 @@ export function createWorkspaceHostProvisionRoute(
       if (stored.target !== requestedDesired.target) {
         return Response.json({ ok: false, error: 'connection target does not match desired.target' }, { status: 422 });
       }
-      if (requestedDesired.target !== 'gcp') {
+      if (!WORKSPACE_HOST_PROVISIONABLE_TARGETS.has(requestedDesired.target)) {
         return Response.json(
           {
             ok: false,
@@ -188,6 +204,29 @@ export function createWorkspaceHostProvisionRoute(
           },
           { status: 501 },
         );
+      }
+      // One live host per hosted sign-up, on every cloud (D-397 / aws-byoc-gcp-parity D-001).
+      // Checked before the workflow starts, so a capped request creates nothing at all.
+      const cap = workspaceHostConnectionInstanceCap(stored.connection);
+      if (cap !== null) {
+        const liveHostIds = await (dependencies.listLiveHostIds ?? listLiveWorkspaceHostIdsOnConnection)(
+          workspaceId,
+          connectionId,
+        );
+        const decision = decideWorkspaceHostInstanceCap({ cap, requestedHostId: requestedDesired.hostId, liveHostIds });
+        if (!decision.admitted) {
+          return Response.json(
+            {
+              ok: false,
+              error: decision.error,
+              message: `this connection already has ${decision.liveHostIds.length} live workspace host(s); the cap is ${decision.cap}`,
+              cap: decision.cap,
+              connectionId,
+              liveHostIds: decision.liveHostIds,
+            },
+            { status: 409 },
+          );
+        }
       }
       // The control query deliberately masks credential references. Rebind the
       // stored raw reference and connection metadata server-side so a browser

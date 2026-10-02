@@ -12,7 +12,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveExplicitAgentOwnerId } from '../coordination/recipient-resolve';
 import { COORD_ROLES } from '../coordination/roles';
 // The allowlist comes from its leaf: the args schema below reads it at module-eval time,
 // which the `../../work-items` re-export cannot serve inside that module's import cycle.
@@ -112,10 +113,23 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    // EI-9274: resolve a literal `'self'` assignee the same as an omitted one (both →
-    // the caller) — previously stored verbatim, producing an unmatchable, permanently
-    // orphaned claim (WI-3881).
-    const assignee = resolveSelfLiteral(args.assignee, ident.ownerId) ?? ident.ownerId;
+    const requestedAssignee = args.assignee ?? ident.ownerId;
+    const assigneeResolution = await resolveExplicitAgentOwnerId(
+      requestedAssignee,
+      ident.ownerId,
+      ident.workspaceId,
+    );
+    if (!assigneeResolution.ok) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, error: assigneeResolution.code, hint: assigneeResolution.message }),
+          },
+        ],
+      };
+    }
+    const assignee = assigneeResolution.ownerId;
     // workspace-work-scope-policy-2026-09-04 P-006: a pull from an out-of-scope harness is
     // refused before any SKIP-LOCKED claim runs (held, never deleted; ledgered). No policy ⇒
     // one cached read, byte-identical behaviour.

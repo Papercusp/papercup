@@ -16,6 +16,7 @@ import { backfillSince, subscribe, type SyncEvent, type SubscribeHandle } from '
 import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
 import type { HostedTenantContextRunner } from '../auth/hosted/service-adapters';
 import {
+  listLiveWorkspaceHostIdsOnConnection,
   readWorkspaceHostConnection,
   readWorkspaceHostControl,
   readWorkspaceHostDestroyTarget,
@@ -125,6 +126,8 @@ export interface HostedBrowserRouteDependencies {
     customerWorkspaceId: string,
     tx?: Sql,
   ) => Promise<string | null>;
+  /** Live hosts on one connection, for the per-connection instance cap, read under tenant RLS. */
+  readonly listLiveHostIds?: (workspaceId: string, connectionId: string, tx?: Sql) => Promise<string[]>;
   readonly startProvisioning?: (
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
@@ -328,6 +331,11 @@ function localProvisionRoute(
     },
     readConnection: (workspaceId, connectionId) =>
       wrapTenantRead(principal, runTenant, (tx) => readConnection(workspaceId, connectionId, tx)),
+    // The per-connection instance cap reads under the same tenant transaction as the
+    // connection itself, so it can only ever count this tenant's hosts.
+    listLiveHostIds: (workspaceId, connectionId) =>
+      wrapTenantRead(principal, runTenant, (tx) =>
+        (deps.listLiveHostIds ?? listLiveWorkspaceHostIdsOnConnection)(workspaceId, connectionId, tx)),
     startProvisioning: (input) =>
       (deps.startProvisioning ?? startWorkspaceHostProvisioningWorkflow)({ ...input, actorId: principal.userId }),
   });

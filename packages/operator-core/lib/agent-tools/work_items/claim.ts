@@ -85,6 +85,7 @@ import {
   type PilotParticipantRole,
 } from '../../pilot-participant-receipts';
 import { canonicalizeAssigneeOwnerId, resolveHolderOwnerId } from '../../work-item-holder-identity';
+import { resolveExplicitAgentOwnerId } from '../coordination/recipient-resolve';
 
 interface ClaimItem {
   id: string;
@@ -306,10 +307,16 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // here with a typed reason naming the fix. Left to the claimWorkItem backstop it came back
   // null, which this path reported as a phantom claim conflict. A full id, a non-su identity,
   // and any other value pass through byte-identical, with no lookup.
-  if (it.assignee) {
+  if (it.assignee !== undefined) {
     const canonical = await canonicalizeAssigneeOwnerId(it.assignee, { workspaceId: identity.workspaceId ?? null });
     if (!canonical.ok) return { ok: false, id: it.id, error: canonical.code, hint: canonical.message };
-    if (canonical.expandedFrom !== null) it.assignee = canonical.ownerId;
+    const resolved = await resolveExplicitAgentOwnerId(
+      canonical.ownerId,
+      identity.ownerId,
+      identity.workspaceId ?? null,
+    );
+    if (!resolved.ok) return { ok: false, id: it.id, error: resolved.code, hint: resolved.message };
+    it.assignee = resolved.ownerId;
   }
   const claimer = it.assignee ?? claimerDefault;
   if (it.pilotRole && claimer !== claimerDefault) {

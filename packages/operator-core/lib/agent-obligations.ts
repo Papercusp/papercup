@@ -41,7 +41,16 @@ export type AgentObligationFamily =
    * — so it is exactly the one a compaction drops without trace, leaving a
    * session parked on a key nobody will ever fire.
    */
-  | 'waiting-on';
+  | 'waiting-on'
+  /**
+   * A consult opened under `latency_contract:'proceed'` whose ASSUMPTION the
+   * originator has not reconciled. 'proceed' lets the agent keep working before
+   * the answer arrives, which incurs a debt: if the answer (or its absence)
+   * contradicts what was assumed, work built on the assumption must be redone.
+   * Until now that debt was an honour-system instruction — no row, no terminal
+   * state, so a compaction or a lapsed consult silently dropped it.
+   */
+  | 'consult-reconciliation';
 export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';
 export type AgentObligationFreshness = 'current' | 'stale' | 'unknown';

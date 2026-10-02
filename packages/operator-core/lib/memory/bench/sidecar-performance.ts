@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { z } from 'zod';
 import { channel } from 'node:diagnostics_channel';
@@ -295,6 +295,23 @@ export async function runPerformanceChild(input: {
   const { runGovernedOperation, admissionContextFromEnvironment } = await import('../../resource-governor/execution');
   const { activeWorkspaceId } = await import('../../workspace-registry');
   const { manifest, manifestSha256, cell, arm } = input;
+  // The declared evaluator can live in an immutable source artifact. Always
+  // spawning this module's live sibling defeated that identity when a long
+  // matrix crossed a shared-tree edit. Loader/config pins let the artifact
+  // carry its own toolchain without inheriting a parent's tsx alias context.
+  if (!manifest.inputs.evaluator || !cell.inputIds.includes('evaluator')) {
+    throw new Error('performance child requires a declared evaluator');
+  }
+  const runtimeInput = (parameter: 'runtimeLoader' | 'runtimeTsconfig'): string | undefined => {
+    const ref = cell.parameters[parameter];
+    if (ref === undefined) return undefined;
+    if (typeof ref !== 'string' || !cell.inputIds.includes(ref) || !manifest.inputs[ref]) {
+      throw new Error(`undeclared performance ${parameter}`);
+    }
+    return path.resolve(manifest.inputs[ref].path);
+  };
+  const evaluator = path.resolve(manifest.inputs.evaluator.path);
+  const loader = runtimeInput('runtimeLoader'), tsconfig = runtimeInput('runtimeTsconfig');
   const parent = admissionContextFromEnvironment(process.env.PAPERCUSP_ADMISSION_CONTEXT);
   const memoryBytes = [arm.artifacts.graph, arm.artifacts.tokenizer, arm.artifacts.config, ...arm.artifacts.weights]
     .reduce((n, file) => n + file.bytes, 0);
@@ -314,15 +331,26 @@ export async function runPerformanceChild(input: {
       return { cpuWeight: arm.execution.intraOpThreads, memoryBytes: Math.ceil(peakRssMiB * 1024 * 1024) };
     },
   }, async (context) => {
+    // Admission can queue before spawn. Recheck the complete declared source
+    // and input population after that wait and before any child executes it.
+    for (const ref of cell.inputIds) {
+      const declared = manifest.inputs[ref];
+      if (!declared) throw new Error(`undeclared performance input: ${ref}`);
+      const actual = await fingerprintFile(path.resolve(declared.path));
+      if (actual.sha256 !== declared.sha256 || actual.bytes !== declared.bytes) {
+        throw new Error(`performance child input fingerprint mismatch: ${ref}`);
+      }
+    }
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       const child = (deps.spawnProcess ?? spawn)(process.execPath,
         // The child runs a TS file; parent eval/stdin/Vitest flags are not a
         // valid file launch context. Use the benchmark's existing tsx loader.
-        ['--import', 'tsx', fileURLToPath(new URL('./embedder-eval-cli.ts', import.meta.url)),
+        ['--import', loader ? pathToFileURL(loader).href : 'tsx', evaluator,
           '--manifest', input.manifestFile, '--manifest-sha256', manifestSha256, '--cell', cell.id,
           '--legs', `sidecar:${cell.armId}`, '--isolated-sidecar', '--mdenseon-model', input.mdenseonModel,
           ...(cell.parameters.transportTrace === true ? ['--transport-trace'] : []), '--out', input.rawOutput],
-        { stdio: ['ignore', input.logFd, input.logFd], env: { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1',
+        { stdio: ['ignore', input.logFd, input.logFd], env: { ...process.env,
+          ...(tsconfig ? { TSX_TSCONFIG_PATH: tsconfig } : {}), PAPERCUSP_FORBID_REAL_PG: '1',
           PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(context) } });
       child.once('error', reject); child.once('exit', resolve);
     });

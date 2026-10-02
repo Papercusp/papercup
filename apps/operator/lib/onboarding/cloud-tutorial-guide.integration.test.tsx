@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Button } from "@/app/harness/Button";
 import { createTutorialState, tutorialReducer, type ProductObservation } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
-import { CloudTutorialGuide } from "./cloud-tutorial-guide";
+import { CloudTutorialGuide, CloudTutorialHelpEntry } from "./cloud-tutorial-guide";
 
 const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
 let systemReducedMotion = false;
@@ -29,6 +29,17 @@ function Fixture({ observation = { scope, revision: 1, access: "allowed" } as Pr
   </>;
 }
 describe("Persistent nonmodal Cloud Guide", () => {
+  it("mounts the replay action only after opening the accessible Help disclosure", () => {
+    const onStart = vi.fn();
+    render(<CloudTutorialHelpEntry onStart={onStart} />);
+    const help = screen.getByRole("button", { name: "Help" });
+    expect(help.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Get your first agent running" })).toBeNull();
+    fireEvent.click(help);
+    expect(help.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Get your first agent running" }));
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
   it("honors the system reduced-motion preference even when a caller does not request reduced motion", async () => {
     systemReducedMotion = true;
     render(<Fixture reducedMotion={false} />);

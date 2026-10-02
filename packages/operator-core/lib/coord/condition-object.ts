@@ -49,10 +49,12 @@
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from '../agent-tools/coordination/log';
 import { WORK_ITEM_TAG_SRC_KIND } from '../agent-tools/coordination/coupled-topic-sources';
 import { EVENT_SUBSCRIPTION_KIND } from '../agent-tools/coordination/event-subscriptions';
+import type { Sql } from 'postgres';
 import {
   assessCriticalClaimProgressLease,
   CRITICAL_CLAIM_PROGRESS_LEASE_MS,
 } from '../agent-tools/work_items/release-force-guard';
+import { CHECKPOINT_RUN_LOCK_STALE_MS } from '../release-checkpoint-launch';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { linkWorkItem, readWorkItemClaimHoldProvenance, unlinkWorkItem } from '../work-items';
 import {
@@ -70,6 +72,13 @@ export const CONDITION_LINK_REL = 'about' as const;
 
 /** Hard cap on rows returned by one resolve, so a pathological key cannot flood a caller. */
 export const CONDITION_OBJECT_ROW_CAP = 200;
+
+const CHECKPOINT_AWAIT_GLOBAL_EVENT_KEYS = [
+  'release:green',
+  'green-checkpoint:red',
+  'green-checkpoint:inconclusive',
+  'green-checkpoint:held',
+] as const;
 
 /**
  * Is a condition claimed, and is that claim still worth anything?
@@ -94,6 +103,9 @@ export interface ConditionWorkItemRow {
   /** Genuine item-scoped progress, distinct from the holder's process heartbeat. */
   lastProgressAt: string | null;
   expiresAt: string | null;
+  /** Latest capped deadline from a pending exact-run checkpoint:await by takenBy. */
+  checkpointAwaitCreatedAt?: string | null;
+  checkpointAwaitExpiresAt?: string | null;
   /** Persisted work-item payload used to apply the claim-hold guard's provenance predicate. */
   payload?: unknown;
 }
@@ -188,24 +200,42 @@ export function resolveConditionObject(
  * coordination surface, though, and a claimed condition owner must not hold that key
  * forever merely because its issue-family row has no stored expiry. Reuse the shared
  * critical-claim progress lease for this read-only fallback. Missing progress and claim
- * anchors remain unmeasured (and therefore fail closed as held); no generic issue row is
- * mutated or assigned an expiry by this policy.
+ * anchors remain unmeasured (and therefore fail closed as held) unless the same holder
+ * has a pending checkpoint await bound to an exact runId. That await supplies a temporary,
+ * bounded lease extension; no generic issue row is mutated or assigned an expiry by this
+ * policy.
  */
 export function effectiveConditionLeaseExpiresAt(
   row: ConditionWorkItemRow,
   nowMs: number,
 ): string | null {
   if (!row.takenBy) return null;
-  if (row.expiresAt) return row.expiresAt;
+  let baseExpiry = row.expiresAt;
+  if (!baseExpiry) {
+    const lease = assessCriticalClaimProgressLease({
+      takenAt: row.takenAt,
+      lastProgressAt: row.lastProgressAt,
+      nowMs,
+      leaseMs: CRITICAL_CLAIM_PROGRESS_LEASE_MS,
+    });
+    if (lease.anchorMs !== null) baseExpiry = new Date(lease.anchorMs + lease.leaseMs).toISOString();
+  }
 
-  const lease = assessCriticalClaimProgressLease({
-    takenAt: row.takenAt,
-    lastProgressAt: row.lastProgressAt,
-    nowMs,
-    leaseMs: CRITICAL_CLAIM_PROGRESS_LEASE_MS,
-  });
-  if (lease.anchorMs === null) return null;
-  return new Date(lease.anchorMs + lease.leaseMs).toISOString();
+  // A precise pending checkpoint await proves the same holder is waiting on a
+  // specific in-flight verifier. Its timeout may be longer than the ordinary
+  // progress lease, but the effective condition lease is bounded both by that
+  // await's own deadline and by CHECKPOINT_RUN_LOCK_STALE_MS from await creation.
+  const awaitCreatedAtMs = row.checkpointAwaitCreatedAt ? Date.parse(row.checkpointAwaitCreatedAt) : NaN;
+  if (!Number.isFinite(awaitCreatedAtMs) || awaitCreatedAtMs > nowMs) return baseExpiry;
+  const awaitCapMs = awaitCreatedAtMs + CHECKPOINT_RUN_LOCK_STALE_MS;
+  const awaitDeadlineMs = row.checkpointAwaitExpiresAt
+    ? Math.min(awaitCapMs, Date.parse(row.checkpointAwaitExpiresAt))
+    : awaitCapMs;
+  if (!Number.isFinite(awaitDeadlineMs) || awaitDeadlineMs <= nowMs) return baseExpiry;
+  if (!baseExpiry) return new Date(awaitDeadlineMs).toISOString();
+  const baseExpiryMs = Date.parse(baseExpiry);
+  if (!Number.isFinite(baseExpiryMs) || awaitDeadlineMs <= baseExpiryMs) return baseExpiry;
+  return new Date(awaitDeadlineMs).toISOString();
 }
 
 /** PURE. Has this condition-owner lease lapsed? An unanchored claim fails closed. */
@@ -263,24 +293,30 @@ export function claimStateOf(row: ConditionWorkItemRow, nowMs: number): Conditio
  */
 export async function findConditionObjects(
   conditionKeys: readonly string[],
-  opts: { harnessSlug?: string } = {},
+  opts: {
+    harnessSlug?: string;
+    /** Test seam for the targeted query; production leaves this unset. */
+    sql?: Sql;
+    /** Test seam for deterministic await/lease deadline comparisons. */
+    nowMs?: number;
+  } = {},
 ): Promise<ReadonlyMap<string, ConditionObject>> {
   const out = new Map<string, ConditionObject>();
   const keys = [...new Set(conditionKeys.map((k) => k.trim()).filter(Boolean))];
   if (keys.length === 0) return out;
 
-  const now = Date.now();
+  const now = opts.nowMs ?? Date.now();
   // Absent the PG fast path, report `no-object` rather than throwing: a cell
   // that cannot resolve ownership must still render, and "no owner" is the
   // correct, non-misleading answer when we cannot see the store.
-  if (!coordHasPgFastPath()) {
+  if (!opts.sql && !coordHasPgFastPath()) {
     for (const k of keys) out.set(k, resolveConditionObject(k, [], now));
     return out;
   }
 
   const byKey = new Map<string, ConditionWorkItemRow[]>();
   try {
-    const sql = coordSql();
+    const sql = opts.sql ?? coordSql();
     const rows = await sql<
       {
         condition_key: string;
@@ -292,6 +328,8 @@ export async function findConditionObjects(
         last_progress_at: string | null;
         expires_at: string | null;
         payload: unknown;
+        checkpoint_await_created_at: Date | string | null;
+        checkpoint_await_expires_at: Date | string | null;
       }[]
     >`
       SELECT l.dst_ref     AS condition_key,
@@ -302,11 +340,48 @@ export async function findConditionObjects(
              w.taken_at    AS taken_at,
              w.last_progress_at AS last_progress_at,
              w.expires_at  AS expires_at,
-             w.payload     AS payload
+             w.payload     AS payload,
+             checkpoint_await.created_at AS checkpoint_await_created_at,
+             checkpoint_await.expires_at AS checkpoint_await_expires_at
         FROM harness_shared.coord_links l
         JOIN harness_shared.work_items w
           ON w.feature_id = l.src_ref
          AND w.workspace_id = l.workspace_id
+        -- Await and work-item rows may use different workspace partitions. The
+        -- subscriber id is globally unique, so correlate on the holder only.
+        LEFT JOIN LATERAL (
+          SELECT a.created_at,
+                 a.effective_expires_ts AS expires_at
+            FROM harness_shared.event_awaits_effective a
+           WHERE a.subscriber_id = w.taken_by
+             AND (
+               a.event_key = ANY(${CHECKPOINT_AWAIT_GLOBAL_EVENT_KEYS as string[]}::text[])
+               OR a.event_key = ANY(ARRAY[
+                 'release:green:' || split_part(l.dst_ref, ':', 2),
+                 'green-checkpoint:red:' || split_part(l.dst_ref, ':', 2),
+                 'green-checkpoint:inconclusive:' || split_part(l.dst_ref, ':', 2),
+                 'green-checkpoint:held:' || split_part(l.dst_ref, ':', 2)
+               ])
+             )
+             AND jsonb_typeof(a.payload_filter -> 'runId') = 'string'
+             AND length(a.payload_filter ->> 'runId') >= 4
+             AND a.fired_at IS NULL
+             AND a.cancelled_at IS NULL
+             AND a.superseded_at IS NULL
+             AND (a.effective_expires_ts IS NULL OR a.effective_expires_ts > to_timestamp(${now}::double precision / 1000.0))
+             AND a.created_at <= to_timestamp(${now}::double precision / 1000.0)
+             AND a.created_at + ${CHECKPOINT_RUN_LOCK_STALE_MS} * INTERVAL '1 millisecond'
+                   > to_timestamp(${now}::double precision / 1000.0)
+             AND (l.dst_ref LIKE 'green-stall:%' OR l.dst_ref LIKE 'gate-red-streak:%')
+           ORDER BY LEAST(
+             COALESCE(
+               a.effective_expires_ts,
+               a.created_at + ${CHECKPOINT_RUN_LOCK_STALE_MS} * INTERVAL '1 millisecond'
+             ),
+             a.created_at + ${CHECKPOINT_RUN_LOCK_STALE_MS} * INTERVAL '1 millisecond'
+           ) DESC
+           LIMIT 1
+        ) checkpoint_await ON true
        WHERE l.workspace_id = ${coordWorkspaceId()}
          AND l.src_kind = ${WORK_ITEM_TAG_SRC_KIND}
          AND l.dst_kind = ${EVENT_SUBSCRIPTION_KIND}
@@ -327,6 +402,14 @@ export async function findConditionObjects(
         takenAt: r.taken_at ?? null,
         lastProgressAt: r.last_progress_at ?? null,
         expiresAt: r.expires_at ?? null,
+        checkpointAwaitCreatedAt:
+          r.checkpoint_await_created_at instanceof Date
+            ? r.checkpoint_await_created_at.toISOString()
+            : r.checkpoint_await_created_at ?? null,
+        checkpointAwaitExpiresAt:
+          r.checkpoint_await_expires_at instanceof Date
+            ? r.checkpoint_await_expires_at.toISOString()
+            : r.checkpoint_await_expires_at ?? null,
         payload: r.payload ?? null,
       };
       if (list) list.push(row);

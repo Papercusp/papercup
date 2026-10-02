@@ -1060,6 +1060,24 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 
+  it('names the safe repair for a retired but still-pinned projection conflict', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql
+      .mockResolvedValueOnce([{ acceptance_bar_epoch: '1' }])
+      .mockResolvedValueOnce([{
+        spec_id: 'AUTO-BAR-R-9-P-999',
+        source_bar_key: 'R-9',
+        lifecycle_status: 'retired',
+      }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, preview: true, error: 'bar_projection_conflict' });
+    expect(result.problems[0].detail).toContain("lifecycleStatus:'superseded'");
+    expect(result.problems[0].detail).toContain('sourceBar:null');
+    expect(result.message).toContain('plans:set-specs');
+  });
+
   it('does not treat a superseded unpinned generated identity as a live preview conflict', async () => {
     resolvePlanContent(barPlanCompleteWithDesign);
     mockOrgSql

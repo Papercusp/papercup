@@ -30,6 +30,13 @@ const workScope = vi.hoisted(() => ({
   })),
 }));
 const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
+const explicitAssigneeM = vi.hoisted(() => ({
+  resolve: vi.fn(async (raw: string, callerOwnerId: string, _workspaceId?: string | null) =>
+    ({ ok: true as const, ownerId: raw.trim() === 'self' ? callerOwnerId : raw.trim() }) as
+      | { ok: true; ownerId: string }
+      | { ok: false; code: string; message: string; candidates?: string[] },
+  ),
+}));
 const forceGuard = vi.hoisted(() => ({
   verdict: { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } } as any,
 }));
@@ -38,6 +45,10 @@ vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
+}));
+vi.mock('../coordination/recipient-resolve', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/recipient-resolve')>()),
+  resolveExplicitAgentOwnerId: explicitAssigneeM.resolve,
 }));
 //
 // PARTIAL mock (importOriginal), deliberately — NOT a hand-listed factory. A hand-listed factory
@@ -139,6 +150,10 @@ const body = async (args: unknown) => ((await tool.handler(args as never, {} as 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  explicitAssigneeM.resolve.mockImplementation(async (raw, callerOwnerId) => ({
+    ok: true,
+    ownerId: raw.trim() === 'self' ? callerOwnerId : raw.trim(),
+  }));
   OWNER_REGISTRY.ids = [];
   identity.ownerId = 'me';
   identity.workspaceId = 'ws-1';
@@ -976,6 +991,20 @@ describe('work_items:claim short-form owner ids (EI-23701433507513915)', () => {
     const b = await body({ id: 'WI-GONE', assignee: 'su-deadbeef' });
 
     expect(b.results[0]).toMatchObject({ ok: false, error: 'assignee_short_form_unresolved' });
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('refuses an arbitrary unknown full assignee before claiming', async () => {
+    explicitAssigneeM.resolve.mockResolvedValue({
+      ok: false,
+      code: 'assignee_unknown',
+      message: 'No known owner matches noop-do-not-use.',
+    });
+
+    const b = await body({ id: 'WI-UNKNOWN-ASSIGNEE', assignee: 'noop-do-not-use' });
+
+    expect(explicitAssigneeM.resolve).toHaveBeenCalledWith('noop-do-not-use', 'me', 'ws-1');
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-UNKNOWN-ASSIGNEE', error: 'assignee_unknown' });
     expect(claimM).not.toHaveBeenCalled();
   });
 });

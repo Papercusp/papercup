@@ -44,7 +44,11 @@ import {
   type AgentObligation,
   type AgentObligationFamily,
 } from './agent-obligations';
-import { ownerDirectiveObligations, waitingOnObligations } from './agent-obligation-providers';
+import {
+  consultReconciliationObligations,
+  ownerDirectiveObligations,
+  waitingOnObligations,
+} from './agent-obligation-providers';
 import {
   projectAgentTurnStartObligationBrief,
   type AgentObligationBrief,
@@ -686,6 +690,32 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
         },
       }),
     marker: /gate:coverage-probe/,
+  },
+  // EI-23764501791910357: the real provider, on a real row shape. The probe uses an
+  // ANSWERED consult deliberately — that is the phase whose absence from the prompt is
+  // costly (the reply may falsify work the originator already built on the assumption).
+  'consult-reconciliation': {
+    build: () =>
+      consultReconciliationObligations({
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-coverage-probe',
+        observedAt: FAMILY_OBSERVED_AT,
+        sourceGeneration: 'coverage-probe',
+        read: {
+          status: 'known',
+          value: [
+            {
+              consultId: 'consult-coverage-probe',
+              phase: 'answered',
+              assumption: 'coverage probe assumption',
+              originTaskRef: 'EI-coverage-probe',
+              settledAt: '2026-09-21T15:00:00.000Z',
+              expiresAt: null,
+            },
+          ],
+        },
+      }),
+    marker: /consult-coverage-probe/,
   },
 };
 

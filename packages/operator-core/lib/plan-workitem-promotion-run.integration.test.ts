@@ -76,6 +76,7 @@ const h = vi.hoisted(() => ({
    */
   standDownFaults: null as null | { remaining: number; injected: number },
   laneSyncFailures: new Map<string, string>(),
+  laneSyncRejections: new Map<string, string>(),
   /**
    * WI-10004234: hold every condition-marked mint until BOTH concurrent callers have minted,
    * so exactly one of them deterministically loses the migration-741 claim race.
@@ -136,6 +137,8 @@ vi.mock('./plan-items/reconcile-linked-work-items', async (importOriginal) => {
     syncLinkedWorkItemsToPlanLane: async (
       ...args: Parameters<typeof actual.syncLinkedWorkItemsToPlanLane>
     ) => {
+      const rejection = h.laneSyncRejections.get(args[0].itemId);
+      if (rejection) throw new Error(rejection);
       const failure = h.laneSyncFailures.get(args[0].itemId);
       if (!failure) return actual.syncLinkedWorkItemsToPlanLane(...args);
       return {
@@ -350,6 +353,7 @@ beforeEach(async () => {
   h.edgeContentionFaults = null;
   h.standDownFaults = null;
   h.laneSyncFailures.clear();
+  h.laneSyncRejections.clear();
   h.mintBarrier = null;
   h.plans.clear();
 });
@@ -1036,6 +1040,24 @@ created: 2026-08-21
         workItemId: expect.any(String),
         stage: 'apply-gate',
         message: 'injected: lifecycle write unavailable',
+      },
+    ]);
+    expect((await features())[0]?.status).toBe('open');
+  });
+
+  it('WI-10003685: reports an unexpected inline sync rejection while keeping mint best-effort', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-REJECT', status: 'blocked', text: 'Blocked lane' }] });
+    h.laneSyncRejections.set('P-REJECT', 'injected: lane sync rejected');
+
+    const res = await run.promotePlanItems(base);
+
+    expect(res.promoted).toBe(1);
+    expect(res.laneGateFailures).toEqual([
+      {
+        itemId: 'P-REJECT',
+        workItemId: expect.any(String),
+        stage: 'sync-rejection',
+        message: 'injected: lane sync rejected',
       },
     ]);
     expect((await features())[0]?.status).toBe('open');

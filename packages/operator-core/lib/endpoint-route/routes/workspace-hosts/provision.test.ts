@@ -59,14 +59,42 @@ function harness() {
       },
     },
   }));
+  const listLiveHostIds = vi.fn<NonNullable<WorkspaceHostProvisionRouteDependencies['listLiveHostIds']>>(
+    async () => [],
+  );
   const dependencies: WorkspaceHostProvisionRouteDependencies = {
     activeWorkspaceId: () => 'ws-1',
     provisioningAvailable: () => true,
     readConnection,
+    listLiveHostIds,
     startProvisioning,
   };
-  return { dependencies, readConnection, startProvisioning };
+  return { dependencies, readConnection, listLiveHostIds, startProvisioning };
 }
+
+/** A hosted (one-per-sign-up) AWS connection: its `delegation://` ref is what makes it capped. */
+function hostedAwsConnection() {
+  return {
+    id: 'connection-1',
+    target: 'aws',
+    status: 'connected' as const,
+    connection: {
+      target: 'aws',
+      cloudCredentialRef: { kind: 'cloud' as const, ref: 'delegation://customer-ws/connection-1' },
+      provider: { accountId: '413781344298', region: 'us-east-2' },
+    },
+  };
+}
+
+const awsDesired = {
+  ...desired,
+  target: 'aws',
+  scope: { kind: 'account', id: '413781344298' },
+  region: 'us-east-2',
+  zone: 'us-east-2a',
+  size: 't3.medium',
+  image: { id: 'ami-0123456789abcdef0' },
+} as WorkspaceHostDesiredSpec;
 
 async function post(dependencies: WorkspaceHostProvisionRouteDependencies, body: unknown): Promise<Response> {
   const route = createWorkspaceHostProvisionRoute(dependencies);
@@ -292,21 +320,23 @@ describe('POST /workspace-hosts/provision', () => {
   });
 
   it('maps unsupported targets and typed runner refusals without echoing internal failures', async () => {
+    // 'azure' has no registered provider factory; 'gcp' and 'aws' do (P-007 admits aws).
     const unsupported = harness();
     unsupported.readConnection.mockResolvedValueOnce({
       id: 'connection-1',
-      target: 'aws',
+      target: 'azure',
       status: 'connected',
-      connection: { target: 'aws', cloudCredentialRef: { kind: 'cloud', ref: 'resolver://aws' } },
+      connection: { target: 'azure', cloudCredentialRef: { kind: 'cloud', ref: 'resolver://azure' } },
     });
-    const awsDesired = { ...desired, target: 'aws' };
+    const azureDesired = { ...desired, target: 'azure' };
     expect(
       await post(unsupported.dependencies, {
         connectionId: 'connection-1',
         name: 'Host',
-        desired: awsDesired,
+        desired: azureDesired,
       }),
     ).toMatchObject({ status: 501 });
+    expect(unsupported.startProvisioning).not.toHaveBeenCalled();
 
     const rejected = harness();
     rejected.startProvisioning.mockRejectedValueOnce(
@@ -336,6 +366,70 @@ describe('POST /workspace-hosts/provision', () => {
     });
     expect(internalResponse.status).toBe(500);
     await expect(internalResponse.text()).resolves.not.toContain('secret-bearing internal detail');
+  });
+
+  it('admits an AWS provision on an uncapped (operator-credential) connection into the durable workflow', async () => {
+    const h = harness();
+    h.readConnection.mockResolvedValueOnce({
+      id: 'connection-1',
+      target: 'aws',
+      status: 'connected',
+      connection: { target: 'aws', cloudCredentialRef: { kind: 'cloud', ref: 'aws-profile://papercusp-byoc' } },
+    });
+    h.listLiveHostIds.mockResolvedValueOnce(['host-0']);
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Host', desired: awsDesired });
+    expect(response.status).toBe(201);
+    expect(h.startProvisioning).toHaveBeenCalledTimes(1);
+    expect(h.startProvisioning.mock.calls[0]![0].desired.target).toBe('aws');
+    // Uncapped: the live-host census is not even read.
+    expect(h.listLiveHostIds).not.toHaveBeenCalled();
+  });
+
+  it('refuses a hosted AWS provision beyond the per-connection instance cap with the named cap error', async () => {
+    const h = harness();
+    h.readConnection.mockResolvedValueOnce(hostedAwsConnection());
+    h.listLiveHostIds.mockResolvedValueOnce(['host-0']);
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Second', desired: awsDesired });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace_host_instance_cap_exceeded',
+      cap: 1,
+      connectionId: 'connection-1',
+      liveHostIds: ['host-0'],
+    });
+    expect(h.listLiveHostIds).toHaveBeenCalledWith('ws-1', 'connection-1');
+    // Refused BEFORE the workflow: a capped request creates nothing at all.
+    expect(h.startProvisioning).not.toHaveBeenCalled();
+  });
+
+  it('admits the first hosted AWS host and a resume of the same live host under the cap', async () => {
+    const first = harness();
+    first.readConnection.mockResolvedValueOnce(hostedAwsConnection());
+    first.listLiveHostIds.mockResolvedValueOnce([]);
+    expect((await post(first.dependencies, { connectionId: 'connection-1', name: 'Host', desired: awsDesired })).status).toBe(201);
+    expect(first.startProvisioning).toHaveBeenCalledTimes(1);
+
+    const resume = harness();
+    resume.readConnection.mockResolvedValueOnce(hostedAwsConnection());
+    resume.listLiveHostIds.mockResolvedValueOnce(['host-1']);
+    expect((await post(resume.dependencies, { connectionId: 'connection-1', name: 'Host', desired: awsDesired })).status).toBe(201);
+    expect(resume.startProvisioning).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the same cap to a hosted GCP connection (the cap is per connection, not per cloud)', async () => {
+    const h = harness();
+    h.readConnection.mockResolvedValueOnce({
+      id: 'connection-1',
+      target: 'gcp',
+      status: 'connected',
+      connection: { target: 'gcp', cloudCredentialRef: { kind: 'cloud', ref: 'delegation://customer-ws/connection-1' } },
+    });
+    h.listLiveHostIds.mockResolvedValueOnce(['host-0']);
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Second', desired });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: 'workspace_host_instance_cap_exceeded' });
+    expect(h.startProvisioning).not.toHaveBeenCalled();
   });
 
   it('maps a concurrent host-scoped DBOS admission refusal to 409', async () => {

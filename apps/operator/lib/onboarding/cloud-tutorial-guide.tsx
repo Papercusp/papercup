@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useReducedMotion } from "motion/react";
 import { Button } from "@/app/harness/Button";
+import { LazyDetails } from "@/app/_components/LazyDetails";
 import { CLOUD_TUTORIAL_STEPS, confirmedTutorialSteps, currentTutorialStep, tutorialStepStatus, type TutorialEvent, type TutorialState, type LessonStep, type StepStatus } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
 import { createTutorialAnalytics } from "./cloud-tutorial-analytics";
@@ -16,7 +17,7 @@ const statusCopy = {
   complete: "Your first agent lesson is complete.",
 };
 export function CloudTutorialHelpEntry({ onStart }: { onStart: () => void }) {
-  return <details><summary>Help</summary><Button onClick={onStart}>Get your first agent running</Button></details>;
+  return <LazyDetails summary="Help"><Button onClick={onStart}>Get your first agent running</Button></LazyDetails>;
 }
 
 /** A nonmodal companion to the real product. It never calls a provision,

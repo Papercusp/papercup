@@ -273,6 +273,30 @@ export async function readWorkspaceHostConnection(
   });
 }
 
+/**
+ * Hosts on one connection that still hold — or are acquiring — cloud resources: every host whose
+ * desired state is not `absent`. `destroying` counts (its resources still exist), and a NULL state
+ * counts too, so an unreadable row can never make room under a cap. Feeds the per-connection
+ * instance cap (`instance-cap.ts`, aws-byoc-gcp-parity-2026-10-01 P-007).
+ */
+export async function listLiveWorkspaceHostIdsOnConnection(
+  workspaceId: string,
+  connectionId: string,
+  tx?: Sql,
+): Promise<string[]> {
+  return inWorkspace(workspaceId, tx, async (query) => {
+    const rows = await query<Array<{ id: string }>>`
+      SELECT id
+      FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId}
+        AND connection_id = ${connectionId}
+        AND desired_state IS DISTINCT FROM 'absent'
+      ORDER BY created_at, id
+    `;
+    return rows.map((row) => row.id);
+  });
+}
+
 export interface WorkspaceHostInput {
   workspaceId: string;
   id: string;

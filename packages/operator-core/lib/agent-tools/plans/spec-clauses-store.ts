@@ -750,6 +750,13 @@ interface RevisionRow {
 
 export interface ListSpecClausesOptions {
   harnessSlug?: string;
+  /**
+   * Pin the workspace. A caller that already resolved its subject plan row MUST pass
+   * that row's workspace: for the operator-home harness `resolvePlanScope` otherwise
+   * falls back to PAPERCUSP_WORKSPACE_ID, so a plan installed in any other workspace
+   * reads zero clauses and every BAR reports `bar_snapshot_mapping_missing` (WI-10005140).
+   */
+  workspaceId?: string;
   planSlug: string;
   specIds?: string[];
   sourceValIds?: string[];
@@ -763,7 +770,10 @@ export interface ListSpecClausesOptions {
 
 /** Exact structured read; current-only unless includeHistory or revision is requested. */
 export async function listSpecClauses(options: ListSpecClausesOptions): Promise<SpecClauseRevision[]> {
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const scope = await resolvePlanScope({
+    harnessSlug: options.harnessSlug,
+    ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+  });
   const specIds = options.specIds ?? [];
   const valIds = options.sourceValIds ?? [];
   const itemIds = options.planItemIds ?? [];

@@ -13,6 +13,10 @@
  * channel-day) in `chat_rollup_queue`, and `rollupChatUnits` re-renders each queued
  * bucket from the LIVE messages. So an edit re-renders its unit, and a delete
  * (`tombstoneChatMessage`) removes the text from the unit on the next rollup.
+ * A change to a source's routing (scope, scope_ref, owner, provider account,
+ * datatype mapping, destination or permission policy) re-queues every bucket of that
+ * source in the database itself (trigger `data_sources_requeue_chat_buckets`,
+ * migration 1326), so the next rollup moves existing units without a new message.
  *
  * Rendered units go to the documents corpus (D-005) only when destination_policy routes
  * the source's chat-message datatype to `document`. Where they land follows the

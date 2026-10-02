@@ -1812,7 +1812,11 @@ async function defaultReadPlanItems(
 async function defaultReadClauses(
   plan: AcceptanceBarSubjectPlanSource,
 ): Promise<BoundedAcceptanceBarRows<SpecClauseRevision>> {
+  // Scope to the subject row's OWN workspace, like every other reader here. Without it the
+  // operator-home harness resolves to PAPERCUSP_WORKSPACE_ID and a plan stored elsewhere
+  // reads zero clauses, so every BAR reports bar_snapshot_mapping_missing (WI-10005140).
   const rows = await listSpecClauses({
+    workspaceId: plan.workspaceId,
     harnessSlug: plan.harnessSlug,
     planSlug: plan.planSlug,
     limit: MAX_BAR_PROJECTION_EDGES + 1,

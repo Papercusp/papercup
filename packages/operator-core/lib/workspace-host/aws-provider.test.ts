@@ -28,6 +28,7 @@ import {
 import { cloudResourceKindForDeleteOp, describeCloudResourceDeleteAddress } from './cloud-resource-obligations';
 import type { WorkspaceHostResourceCreatedEvent } from './gcp-provider';
 import type { AwsWorkspaceHostInventoryRequest, AwsWorkspaceHostInventorySnapshot } from './aws-safety';
+import { AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS } from './aws-safety';
 
 const NOW = '2026-08-22T08:00:00.000Z';
 
@@ -385,6 +386,48 @@ async function provision(
   expect(client.attachVolumeCalls).toHaveLength(1);
   return { host: { hostId: desired().hostId, target: 'aws', resources }, resources };
 }
+
+/** Every `TagSpecifications[].ResourceType` anywhere in a value (step inputs nest the EC2 request). */
+function taggedResourceTypes(value: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) value.forEach((entry) => taggedResourceTypes(entry, out));
+  else if (value && typeof value === 'object') {
+    for (const [key, entry] of Object.entries(value)) {
+      if (key === 'TagSpecifications' && Array.isArray(entry)) {
+        for (const spec of entry) if (typeof spec?.ResourceType === 'string') out.add(spec.ResourceType);
+      } else taggedResourceTypes(entry, out);
+    }
+  }
+  return out;
+}
+
+describe('AWS zero-orphan coverage (aws-byoc-gcp-parity P-007)', () => {
+  // The teardown census (censusAwsWorkspaceHostResources) can only prove "no resource carrying this
+  // host's ownership tag survives" for the kinds it enumerates. So every EC2 resource type the
+  // provider TAGS for a host must map to an AWS census kind; a new tagged type (a per-host security
+  // group, an instance profile, an ENI) would otherwise survive teardown invisibly.
+  const EC2_TAG_TYPE_TO_CENSUS_KIND: Record<string, string> = { instance: 'vm', volume: 'disk', snapshot: 'snapshot' };
+
+  it('tags only resource types the teardown census enumerates, and creates no per-host SG or instance profile', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'orphan-1', idempotencyKey: 'orphan-1', desired: desired() },
+      context(),
+    );
+    const tagged = taggedResourceTypes(plan.steps.map((step) => step.input));
+    expect([...tagged].sort()).toEqual(['instance', 'volume']);
+    for (const type of tagged) {
+      expect(AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS as readonly string[]).toContain(EC2_TAG_TYPE_TO_CENSUS_KIND[type]);
+    }
+    // Snapshots are tagged by the snapshot action; their census kind must exist too.
+    expect(AWS_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS as readonly string[]).toContain(EC2_TAG_TYPE_TO_CENSUS_KIND.snapshot);
+    // Security groups and the instance profile are CONNECTION-level (settings.securityGroupIds /
+    // instanceProfileArn): referenced, never created or host-tagged, so they cannot be host orphans.
+    for (const step of plan.steps) {
+      expect(JSON.stringify(step.input)).not.toMatch(/CreateSecurityGroup|security-group'|CreateInstanceProfile|instance-profile'/i);
+      expect((step.input as { op?: string }).op ?? '').not.toMatch(/security-group|instance-profile|iam/i);
+    }
+  });
+});
 
 describe('AWS workspace-host provider planning', () => {
   it('builds deterministic RunInstances and encrypted EBS inputs with a stable 64-character ClientToken', async () => {

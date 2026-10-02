@@ -321,6 +321,92 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
   });
 
+  // ── WI-10005134: a LIVE psu host means the session is running ─────────────
+  // A psu host carry-respawns its CLI child under a new pid, so the adv row's
+  // recorded pid can be dead while the session is alive. Measured 2026-10-01:
+  // three wakes for one owner went resume-headless while its host was live and
+  // deferring them, putting a second `claude --resume` on the live session.
+
+  it('WI-10005134: recorded pid DEAD + LIVE psu host whose inject misses → park, NEVER resume-headless', async () => {
+    const s = tb.session('A');
+    await tb.spawnSocketHost(s.ownerId);
+    const dead = await deadPid();
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: dead }),
+    });
+    let spawns = 0;
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => false,
+        injectPsuHost: async () => false,
+        spawnDetached: () => {
+          spawns += 1;
+          return 4242;
+        },
+      }),
+    );
+    expect(out.kind).toBe('park');
+    expect(out.kind === 'park' ? out.reason : '').toContain('WI-10005134');
+    expect(spawns).toBe(0);
+  });
+
+  it('WI-10005134: host ACKS a deferred-carry-respawn-pending refusal → park with the host reason, no second attempt, no spawn', async () => {
+    const s = tb.session('A');
+    await tb.spawnSocketHost(s.ownerId);
+    const dead = await deadPid();
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: dead }),
+    });
+    let injects = 0;
+    let spawns = 0;
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => false,
+        injectPsuHostWithConfirmation: async () => {
+          injects += 1;
+          return { ok: false, confirmation: 'acked', reason: 'deferred-carry-respawn-pending' };
+        },
+        spawnDetached: () => {
+          spawns += 1;
+          return 4242;
+        },
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({
+      kind: 'park',
+      reason:
+        'psu-host deferred-carry-respawn-pending: the live host deferred this wake; parked for a durable retry, never a second process',
+    });
+    expect(injects).toBe(1);
+    expect(spawns).toBe(0);
+  });
+
+  it('WI-10005134 calibration: same stale pid with NO psu host still resumes headless', async () => {
+    // Without a live host the session really has exited; the guard must not
+    // swallow the legitimate resume (the control for the two cases above).
+    const s = tb.session('A');
+    const dead = await deadPid();
+    const d = makeDelivery({
+      subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: dead }),
+    });
+    const out = await executeWake(
+      d,
+      baseDeps({
+        getSession: async () => ({ pid: dead, endedAt: null, agent: 'claude', sessionId: 'native-A', coordOwnerId: null, cwd: s.cwd }) as never,
+        alive: () => false,
+        injectPsuHost: async () => false,
+      }),
+    );
+    expect(out).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'resume-headless' });
+  });
+
   it('adv-session exited + claude WITHOUT native session id + presence live → park (no --continue)', async () => {
     const s = tb.session('A');
     const d = makeDelivery({

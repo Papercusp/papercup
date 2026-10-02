@@ -710,12 +710,26 @@ describe('persistFailedTaskUnitTerminal fallback collector', () => {
 
   it('is idempotent after terminal evidence is already durable', async () => {
     const terminal = failedTerminal('pc-idempotent1.service');
-    await store.persistFailedTaskUnitTerminal(terminal, { workspaceId: WS });
-    await expect(store.persistFailedTaskUnitTerminal(terminal, { workspaceId: WS })).resolves.toEqual({
+    const emitTerminal = vi.fn();
+    await store.persistFailedTaskUnitTerminal(
+      terminal,
+      { workspaceId: WS },
+      undefined,
+      { emitTerminal },
+    );
+    await expect(
+      store.persistFailedTaskUnitTerminal(
+        terminal,
+        { workspaceId: WS },
+        undefined,
+        { emitTerminal },
+      ),
+    ).resolves.toEqual({
       durable: true,
       outcome: 'already-recorded',
       taskId: 'idempotent1',
     });
+    expect(emitTerminal).toHaveBeenCalledOnce();
   });
 
   it('refuses to reset a reused unit name when its invocation differs from durable evidence', async () => {

@@ -871,10 +871,16 @@ describe('WI-1999 remote-holder guard', () => {
 
   it('WI-10005136: issue reaper parity — a never-seen assignee with a recently-changed held row is KEPT past the fallback', async () => {
     await seedIssue('EI-RH2', 'bug', 'su-remote-issue-live', 30);
+    // The held issue row itself is idle, so only the OTHER row can keep it.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH2'`;
     await seedItem('F-RH7', 'su-remote-issue-live', 2, 'in_progress'); // live elsewhere: fresh claim
     const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((c) => c.issue_id)).not.toContain('EI-RH2');
     expect(await assigneeOf('EI-RH2')).toBe('su-remote-issue-live');
+    // Control: without that other row, the same idle claim frees.
+    await sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'F-RH7'`;
+    const later = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(later.released.map((c) => c.issue_id)).toContain('EI-RH2');
   });
 
   it('a never-seen holder with NULL taken_at anchors the fallback on updated_ts (EI-2534 must not re-strand)', async () => {
@@ -894,6 +900,9 @@ describe('WI-1999 remote-holder guard', () => {
     await seedIssue('EI-RH1', 'bug', 'su-remote-issue-holder', 30);
     expect((await reclaimStaleIssueClaims(sql)).released.map((c) => c.issue_id)).not.toContain('EI-RH1');
     expect(await assigneeOf('EI-RH1')).toBe('su-remote-issue-holder');
+    // Abandoned: its own row (engineer_issues is a view over work_items) has not changed
+    // since the claim either — WI-10005136 counts a recently-changed held row as life.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'EI-RH1'`;
     const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((c) => c.issue_id)).toContain('EI-RH1');
     expect(await assigneeOf('EI-RH1')).toBeNull();

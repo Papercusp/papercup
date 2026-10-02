@@ -81,8 +81,18 @@ export interface PromotePlanResult {
   promoted: number;
   /** open items already covered by a work-item (idempotent skips) */
   skipped: number;
-  /** Fail-soft inline plan-lane sync errors, correlated to the minted work-item. */
-  laneGateFailures?: Array<PlanLaneSyncFailure & { itemId: string; workItemId: string }>;
+  /**
+   * Fail-soft inline plan-lane sync errors, correlated to the minted work-item. Stage
+   * `sync-rejection` is minted HERE (the reconciler call itself threw), so it widens this
+   * field rather than the reconciler's own PlanLaneSyncFailure union, which never emits it.
+   */
+  laneGateFailures?: Array<
+    Omit<PlanLaneSyncFailure, 'stage'> & {
+      stage: PlanLaneSyncFailure['stage'] | 'sync-rejection';
+      itemId: string;
+      workItemId: string;
+    }
+  >;
   /** true when the flag is OFF — promotion was a no-op */
   flagOff?: boolean;
   /**

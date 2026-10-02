@@ -231,6 +231,9 @@ test('native debug-file discovery distinguishes not-open, unavailable bounds and
   f.links.set('/proc/30/fd/7', '/other/file');
   const options = { ...f.options, outputDescriptors: true, debugFile: '/dev/shm/gst.log' };
   assert.equal(collectOwnedWebKitSample(options, f.proc).processes[1].output?.debugFileStatus, 'not-open');
+  f.links.delete('/proc/30/fd/7');
+  assert.equal(collectOwnedWebKitSample(options, f.proc).processes[1].output?.debugFileStatus, 'unavailable');
+  f.links.set('/proc/30/fd/7', '/other/file');
   f.dirs.set('/proc/30/fd', Array.from({ length: 257 }, (_, i) => String(i)));
   assert.equal(collectOwnedWebKitSample(options, f.proc).processes[1].output?.debugFileStatus, 'unavailable');
   f.dirs.set('/proc/30/fd', ['7']);

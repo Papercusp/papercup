@@ -144,9 +144,8 @@ export default defineTool({
       .max(32)
       .optional()
       .describe(
-        'free-form tags. Special: include "hive-placement" on a generic-kind datatype to opt its ' +
-          'work-items into the autonomous placement frontier (a bee gets auto-placed); omit it and items ' +
-          'are tracked + visible but not auto-placed.',
+        'free-form tags. No tag affects placement: the frontier auto-places a kind only when its ' +
+          'nature is work and audience is agent.',
       ),
     force: z.boolean().optional().describe('bypass the soft semantic-dedup gate (declare even when a similar datatype exists)'),
   }),

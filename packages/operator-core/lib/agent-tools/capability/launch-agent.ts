@@ -422,11 +422,11 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. Fresh plan-bound, per-member-with-briefs, and `successor` launches may omit it. For N members on an existing plan use `fleet:launch-on-plan`. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
+    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. Fresh plan-bound, per-member-with-briefs, and `successor` launches may omit it. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
   guidance: {
     when: 'AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.',
     notWhen:
-      'To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
+      'To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
       "A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent's latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.",
     seeAlso: [
@@ -543,7 +543,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
+          'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. A successor is visible by default when `headless` is omitted or `false`; set `headless: true` for no window. It cannot be combined with `restoreVisible`. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
         ),
       fork: z
         .boolean()
@@ -586,7 +586,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          "Keep a FRESH launch out of the caller's presence fleet. This only suppresses fresh caller-fleet inheritance; an explicit `fleet` still wins, and RESUME/FORK preserve the target session's durable membership.",
+          "Keep a FRESH launch out of the caller's presence fleet; an explicit `fleet` still wins (RESUME/FORK membership: see `fleet`).",
         ),
       goalVerifier: z
         .enum(['grade', 'test'])
@@ -596,7 +596,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty), but note EI-9748: a `:3170` restart reaps them.',
+          'Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty).',
         ),
       count: z
         .number()
@@ -610,7 +610,7 @@ export default defineTool({
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/carry/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA ID resolved against the target harness (valid ids are harness-specific); discover exact ids first with roles:list { harnessSlug: "<target>" } and read roles[].id. It is never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `claimKinds` needs a self-pulling fleet — use fleet:launch-on-plan for that claim-lane behavior.',
+          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/context/limit/role/carry/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a registered persona id (see its own description); invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `claimKinds` needs a self-pulling fleet — use fleet:launch-on-plan for that claim-lane behavior.',
         ),
       cwd: z
         .string()
@@ -681,6 +681,13 @@ export default defineTool({
             message: '`resume` and `successor` are mutually exclusive; choose the source recovery mode you want.',
           });
         }
+        if (hasSuccessor && value.restoreVisible !== undefined) {
+          refinement.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['restoreVisible'],
+            message: '`successor` and `restoreVisible` are mutually exclusive; use `restoreVisible` only with an exact session resume.',
+          });
+        }
         if (value.plan && (hasResume || hasSuccessor)) {
           refinement.addIssue({
             code: z.ZodIssueCode.custom,
@@ -702,6 +709,16 @@ export default defineTool({
             message: '`brief` is required with `resume`/`fork` because it is the resumed session\'s actionable next turn',
           });
         }
+      })
+      // Keep the root Zod object (launch-agent consumers inspect args.shape),
+      // while publishing the same cross-field rule to MCP/compact-schema clients.
+      // A root oneOf would be erased by flattenForOpenAi; dependentSchemas is
+      // preserved as an object-rooted JSON Schema constraint.
+      .meta({
+        dependentSchemas: {
+          successor: { not: { required: ['restoreVisible'] } },
+          restoreVisible: { not: { required: ['successor'] } },
+        },
       });
   })(),
   async handler(args, ctx) {

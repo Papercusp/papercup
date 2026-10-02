@@ -142,11 +142,17 @@ function readNativeOutput(pid: number, debugFile: string | undefined, proc: Proc
       const fds = proc.list(`/proc/${pid}/fd`);
       if (fds.length > MAX_DEBUG_FILE_DESCRIPTORS) throw new RangeError();
       debugFileStatus = 'not-open';
+      let discoveryIncomplete = false;
+      let matched = false;
       for (const entry of fds) {
-        if (!/^[0-9]+$/.test(entry) || !Number.isSafeInteger(Number(entry))) continue;
+        if (!/^[0-9]+$/.test(entry) || !Number.isSafeInteger(Number(entry))) {
+          discoveryIncomplete = true;
+          continue;
+        }
         try {
           if (proc.link(`/proc/${pid}/fd/${entry}`) !== target) continue;
-        } catch { continue; }
+        } catch { discoveryIncomplete = true; continue; }
+        matched = true;
         const descriptor = readOutputDescriptor(pid, Number(entry), proc);
         if (descriptor.status === 'captured' && descriptor.target !== target) {
           descriptors.push({ fd: Number(entry), status: 'unavailable', reason: 'descriptor-changed' });
@@ -157,6 +163,7 @@ function readNativeOutput(pid: number, debugFile: string | undefined, proc: Proc
         }
         break;
       }
+      if (!matched && discoveryIncomplete) debugFileStatus = 'unavailable';
     } catch { /* Bounded/unavailable discovery is separate from stdout/stderr. */ }
   }
   return { readStartedEpochMs, readCompletedEpochMs: Date.now(), descriptors, debugFileStatus };

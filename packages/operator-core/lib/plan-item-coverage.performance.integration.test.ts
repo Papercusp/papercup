@@ -154,7 +154,7 @@ afterAll(async () => {
   await root?.end({ timeout: 5 });
   if (privateDb) {
     const admin = postgres(privateDb.uri, { max: 1, onnotice: () => {} });
-    try { await admin.unsafe(`DROP DATABASE "${privateDb.name}"`); }
+    try { await admin.unsafe(`DROP DATABASE "${privateDb.name}" WITH (FORCE)`); }
     finally { await admin.end({ timeout: 5 }); }
   }
 });

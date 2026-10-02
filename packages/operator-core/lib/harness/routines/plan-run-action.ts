@@ -317,8 +317,12 @@ async function runScheduledPlanFireTx(
     throw new Error(`plan_run_template_pin_mismatch:${templateSlug}`);
   }
   if (template.acceptance_bar_epoch != null) {
+    // Scope the contract read to the SAME harness the template row came from. A built-in
+    // template is installed once per harness, so an unscoped read of its slug spans every
+    // harness that holds a copy and refuses `bar_snapshot_plan_ambiguous` (WI-10005140).
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(templateSlug, 'pre-start', {
       expectedApplicable: true,
+      harnessSlug: planStorageSlug,
     });
     if (!lifecycle.satisfied) {
       const detail = lifecycle.message ?? 'acceptance BAR contract is not ready for scheduled start';

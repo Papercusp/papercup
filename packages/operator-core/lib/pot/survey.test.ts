@@ -948,7 +948,7 @@ describe('surveyPot escalated-issue frontier (EI-12275)', () => {
     ...over,
   });
 
-  // The headline defect: pot:survey.fetchFrontierRows is feature/chunk-only
+  // The headline defect: pot:survey.fetchFrontierRows excludes the issue-routed kinds
   // (frontierPlacementKindClause), so a severity:major bug/change/task item was
   // structurally invisible to the Mug's ranked frontier — no escalation-pressure
   // weight could ever help it, because it never entered rankPlacements' input set
