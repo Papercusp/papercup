@@ -53,6 +53,8 @@ export interface GoalOwnerReportDraftInput {
     budgetCents: number | null;
     source: string | null;
     coverage: string;
+    /** Timestamp attached to the goal spend snapshot, when the writer supplied one. */
+    measuredAt?: string | null;
     unmeasuredPricedSpend: boolean;
   };
   ownerWalls: Array<{ ref: string; action: string }> | null;
@@ -97,8 +99,8 @@ export function buildGoalOwnerReportDraft(input: GoalOwnerReportDraftInput): Goa
     });
   const cost = input.cost;
   const costText = cost.spentCents == null
-    ? `unknown; coverage=${cost.coverage}; source=${cost.source ?? 'unavailable'}`
-    : `${cost.spentCents}c / ${cost.budgetCents ?? 'undeclared'}c; coverage=${cost.coverage}; source=${cost.source ?? 'unmarked'}${cost.unmeasuredPricedSpend ? '; unmeasured priced spend remains' : ''}`;
+    ? `unknown; coverage=${cost.coverage}; source=${cost.source ?? 'unavailable'}; measured at=${cost.measuredAt ?? 'unknown'}; read at=${input.observedAt}`
+    : `${cost.spentCents}c / ${cost.budgetCents ?? 'undeclared'}c; coverage=${cost.coverage}; source=${cost.source ?? 'unmarked'}; measured at=${cost.measuredAt ?? 'unknown'}; read at=${input.observedAt}${cost.unmeasuredPricedSpend ? '; unmeasured priced spend remains' : ''}`;
   const fields: Record<GoalOwnerReportField, string> = {
     moved: `${moved.length ? moved.join('; ') : Number.isFinite(cutoff)
       ? 'none evidenced since the previous report in this snapshot'

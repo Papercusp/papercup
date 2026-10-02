@@ -26,7 +26,7 @@ describe('P-021 evidence-backed owner report draft', () => {
     movements: [{ ref: 'plan:papercusp/alpha', state: 'shipped', updatedAt: '2026-09-25T19:30:00.000Z',
       artifact: { ref: 'scorecard:alpha', updatedAt: '2026-09-25T19:25:00.000Z' } }],
     cost: { spentCents: 340, budgetCents: 1000, source: 'goal-lineage-rollup',
-      coverage: 'measured', unmeasuredPricedSpend: false },
+      coverage: 'measured', measuredAt: '2026-09-25T19:55:00.000Z', unmeasuredPricedSpend: false },
     ownerWalls: [{ ref: 'WI-1', action: 'choose a domain' }],
     killed: [{ ref: 'fleet:old', criterion: 'cost exceeded 1000c', at: '2026-09-25T19:40:00.000Z' }],
     artifactReads: [] as Array<{ ref: string; readAt: string }>,
@@ -37,6 +37,9 @@ describe('P-021 evidence-backed owner report draft', () => {
     expect(unread.unreadArtifacts).toEqual(['scorecard:alpha']);
     expect(unread.fields.moved).toContain('completion unverified (artifact unread)');
     expect(unread.fields.cost).toContain('coverage=measured; source=goal-lineage-rollup');
+    expect(unread.fields.cost).toContain('measured at=2026-09-25T19:55:00.000Z');
+    expect(unread.fields.cost).toContain('read at=2026-09-25T20:00:00.000Z');
+    expect(unread.fields.cost).not.toContain('unmeasured');
     expect(unread.fields.ownerWalled).toContain('WI-1: choose a domain');
     expect(unread.fields.killed).toContain('fleet:old');
     expect(parseGoalOwnerReport(unread.text).complete).toBe(true);
@@ -54,9 +57,11 @@ describe('P-021 evidence-backed owner report draft', () => {
   it('never turns a first snapshot or missing reads into false movement, cost, walls or kills', () => {
     const draft = buildGoalOwnerReportDraft({ ...base, previousReportAt: null,
       cost: { spentCents: null, budgetCents: 1000, source: null,
-        coverage: 'unverified', unmeasuredPricedSpend: true }, ownerWalls: null, killed: null });
+        coverage: 'unverified', measuredAt: null, unmeasuredPricedSpend: true }, ownerWalls: null, killed: null });
     expect(draft.fields.moved).toContain('no previous report watermark');
     expect(draft.fields.cost).toContain('unknown; coverage=unverified');
+    expect(draft.fields.cost).toContain('measured at=unknown');
+    expect(draft.fields.cost).toContain('read at=2026-09-25T20:00:00.000Z');
     expect(draft.fields.ownerWalled).toContain('unknown');
     expect(draft.fields.killed).toContain('unknown');
     expect(parseGoalOwnerReport(draft.text).complete).toBe(true);

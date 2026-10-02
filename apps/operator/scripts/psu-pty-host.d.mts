@@ -193,6 +193,63 @@ export function tagSessionPortTurn(text: string, sid: string, env?: EnvironmentM
  * concatenated stream remains byte-identical. */
 export function ptyWriteChunks(value: any, maxCodeUnits?: number): string[];
 /**
+ * Confirm a fresh Codex kickoff reached the visible composer before Enter can
+ * submit it. A backend frame proves the TUI rendered; child.write only proves
+ * the host attempted input. Neither proves the composer accepted the marker.
+ */
+export function waitForPtyTextEcho({ read, text, timeoutMs, pollMs, headLossGraceMs, shouldCancel, onPending, }?: {
+    timeoutMs?: number | undefined;
+    pollMs?: number | undefined;
+    headLossGraceMs?: number | undefined;
+    shouldCancel?: (() => boolean) | undefined;
+    onPending?: (() => void) | undefined;
+}): Promise<{
+    echoed: boolean;
+    reason: string;
+    elapsedMs: number;
+    cancelled?: undefined;
+    observedChars?: undefined;
+    markerTailSeen?: undefined;
+    markerHeadLost?: undefined;
+    visibleTail?: undefined;
+} | {
+    echoed: boolean;
+    cancelled: boolean;
+    elapsedMs: number;
+    reason?: undefined;
+    observedChars?: undefined;
+    markerTailSeen?: undefined;
+    markerHeadLost?: undefined;
+    visibleTail?: undefined;
+} | {
+    echoed: boolean;
+    elapsedMs: number;
+    observedChars: number;
+    markerTailSeen: boolean;
+    reason?: undefined;
+    cancelled?: undefined;
+    markerHeadLost?: undefined;
+    visibleTail?: undefined;
+} | {
+    echoed: boolean;
+    markerHeadLost: number;
+    elapsedMs: number;
+    observedChars: number;
+    markerTailSeen: boolean;
+    reason?: undefined;
+    cancelled?: undefined;
+    visibleTail?: undefined;
+} | {
+    echoed: boolean;
+    reason: string;
+    elapsedMs: number;
+    observedChars: number;
+    markerTailSeen: boolean;
+    visibleTail: string;
+    cancelled?: undefined;
+    markerHeadLost?: undefined;
+}>;
+/**
  * P-006 (psu-pty-turn-boundary-generalization-2026-09-22): may a ROUTINE host
  * diagnostic be written to stderr right now?
  *
@@ -274,6 +331,26 @@ export function findNativeTranscriptMarker({ agent, env, marker, sinceMs, home, 
  * returns null because the exact proof owns that case. Pure and exported for
  * tests. */
 export function truncatedTurnOriginMarkerLoss(marker: any, value: any, { minNonceChars }?: {
+    minNonceChars?: number | undefined;
+}): number | null;
+/** WI-10005331: the pre-submit composer echo loses leading marker bytes the same
+ * way the native transcript does (WI-10002745). Measured 2026-10-02: Codex resolver
+ * su-df88c37b echoed 49 of 50 marker characters with the tail visible, the exact
+ * proof could never match, and the host waited ~557s and then dropped the kickoff,
+ * so inbox-resolve run bulk-bf4040d6 failed with every item undecided.
+ *
+ * Returns how many leading characters of `marker` were lost when `visible` holds a
+ * proper suffix of it that keeps at least `minNonceChars` nonce characters and the
+ * closing bracket; otherwise null (including when the exact marker is present, which
+ * the exact proof owns). Unlike truncatedTurnOriginMarkerLoss the suffix may sit
+ * anywhere in `visible`: the echo tap holds only output written after this kickoff's
+ * own write, so its leading bytes are composer chrome rather than a transcript row
+ * that could quote another injection, and the nonce tail is this injection's own
+ * random value. The suffix must start the text or follow chrome: when the nearest
+ * preceding non-space character could belong to a marker, the echo is either another
+ * nonce that shares this tail or a marker that lost a MIDDLE byte (which the
+ * post-submit proof rejects), so it is refused. Pure and exported for tests. */
+export function composerEchoMarkerHeadLoss(marker: any, visible: any, { minNonceChars }?: {
     minNonceChars?: number | undefined;
 }): number | null;
 /** A carry requested in THIS turn may use its exact native completion as a

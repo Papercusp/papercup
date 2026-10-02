@@ -464,3 +464,41 @@ describe('detectContentOffenders — the real registry quarantines an esbuild-on
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * EI-23381057036304308 — shell output redirected into a repo-root filename is
+ * not covered by the extension-scoped source detectors. Keep the exact status
+ * artifact and ordinary paths as a production-registry guard.
+ */
+describe('detectContentOffenders — suspicious root redirect filenames', () => {
+  const artifact = 'VERDICT: WORKING (cpu is being consumed)';
+
+  it('quarantines extensionless root-level shell output artifacts', async () => {
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([`?? ${artifact}`]),
+      readText: async (file) => (file === artifact ? '1.02067' : null),
+    });
+
+    expect([...new Set(offenders.map((o) => o.file))]).toEqual([artifact]);
+    const hit = offenders.find((o) => o.detectorKey === 'root-redirect-artifact');
+    expect(hit).toBeDefined();
+    expect(hit!.error).toMatch(/root-level.*shell output|shell output.*root-level/i);
+    expect(hit!.fixerRole).toBe('content-fixer');
+  });
+
+  it('does not quarantine normal files or nested status-like paths', async () => {
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([
+        '?? CPU: report.md',
+        '?? logs/VERDICT: WORKING (cpu is being consumed)',
+      ]),
+      readText: async () => 'ordinary text',
+    });
+
+    expect(offenders).toEqual([]);
+  });
+});

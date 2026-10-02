@@ -599,11 +599,12 @@ const KICKOFF_MARKER_ECHO_POLL_MS = 25;
  * submit it. A backend frame proves the TUI rendered; child.write only proves
  * the host attempted input. Neither proves the composer accepted the marker.
  */
-async function waitForPtyTextEcho({
+export async function waitForPtyTextEcho({
   read,
   text,
   timeoutMs = KICKOFF_MARKER_ECHO_TIMEOUT_MS,
   pollMs = KICKOFF_MARKER_ECHO_POLL_MS,
+  headLossGraceMs = KICKOFF_MARKER_ECHO_TIMEOUT_MS,
   shouldCancel = () => false,
   onPending = () => {},
 } = {}) {
@@ -616,15 +617,25 @@ async function waitForPtyTextEcho({
   let observedChars = 0;
   let markerTailSeen = false;
   let pendingReported = false;
+  let visible = '';
   while (true) {
     if (shouldCancel()) return { echoed: false, cancelled: true, elapsedMs: Date.now() - startedAt };
-    const visible = stripAnsi(String(read() ?? '')).replace(/[\r\n]/g, '');
+    visible = stripAnsi(String(read() ?? '')).replace(/[\r\n]/g, '');
     observedChars = Math.max(observedChars, visible.length);
     markerTailSeen ||= visible.includes(expected.slice(-12));
     if (visible.includes(expected)) {
       return { echoed: true, elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
     }
     const elapsedMs = Date.now() - startedAt;
+    // WI-10005331: the exact proof gets the first grace window. After it, a marker
+    // that lost only its head is this kickoff's own echo; waiting cannot complete it.
+    // The post-submit native proof already accepts the same loss (WI-10002745).
+    if (elapsedMs >= headLossGraceMs) {
+      const markerHeadLost = composerEchoMarkerHeadLoss(expected, visible);
+      if (markerHeadLost != null) {
+        return { echoed: true, markerHeadLost, elapsedMs, observedChars, markerTailSeen };
+      }
+    }
     if (!pendingReported && elapsedMs >= KICKOFF_MARKER_ECHO_TIMEOUT_MS) {
       pendingReported = true;
       onPending({ elapsedMs, observedChars, markerTailSeen });
@@ -633,7 +644,16 @@ async function waitForPtyTextEcho({
     if (remainingMs <= 0) break;
     await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(1, Number(pollMs) || 1), remainingMs)));
   }
-  return { echoed: false, reason: 'timeout', elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
+  return {
+    echoed: false,
+    reason: 'timeout',
+    elapsedMs: Date.now() - startedAt,
+    observedChars,
+    markerTailSeen,
+    // Bounded evidence of WHICH bytes were missing: head loss, a dropped middle
+    // byte and a composer that never rendered the marker need different fixes.
+    visibleTail: visible.slice(-80),
+  };
 }
 
 /**
@@ -780,6 +800,43 @@ export function truncatedTurnOriginMarkerLoss(
   const minSuffixLength = minNonceChars + 1; // nonce tail + closing bracket
   for (let lost = 1; lost <= exact.length - minSuffixLength; lost++) {
     if (text.startsWith(exact.slice(lost))) return lost;
+  }
+  return null;
+}
+
+/** WI-10005331: the pre-submit composer echo loses leading marker bytes the same
+ * way the native transcript does (WI-10002745). Measured 2026-10-02: Codex resolver
+ * su-df88c37b echoed 49 of 50 marker characters with the tail visible, the exact
+ * proof could never match, and the host waited ~557s and then dropped the kickoff,
+ * so inbox-resolve run bulk-bf4040d6 failed with every item undecided.
+ *
+ * Returns how many leading characters of `marker` were lost when `visible` holds a
+ * proper suffix of it that keeps at least `minNonceChars` nonce characters and the
+ * closing bracket; otherwise null (including when the exact marker is present, which
+ * the exact proof owns). Unlike truncatedTurnOriginMarkerLoss the suffix may sit
+ * anywhere in `visible`: the echo tap holds only output written after this kickoff's
+ * own write, so its leading bytes are composer chrome rather than a transcript row
+ * that could quote another injection, and the nonce tail is this injection's own
+ * random value. The suffix must start the text or follow chrome: when the nearest
+ * preceding non-space character could belong to a marker, the echo is either another
+ * nonce that shares this tail or a marker that lost a MIDDLE byte (which the
+ * post-submit proof rejects), so it is refused. Pure and exported for tests. */
+export function composerEchoMarkerHeadLoss(
+  marker,
+  visible,
+  { minNonceChars = TRUNCATED_MARKER_MIN_NONCE_CHARS } = {},
+) {
+  const exact = String(marker ?? '');
+  if (!LEADING_TURN_ORIGIN_RE.test(exact)) return null;
+  const text = String(visible ?? '');
+  if (text.includes(exact)) return null;
+  const minSuffixLength = minNonceChars + 1; // nonce tail + closing bracket
+  for (let lost = 1; lost <= exact.length - minSuffixLength; lost++) {
+    const suffix = exact.slice(lost);
+    for (let at = text.indexOf(suffix); at !== -1; at = text.indexOf(suffix, at + 1)) {
+      const before = text.slice(0, at).trimEnd();
+      if (!before || !/[⟦⟧A-Za-z0-9:._@-]$/u.test(before)) return lost;
+    }
   }
   return null;
 }
@@ -9092,6 +9149,7 @@ export function hostThroughPty(o) {
                 reason: echoProof.reason,
                 observedChars: echoProof.observedChars,
                 markerTailSeen: echoProof.markerTailSeen,
+                visibleTail: echoProof.visibleTail ?? null,
                 budgetMs: Math.max(0, deadline - turnWriteStartedAt),
               });
               markerEchoFailureReason = 'kickoff-marker-echo-unconfirmed';
@@ -9101,6 +9159,8 @@ export function hostThroughPty(o) {
               appendHostEvent(ownerId, 'launch-kickoff-marker-echo-confirmed', {
                 elapsedMs: echoProof.elapsedMs,
                 markerChars: marker.length,
+                // WI-10005331: non-null when only a head-truncated marker echoed.
+                markerHeadLost: echoProof.markerHeadLost ?? null,
               });
             }
           }

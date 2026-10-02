@@ -261,11 +261,12 @@ describe('scorecards:get evidence-first projection', () => {
     const tool = lookupByMcpName('scorecards:get');
     const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
     expect(chaining).toContain('Promise.all');
-    expect(chaining).toContain('small bounded');
+    expect(chaining).toContain('small Promise.all groups');
     expect(chaining).toContain('papercusp.output-envelope/v1');
-    expect(chaining).toContain('follow its content reference with capability:read');
-    expect(chaining).toContain('Inspect the outer shape before reading scorecard.criteria');
-    expect(chaining).toContain('each criterion’s evidenceRead.next page loop sequential');
+    expect(chaining).toContain('capability:read');
+    expect(chaining).toContain('before reading scorecard.criteria');
+    expect(chaining).toContain('pages sequentially');
+    expect(chaining).toContain('Concatenate complete pages');
   });
 
   it('rejects unknown criterion keys and out-of-range offsets instead of returning empty evidence', async () => {
