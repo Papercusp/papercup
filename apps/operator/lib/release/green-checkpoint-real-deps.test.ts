@@ -3152,6 +3152,63 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(exclusiveSetup.opts?.env?.PC_HEAVY_COALESCE).toBe("0");
   });
 
+  it("WI-10004108: an absent configured integration branch is a typed not-applicable preflight", async () => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-missing-integration-ref-"));
+    const integration = join(root, "integration");
+    mkdirSync(integration, { recursive: true });
+    const git = (...args: string[]): string => {
+      const result = spawnSync("git", ["-C", integration, ...args], {
+        encoding: "utf8",
+      });
+      if (result.status !== 0) {
+        throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+      }
+      return result.stdout.trim();
+    };
+
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "fixture@example.invalid");
+      git("config", "user.name", "fixture");
+      writeFileSync(join(integration, "README.md"), "valid repository without staging\n");
+      git("add", "README.md");
+      git("commit", "-qm", "initial commit");
+      const cfg = releaseConfig({
+        integrationRoot: integration,
+        releaseRoot: join(root, "release"),
+        checkpointRoot: join(root, "checkpoint"),
+        checkpointLogDir: join(root, "logs"),
+        integrationBranch: "staging",
+        releaseRef: "main",
+      });
+
+      const result = await beginCheckpointPreflight(cfg, "staging", runCmd);
+      expect(result.kind).toBe("not-applicable");
+      if (result.kind !== "not-applicable") {
+        throw new Error("expected missing configured branch to be not-applicable");
+      }
+      expect(result.integrationRef).toBe("staging");
+      expect(result.summary).toMatch(/not applicable/i);
+      expect(existsSync(checkpointRunLockDir(join(root, "logs"), integration))).toBe(false);
+
+      const invalidRoot = join(root, "not-a-git-repository");
+      mkdirSync(invalidRoot);
+      const invalidCfg = releaseConfig({
+        integrationRoot: invalidRoot,
+        releaseRoot: join(root, "invalid-release"),
+        checkpointRoot: join(root, "invalid-checkpoint"),
+        checkpointLogDir: join(root, "invalid-logs"),
+        integrationBranch: "staging",
+        releaseRef: "main",
+      });
+      await expect(
+        beginCheckpointPreflight(invalidCfg, "staging", runCmd),
+      ).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("D-081 joined guard: unseen exact inputs traverse the real prelock publisher and materializer to a normal candidate-bound verdict", async () => {
     // This test deliberately drives the REAL dependency-generation prewarm (that is the
     // whole point of the "unseen exact inputs" path). green-checkpoint.ts routes every
@@ -3283,6 +3340,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         candidate,
         runCmd,
       );
+      if (preflight.kind !== "ready") {
+        throw new Error("expected an available candidate to complete checkpoint preflight");
+      }
       const prewarmed = preflight.prewarmedDependencyGeneration;
       lock = preflight.lock;
       expect(lock.acquired).toBe(true);

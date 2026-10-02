@@ -4,6 +4,7 @@ import type { Sql } from 'postgres';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { deriveClaimScope, rearmControlWitnessForContextWipe } from './control-anchor';
 import {
+  ACTIVATION_CONSUMER_READ_PATH,
   CONTROL_ANCHOR_MAX_TOKENS,
   CONTROL_TRANSITION_MAX_TOKENS,
   CONTROL_TRANSITION_SCHEMA,
@@ -246,6 +247,60 @@ describe('compact durable CTRL anchor', () => {
     expect([a.generation, b.generation, c.generation]).toEqual([1, 1, 2]);
     expect(b.updatedAt).toBe(a.updatedAt);
     expect(c.updatedAt).not.toBe(b.updatedAt);
+  });
+
+  describe('consumer-attested write (EI-23770243810745552)', () => {
+    const activation = (stateRevision: string) => ({
+      schemaVersion: 1 as const,
+      attribution: { actorId: 'actor', principalId: 'principal', sessionId: 'session' },
+      desired: { specificationRevision: 'a'.repeat(64), stateRevision },
+      prepared: null,
+      applied: null,
+      status: 'desired' as const,
+    });
+
+    it('an agreeing write attests no divergence and renders NO consumerView key', async () => {
+      const persisted = await persistControlAnchor(
+        { ownerId: 'su-x', workspaceId: 'papercusp-workspace', state: state({ activation: activation('1') }) },
+        inMemoryPersistSql(),
+      );
+      expect(persisted.consumerView.divergedFromWrite).toBe(false);
+      expect(persisted.consumerView.readPath).toBe(ACTIVATION_CONSUMER_READ_PATH);
+      const anchor = renderControlAnchor({ ownerId: 'su-x', ...persisted });
+      expect('consumerView' in anchor).toBe(false);
+    });
+
+    it('a write whose consumer read returns a DIFFERENT activation is reported, not ok-by-silence', async () => {
+      // The WI-10002021 decoy: the row the enforcement port reads holds an older activation
+      // than the one this write intended. Same fake, but RETURNING serves the stale read path.
+      const honest = inMemoryPersistSql();
+      const decoy = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const [row] = (await (honest as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<Array<Record<string, unknown>>>)(strings, ...values));
+        return [{ ...row, control_state: { ...(row?.control_state as object), activation: activation('STALE') } }];
+      }) as unknown as Sql;
+      const persisted = await persistControlAnchor(
+        { ownerId: 'su-x', workspaceId: 'papercusp-workspace', state: state({ activation: activation('2') }) },
+        decoy,
+      );
+      expect(persisted.consumerView.divergedFromWrite).toBe(true);
+      expect(persisted.consumerView.value?.desired.stateRevision).toBe('STALE');
+      const anchor = renderControlAnchor({ ownerId: 'su-x', ...persisted });
+      expect(anchor.consumerView).toEqual(persisted.consumerView);
+      // Behavior-neutral: the anchor's authoritative state/hash are unchanged by the attestation.
+      expect(anchor.stateHash).toBe(controlStateHash(persisted.state));
+    });
+
+    it('a state with no activation attests agreement (null == null), not divergence', async () => {
+      const persisted = await persistControlAnchor(
+        { ownerId: 'su-x', workspaceId: 'papercusp-workspace', state: state() },
+        inMemoryPersistSql(),
+      );
+      expect(persisted.consumerView).toEqual({
+        readPath: ACTIVATION_CONSUMER_READ_PATH,
+        value: null,
+        divergedFromWrite: false,
+      });
+    });
   });
 
   it('carries provenance, a full-resync rule, and an enforced serialized token budget', () => {

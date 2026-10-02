@@ -27,6 +27,10 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'discovery-reasserted' ||
     kind === 'owner-composer-wedge-cleared' ||
     kind === 'launch-kickoff-turn-start-retry' ||
+    // WI-10004943: a fresh Codex child stuck at Starting was replaced and the
+    // kickoff re-delivered. The replacement's outcome is a separate event
+    // (launch-kickoff-fresh-child-failed counts as failure via the suffix rule).
+    kind === 'launch-kickoff-fresh-child-retry' ||
     kind === 'launch-kickoff-model-turn-retry-result' ||
     kind === 'submit-verify-human-input-retry' ||
     kind === 'respawn-carry-fresh-epoch-retry' ||

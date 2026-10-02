@@ -183,6 +183,10 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('headless-codex-model-choice-select-existing')).toBe('routine');
     // Pending is a non-terminal slow-echo state; confirmed/unconfirmed carry the verdict.
     expect(classifyPtyHostEvent('launch-kickoff-marker-echo-pending')).toBe('routine');
+    // WI-10004943: replacing a stuck fresh Codex child is a recovery; the
+    // replacement failing is a failure.
+    expect(classifyPtyHostEvent('launch-kickoff-fresh-child-retry')).toBe('recovered');
+    expect(classifyPtyHostEvent('launch-kickoff-fresh-child-failed')).toBe('failure');
     expect(classifyPtyHostEvent('launch-kickoff-marker-echo-confirmed')).toBe('routine');
     expect(classifyPtyHostEvent('launch-kickoff-marker-echo-unconfirmed')).toBe('failure');
   });

@@ -1324,17 +1324,12 @@ describe('durable detached snapshot lifecycle', () => {
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
     process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
     let releaseTerminalSnapshot!: () => void;
-    let markTerminalSnapshotStarted!: () => void;
-    const terminalSnapshotStarted = new Promise<void>((resolve) => {
-      markTerminalSnapshotStarted = resolve;
-    });
     const terminalSnapshotGate = new Promise<void>((resolve) => {
       releaseTerminalSnapshot = resolve;
     });
     persistSqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join(' ');
       if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots') && values[5] === 'pass') {
-        markTerminalSnapshotStarted();
         await terminalSnapshotGate;
       }
       return [];
@@ -1352,9 +1347,22 @@ describe('durable detached snapshot lifecycle', () => {
     }) as unknown as Sql;
 
     try {
+      // Match the other persistence lifecycle fixtures: resolve the mocked
+      // database before the close callback enters its fail-soft import path.
+      const database = await import('@papercusp/db-org');
+      expect(database.getOrgPg().sql).toBe(persistSqlMock);
+      expect(process.env.PAPERCUSP_TEST_RUNS_PERSIST).toBe('1');
       const snapshot = store.startRun(req({ requestedFiles: ['lib/local-pass.test.ts'] }));
       lastChild._emitClose(0);
-      await terminalSnapshotStarted;
+      expect(store.getRun(snapshot.runId)).toMatchObject({ status: 'pass' });
+      // Readiness must report which writes actually reached the seam rather
+      // than hanging until the whole test's timeout if the seam is missed.
+      await vi.waitFor(() => {
+        const states = persistSqlMock.mock.calls
+          .filter(([strings]) => strings.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots'))
+          .map((call) => call[6]);
+        expect(states).toContain('pass');
+      }, { timeout: 2_000 });
 
       let settled = false;
       const statusRead = store.getRunAsync(snapshot.runId, sql).then((result) => {

@@ -239,7 +239,9 @@ describe('persistHarnessTestRuns', () => {
       testNamePattern: 'PUI-USAGE',
       sql,
     });
-    expect(JSON.parse(String(calls[0][16]))).toEqual({
+    // postgres-js serializes an object into jsonb. Passing a pre-stringified
+    // value instead stores a JSON string scalar and breaks field reads.
+    expect(calls[0][16]).toEqual({
       schemaVersion: 1,
       root: '/work/harness-repo',
       filePath: 'src/foo.test.ts',
@@ -265,7 +267,7 @@ describe('persistHarnessTestRuns', () => {
       sql,
     });
     expect(calls[0][15]).toBe(true);
-    expect(JSON.parse(String(calls[0][16]))).toMatchObject({ commitSha: null, worktreeDirty: true });
+    expect(calls[0][16]).toMatchObject({ commitSha: null, worktreeDirty: true });
   });
 
   it('EI-4940: loop_lag_p95_ms is null when no monitor is running (absence of signal, not a claim of calm)', async () => {

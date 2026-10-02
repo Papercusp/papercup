@@ -18745,7 +18745,7 @@
           "POST"
         ]
       },
-      "description": "Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Default is a HARD delete (gone for good — the right call for privacy asks). Pass soft:true to instead close the memory's validity window (temporal-lite): it drops out of recall but stays retrievable via include_superseded / as_of on memory:search. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position; a not-found / timed-out id comes back as that item's { ok:false } without failing the rest.",
+      "description": "Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Default is a HARD delete (gone for good — the right call for privacy asks). Pass soft:true to instead close the memory's validity window (temporal-lite): it drops out of recall but stays retrievable via include_superseded / as_of on memory:search. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position. After a hard-delete timeout, the handler re-reads the row: confirmed absence returns ok:true with reconciledAfterTimeout:true; unresolved status returns { ok:false, reason:'timeout_unknown' } and should be checked before retrying.",
       "capabilities": [
         "memory:write"
       ],

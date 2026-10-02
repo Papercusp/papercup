@@ -80,11 +80,16 @@ export interface SessionRow {
 export interface CapacityRow {
   machineType: string;
   label: string;
-  /** Largest N that passed; 0 when even the first step saturated. */
+  /** The passed N that held the most sessions in flight; 0 when even the first step saturated. */
   capacity: number;
-  /** True when no step saturated, so `capacity` is a lower bound. */
+  /** True when no step saturated and no later pass held fewer sessions, so `capacity` is a lower bound. */
   censored: boolean;
   saturatedAt: { n: number; reason: string } | null;
+  /**
+   * A later step passed the ramp's rule but held FEWER sessions in flight than the capacity step:
+   * the machine peaked below the saturation rule. `n` and `achieved` are that last pass. null otherwise.
+   */
+  peakedAt: { n: number; achieved: number } | null;
   /** The ramp stopped at an UNDERDRIVEN step: capacity beyond the last pass is unmeasured, not refuted. */
   underdrivenAt: { n: number; reason: string } | null;
   /** Measured at the capacity step (null when there is none). */
@@ -138,7 +143,16 @@ export function capacityRow(
   const firstStop = mine.find((s) => !s.ok) ?? null;
   const firstSat = firstStop && !firstStop.underdriven ? firstStop : null;
   const passed = mine.filter((s) => s.ok && (!firstStop || s.n < firstStop.n));
-  const best = passed.at(-1) ?? null;
+  const lastPassed = passed.at(-1) ?? null;
+  // The capacity step is the pass that held the MOST sessions in flight, not the last pass: past the
+  // machine's peak, more slots can still pass the ramp's rule while holding fewer sessions and doing
+  // less work (t2d-standard-16, WI-10004380: n80 held 78.0 for 446 runs, n96 passed holding 73.5 for
+  // 406). Pricing the last pass would divide by the smaller count. Ties keep the smaller N. A step
+  // without `achieved=` (older logs) counts as N, as activeAgents does, so such a ramp keeps its last pass.
+  const held = (s: StepVerdict): number => Math.min(s.n, s.achieved ?? s.n);
+  const best = passed.reduce<StepVerdict | null>((b, s) => (b === null || held(s) > held(b) ? s : b), null);
+  const peakedAt =
+    best && lastPassed && best !== lastPassed ? { n: lastPassed.n, achieved: held(lastPassed) } : null;
   const capacity = best?.n ?? 0;
   const activeAgents = best ? Math.min(capacity, best.achieved ?? capacity) : null;
   const usdPerHour = hourlyPriceUsd(machineType, diskGb);
@@ -157,8 +171,9 @@ export function capacityRow(
     machineType,
     label,
     capacity,
-    censored: firstSat === null && best !== null,
+    censored: firstSat === null && best !== null && peakedAt === null,
     saturatedAt: firstSat ? { n: firstSat.n, reason: firstSat.reason ?? '' } : null,
+    peakedAt,
     underdrivenAt: firstStop?.underdriven ? { n: firstStop.n, reason: firstStop.reason ?? '' } : null,
     wallSlowdown: best?.wallSlowdown ?? null,
     activeAgents,
@@ -180,7 +195,7 @@ export function renderMarkdown(rows: readonly CapacityRow[]): string {
   const out = [head, '|' + ' --- |'.repeat(13)];
   for (const r of rows) {
     out.push(
-      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${r.toolDivergedShare === null ? '—' : f(r.toolDivergedShare * 100, 0)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.activeAgents, 1)} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} | ${r.usdPerAgentMonthSpot === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonthSpot)}`} |`,
+      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.peakedAt ? `peaked (n${r.peakedAt.n} passed holding ${f(r.peakedAt.achieved, 1)})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${r.toolDivergedShare === null ? '—' : f(r.toolDivergedShare * 100, 0)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.activeAgents, 1)} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} | ${r.usdPerAgentMonthSpot === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonthSpot)}`} |`,
     );
   }
   return out.join('\n');

@@ -451,6 +451,17 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('migrations-pending', true)).toBe('reset');
   });
 
+  it('WI-10004108: a missing configured integration branch is recorded as not-applicable without counting a stall', () => {
+    expect(classifyGateStallStatus('not-applicable', false)).toBe('noop');
+    expect(classifyGateStallStatus('not-applicable', true)).toBe('reset');
+    expect(
+      gateStallNoopLogMessage(
+        'not-applicable',
+        'Configured integration branch "staging" is absent',
+      ),
+    ).toContain('not-applicable');
+  });
+
   it('EI-20767792192323374: infra-inconclusive is a NON-VERDICT, not a red', () => {
     // One step LATER in the run than migrations-pending: the suite really executed, but the
     // gate's own vite-node module cache was deleted underneath it mid-run, so its failures are

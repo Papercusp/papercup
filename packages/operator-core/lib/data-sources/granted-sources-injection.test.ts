@@ -7,9 +7,12 @@
 import type { Sql } from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import type { OrganizationSearchResult, PotSearchResult } from './documents-corpus';
+import type { LiveSearchResult } from './live-search-adapter';
 import {
   buildGrantedSourcesContextBlock,
+  collectLiveEntries,
   collectOrganizationEntries,
+  GRANTED_SOURCES_LIVE_TIMEOUT_MS,
   collectPotEntries,
   fenceUntrustedSourceText,
   GRANTED_SOURCES_HEADER,
@@ -83,6 +86,28 @@ function deps(overrides: Partial<GrantedSourcesDeps> = {}): GrantedSourcesDeps {
     collectPersonal: vi.fn(async () => null),
     searchOrganization: vi.fn(async () => ({ allowed: true as const, results: [orgResult()], withheld: 0, disclosed: 0 })),
     searchPot: vi.fn(async () => ({ results: [potResult()], withheld: 0, disclosed: 0 }) as never),
+    searchLive: vi.fn(async () => ({
+      allowed: true as const, results: [liveResult()], withheld: 0, disclosed: 0, unmapped: [], failed: [],
+    })),
+    ...overrides,
+  };
+}
+
+function liveResult(overrides: Partial<LiveSearchResult> = {}): LiveSearchResult {
+  return {
+    id: 'live-doc-1',
+    source: 'slack',
+    dataSourceId: 'ds-live-1',
+    kind: 'live-hit',
+    externalId: 'T1:C3:1.2',
+    occurredAt: null,
+    participants: [],
+    title: 'Live doc',
+    snippet: 'live snippet',
+    metadata: { live: true },
+    permalink: 'https://example.slack.com/archives/C3/p12',
+    score: 1,
+    privacy: null,
     ...overrides,
   };
 }
@@ -214,7 +239,53 @@ describe('collectPotEntries', () => {
   });
 });
 
+describe('collectLiveEntries', () => {
+  it('calls no provider when the pot and plan subscribe to no source', async () => {
+    const d = deps({ subscribedSources: vi.fn(async () => []) });
+    expect(await collectLiveEntries(LEG, d)).toEqual([]);
+    expect(d.searchLive).not.toHaveBeenCalled();
+  });
+
+  it('maps subscribed live hits with the data source as ref and the permalink as link', async () => {
+    const d = deps({
+      searchLive: vi.fn(async () => ({
+        allowed: true as const, withheld: 0, disclosed: 1, unmapped: [], failed: [],
+        results: [liveResult(), liveResult({ title: 'other', source: 'asana' })],
+      })),
+    });
+    const out = await collectLiveEntries(LEG, d);
+    expect(out).toEqual([expect.objectContaining({
+      scope: 'live', source: 'slack', ref: 'ds-live-1', title: 'Live doc',
+      link: 'https://example.slack.com/archives/C3/p12',
+    })]);
+    expect(d.searchLive).toHaveBeenCalledWith(d.sql, expect.anything(), expect.objectContaining({
+      sources: ['slack'], principalUserId: 'user-1', agentOwnerId: 'su-agent',
+      timeoutMs: GRANTED_SOURCES_LIVE_TIMEOUT_MS,
+    }));
+  });
+
+  it('returns nothing on a refused live search', async () => {
+    const d = deps({ searchLive: vi.fn(async () => ({ allowed: false as const, reason: 'not_granted' as never })) });
+    expect(await collectLiveEntries(LEG, d)).toEqual([]);
+  });
+});
+
 describe('buildGrantedSourcesContextBlock', () => {
+  it('reads subscriptions once for the organization and live legs', async () => {
+    const d = deps();
+    await buildGrantedSourcesContextBlock(LEG, d);
+    expect(d.subscribedSources).toHaveBeenCalledTimes(1);
+    expect(d.searchOrganization).toHaveBeenCalledTimes(1);
+    expect(d.searchLive).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a live entry with its permalink as an escaped link attribute', async () => {
+    const block = (await buildGrantedSourcesContextBlock(LEG, deps()))!;
+    expect(block).toContain(
+      `<${UNTRUSTED_FENCE_TAG} scope="live" source="slack" ref="ds-live-1" external-id="T1:C3:1.2" link="https://example.slack.com/archives/C3/p12">`,
+    );
+  });
+
   it('is silent for an empty query or a missing owner', async () => {
     const d = deps();
     expect(await buildGrantedSourcesContextBlock({ ...LEG, query: '   ' }, d)).toBeNull();
@@ -222,7 +293,7 @@ describe('buildGrantedSourcesContextBlock', () => {
     expect(d.resolveSubjects).not.toHaveBeenCalled();
   });
 
-  it('orders personal, then pot, then organization entries in one block', async () => {
+  it('orders personal, then pot, then organization, then live entries in one block', async () => {
     const d = deps({
       collectPersonal: vi.fn(async () => ({
         scopes: ['email'],
@@ -239,6 +310,7 @@ describe('buildGrantedSourcesContextBlock', () => {
     expect(iPersonal).toBeGreaterThan(0);
     expect(iPot).toBeGreaterThan(iPersonal);
     expect(iOrg).toBeGreaterThan(iPot);
+    expect(block.indexOf('Live doc')).toBeGreaterThan(iOrg);
   });
 
   it('keeps the other legs when one leg throws', async () => {
@@ -248,6 +320,14 @@ describe('buildGrantedSourcesContextBlock', () => {
     });
     const block = (await buildGrantedSourcesContextBlock(LEG, d))!;
     expect(block).toContain('Pot doc');
+    expect(block).toContain('Live doc');
     expect(block).not.toContain('Org doc');
+  });
+
+  it('is silence for the live leg alone when the provider throws', async () => {
+    const d = deps({ searchLive: vi.fn(async () => { throw new Error('slack down'); }) });
+    const block = (await buildGrantedSourcesContextBlock(LEG, d))!;
+    expect(block).toContain('Org doc');
+    expect(block).not.toContain('Live doc');
   });
 });

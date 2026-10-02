@@ -3468,6 +3468,9 @@ export function classifyGateStallStatus(
     status === 'cancelled' ||
     status === 'repair-in-progress' ||
     status === 'repair-staging-mismatch' ||
+    // WI-10004108: an install with no configured integration branch cannot run this gate. It
+    // reports a durable not-applicable status, but must not create a red or no-verdict streak.
+    status === 'not-applicable' ||
     // WI-42350: the run DECLINED to re-judge a sha that already reached a red
     // verdict on a byte-identical tree. The producer says so in as many words
     // ("This is NOT a new red: it is the same one") and returns `green: null`
@@ -3750,6 +3753,14 @@ function oneLineMeasuredDetail(detail: string | null | undefined): string | null
 }
 
 export function gateStallNoopLogMessage(status: string, detail?: string | null): string {
+  if (status === 'not-applicable') {
+    const measuredDetail = oneLineMeasuredDetail(detail);
+    return (
+      `${orchestratorStdoutTag()} 'not-applicable' — green-checkpoint has no configured integration ` +
+      `branch for this installation${measuredDetail ? ` (${measuredDetail})` : ''}. This outcome is ` +
+      `recorded under gate_health.inconclusive without advancing the red or no-verdict counters.`
+    );
+  }
   if (status === 'disk-headroom') {
     return (
       // EI-23424266636870803: this said "the temp filesystem", which routes a responder

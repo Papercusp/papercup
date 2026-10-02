@@ -155,6 +155,24 @@ describe('capacity-table', () => {
     expect(buildTable(root, 120).find((r) => r.machineType === 'e2-standard-4')?.activeAgents).toBe(2);
   });
 
+  // WI-10004380 (t2d-standard-16): n96 passed the ramp's rule but held fewer sessions than n80 and did
+  // less work. The capacity step is the peak, it is measured there, and the ramp is not censored.
+  it('takes capacity from the pass that held the most sessions, not the last pass, and marks the peak', () => {
+    const line = (n: number, achieved: string) =>
+      `RAMP_STEP_END p005-mixed-normal-n${n} n=${n} rc=0 OK runs=400 wallSlowdown=0.72 diverged=0 toolDiverged=0 achieved=${achieved} setupMsP50=84 2026-10-02T00:56:56Z`;
+    vm('t2d-standard-16', 'mixed-normal', [line(64, '63.3/64'), line(80, '78.0/80'), line(96, '73.5/96')], { n: 80, cores: 15.1, anonMb: 30000, peaksMiB: [700] });
+    const [row] = buildTable(root, 120);
+    expect(row).toMatchObject({ capacity: 80, censored: false, activeAgents: 78, peakedAt: { n: 96, achieved: 73.5 }, saturatedAt: null });
+    expect(row.usdPerAgentMonth).toBeCloseTo((hourlyPriceUsd('t2d-standard-16', 120) * 730) / 78, 9);
+    expect(row.coresPerAgent).toBeCloseTo(15.1 / 78, 6);
+    const md = renderMarkdown([row]).split('\n')[2];
+    expect(md).toContain('| 80 | peaked (n96 passed holding 73.5) |');
+    expect(md).not.toMatch(/[≥≤]/);
+    // Ties keep the smaller N: a later pass holding the same count adds slots, not capacity.
+    vm('c4a-standard-16', 'mixed-normal', [line(48, '47.0/48'), line(56, '47.0/56')], { n: 48, cores: 9, anonMb: 9000, peaksMiB: [700] });
+    expect(buildTable(root, 120).find((r) => r.machineType === 'c4a-standard-16')).toMatchObject({ capacity: 48, peakedAt: { n: 56, achieved: 47 } });
+  });
+
   // WI-10004672: a step that never held N sessions measured the driver, so it neither passes nor
   // saturates. Capacity stops at the last real pass, as a floor, and the table says why.
   it('treats an UNDERDRIVEN step as unmeasured: capacity is the last pass, censored, never a saturation', () => {

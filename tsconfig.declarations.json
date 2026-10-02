@@ -106,6 +106,9 @@
     // source-corroborated graph-suggestion module behind the affected-test selector. Imported
     // directly by affected-tests-graph-suggestions.test.ts.
     "scripts/lib/graph-dependency-suggestions.mjs",
+    // P-008 — the out-of-band producer for that snapshot (the only code that reads the graph
+    // backend; fails closed). Imported directly by gen-graph-dependency-snapshot.test.ts.
+    "scripts/gen-graph-dependency-snapshot.mjs",
     // gate-test-reuse-yield-2026-10-01 P-007 (D-010) — per-table generated-schema drift. Imported
     // by test-pass-reuse.mjs and directly by schema-symbol-drift.test.ts.
     "scripts/lib/schema-symbol-drift.mjs",

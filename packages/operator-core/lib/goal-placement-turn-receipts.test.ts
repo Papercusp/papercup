@@ -9,6 +9,7 @@ import {
   confirmGoalPlacementDelivery, deliveredGoalPlacementRows, prepareGoalPlacementDelivery,
   type GoalPlacementTurnReceiptDeps,
   recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps, GOAL_PLACEMENT_TURN_END_SETTLE_POLLS,
+  recordGoalPlacementTurnEndOutcome,
   observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
   type GoalPlacementAdmissionObservation, noProgressAge, placementSelection,
 } from './goal-placement-turn-receipts';
@@ -418,6 +419,38 @@ describe('native turn-end policy observation', () => {
     f.read.goalId = null;
     expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('no-canonical-goal');
     expect(f.deps.append).not.toHaveBeenCalled();
+  });
+});
+
+describe('native turn-end non-recording diagnostics', () => {
+  const input = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: 'old-session', sourceKind: 'codex' as const };
+
+  it('stores a compact lifecycle outcome under a key separate from eligibility receipts', async () => {
+    const append = vi.fn(async () => ({ id: 'diagnostic' }));
+    const persisted = await recordGoalPlacementTurnEndOutcome(input,
+      { recorded: false, reason: 'native-session-mismatch' }, { append, now: () => at(5).getTime() });
+
+    expect(persisted).toBe(true);
+    expect(append).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'workspace', owner: 'holder', agent: 'codex', sessionId: 'old-session', scope: null,
+      kind: 'lifecycle', toolName: null, phase: null,
+      toolUseId: `goal-placement-turn-end-outcome:codex:old-session:${at(5).toISOString()}`,
+      summary: 'Goal placement policy turn-end observation was not recorded', status: null, cwd: null,
+      detail: { goalPlacementTurnEndOutcome: {
+        version: 1, recorded: false, reason: 'native-session-mismatch', observedAt: at(5).toISOString(),
+      } },
+    });
+  });
+
+  it('leaves successful observations and no-canonical-goal outcomes out of the diagnostic stream', async () => {
+    const append = vi.fn(async () => ({ id: 'diagnostic' }));
+    const deps = { append, now: () => at(5).getTime() };
+
+    expect(await recordGoalPlacementTurnEndOutcome(input,
+      { recorded: true, reason: 'turn-end-policy-recorded-not-yet-graded' }, deps)).toBe(false);
+    expect(await recordGoalPlacementTurnEndOutcome(input,
+      { recorded: false, reason: 'no-canonical-goal' }, deps)).toBe(false);
+    expect(append).not.toHaveBeenCalled();
   });
 });
 

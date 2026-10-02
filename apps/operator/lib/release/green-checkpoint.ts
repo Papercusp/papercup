@@ -1418,6 +1418,8 @@ export interface CheckpointResult {
   /** Compatibility field for older recorders that predate candidateSource. */
   diagnostic?: CheckpointDiagnostic;
   reason:
+    /** The install has no configured local integration branch, so this checkpoint cannot run. */
+    | "not-applicable"
     | "up-to-date"
     /** WI-42350 — this exact sha already reached a RED verdict, so the run declined to re-judge
      *  it and skipped materialization. Distinct from "not-green": that means THIS run judged and
@@ -15633,12 +15635,60 @@ export async function beginCheckpointPreflight(
   candidateRef: string,
   exec: CheckpointExec = runCmd,
   dependencyPrebuildDeps: CheckpointDependencyPrebuildDeps = {},
-): Promise<{
-  candidate: string;
-  prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
-  lock: CheckpointRunLock;
-}> {
-  const candidate = await revParse(cfg.integrationRoot, candidateRef);
+): Promise<
+  | {
+      kind: "ready";
+      candidate: string;
+      prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
+      lock: CheckpointRunLock;
+    }
+  | {
+      kind: "not-applicable";
+      candidate: string;
+      integrationRef: string;
+      summary: string;
+    }
+> {
+  let candidate: string;
+  try {
+    candidate = await revParse(cfg.integrationRoot, candidateRef);
+  } catch (error) {
+    // A scheduled install may intentionally have no integration branch. Distinguish that
+    // exact condition from a missing repository, broken ref target, or Git execution failure:
+    // only an exact configured local branch proven absent by show-ref is not applicable.
+    if (candidateRef === cfg.integrationBranch) {
+      const configuredBranchRef = cfg.integrationBranch.startsWith("refs/heads/")
+        ? cfg.integrationBranch
+        : `refs/heads/${cfg.integrationBranch}`;
+      try {
+        const branch = await exec(
+          "git",
+          [
+            "-C",
+            cfg.integrationRoot,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            configuredBranchRef,
+          ],
+          { allowNonZero: true },
+        );
+        if (branch.code === 1 && branch.signal == null) {
+          return {
+            kind: "not-applicable",
+            candidate: candidateRef,
+            integrationRef: cfg.integrationBranch,
+            summary:
+              `Configured integration branch "${cfg.integrationBranch}" is absent; ` +
+              "green-checkpoint is not applicable for this installation.",
+          };
+        }
+      } catch {
+        // Keep the original candidate-resolution error when Git cannot establish absence.
+      }
+    }
+    throw error;
+  }
   let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration | null =
     null;
   try {
@@ -15663,7 +15713,7 @@ export async function beginCheckpointPreflight(
   const lock = acquireCheckpointRunLock(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
   );
-  return { candidate, prewarmedDependencyGeneration, lock };
+  return { kind: "ready", candidate, prewarmedDependencyGeneration, lock };
 }
 
 /** A signaled child is not a successful zero-exit command, even though Node reports
@@ -21505,6 +21555,20 @@ if (require.main === module) {
         cfg,
         candidateArg ?? pinnedCandidate ?? cfg.integrationBranch,
       );
+      if (preflight.kind === "not-applicable") {
+        await emitResult({
+          advanced: false,
+          candidate: preflight.candidate,
+          from: null,
+          green: null,
+          reason: "not-applicable",
+          summary: preflight.summary,
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
+          ...(gateFireId ? { gateFireId } : {}),
+        });
+        process.exit(0);
+      }
       resolvedCandidateForRun = preflight.candidate;
       prewarmedDependencyGeneration = preflight.prewarmedDependencyGeneration;
       lock = preflight.lock;

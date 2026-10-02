@@ -15,7 +15,13 @@
  *   - pot — documents written into the agent's own pot (scope = 'pot', e.g. a
  *     pot-scoped chat source, P-015), searched through searchPotDocuments. The pot
  *     is read from server-owned presence, so pot membership is the access rule and
- *     no subscription is needed.
+ *     no subscription is needed;
+ *   - live — hits from federated data sources (sync_mode = 'federated', P-018,
+ *     BAR R-12), queried at read time through searchLiveSources. Nothing is stored:
+ *     the provider enforces its own ACL by querying as the principal's mapped
+ *     identity, and the vault grant and disclosure ledger still apply. Gated on the
+ *     same pot/plan subscriptions as the organization leg, with a short timeout so
+ *     a slow provider cannot stall the turn.
  *
  * Every injected snippet is fenced as UNTRUSTED QUOTED DATA that names its source
  * (anyone in a shared channel can type "ignore previous instructions"), the
@@ -34,12 +40,16 @@ import {
   type OrganizationSearchOutcome,
   type PotSearchOutcome,
 } from './documents-corpus';
+import { searchLiveSources, type LiveSearchOutcome } from './live-search-adapter';
 
 export const GRANTED_SOURCES_BUDGET_TOKENS = 600;
 /** ts_rank_cd floor for organization and pot documents; below it a lexical match is noise. */
 export const GRANTED_SOURCES_RELEVANCE_FLOOR = 0.05;
 export const GRANTED_SOURCES_ORGANIZATION_LIMIT = 6;
 export const GRANTED_SOURCES_POT_LIMIT = 6;
+export const GRANTED_SOURCES_LIVE_LIMIT = 4;
+/** Per-source provider timeout at turn start; tighter than an explicit search's. */
+export const GRANTED_SOURCES_LIVE_TIMEOUT_MS = 2_500;
 export const GRANTED_SOURCES_INJECTION_VIA = 'documents:ambient';
 export const UNTRUSTED_FENCE_TAG = 'untrusted-source-data';
 const SNIPPET_CHARS = 360;
@@ -181,15 +191,17 @@ function attr(value: string): string {
 }
 
 export interface GrantedSourceEntry {
-  scope: 'personal' | 'organization' | 'pot';
+  scope: 'personal' | 'organization' | 'pot' | 'live';
   source: string;
-  /** Grant scope key (personal), permission list id (organization) or pot slug (pot). */
+  /** Grant scope key (personal), permission list id (organization), pot slug (pot) or data source id (live). */
   ref: string;
   externalId: string | null;
   occurredAt: string | null;
   title: string;
   snippet: string;
   privacy: DocumentLabel | null;
+  /** Provider link to the original (live hits), rendered as the citation. */
+  link?: string | null;
 }
 
 export function estimateInjectionTokens(text: string): number {
@@ -208,6 +220,7 @@ export function renderGrantedSourceEntry(entry: GrantedSourceEntry): string {
     `ref="${attr(entry.ref)}"`,
     entry.externalId ? `external-id="${attr(entry.externalId)}"` : null,
     entry.occurredAt ? `occurred="${attr(entry.occurredAt.slice(0, 10))}"` : null,
+    entry.link ? `link="${attr(entry.link)}"` : null,
     entry.privacy
       ? `restricted="${attr(`${entry.privacy.level}: send only to ${entry.privacy.readerSet.join(', ')} or the owner`)}"`
       : null,
@@ -250,6 +263,11 @@ export interface GrantedSourcesDeps {
     params: Parameters<typeof searchOrganizationDocuments>[2],
   ) => Promise<OrganizationSearchOutcome>;
   searchPot: (sql: Sql, params: Parameters<typeof searchPotDocuments>[1]) => Promise<PotSearchOutcome>;
+  searchLive: (
+    sql: Sql,
+    ctx: PersonalToolContext,
+    params: Parameters<typeof searchLiveSources>[2],
+  ) => Promise<LiveSearchOutcome>;
 }
 
 type InjectionSubjects = Awaited<ReturnType<typeof resolveInjectionSubjects>>;
@@ -274,19 +292,35 @@ function defaultDeps(): GrantedSourcesDeps {
         await tx`SELECT set_config('app.workspace_id', ${params.workspaceId}, true)`;
         return searchPotDocuments(tx as unknown as Sql, params);
       }) as Promise<PotSearchOutcome>,
+    // Same shape as the organization leg: the grant read, identity read and
+    // disclosure rows commit together under this workspace's GUC.
+    searchLive: (db, ctx, params) =>
+      db.begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${params.workspaceId}, true)`;
+        return searchLiveSources(tx as unknown as Sql, ctx, params);
+      }) as Promise<LiveSearchOutcome>,
   };
 }
 
 type LegInput = { ownerId: string; userId: string; workspaceId: string; query: string; relevanceFloor?: number };
+
+async function subscribedSourcesFor(
+  input: LegInput,
+  deps: GrantedSourcesDeps,
+  resolvedSubjects?: InjectionSubjects,
+): Promise<string[]> {
+  const subjects = resolvedSubjects ?? await deps.resolveSubjects(deps.sql, input.ownerId, input.workspaceId);
+  return deps.subscribedSources(deps.sql, input.workspaceId, subjects);
+}
 
 /** Organization entries for the agent's subscribed sources, above the relevance floor. */
 export async function collectOrganizationEntries(
   input: LegInput,
   deps: GrantedSourcesDeps,
   resolvedSubjects?: InjectionSubjects,
+  resolvedSources?: readonly string[],
 ): Promise<GrantedSourceEntry[]> {
-  const subjects = resolvedSubjects ?? await deps.resolveSubjects(deps.sql, input.ownerId, input.workspaceId);
-  const sources = await deps.subscribedSources(deps.sql, input.workspaceId, subjects);
+  const sources = [...(resolvedSources ?? await subscribedSourcesFor(input, deps, resolvedSubjects))];
   if (!sources.length) return [];
   const context = await deps.resolveContext(deps.sql, input.ownerId, input.workspaceId);
   const outcome = await deps.searchOrganization(deps.sql, context, {
@@ -312,6 +346,47 @@ export async function collectOrganizationEntries(
       title: r.title,
       snippet: r.snippet,
       privacy: r.privacy,
+    }));
+}
+
+/**
+ * Live entries from federated sources the agent's pot or plan subscribes to. No
+ * subscription means no provider call at all. There is no ts_rank floor: live
+ * scores are adapter-native, so the adapter's own ranking and the limit bound it.
+ */
+export async function collectLiveEntries(
+  input: LegInput,
+  deps: GrantedSourcesDeps,
+  resolvedSubjects?: InjectionSubjects,
+  resolvedSources?: readonly string[],
+): Promise<GrantedSourceEntry[]> {
+  const sources = [...(resolvedSources ?? await subscribedSourcesFor(input, deps, resolvedSubjects))];
+  if (!sources.length) return [];
+  const context = await deps.resolveContext(deps.sql, input.ownerId, input.workspaceId);
+  const outcome = await deps.searchLive(deps.sql, context, {
+    workspaceId: input.workspaceId,
+    principalUserId: input.userId,
+    agentOwnerId: input.ownerId.trim(),
+    query: input.query,
+    sources,
+    limit: GRANTED_SOURCES_LIVE_LIMIT,
+    snippetChars: SNIPPET_CHARS,
+    timeoutMs: GRANTED_SOURCES_LIVE_TIMEOUT_MS,
+  });
+  if (!outcome.allowed) return [];
+  const subscribed = new Set(sources);
+  return outcome.results
+    .filter((r) => subscribed.has(r.source))
+    .map((r) => ({
+      scope: 'live' as const,
+      source: r.source,
+      ref: r.dataSourceId,
+      externalId: r.externalId,
+      occurredAt: r.occurredAt,
+      title: r.title,
+      snippet: r.snippet,
+      privacy: r.privacy,
+      link: r.permalink,
     }));
 }
 
@@ -370,10 +445,14 @@ export async function buildGrantedSourcesContextBlock(
   if (!query || !input.ownerId.trim() || !input.userId.trim()) return null;
   const leg = { ...input, query };
   const subjects = deps.resolveSubjects(deps.sql, input.ownerId, input.workspaceId);
-  const [personal, pot, organization] = await Promise.all([
+  // One subscription read feeds both subscription-gated legs.
+  const sources = subjects.then((s) => deps.subscribedSources(deps.sql, input.workspaceId, s));
+  const none = () => [] as GrantedSourceEntry[];
+  const [personal, pot, organization, live] = await Promise.all([
     deps.collectPersonal(leg).catch(() => null),
-    subjects.then((s) => collectPotEntries(leg, deps, s)).catch(() => [] as GrantedSourceEntry[]),
-    subjects.then((s) => collectOrganizationEntries(leg, deps, s)).catch(() => [] as GrantedSourceEntry[]),
+    subjects.then((s) => collectPotEntries(leg, deps, s)).catch(none),
+    sources.then((list) => collectOrganizationEntries(leg, deps, undefined, list)).catch(none),
+    sources.then((list) => collectLiveEntries(leg, deps, undefined, list)).catch(none),
   ]);
   const personalEntries: GrantedSourceEntry[] = (personal?.documents ?? []).map((d) => ({
     scope: 'personal',
@@ -385,5 +464,5 @@ export async function buildGrantedSourcesContextBlock(
     snippet: d.snippet,
     privacy: d.privacy,
   }));
-  return renderGrantedSourcesBlock([...personalEntries, ...pot, ...organization], input.budgetTokens);
+  return renderGrantedSourcesBlock([...personalEntries, ...pot, ...organization, ...live], input.budgetTokens);
 }

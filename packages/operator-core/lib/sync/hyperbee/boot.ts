@@ -128,7 +128,7 @@ import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from
 import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { loadRevokedPubkeys } from './load-revoked-pubkeys';
+import { loadRevokedPubkeysCached } from './load-revoked-pubkeys';
 import {
   registerAllHarnessProjections,
   buildHarnessProjectionApply,
@@ -1911,11 +1911,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // and a live PG, so this is safe.
   //
   // Fail-open: a load failure records a boot event and continues.
+  //
+  // WI-10005183: both reads go through the NOTIFY-invalidated process cache
+  // (revoked-set-cache.ts). This loader runs at the top of EVERY merge pass for
+  // EVERY harness (~once a second each), and the published sets change a few times
+  // a day — measured 162 identical queries/s on bg-host before the cache. The cache
+  // serves nothing until it is attached to the live sync_invalidate LISTEN, and
+  // every contributors / pot_members row write drops it, so a refresh here still
+  // sees every committed revocation this process has heard about. The G7 ordering
+  // and the WI-193 un-revoke reconciliation below are unchanged.
   const loadRevoked =
     opts.loadRevokedOverride ??
     (async () => {
       // Harness-scope revocations (the base set).
-      const base = await loadRevokedPubkeys({
+      const base = await loadRevokedPubkeysCached({
         workspaceId: opts.workspaceId,
         harnessSlug: opts.harnessSlug,
       });
@@ -1933,8 +1942,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // handle on a joiner seeded an EMPTY revoked set — i.e. THIS seed, whose whole job
           // is refusing an already-revoked peer on first contact, refused nobody. Resolve
           // the federated scope first (a no-op on an owner).
-          const { loadRevokedHivePubkeysForLocalPot } = await loadFederatedPotScopeModule();
-          for (const pk of await loadRevokedHivePubkeysForLocalPot(opts.workspaceId, hiveHome)) {
+          const { loadRevokedHivePubkeysForLocalPotCached } = await loadFederatedPotScopeModule();
+          for (const pk of await loadRevokedHivePubkeysForLocalPotCached(opts.workspaceId, hiveHome)) {
             base.add(pk);
           }
         }

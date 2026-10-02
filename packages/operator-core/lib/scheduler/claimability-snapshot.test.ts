@@ -48,7 +48,9 @@ function makeHandle(log: Log, opts: { failAtQuery?: number } = {}) {
   let queries = 0;
   const handle = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const fragment = { strings: Array.from(strings), args: values };
-    const text = renderSqlFragment(fragment).replace(/\s+/g, ' ').trim();
+    // Strip SQL comments before flattening so comment-only column names cannot
+    // satisfy projection assertions or hide the rest of the statement.
+    const text = renderSqlFragment(fragment).replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ').trim();
     return {
       ...fragment,
       then(resolve: (rows: unknown[]) => void, reject: (err: unknown) => void) {
@@ -180,7 +182,9 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     // Narrowness is the POINT of this projection — the 80-column row is what it
     // exists to avoid materializing. Completeness is asserted separately (and
     // DERIVED, not enumerated) by the sibling test below.
-    expect(projection).not.toContain('wi.summary');
+    // Intake floor #16 consumes summary to distinguish candidate work. Keep it
+    // projected while excluding the search and embedding data that no floor uses.
+    expect(projection).toContain('wi.summary');
     expect(projection).not.toContain('wi._search');
     expect(projection).not.toContain('wi.embedding');
   });

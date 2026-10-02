@@ -4053,7 +4053,8 @@ export default defineTool({
             import('../../../role-codex-home'),
             import('../../../codex-lock-runtime'),
           ]);
-          const home = readCodexHomeDiagnostics(session.id);
+          // Async for the same reason as the marker read below (WI-10005188).
+          const home = await readCodexHomeDiagnostics(session.id);
           const hooksConfigured =
             home.hooksExists &&
             home.diagnostics?.lockEnforcement === 'hooks-configured' &&

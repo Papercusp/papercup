@@ -127,7 +127,14 @@ export function liveDocumentId(dataSourceId: string, externalId: string): string
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** Active organization data sources configured for live search. */
+/**
+ * data_sources statuses a live source is NOT queried in. Every other status is
+ * queryable: a federated source has no sync to move it out of `error`, and a
+ * broken provider already fails soft per source.
+ */
+export const LIVE_SEARCH_EXCLUDED_STATUSES = ['unconfigured', 'disabled'] as const;
+
+/** Configured, enabled organization data sources that serve live search. */
 export async function listLiveSources(sql: Sql, workspaceId: string): Promise<LiveSourceRecord[]> {
   const rows = await sql<Array<{
     id: string; workspace_id: string; kind: string; credential_ref: string | null; config: Record<string, unknown> | null;
@@ -137,7 +144,7 @@ export async function listLiveSources(sql: Sql, workspaceId: string): Promise<Li
      WHERE workspace_id = ${workspaceId}
        AND sync_mode = ${LIVE_SEARCH_SYNC_MODE}
        AND scope = 'organization'
-       AND status = 'active'
+       AND status <> ALL(${[...LIVE_SEARCH_EXCLUDED_STATUSES]}::text[])
      ORDER BY created_at, id`;
   return rows.map((r) => ({
     id: r.id,
@@ -158,7 +165,7 @@ async function liveProviderIdentity(
     SELECT provider_user_id FROM harness_shared.provider_identity_mappings
      WHERE workspace_id = ${workspaceId} AND provider = ${normalizePersonalSource(provider)}
        AND user_id = ${principalUserId}::uuid AND revoked_at IS NULL
-     ORDER BY created_at DESC
+     ORDER BY provider_user_id
      LIMIT 1`;
   return rows[0]?.provider_user_id ?? null;
 }

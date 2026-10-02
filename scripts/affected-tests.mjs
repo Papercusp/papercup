@@ -2022,6 +2022,21 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // WI-10005194. lib/scout/pty-host-health-lane.test.ts reads
+    // apps/operator/scripts/psu-pty-host.mjs BY PATH and fails when the host
+    // emits an event kind the classifier does not know. The host lives in
+    // @papercusp/web, so a host-only edit never selected operator-core and the
+    // red first surfaced at the fleet gate. That happened twice in about 3 hours
+    // (EI-24823553355491316, then WI-10004943's launch-kickoff-fresh-child-retry).
+    // The task runs that one file only (11 assertions, under 1s).
+    workspace: "@papercusp/operator-core",
+    script: "test:pty-host-event-classification",
+    appliesTo: (f) =>
+      f === "apps/operator/scripts/psu-pty-host.mjs" ||
+      f === "packages/operator-core/lib/scout/pty-host-health-lane.ts" ||
+      f === "packages/operator-core/lib/scout/pty-host-health-lane.test.ts",
+  },
+  {
     // Phone media sources are outside npm workspaces. Include all three layers even
     // when the web unit suite is selected; it excludes the integration suite.
     workspace: "@papercusp/web",

@@ -334,6 +334,58 @@ export async function boundedRecordGoalPlacementTurnEnd(input: Parameters<typeof
   })).value;
 }
 
+/** Persist why the turn-end policy was not recorded without creating a receipt
+ * that could be mistaken for eligibility evidence. No-goal callers are the
+ * normal case and intentionally produce no diagnostic row. */
+export async function recordGoalPlacementTurnEndOutcome(
+  input: Parameters<typeof recordGoalPlacementTurnEnd>[0],
+  outcome: { recorded: boolean; reason: string },
+  deps: Pick<GoalPlacementTurnReceiptDeps, 'append' | 'now'> = defaults,
+): Promise<boolean> {
+  if (outcome.recorded || outcome.reason === 'no-canonical-goal') return false;
+  const observedAt = new Date(deps.now()).toISOString();
+  try {
+    await deps.append({
+      workspaceId: input.workspaceId,
+      owner: input.ownerId,
+      agent: input.sourceKind,
+      sessionId: input.nativeSessionId,
+      scope: null,
+      kind: 'lifecycle',
+      toolName: null,
+      phase: null,
+      toolUseId: `goal-placement-turn-end-outcome:${input.sourceKind}:${input.nativeSessionId}:${observedAt}`,
+      summary: 'Goal placement policy turn-end observation was not recorded',
+      status: null,
+      cwd: null,
+      detail: { goalPlacementTurnEndOutcome: { version: 1, recorded: false, reason: outcome.reason, observedAt } },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Fail-soft lifecycle append used by the bounded journal hook. */
+export async function boundedRecordGoalPlacementTurnEndOutcome(
+  input: Parameters<typeof recordGoalPlacementTurnEnd>[0],
+  outcome: { recorded: boolean; reason: string },
+): Promise<boolean> {
+  if (outcome.recorded || outcome.reason === 'no-canonical-goal') return false;
+  try {
+    const [{ withBoundedTimeout }, { trackDetached }] = await Promise.all([
+      import('./bounded-timeout'), import('./detached-imports'),
+    ]);
+    return (await withBoundedTimeout(trackDetached(recordGoalPlacementTurnEndOutcome(input, outcome)), {
+      timeoutMs: 500,
+      label: 'goal-placement-turn-end-outcome',
+      fallback: false,
+    })).value;
+  } catch {
+    return false;
+  }
+}
+
 /** The owner-free half of the receipt gate: a due, actionable goal placement row.
  * The turn-start composer reserves budget for exactly these rows, so it must ask
  * this same predicate — a composer that guessed would protect one set and the

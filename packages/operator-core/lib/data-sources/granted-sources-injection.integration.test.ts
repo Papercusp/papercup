@@ -36,6 +36,7 @@ import {
   unsubscribeSource,
   type GrantedSourcesDeps,
 } from './granted-sources-injection';
+import { searchLiveSources } from './live-search-adapter';
 
 let org: OrgTestDb;
 let alice: string;
@@ -103,6 +104,7 @@ function deps(overrides: Partial<GrantedSourcesDeps> = {}): GrantedSourcesDeps {
     collectPersonal: async () => null,
     searchOrganization: (db, ctx, params) => searchOrganizationDocuments(db, ctx, params),
     searchPot: (db, params) => searchPotDocuments(db, params),
+    searchLive: (db, ctx, params) => searchLiveSources(db, ctx, params),
     ...overrides,
   };
 }

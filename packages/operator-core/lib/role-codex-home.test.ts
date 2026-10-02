@@ -1319,7 +1319,7 @@ describe('writeSuCodexHome', () => {
     mkdirSync(rolloutDir, { recursive: true });
     writeFileSync(join(rolloutDir, 'rollout-2026-06-21T13-12-06-019eeb2b-0742-72a0-85a4-5dc505cfe62d.jsonl'), '{}\n');
 
-    const diag = readCodexHomeDiagnostics('diag');
+    const diag = await readCodexHomeDiagnostics('diag');
     expect(diag.exists).toBe(true);
     expect(diag.agentsExists).toBe(true);
     expect(diag.configExists).toBe(true);
