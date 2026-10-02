@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const ROOT = resolve(__dirname, '../../../..');
-const SCRIPT = join(ROOT, 'infra/images/bootc/release-supply-chain.sh');
+// Overridable so scripts/mutation-probe.sh can point the suite at a copy outside the tree.
+const SCRIPT = process.env.RELEASE_SUPPLY_CHAIN_SCRIPT ?? join(ROOT, 'infra/images/bootc/release-supply-chain.sh');
 const DIGEST = 'sha256:' + '1'.repeat(64);
 
 const genericKernelCpe = {
