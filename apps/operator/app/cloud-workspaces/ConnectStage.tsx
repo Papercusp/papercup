@@ -21,6 +21,7 @@ import { Cloud, Plus, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/app/harness/Button";
 import { TextInput } from "@/app/harness/TextInput";
 import { Select } from "@/app/harness/Select";
+import { resolveBrowserApiTransport } from "../../lib/hosted-browser-api";
 import {
   Field,
   StageHeader,
@@ -132,6 +133,11 @@ export function ConnectStage({
 }) {
   const activeProvider =
     PROVIDERS.find((provider) => provider.target === connectTarget) ?? null;
+  const setupTemplateReady = /^\d{12}$/.test(draft.accountId.trim()) &&
+    /^(?!us-gov-|cn-)[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/.test(draft.region.trim());
+  const setupTemplateUrl = setupTemplateReady
+    ? `/api/workspace-hosts/aws-setup-template?${new URLSearchParams({ accountId: draft.accountId.trim(), region: draft.region.trim() })}`
+    : null;
 
   /*
    * The panel is a DISCLOSURE, so it owes the disclosure focus contract; it is
@@ -366,6 +372,14 @@ export function ConnectStage({
                 aria-label="Runtime service account email" aria-describedby={hintId} />}
             </Field>
             </> : activeProvider.target === "aws" ? <>
+              {resolveBrowserApiTransport().mode === "local" ? <Field
+                label="AWS setup template"
+                hint="Enter your account ID and region to download the CloudFormation template. Create the stack in your AWS account, then copy its Outputs into the resource fields below. Use OperatorRoleArn with the Assume an IAM role credential source."
+              >
+                {setupTemplateUrl ? <Button asChild variant="ghost">
+                  <a href={setupTemplateUrl} download>Download AWS setup template</a>
+                </Button> : <Button variant="ghost" disabled>Download AWS setup template</Button>}
+              </Field> : null}
               <Field label="Credential source" hint="Credentials resolve on this machine using the AWS SDK.">
                 {(hintId) => <Select value={draft.credentialMethod} ariaLabel="AWS credential source" describedBy={hintId}
                   options={[
