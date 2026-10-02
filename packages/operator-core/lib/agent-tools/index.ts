@@ -183,6 +183,8 @@ import './consult/get-feedback';
 import './consult/reply';
 import './consult/decline';
 import './consult/close';
+// EI-23764501791910357 slice 3: the requester's terminal disposition of a proceed consult.
+import './consult/reconcile';
 // review-routing-through-relevance-router-2026-09-26 P-004: per-policy routing health.
 import './consult/routing-health';
 import './roles/list';
