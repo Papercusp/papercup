@@ -10,8 +10,26 @@
 export const GOAL_OWNER_REPORT_SCHEMA_VERSION = 'goal-owner-report-v1' as const;
 export const GOAL_OWNER_REPORT_FIELD = 'goalOwnerReport' as const;
 
-export const GOAL_OWNER_REPORT_FIELDS = ['moved', 'cost', 'ownerWalled', 'killed'] as const;
+/**
+ * The WRITE-TIME contract: every heading a report must carry before the send /
+ * escalate gates stamp it. NEXT WAKE was added by WI-10005205: graded holders
+ * kept omitting what will wake them next (the rubric
+ * work-on-everything-stewardship-health owner-steering-and-reporting requires
+ * it), and they did so because this gate never asked for it. A gate that names
+ * only four headings teaches the holder that a four-heading report is complete.
+ */
+export const GOAL_OWNER_REPORT_FIELDS = ['moved', 'cost', 'ownerWalled', 'killed', 'nextWake'] as const;
 export type GoalOwnerReportField = (typeof GOAL_OWNER_REPORT_FIELDS)[number];
+
+/**
+ * The EVIDENCE contract: the fields a stored stamp must carry to count as a
+ * delivered report. Kept at the original four so stamps written before
+ * NEXT WAKE existed (schema v1 has no version bump for the additive field)
+ * still satisfy the cadence watchdog and kickoff evidence; the write gate above
+ * is where the fifth field is enforced.
+ */
+export const GOAL_OWNER_REPORT_STAMP_CORE_FIELDS = ['moved', 'cost', 'ownerWalled', 'killed'] as const;
+export type GoalOwnerReportCoreField = (typeof GOAL_OWNER_REPORT_STAMP_CORE_FIELDS)[number];
 
 /**
  * The heading an author actually types for each field. Refusals quote these, so
@@ -23,9 +41,10 @@ export const GOAL_OWNER_REPORT_HEADINGS: Readonly<Record<GoalOwnerReportField, s
   cost: 'COST',
   ownerWalled: 'OWNER-WALLED',
   killed: 'KILLED',
+  nextWake: 'NEXT WAKE',
 });
 
-/** Human-facing rendering of the whole contract, e.g. "MOVED / COST / OWNER-WALLED / KILLED". */
+/** Human-facing rendering of the whole contract, e.g. "MOVED / COST / OWNER-WALLED / KILLED / NEXT WAKE". */
 export const GOAL_OWNER_REPORT_HEADING_LIST = GOAL_OWNER_REPORT_FIELDS.map(
   (field) => GOAL_OWNER_REPORT_HEADINGS[field],
 ).join(' / ');
@@ -62,6 +81,12 @@ export interface GoalOwnerReportDraftInput {
   artifactReads: Array<{ ref: string; readAt: string }>;
   movementTruncated?: boolean;
   killedTruncated?: boolean;
+  /**
+   * What will wake the holder next and roughly when (loop interval, awaited
+   * event, owner reply). Null/absent renders an explicit unknown rather than a
+   * guessed wake: the reader must not be told a wake exists when none was read.
+   */
+  nextWake?: string | null;
 }
 
 export interface GoalOwnerReportDraft {
@@ -117,6 +142,7 @@ export function buildGoalOwnerReportDraft(input: GoalOwnerReportDraftInput): Goa
       ).join('; ') + (input.killedTruncated ? '; partial coverage: more stopped work exists; read the rest' : '')
       : input.killedTruncated ? 'partial coverage: more stopped work exists; read the rest'
       : 'none evidenced in the current portfolio',
+    nextWake: input.nextWake?.trim() || 'unknown (no wake source was read for this draft)',
   };
   const text = [
     `Goal ${input.goalId}; portfolio read ${input.observedAt}`,
@@ -132,6 +158,8 @@ export interface GoalOwnerReportStamp {
   cost: string;
   ownerWalled: string;
   killed: string;
+  /** Absent on stamps written before WI-10005205; always present on new stamps. */
+  nextWake?: string;
 }
 
 export interface GoalOwnerReportParseResult {
@@ -151,6 +179,7 @@ const LABEL_TO_FIELD: Readonly<Record<string, GoalOwnerReportField>> = {
   COST: 'cost',
   OWNERWALLED: 'ownerWalled',
   KILLED: 'killed',
+  NEXTWAKE: 'nextWake',
 };
 
 /**
@@ -161,7 +190,7 @@ const LABEL_TO_FIELD: Readonly<Record<string, GoalOwnerReportField>> = {
  * satisfy them. Modern writes never depend on these regexes: they carry the
  * server-authored stamp above.
  */
-export const GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS: Readonly<Record<GoalOwnerReportField, string>> = Object.freeze({
+export const GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS: Readonly<Record<GoalOwnerReportCoreField, string>> = Object.freeze({
   moved:
     '(^|\\n)[[:space:]#>*+-]*(\\*\\*|__)?MOVED([[:space:]]*[:：])?(\\*\\*|__)?[[:space:]]*(:|—|–|-)[[:space:]]*[^[:space:]\\n]',
   cost: '(^|\\n)[[:space:]#>*+-]*(\\*\\*|__)?COST([[:space:]]*[:：])?(\\*\\*|__)?[[:space:]]*(:|—|–|-)[[:space:]]*[^[:space:]\\n]',
@@ -198,7 +227,9 @@ function reportHeading(raw: string): { field: GoalOwnerReportField; remainder: s
   const line = normalizeHeadingLine(raw);
   // A value on the heading line needs punctuation. Without that constraint,
   // ordinary prose such as "moved the build" becomes a report attempt.
-  const match = line.match(/^(MOVED|COST|OWNER(?:[\s_-]+)?WALLED|KILLED)(?:[ \t]*(?::|：|—|–|-)[ \t]*(.*)|[ \t]*)$/i);
+  const match = line.match(
+    /^(MOVED|COST|OWNER(?:[\s_-]+)?WALLED|KILLED|NEXT(?:[\s_-]+)?WAKE)(?:[ \t]*(?::|：|—|–|-)[ \t]*(.*)|[ \t]*)$/i,
+  );
   if (!match) return null;
   const field = normalizeLabel(match[1]!);
   return field ? { field, remainder: (match[2] ?? '').trim() } : null;
@@ -284,6 +315,7 @@ export function stampGoalOwnerReport(goalId: string, parsed: GoalOwnerReportPars
     cost: parsed.fields.cost!,
     ownerWalled: parsed.fields.ownerWalled!,
     killed: parsed.fields.killed!,
+    nextWake: parsed.fields.nextWake!,
   };
 }
 
@@ -293,7 +325,9 @@ export function isGoalOwnerReportStamp(value: unknown, goalId?: string): value i
   if (stamp.schemaVersion !== GOAL_OWNER_REPORT_SCHEMA_VERSION) return false;
   if (typeof stamp.goalId !== 'string' || !stamp.goalId.trim()) return false;
   if (goalId !== undefined && stamp.goalId !== goalId) return false;
-  return GOAL_OWNER_REPORT_FIELDS.every(
+  // Evidence contract: the four core fields. A stamp written before NEXT WAKE
+  // was required still counts as a delivered report (see STAMP_CORE_FIELDS).
+  return GOAL_OWNER_REPORT_STAMP_CORE_FIELDS.every(
     (field) => typeof stamp[field] === 'string' && Boolean((stamp[field] as string).trim()),
   );
 }
@@ -359,8 +393,15 @@ export function diagnoseGoalOwnerReportEnvelope(envelope: unknown, goalId: strin
   // coord:send persists an array of sections, a legacy write a flat string.
   const parsed = parseGoalOwnerReport(record.body as GoalOwnerReportTextInput);
   if (!parsed.attempted) return { kind: 'not-attempted' };
-  if (!parsed.complete) {
-    return { kind: 'incomplete', missing: parsed.missing, empty: parsed.empty, duplicate: parsed.duplicate };
+  // Stored evidence is judged on the core four (the evidence contract), so a
+  // pre-NEXT-WAKE body is not retroactively demoted to incomplete.
+  const core = (fields: GoalOwnerReportField[]) =>
+    fields.filter((field) => (GOAL_OWNER_REPORT_STAMP_CORE_FIELDS as readonly string[]).includes(field));
+  const missing = core(parsed.missing);
+  const empty = core(parsed.empty);
+  const duplicate = core(parsed.duplicate);
+  if (missing.length || empty.length || duplicate.length) {
+    return { kind: 'incomplete', missing, empty, duplicate };
   }
   if (typeof record.body === 'string') {
     return record.body.includes(goalId) ? { kind: 'complete' } : { kind: 'wrong-goal', stampedGoalId: null };

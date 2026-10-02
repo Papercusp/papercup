@@ -77,6 +77,8 @@ export const PC_HEAVY_VOLATILE_IDENTITY_ENV = Object.freeze([
   // WI-1024071 live Run C -> D: conditionally present for focused/preempt paths. Its value
   // selects wrapper scheduling only; it never changes the admitted task's command or inputs.
   "PC_HEAVY_PREEMPT_EXCLUSIVE",
+  // Memory-reservation scratch path, `$_mem_reserve_dir/anon.$_id` — unique per admission.
+  "PC_HEAVY_RESERVE_ANON_FILE",
 ]);
 
 /**
