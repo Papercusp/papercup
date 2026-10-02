@@ -4,7 +4,9 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 
 // Pass-through spies on the SYNCHRONOUS fs calls, so a test can prove the reservation hot path
-// never touches the disk synchronously (WI-10004513). Behaviour is the real implementation.
+// (WI-10004513) and the GC sweep (WI-10005135) never touch the disk synchronously. Behaviour is
+// the real implementation. mkdirSync is spied as the calibration control: ensureScratchRunDir
+// still calls it, which proves these spies intercept scratch-gc.ts's own node:fs import.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -12,6 +14,8 @@ vi.mock('node:fs', async (importOriginal) => {
     readdirSync: vi.fn(actual.readdirSync),
     statSync: vi.fn(actual.statSync),
     existsSync: vi.fn(actual.existsSync),
+    rmSync: vi.fn(actual.rmSync),
+    mkdirSync: vi.fn(actual.mkdirSync),
   };
 });
 import {
@@ -79,19 +83,19 @@ function makeRunDir(workspaceId: string, toolName: string, runId: string, bytes:
 }
 
 describe('runScratchGc — retention', () => {
-  it('keeps fresh run-dirs', () => {
+  it('keeps fresh run-dirs', async () => {
     makeRunDir('ws-A', 'demo:tool', UUID(1), 100, 0);
-    const r = runScratchGc({ workspaceRegistry: ['ws-A'] });
+    const r = await runScratchGc({ workspaceRegistry: ['ws-A'] });
     expect(r.retentionEvictions).toBe(0);
     expect(existsSync(ensureScratchRunDir({ workspaceId: 'ws-A', toolName: 'demo:tool', runId: UUID(1) }))).toBe(true);
   });
 
-  it('drops run-dirs past RETENTION_MS', () => {
+  it('drops run-dirs past RETENTION_MS', async () => {
     makeRunDir('ws-A', 'demo:tool', UUID(1), 100, RETENTION_MS + 1000);
     const before = ensureScratchRunDir({ workspaceId: 'ws-A', toolName: 'demo:tool', runId: UUID(1) });
     // ensureScratchRunDir doesn't reset mtime — re-stamp old timestamp
     // BEFORE running GC. (utimes was just called by makeRunDir.)
-    const r = runScratchGc({ workspaceRegistry: ['ws-A'] });
+    const r = await runScratchGc({ workspaceRegistry: ['ws-A'] });
     expect(r.retentionEvictions).toBeGreaterThanOrEqual(1);
     expect(existsSync(before)).toBe(false);
   });
@@ -133,16 +137,16 @@ describe('scratch GC schedule — single source + max-age bound (WI-10004532)', 
     expect(call![0]).toMatch(/crontab:\s*SCRATCH_GC_CRONTAB\b/);
   });
 
-  it('a run-dir that just escapes one sweep is evicted by the next, before SCRATCH_RUN_DIR_MAX_AGE_MS', () => {
+  it('a run-dir that just escapes one sweep is evicted by the next, before SCRATCH_RUN_DIR_MAX_AGE_MS', async () => {
     const ageAtFirstSweep = RETENTION_MS - 60_000;
     const dir = makeRunDir('ws-A', 'demo:tool', UUID(7), 100, ageAtFirstSweep);
     const t0 = Date.now();
 
-    const first = runScratchGc({ workspaceRegistry: ['ws-A'], now: t0 });
+    const first = await runScratchGc({ workspaceRegistry: ['ws-A'], now: t0 });
     expect(first.retentionEvictions).toBe(0);
     expect(existsSync(dir)).toBe(true);
 
-    const second = runScratchGc({ workspaceRegistry: ['ws-A'], now: t0 + SCRATCH_GC_SWEEP_PERIOD_MS });
+    const second = await runScratchGc({ workspaceRegistry: ['ws-A'], now: t0 + SCRATCH_GC_SWEEP_PERIOD_MS });
     expect(second.retentionEvictions).toBe(1);
     expect(existsSync(dir)).toBe(false);
     // Its age when the second sweep removed it stays inside the documented bound.
@@ -151,10 +155,10 @@ describe('scratch GC schedule — single source + max-age bound (WI-10004532)', 
 });
 
 describe('runScratchGc — dead-workspace cleanup', () => {
-  it('drops scratch dirs whose workspace is not in the registry', () => {
+  it('drops scratch dirs whose workspace is not in the registry', async () => {
     makeRunDir('ws-DEAD', 'demo:tool', UUID(1), 100);
     makeRunDir('ws-ALIVE', 'demo:tool', UUID(2), 100);
-    const r = runScratchGc({ workspaceRegistry: ['ws-ALIVE'] });
+    const r = await runScratchGc({ workspaceRegistry: ['ws-ALIVE'] });
     expect(r.deadWorkspaces).toBe(1);
     expect(r.deadWorkspaceBytes).toBeGreaterThan(0);
     const scratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT!;
@@ -162,11 +166,11 @@ describe('runScratchGc — dead-workspace cleanup', () => {
     expect(existsSync(join(scratchRoot, 'ws-ALIVE'))).toBe(true);
   });
 
-  it('is a no-op when scratch root has zero workspace dirs', () => {
+  it('is a no-op when scratch root has zero workspace dirs', async () => {
     // The outer beforeEach gave us a fresh sandbox HOME with nothing
     // under .papercusp/scratch yet (this test doesn't call makeRunDir).
     // GC should report no work.
-    const r = runScratchGc({ workspaceRegistry: ['ws-X'] });
+    const r = await runScratchGc({ workspaceRegistry: ['ws-X'] });
     expect(r.deadWorkspaces).toBe(0);
     expect(r.retentionEvictions).toBe(0);
     expect(r.quotaEvictions).toBe(0);
@@ -198,12 +202,16 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
   });
 
   it('calibration: the spies DO see scratch-gc.ts sync fs calls (so the zero-call assertions are not vacuous)', () => {
-    makeRunDir('ws-A', 'tool', UUID(9), 64);
+    // ensureScratchRunDir is the module's one remaining synchronous fs call (mkdirSync). Seeing it
+    // proves the vi.mock above intercepts scratch-gc.ts's own node:fs import, which is the only
+    // way the zero-call assertions below could pass vacuously.
+    vi.mocked(mkdirSync).mockClear();
+    ensureScratchRunDir({ workspaceId: 'ws-A', toolName: 'tool', runId: UUID(9) });
+    expect(vi.mocked(mkdirSync)).toHaveBeenCalled();
+    // And the spied functions are the ones scratch-gc.ts would call: a direct call is recorded.
     vi.mocked(readdirSync).mockClear();
-    vi.mocked(statSync).mockClear();
-    runScratchGc({ workspaceRegistry: ['ws-A'] }); // the hourly sweep still walks synchronously
+    readdirSync(process.env.PAPERCUSP_SCRATCH_ROOT!);
     expect(vi.mocked(readdirSync)).toHaveBeenCalled();
-    expect(vi.mocked(statSync)).toHaveBeenCalled();
   });
 
   it('performs ZERO synchronous fs calls, however large the tree', async () => {
@@ -259,6 +267,57 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
   });
 });
 
+describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', () => {
+  it('sweeps dead workspaces, expired runs and the quota pass with ZERO synchronous fs calls', async () => {
+    // A tree that exercises every pass: a dead workspace, expired and fresh run dirs.
+    makeRunDir('ws-DEAD', 'tool', UUID(1), 256);
+    for (let i = 0; i < 12; i++) makeRunDir('ws-A', `tool-${i % 3}`, UUID(10 + i), 128, RETENTION_MS + 60_000);
+    for (let i = 0; i < 6; i++) makeRunDir('ws-A', `tool-${i % 3}`, UUID(40 + i), 128);
+    for (const fn of [readdirSync, statSync, existsSync, rmSync, mkdirSync]) vi.mocked(fn).mockClear();
+
+    const r = await runScratchGc({ workspaceRegistry: ['ws-A'] });
+
+    // It did the work (so the zero-call assertions below are not vacuous) ...
+    expect(r.deadWorkspaces).toBe(1);
+    expect(r.retentionEvictions).toBe(12);
+    const scratch = process.env.PAPERCUSP_SCRATCH_ROOT!;
+    // ... with no synchronous fs call on the calling thread.
+    expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(statSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(existsSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(rmSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(mkdirSync)).not.toHaveBeenCalled();
+    // Outcome check, read after the assertions so the test's own calls do not count.
+    expect(existsSync(join(scratch, 'ws-DEAD'))).toBe(false);
+    expect(readdirSync(join(scratch, 'ws-A', 'tool-0')).length).toBe(2);
+  });
+
+  it('yields to the event loop while it walks (a timer scheduled before the sweep fires before it ends)', async () => {
+    for (let i = 0; i < 6; i++) makeRunDir('ws-A', `tool-${i % 2}`, UUID(60 + i), 64);
+    let timerFiredDuringSweep = false;
+    let sweepDone = false;
+    setTimeout(() => {
+      if (!sweepDone) timerFiredDuringSweep = true;
+    }, 0);
+    await runScratchGc({ workspaceRegistry: ['ws-A'] });
+    sweepDone = true;
+    expect(timerFiredDuringSweep).toBe(true);
+  });
+
+  it('treats a missing scratch root as an empty tree', async () => {
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'does-not-exist');
+    const r = await runScratchGc({ workspaceRegistry: ['ws-A'] });
+    expect(r).toEqual({
+      retentionEvictions: 0,
+      retentionEvictedBytes: 0,
+      deadWorkspaces: 0,
+      deadWorkspaceBytes: 0,
+      quotaEvictions: 0,
+      quotaEvictedBytes: 0,
+    });
+  });
+});
+
 describe('runScratchGc — quota eviction', () => {
   it('FIFO-evicts oldest run-dirs when over quota', async () => {
     // Set up multiple run-dirs in the same workspace and force
@@ -287,7 +346,7 @@ describe('runScratchGc — quota eviction', () => {
     expect(readdirSync(join(wsRoot, 'demo:tool')).length).toBe(3);
     // No quota will fire at 300 bytes total, but the test still
     // exercises the gather-and-sort path.
-    runScratchGc({ workspaceRegistry: ['ws-Q'] });
+    await runScratchGc({ workspaceRegistry: ['ws-Q'] });
     expect(scratchEvictionBytes()).toBe(0);
   });
 });

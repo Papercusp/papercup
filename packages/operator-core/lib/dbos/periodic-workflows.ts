@@ -128,7 +128,7 @@ async function scratchGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
       const workspaceRegistry = readRegistry().workspaces.map((w) => w.id);
-      runScratchGc({ workspaceRegistry });
+      await runScratchGc({ workspaceRegistry });
     },
     { name: 'scratch-gc' },
   );
