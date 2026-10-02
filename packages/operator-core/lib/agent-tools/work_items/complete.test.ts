@@ -6566,6 +6566,43 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       });
     });
 
+    // WI-10005199 — handler-level pair for the consumerView attestation. The leaf and the
+    // source-wiring pin live in complete-consumer-view.test.ts; THIS pair drives the real
+    // handler end to end so a regression anywhere between `reconcileStampedAuthority` and the
+    // response (a dropped spread, a wrong operand) fails here with the migration-972 shape:
+    // the call computes `committed`, the BEFORE trigger stores `proposed` on the re-read row.
+    it('WI-10005199: a floor-trigger downgrade surfaces as a consumerView on the close response', async () => {
+      const row = { ...item, id: 'WI-1', family: 'issue', state: 'open' };
+      getWorkItem.mockResolvedValue(row);
+      setWorkItemStateWithAliasInfo.mockResolvedValue({
+        ...okState({ ...row, state: 'done', completionAuthority: 'proposed' }),
+        workItem: { ...row, state: 'done', completionAuthority: 'proposed' },
+      });
+
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', verifiedHow: 'unit', testResult: '26/26 green' },
+      });
+
+      expect(stateOpts().completionAuthority).toBe('committed'); // what the call computed
+      expect(r.completionAuthority).toBe('proposed'); // what a consumer reads back
+      expect(r.consumerView).toMatchObject({
+        divergedFromWrite: true,
+        value: { completionAuthority: 'proposed' },
+      });
+    });
+
+    it('WI-10005199: an ordinary close that agrees with its read-back carries NO consumerView (exception-only)', async () => {
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', verifiedHow: 'unit', testResult: '26/26 green' },
+      });
+      expect(r.completionAuthority).toBe('committed');
+      expect(r).not.toHaveProperty('consumerView');
+    });
+
     it('verifiedHow + testsRun also lands `committed` (either half of the test pair qualifies)', async () => {
       await one({
         id: 'WI-1',
