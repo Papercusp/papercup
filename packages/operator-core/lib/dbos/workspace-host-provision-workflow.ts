@@ -506,6 +506,37 @@ export function workspaceHostProvisioningEnqueueRequest(input: StartWorkspaceHos
   return { workflowInput, workflowId: keys.workflowId, deduplicationId: keys.deduplicationId };
 }
 
+/**
+ * The durable enqueue request for a lifecycle action on an existing host (stop, start, snapshot,
+ * repair, upgrade, restore, ...). Shared by the in-process start and the DBOS client, exactly as
+ * {@link workspaceHostProvisioningEnqueueRequest} is for provision, so a hosted action enqueued
+ * from a process without DBOS is the same workflow, with the same keys, as an in-process one.
+ * Request-shape errors throw here, before anything is enqueued.
+ */
+export function workspaceHostLifecycleEnqueueRequest(input: StartWorkspaceHostLifecycleInput): {
+  workflowInput: WorkspaceHostLifecycleWorkflowInput;
+  workflowId: string;
+  deduplicationId: string;
+} {
+  validateWorkspaceHostLifecycleRequest(input);
+  const operationId = input.operationId ?? randomUUID();
+  const workflowInput: WorkspaceHostLifecycleWorkflowInput = { ...input, operationId };
+  const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
+  return { workflowInput, workflowId: keys.workflowId, deduplicationId: keys.deduplicationId };
+}
+
+/** The durable enqueue request for a destroy; see {@link workspaceHostLifecycleEnqueueRequest}. */
+export function workspaceHostDestroyEnqueueRequest(input: StartWorkspaceHostDestroyInput): {
+  workflowInput: WorkspaceHostDestroyWorkflowInput;
+  workflowId: string;
+  deduplicationId: string;
+} {
+  const operationId = input.operationId ?? randomUUID();
+  const workflowInput: WorkspaceHostDestroyWorkflowInput = { ...input, action: 'destroy', operationId };
+  const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
+  return { workflowInput, workflowId: keys.workflowId, deduplicationId: keys.deduplicationId };
+}
+
 export class WorkspaceHostProvisioningConflictError extends Error {
   constructor(readonly hostId: string) {
     super(`Workspace host '${hostId}' already has a provisioning operation in progress`);
@@ -603,18 +634,16 @@ export async function startWorkspaceHostProvisioningWorkflow(
 export async function startWorkspaceHostDestroyWorkflow(
   input: StartWorkspaceHostDestroyInput,
 ): Promise<WorkspaceHostDestroyWorkflowResult | WorkspaceHostOperationAcceptance> {
-  const operationId = input.operationId ?? randomUUID();
-  const workflowInput: WorkspaceHostDestroyWorkflowInput = { ...input, action: 'destroy', operationId };
-  const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
+  const request = workspaceHostDestroyEnqueueRequest(input);
   try {
     await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
-      workflowID: keys.workflowId,
+      workflowID: request.workflowId,
       queueName: workspaceHostProvisioningQueue.name,
-      enqueueOptions: { deduplicationID: keys.deduplicationId },
-    })(workflowInput);
-    return await settleWithinAdmissionWindow<WorkspaceHostDestroyWorkflowResult>(keys.workflowId, {
+      enqueueOptions: { deduplicationID: request.deduplicationId },
+    })(request.workflowInput);
+    return await settleWithinAdmissionWindow<WorkspaceHostDestroyWorkflowResult>(request.workflowId, {
       status: 'accepted',
-      operationId,
+      operationId: request.workflowInput.operationId,
       hostId: input.hostId,
     });
   } catch (error) {
@@ -630,19 +659,16 @@ export async function startWorkspaceHostLifecycleWorkflow(
 ): Promise<WorkspaceHostProvisioningResult | WorkspaceHostOperationAcceptance> {
   // Reject request-shape errors before DBOS binds the operationId to a workflow result. A corrected
   // retry with the same ID must remain admissible after an invalid request.
-  validateWorkspaceHostLifecycleRequest(input);
-  const operationId = input.operationId ?? randomUUID();
-  const workflowInput: WorkspaceHostLifecycleWorkflowInput = { ...input, operationId };
-  const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
+  const request = workspaceHostLifecycleEnqueueRequest(input);
   try {
     await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
-      workflowID: keys.workflowId,
+      workflowID: request.workflowId,
       queueName: workspaceHostProvisioningQueue.name,
-      enqueueOptions: { deduplicationID: keys.deduplicationId },
-    })(workflowInput);
-    return await settleWithinAdmissionWindow<WorkspaceHostProvisioningResult>(keys.workflowId, {
+      enqueueOptions: { deduplicationID: request.deduplicationId },
+    })(request.workflowInput);
+    return await settleWithinAdmissionWindow<WorkspaceHostProvisioningResult>(request.workflowId, {
       status: 'accepted',
-      operationId,
+      operationId: request.workflowInput.operationId,
       hostId: input.hostId,
     });
   } catch (error) {

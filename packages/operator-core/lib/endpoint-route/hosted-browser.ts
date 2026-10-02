@@ -50,7 +50,10 @@ import {
   type StartWorkspaceHostLifecycleInput,
   type StartWorkspaceHostProvisioningInput,
 } from '../dbos/workspace-host-provision-workflow';
-import type { WorkspaceHostProvisioningEnqueuer } from '../dbos/workspace-host-provision-client';
+import type {
+  WorkspaceHostOperationEnqueuer,
+  WorkspaceHostProvisioningEnqueuer,
+} from '../dbos/workspace-host-provision-client';
 import type { WorkspaceHostOperationAcceptance } from '../workspace-host/admission-window';
 import { dbosStarted } from '../dbos/bootstrap';
 import { PAPERCUSP_HOSTED_BRING_UP_AGENTS, type WorkspaceHostBringUp } from '../workspace-host/hosted-bring-up';
@@ -134,6 +137,12 @@ export interface HostedBrowserRouteDependencies {
    * know the selected workspace, so a hosted retry silently loses its bring-up.
    */
   readonly provisioning?: WorkspaceHostProvisioningEnqueuer;
+  /**
+   * The same DBOS-client enqueuer, for lifecycle actions and destroy (WI-10005363). Present ⇒ the
+   * action route admits and ENQUEUES here with the actor intact and answers 202 at once, instead
+   * of forwarding the raw body to the controller (no actor, and a false 504 while it waits).
+   */
+  readonly operations?: WorkspaceHostOperationEnqueuer;
   /** The host the selected customer workspace is bound to, read under tenant RLS. */
   readonly readBoundHostId?: (
     controlPlaneWorkspaceId: string,
@@ -438,20 +447,53 @@ function localActionRoute(
 ) {
   const readTarget = deps.readTarget ?? readWorkspaceHostDestroyTarget;
   const readConnection = deps.readConnection ?? readWorkspaceHostConnection;
+  const operations = deps.operations;
   return createWorkspaceHostActionRoute({
     // Lifecycle rows are likewise keyed by the fixed control-plane workspace;
     // the selected customer binding is carried only by `runTenant` + RLS.
     activeWorkspaceId: () => config.controlPlaneWorkspaceId,
-    provisioningAvailable: deps.provisioningAvailable ?? dbosStarted,
+    provisioningAvailable: deps.provisioningAvailable ?? (operations ? () => true : dbosStarted),
     readTarget: (workspaceId, hostId) =>
       wrapTenantRead(principal, runTenant, (tx) => readTarget(workspaceId, hostId, tx)),
     readConnection: (workspaceId, connectionId) =>
       wrapTenantRead(principal, runTenant, (tx) => readConnection(workspaceId, connectionId, tx)),
     startDestroy: (input) =>
-      (deps.startDestroy ?? startWorkspaceHostDestroyWorkflow)({ ...input, actorId: principal.userId }),
+      (deps.startDestroy ?? (operations ? enqueuedDestroy(operations) : startWorkspaceHostDestroyWorkflow))({
+        ...input,
+        actorId: principal.userId,
+      }),
     startLifecycle: (input) =>
-      (deps.startLifecycle ?? startWorkspaceHostLifecycleWorkflow)({ ...input, actorId: principal.userId }),
+      (deps.startLifecycle ?? (operations ? enqueuedLifecycle(operations) : startWorkspaceHostLifecycleWorkflow))({
+        ...input,
+        actorId: principal.userId,
+      }),
   });
+}
+
+/** A lifecycle action through the DBOS-client enqueuer, answered as an acceptance (WI-10005363). */
+function enqueuedLifecycle(enqueuer: WorkspaceHostOperationEnqueuer) {
+  return async (input: StartWorkspaceHostLifecycleInput): Promise<WorkspaceHostOperationAcceptance> => {
+    try {
+      const { operationId } = await enqueuer.enqueueLifecycle(input);
+      return { status: 'accepted', operationId, hostId: input.hostId };
+    } catch (error) {
+      if (isWorkspaceHostProvisioningDedupConflict(error)) throw new WorkspaceHostProvisioningConflictError(input.hostId);
+      throw error;
+    }
+  };
+}
+
+/** A destroy through the DBOS-client enqueuer, answered as an acceptance (WI-10005363). */
+function enqueuedDestroy(enqueuer: WorkspaceHostOperationEnqueuer) {
+  return async (input: StartWorkspaceHostDestroyInput): Promise<WorkspaceHostOperationAcceptance> => {
+    try {
+      const { operationId } = await enqueuer.enqueueDestroy(input);
+      return { status: 'accepted', operationId, hostId: input.hostId };
+    } catch (error) {
+      if (isWorkspaceHostProvisioningDedupConflict(error)) throw new WorkspaceHostProvisioningConflictError(input.hostId);
+      throw error;
+    }
+  };
 }
 
 function destroyPermissionDenied(request: Request, principal: HostedPrincipal): Promise<Response | null> {
