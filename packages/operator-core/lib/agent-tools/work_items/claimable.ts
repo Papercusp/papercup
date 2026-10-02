@@ -81,7 +81,7 @@ export default defineTool({
     //     whole-backlog fallback, which would look like a suddenly-huge lane.
     "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `queueControl` separates active claims, hold-open leases, durable parks, and agent review (overlapping axes); `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
   guidance: {
-    when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. SSOT, not raw SQL or the claimable view.",
+    when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. Work-predicate SSOT; not raw SQL/view.",
     notWhen:
       "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability, or a backlog incl. gated rows → work_items:list. `includeObservations` is intentionally unsupported: observation-lane rows are never claimable. Curate them with work_items:list/work_items:search { includeObservations:true }, or pass sampleExcluded here to inspect them under the observationLane exclusion floor.",
     chaining:
