@@ -258,6 +258,32 @@ describe('the trigger: a seam gained call sites', () => {
     expect(changedSeamControlFlow(CONTROL_FLOW_BEFORE, after, 'probe.ts')).toEqual([]);
   });
 
+  it('limits a control-flow finding to seams whose invocation context changed', () => {
+    const before = `
+      export function run(input, probe: Probe, runner: Runner, source: Source) {
+        probe();
+        if (input.enabled) runner();
+        source();
+      }
+    `;
+    const after = before.replace('if (input.enabled)', 'if (input.enabled && input.ready)');
+    const rows = changedSeamControlFlow(before, after, 'branch-scope.ts');
+    expect(rows.map(({ seam }) => seam)).toEqual(['runner()']);
+  });
+
+  it('still reports a changed early-return guard before a dependency call', () => {
+    const before = `
+      export function run(input, runner: Runner) {
+        if (input.skip) return;
+        return runner();
+      }
+    `;
+    const after = before.replace('if (input.skip)', 'if (input.skip || input.cancelled)');
+    expect(changedSeamControlFlow(before, after, 'early-return.ts')).toMatchObject([
+      { function: 'run', seam: 'runner()', reason: 'control-flow-changed' },
+    ]);
+  });
+
   it('does not compare same-named methods from different owners after an unrelated line insertion', () => {
     const before = `
       const firstSource = {
