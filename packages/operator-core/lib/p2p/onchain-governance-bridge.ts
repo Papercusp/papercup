@@ -25,7 +25,7 @@ import { verifyFinalizationCertificate, type FinalizationCertificate } from '../
 import { authorizeTreasuryTransfer, type SafeTreasuryConfig, type TreasuryTransferRequest } from './treasury-controls';
 import { buildEvmBatchSettlementRequest, type EvmBatchSettlementRequest, type EvmSettlementConfig } from './evm-settlement';
 import type { PaymentChannelState } from './payment-channel';
-import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 
 /** Finalized actions that MAY be mirrored on-chain. */
 export const MIRRORABLE_ACTION_KINDS = ['treasury-transfer', 'settlement-batch'] as const;

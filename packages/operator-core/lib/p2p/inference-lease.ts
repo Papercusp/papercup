@@ -31,7 +31,7 @@
  */
 
 import type { BudgetAxis, BudgetUnit } from './offer-budget';
-import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 
 /* ─────────────────────────────────────────────────────────────────────────
  * The lease

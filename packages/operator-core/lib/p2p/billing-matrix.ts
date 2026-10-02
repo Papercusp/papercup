@@ -25,7 +25,7 @@
  * emits a P-004 refusal). It never imports FLAGS or a store.
  */
 
-import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 
 export type BillingMode = 'host-pays' | 'pool-with-attribution' | 'provider-capped-key';
 export const BILLING_MODES: readonly BillingMode[] = ['host-pays', 'pool-with-attribution', 'provider-capped-key'] as const;

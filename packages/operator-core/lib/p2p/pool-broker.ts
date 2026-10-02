@@ -37,7 +37,7 @@ import { verifyEd25519 } from '../identity/ed25519';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import type { BudgetAxis, BudgetEnvelope, BudgetUnit } from './offer-budget';
 import { resolveBillingAuthority, type BillingContext } from './billing-matrix';
-import type { RefusalContract } from '../capability-envelope/identity-refusal-contract';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 
 /* ─────────────────────────────────────────────────────────────────────────
  * The signed objects
