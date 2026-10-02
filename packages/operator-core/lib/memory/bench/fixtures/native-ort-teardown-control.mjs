@@ -20,6 +20,21 @@ function fingerprint(path) {
   return { path, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
 }
 
+function observedProcessEnvironment() {
+  // Observation, not admission: the governed parent validates/owns the typed
+  // context. Retain its exact serialization so the parent can check forwarding
+  // all the way through the debugger and FILE worker without guessing lineage.
+  const allocator = Object.fromEntries(['GLIBC_TUNABLES', 'MALLOC_CHECK_', 'MALLOC_PERTURB_', 'LD_PRELOAD']
+    .map(key => [key, process.env[key] ?? null]));
+  const libraries = process.platform === 'linux'
+    ? [...new Set(readFileSync('/proc/self/maps', 'utf8').split('\n')
+      .map(line => line.trim().split(/\s+/).at(-1))
+      .filter(path => path && /\/(?:libc\.so\.6|libc_malloc_debug\.so(?:\.0)?|ld-linux-x86-64\.so\.2)$/.test(path)))]
+      .sort().map(fingerprint)
+    : [];
+  return { serializedAdmissionContext: process.env.PAPERCUSP_ADMISSION_CONTEXT ?? null, allocator, libraries };
+}
+
 async function run(config) {
   const { ortEntry, device, outcome, release } = config;
   if (!isAbsolute(ortEntry) || !['cpu', 'cuda'].includes(device)
@@ -34,6 +49,7 @@ async function run(config) {
   const receipt = { formatVersion: 1, workItem: 'WI-10005599', processId: process.pid,
     scope: '130-byte native Mul fixture; no embedding weights', graph: { bytes: graph.length, sha256: graphSha },
     source: fingerprint(file), node: fingerprint(process.execPath), ortEntry: fingerprint(ortEntry),
+    observation: observedProcessEnvironment(),
     device, outcome, release, embeddingModelInferencePerformed: false, disposed: false };
   try {
     try {
@@ -146,6 +162,7 @@ async function debugCapture(root, config, debuggerConfig) {
   }
   const invocation = { binary: fingerprint(debuggerConfig.binary), commands: fingerprint(debuggerConfig.commands),
     source: fingerprint(file), node: fingerprint(process.execPath), configuration: config,
+    observation: observedProcessEnvironment(),
     scope: 'small native teardown control only; debugger changes observation', embeddingModelInferencePerformed: false };
   writeFileSync(join(root, 'debugger-invocation.json'), JSON.stringify(invocation, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   const stdoutFd = openSync(join(root, 'debugger.stdout.log'), 'wx', 0o600);
