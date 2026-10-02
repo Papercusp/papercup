@@ -3454,7 +3454,16 @@ def _fa_operands(argv, argflags):
     while j < len(argv):
         a = argv[j]
         if a == '--':
-            operands.extend(argv[j + 1:])
+            # The -- token ends option parsing, not shell redirection parsing.
+            # Keep collecting operands until a shell redirect token; otherwise
+            # grep -- PATTERN PATH 2>/dev/null leaves the fd digit 2 looking
+            # like another path to stat.
+            for tail_token in argv[j + 1:]:
+                if tail_token and all(c in '<>&' for c in tail_token):
+                    if operands and operands[-1].isdigit():
+                        operands.pop()
+                    break
+                operands.append(tail_token)
             break
         # A redirect ends the operand list; a bare fd digit belongs to it
         # (`grep -rn foo . 2>/dev/null` tokenizes the `2` as a word).
