@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
+import { assertNativeProfilerQualification, bindNativeProfilerKernelRequests, bindNativeLoaderMappedObjects, bindNativeLoaderClosure, inspectNativeLoaderActivity, loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement, type NativeLoaderCaptureReceipt } from './measurement-manifest';
 import type { WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
@@ -147,7 +147,7 @@ describe('generated loader object to retained file joins', () => {
     const compiled=spawnSync('/usr/bin/cc',['-x','c','-shared','-fPIC','-nostdlib','-o',library,'-'],
       {input:'int pc_loader_fixture(void) { return 7; }',encoding:'utf8',timeout:10000});
     expect(compiled.status,compiled.stderr).toBe(0);
-    const program = `import os,json,time,hashlib,ctypes
+    const program = `import os,json,time,hashlib,ctypes,struct
 libc=ctypes.CDLL('libc.so.6')
 libc.dlmopen.argtypes=[ctypes.c_long,ctypes.c_char_p,ctypes.c_int]; libc.dlmopen.restype=ctypes.c_void_p
 handles=[libc.dlmopen(-1,${JSON.stringify(library)}.encode(),2) for _ in range(2)]
@@ -168,11 +168,38 @@ for file,row in rows.items():
  assert str(stat.st_ino)==row['mappedInode']
  assert (os.major(stat.st_dev),os.minor(stat.st_dev))==tuple(int(x,16) for x in row['mappedDevice'].split(':'))
  row.update(bytes=stat.st_size,sha256=hashlib.file_digest(open(file,'rb'),'sha256').hexdigest()); libraries.append(row)
+auxv={}
+raw=open('/proc/self/auxv','rb').read()
+for offset in range(0,len(raw),16):
+ key,value=struct.unpack_from('<QQ',raw,offset)
+ if key==0: break
+ auxv[key]=value
+executable=os.path.realpath('/proc/self/exe')
+image=open(executable,'rb').read()
+assert image[:6]==bytes([127,69,76,70,2,1])
+phoff=struct.unpack_from('<Q',image,32)[0]; phent,phnum=struct.unpack_from('<HH',image,54)
+assert (phent,phnum)==(auxv[4],auxv[5])
+interpreter=None
+for index in range(phnum):
+ offset=phoff+index*phent
+ if struct.unpack_from('<I',image,offset)[0]!=3: continue
+ nameOffset=struct.unpack_from('<Q',image,offset+8)[0]; nameBytes=struct.unpack_from('<Q',image,offset+32)[0]
+ interpreter=os.path.realpath(image[nameOffset:nameOffset+nameBytes-1].decode())
+vdsoLine=next(line for line in open('/proc/self/maps') if line.rstrip().endswith('[vdso]'))
+vdsoAddress,vdsoPermissions,vdsoOffset=vdsoLine.split()[:3]; vdsoStart,vdsoEnd=vdsoAddress.split('-')
+assert int(vdsoStart,16)==auxv[33]
+memory=os.open('/proc/self/mem',os.O_RDONLY)
+try: vdsoBytes=os.pread(memory,int(vdsoEnd,16)-int(vdsoStart,16),auxv[33])
+finally: os.close(memory)
+loaderProcess=dict(executablePath=executable,interpreterPath=interpreter,programHeaderAddress=hex(auxv[3])[2:],
+ programHeaderEntryBytes=phent,programHeaderCount=phnum,entryAddress=hex(auxv[9])[2:],interpreterBaseAddress=hex(auxv[7])[2:],
+ vdso=dict(startAddress=vdsoStart,endAddress=vdsoEnd,fileOffset=vdsoOffset,permissions=vdsoPermissions,
+ bytes=len(vdsoBytes),sha256=hashlib.sha256(vdsoBytes).hexdigest(),origin='kernel-auxv-AT_SYSINFO_EHDR'))
 after=str(time.clock_gettime_ns(time.CLOCK_MONOTONIC))
 def marker(phase):
  n=str(time.clock_gettime_ns(time.CLOCK_MONOTONIC)); os.write(2,('PC_NATIVE_RUN\\t'+json.dumps(dict(runTag='real',processId=os.getpid(),nativeThreadId=os.getpid(),phase=phase,monotonicNs=n))+'\\n').encode()); return n
 start=marker('start'); end=marker('end')
-print(json.dumps(dict(window=dict(runTag='real',processId=os.getpid(),nativeThreadId=os.getpid(),startMonotonicNs=start,endMonotonicNs=end),runtime=dict(platform='linux',clock='node-hrtime',beforeNs=before,afterNs=after,libraries=libraries,gpuMemory=dict(status='not-applicable')))))`;
+print(json.dumps(dict(window=dict(runTag='real',processId=os.getpid(),nativeThreadId=os.getpid(),startMonotonicNs=start,endMonotonicNs=end),runtime=dict(platform='linux',clock='node-hrtime',beforeNs=before,afterNs=after,libraries=libraries,gpuMemory=dict(status='not-applicable'),loaderProcess=loaderProcess))))`;
     const env: NodeJS.ProcessEnv={...process.env,LD_DEBUG:'files'};delete env.LD_DEBUG_OUTPUT;
     const child=spawnSync('/usr/bin/python3',['-I','-S','-c',program],{env,encoding:'utf8',timeout:10000,maxBuffer:2*1024*1024});
     expect(child.status,child.stderr).toBe(0);
@@ -188,6 +215,80 @@ print(json.dumps(dict(window=dict(runTag='real',processId=os.getpid(),nativeThre
     expect(result.noLoaderActivityDuringPopulation).toBe(true);
     expect(result.unjoinedMappedFiles.some(file=>file.path.includes('python3'))).toBe(true);
     expect(result.completeBeforeInferenceClosureVerified).toBe(false);
+    const stderr=Buffer.from(child.stderr);
+    const closure=bindNativeLoaderClosure(stderr,[observed.window],event,{source:'spawn-pipe',captureStartedBeforeExec:true,
+      eof:true,processId:observed.window.processId,exitCode:child.status!,signal:child.signal,bytes:stderr.length,
+      sha256:crypto.createHash('sha256').update(stderr).digest('hex')});
+    expect(closure.completeBeforeInferenceClosureVerified).toBe(true);
+    expect(closure.unjoinedMappedFiles).toEqual([]);
+    expect(closure.executable.path).toBe(fs.realpathSync('/usr/bin/python3'));
+    expect(closure.interpreter.path).toContain('ld-linux');
+    expect(closure.initializationJoins.some(join=>join.file===closure.interpreter)).toBe(true);
+    expect(closure.vdso.origin).toBe('kernel-auxv-AT_SYSINFO_EHDR');
+  });
+});
+describe('complete native loader capture qualification', () => {
+  const window={runTag:'closure',processId:123,nativeThreadId:456,startMonotonicNs:'100',endMonotonicNs:'200'};
+  const marker=(phase:'start'|'end')=>'PC_NATIVE_RUN\t'+JSON.stringify({runTag:'closure',processId:123,nativeThreadId:456,
+    phase,monotonicNs:phase==='start'?'100':'200'});
+  const log=()=>Buffer.from(['123: file=/lib/library.so [0];  generating link map',
+    '123: dynamic: 0x1800 base: 0x1000 size: 0x1000','123: entry: 0x1000 phdr: 0x1040 phnum: 9',
+    '123: calling init: /lib/library.so','123: calling init: /lib/interpreter.so','123: transferring control: /runtime/node',
+    marker('start'),marker('end'),'123: calling fini: /lib/library.so [0]',''].join('\n'));
+  const receipt=(bytes:Buffer):NativeLoaderCaptureReceipt=>({source:'spawn-pipe',captureStartedBeforeExec:true,eof:true,
+    processId:123,exitCode:0,signal:null,bytes:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex')});
+  const sample=():WorkerNativeInferenceTrace=>({model:'/fixture',device:'cpu',observedAt:'2026-10-02T00:00:00Z',requestId:1,
+    attempt:1,workerThreadId:1,processId:123,nativeThreadId:456,runTag:'closure',runIndex:1,phase:'start',clock:'node-hrtime',
+    monotonicNs:'100',runtime:{platform:'linux',clock:'node-hrtime',beforeNs:'80',afterNs:'90',gpuMemory:{status:'not-applicable'},
+      libraries:[['/lib/library.so','1000','2000'],['/runtime/node','3000','4000'],['/lib/interpreter.so','5000','6000']]
+        .map(([path,startAddress,endAddress])=>({path,bytes:4096,sha256:'a'.repeat(64),mappedInode:'123',mappedDevice:'08:01',
+          mappedRanges:[{startAddress,endAddress,fileOffset:'0',permissions:'r-xp'}]})),
+      loaderProcess:{executablePath:'/runtime/node',interpreterPath:'/lib/interpreter.so',programHeaderAddress:'3040',
+        programHeaderEntryBytes:56,programHeaderCount:9,entryAddress:'3100',interpreterBaseAddress:'5000',
+        vdso:{startAddress:'7000',endAddress:'8000',fileOffset:'0',permissions:'r-xp',bytes:4096,
+          sha256:'b'.repeat(64),origin:'kernel-auxv-AT_SYSINFO_EHDR'}}}});
+  it('qualifies the exec image, init-only interpreter and kernel vDSO with no mapped-file residue',()=>{
+    const bytes=log(),result=bindNativeLoaderClosure(bytes,[window],sample(),receipt(bytes));
+    expect(result).toMatchObject({completeBeforeInferenceClosureVerified:true,unjoinedMappedFiles:[],
+      executable:{path:'/runtime/node'},interpreter:{path:'/lib/interpreter.so'},vdso:{sha256:'b'.repeat(64)}});
+    expect(result.initializationJoins.map(join=>[join.file.path,join.namespaces])).toEqual([
+      ['/lib/library.so',['0']],['/lib/interpreter.so',[]]]);
+  });
+  it.each(['source','late-start','missing-eof','exit','signal','pid','bytes','hash','encoding'])('refuses %s stderr receipts',failure=>{
+    let bytes=log(); const observed=receipt(bytes);
+    if(failure==='source') (observed as any).source='log-tail';
+    if(failure==='late-start') (observed as any).captureStartedBeforeExec=false;
+    if(failure==='missing-eof') (observed as any).eof=false;
+    if(failure==='exit') observed.exitCode=1;
+    if(failure==='signal') observed.signal='SIGTERM';
+    if(failure==='pid') observed.processId=999;
+    if(failure==='bytes') observed.bytes++;
+    if(failure==='hash') observed.sha256='0'.repeat(64);
+    if(failure==='encoding') {bytes=Buffer.concat([bytes,Buffer.from([255])]);Object.assign(observed,receipt(bytes));}
+    expect(()=>bindNativeLoaderClosure(bytes,[window],sample(),observed)).toThrow('native loader');
+  });
+  it.each(['missing-process','entry','headers','count','interpreter','base','vdso-hash','vdso-size','vdso-overlap',
+    'residue','init-path','init-only','transfer','double-transfer','late-error','transient'])('refuses %s closure evidence',failure=>{
+    const event=sample(),process=event.runtime!.loaderProcess!;let text=log().toString();
+    if(failure==='missing-process') delete event.runtime!.loaderProcess;
+    if(failure==='entry') process.entryAddress='1800';
+    if(failure==='headers') process.programHeaderAddress='3f80';
+    if(failure==='count') process.programHeaderCount=0;
+    if(failure==='interpreter') process.interpreterPath='/lib/library.so';
+    if(failure==='base') process.interpreterBaseAddress='5001';
+    if(failure==='vdso-hash') process.vdso.sha256='bad';
+    if(failure==='vdso-size') process.vdso.bytes++;
+    if(failure==='vdso-overlap') {process.vdso.startAddress='3000';process.vdso.endAddress='4000';}
+    if(failure==='residue'||failure==='init-only') event.runtime!.libraries.push({...structuredClone(event.runtime!.libraries[0]),
+      path:'/lib/unjoined.so',mappedRanges:[{startAddress:'9000',endAddress:'a000',fileOffset:'0',permissions:'r-xp'}]});
+    if(failure==='init-path') text=text.replace('calling init: /lib/library.so','calling init: unresolved.so');
+    if(failure==='init-only') text=text.replace('calling init: /lib/library.so','calling init: /lib/unjoined.so');
+    if(failure==='transfer') text=text.replace('transferring control: /runtime/node','transferring control: /lib/library.so');
+    if(failure==='double-transfer') text=text.replace(marker('start'),'123: transferring control: /runtime/node\n'+marker('start'));
+    if(failure==='late-error') text+='123: fatal: lost loader evidence\n';
+    if(failure==='transient') text=text.replace(marker('end'),'123: file=transient.so [0];  generating link map\n'+marker('end'));
+    const bytes=Buffer.from(text);
+    expect(()=>bindNativeLoaderClosure(bytes,[window],event,receipt(bytes))).toThrow('native loader');
   });
 });
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
