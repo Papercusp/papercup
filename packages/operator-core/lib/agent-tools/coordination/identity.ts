@@ -322,6 +322,45 @@ export function operationCallerId(principalSlug: string, uiClientId: string | nu
 }
 
 /**
+ * WI-10005678: the bare session id a principal-namespaced caller is VERIFIED to be, or
+ * null. {@link operationCallerId} namespaces `client=` under its bearer
+ * (`system:judge/<client>`) because a bearer's client is normally caller-chosen. A
+ * role-scoped SPAWN URL is the exception: the operator HMAC-signs its params, `client=`
+ * included (spawn-signing.ts), and the dispatcher stamps that principal
+ * `authMethod:'spawn-url', trust:'trusted'` (role-principal-caps.ts). That client id is
+ * the session's own ledger identity (adv_sessions.coord_owner_id, its inbox-wake key, the
+ * id the ship recruiter announces), so peers address it bare. Measured 2026-10-02: an
+ * acceptance judge read `total 0` for four messages addressed to that bare id.
+ */
+export function verifiedSpawnSessionAlias(
+  ctx: {
+    principal?: { slug: string; authMethod?: string; trust?: string } | null;
+    uiClientId?: string | null;
+  },
+  ownerId: string,
+): string | null {
+  const principal = ctx.principal;
+  const client = ctx.uiClientId?.trim();
+  if (!principal || !client) return null;
+  if (principal.authMethod !== 'spawn-url' || principal.trust !== 'trusted') return null;
+  if (!principal.slug.startsWith('system:')) return null;
+  return ownerId === operationCallerId(principal.slug, client) && ownerId !== client ? client : null;
+}
+
+/**
+ * WI-10005678: does `sender` match a `from` filter naming a bare session id? Exact match,
+ * or a `system:<role>/<from>` sender, the namespaced form a verified spawn session's
+ * messages carry (see {@link verifiedSpawnSessionAlias}). Only a single `system:` segment
+ * qualifies, so `app:<id>/<from>` and nested ids never match a bare filter.
+ */
+export function senderMatchesFilter(sender: unknown, from: string): boolean {
+  if (sender === from) return true;
+  if (typeof sender !== 'string' || !sender.startsWith('system:')) return false;
+  const slash = sender.indexOf('/');
+  return slash > 0 && sender.slice(slash + 1) === from;
+}
+
+/**
  * Resolve the calling agent's coordination identity. Throws when the
  * ctx carries no attributable identity at all — coordination writes
  * MUST be attributable, so a missing identity is a hard error, not a

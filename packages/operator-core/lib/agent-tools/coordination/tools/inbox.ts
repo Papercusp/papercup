@@ -13,10 +13,12 @@ import {
   COORD_EXECUTABLE_KINDS,
   type CoordKind,
 } from "@papercusp/coordination/core";
-import { resolveAgentIdentity } from "../identity";
+import { resolveAgentIdentity, senderMatchesFilter, verifiedSpawnSessionAlias } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
 import {
   readInbox,
+  readDirectedInbox,
+  mergeInboxEntries,
   drainAndDeliverUserMailbox,
   getSupersededMap,
   getRemoteOriginMsgIds,
@@ -616,7 +618,9 @@ export function filterInboxBySender<T extends { from?: unknown }>(
   from: string | undefined | null,
 ): readonly T[] {
   if (!from) return entries;
-  return entries.filter((e) => e.from === from);
+  // WI-10005678: a verified spawn session (an acceptance judge) sends as
+  // `system:<role>/<id>`, so a filter naming its bare `<id>` must still match.
+  return entries.filter((e) => senderMatchesFilter(e.from, from));
 }
 
 /**
@@ -1019,7 +1023,7 @@ export default defineTool({
     // The watermark is read concurrently too — the P-010 re-bootstrap flag rides
     // it (snapshot_rebootstrap_pending), so the common no-flag path adds only one
     // cheap PK read and no extra latency.
-    const [, all, wm] = await Promise.all([
+    const [, ownInbox, wm] = await Promise.all([
       inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
         ? heartbeatPresence(identity).catch(() => {})
         : Promise.resolve(),
@@ -1114,6 +1118,29 @@ export default defineTool({
       ),
       readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);
+    // WI-10005678: a verified spawn session (an acceptance judge) reads as
+    // `system:<role>/<id>`, but peers, its inbox-wake and the ship recruiter all
+    // address the bare `<id>`. Fold in what was sent to that bare id. Directed rows
+    // only: the broadcasts already arrived through the caller's own read.
+    const sessionAlias = verifiedSpawnSessionAlias(
+      ctx as Parameters<typeof verifiedSpawnSessionAlias>[0],
+      identity.ownerId,
+    );
+    const all = sessionAlias
+      ? mergeInboxEntries(
+          ownInbox,
+          await readDirectedInbox(sessionAlias, { since_ts: deliveryFloorTs, kinds: args.kinds }).catch(
+            (e: unknown) => {
+              console.warn(
+                `[coord:inbox] session-alias read for ${sessionAlias} failed (own inbox still served): ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+              return [];
+            },
+          ),
+        )
+      : ownInbox;
 
     const ambientExcluded = includeAmbient
       ? 0

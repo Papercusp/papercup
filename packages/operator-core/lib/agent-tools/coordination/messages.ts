@@ -696,6 +696,68 @@ export async function readInbox(
   return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
 }
 
+/** Row cap for {@link readDirectedInbox}: directed traffic to one session id is small
+ *  (no broadcast rows match), so this bounds a pathological id, not a normal read. */
+export const DIRECTED_INBOX_ROW_CAP = 2_000;
+
+/**
+ * WI-10005678: entries addressed EXPLICITLY to `ownerId` — never the `'*'` broadcasts
+ * {@link readInbox} also returns. coord:inbox uses it for a caller's VERIFIED session
+ * alias (identity.ts `verifiedSpawnSessionAlias`): the caller's own read already carries
+ * every broadcast, so re-reading them here would only re-pay the ~20k-row broadcast scan
+ * (WI-6939) for rows that dedupe away. Same recipient predicate, index and post-filter as
+ * readInbox; the recipient match is narrowed to an explicit `to` entry.
+ */
+export async function readDirectedInbox(
+  ownerId: string,
+  opts: InboxOptions = {},
+): Promise<CoordEnvelope[]> {
+  if (!ownerId) return [];
+  const directed = (entries: CoordEnvelope[]): CoordEnvelope[] =>
+    entries.filter((e) => Array.isArray(e.to) && (e.to as unknown[]).includes(ownerId));
+  if (coordHasPgFastPath()) {
+    const sql = coordSql();
+    const sinceBound = opts.since_ts
+      ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+      : null;
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
+         AND jsonb_typeof(body->'to') = 'array'
+         AND (body->'to') ? ${ownerId}
+       ORDER BY id DESC
+       LIMIT ${DIRECTED_INBOX_ROW_CAP}
+    `;
+    const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+    return directed(suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines)));
+  }
+  const lines = await coordLog.readLines('messages');
+  return directed(suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines)));
+}
+
+/**
+ * WI-10005678: fold `extra` into `base` without duplicating a message delivered to both
+ * ids, keeping filterInbox's ascending (ts, msg_id) order. Pure; `base` wins on a
+ * msg_id collision.
+ */
+export function mergeInboxEntries<T extends { msg_id?: unknown; ts?: unknown }>(
+  base: readonly T[],
+  extra: readonly T[],
+): T[] {
+  if (extra.length === 0) return [...base];
+  const seen = new Set(base.map((e) => e.msg_id).filter((id): id is string => typeof id === 'string'));
+  const added = extra.filter((e) => typeof e.msg_id !== 'string' || !seen.has(e.msg_id));
+  if (added.length === 0) return [...base];
+  return [...base, ...added].sort(
+    (a, b) =>
+      String(a.ts ?? '').localeCompare(String(b.ts ?? '')) ||
+      String(a.msg_id ?? '').localeCompare(String(b.msg_id ?? '')),
+  );
+}
+
 /** Rows fetched per keyset page by {@link readInboxWindow}. Sized so a normal
  *  read is satisfied by ONE page while transferring ~20x less than the
  *  unbounded read it replaces. */
