@@ -14,12 +14,14 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import SecretStream from '@hyperswarm/secret-stream';
 import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace-session';
 import type {
   HostedConnectorBinding,
   HostedConnectorTicketBinding,
 } from '../endpoint-route/hosted-workspace-connector';
 import { HostedWorkspaceConnectorClient } from './hosted-connector-client';
+import { ByocSealedChannel, isByocSealedPacket } from './byoc-sealed-channel';
 import {
   HostedWorkspaceHostSessionAdapter,
   type HostedDesktopBackend,
@@ -178,6 +180,7 @@ const binding: HostedConnectorBinding = {
   generation: 7,
   transport: 'websocket',
   state: 'active',
+  hosting: 'byoc',
 };
 const ticket: HostedConnectorTicketBinding = {
   ...binding,
@@ -210,6 +213,8 @@ async function runAssembledByoc() {
   const controlLogs: string[] = [];
   let adapter: HostedWorkspaceHostSessionAdapter | undefined;
   let channel = 0;
+  const clientKey = SecretStream.keyPair(Buffer.alloc(32, 41));
+  const hostKey = SecretStream.keyPair(Buffer.alloc(32, 42));
   const desktop: HostedDesktopBackend = {
     lookup: async () => ({
       endpoint: { host: '127.0.0.1', port: 6901 },
@@ -256,6 +261,10 @@ async function runAssembledByoc() {
         },
         onAudit: (event) => hostAudit.push(event),
         onWarning: (warning) => hostWarnings.push(warning),
+        byocSealedChannel: {
+          localKeyPair: hostKey,
+          expectedRemotePublicKey: clientKey.publicKey,
+        },
       });
     },
     onEnvelope: (envelope) => {
@@ -286,62 +295,75 @@ async function runAssembledByoc() {
       const wire = sockets(kind + '-browser-wire', captures);
       broker.attachBrowser(ticket, wire.control, {
         kind,
+        sealed: true,
         ...(desktopSessionId ? { desktopSessionId, desktopMode: 'takeover' as const } : {}),
       });
-      return wire.peer;
+      const frames: Record<string, unknown>[] = [];
+      const sealed = new ByocSealedChannel({
+        initiator: true,
+        localKeyPair: clientKey,
+        expectedRemotePublicKey: hostKey.publicKey,
+        sendPacket: (packet) => wire.peer.send(JSON.stringify(packet)),
+        onFrame: (frame) => frames.push(frame),
+        onError: (error) => hostWarnings.push(`browser sealed channel: ${error.message}`),
+      });
+      wire.peer.on('message', (data: unknown) => {
+        try {
+          const parsed: unknown = JSON.parse(Buffer.from(data as Buffer).toString('utf8'));
+          if (isByocSealedPacket(parsed)) sealed.receive(parsed);
+        } catch {
+          /* session.bound is intentionally clear control metadata */
+        }
+      });
+      return { sealed, frames };
     }
     const ptyBrowser = browser('pty');
     await settle(pending);
-    ptyBrowser.send(JSON.stringify({ type: 'pty.input', data: Buffer.from(marker('pty')).toString('base64') }));
+    await ptyBrowser.sealed.opened;
+    await ptyBrowser.sealed.send({ type: 'pty.input', data: Buffer.from(marker('pty')).toString('base64') });
     await settle(pending);
     ptys[0]?.output(marker('pty'));
     await settle(pending);
-    ptyBrowser.send(
-      JSON.stringify({
+    await ptyBrowser.sealed.send(
+      {
         type: 'file.write',
         requestId: 'file-1',
         path: 'marker.txt',
         encoding: 'utf8',
         data: marker('file'),
-      }),
+      },
     );
     await settle(pending);
 
     const operatorBrowser = browser('operator-http');
     await settle(pending);
-    operatorBrowser.send(
-      JSON.stringify({
+    await operatorBrowser.sealed.opened;
+    await operatorBrowser.sealed.send(
+      {
         type: 'http.request',
         requestId: 'chat-1',
         method: 'POST',
         path: '/api/operator/conversations',
         headers: { 'content-type': 'application/json' },
         body: Buffer.from(JSON.stringify({ message: marker('operator-http') })).toString('base64'),
-      }),
+      },
     );
     await settle(pending);
 
-    const app = broker.openAppChannel({ binding, lastSeenAt: new Date() }, { onFrame: () => {}, onClose: () => {} });
-    if (!app) throw new Error('app channel did not open');
-    await settle(pending);
-    if (
-      !app.send({
+    await operatorBrowser.sealed.send({
         type: 'http.request',
         requestId: 'app-1',
         method: 'POST',
         path: '/api/agent-tools/plans/list',
         headers: { 'content-type': 'application/json' },
         body: Buffer.from(JSON.stringify({ args: marker('app-http') })).toString('base64'),
-      })
-    )
-      throw new Error('app request was refused');
+      });
     await settle(pending);
 
     const desktopBrowser = browser('desktop', 'desktop-1');
     await settle(pending);
-    desktopBrowser.send(
-      JSON.stringify({ type: 'desktop.data', data: Buffer.from(marker('desktop')).toString('base64') }),
-    );
+    await desktopBrowser.sealed.opened;
+    await desktopBrowser.sealed.send({ type: 'desktop.data', data: Buffer.from(marker('desktop')).toString('base64') });
     await settle(pending);
     desktopSockets[0]?.output(marker('desktop'));
     await settle(pending);
@@ -392,11 +414,7 @@ describe('hosted BYOC content marker negative control (P-003)', () => {
     }
   });
 
-  it('records the current plaintext-relay defect on every plane', () => {
-    expect(PLANES.filter((plane) => recoverable(run.captures, marker(plane)).length > 0)).toEqual(PLANES);
-  });
-
-  it.fails('DESIRED: no BYOC content marker is recoverable from control-plane bytes, rows, logs or telemetry', () => {
+  it('keeps every BYOC content marker unrecoverable from control-plane bytes, rows, logs and telemetry', () => {
     const leaks = PLANES.flatMap((plane) =>
       recoverable(run.captures, marker(plane)).map((capture) => ({ plane, surface: capture.surface })),
     );
