@@ -175,7 +175,7 @@ export async function savePendingCarryRespawn(
   const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
     INSERT INTO harness_shared.session_briefs
       (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
-    VALUES (\${ownerId}, \${workspaceId}, \${JSON.stringify(slot)}::text::jsonb, now(), now())
+    VALUES (${ownerId}, ${workspaceId}, ${JSON.stringify(slot)}::text::jsonb, now(), now())
     ON CONFLICT (owner_id) DO UPDATE SET
       pending_carry_respawn = EXCLUDED.pending_carry_respawn,
       updated_at = now()
@@ -195,8 +195,8 @@ export async function clearPendingCarryRespawn(
   const rows = await sql<Array<{ owner_id: string }>>`
     UPDATE harness_shared.session_briefs
        SET pending_carry_respawn = NULL, updated_at = now()
-     WHERE owner_id = \${ownerId}
-       AND pending_carry_respawn->>'nonce' = \${nonce}
+     WHERE owner_id = ${ownerId}
+       AND pending_carry_respawn->>'nonce' = ${nonce}
     RETURNING owner_id
   `;
   return rows.length > 0;
@@ -217,7 +217,7 @@ export async function consumePendingCarryRespawn(
   const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
     UPDATE harness_shared.session_briefs
        SET pending_carry_respawn = NULL, updated_at = now()
-     WHERE owner_id = \${ownerId}
+     WHERE owner_id = ${ownerId}
        AND pending_carry_respawn IS NOT NULL
     RETURNING pending_carry_respawn
   `;
@@ -238,7 +238,7 @@ export async function restorePendingCarryRespawn(
   const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
     INSERT INTO harness_shared.session_briefs
       (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
-    VALUES (\${ownerId}, \${workspaceId}, \${JSON.stringify(valid)}::text::jsonb, now(), now())
+    VALUES (${ownerId}, ${workspaceId}, ${JSON.stringify(valid)}::text::jsonb, now(), now())
     ON CONFLICT (owner_id) DO UPDATE SET
       pending_carry_respawn = COALESCE(
         harness_shared.session_briefs.pending_carry_respawn,
