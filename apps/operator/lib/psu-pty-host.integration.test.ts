@@ -6,8 +6,8 @@
  * assert the socket + discovery file are created on start and cleaned up on exit.
  * Spawns a real @lydell/node-pty subprocess, so it's an integration test.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -51,6 +51,72 @@ import {
 // subpath keeps this an integration test of the actual chain, not a re-impl.
 import { interruptViaPty, findLiveHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+
+/**
+ * WI-10005017: some respawn tests fail only in whole-file runs, and the failure
+ * reads "expected 1 to be 2" (one child booted where two were expected). That says
+ * nothing about WHY the successor never started. The host's own event log does, but
+ * it lives in the auto-cleaned PSU_PTY_DIR and is gone by the time anyone looks. On
+ * failure, attach the tail of every host event log this test wrote to the failure
+ * output, so a non-reproducing failure carries its own evidence.
+ */
+const FAILURE_EVENT_TAIL_LINES = 30;
+function hostEventTailsSince(dir: string, sinceMs: number, lines = FAILURE_EVENT_TAIL_LINES): string {
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.events.jsonl'));
+  } catch {
+    return `(host event dir ${dir} unreadable)`;
+  }
+  const blocks: string[] = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    try {
+      if (statSync(path).mtimeMs < sinceMs) continue;
+      const tail = readFileSync(path, 'utf8').trim().split('\n').slice(-lines).join('\n');
+      blocks.push(`--- ${name} (last ${lines} events) ---\n${tail}`);
+    } catch {
+      /* a log removed mid-read is not evidence either way */
+    }
+  }
+  return blocks.length ? blocks.join('\n') : '(no host event log written during this test)';
+}
+
+beforeEach((ctx) => {
+  const startedAtMs = Date.now() - 1_000;
+  ctx.onTestFailed(({ task }) => {
+    const evidence = hostEventTailsSince(PSU_PTY_DIR, startedAtMs);
+    console.error(`[WI-10005017] host events for failed test "${task.name}":\n${evidence}`);
+    const first = task.result?.errors?.[0];
+    if (first && typeof first.message === 'string') first.message += `\n[host events]\n${evidence}`;
+  });
+});
+
+describe('failure evidence: host event tails (WI-10005017)', () => {
+  it('includes logs written since the test started, tail-bounded, and skips older ones', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psu-pty-evidence-'));
+    try {
+      const fresh = join(dir, 'su-fresh.events.jsonl');
+      const stale = join(dir, 'su-stale.events.jsonl');
+      writeFileSync(fresh, Array.from({ length: 40 }, (_, i) => `{"kind":"e${i}"}`).join('\n'));
+      writeFileSync(stale, '{"kind":"old"}\n');
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(stale, old, old);
+      writeFileSync(join(dir, 'su-fresh.json'), '{}');
+      const out = hostEventTailsSince(dir, Date.now() - 10_000, 5);
+      expect(out).toContain('su-fresh.events.jsonl');
+      expect(out).toContain('{"kind":"e39"}');
+      expect(out).toContain('{"kind":"e35"}');
+      expect(out).not.toContain('{"kind":"e34"}');
+      expect(out).not.toContain('su-stale');
+      expect(out).not.toContain('--- su-fresh.json ');
+      expect(hostEventTailsSince(dir, Date.now() + 60_000)).toBe('(no host event log written during this test)');
+      expect(hostEventTailsSince(join(dir, 'missing'), 0)).toMatch(/unreadable/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin. */
 function fakeIo() {
