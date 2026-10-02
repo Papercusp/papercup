@@ -2811,8 +2811,9 @@ async function notifySkippedLockedPaths(slug: string, outcome: GitSyncOutcome): 
   const skippedPaths = outcome.skippedPaths ?? [];
   if (skippedPaths.length === 0) return;
 
-  const byHolder = new Map<string, GitSyncSkippedPath[]>();
+  const byHolder = new Map<string, Array<Extract<GitSyncSkippedPath, { owner: string }>>>();
   for (const skipped of skippedPaths) {
+    if (!('owner' in skipped)) continue;
     const holder = skipped.owner.trim();
     if (!holder) continue;
     const rows = byHolder.get(holder);

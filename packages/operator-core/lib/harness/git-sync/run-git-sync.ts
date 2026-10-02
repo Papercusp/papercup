@@ -1256,16 +1256,10 @@ export interface GitSyncLockHolding {
   goalRef?: string;
 }
 
-/** A dirty path deferred by this pass. Missing `reason` is the legacy live-lock shape. */
-export interface GitSyncSkippedPath {
-  scope: string;
-  path: string;
-  owner?: string;
-  intent?: string;
-  /** Other per-path deferral classes; omitted for live-lock rows. */
-  reason?: 'migration-reservation';
-  detail?: string;
-}
+/** A dirty path deferred by this pass, with lock provenance or a guard reason. */
+export type GitSyncSkippedPath =
+  | { scope: string; path: string; owner: string; intent: string }
+  | { scope: string; path: string; reason: 'migration-reservation'; detail: string };
 
 /** True when two repo-relative paths overlap as a file or directory lock. */
 function gitSyncPathsOverlap(a: string, b: string): boolean {
@@ -3989,7 +3983,9 @@ function migrationReservationSkips(
     if (paths.includes(refusal.path)) continue;
     paths.push(refusal.path);
     if (
-      !skippedPaths.some((entry) => entry.path === refusal.path && entry.reason === 'migration-reservation')
+      !skippedPaths.some(
+        (entry) => entry.path === refusal.path && 'reason' in entry && entry.reason === 'migration-reservation',
+      )
     ) {
       skippedPaths.push({
         scope,
@@ -5845,7 +5841,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // A live lock is a partial exclusion, not a fleet-wide stop. Report the legacy
   // skipped verdict only when a live-lock path prevented progress. Migration-only
   // deferrals remain visible in skippedPaths without being mislabeled as locks.
-  if (skippedPaths.some((path) => path.reason === undefined) && !didSomething)
+  if (skippedPaths.some((path) => 'owner' in path) && !didSomething)
     return {
       status: 'skipped-locked',
       dirtyPathCount,
