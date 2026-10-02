@@ -423,6 +423,69 @@ describe('hosted browser route boundary', () => {
       const response = await hostedRetry({ enqueue });
       expect(response.status).toBe(409);
     });
+
+    // WI-10005363: lifecycle actions took the same raw-forward path, so a portal repair reached the
+    // workflow with no actor and the portal got a false 504 (measured: canary repair r1, 07:39Z).
+    function hostedAction(operations: { enqueueLifecycle: ReturnType<typeof vi.fn>; enqueueDestroy: ReturnType<typeof vi.fn> }) {
+      return routeHandler(createHostedBrowserRoutes({
+        publicOrigin: ORIGIN,
+        controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+        dependencies: {
+          runTenant: tenantRunner([]),
+          readTarget: async () => ({
+            hostId: 'host-bound',
+            target: 'gcp',
+            connectionId: 'gcp:connection',
+            desired: { hostId: 'host-bound', target: 'gcp', scope: { kind: 'project', id: 'p' } },
+          }) as never,
+          readConnection: async () => ({
+            id: 'gcp:connection',
+            target: 'gcp',
+            status: 'connected' as const,
+            connection: {
+              target: 'gcp',
+              cloudCredentialRef: { kind: 'cloud' as const, ref: 'delegation://tenant-a/gcp:connection' },
+            },
+          }) as never,
+          operations: operations as never,
+        },
+      }).routes, '/hosted/browser/workspace-hosts/action')(
+        new Request(`${ORIGIN}/api/hosted/browser/workspace-hosts/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: ORIGIN },
+          body: JSON.stringify({ action: 'repair', workspaceId: 'host-bound', operationId: 'repair-host-bound-r1' }),
+        }),
+        context(),
+      );
+    }
+
+    it('enqueues a hosted lifecycle action with its actor and answers 202 instead of forwarding', async () => {
+      const enqueueLifecycle = vi.fn(async (input: { operationId?: string }) => ({
+        workflowId: 'wf',
+        operationId: input.operationId ?? 'generated',
+      }));
+      const enqueueDestroy = vi.fn();
+      const response = await hostedAction({ enqueueLifecycle, enqueueDestroy });
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toMatchObject({ operationId: 'repair-host-bound-r1', hostId: 'host-bound' });
+      expect(enqueueLifecycle).toHaveBeenCalledTimes(1);
+      expect(enqueueLifecycle.mock.calls[0]?.[0]).toMatchObject({
+        workspaceId: CONTROL_PLANE_WORKSPACE,
+        hostId: 'host-bound',
+        action: 'repair',
+        operationId: 'repair-host-bound-r1',
+        actorId: 'user-1',
+      });
+      expect(enqueueDestroy).not.toHaveBeenCalled();
+    });
+
+    it('answers a duplicate lifecycle enqueue with the in-process 409 conflict', async () => {
+      const enqueueLifecycle = vi.fn(async () => {
+        throw Object.assign(new Error('duplicate'), { dbosErrorCode: 28 });
+      });
+      const response = await hostedAction({ enqueueLifecycle, enqueueDestroy: vi.fn() });
+      expect(response.status).toBe(409);
+    });
   });
 
   it('forwards only tenant-safe invalidations over SSE and strips row payloads', async () => {
