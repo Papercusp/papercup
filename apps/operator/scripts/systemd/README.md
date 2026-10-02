@@ -347,8 +347,14 @@ measured bg-host generation writer's overlap with Docker's root device; a
 post-change Docker remeasurement is still needed to establish whether that
 overlap caused the container-start stall.
 
-All three drop-ins must be installed as symlinks so the checked-in contracts remain
-the source of truth.
+The 99-mcp-proxy.conf drop-in routes MCP clients minted by the background host
+through the separate `papercup-mcp-proxy-bg-host.service` (`:9271` → `:3271`).
+That proxy retries only upstream connection refusals, where the request has not
+reached the host; post-connect failures are surfaced so a write is never replayed
+after it may have run.
+
+Every drop-in named in this section must be installed as a symlink so the
+checked-in contracts remain the source of truth.
 
 ## Install (one-time, on the shared development host)
 
@@ -361,7 +367,10 @@ ln -sfn "$(pwd)/papercup-bg-host.service.d/95-bundled-entry.conf" \
 ln -sfn "$(pwd)/papercup-bg-host.service.d/97-gateway-systemd-authority.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/97-gateway-systemd-authority.conf
 ln -sfn "$(pwd)/papercup-bg-host.service.d/98-dependency-generation-root.conf" ~/.config/systemd/user/papercup-bg-host.service.d/98-dependency-generation-root.conf
+ln -sfn "$(pwd)/papercup-bg-host.service.d/99-mcp-proxy.conf" ~/.config/systemd/user/papercup-bg-host.service.d/99-mcp-proxy.conf
+ln -sfn "$(pwd)/papercup-mcp-proxy-bg-host.service" ~/.config/systemd/user/papercup-mcp-proxy-bg-host.service
 systemctl --user daemon-reload
+systemctl --user enable --now papercup-mcp-proxy-bg-host.service
 ```
 
 Do not copy the drop-in or edit the generated service. Do not restart bg-host
@@ -381,6 +390,10 @@ load persists. Any unit that gains an `ExecStartPre` owns its start timeout too.
 
 ```bash
 node scripts/check-systemd-dropins-installed.mjs   # from the repo root
+systemctl --user is-enabled papercup-mcp-proxy-bg-host.service
+systemctl --user is-active papercup-mcp-proxy-bg-host.service
+systemctl --user show papercup-bg-host.service --property=DropInPaths --value \
+  | tr ' ' '\n' | grep 99-mcp-proxy.conf
 ```
 
 That is the authoritative check and it is the one to trust: it reads the unit's live
@@ -407,8 +420,10 @@ were all written as though it were active. None of them could see the host. See 
 Once loaded, the effective unit should show `bundle-host.sh` as `ExecStartPre` and
 `node dist-host/hono-host.mjs` as the final command, `TimeoutStartUSec=5min`, and retain
 the `PAPERCUSP_HONO_PORT=3271`, `PAPERCUSP_BACKGROUND_WORKERS=1`, and DBOS/routine
-assignments from the base unit. A configured drop-in is not proof that the running
-service has loaded it; verify after the next managed restart.
+assignments from the base unit. It should also show
+`PAPERCUSP_MCP_PROXY_BASE=http://127.0.0.1:9271` and
+`PAPERCUSP_MCP_PROXY_TARGET_PORT=3271`. A configured drop-in is not proof that the
+running service has loaded it; verify after the next managed restart.
 
 ---
 
