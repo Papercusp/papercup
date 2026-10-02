@@ -1096,13 +1096,20 @@ export function classifySameHiveMember(input: {
  *
  * So: report stalled for either (a) an admitted remote log with zero
  * replicator peers (the original WI-1534 axis, unchanged), or (b) zero
- * admitted remotes AT ALL while `liveConnectionCount` is nonzero — i.e. we
+ * admitted remotes AT ALL while `topicConnectionCount` is nonzero — i.e. we
  * have live swarm sockets on this topic and nothing has been admitted yet.
  * The live-connection leg is required (not "admitted is empty" alone) so a
  * genuinely solo/offline node still gets the slow cadence — the same
  * false-positive discipline rung (c)'s never-paired escalation already
  * applies (WI-5686: an axis with no live-peer guard fires for a peer that
  * simply isn't there).
+ *
+ * WI-10005287: `topicConnectionCount` MUST be topic-scoped
+ * (`SwarmHandle.topicStallCandidateCount`). The swarm-wide
+ * `liveConnectionCount` this used to receive counts the one shared socket per
+ * peer for every local topic, so a peer serving only OTHER harnesses held leg
+ * (b) true forever on every topic it does not share (measured on bg-host
+ * 2026-10-02: 48 of 89 joins).
  */
 export function computeHasStalledLogs(
   // `unknown` values (not `Partial<{ peersCount... }>>` directly) so a caller
@@ -1111,7 +1118,7 @@ export function computeHasStalledLogs(
   // `peersCount()` read site (e.g. the `maybePeersCount` casts above).
   admitted: ReadonlyMap<string, unknown>,
   ownLogKeyHex: string,
-  liveConnectionCount: number,
+  topicConnectionCount: number,
 ): boolean {
   let sawRemoteAdmitted = false;
   for (const [keyHex, rawLog] of admitted) {
@@ -1126,7 +1133,7 @@ export function computeHasStalledLogs(
     }
   }
   if (sawRemoteAdmitted) return false;
-  return liveConnectionCount > 0;
+  return topicConnectionCount > 0;
 }
 
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
@@ -6081,7 +6088,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // `escalateToForcedRejoin`'s `swarmHandle?.forceRejoin()` above.
         hasStalledLogs: () => {
           try {
-            return computeHasStalledLogs(admitted, ownLog.keyHex, swarmHandle?.liveConnectionCount ?? 0);
+            // WI-10005287: the TOPIC-scoped socket count, never the swarm-wide
+            // liveConnectionCount (see topicStallCandidateCount's doc).
+            return computeHasStalledLogs(admitted, ownLog.keyHex, swarmHandle?.topicStallCandidateCount ?? 0);
           } catch {
             return false;
           }

@@ -72,6 +72,19 @@ export interface SwarmHandle {
    */
   liveConnectionCount: number;
   /**
+   * WI-10005287: live sockets that may be carrying THIS topic — the input to
+   * boot.ts's pre-admission stall leg (`computeHasStalledLogs` leg (b)).
+   *
+   * `liveConnectionCount` is the SHARED swarm's whole socket set, so it is
+   * topic-blind: one peer connected for some other harness made every local
+   * topic with no admitted remote read "stalled" forever (bg-host 2026-10-02:
+   * 48 of 89 joins, admitted = own log only, one socket whose announce channel
+   * was open on 2 other topics and never opened on these). A socket counts here
+   * only if {@link isTopicStallCandidateSocket} says so — see its doc for the
+   * rule and why it keeps the original dead-data-path case.
+   */
+  topicStallCandidateCount: number;
+  /**
    * EI-13317 rung (b): force a fresh topic leave()+join() NOW (a new discovery
    * session/DHT announce), bypassing the severed-link timer. Extracted from
    * the escalation ladder's own leave+rejoin action (below) so an EXTERNAL
@@ -1023,14 +1036,44 @@ function announceTopicStatesFor(mux: object): Map<string, TopicAnnounceState> {
  * `userData`; the WeakMap check keeps this safe for minimal test streams whose
  * `userData` may hold something unrelated.
  */
-function announceStateForSocket(socket: unknown, topicHex: string): TopicAnnounceState | null {
+function announceStatesForSocket(socket: unknown): Map<string, TopicAnnounceState> | null {
   const muxStream = ((socket as { noiseStream?: unknown } | null)?.noiseStream ?? socket) as {
     userData?: unknown;
   } | null;
   if (!muxStream || typeof muxStream !== 'object') return null;
   const mux = muxStream.userData;
   if (!mux || typeof mux !== 'object') return null;
-  return announceTopicStateByMuxer.get(mux)?.get(topicHex) ?? null;
+  return announceTopicStateByMuxer.get(mux) ?? null;
+}
+
+function announceStateForSocket(socket: unknown, topicHex: string): TopicAnnounceState | null {
+  return announceStatesForSocket(socket)?.get(topicHex) ?? null;
+}
+
+/**
+ * WI-10005287: could this live socket be carrying `topicHex`? Feeds
+ * {@link SwarmHandle.topicStallCandidateCount}.
+ *
+ * One Hyperswarm socket per peer is shared by every topic in the process, so
+ * "a socket exists" says nothing about which topic it serves. The announce
+ * channels opened on its muxer do:
+ *   - this topic's channel has opened (both sides opened it) → yes, the peer
+ *     participates in this topic;
+ *   - some OTHER topic's channel has opened but not this one → no. The data
+ *     path demonstrably works and the peer has not opened this topic, so it
+ *     is not a participant (the measured bg-host case);
+ *   - no channel has opened on it at all → yes. We cannot tell which topic it
+ *     is for, and this is exactly EI-18665254552552477's pre-admission stall
+ *     (established sockets, zero inbound frames), so it must still count.
+ * A socket with no readable muxer state (minimal test fakes) has opened no
+ * channel, so it counts — the pre-WI-10005287 behaviour.
+ */
+export function isTopicStallCandidateSocket(socket: unknown, topicHex: string): boolean {
+  const states = announceStatesForSocket(socket);
+  if (!states) return true;
+  if (states.get(topicHex)?.opened) return true;
+  for (const state of states.values()) if (state.opened) return false;
+  return true;
 }
 
 /** Create + open the announce channel on a muxer (returns silently when the
@@ -3409,6 +3452,15 @@ export async function joinHarnessSwarm(
         return n;
       }
       return liveConnectionCount;
+    },
+    get topicStallCandidateCount() {
+      // Same socket source as liveConnectionCount (the shared swarm's set, or
+      // this join's own sockets on minimal fakes), filtered to the sockets that
+      // may be carrying this topic (WI-10005287).
+      const sockets: Iterable<unknown> = opts.swarm.connections ?? mySockets;
+      let n = 0;
+      for (const socket of sockets) if (isTopicStallCandidateSocket(socket, topicHex)) n++;
+      return n;
     },
     async forceRejoin() {
       await forceRejoinNow();
