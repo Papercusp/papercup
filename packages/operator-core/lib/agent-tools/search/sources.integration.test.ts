@@ -27,7 +27,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SEARCH_SOURCES as DEFAULT_SEARCH_SOURCES, compactLiteralToken } from './sources';
 import type { SearchSource, SearchSourceParams } from '@papercusp/search';
 
@@ -651,6 +651,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('search-sources');
   sql = db.sql;
   await setupSchema(sql);
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
   await seed(sql);
   await seedP17(sql);
   await seedCompactToken(sql);

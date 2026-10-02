@@ -74,9 +74,19 @@ TLS=(); [ "$INSECURE" -eq 1 ] && TLS=(--tls-verify=false)
 SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
 
 CTR=""
+# The image ships read-only directories (etc/pki/ca-trust/extracted/pem/directory-hash is 0555)
+# and tar restores those modes, so a bare `rm -rf` cannot unlink their entries: measured
+# 2026-10-02, 365 files survived and the next run would extract into the stale tree. Give the
+# owner write permission back first. Every entry was extracted by this user, so chmod can.
+remove_tree() {
+  [ -e "$1" ] || return 0
+  chmod -R u+w "$1" 2>/dev/null
+  rm -rf "$1"
+  [ ! -e "$1" ]
+}
 cleanup() {
   [ -n "$CTR" ] && "${PODMAN[@]}" rm -f "$CTR" >/dev/null 2>&1
-  [ "$KEEP_TREE" -eq 1 ] || rm -rf "$TREE"
+  [ "$KEEP_TREE" -eq 1 ] || remove_tree "$TREE"
 }
 trap cleanup EXIT
 
@@ -114,7 +124,8 @@ GOT_ID="sha256:${GOT_ID#sha256:}"
 echo "IMAGE_CONFIG=$CONFIG  (container image id == registry config of $DIGEST)"
 
 echo "=== export the root filesystem to $TREE (as $(id -un)) ==="
-rm -rf "$TREE"; mkdir -p "$TREE"
+remove_tree "$TREE" || die "cannot clear the previous export at $TREE"
+mkdir -p "$TREE"
 # Device nodes cannot be created unprivileged and carry no content; everything else is extracted
 # readable by this user (--no-same-permissions applies the umask), so mode-000 files like
 # /etc/shadow are still READ rather than skipped.

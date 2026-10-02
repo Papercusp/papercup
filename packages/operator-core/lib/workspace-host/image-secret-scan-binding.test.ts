@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,6 +20,8 @@ const tempDirs: string[] = [];
 interface Fixture {
   imageId: string;
   manifest: unknown;
+  /** Ship a 0555 directory with a file in it, as the real image does (etc/pki/.../directory-hash). */
+  readOnlyDir?: boolean;
 }
 
 function runScan(fixture: Fixture) {
@@ -35,6 +37,12 @@ function runScan(fixture: Fixture) {
   mkdirSync(join(rootfs, 'etc'), { recursive: true });
   writeFileSync(join(rootfs, 'etc', 'os-release'), 'NAME=fixture\n');
   writeFileSync(join(rootfs, 'etc', 'hostname'), 'fixture\n');
+  if (fixture.readOnlyDir) {
+    const hashDir = join(rootfs, 'etc', 'pki', 'directory-hash');
+    mkdirSync(hashDir, { recursive: true });
+    writeFileSync(join(hashDir, 'ca-bundle.crt'), 'fixture cert\n');
+    chmodSync(hashDir, 0o555);
+  }
   writeFileSync(manifest, JSON.stringify(fixture.manifest));
   writeFileSync(podmanCallLog, '');
   writeFileSync(auditor, ['import sys', 'print("  coverage: 2 file(s) scanned")', 'sys.exit(0)', ''].join('\n'));
@@ -92,6 +100,7 @@ function runScan(fixture: Fixture) {
     output: (result.stdout ?? '') + (result.stderr ?? ''),
     podmanCalls: readFileSync(podmanCallLog, 'utf8').split('\n').filter(Boolean),
     record: existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, 'utf8')) : null,
+    treeLeftBehind: existsSync(join(out, 'secret-scan-rootfs')),
   };
 }
 
@@ -103,7 +112,29 @@ const singlePlatformManifest = (configDigest: string) => ({
 });
 
 afterEach(() => {
-  while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop()!;
+    // A read-only fixture dir (or a tree the script failed to remove) would make rmSync throw.
+    spawnSync('chmod', ['-R', 'u+w', dir]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe('image-secret-scan removes the exported tree even when the image ships read-only directories', () => {
+  it('leaves no extracted rootfs behind after a clean scan of an image with a 0555 directory', () => {
+    // Measured 2026-10-02 on the P-012 AWS bake: etc/pki/ca-trust/extracted/pem/directory-hash
+    // is 0555 in the image, tar restored that mode, and 365 entries survived `rm -rf`. The
+    // next run's extraction into that stale tree is the failure this guards against.
+    const result = runScan({
+      imageId: CONFIG_HEX,
+      manifest: singlePlatformManifest(`sha256:${CONFIG_HEX}`),
+      readOnlyDir: true,
+    });
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain('SECRET_SCAN_RESULT=CLEAN');
+    expect(result.output).not.toMatch(/cannot remove/);
+    expect(result.treeLeftBehind).toBe(false);
+  });
 });
 
 describe('image-secret-scan binds the scanned container to the requested image by content', () => {

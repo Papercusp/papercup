@@ -17,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { runSessionSearchIndexBuildOnce } from '../../session-search-index-build';
 import { retrieveSessionTurnFuzzy, retrieveSessionTurnLiteralTiers } from './session-turn-literal';
 
@@ -46,6 +46,7 @@ beforeAll(async () => {
   await applyMigrationForTest(sql, M501);
   await applyMigrationForTest(sql, M794);
   await applyMigrationForTest(sql, M1273);
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
   // The corpus is large enough, and the target literal RARE enough, for the planner to prefer the GIN
   // (a literal present in every row is correctly served by the newest-first btree instead — that is a
   // selectivity fact, not an index defect; and on a ~3k-row table the workspace pkey bitmap + post-filter
@@ -83,6 +84,15 @@ afterAll(async () => {
 const literalBranches = (): Captured[] =>
   captured.filter((c) => /FROM\s+harness_shared\.session_turns/i.test(c.query) && /LIKE/i.test(c.query));
 
+/**
+ * Plan lines that seq-scan anything but the disclosure ledger. The D-006 reader rule
+ * (WI-10005570) correlates an EXISTS over the small `personal_disclosures` ledger,
+ * whose indexes are partial (released_at IS NULL), so that subquery may seq-scan
+ * even with enable_seqscan=off. The guard's subject is the session_turns access.
+ */
+const nonLedgerSeqScans = (plan: string): string[] =>
+  plan.split('\n').filter((l) => /Seq Scan/.test(l) && !/personal_disclosures/.test(l));
+
 async function planOf(c: Captured): Promise<string> {
   return sql.begin(async (tx) => {
     // Forbid the seq scan fallback so the plan reveals whether the predicate is INDEX-SERVABLE at all.
@@ -102,7 +112,7 @@ describe('production literal branches are served by the trigram GIN (not a hand-
     expect(branches[0]!.query).toMatch(/lower\(text\) LIKE/);
     const plan = await planOf(branches[0]!);
     expect(plan, `EXACT plan:\n${plan}`).toContain(TRGM);
-    expect(plan).not.toMatch(/Seq Scan/);
+    expect(nonLedgerSeqScans(plan), `EXACT plan:\n${plan}`).toEqual([]);
   }, 90_000);
 
   it('every FUZZY variant statement (typo query) is a lower(text) LIKE and uses the trigram index', async () => {
@@ -117,7 +127,7 @@ describe('production literal branches are served by the trigram GIN (not a hand-
       expect(b.query).toMatch(/lower\(text\) LIKE/);
       const plan = await planOf(b);
       expect(plan).toContain(TRGM);
-      expect(plan).not.toMatch(/Seq Scan/);
+      expect(nonLedgerSeqScans(plan), `FUZZY plan:\n${plan}`).toEqual([]);
     }
   }, 90_000);
 

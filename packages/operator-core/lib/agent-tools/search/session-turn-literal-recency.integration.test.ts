@@ -19,7 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { readSessionSearchReadiness, runSessionSearchIndexBuildOnce } from '../../session-search-index-build';
 import {
   SESSION_TURN_LITERAL_POLICY,
@@ -102,6 +102,7 @@ beforeAll(async () => {
   await applyMigrationForTest(sql, path.join(SQL_DIR, '501-session-turns.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '794-session-turns-provenance-at-ingest.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql'));
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
 }, 120_000);
 
 afterAll(async () => {

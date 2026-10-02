@@ -19,7 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   SESSION_TURN_WINDOW_MAX_LITERAL,
   SESSION_TURN_WINDOW_OVERLAP,
@@ -95,6 +95,7 @@ beforeAll(async () => {
   await applyMigrationForTest(sql, path.join(SQL_DIR, '794-session-turns-provenance-at-ingest.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '1334-session-turn-windows.sql'));
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
 }, 120_000);
 
 afterAll(async () => {
