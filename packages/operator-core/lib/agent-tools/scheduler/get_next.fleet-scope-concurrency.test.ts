@@ -71,7 +71,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   fleetScopedMiss: fleetScopedMissM,
   diagnoseFleetScopeIssueFloorMiss: issueFloorMissM,
   diagnoseFleetScopeCooldownMiss: cooldownMissM,
-  diagnoseFleetScopeFeatureFamilyMatch: featureFamilyMatchM,
+  diagnoseFleetScopeFeatureFamilyExclusions: featureFamilyMatchM,
   diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
   diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
   // EI-12832: a fleet-scoped pull reads the durable pause state before pulling. Unlike the

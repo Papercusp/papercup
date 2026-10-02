@@ -27,7 +27,7 @@ const issueFloorMissM = vi.hoisted(() => vi.fn());
 const terminalExhaustionM = vi.hoisted(() => vi.fn());
 const planTerminalityM = vi.hoisted(() => vi.fn());
 const leaderLivenessM = vi.hoisted(() => vi.fn());
-const featureFamilyMatchM = vi.hoisted(() => vi.fn());
+const featureFamilyBreakdownM = vi.hoisted(() => vi.fn());
 const fleetScopedMissM = vi.hoisted(() => vi.fn());
 const cooldownMissM = vi.hoisted(() => vi.fn());
 
@@ -69,7 +69,7 @@ vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
   diagnoseFleetScopeLeaderLiveness: leaderLivenessM,
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 — none of this
   // file's fixtures do (survivors/drained are both 22), so this is a defensive stub only.
-  diagnoseFleetScopeFeatureFamilyMatch: featureFamilyMatchM,
+  diagnoseFleetScopeFeatureFamilyExclusions: featureFamilyBreakdownM,
   fleetScopedMiss: fleetScopedMissM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
@@ -107,7 +107,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     terminalExhaustionM.mockResolvedValue(null);
     planTerminalityM.mockResolvedValue(null);
     leaderLivenessM.mockResolvedValue(null);
-    featureFamilyMatchM.mockResolvedValue(null);
+    featureFamilyBreakdownM.mockResolvedValue(null);
     fleetScopedMissM.mockReturnValue({ ok: false, error: 'miss', windDown: false });
   });
 
@@ -225,7 +225,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ workItem: { id: 'WI-feature', harness: 'papercusp' }, claimedUnder: 'drain', specSource: 'fleet' });
     issueFloorMissM.mockResolvedValue(zeroMatches);
-    featureFamilyMatchM.mockResolvedValue(3);
+    featureFamilyBreakdownM.mockResolvedValue({ matchedByFilter: 3, claimable: 3, excluded: { claimFloors: 0, reservedPlanLane: 0 } });
 
     const res = await call();
 
@@ -243,6 +243,19 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
 
     expect(getNextForBeeM).toHaveBeenCalledTimes(1);
     expect(missOpts()?.divergenceRecheck).toBeUndefined();
+  });
+
+  it('EI-24905216534076710: forwards pre-floor held feature matches without another claim attempt', async () => {
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValue({ matchedByFilter: 0, claimable: 0, excluded: {} });
+    const featureBreakdown = { matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0 } };
+    featureFamilyBreakdownM.mockResolvedValue(featureBreakdown);
+
+    await call();
+
+    expect(getNextForBeeM).toHaveBeenCalledTimes(1);
+    expect(fleetScopedMissM.mock.calls[0]?.[2]).toMatchObject({ featureBreakdown });
+    expect(featureFamilyBreakdownM).toHaveBeenCalledTimes(1);
   });
 
   it('a retry that THROWS leaves the original reading in place and still refuses to claim confirmation', async () => {

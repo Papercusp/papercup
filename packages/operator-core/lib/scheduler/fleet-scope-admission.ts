@@ -2354,7 +2354,7 @@ export function fleetScopedMiss(
             'correctly admits ONLY feature-family rows for long stretches (D-009: a plan-promoted item is feature-family unless its ' +
             'own kind is bug/change/task), so the issue-family breakdown\'s `matchedByFilter: 0` is EXPECTED BY CONSTRUCTION here, ' +
             'not a sign the spec itself is broken. ' +
-            (opts?.featureFamilyMatched === 0
+            (featureClaimable === 0
               ? 'The feature-family (tier-1) pool was ALSO checked and is genuinely empty right now — this is an ordinary drain.'
               : 'The feature-family (tier-1) pool could not be confirmed on this pull — treat this as a likely drain, but verify ' +
                 'via plans:items / work_items:claimable before reporting a spec-authoring problem to your fleet leader.') +
@@ -2448,7 +2448,7 @@ export function fleetScopedMiss(
     // spec was never broken, only structurally incapable of matching the family it was judged
     // against). `featureFamilyMatched` is surfaced as-observed (0 = confirmed empty, null/undefined
     // = the tier-1 check did not run) so a caller can tell "confirmed drain" from "unconfirmed".
-    ...(nonIssueSpecEmpty ? { reason: 'ordinary_drain' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? null } : {}),
+    ...(nonIssueSpecEmpty ? { reason: 'ordinary_drain' as const, featureFamilyMatched: featureClaimable } : {}),
     // EI-18741523426513509: named, top-level reason for the floor-gated (transient) case — the
     // effect-vs-cause counterpart of `spec_matches_nothing` above. A caller (or a leader reading
     // a relayed report) can branch on this WITHOUT digging into excludedBreakdown to tell "your
