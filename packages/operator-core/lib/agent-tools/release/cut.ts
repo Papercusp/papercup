@@ -44,7 +44,7 @@
  */
 
 import { z } from 'zod';
-import { execFileSync } from 'node:child_process';
+import { execFile, type ExecFileOptions } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
@@ -156,12 +156,12 @@ export type CutRootResolution =
 
 export interface CutRootResolutionDeps {
   loadRegistry?: (workspaceId: string) => Promise<HarnessRegistry>;
-  listWorktrees?: (repoPath: string) => CutWorktree[];
-  status?: (worktreePath: string) => string;
+  listWorktrees?: (repoPath: string) => CutWorktree[] | Promise<CutWorktree[]>;
+  status?: (worktreePath: string) => string | Promise<string>;
   canonicalPath?: (candidate: string) => string;
-  desktopStatus?: (desktopRoot: string) => string;
-  desktopHeadMatches?: (worktreeRoot: string) => boolean;
-  headFile?: (desktopRoot: string, relativePath: string) => string;
+  desktopStatus?: (desktopRoot: string) => string | Promise<string>;
+  desktopHeadMatches?: (worktreeRoot: string) => boolean | Promise<boolean>;
+  headFile?: (desktopRoot: string, relativePath: string) => string | Promise<string>;
   readFile?: (absolutePath: string) => string;
   exists?: (absolutePath: string) => boolean;
   readDir?: (absolutePath: string) => string[];
@@ -436,28 +436,52 @@ function parseWorktreeList(stdout: string): CutWorktree[] {
     .filter((worktree) => worktree.path.length > 0);
 }
 
-function defaultListWorktrees(repoPath: string): CutWorktree[] {
-  const stdout = execFileSync('git', ['-C', repoPath, 'worktree', 'list', '--porcelain'], {
-    encoding: 'utf8',
+/**
+ * WI-10005193: run a child to completion WITHOUT blocking the event loop.
+ *
+ * release:cut is an MCP tool, so every child it runs executes on the OPERATOR MAIN THREAD.
+ * The previous execFileSync calls held that thread for the child's whole lifetime. Measured on
+ * :3170 at 2026-10-02T02:28:01Z: an event-loop-sentinel stall profile attributed 54% of samples to
+ * execFileSync < defaultListWorktrees / defaultWorktreeStatus < resolveCutRoot. resolveCutRoot runs
+ * `git worktree list` once PER REGISTERED PROJECT (~50 checkouts). prepare-tag held the thread for
+ * up to its 120s timeout, which is past the sentinel's 20s wedge threshold: a SIGKILL of the host.
+ *
+ * Callback-style execFile (not promisify) keeps a single mockable seam. stdin is closed at spawn, as
+ * execFileSync did, so a child that reads stdin sees EOF instead of waiting forever.
+ */
+export function runFileAsync(file: string, args: readonly string[], options: ExecFileOptions = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      file,
+      [...args],
+      { maxBuffer: 1024 * 1024, ...options, encoding: 'utf8' as const },
+      (err, stdout) => {
+        if (err) reject(err);
+        else resolve(String(stdout));
+      },
+    );
+    child?.stdin?.end();
+  });
+}
+
+async function defaultListWorktrees(repoPath: string): Promise<CutWorktree[]> {
+  const stdout = await runFileAsync('git', ['-C', repoPath, 'worktree', 'list', '--porcelain'], {
     maxBuffer: 4 * 1024 * 1024,
     timeout: 10_000,
   });
-  return parseWorktreeList(String(stdout));
+  return parseWorktreeList(stdout);
 }
 
-export function defaultWorktreeStatus(worktreePath: string): string {
-  return String(
-    execFileSync('git', ['-C', worktreePath, 'status', '--porcelain'], {
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 10_000,
-      // This is a proof read, not an opportunity to refresh the index. On a
-      // newly materialized 38-submodule release tree Git's optional index write
-      // exceeded the otherwise adequate 10s guard; the identical read-only
-      // status completed in 0.41s and preserved the full cleanliness result.
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-    }),
-  );
+export async function defaultWorktreeStatus(worktreePath: string): Promise<string> {
+  return runFileAsync('git', ['-C', worktreePath, 'status', '--porcelain'], {
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: 10_000,
+    // This is a proof read, not an opportunity to refresh the index. On a
+    // newly materialized 38-submodule release tree Git's optional index write
+    // exceeded the otherwise adequate 10s guard; the identical read-only
+    // status completed in 0.41s and preserved the full cleanliness result.
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+  });
 }
 
 function defaultCanonicalPath(candidate: string): string {
@@ -634,7 +658,7 @@ export async function resolveCutRoot(
   const projects = registry.projects.filter((project) => project.path.trim().length > 0);
   for (const project of projects) {
     try {
-      for (const worktree of listWorktrees(project.path)) {
+      for (const worktree of await listWorktrees(project.path)) {
         if (worktree.prunable) continue;
         candidates.set(canonical(worktree.path), worktree);
       }
@@ -665,7 +689,7 @@ export async function resolveCutRoot(
 
   let dirty: string;
   try {
-    dirty = status(selected.path);
+    dirty = await status(selected.path);
   } catch (err) {
     return {
       ok: false,
@@ -680,12 +704,12 @@ export async function resolveCutRoot(
       };
     }
     const desktopRoot = path.join(selected.path, 'papercusp-desktop');
-    const desktopStatus = (deps.desktopStatus ?? ((root: string) => execFileSync(
-      'git', ['-C', root, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' },
+    const desktopStatus = await (deps.desktopStatus ?? ((root: string) => runFileAsync(
+      'git', ['-C', root, 'status', '--porcelain', '--untracked-files=all'],
     )))(desktopRoot);
     const files: Record<string, { head?: string; worktree: string; expectedSource?: string }> = {};
-    const headFile = deps.headFile ?? ((root: string, relativePath: string) => execFileSync(
-      'git', ['-C', root, 'show', `HEAD:${relativePath}`], { encoding: 'utf8' },
+    const headFile = deps.headFile ?? ((root: string, relativePath: string) => runFileAsync(
+      'git', ['-C', root, 'show', `HEAD:${relativePath}`],
     ));
     const readFile = deps.readFile ?? ((absolutePath: string) => readFileSync(absolutePath, 'utf8'));
     for (const line of desktopStatus.split('\n').filter(Boolean)) {
@@ -695,8 +719,8 @@ export async function resolveCutRoot(
       if (isVersionPath || sidecarSourcePath !== null) {
         try {
           files[relativePath] = {
-            ...(isVersionPath ? { head: headFile(desktopRoot, relativePath) } : {}),
-            ...(sidecarSourcePath ? { expectedSource: headFile(desktopRoot, sidecarSourcePath) } : {}),
+            ...(isVersionPath ? { head: await headFile(desktopRoot, relativePath) } : {}),
+            ...(sidecarSourcePath ? { expectedSource: await headFile(desktopRoot, sidecarSourcePath) } : {}),
             worktree: readFile(path.join(desktopRoot, relativePath)),
           };
         } catch {
@@ -709,25 +733,22 @@ export async function resolveCutRoot(
       desktopStatus,
       desktopHeadMatches:
         dirty.trimEnd() === ' M papercusp-desktop'
-          ? (
+          ? await (
               deps.desktopHeadMatches ??
-              ((root: string) => {
-                try {
-                  execFileSync('git', [
-                    '-C',
-                    root,
-                    'diff',
-                    '--quiet',
-                    '--ignore-submodules=dirty',
-                    'HEAD',
-                    '--',
-                    'papercusp-desktop',
-                  ]);
-                  return true;
-                } catch {
-                  return false;
-                }
-              })
+              ((root: string) =>
+                runFileAsync('git', [
+                  '-C',
+                  root,
+                  'diff',
+                  '--quiet',
+                  '--ignore-submodules=dirty',
+                  'HEAD',
+                  '--',
+                  'papercusp-desktop',
+                ]).then(
+                  () => true,
+                  () => false,
+                ))
             )(selected.path)
           : undefined,
       version: options.reuseSeedVersion,
@@ -1166,10 +1187,9 @@ export default defineTool({
             metadata: { version: args.version, channel },
           },
           async () =>
-            String(
-              execFileSync(path.join(selected.desktopRoot, 'bin', 'release-local.sh'), [args.version, channel], {
+            (
+              await runFileAsync(path.join(selected.desktopRoot, 'bin', 'release-local.sh'), [args.version, channel], {
                 cwd: selected.desktopRoot,
-                encoding: 'utf8',
                 timeout: 120_000,
                 maxBuffer: 4 * 1024 * 1024,
                 env: {
@@ -1177,7 +1197,7 @@ export default defineTool({
                   PAPERCUSP_RELEASE_PREPARE_TAG_SHA: args.sourceSha,
                   PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
                 },
-              }),
+              })
             ).trim(),
         );
       } catch (err) {

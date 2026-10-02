@@ -2125,4 +2125,72 @@ describe('every role that creates a host holds what GCP checks on the instance i
       'compute.instances.setTags',
     ]);
   });
+
+  it('spot (WI-10005210): a spot insert needs setScheduling, and every create role holds it', async () => {
+    const spec = gcpFirstWorkspaceDesiredSpec({
+      hostId: 'host-gcp-1',
+      record: {
+        credentialRef: 'delegation://workspace-gcp-1/conn-1',
+        configuration: {
+          provider: 'gcp',
+          source: {
+            method: 'papercusp-hosted',
+            projectId: 'papercusp-dev-123',
+            serviceAccountEmail: 'pco-aaaa@papercusp-org-identity.iam.gserviceaccount.com',
+            hostId: 'host-gcp-1',
+          },
+        },
+      } as never,
+    });
+    spec.provider = { ...spec.provider, provisioningModel: 'spot' };
+    const request = await instanceInsert(spec);
+    expect(gcpInstanceInsertPermissions(request)).toContain('compute.instances.setScheduling');
+    const hosted = [...PAPERCUSP_HOSTED_HOST_PERMISSIONS, ...PAPERCUSP_HOSTED_OBSERVER_PERMISSIONS];
+    expect(missing(request, hosted)).toEqual([]);
+    expect(missing(request, GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS)).toEqual([]);
+    expect(missing(request, hosted.filter((p) => p !== 'compute.instances.setScheduling'))).toEqual([
+      'compute.instances.setScheduling',
+    ]);
+  });
+});
+
+describe('spot provisioning option (WI-10005210)', () => {
+  async function plan(spec: WorkspaceHostDesiredSpec) {
+    const { provider } = providerAndClient();
+    return provider.plan({ action: 'provision', operationId: 'spot', idempotencyKey: 'spot', desired: spec }, context());
+  }
+  async function insertFor(spec: WorkspaceHostDesiredSpec): Promise<GcpInstanceInsertInput> {
+    const steps = (await plan(spec)).steps;
+    return (steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput })
+      .request;
+  }
+
+  it('defaults to on-demand: no scheduling block and no setScheduling permission', async () => {
+    const request = await insertFor(desired());
+    expect(request).not.toHaveProperty('scheduling');
+    expect(gcpInstanceInsertPermissions(request)).not.toContain('compute.instances.setScheduling');
+    const standard = desired();
+    standard.provider = { ...standard.provider, provisioningModel: 'standard' };
+    expect(await insertFor(standard)).not.toHaveProperty('scheduling');
+  });
+
+  it("provisioningModel 'spot' creates a spot VM that STOPS on reclaim, so its disks and state survive", async () => {
+    const spec = desired();
+    spec.provider = { ...spec.provider, provisioningModel: 'spot' };
+    const request = await insertFor(spec);
+    expect(request.scheduling).toEqual({
+      provisioningModel: 'SPOT',
+      instanceTerminationAction: 'STOP',
+      automaticRestart: false,
+      onHostMaintenance: 'TERMINATE',
+    });
+    // The data disk stays a separate, retained disk.
+    expect(request.disks[1]).toMatchObject({ boot: false, autoDelete: false });
+  });
+
+  it('refuses an unknown provisioningModel instead of silently creating an on-demand host', async () => {
+    const spec = desired();
+    spec.provider = { ...spec.provider, provisioningModel: 'preemptible' };
+    await expect(plan(spec)).rejects.toThrow(/provisioningModel must be one of standard, spot/);
+  });
 });

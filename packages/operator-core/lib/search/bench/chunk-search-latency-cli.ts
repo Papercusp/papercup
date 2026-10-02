@@ -45,6 +45,7 @@ import { resolveProseProfileSelection } from '../prose-vector-dims';
 import {
   CHUNK_SEARCH_LATENCY_QUERIES as QUERIES,
   D024_QUERY_SET_HASH,
+  d024LoadMatch,
   querySetHash,
   r33Verdicts,
   summariseSite,
@@ -209,17 +210,21 @@ async function main(): Promise<void> {
       return [p, { build: builds[p], summary, r33: r33Verdicts(summary) }];
     }),
   );
+  const loadEnd = os.loadavg();
+  const loadMatch = d024LoadMatch(load0, loadEnd);
   const result = {
     bench: 'chunk-search-latency',
     plan: 'generic-rag-chunking-2026-09-29',
     bar: 'R-33',
     baselineDecision: 'D-024',
+    loadRuleDecision: 'D-038',
     ports,
     rounds,
     startedAt,
     finishedAt: new Date().toISOString(),
     loadavgStart: load0,
-    loadavgEnd: os.loadavg(),
+    loadavgEnd: loadEnd,
+    loadMatch,
     cores: os.cpus().length,
     querySetHash: hash,
     queries: QUERIES,
@@ -232,6 +237,8 @@ async function main(): Promise<void> {
     'R33_SUMMARY ' +
       JSON.stringify({
         querySetHash: hash.slice(0, 12),
+        loadMatched: loadMatch.matched,
+        outOfBand: loadMatch.outOfBand,
         perPort: Object.fromEntries(Object.entries(perPort).map(([p, v]) => [p, { sha: v.build?.sha, r33: v.r33 }])),
         out,
       }),

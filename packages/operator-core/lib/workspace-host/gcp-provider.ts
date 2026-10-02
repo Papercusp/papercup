@@ -250,7 +250,32 @@ export interface GcpInstanceInsertInput {
   /** Absent = the instance holds no cloud identity at all (Papercusp-hosted hosts, D-399). */
   serviceAccounts?: readonly [{ email: string; scopes: readonly string[] }];
   metadata: { items: readonly { key: string; value: string }[] };
+  /** Absent = GCP's default, an on-demand (STANDARD) instance. */
+  scheduling?: GcpInstanceSpotScheduling;
 }
+
+/**
+ * A spot instance's scheduling block. GCP may reclaim a spot VM at any time; STOP (not DELETE)
+ * keeps the boot and data disks, so the host restarts with its state and agents resume
+ * (measured: plan agent-capacity-and-cost-gcp-2026-09-30 D-026). Spot VMs cannot live-migrate or
+ * restart automatically, so those two fields are pinned to the only values GCP accepts for spot.
+ */
+export interface GcpInstanceSpotScheduling {
+  provisioningModel: 'SPOT';
+  instanceTerminationAction: 'STOP' | 'DELETE';
+  automaticRestart: false;
+  onHostMaintenance: 'TERMINATE';
+}
+
+export const GCP_SPOT_SCHEDULING: GcpInstanceSpotScheduling = Object.freeze({
+  provisioningModel: 'SPOT',
+  instanceTerminationAction: 'STOP',
+  automaticRestart: false,
+  onHostMaintenance: 'TERMINATE',
+});
+
+export const GCP_WORKSPACE_HOST_PROVISIONING_MODELS = ['standard', 'spot'] as const;
+export type GcpWorkspaceHostProvisioningModel = (typeof GCP_WORKSPACE_HOST_PROVISIONING_MODELS)[number];
 
 /**
  * The permissions GCP checks on `instances.insert` for THIS request: one per field it sets
@@ -264,6 +289,7 @@ export function gcpInstanceInsertPermissions(request: GcpInstanceInsertInput): s
   if (Object.keys(request.labels).length > 0) permissions.add('compute.instances.setLabels');
   if (request.tags.items.length > 0) permissions.add('compute.instances.setTags');
   if (request.metadata.items.length > 0) permissions.add('compute.instances.setMetadata');
+  if (request.scheduling) permissions.add('compute.instances.setScheduling');
   if (request.serviceAccounts?.length) {
     permissions.add('compute.instances.setServiceAccount');
     permissions.add('iam.serviceAccounts.actAs');
@@ -529,6 +555,8 @@ export interface GcpWorkspaceHostDesiredProviderSettings {
   dataDiskResizePolicy: typeof GCP_DATA_DISK_RESIZE_POLICY;
   kmsKeyName?: string;
   metadata: Readonly<Record<string, string>>;
+  /** 'spot' = reclaimable, about half the price (D-020/D-024); the default stays on-demand. */
+  provisioningModel: GcpWorkspaceHostProvisioningModel;
 }
 
 type GcpStepInput =
@@ -1293,7 +1321,18 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     dataDiskResizePolicy: GCP_DATA_DISK_RESIZE_POLICY,
     kmsKeyName: optionalString(provider.kmsKeyName, 'gcp.desired.provider.kmsKeyName'),
     metadata: stringRecord(provider.metadata, 'gcp.desired.provider.metadata'),
+    provisioningModel: provisioningModel(provider.provisioningModel),
   };
+}
+
+function provisioningModel(value: unknown): GcpWorkspaceHostProvisioningModel {
+  if (value === undefined) return 'standard';
+  if ((GCP_WORKSPACE_HOST_PROVISIONING_MODELS as readonly unknown[]).includes(value)) {
+    return value as GcpWorkspaceHostProvisioningModel;
+  }
+  throw new Error(
+    `gcp.desired.provider.provisioningModel must be one of ${GCP_WORKSPACE_HOST_PROVISIONING_MODELS.join(', ')}`,
+  );
 }
 
 /**
@@ -2224,6 +2263,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             ? { serviceAccounts: [{ email: settings.serviceAccountEmail, scopes: settings.serviceAccountScopes }] as const }
             : {}),
           metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript) },
+          ...(settings.provisioningModel === 'spot' ? { scheduling: GCP_SPOT_SCHEDULING } : {}),
         },
       } satisfies GcpStepInput,
     });

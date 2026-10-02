@@ -4316,16 +4316,96 @@ describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
       expect(ev?.lastMatches[0]).toMatchObject({ status: 'Starting', text: footer('Starting') });
     });
 
-    it('a partial repaint: the verdict reads a stale Starting while Ready was painted after it', () => {
-      // Codex rewrote only the status word with cursor positioning; stripAnsi joins it
-      // onto the old footer, so the last COMPLETE footer is still the Starting one.
-      const out = `${footer('Starting')}\u001b[40;2HReady`;
-      // The host's own readiness check agrees: not ready.
-      expect(realHost.startupOutputReady('codex', out)).toBe(false);
-      const ev = realHost.codexStartingFooterEvidence(out);
-      expect(ev).toMatchObject({ state: 'starting', readyAfterLastFooter: true });
-      expect(ev?.rawTail).toContain('⎋[40;2HReady');
+    // Resolved 2026-10-02 (H2). The rawTail of the 02:03:41Z codex-starting-stuck-snapshot
+    // (su-46569c12 recycle child): Codex (ratatui) repainted only the cells that changed,
+    // each run positioned with CUP, so the unchanged `a` of Ready and of max, and the `t`
+    // of Context, were never rewritten.
+    const before = 'Starting · GPT-6-Luna max · Context 100% left';
+    const after = 'Ready · GPT-6-Luna max · Context 100% left · stag';
+    const measuredDiff =
+      '\u001b[?2026h\u001b[?25l\u001b[14;3H\u001b[38;5;183;49mRe\u001b[14;6Hdy\u001b[39;49m · ' +
+      '\u001b[38;5;223;49mGPT-6-Luna m\u001b[14;24Hx\u001b[39;49m · \u001b[38;5;216;49mContex' +
+      '\u001b[14;35H 100% left\u001b[39;49m · \u001b[38;5;111;49mstag\u001b[39m\u001b[49m\u001b[0m' +
+      '\u001b[12;3H\u001b[?25h\u001b[?2026l';
+    const measuredRepaint = `\u001b[14;3H${before}\u001b[12;3H${measuredDiff}`;
+    // The same shape, generated: write only the cells that differ, one CUP per run.
+    const diffRepaint = (from: string, to: string, row: number, col: number) => {
+      let out = '';
+      let run = '';
+      let runStart = -1;
+      const width = Math.max(from.length, to.length);
+      for (let k = 0; k <= width; k += 1) {
+        if (k < width && (from[k] ?? ' ') !== (to[k] ?? ' ')) {
+          if (runStart < 0) runStart = k;
+          run += to[k] ?? ' ';
+        } else if (runStart >= 0) {
+          out += `\u001b[${row};${col + runStart}H${run}`;
+          run = '';
+          runStart = -1;
+        }
+      }
+      return out;
+    };
+
+    it('a partial repaint: the screen reads Ready while the flattened stream still reads Starting', () => {
+      // The host's readiness check now reads the rendered screen.
+      expect(realHost.startupOutputReady('codex', measuredRepaint)).toBe(true);
+      expect(realHost.codexFooterStateFromOutput(measuredRepaint)).toBe('ready');
+      const ev = realHost.codexStartingFooterEvidence(measuredRepaint);
+      // CONTROL: the flattened stream still reads the stale footer, so these bytes do
+      // reproduce the defect. readyAfterLastFooter is false too ("Redy"), which is why
+      // the original decision rule could not see H2 from the stream alone.
+      expect(ev).toMatchObject({ state: 'ready', streamState: 'starting', readyAfterLastFooter: false });
+      expect(ev?.screenFooter).toBe(after);
+      expect(ev?.rawTail).toContain('⎋[14;6Hdy');
       expect(ev?.rawTail).not.toContain('\u001b');
+    });
+
+    it('a generated cell diff matches the measured run structure, and works both ways', () => {
+      const generated = diffRepaint(before, after, 14, 3);
+      expect(generated.startsWith('\u001b[14;3HRe\u001b[14;6Hdy · GPT-6-Luna m\u001b[14;24Hx')).toBe(true);
+      expect(realHost.codexFooterStateFromOutput(`\u001b[14;3H${before}${generated}`)).toBe('ready');
+      // Ready -> Starting must read starting: the screen is not biased toward Ready.
+      const backToStarting = `\u001b[14;3H${after}${diffRepaint(after, before, 14, 3)}`;
+      expect(realHost.renderTerminalScreen(backToStarting)[13]).toBe(`  ${before}`);
+      expect(realHost.codexFooterStateFromOutput(backToStarting)).toBe('starting');
+      expect(realHost.startupOutputReady('codex', `\u001b[14;3H${before}`)).toBe(false);
+    });
+
+    it('history scrolled in above the viewport leaves the footer row intact; the newest footer wins', () => {
+      const base = `\u001b[24;1H${after}`;
+      const history = `\u001b[1;20r\u001b[20;1H${
+        Array.from({ length: 6 }, (_, k) => `\r\nhistory line ${k}`).join('')}\u001b[r`;
+      const rows = realHost.renderTerminalScreen(base + history);
+      expect(rows[19]).toBe('history line 5');
+      expect(rows[23]).toBe(after);
+      expect(realHost.codexFooterStateFromOutput(base + history)).toBe('ready');
+      // A full-screen LF on the last row scrolls the old footer up; the new one is lowest.
+      const scrolled = realHost.renderTerminalScreen(`\u001b[24;1H${before}\r\n\u001b[24;1H${after}`);
+      expect(scrolled.slice(22)).toEqual([before, after]);
+      expect(realHost.codexFooterStateFromOutput(`\u001b[24;1H${before}\r\n\u001b[24;1H${after}`)).toBe('ready');
+    });
+
+    it('renders erase, insert/delete, wrap, wide cells, strings and the alternate screen', () => {
+      const R = (s: string) => realHost.renderTerminalScreen(s, { rows: 3, cols: 10 });
+      expect(R('abcdefghij\u001b[1;4H\u001b[K')).toEqual(['abc', '', '']);
+      expect(R('abcdef\u001b[1;3H\u001b[2P')).toEqual(['abef', '', '']);
+      expect(R('abcdef\u001b[1;3H\u001b[2@')).toEqual(['ab  cdef', '', '']);
+      expect(R('abcdefghijKL')).toEqual(['abcdefghij', 'KL', '']);
+      expect(R('a中b')).toEqual(['a中b', '', '']);
+      expect(R('one\r\ntwo\r\nthree\r\nfour')).toEqual(['two', 'three', 'four']);
+      expect(R('\u001b]0;title\u0007\u001b(Bok\u001b[0 q\u001b[6n')).toEqual(['ok', '', '']);
+      expect(R('main\u001b[?1049h\u001b[2;1Halt\u001b[?1049l')).toEqual(['main', '', '']);
+      expect(R('abc\r\ndef\u001b[2J')).toEqual(['', '', '']);
+      expect(R('ab\u001b7\u001b[3;5Hx\u001b8c')).toEqual(['abc', '', '    x']);
+    });
+
+    it('falls back to the flattened stream only when the screen holds no complete footer', () => {
+      expect(realHost.codexFooterStateFromOutput(`${before}\r\n${after}`)).toBe('ready');
+      // Wrapped across a too-narrow grid, no screen row holds a complete footer.
+      expect(realHost.codexFooterStateFromOutput(before, { rows: 24, cols: 20 })).toBe('starting');
+      expect(realHost.codexFooterStateFromOutput('no footer yet')).toBeNull();
+      expect(realHost.codexFooterStateFromOutput(undefined)).toBeNull();
     });
 
     it('a full Ready repaint wins: state ready, matches in order', () => {
@@ -4355,6 +4435,14 @@ describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
         rootPid: 100, codexHome: '/h', platform: 'darwin', readFile, readDir, readTail, startupOutput: footer('Starting'),
       });
       expect(withOutput).toMatchObject({ footer: { state: 'starting', footerMatchCount: 1 } });
+      // screenDims reaches the renderer: on a 10-column grid no row can hold a whole
+      // footer, so the verdict falls back to the stream; at the child's real size it is Ready.
+      const snap = (screenDims?: { rows: number, cols: number }) => collectCodexStartingStuckSnapshot({
+        rootPid: 100, codexHome: '/h', platform: 'darwin', readFile, readDir, readTail,
+        startupOutput: measuredRepaint, screenDims,
+      });
+      expect(snap({ rows: 24, cols: 80 })).toMatchObject({ footer: { state: 'ready', streamState: 'starting' } });
+      expect(snap({ rows: 24, cols: 10 })).toMatchObject({ footer: { state: 'starting', screenFooter: null } });
       const without = collectCodexStartingStuckSnapshot({ rootPid: 100, codexHome: '/h', platform: 'darwin', readFile, readDir, readTail });
       expect(without).toMatchObject({ footer: null });
     });

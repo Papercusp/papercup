@@ -161,7 +161,7 @@ export default defineTool({
       .array(z.enum(DATATYPE_NATURES))
       .optional()
       .describe(
-        "Natures to return; default work only unless kind is named. ['record'] reads e.g. deal rows.",
+        "P-010/D-011: natures to return (work|record|document|event). Default: work only, unless kind is named. ['record'] reads record rows such as pipeline deals.",
       ),
   }),
   async handler(args) {

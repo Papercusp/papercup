@@ -445,10 +445,26 @@ export function createWorkspaceHostActionRoute(
       try {
         const releaseTaskId = typeof body.releaseTaskId === 'string' ? body.releaseTaskId : undefined;
         const restoreCanary = action === 'restore' ? body.canary as WorkspaceHostCanaryAdmission | undefined : undefined;
+        // The desktop submits only the new host identity. Resolve the rest from persisted state,
+        // retaining explicit restore overrides while rebinding credentials on the control plane.
+        const restoreDesired = action === 'restore' && isRecord(body.desired)
+          ? {
+              ...target.desired,
+              ...body.desired,
+              credentials: { ...target.desired.credentials, ...(isRecord(body.desired.credentials) ? body.desired.credentials : {}),
+                cloudCredentialRef: stored.connection.cloudCredentialRef },
+              ...(target.desired.provider || body.desired.provider || stored.connection.provider
+                ? { provider: { ...target.desired.provider, ...(isRecord(body.desired.provider) ? body.desired.provider : {}), ...stored.connection.provider } }
+                : {}),
+            } as WorkspaceHostDesiredSpec
+          : undefined;
         if (action === 'restore' && isRecord(body.desired)) {
+          if (typeof restoreDesired!.hostId !== 'string' || !SAFE_ID.test(restoreDesired!.hostId) || restoreDesired!.hostId === hostId) {
+            return requestError('restore must name a distinct valid desired.hostId', 422);
+          }
           validateWorkspaceHostCanaryAdmission({
             workspaceId,
-            desired: body.desired as unknown as WorkspaceHostDesiredSpec,
+            desired: restoreDesired!,
             connection: stored.connection,
             canary: restoreCanary,
             sourceLabels: target.desired.labels,
@@ -497,7 +513,7 @@ export function createWorkspaceHostActionRoute(
                 ? { rollbackImage: body.rollbackImage as unknown as WorkspaceHostImageRef }
                 : {}),
               ...(isRecord(body.snapshot) ? { snapshot: body.snapshot as unknown as WorkspaceHostSnapshotRef } : {}),
-              ...(isRecord(body.desired) ? { desired: body.desired as unknown as WorkspaceHostDesiredSpec } : {}),
+              ...(restoreDesired ? { desired: restoreDesired } : isRecord(body.desired) ? { desired: body.desired as unknown as WorkspaceHostDesiredSpec } : {}),
               ...(restoreCanary ? { canary: restoreCanary } : {}),
             });
         if (isWorkspaceHostOperationAcceptance(result)) {

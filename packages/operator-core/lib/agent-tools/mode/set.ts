@@ -218,8 +218,8 @@ export default defineTool({
     // argument actually accepts (goal-mode-hardening-2026-08-10 P-008).
     `Enter/exit an official session mode (${MODE_IDS.join(' | ')}) for yourself or a peer. ` +
     '{ mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); ' +
-    'cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed ' +
-    'incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the ' +
+    'cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract. An owner-directed ' +
+    'incumbent REFUSES peer overrides. Such an override is downgraded to a request message (stickyConflict:true). Self-set returns the ' +
     'full binding contract — read it. Audited in agent_mode_changes.',
   guidance: {
     when:

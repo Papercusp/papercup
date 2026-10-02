@@ -438,6 +438,12 @@ interface RawInstance extends RawResource {
   id?: string;
   status?: GcpComputeInstanceStatus;
   machineType?: string;
+  scheduling?: {
+    provisioningModel?: string;
+    instanceTerminationAction?: string;
+    automaticRestart?: boolean;
+    onHostMaintenance?: string;
+  };
   tags?: { items?: string[] };
   networkInterfaces?: Array<{
     network?: string;
@@ -619,7 +625,8 @@ function asOperation(
   };
 }
 
-function recreateInput(
+/** Exported for tests: the insert request that re-creates `raw` with its retained data disk. */
+export function recreateInput(
   raw: RawInstance,
   bootDisk: RawDisk | undefined,
   zone: string,
@@ -698,6 +705,17 @@ function recreateInput(
     // An instance created without an identity is re-created without one.
     ...(account?.email ? { serviceAccounts: [{ email: account.email, scopes: account.scopes ?? [] }] as const } : {}),
     metadata: { items: metadata },
+    // A spot host is re-created as spot, so an upgrade never silently moves it to on-demand.
+    ...(raw.scheduling?.provisioningModel === 'SPOT'
+      ? {
+          scheduling: {
+            provisioningModel: 'SPOT',
+            instanceTerminationAction: raw.scheduling.instanceTerminationAction === 'DELETE' ? 'DELETE' : 'STOP',
+            automaticRestart: false,
+            onHostMaintenance: 'TERMINATE',
+          } as const,
+        }
+      : {}),
   };
 }
 

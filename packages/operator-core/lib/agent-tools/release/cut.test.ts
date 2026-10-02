@@ -7,6 +7,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/release/cut.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import type { ExecFileOptions } from 'node:child_process';
 import type { PreflightResult, CutStatus, HandoffResult, ReleaseGate } from '../../release-cut-launch';
 
 const { auditSqlM } = vi.hoisted(() => ({ auditSqlM: vi.fn() }));
@@ -56,14 +58,14 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 }));
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
-  execFileSync: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
 import { beginCutOperation } from '../../release-cut-operation';
 import { markSpawned } from '../../task-manager/store';
 import { loadHarnessRegistry } from '../../harness-registry';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 const beginOpM = vi.mocked(beginCutOperation);
 const markSpawnedM = vi.mocked(markSpawned);
 const launchM = vi.mocked(launchDetachedCut);
@@ -73,10 +75,37 @@ const preflightM = vi.mocked(preflightCut);
 const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
 const registryM = vi.mocked(loadHarnessRegistry);
-const execFileSyncM = vi.mocked(execFileSync);
+const execFileM = vi.mocked(execFile);
+
+/**
+ * WI-10005193: cut.ts runs its children through callback-style execFile (runFileAsync) so the
+ * operator main thread is never blocked. Drive the mock from a synchronous implementation:
+ * its return value is the child's stdout and a throw is the child's failure. The callback fires
+ * on a later macrotask, as a real child's exit does.
+ */
+type ExecFileCallback = (err: Error | null, stdout: string, stderr: string) => void;
+function installExecFile(
+  impl: (command: string, args: readonly string[], options: ExecFileOptions, callback: ExecFileCallback) => unknown,
+) {
+  execFileM.mockImplementation(impl as never);
+}
+function mockExecFile(impl: (command: string, args: readonly string[], options: unknown) => string) {
+  installExecFile((command, args, options, callback) => {
+    let stdout = '';
+    let failure: Error | null = null;
+    try {
+      stdout = impl(command, args, options);
+    } catch (err) {
+      failure = err as Error;
+    }
+    setImmediate(() => callback(failure, failure ? '' : stdout, ''));
+    return { stdin: { end: () => undefined } };
+  });
+}
 const {
   default: tool,
   defaultWorktreeStatus,
+  runFileAsync,
   resolveCutRoot,
   isAutoManagedCutWorktree,
   validateReleaseResumeResidue,
@@ -112,6 +141,11 @@ function mkPreflight(over: Partial<PreflightResult> = {}, inFlight = false): Pre
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // A bare vi.fn() never invokes execFile's callback, which would HANG an unstubbed path
+  // instead of failing it. Fail loud; each test that expects a child stubs its own output.
+  mockExecFile((command, args) => {
+    throw new Error(`unstubbed execFile in cut.test.ts: ${command} ${args.join(' ')}`);
+  });
   auditSqlM.mockResolvedValue([]);
   registryM.mockResolvedValue({ projects: [] });
   preflightM.mockReturnValue(mkPreflight());
@@ -143,21 +177,87 @@ beforeEach(() => {
   markSpawnedM.mockResolvedValue(undefined);
 });
 
+/**
+ * WI-10005193: release:cut is an MCP tool, so its children run on the OPERATOR MAIN THREAD.
+ * Measured 2026-10-02T02:28:01Z on :3170: an event-loop-sentinel stall profile put 54% of samples
+ * in execFileSync < defaultListWorktrees / defaultWorktreeStatus < resolveCutRoot, and prepare-tag
+ * could hold the thread for its whole 120s timeout (the sentinel SIGKILLs the host at 20s).
+ */
+describe('release:cut — children never block the operator event loop (WI-10005193)', () => {
+  async function useRealExecFile() {
+    const real = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    installExecFile((command, args, options, callback) =>
+      real.execFile(command, [...args], { ...options, encoding: 'utf8' }, callback),
+    );
+  }
+
+  it('keeps the event loop turning while a child runs', async () => {
+    await useRealExecFile();
+    let ticks = 0;
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      ticks += 1;
+      setTimeout(tick, 10);
+    };
+    setTimeout(tick, 10);
+    let out: string;
+    try {
+      out = await runFileAsync(process.execPath, [
+        '-e',
+        'const t = Date.now(); while (Date.now() - t < 400) {} process.stdout.write("done")',
+      ]);
+    } finally {
+      stopped = true;
+    }
+    expect(out).toBe('done');
+    // A synchronous spawn holds the loop for the child's whole lifetime, so no timer can fire
+    // before the result is returned: ticks would be 0. The child busy-loops for 400ms.
+    expect(ticks).toBeGreaterThanOrEqual(5);
+  });
+
+  it('closes the child stdin, so a child that reads stdin sees EOF instead of hanging', async () => {
+    await useRealExecFile();
+    const out = await runFileAsync(
+      process.execPath,
+      ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("eof"))'],
+      { timeout: 10_000 },
+    );
+    expect(out).toBe('eof');
+  });
+
+  it('rejects with the child failure, as execFileSync threw', async () => {
+    await useRealExecFile();
+    await expect(
+      runFileAsync(process.execPath, ['-e', 'process.stderr.write("boom"); process.exit(3)']),
+    ).rejects.toThrow(/boom/);
+  });
+
+  it('cut.ts makes no synchronous child-process call', () => {
+    const source = readFileSync(new URL('./cut.ts', import.meta.url), 'utf8');
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    // Positive control: the stripped text is still the module (comment stripping ate nothing real).
+    expect(code).toMatch(/\brunFileAsync\(/);
+    expect(code).not.toMatch(/\b(?:execFileSync|spawnSync|execSync)\s*\(/);
+  });
+});
+
 describe('release:cut — constrained root selector', () => {
   const worktreeRoot = '/registered/isolated-worktree';
   const desktopRoot = `${worktreeRoot}/papercusp-desktop`;
 
-  it('reads worktree status without optional Git index writes', () => {
-    execFileSyncM.mockReturnValue('');
+  it('reads worktree status without optional Git index writes', async () => {
+    mockExecFile(() => '');
 
-    expect(defaultWorktreeStatus(worktreeRoot)).toBe('');
-    expect(execFileSyncM).toHaveBeenCalledWith(
+    await expect(defaultWorktreeStatus(worktreeRoot)).resolves.toBe('');
+    expect(execFileM).toHaveBeenCalledWith(
       'git',
       ['-C', worktreeRoot, 'status', '--porcelain'],
       expect.objectContaining({
         timeout: 10_000,
         env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
       }),
+      expect.any(Function),
     );
   });
 
@@ -448,12 +548,12 @@ describe('release:cut — explicit registered root routing', () => {
 
   function useRegisteredRoot() {
     registryM.mockResolvedValue({ projects: [{ slug: 'isolated', path: worktreeRoot }] });
-    execFileSyncM.mockImplementation(((command: string, args: readonly string[]) => {
+    mockExecFile((command, args) => {
       if (command !== 'git') throw new Error(`unexpected command ${command}`);
       if (args[2] === 'worktree') return `worktree ${worktreeRoot}\nHEAD deadbeef\n\n`;
       if (args[2] === 'status') return '';
       throw new Error(`unexpected git args: ${args.join(' ')}`);
-    }) as never);
+    });
   }
 
   it('routes preflight through the selected desktop root', async () => {
@@ -626,7 +726,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
     });
     expect(b.wouldRun).toContain(`PAPERCUSP_RELEASE_PREPARE_TAG_SHA='${sourceSha}'`);
     expect(b.wouldRun).toContain("PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM='1'");
-    expect(execFileSyncM).not.toHaveBeenCalled();
+    expect(execFileM).not.toHaveBeenCalled();
   });
 
   it('previews an implicit auto-managed root without allowing a confirmed write', async () => {
@@ -641,12 +741,12 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
       expect(preview.blocker).toMatch(/root_not_isolated/);
       expect(preview.wouldRun).toContain('<registered-isolated-worktree>/papercusp-desktop');
       expect(preview.wouldRun).not.toContain('/workspace/papercusp-release/');
-      expect(execFileSyncM).not.toHaveBeenCalled();
+      expect(execFileM).not.toHaveBeenCalled();
 
       const confirmed = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
       expect(confirmed).toMatchObject({ ok: false, refused: true });
       expect(confirmed.reason).toMatch(/root_not_isolated/);
-      expect(execFileSyncM).not.toHaveBeenCalled();
+      expect(execFileM).not.toHaveBeenCalled();
     } finally {
       process.env.PAPERCUSP_DESKTOP_ROOT = priorRoot;
     }
@@ -657,7 +757,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
 
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/bad_source_sha/);
-    expect(execFileSyncM).not.toHaveBeenCalled();
+    expect(execFileM).not.toHaveBeenCalled();
   });
 
   it('role-gates the confirmed remote write', async () => {
@@ -665,11 +765,11 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
 
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/role_forbidden/);
-    expect(execFileSyncM).not.toHaveBeenCalled();
+    expect(execFileM).not.toHaveBeenCalled();
   });
 
   it('runs the release-owned helper with exact source + explicit confirmation', async () => {
-    execFileSyncM.mockReturnValue('created exact tag\n');
+    mockExecFile(() => 'created exact tag\n');
 
     const b = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
 
@@ -683,7 +783,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
       artifactUpload: false,
       output: 'created exact tag',
     });
-    expect(execFileSyncM).toHaveBeenCalledWith(
+    expect(execFileM).toHaveBeenCalledWith(
       expect.stringMatching(/papercusp-desktop\/bin\/release-local\.sh$/),
       ['0.0.18', 'alpha'],
       expect.objectContaining({
@@ -692,11 +792,12 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
           PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
         }),
       }),
+      expect.any(Function),
     );
   });
 
   it('returns a structured refusal when create detects an existing mismatch', async () => {
-    execFileSyncM.mockImplementation(() => {
+    mockExecFile(() => {
       throw new Error('origin refs/tags/desktop-v0.0.18-alpha already exists at deadbeef');
     });
 

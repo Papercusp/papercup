@@ -2521,7 +2521,7 @@
           "POST"
         ]
       },
-      "description": "Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. In scopeToFiles mode, ok/errorCount/exitCode describe the requested files, while otherErrorCount/otherErrors preserve other-file diagnostics separately. Parser/global/partial-scope failures remain incomplete, never green. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.",
+      "description": "Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. In scopeToFiles mode, ok/errorCount/exitCode describe the requested files, while otherErrorCount/otherErrors preserve other-file diagnostics separately. Parser/global/partial-scope failures remain incomplete, never green. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked zero files. Such a run (TS5057/TS5058/TS18003) is refused rather than reported as a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.",
       "capabilities": [
         "operator:write"
       ],
@@ -10811,7 +10811,7 @@
           "POST"
         ]
       },
-      "description": "\"Is my edit live YET — and what actually makes it live?\" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE, so a deploy NEVER carries their code — the edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy. A few paths have 2 consumers on different routes — those return `activations` (plural) instead.",
+      "description": "\"Is my edit live YET — and what actually makes it live?\" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE. A deploy NEVER carries their code. The edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy. A few paths have 2 consumers on different routes — those return `activations` (plural) instead.",
       "capabilities": [
         "intel:read"
       ],
@@ -19151,7 +19151,7 @@
           "POST"
         ]
       },
-      "description": "Enter/exit an official session mode (audit | auto | cold-auto | drain | goal | grade | ideate | test) for yourself or a peer. { mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the full binding contract — read it. Audited in agent_mode_changes.",
+      "description": "Enter/exit an official session mode (audit | auto | cold-auto | drain | goal | grade | ideate | test) for yourself or a peer. { mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract. An owner-directed incumbent REFUSES peer overrides. Such an override is downgraded to a request message (stickyConflict:true). Self-set returns the full binding contract — read it. Audited in agent_mode_changes.",
       "capabilities": [
         "coord:write"
       ],

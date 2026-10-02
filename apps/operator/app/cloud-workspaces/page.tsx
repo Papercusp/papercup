@@ -24,6 +24,7 @@ import { Button } from "@/app/harness/Button";
 import { Modal } from "@/app/harness/Modal";
 import { RadioGroup } from "@/app/harness/RadioGroup";
 import { TextInput } from "@/app/harness/TextInput";
+import { Select } from "@/app/harness/Select";
 import { WorkspaceRail } from "./WorkspaceRail";
 import { ConnectStage, EMPTY_CONNECT_DRAFT, connectionActionFromDraft, type ConnectDraft } from "./ConnectStage";
 import { ConfigureStage } from "./ConfigureStage";
@@ -156,6 +157,9 @@ export default function CloudWorkspacesPage() {
   const [connectDraft, setConnectDraft] =
     useState<ConnectDraft>(EMPTY_CONNECT_DRAFT);
   const [destroyConfirm, setDestroyConfirm] = useState("");
+  const [restoreSource, setRestoreSource] = useState<WorkspaceHostControlRow | null>(null);
+  const [restoreName, setRestoreName] = useState("");
+  const [restoreSnapshotId, setRestoreSnapshotId] = useState("");
   const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -493,7 +497,13 @@ export default function CloudWorkspacesPage() {
       workspace: WorkspaceHostControlRow,
       action: Exclude<LifecycleAction, "destroy">,
     ) => {
-      const gerund: Record<Exclude<LifecycleAction, "destroy">, string> = {
+      if (action === "restore") {
+        setRestoreSource(workspace);
+        setRestoreName(`${workspace.name}-restored`);
+        setRestoreSnapshotId(workspace.resources?.find((resource) => resource.kind === "snapshot" && resource.state === "applied" && resource.providerId)?.providerId ?? "");
+        return;
+      }
+      const gerund: Record<Exclude<LifecycleAction, "destroy" | "restore">, string> = {
         start: "Starting",
         stop: "Stopping",
         repair: "Repairing",
@@ -513,6 +523,21 @@ export default function CloudWorkspacesPage() {
     void setDisposition("snapshot");
     setDestroyConfirm("");
   }, [setDestroyId, setDisposition]);
+
+  const restoreSnapshots = restoreSource?.resources?.filter((resource) =>
+    resource.kind === "snapshot" && resource.state === "applied" && resource.providerId) ?? [];
+  const restoreHostId = workspaceHostIdFromName(restoreName);
+  const canRestore = Boolean(restoreSource && (restoreSource.target === "gcp" || restoreSource.target === "aws") &&
+    restoreName.trim() && restoreHostId !== restoreSource.id && !workspaces.some((host) => host.id === restoreHostId) &&
+    restoreSnapshots.some((snapshot) => snapshot.providerId === restoreSnapshotId));
+  const handleRestore = () => {
+    if (!canRestore || !restoreSource || (restoreSource.target !== "gcp" && restoreSource.target !== "aws")) return;
+    void perform(`restore:${restoreSource.id}`, {
+      action: "restore", workspaceId: restoreSource.id, name: restoreName.trim(),
+      snapshot: { target: restoreSource.target, hostId: restoreSource.id, providerId: restoreSnapshotId },
+      desired: { hostId: restoreHostId },
+    }, `Restoring ${restoreName.trim()}`).then((ok) => { if (ok) setRestoreSource(null); });
+  };
 
   const backupReady =
     disposition !== "backup" ||
@@ -788,6 +813,23 @@ export default function CloudWorkspacesPage() {
             >
               <Trash2 size={14} aria-hidden="true" /> Confirm destroy
             </Button>
+          </div>
+        </div>
+      </Modal>
+      <Modal open={Boolean(restoreSource)} onClose={() => setRestoreSource(null)} title={`Restore ${restoreSource?.name ?? "workspace"}`}>
+        <div className={styles.modalBody}>
+          <p>Create a separate host from a durable snapshot. The source host stays available; its provider configuration is reused.</p>
+          <Field label="Restored workspace name"><TextInput value={restoreName} aria-label="Restored workspace name"
+            onChange={(event) => setRestoreName(event.target.value)} /></Field>
+          <Field label="Recovery snapshot" hint={!restoreSnapshots.length ? "Create a snapshot before restoring." : "Only durable snapshots registered to this host are available."}>
+            {(hintId) => <Select value={restoreSnapshotId} ariaLabel="Recovery snapshot" describedBy={hintId}
+              options={restoreSnapshots.map((snapshot) => ({ value: snapshot.providerId!, label: snapshot.providerId! }))}
+              onChange={setRestoreSnapshotId} />}
+          </Field>
+          <p role="status">{canRestore ? "Ready to restore to a separate host." : "Choose a durable snapshot and a name that creates a new host."}</p>
+          <div className={styles.modalActions}>
+            <Button variant="ghost" onClick={() => setRestoreSource(null)}>Cancel</Button>
+            <Button variant="primary" disabled={!canRestore || busyKeys.has(`restore:${restoreSource?.id ?? ""}`)} onClick={handleRestore}>Restore workspace</Button>
           </div>
         </div>
       </Modal>

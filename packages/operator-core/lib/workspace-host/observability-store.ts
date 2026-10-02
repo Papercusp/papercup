@@ -1401,12 +1401,13 @@ interface LogDbRow {
   metadata: unknown;
 }
 
-function capabilities(state: string): Record<string, boolean> {
+function capabilities(state: string, hasSnapshot = false): Record<string, boolean> {
   return {
     start: state === 'stopped',
     stop: state === 'running' || state === 'degraded',
     repair: state !== 'absent' && state !== 'destroying',
     snapshot: state === 'running' || state === 'stopped' || state === 'degraded',
+    restore: hasSnapshot && ['running', 'stopped', 'degraded', 'absent'].includes(state),
     destroy: state !== 'absent' && state !== 'destroying',
   };
 }
@@ -1554,7 +1555,7 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
           label: row.recoverability_label,
           updatedAt: iso(row.recoverability_updated_at),
         },
-        capabilities: capabilities(row.observed_state),
+        capabilities: capabilities(row.observed_state, hostResources.some((resource) => resource.kind === 'snapshot' && resource.state === 'applied' && Boolean(resource.provider_id))),
         resources: hostResources.map((resource) => ({
           logicalKey: resource.logical_key,
           kind: resource.kind,

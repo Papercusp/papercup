@@ -10722,6 +10722,17 @@ export function reportSessionRespawnedDurably(
  * successor and cleared the predecessor's context estimate. Exported for a
  * deterministic ordering regression test; both operations remain fail-soft.
  */
+/**
+ * EI-23076695727837648: the first turn a host-code-adopting predecessor owed its
+ * successor. The in-process respawn injects it after spawn; an adopting host exits
+ * first, so it travels in the handoff as `firstTurnText`. Returns null when absent,
+ * so a handoff written by an older host keeps the old behaviour (no kickoff).
+ */
+export function handoffFirstTurnText(handoff) {
+  const text = handoff?.firstTurnText;
+  return typeof text === "string" && text.length > 0 ? text : null;
+}
+
 export async function announceAdoptedCarryRespawn(
   ownerId,
   advSessionId,
@@ -11801,10 +11812,15 @@ export function runWrapper(options) {
       process.stderr.write(
         `psu: host handoff carried no ${healedRender.join(", ")} — re-derived from terminalRenderEnv\n`,
       );
-    // The successor's first turn is the carry, delivered through the argv above.
     // A kickoff from THIS process's own command line would be the ORIGINAL
     // launch's first prompt replayed into a session that is many turns past it.
-    kickoff = null;
+    // The argv above carries the carry DOCUMENT only, NOT the successor's first
+    // turn: the predecessor would have injected that turn after spawn, but it
+    // exited to adopt fresh code. So seed the predecessor's first turn instead,
+    // verbatim (it already carries its own turn-origin marker, so it is never
+    // re-tagged as a fleet kickoff). EI-23076695727837648: without this the
+    // successor idled until an unrelated loop fire or wake, up to 48 min.
+    kickoff = handoffFirstTurnText(hostHandoff);
     kickoffFile = null;
     sessionPort = null;
     if (hostHandoff.nativeId) {

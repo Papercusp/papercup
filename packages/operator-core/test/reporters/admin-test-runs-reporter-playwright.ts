@@ -20,9 +20,10 @@
  * if any test failed, pass if all passed).
  */
 
-import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+import type { FullConfig, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-resolve';
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
+import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from '@papercusp/operator-core/lib/testing-worktree';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import type { TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
@@ -38,6 +39,7 @@ interface TestRunRow {
   passed: number;
   failed: number;
   skipped: number;
+  worktreeDirty: boolean;
 }
 
 function captureReporterSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
@@ -54,8 +56,8 @@ function captureReporterSaturationSnapshot(): { loopLagP95Ms: number | null; rss
   return { loopLagP95Ms: null, rssMb };
 }
 
-function toWorkspaceRel(absPath: string): string {
-  const rel = relative(resolveAgentWorkspaceRoot({}), absPath);
+function toWorkspaceRel(absPath: string, root: string): string {
+  const rel = relative(root, absPath);
   return rel.split(/[/\\]/).join(posix.sep);
 }
 
@@ -83,13 +85,11 @@ async function tryGetPg(): Promise<{
   }
 }
 
-async function insertRow(row: TestRunRow): Promise<void> {
+async function insertRow(row: TestRunRow, root: string, worktreeAfter: WorktreeGitSnapshot): Promise<void> {
   let branch: string | null = null;
-  let commit: string | null = null;
+  const commit = worktreeAfter.commit;
   try {
-    const ctx = await resolveGitContext();
-    branch = ctx.branch;
-    commit = ctx.commit;
+    if (root === resolveAgentWorkspaceRoot({})) branch = (await resolveGitContext()).branch;
   } catch { /* fail-soft */ }
 
   const pg = await tryGetPg();
@@ -105,7 +105,7 @@ async function insertRow(row: TestRunRow): Promise<void> {
   const workspaceId = resolveTestRunWorkspaceId();
   const executionDetails: TestRunExecutionDetails = {
     schemaVersion: 1,
-    root: resolveAgentWorkspaceRoot({}),
+    root,
     filePath: row.filePath,
     runGroupId,
     workspaceId,
@@ -118,8 +118,7 @@ async function insertRow(row: TestRunRow): Promise<void> {
     collectionFailed: false,
     mutationPhase: null,
     commitSha: commit,
-    // A shared checkout was not proven stable around this browser run.
-    worktreeDirty: true,
+    worktreeDirty: row.worktreeDirty,
   };
 
   try {
@@ -129,7 +128,7 @@ async function insertRow(row: TestRunRow): Promise<void> {
           (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, worktree_dirty, execution_details)
         VALUES
           (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
-           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${true}, ${pg.sql.json(executionDetails)})
+           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${row.worktreeDirty}, ${pg.sql.json(executionDetails)})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -155,8 +154,12 @@ interface PerFile {
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private byFile = new Map<string, PerFile>();
   private pending: Promise<void>[] = [];
+  private runRoot = resolveAgentWorkspaceRoot({});
+  private worktreeBefore: WorktreeGitSnapshot | null = null;
 
-  onBegin(): void {
+  onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
+    this.runRoot = resolveAgentWorkspaceRoot(config?.rootDir ? { projectDir: config.rootDir } : {});
+    this.worktreeBefore = captureWorktreeSnapshot(this.runRoot);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -211,9 +214,11 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
   onEnd(): void {
     try {
+      const worktreeAfter = captureWorktreeSnapshot(this.runRoot);
+      const worktreeDirty = computeWorktreeDirty(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter);
       for (const [file, agg] of this.byFile) {
         try {
-          const filePath = toWorkspaceRel(file);
+          const filePath = toWorkspaceRel(file, this.runRoot);
           const status: TestRunRow['status'] = agg.anyFail
             ? 'fail'
             : agg.allSkipped
@@ -232,7 +237,8 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               passed: agg.passed,
               failed: agg.failed,
               skipped: agg.skipped,
-            }),
+              worktreeDirty,
+            }, this.runRoot, worktreeAfter),
           );
         } catch {
           /* swallow per-file */

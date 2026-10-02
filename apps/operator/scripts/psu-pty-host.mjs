@@ -2504,7 +2504,7 @@ export function readCodexTuiLogTail(codexHome, {
 }
 
 /** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
- * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail, startupOutput?: string }} [options]
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail, startupOutput?: string, screenDims?: { rows?: number, cols?: number } }} [options]
  */
 export function collectCodexStartingStuckSnapshot({
   rootPid,
@@ -2516,6 +2516,8 @@ export function collectCodexStartingStuckSnapshot({
   readTail = readFileTail,
   // WI-10005178: the pty output the `Starting` verdict was read from.
   startupOutput,
+  // The child's PTY size, so the footer is read off the same grid it painted.
+  screenDims,
 } = {}) {
   try {
     const tree = platform === 'linux'
@@ -2526,7 +2528,7 @@ export function collectCodexStartingStuckSnapshot({
       procs: tree.procs,
       procsTruncated: tree.truncated,
       log: readCodexTuiLogTail(codexHome, { readTail }),
-      footer: codexStartingFooterEvidence(startupOutput),
+      footer: codexStartingFooterEvidence(startupOutput, { dims: screenDims }),
     };
   } catch (error) {
     return { rootPid: Number.isInteger(rootPid) ? rootPid : null, error: hostErrorEvidence(error) };
@@ -5771,11 +5773,259 @@ function codexStatusFooterState(visible) {
   if (status.endsWith('ready')) return 'ready';
   return status;
 }
-function codexReadyStatusFooterObserved(visible) {
+function codexReadyStatusFooterObserved(output, dims) {
   // Codex v0.157 can leave the header at `model: loading` even after the
   // session is ready. The footer is the positive, post-model-choice signal;
   // its `Starting` form is painted while MCP startup is still in flight.
-  return codexStatusFooterState(visible) === 'ready';
+  return codexFooterStateFromOutput(output, dims) === 'ready';
+}
+
+/** WI-10005178: a minimal synchronous VT screen model, for reading TUI chrome as
+ * the terminal SHOWS it. stripAnsi() flattens a byte stream, which is wrong for a
+ * differential renderer: Codex (ratatui) repaints only the cells that changed and
+ * positions each run with CUP. Measured 2026-10-02T02:03Z and 02:16Z on recycle
+ * children (su-46569c12, su-3b465e67, codex-starting-stuck-snapshot rawTail): the
+ * footer went from `Starting · GPT-6-Luna max · Context 100% left` to Ready as
+ * `ESC[14;3H Re ESC[14;6H dy …`, skipping the unchanged `a`. The flattened
+ * stream's last COMPLETE footer was still `Starting`, so a ready child was judged
+ * stuck and dropped after ~3 minutes. Replaying the cursor motion onto a grid
+ * gives back `Ready · …`.
+ *
+ * Covers the motion, erase, insert/delete and scroll subset a TUI uses, plus the
+ * alternate screen. SGR, modes, OSC/DCS strings and terminal queries change no
+ * cells and are skipped. A code point is one cell, except the common East Asian
+ * wide and emoji ranges (two); combining marks are dropped. Returns one string
+ * per row with trailing blanks trimmed. Pure and exported for tests. */
+const TERMINAL_WIDE_RE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{1f300}-\u{1f64f}\u{1f900}-\u{1f9ff}\u{20000}-\u{3fffd}]/u;
+const TERMINAL_ZERO_WIDTH_RE = /[̀-ͯ​-‏⃐-⃿︀-️]/u;
+const TERMINAL_CSI_RE = /\x1b\[([0-?]*)([ -/]*)([@-~])/y;
+export function renderTerminalScreen(output, { rows = 24, cols = 80 } = {}) {
+  const R = Math.max(1, Math.min(500, Math.floor(Number(rows)) || 24));
+  const C = Math.max(1, Math.min(1000, Math.floor(Number(cols)) || 80));
+  const blankRow = () => new Array(C).fill(' ');
+  const blankScreen = () => Array.from({ length: R }, blankRow);
+  let screen = blankScreen();
+  let row = 0;
+  let col = 0;
+  let top = 0;
+  let bottom = R - 1;
+  let wrapPending = false;
+  let saved = { row: 0, col: 0 };
+  let mainScreen = null;
+  const clampRow = (r) => Math.min(R - 1, Math.max(0, r));
+  const clampCol = (c) => Math.min(C - 1, Math.max(0, c));
+  const scrollUp = (n, from = top, to = bottom) => {
+    for (let k = 0; k < Math.min(n, to - from + 1); k += 1) {
+      screen.splice(from, 1);
+      screen.splice(to, 0, blankRow());
+    }
+  };
+  const scrollDown = (n, from = top, to = bottom) => {
+    for (let k = 0; k < Math.min(n, to - from + 1); k += 1) {
+      screen.splice(to, 1);
+      screen.splice(from, 0, blankRow());
+    }
+  };
+  const lineFeed = () => {
+    if (row === bottom) scrollUp(1);
+    else row = clampRow(row + 1);
+  };
+  const eraseCells = (r, from, to) => {
+    for (let c = Math.max(0, from); c <= Math.min(C - 1, to); c += 1) screen[r][c] = ' ';
+  };
+  const put = (ch, width) => {
+    if (wrapPending) {
+      col = 0;
+      lineFeed();
+      wrapPending = false;
+    }
+    if (width === 2 && col === C - 1) {
+      screen[row][col] = ' ';
+      col = 0;
+      lineFeed();
+    }
+    screen[row][col] = ch;
+    if (width === 2 && col + 1 < C) screen[row][col + 1] = '';
+    const end = col + width - 1;
+    if (end >= C - 1) {
+      col = C - 1;
+      wrapPending = true;
+    } else {
+      col = end + 1;
+    }
+  };
+  const s = String(output ?? '');
+  let i = 0;
+  while (i < s.length) {
+    const code = s.codePointAt(i);
+    if (code === 0x1b) {
+      const next = s[i + 1];
+      if (next === undefined) break;
+      if (next === '[') {
+        TERMINAL_CSI_RE.lastIndex = i;
+        const m = TERMINAL_CSI_RE.exec(s);
+        if (!m) {
+          i += 2;
+          continue;
+        }
+        i = TERMINAL_CSI_RE.lastIndex;
+        const [, params, intermediates, final] = m;
+        if (intermediates) continue; // e.g. DECSCUSR `ESC[0 q`: no cell changes
+        if (/^[<=>?]/.test(params)) {
+          // Private modes touch no cells, except switching to/from the alternate screen.
+          if (params[0] === '?' && (final === 'h' || final === 'l')
+            && params.slice(1).split(';').some((p) => p === '1049' || p === '1047' || p === '47')) {
+            if (final === 'h' && !mainScreen) {
+              mainScreen = { screen, row, col, top, bottom };
+              screen = blankScreen();
+              top = 0;
+              bottom = R - 1;
+            } else if (final === 'l' && mainScreen) {
+              ({ screen, row, col, top, bottom } = mainScreen);
+              mainScreen = null;
+            }
+            wrapPending = false;
+          }
+          continue;
+        }
+        if (final === 'm') continue; // SGR
+        const ps = params.split(';').map((p) => (/^\d+$/.test(p) ? Number(p) : null));
+        const n = (k) => (ps[k] > 0 ? ps[k] : 1);
+        const mode = ps[0] ?? 0;
+        wrapPending = false;
+        switch (final) {
+          case 'H': case 'f': row = clampRow(n(0) - 1); col = clampCol(n(1) - 1); break;
+          case 'A': row = clampRow(row - n(0)); break;
+          case 'B': case 'e': row = clampRow(row + n(0)); break;
+          case 'C': case 'a': col = clampCol(col + n(0)); break;
+          case 'D': col = clampCol(col - n(0)); break;
+          case 'E': row = clampRow(row + n(0)); col = 0; break;
+          case 'F': row = clampRow(row - n(0)); col = 0; break;
+          case 'G': case '`': col = clampCol(n(0) - 1); break;
+          case 'd': row = clampRow(n(0) - 1); break;
+          case 'J':
+            if (mode === 0) {
+              eraseCells(row, col, C - 1);
+              for (let r = row + 1; r < R; r += 1) eraseCells(r, 0, C - 1);
+            } else if (mode === 1) {
+              eraseCells(row, 0, col);
+              for (let r = 0; r < row; r += 1) eraseCells(r, 0, C - 1);
+            } else {
+              for (let r = 0; r < R; r += 1) eraseCells(r, 0, C - 1);
+            }
+            break;
+          case 'K':
+            if (mode === 0) eraseCells(row, col, C - 1);
+            else if (mode === 1) eraseCells(row, 0, col);
+            else eraseCells(row, 0, C - 1);
+            break;
+          case 'X': eraseCells(row, col, col + n(0) - 1); break;
+          case '@': {
+            const cells = screen[row];
+            cells.splice(col, 0, ...new Array(Math.min(n(0), C - col)).fill(' '));
+            cells.length = C;
+            break;
+          }
+          case 'P': {
+            const cells = screen[row];
+            const k = Math.min(n(0), C - col);
+            cells.splice(col, k);
+            cells.push(...new Array(k).fill(' '));
+            break;
+          }
+          case 'L': if (row >= top && row <= bottom) { scrollDown(n(0), row, bottom); col = 0; } break;
+          case 'M': if (row >= top && row <= bottom) { scrollUp(n(0), row, bottom); col = 0; } break;
+          case 'S': scrollUp(n(0)); break;
+          case 'T': if (ps.length <= 1) scrollDown(n(0)); break; // the 5-param form is mouse tracking
+          case 'r': {
+            const t = Math.min(n(0), R) - 1;
+            const b = ps[1] > 0 ? Math.min(ps[1], R) - 1 : R - 1;
+            if (t < b) {
+              top = t;
+              bottom = b;
+            } else {
+              top = 0;
+              bottom = R - 1;
+            }
+            row = 0;
+            col = 0;
+            break;
+          }
+          case 's': if (!params) saved = { row, col }; break;
+          case 'u': if (!params) ({ row, col } = saved); break;
+          default: break; // queries (`6n`, `c`) and anything else that paints nothing
+        }
+        continue;
+      }
+      if (next === ']' || next === 'P' || next === '_' || next === '^' || next === 'X') {
+        // OSC ends at BEL or ST; DCS, APC, PM and SOS end at ST.
+        let j = i + 2;
+        while (j < s.length) {
+          if (next === ']' && s[j] === '\x07') { j += 1; break; }
+          if (s[j] === '\x1b' && s[j + 1] === '\\') { j += 2; break; }
+          j += 1;
+        }
+        i = j;
+        continue;
+      }
+      if (next === '7') saved = { row, col };
+      else if (next === '8') ({ row, col } = saved);
+      else if (next === 'M') {
+        if (row === top) scrollDown(1);
+        else row = clampRow(row - 1);
+      } else if (next === 'D') lineFeed();
+      else if (next === 'E') { col = 0; lineFeed(); }
+      else if (next === 'c') {
+        screen = blankScreen();
+        row = 0;
+        col = 0;
+        top = 0;
+        bottom = R - 1;
+        saved = { row: 0, col: 0 };
+        mainScreen = null;
+      }
+      if ('78MDEc'.includes(next)) wrapPending = false;
+      // `ESC ( B`, `ESC # 8` and other intermediate forms carry one more byte.
+      i += /[ -/]/.test(next) ? 3 : 2;
+      continue;
+    }
+    if (code < 0x20 || code === 0x7f) {
+      if (code === 0x0d) {
+        col = 0;
+        wrapPending = false;
+      } else if (code === 0x0a || code === 0x0b || code === 0x0c) {
+        lineFeed();
+        wrapPending = false;
+      } else if (code === 0x08) {
+        col = Math.max(0, col - 1);
+        wrapPending = false;
+      } else if (code === 0x09) {
+        col = Math.min(C - 1, (Math.floor(col / 8) + 1) * 8);
+      }
+      i += 1;
+      continue;
+    }
+    const ch = String.fromCodePoint(code);
+    i += ch.length;
+    // C1 controls and combining marks occupy no cell.
+    if ((code >= 0x80 && code < 0xa0) || TERMINAL_ZERO_WIDTH_RE.test(ch)) continue;
+    put(ch, TERMINAL_WIDE_RE.test(ch) ? 2 : 1);
+  }
+  return screen.map((cells) => cells.join('').replace(/ +$/, ''));
+}
+
+/** WI-10005178: the Codex footer state as the terminal shows it. The rendered
+ * screen decides; the flattened stream is only the fallback for a screen that
+ * holds no complete footer (the bounded startup buffer trimmed the full paint and
+ * left only cell diffs), the one case the screen cannot decide. Pass the child's
+ * PTY size: a CUP beyond the rendered grid is clamped onto the wrong cell.
+ * @param {unknown} output
+ * @param {{ rows?: number, cols?: number }} [dims]
+ * @returns {string | null} */
+export function codexFooterStateFromOutput(output, dims) {
+  const raw = String(output ?? '');
+  return codexStatusFooterState(renderTerminalScreen(raw, dims).join('\n'))
+    ?? codexStatusFooterState(stripAnsi(raw));
 }
 
 /** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
@@ -5789,9 +6039,13 @@ function codexReadyStatusFooterObserved(visible) {
  * separates them: `readyAfterLastFooter` true with state `starting` is the stale-read
  * signature; `mcpLines` names a server Codex was still waiting on. Bounded and
  * redacted, because host events reach a shared store. */
-export function codexStartingFooterEvidence(output, { maxMatches = 4, tailChars = 600, maxLineChars = 160 } = {}) {
+export function codexStartingFooterEvidence(output, { maxMatches = 4, tailChars = 600, maxLineChars = 160, dims } = {}) {
   if (typeof output !== 'string') return null;
   const visible = stripAnsi(output);
+  // Resolved 2026-10-02 (H2): `state` is now the screen-rendered verdict the host
+  // acts on; `streamState` keeps the flattened-stream reading it replaced.
+  const footerRow = new RegExp(CODEX_STATUS_FOOTER_RE.source);
+  const screenFooter = renderTerminalScreen(output, dims).findLast((r) => footerRow.test(r)) ?? null;
   const matches = [...visible.matchAll(CODEX_STATUS_FOOTER_RE)];
   const last = matches.at(-1) ?? null;
   const afterLast = last ? visible.slice(last.index + last[0].length) : visible;
@@ -5804,7 +6058,9 @@ export function codexStartingFooterEvidence(output, { maxMatches = 4, tailChars 
     return code < 0x20 || code === 0x7f ? `^${String.fromCharCode(code ^ 0x40)}` : ch;
   }).join('');
   return {
-    state: codexStatusFooterState(visible),
+    state: codexFooterStateFromOutput(output, dims),
+    streamState: codexStatusFooterState(visible),
+    screenFooter: screenFooter === null ? null : line(screenFooter),
     footerMatchCount: matches.length,
     lastMatches: matches.slice(-maxMatches).map((m) => ({
       status: m[1],
@@ -5827,12 +6083,14 @@ export function headlessClaudeKickoffReadiness({
   return promptReady ? 'composer-ready' : 'wait-for-composer';
 }
 
-export function startupOutputReady(agent, output) {
+/** @param {*} agent @param {*} output
+ *  @param {{ rows?: number, cols?: number }} [dims] the child's PTY size (WI-10005178) */
+export function startupOutputReady(agent, output, dims) {
   const visible = stripAnsi(output);
   const normalized = String(agent ?? '').toLowerCase();
   if (normalized === 'omp') return /\bomp\s+v\d/i.test(visible);
   if (normalized === 'codex') {
-    const footerState = codexStatusFooterState(visible);
+    const footerState = codexFooterStateFromOutput(output, dims);
     if (footerState !== null) return footerState === 'ready';
     return /\d{1,3}%\s*context left/i.test(visible);
   }
@@ -5877,12 +6135,12 @@ export function codexTuiStartObserved(output) {
  * has already trimmed away: the whole buffer then counts as post-probe.
  * Pure and exported for tests. */
 const CODEX_SESSION_MODEL_RE = /model:\s+(?!loading\b)[^\s│]/;
-export function codexSessionFrameObserved(output, { probeAlreadySeen = false } = {}) {
+export function codexSessionFrameObserved(output, { probeAlreadySeen = false, dims } = {}) {
   const raw = String(output ?? '');
   const probeAt = raw.lastIndexOf('\x1b[6n');
   if (probeAt < 0 && !probeAlreadySeen) return false;
-  const visible = stripAnsi(probeAt < 0 ? raw : raw.slice(probeAt + '\x1b[6n'.length));
-  return CODEX_SESSION_MODEL_RE.test(visible) || codexReadyStatusFooterObserved(visible);
+  const afterProbe = probeAt < 0 ? raw : raw.slice(probeAt + '\x1b[6n'.length);
+  return CODEX_SESSION_MODEL_RE.test(stripAnsi(afterProbe)) || codexReadyStatusFooterObserved(afterProbe, dims);
 }
 
 /** If the Codex first frame is never observed (a future Codex that stops
@@ -7666,13 +7924,19 @@ export function hostThroughPty(o) {
   // argv (every respawn mints from it), so it cannot say whether the current
   // child carries a persona flag; coldResetModeForAgent needs exactly that.
   let liveChildArgs = args;
+  // WI-10005178: the child's PTY size, so its cursor-positioned output can be
+  // replayed onto the same grid (renderTerminalScreen). onResize keeps the child
+  // at these dims too.
+  const childScreenDims = () => ({
+    cols: sanePtyDim(stdout.columns, 80, 1000),
+    rows: sanePtyDim(stdout.rows, 24, 500),
+  });
   const spawnChild = (spawnArgs = args) => {
     liveChildArgs = spawnArgs;
     const target = resolveAgentPtyTarget({ command, args: spawnArgs, env, cwd });
     return pty.spawn(target.command, target.args, {
       name: ptyName,
-      cols: sanePtyDim(stdout.columns, 80, 1000),
-      rows: sanePtyDim(stdout.rows, 24, 500),
+      ...childScreenDims(),
       cwd,
       env: target.env,
     });
@@ -8171,7 +8435,7 @@ export function hostThroughPty(o) {
         : null,
     };
     if (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex') {
-      context.codexFooterAtWrite = codexStatusFooterState(stripAnsi(childStartupOutput));
+      context.codexFooterAtWrite = codexFooterStateFromOutput(childStartupOutput, childScreenDims());
     }
     return context;
   };
@@ -8426,7 +8690,7 @@ export function hostThroughPty(o) {
       codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady;
     const codexStartupExplicitlyStarting = () =>
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
-      codexStatusFooterState(stripAnsi(childStartupOutput)) === 'starting';
+      codexFooterStateFromOutput(childStartupOutput, childScreenDims()) === 'starting';
     const startupFallbackCanAuthorize = () =>
       !codexMarkerKickoffRequiresFrame() &&
       !codexStartupExplicitlyStarting() &&
@@ -8944,6 +9208,7 @@ export function hostThroughPty(o) {
           rootPid: child?.pid,
           codexHome: env.CODEX_HOME,
           startupOutput: childStartupOutput,
+          screenDims: childScreenDims(),
         });
         appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', { label, ...snapshot });
       } catch {
@@ -10706,7 +10971,7 @@ export function hostThroughPty(o) {
       if (
         childBackendTuiStartedAt &&
         !childBackendFirstFrameAt &&
-        codexSessionFrameObserved(childStartupOutput, { probeAlreadySeen: true })
+        codexSessionFrameObserved(childStartupOutput, { probeAlreadySeen: true, dims: childScreenDims() })
       ) {
         childBackendFirstFrameAt = Date.now();
         appendHostEvent(ownerId, 'backend-session-frame-observed', {
@@ -10768,7 +11033,7 @@ export function hostThroughPty(o) {
         // identified theme screen turns readiness off until its Security screen
         // receives the second CR; otherwise every healthy launch would wait for
         // the full expiry window even when no wizard is present.
-        childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
+        childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput, childScreenDims());
       }
       // Codex can paint a composer before the model offer. Submission, above,
       // disarms the watcher; a ready frame alone does not.
@@ -11485,6 +11750,13 @@ export function hostThroughPty(o) {
             mode: respawnMode,
             command,
             args: recycleArgs,
+            // EI-23076695727837648: the first turn is NOT in recycleArgs. The
+            // in-process path injects carryText after spawn (injectTurnAtPrompt),
+            // and this predecessor exits before it would. Without this field the
+            // successor boots on the carry document and then sits idle until an
+            // unrelated loop fire or wake (measured 3-48 min, 11 of 11 adoptions
+            // on one goal holder). The launcher successor seeds it as its kickoff.
+            firstTurnText: typeof carryText === 'string' && carryText.length > 0 ? carryText : null,
             cwd,
             nativeId: nativeId ?? null,
             advSessionId: advSessionId ?? env.PAPERCUSP_ADV_SESSION_ID ?? null,

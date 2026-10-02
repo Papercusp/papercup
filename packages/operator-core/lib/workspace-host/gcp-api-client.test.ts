@@ -8,6 +8,7 @@ import {
   GCP_BILLING_EXPORT_MAX_BYTES_BILLED,
   GoogleBigQueryBillingExportReader,
   GoogleComputeWorkspaceHostApiClient,
+  recreateInput as gcpRecreateInput,
   parseGcpBillingExportDescriptor,
 } from './gcp-api-client';
 import {
@@ -1177,5 +1178,42 @@ describe('boot disk sizing against the source image', () => {
     await client.insertInstance(PROJECT, ZONE, bootInstance(30), REQUEST_ID);
 
     expect(body().disks[0].initializeParams.diskSizeGb).toBe(30);
+  });
+});
+
+describe('recreateInput keeps a spot host on spot (WI-10005210)', () => {
+  const raw = (scheduling?: Record<string, unknown>) =>
+    ({
+      name: 'pc-host-vm',
+      machineType: `zones/${ZONE}/machineTypes/e2-custom-16-32768`,
+      networkInterfaces: [{ network: 'global/networks/n', subnetwork: `regions/${REGION}/subnetworks/s` }],
+      disks: [
+        { boot: true, autoDelete: true, source: `zones/${ZONE}/disks/pc-host-boot` },
+        { boot: false, autoDelete: false, source: `zones/${ZONE}/disks/pc-host-data`, deviceName: 'papercusp-data' },
+      ],
+      ...(scheduling ? { scheduling } : {}),
+    }) as Parameters<typeof gcpRecreateInput>[0];
+  const boot = { sourceImage: 'projects/p/global/images/i', sizeGb: '30', type: 'pd-balanced' } as Parameters<
+    typeof gcpRecreateInput
+  >[1];
+
+  it('re-creates a SPOT instance with STOP-on-reclaim scheduling and an on-demand one without any', () => {
+    // GCP reports the defaults it filled in for spot; the re-create pins them.
+    const spot = gcpRecreateInput(
+      raw({ provisioningModel: 'SPOT', instanceTerminationAction: 'STOP', automaticRestart: false, onHostMaintenance: 'TERMINATE' }),
+      boot,
+      ZONE,
+    );
+    expect(spot?.scheduling).toEqual({
+      provisioningModel: 'SPOT',
+      instanceTerminationAction: 'STOP',
+      automaticRestart: false,
+      onHostMaintenance: 'TERMINATE',
+    });
+    // An on-demand instance reports STANDARD (or nothing); its re-create carries no scheduling block.
+    expect(gcpRecreateInput(raw({ provisioningModel: 'STANDARD', automaticRestart: true }), boot, ZONE)).not.toHaveProperty(
+      'scheduling',
+    );
+    expect(gcpRecreateInput(raw(), boot, ZONE)).not.toHaveProperty('scheduling');
   });
 });

@@ -277,7 +277,9 @@ export default defineTool({
     // turn-lifecycle-control P-003/P-004: a session's lifecycle transition is the
     // universal, client-agnostic moment to (un)arm its inbox-wake watch — so EVERY
     // psu/Queen-launched agent is wakeable WITHOUT having to call coord:await-inbox
-    // (D-001). Idempotent upsert / cancel; never let it break the report.
+    // (D-001). Idempotent upsert / cancel; never let it break the report. SessionEnd
+    // cancellation is deferred until continuation classification below: a resumed
+    // same-owner loop may not receive another SessionStart before its next wake.
     const phase = args.kind === 'lifecycle' ? lifecyclePhase(args.summary) : null;
     // Judge sessions are deliberately admitted only to narrow evidence/reply
     // tools, so they cannot consume the broad coord inbox that the standing
@@ -361,8 +363,6 @@ export default defineTool({
               );
             });
           }
-        } else if (!foreignSession) {
-          await cancelInboxWake(owner, ctx.principal?.workspaceId); // D-003: cancel on clean end
         }
       } catch (e) {
         console.warn(
@@ -455,6 +455,18 @@ export default defineTool({
           );
         } else {
           result.session_end_disposition = 'terminal';
+          // D-003: only a terminal SessionEnd retires the standing watch. A
+          // carry-respawn, context reset, or active warm loop continues under the
+          // same owner id; canceling before the classifier runs strands that
+          // continuation with no wake route when it does not get a fresh
+          // SessionStart before its next inbox event.
+          try {
+            await cancelInboxWake(owner, ctx.principal?.workspaceId);
+          } catch (e) {
+            console.warn(
+              `[activity:report] inbox-wake end for ${owner} failed: ${e instanceof Error ? e.message : e}`,
+            );
+          }
           // session-death-claim-release-2026-07-11 P-002 (the FAST PATH): the
           // SAME SessionEnd/Stop lifecycle event that already fires on every
           // psu session (hooks/cc/lifecycle-report.sh → THIS call, unchanged)

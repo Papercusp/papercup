@@ -7,6 +7,7 @@ import {
   type WorkspaceHostConnectionRouteDependencies,
 } from './connection';
 import type { AwsWorkspaceHostPreflightClient } from '../../../workspace-host/aws-connection';
+import type { StoredWorkspaceHostConnection } from '../../../workspace-host/observability-store';
 import {
   inspectAwsWorkspaceHostConnection,
   type AwsConnectionInspectionClient,

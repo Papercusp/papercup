@@ -776,6 +776,29 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
     expect(body.message).not.toContain('replaced the boot disk');
   });
 
+  it.each(['gcp', 'aws'] as const)('hydrates a desktop %s restore from persisted config and rebinds current credentials', async (target) => {
+    const h = harness();
+    const source = { ...desired, target, scope: { kind: target === 'aws' ? 'account' as const : 'project' as const, id: target === 'aws' ? '123456789012' : 'project-1' }, labels: undefined,
+      provider: { sourceSetting: 'kept' } };
+    h.readTarget.mockResolvedValue({ ...(await h.readTarget())!, target, desired: source });
+    h.readConnection.mockResolvedValue({ id: 'connection-1', target, status: 'connected', connection: {
+      target, cloudCredentialRef: { kind: 'cloud', ref: 'resolver://current' }, provider: { currentSetting: 'bound' },
+    } });
+    const snapshot = { target, hostId: 'host-1', providerId: 'snapshot-1' };
+    const response = await post(h.dependencies, { action: 'restore', workspaceId: 'host-1', name: 'Restored host', snapshot, desired: { hostId: 'host-restored' } });
+    expect(response.status).toBe(200);
+    expect(h.startLifecycle).toHaveBeenCalledWith(expect.objectContaining({ action: 'restore', snapshot, name: 'Restored host',
+      desired: { ...source, hostId: 'host-restored', credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'resolver://current' } },
+        provider: { sourceSetting: 'kept', currentSetting: 'bound' } } }));
+  });
+
+  it.each(['host-1', 'bad host', ''])('refuses invalid or same-host desktop restore identity %s', async (hostId) => {
+    const h = harness();
+    const response = await post(h.dependencies, { action: 'restore', workspaceId: 'host-1', snapshot: { target: 'gcp', hostId: 'host-1', providerId: 'snapshot-1' }, desired: { hostId } });
+    expect(response.status).toBe(422);
+    expect(h.startLifecycle).not.toHaveBeenCalled();
+  });
+
   it('threads explicit upgrade and restore inputs without inventing provider defaults', async () => {
     const { dependencies, startLifecycle } = harness();
     const image = { id: 'projects/images/global/images/papercusp-v2', version: '2' };

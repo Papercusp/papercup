@@ -62,7 +62,15 @@ export type WorkspaceHostActionArgs =
         };
       };
     }
-  | { action: Exclude<LifecycleAction, "destroy">; workspaceId: string }
+  | { action: Exclude<LifecycleAction, "destroy" | "restore">; workspaceId: string }
+  | {
+      action: "restore";
+      workspaceId: string;
+      name: string;
+      snapshot: { target: "gcp" | "aws"; hostId: string; providerId: string };
+      /** The server rebinds the source host's config and credential reference. */
+      desired: { hostId: string };
+    }
   | {
       action: "destroy";
       workspaceId: string;

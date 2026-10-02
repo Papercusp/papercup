@@ -322,6 +322,7 @@ describe("contextual lifecycle actions", () => {
     expect(plan.overflow.map((entry) => entry.action)).toEqual([
       "repair",
       "snapshot",
+      "restore",
       "destroy",
     ]);
   });

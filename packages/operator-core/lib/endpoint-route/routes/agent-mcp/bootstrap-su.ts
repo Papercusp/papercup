@@ -1979,7 +1979,16 @@ export const bootstrapSu = defineTool({
         impliedStack: 'su-static',
       });
     } catch (error: any) {
-      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error) }, 400);
+      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error),
+        refusal: {
+          observed: { harness: harnessSlug, role: suRoleRaw ?? 'su', stack: Array.isArray(body.stack) ? body.stack.join(',') : null },
+          liftsWhen:
+            'the selected launch identity stack resolves against this launch\'s blueprint source: every ' +
+            'stack ref (and a `composition:` root) exists and loads, so its model default can be read ' +
+            '(`error` names the failing ref). Retrying the identical request cannot lift it: correct the ' +
+            'stack ref or repair the identity definition',
+          whoCanMakeItTrue: ['self', 'owner'],
+        } }, 400);
     }
     const suppliedModel = body.model?.trim() || null;
     const requestedModel = body.model_source === 'configured-default' ? null : suppliedModel;

@@ -291,17 +291,21 @@ export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 
 /** Caller-facing contract for the server-generated verification tree stamp. */
 export const COMPLETION_TREE_STAMP_CONTRACT =
-  'Server-stamped verification metadata: `work_items:complete` records `treeStamp` from the observed checkout when available; callers must omit `treeStamp`. When present in persisted evidence, `headSha` is a full lowercase 40- or 64-character commit SHA; short hashes are invalid.';
+  'Server-stamped verification metadata: `work_items:complete` records `treeStamp` from the observed checkout when available; callers must omit `treeStamp`. Per-path identities may include a best-effort `gitIgnoreStatus` of `ignored`, `not-ignored`, or `unknown` for working-tree files absent from HEAD.';
 
 /** Caller-facing contract for the server-generated settlement receipt. */
 export const COMPLETION_SETTLEMENT_MANIFEST_CONTRACT =
   'Server-stamped settlement metadata: `work_items:complete` derives `settlementManifest` from the observed checkout; callers must omit `settlementManifest` (including `completion.verification.settlementManifest`). When present in persisted evidence, it contains version=1, a positive generation, a 64-hex evidenceHash, repositoryRoot, a full 40- or 64-character headSha, normalizedPaths, and contentIdentity[]. Do not send intuitive artifact fields such as schemaVersion, artifactPath, artifactSha256, head, or boolean contentIdentity.';
 
 /** Server-observed Git blob identities for each declared changed path. */
+export type CompletionGitIgnoreStatus = 'ignored' | 'not-ignored' | 'unknown';
+
 export type CompletionTreeContentIdentity = {
   path: string;
   workingTreeBlobSha: string | null;
   headBlobSha: string | null;
+  /** Best-effort Git status for working-tree files not present in HEAD. */
+  gitIgnoreStatus?: CompletionGitIgnoreStatus;
   /**
    * WI-42441: set ONLY when `headBlobSha` is null because the server could not READ
    * the HEAD side (an uninitialized submodule, an unreadable object store) — never
@@ -403,6 +407,8 @@ export const CompletionTreeStampSchema = z
           path: z.string().min(1),
           workingTreeBlobSha: completionBlobShaSlot,
           headBlobSha: completionBlobShaSlot,
+          /** WI-10004491: whether an uncommitted working-tree path can enter the ordinary Git sweep. */
+          gitIgnoreStatus: z.enum(['ignored', 'not-ignored', 'unknown']).optional(),
           /**
            * EI-22344624691081449: caller-declared intentional deletion. A
            * deletion is proven only when both blob identities are null, and
@@ -454,6 +460,8 @@ export const CompletionSettlementManifestSchema = z.object({
     path: z.string().min(1),
     workingTreeBlobSha: completionBlobShaSlot,
     headBlobSha: completionBlobShaSlot,
+    /** WI-10004491: close-time Git ignore status for a present path absent from HEAD. */
+    gitIgnoreStatus: z.enum(['ignored', 'not-ignored', 'unknown']).optional(),
     /** EI-22344624691081449: caller-declared intentional deletion. */
     deletion: z.literal(true).optional(),
   })).min(1).max(60),

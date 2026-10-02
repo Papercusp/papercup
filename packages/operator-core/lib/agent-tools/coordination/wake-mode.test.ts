@@ -128,6 +128,17 @@ describe('getWakeModeOverridesFor — owner-scoped batch read (WI-10005228)', ()
     expect(kv.sql).not.toHaveBeenCalled();
   });
 
+  it('calibration: the fake answers the OLD unscoped LIKE read with the whole history', async () => {
+    // Keeps the first test above from passing vacuously: the pre-WI-10005228 query
+    // (`WHERE key LIKE 'wake_mode:agent:%'`) through this same fake returns every
+    // stored row, so a regression to it would surface the s-ended-* owners there.
+    kv.store.set('wake_mode:agent:s-live-1', 'manual');
+    for (let i = 0; i < 5; i += 1) kv.store.set(`wake_mode:agent:s-ended-${i}`, 'manual');
+    const rows = (await kv.sql`SELECT key, value FROM harness_shared.operator_settings
+      WHERE key LIKE 'wake_mode:agent:%'`) as Array<{ key: string }>;
+    expect(rows).toHaveLength(6);
+  });
+
   it('drops a garbage stored value (the owner then resolves via the global default)', async () => {
     kv.store.set('wake_mode:agent:s-1', 'nonsense');
     expect(await getWakeModeOverridesFor(['s-1'])).toEqual(new Map());

@@ -103,6 +103,8 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'compute.instances.setMetadata',
   'compute.instances.setServiceAccount',
   'compute.instances.setTags',
+  // Checked on a spot insert (scheduling block), WI-10005210.
+  'compute.instances.setScheduling',
   'compute.instances.osLogin',
   'compute.snapshots.get',
   'compute.snapshots.list',

@@ -36,6 +36,19 @@ const OWNER = 'su-orphan-sweep-test';
 const GRACE_SEC = 2;
 const EXPIRED_SEC = 100;
 
+/** Keep the hook fixture independent of the Papercusp/Claude session that launched Vitest. */
+function hookFixtureEnv(
+  overrides: Record<string, string | undefined>,
+  parentEnv: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  const inherited = Object.fromEntries(
+    Object.entries(parentEnv).filter(
+      ([key]) => !key.startsWith('PAPERCUSP_') && !key.startsWith('CLAUDE_'),
+    ),
+  );
+  return { ...inherited, ...overrides };
+}
+
 let home: string, cache: string, ws: string, repo: string;
 let server: Server, port: number;
 let requests: Array<{ name: string; args: Record<string, any> }> = [];
@@ -113,8 +126,7 @@ async function runEdit(toolUseId = 'live-edit') {
       session_id: 'session-x',
       cwd: repo,
     }),
-    env: {
-      ...process.env,
+    env: hookFixtureEnv({
       HOME: home,
       PAPERCUSP_SID: OWNER,
       PAPERCUSP_LOCK_SID: OWNER,
@@ -123,7 +135,7 @@ async function runEdit(toolUseId = 'live-edit') {
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
       PAPERCUSP_LOCKS_ORPHAN_GRACE_SEC: String(GRACE_SEC),
       PAPERCUSP_LOCKS_ORPHAN_EXPIRED_SEC: String(EXPIRED_SEC),
-    },
+    }),
   });
 }
 
@@ -132,6 +144,27 @@ const releasedIds = () =>
 const exists = (name: string) => fs.existsSync(join(cache, name));
 
 describe('EI-22176521893516708 — orphaned-claim reconcile', () => {
+  it('keeps hook fixtures isolated from inherited agent-session variables', () => {
+    const env = hookFixtureEnv(
+      {
+        PAPERCUSP_SID: OWNER,
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:12345',
+      },
+      {
+        PATH: '/usr/bin',
+        PAPERCUSP_AGENT_SESSION: '1',
+        PAPERCUSP_OPERATOR_URL: 'http://session-only.invalid',
+        CLAUDE_CODE_SESSION_ID: 'parent-session',
+      },
+    );
+
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.PAPERCUSP_SID).toBe(OWNER);
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:12345');
+    expect(env.PAPERCUSP_AGENT_SESSION).toBeUndefined();
+    expect(env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
+  });
+
   it('releases an orphan whose PostToolUse never ran, and clears its cache entry', async () => {
     seed('orphan', { lockId: 'orphan-lock', ageSec: GRACE_SEC + 5 });
     const r = await runEdit();

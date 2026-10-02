@@ -22,7 +22,7 @@ export type LifecycleState =
   | "repairing"
   | "destroying"
   | "absent";
-export type LifecycleAction = "start" | "stop" | "repair" | "snapshot" | "destroy";
+export type LifecycleAction = "start" | "stop" | "repair" | "snapshot" | "restore" | "destroy";
 export type DestroyDisposition = "snapshot" | "backup" | "discard";
 
 /** The three guided-rail steps, in rail order. */
@@ -420,6 +420,7 @@ const ACTION_LABELS: Record<LifecycleAction, string> = {
   stop: "Stop machine",
   repair: "Repair",
   snapshot: "Snapshot",
+  restore: "Restore snapshot",
   destroy: "Destroy",
 };
 
@@ -459,7 +460,7 @@ export function lifecycleActionPlan(
 
   return {
     primary,
-    overflow: (["repair", "snapshot", "destroy"] as const).map((action) =>
+    overflow: (["repair", "snapshot", "restore", "destroy"] as const).map((action) =>
       spec(action, caps),
     ),
   };

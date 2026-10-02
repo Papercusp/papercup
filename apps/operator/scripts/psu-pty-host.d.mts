@@ -2141,8 +2141,14 @@ export function renderTerminalScreen(output: any, { rows, cols }?: {
  * screen decides; the flattened stream is only the fallback for a screen that
  * holds no complete footer (the bounded startup buffer trimmed the full paint and
  * left only cell diffs), the one case the screen cannot decide. Pass the child's
- * PTY size: a CUP beyond the rendered grid is clamped onto the wrong cell. */
-export function codexFooterStateFromOutput(output: any, dims: any): string | null;
+ * PTY size: a CUP beyond the rendered grid is clamped onto the wrong cell.
+ * @param {unknown} output
+ * @param {{ rows?: number, cols?: number }} [dims]
+ * @returns {string | null} */
+export function codexFooterStateFromOutput(output: unknown, dims?: {
+    rows?: number;
+    cols?: number;
+}): string | null;
 /** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
  * from. Measured 2026-10-02T01:40-01:44Z (su-6a2603be, codex home session-32862):
  * the dropped child's own codex-tui.log shows session init, MCP resolution and the
@@ -2179,7 +2185,12 @@ export function headlessClaudeKickoffReadiness({ enabled, requireInitialOutput, 
     requireInitialOutput?: boolean | undefined;
     promptReady?: boolean | undefined;
 }): "ordinary-gate" | "composer-ready" | "wait-for-composer";
-export function startupOutputReady(agent: any, output: any, dims: any): boolean;
+/** @param {*} agent @param {*} output
+ *  @param {{ rows?: number, cols?: number }} [dims] the child's PTY size (WI-10005178) */
+export function startupOutputReady(agent: any, output: any, dims?: {
+    rows?: number;
+    cols?: number;
+}): boolean;
 /** WI-10002745: the first thing a Codex TUI writes is a burst of terminal
  * capability queries (`ESC[?2004h ESC[>7u ESC[?1004h ESC[6n OSC10? OSC11?
  * ESC[?u ESC[c`). A headless PTY answers none of them, so Codex spends ~3.6s

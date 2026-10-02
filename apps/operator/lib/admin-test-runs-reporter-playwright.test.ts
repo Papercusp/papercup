@@ -39,6 +39,7 @@ import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test
 describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.resolveAgentWorkspaceRoot.mockImplementation(() => '/repo');
     delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
     delete process.env.PAPERCUSP_TEST_RUN_GROUP;
     delete process.env.PAPERCUSP_TEST_RUN_HARNESS;
@@ -90,6 +91,27 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
       failed: 0,
       skipped: 0,
     });
+  });
+
+  it('records the actual isolated Playwright checkout despite an ambient agent tree', async () => {
+    mocks.resolveAgentWorkspaceRoot.mockImplementation((ctx?: { projectDir?: string }) => ctx?.projectDir ? '/proof' : '/repo');
+    const snapshot = { commit: 'proof-sha', porcelain: '' };
+    mocks.captureWorktreeSnapshot.mockReturnValue(snapshot);
+    mocks.computeWorktreeDirty.mockReturnValue(false);
+    const reporter = new AdminTestRunsPlaywrightReporter();
+    reporter.onBegin({ rootDir: '/proof/apps/operator/e2e' });
+    reporter.onTestEnd(
+      { location: { file: '/proof/apps/operator/e2e/tutorial.spec.ts' } } as never,
+      { startTime: new Date(0), duration: 17, status: 'passed', errors: [] } as never,
+    );
+    reporter.onEnd();
+    await reporter.onExit();
+    expect(mocks.captureWorktreeSnapshot.mock.calls).toEqual([['/proof'], ['/proof']]);
+    const values = mocks.sql.mock.calls[0]!.slice(1);
+    expect(values[0]).toBe('apps/operator/e2e/tutorial.spec.ts');
+    expect(values[9]).toBe('proof-sha');
+    expect(values.at(-1)).toMatchObject({ root: '/proof', commitSha: 'proof-sha', worktreeDirty: false });
+    expect(mocks.resolveGitContext).not.toHaveBeenCalled();
   });
 });
 
