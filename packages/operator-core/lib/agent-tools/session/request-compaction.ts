@@ -772,7 +772,7 @@ export default defineTool({
     const openOwnerQuestion = openOwnerMessageQuestion || openOwnerAskCount > 0;
     const firstPrompt =
       spec.firstPrompt ??
-      (() => {
+      (await (async () => {
         // EI-22131227584499489: `focus`/`continueNote` are free text the
         // CALLING owner wrote itself — nothing else verifies it actually names
         // that owner's own state before it becomes a confident "resume: <text>"
@@ -800,11 +800,12 @@ export default defineTool({
           identity.ownerId,
         );
         try {
-          return tagTurnForInjection({ sid: identity.ownerId, origin: 'self-compaction', text: note }).taggedText;
+          return (await tagTurnForInjection({ sid: identity.ownerId, origin: 'self-compaction', text: note }))
+            .taggedText;
         } catch {
           return note; // provenance must never break a boundary
         }
-      })();
+      })());
     // Only the first prompt is live caller-authored successor input at this
     // boundary. The deterministic system addendum may contain immutable
     // transcript/history prose that names a stale candidate while documenting
