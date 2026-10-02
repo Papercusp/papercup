@@ -785,6 +785,47 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     );
   });
 
+  describe('WI-10005640: items[] entries accept the same loop carry aliases as the single shorthand', () => {
+    // Drift guard: the root and each entry used to be two hand-kept field lists. Every
+    // alias the root accepts MUST also be accepted by an entry, so a future alias added
+    // at one level and forgotten at the other fails here instead of as ~40 prod refusals.
+    const ALIASES = ['did', 'left', 'insight', 'next', 'keyInsight', 'nextAction', 'goal'] as const;
+
+    it.each(ALIASES)('parses `%s` on an items[] entry (and on the root)', (alias) => {
+      expect(() => parse({ id: 'WI-7', [alias]: 'x' })).not.toThrow();
+      expect(() => parse({ items: [{ id: 'WI-7', [alias]: 'x' }] })).not.toThrow();
+    });
+
+    it('still refuses root-level aliases combined with items[] (and names the entry-level route)', () => {
+      expect(() => parse({ items: [{ id: 'WI-7', checkpoint: 'batch' }], did: 'x' })).toThrow(
+        /single shorthand[\s\S]*did\/left\/insight\/next/,
+      );
+    });
+
+    it('renders each entry\'s aliases into its stored checkpoint; explicit `checkpoint` wins', async () => {
+      getWorkItem.mockImplementation(async (ref: { workItemId?: string; id?: string }) => ({
+        id: ref?.workItemId ?? ref?.id ?? 'WI-A',
+        harness: 'papercup',
+      }));
+      setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);
+
+      const e = await env({
+        items: [
+          { id: 'WI-A', did: 'did A', left: 'left A', insight: 'insight A', next: 'next A' },
+          { id: 'WI-B', checkpoint: 'canonical B wins', did: 'ignored', next: 'ignored' },
+        ],
+      });
+
+      expect(e.results).toHaveLength(2);
+      expect(e.results[0]).toMatchObject({ ok: true, id: 'WI-A', cleared: false });
+      expect(e.results[1]).toMatchObject({ ok: true, id: 'WI-B', cleared: false });
+      const stored = setWorkItemCheckpoint.mock.calls.map((c: unknown[]) => c[1] as string);
+      expect(stored).toContain('## Did\ndid A\n\n## Left\nleft A\n\n## Key insight\ninsight A\n\n## Next action\nnext A');
+      expect(stored).toContain('canonical B wins');
+      expect(stored.some((s: string) => s.includes('ignored'))).toBe(false);
+    });
+  });
+
   it('EI-21631530729522909: lifts a flattened executable tool probe into the nested probe field', () => {
     const probe = {
       kind: 'tool' as const,

@@ -95,8 +95,16 @@ fi
 step() { printf '\n=== %s ===\n' "$1"; }
 die()  { echo "FAILED: $1" >&2; echo "SUPPLY_CHAIN_RESULT=FAIL"; exit "${2:-1}"; }
 
+# The cosign image's default user is `nonroot` (uid 65532). A release key is rightly 0600 in a
+# 0700 directory owned by whoever runs this script, so that default user cannot open it and
+# signing dies with "reading key: open /keys/cosign.key: permission denied" after the whole
+# image build has already been paid for (measured 2026-10-02, WI-10005606). Run cosign as the
+# CALLER's uid:gid instead: it owns the key and $OUTDIR, so nothing needs loosening, and the
+# files cosign writes under /out stay owned by the caller rather than by root or 65532.
+# HOME points at /tmp because the caller's uid has no passwd entry in the distroless image.
+COSIGN_USER="$(id -u):$(id -g)"
 cosign_run() {
-  "${PODMAN[@]}" run --rm --network host \
+  "${PODMAN[@]}" run --rm --network host --user "$COSIGN_USER" -e HOME=/tmp \
     -v "$KEYDIR":/keys -v "$OUTDIR":/out -w /out \
     -e COSIGN_PASSWORD="${COSIGN_PASSWORD-}" "$COSIGN_IMG" "$@"
 }

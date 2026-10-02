@@ -33,7 +33,7 @@ import { readdirSync, createReadStream, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createHash } from 'node:crypto';
 import { parser } from 'stream-json';
 
@@ -425,5 +425,5 @@ if (asJson) {
 }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+if (isCliEntry(import.meta.url))
   main().catch(error => { console.error(error.message); process.exitCode = 1; });
