@@ -11847,12 +11847,9 @@ export function runWrapper(options) {
     sessionPort = null;
     adoptedCarryRespawn = adoptedCarryRespawnFromHandoff(hostHandoff);
     if (!adoptedCarryRespawn && hostHandoff.nativeId) {
-      // The in-process respawn re-anchors identity through `onRespawn` AFTER
-      // spawning the child; the adopting predecessor exits before it ever gets
-      // there, so the successor owes both halves of that hook. Skipping the
-      // second one is the P-018 successor-kill loop: adv_sessions keeps naming
-      // the predecessor's native id, and the compaction watchdog then reaps a
-      // session that is very much alive.
+      // Non-carry handoffs with a known native id retain the immediate mapping
+      // repair. Carry handoffs wait for the successor's exact first-turn proof
+      // before reporting, so a late Codex id is not skipped.
       recordSessionOwner(hostHandoff.nativeId, ownerId, {
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
       });
