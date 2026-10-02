@@ -154,6 +154,57 @@ describe('named pinned payload attribution on a real Node inspector', () => {
     }
   }, 20_000);
 
+  it('attributes the direct Jev writer without treating private or malformed suffixes as tool namespaces', async () => {
+    const digest = 'a'.repeat(64);
+    const keys = [
+      'private-workspace\u0000jev-memory:' + digest,
+      'private-workspace\u0000jev-memory:' + digest.slice(1),
+      'private-workspace\u0000jev-memory:' + digest.toUpperCase(),
+      'private-workspace\u0000jev-memory:' + digest + '\n',
+      '\u0000jev-memory:' + digest,
+      'private-workspace\u0000private-prefix-jev-memory:' + digest,
+      'private-workspace\u0000jev-memory:' + digest + '|private-payload',
+      'private-workspace\u0000memory-inject-block:private-payload',
+      'private-workspace\u0000plans:get|private-payload',
+    ];
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
+      const map = new Map(${JSON.stringify(keys)}.map(key => [key,
+        { value: { scores: [['private-memory-id', 0.8]], model: 'private-model' } }]));
+      globalThis[Symbol.for('@papercusp/module-singleton.slots')] = new Map([
+        ['@papercusp/operator-core.operatorCache', { value: { cache: { l1: { map } } } }]
+      ]);
+      console.log('ready'); setInterval(() => {}, 1000);
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      const report = await readPinnedState(client, { expectedPid: child.pid!,
+        owners: ['@papercusp/operator-core.operatorCache'], operatorCacheEntries: true,
+        maxCacheEntries: keys.length, maxEntries: 512, maxObjects: 128, budgetMs: 200 });
+      const cache = report.roots[0].cacheEntries;
+      expect(cache).toMatchObject({ checked: keys.length, notChecked: 0 });
+      expect(cache.values[0]).toMatchObject({ cacheOwner: 'jev-memory', toolNamespace: null,
+        keyFormat: 'workspace-nul-jev-memory-sha256',
+        keyDigest: createHash('sha256').update(keys[0]).digest('hex'), traversalLimited: false });
+      for (const value of cache.values.slice(1, -1)) {
+        expect(value).toMatchObject({ cacheOwner: null, toolNamespace: null, keyFormat: 'unknown' });
+      }
+      expect(cache.values.at(-1)).toMatchObject({ cacheOwner: 'plans:get', toolNamespace: 'plans:get',
+        keyFormat: 'workspace-nul-tool-pipe' });
+      expect(JSON.stringify(report)).not.toMatch(/private-|a{64}/);
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+  }, 20_000);
+
   it('reaches cache values beyond the prefix cap and charges skipped edges to the unchanged work budget', async () => {
     const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e', `
       const map = new Map(Array.from({ length: 300 }, (_, index) =>
