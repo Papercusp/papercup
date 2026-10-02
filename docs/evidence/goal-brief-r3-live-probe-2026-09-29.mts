@@ -78,15 +78,27 @@ const transcriptOwners = (session: string): string[] => {
   }
   return [...owners];
 };
+// D-040: the ingester stamps a Claude transcript's owner from the same ~/.papercusp/session-claude/<owner>/ path
+// (session-ingest.ts FILE_ADAPTERS[claude].meta) and keeps it in session_turn_parts for 14 days, so a pruned host file
+// does not erase witness (ii). Disk and ingested readings are one witness read at two times; if they disagree, the
+// session names two owners and stays unresolved.
+const ingestedTranscriptOwners = (session: string): string[] => (/^[0-9a-f-]{36}$/.test(session)
+  ? rows(`SELECT DISTINCT owner FROM harness_shared.session_turn_parts
+      WHERE workspace_id = 'default' AND source_kind = 'claude' AND session_id = ${lit(session)} AND owner IS NOT NULL`)
+    .map((r) => r.owner as string)
+  : []);
 const identities = new Map<string, { owner: string | null; workspace: string | null }>();
-const identityWitnesses: Record<string, { spans: string[]; transcript: string[]; owner: string | null; workspace: string | null }> = {};
+const identityWitnesses: Record<string, { spans: string[]; transcript: string[]; transcriptDisk: string[];
+  transcriptIngested: string[]; owner: string | null; workspace: string | null }> = {};
 observations.identityWitnesses = identityWitnesses;
 function identityOf(session: string | null): { owner: string | null; workspace: string | null } {
   if (!session) return { owner: null, workspace: null };
   if (!identities.has(session)) {
     const spans = rows(`SELECT DISTINCT owner_id, workspace_id FROM harness_shared.session_identity_activation_spans
       WHERE native_session_id = ${lit(session)}`);
-    const transcript = transcriptOwners(session);
+    const transcriptDisk = transcriptOwners(session);
+    const transcriptIngested = ingestedTranscriptOwners(session);
+    const transcript = [...new Set([...transcriptDisk, ...transcriptIngested])];
     const owners = [...new Set([...spans.map((s) => s.owner_id as string), ...transcript])];
     const owner = owners.length === 1 ? owners[0] : null;
     // Workspace: the span's when one exists, else the single workspace across the resolved owner's activation events.
@@ -94,7 +106,8 @@ function identityOf(session: string | null): { owner: string | null; workspace: 
       : owner ? rows(`SELECT DISTINCT workspace_id FROM harness_shared.session_identity_activation_events
           WHERE owner_id = ${lit(owner)}`).map((r) => r.workspace_id as string) : [];
     const workspace = owner && workspaces.length === 1 ? workspaces[0] : null;
-    identityWitnesses[session] = { spans: spans.map((s) => `${s.owner_id}@${s.workspace_id}`), transcript, owner, workspace };
+    identityWitnesses[session] = { spans: spans.map((s) => `${s.owner_id}@${s.workspace_id}`), transcript, transcriptDisk,
+      transcriptIngested, owner, workspace };
     identities.set(session, { owner, workspace });
   }
   return identities.get(session)!;
@@ -198,7 +211,7 @@ residualUnknowns.push('Non-omission of the delivered line is attested by the wri
 residualUnknowns.push('Compaction vs cold restart is not distinguished: both start a new native session under the same owner; memory_session_epochs keeps only the latest epoch per session.');
 residualUnknowns.push('Fleet-leader side: fleet:leader-brief tool_invocations carry no generation/receipt, so the leader half of the shared engine is covered by unit/integration layers (bindings 15943/15944), not by this live probe.');
 // su-4f968faa review of D-037 (2026-10-01): the two witnesses corroborate but are not fully independent.
-residualUnknowns.push('The span and transcript witnesses both derive from the launch-time identity (PAPERCUSP_SID names the per-owner session-claude dir and the activation span), so neither can catch a launcher that assigned the wrong identity. Transcript-only rows also rest on host-local files that can be pruned; a pruned file falls back to foreign.');
+residualUnknowns.push('The span and transcript witnesses both derive from the launch-time identity (PAPERCUSP_SID names the per-owner session-claude dir and the activation span), so neither can catch a launcher that assigned the wrong identity. Transcript-only rows rest on the host transcript file or its ingested copy (D-040; session_turn_parts keeps 14 days); a session pruned from both falls back to foreign.');
 const transcriptOnlySessions = Object.entries(identityWitnesses).filter(([, w]) => w.spans.length === 0 && w.transcript.length > 0).map(([s]) => s);
 
 const passed = assertions.filter((a) => a.passed).length;
