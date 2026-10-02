@@ -107,7 +107,11 @@ import {
   type GoalModeElectionExpectation,
   type GoalModeElectionReceipt,
 } from '../modes/store';
-import { notifyGoalHolderHandoff } from '../goals/holder-handoff';
+import {
+  notifyGoalHolderHandoff,
+  retireSupersededGoalHolderModes,
+  type SupersededGoalHolderRetirement,
+} from '../goals/holder-handoff';
 import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
 import { appendGoalWriteAudit } from '../goals/write-audit';
 import {
@@ -1587,6 +1591,12 @@ export interface GoalHolderRespawnDeps {
     goal: GoalRowLike,
     nowMs: number,
   ) => Promise<GoalHolderRespawnLatchReconciliation>;
+  /**
+   * WI-10005573: retire GOAL-mode rows (and the AUTO/IDEATE they implied) of
+   * holders a newer election superseded, once its handoff window expired. Runs
+   * for every swept goal regardless of holder health; failures are non-fatal.
+   */
+  retireSuperseded?: (goal: GoalRowLike) => Promise<SupersededGoalHolderRetirement>;
   escalateGiveUp: (goal: GoalRowLike, restartsInWindow: number) => Promise<void>;
   /**
    * WI-2140573: wake a live-but-idle elected holder with a retry brief. Default
@@ -2245,6 +2255,8 @@ function holderRespawnDeps(
       await releaseGoalHolderRespawnRateSlot(sql, goal, reservedAtMs),
     reconcileStrandedLatch: async (goal, nowMs) =>
       await reconcileStrandedGoalHolderRespawnLatch(sql, goal, nowMs),
+    retireSuperseded: async (goal) =>
+      await retireSupersededGoalHolderModes(sql, goal.workspaceId, goal.goalId),
     pauseNeedsHuman: async (goal, attemptsInWindow, nowMs) =>
       await pauseGoalForHolderRespawnRateCap(sql, goal, attemptsInWindow, nowMs),
     escalateGiveUp: defaultEscalateHolderRespawnGiveUp,
@@ -2373,6 +2385,30 @@ export async function runGoalHolderRespawnOnce(
         `[goal-holder-respawner] stranded needs-human latch reconcile failed for ${goal.goalId}: ` +
           `${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+
+    // WI-10005573: a superseded holder keeps its GOAL row and implied AUTO
+    // unless something retires them; the handoff notice only disarms its loop.
+    // Health-independent on purpose: the residue exists whether or not the
+    // current holder is healthy. Never blocks the recovery path below.
+    if (deps.retireSuperseded) {
+      try {
+        const retirement = await deps.retireSuperseded(goal);
+        if (retirement.retired.length > 0 || retirement.leftArmed.length > 0) {
+          console.info(
+            `[goal-holder-respawner] ${goal.goalId}: retired superseded holder GOAL rows ` +
+              `[${retirement.retired.join(', ')}]` +
+              (retirement.leftArmed.length > 0
+                ? `; refused (left armed) [${retirement.leftArmed.join(', ')}]`
+                : ''),
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `[goal-holder-respawner] superseded holder retirement failed for ${goal.goalId}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     // A stub that was never picked up is not a lost holder and must not be

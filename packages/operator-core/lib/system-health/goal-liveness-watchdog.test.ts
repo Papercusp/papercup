@@ -798,6 +798,9 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     // EI-23821882158913073 block at the bottom), so without a stub it issues a real
     // query against that stub and warns on every unrelated test in this file.
     reconcileStrandedLatch: async () => ({ kind: 'noop' }),
+    // WI-10005573: same reason — the superseded-holder reaper runs for every
+    // swept goal and would otherwise query the bare `{}` SQL stub.
+    retireSuperseded: async () => ({ retired: [], leftArmed: [] }),
     pauseNeedsHuman: async () => true,
     escalateGiveUp: async () => {},
     // Existing holder-recovery cases model a completed first turn. Without an

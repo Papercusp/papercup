@@ -71,6 +71,7 @@ import {
 } from '../goals/holder';
 import { GOAL_MODE } from '../modes/goal-session';
 import { setMode } from '../modes/store';
+import { retireSupersededGoalHolderModes } from '../goals/holder-handoff';
 import { readGoalHolderPortfolioAct } from '../goals/holder-attestation';
 
 const WS = 'ws-woe-p010';
@@ -1061,5 +1062,76 @@ describe('a stranded needs-human latch converges instead of latching forever (EI
         nowMs,
       ),
     ).resolves.toEqual({ kind: 'noop' });
+  }, 60_000);
+});
+
+describe('superseded holder GOAL rows are retired after the handoff window (WI-10005573)', () => {
+  async function impliedRows(ownerId: string, goalId: string) {
+    return await rootSql<{ mode: string }[]>`
+      SELECT mode FROM harness_shared.agent_modes
+       WHERE workspace_id = ${WS} AND owner_id = ${ownerId}
+         AND implied_by ->> 'mode' = ${GOAL_MODE} AND implied_by ->> 'subject' = ${goalId}`;
+  }
+
+  async function expireHandoff(goalId: string): Promise<void> {
+    await rootSql`
+      UPDATE harness_shared.agent_modes
+         SET goal_handoff_expires_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND mode = ${GOAL_MODE} AND subject = ${goalId}
+         AND goal_handoff_expires_at IS NOT NULL`;
+  }
+
+  it('keeps superseded rows inside the handoff window, then retires them and their implied posture', async () => {
+    const goalId = 'goal-superseded-retire';
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-first', goalId);
+    await attachHolder('su-second', goalId, 'su-first');
+    await attachHolder('su-third', goalId, 'su-second');
+    expect((await impliedRows('su-first', goalId)).length).toBeGreaterThan(0);
+
+    // Inside the elected holder's bounded handoff window nothing is retired:
+    // the predecessor may still be finishing its atomic handoff.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+    });
+    expect((await goalModeRows(goalId)).map((row) => row.owner_id).sort()).toEqual([
+      'su-first',
+      'su-second',
+      'su-third',
+    ]);
+
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: ['su-first', 'su-second'],
+      leftArmed: [],
+    });
+    const rows = await goalModeRows(goalId);
+    expect(rows.map((row) => row.owner_id)).toEqual(['su-third']);
+    expect(await impliedRows('su-first', goalId)).toEqual([]);
+    expect(await impliedRows('su-second', goalId)).toEqual([]);
+    expect((await impliedRows('su-third', goalId)).length).toBeGreaterThan(0);
+
+    // Idempotent: a second sweep finds nothing left to retire.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+    });
+  }, 60_000);
+
+  it('the respawner sweep retires superseded rows on a healthy goal without launching', async () => {
+    const goalId = 'goal-superseded-sweep';
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-old-holder', goalId);
+    await attachHolder('su-live-holder', goalId, 'su-old-holder');
+    sessions.set('su-old-holder', liveSignals());
+    sessions.set('su-live-holder', liveSignals());
+    await expireHandoff(goalId);
+
+    const { deps, launches } = drillDeps();
+    await runGoalHolderRespawnOnce(rootSql, deps);
+    expect(launches).toEqual([]);
+    expect((await goalModeRows(goalId)).map((row) => row.owner_id)).toEqual(['su-live-holder']);
+    expect(await impliedRows('su-old-holder', goalId)).toEqual([]);
   }, 60_000);
 });
