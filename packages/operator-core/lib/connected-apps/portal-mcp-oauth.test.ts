@@ -205,6 +205,21 @@ describe('portal MCP OAuth discovery (P-325)', () => {
 });
 
 describe('portal MCP OAuth flow (P-325)', () => {
+  it('refuses offline BYOC OAuth verbs with typed ingress alternatives', async () => {
+    const h = harness();
+    h.state.live = false;
+    Object.assign(h.deps, { resolveCustomerWorkspaceHosting: async (id: string) => id === WS ? 'byoc' : null });
+    for (const path of [`/api/workspaces/${WS}/oauth/register`, `/api/workspaces/${WS}/oauth/token`]) {
+      const response = await h.call(path, { method: 'POST', body: 'BYOC_SECRET' });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: 'byoc_plaintext_relay_refused',
+        alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+      });
+    }
+    expect(h.state.mints).toEqual([]);
+  });
+
   it('refuses to register or authorize for an offline workspace', async () => {
     const h = harness();
     const clientId = await register(h);

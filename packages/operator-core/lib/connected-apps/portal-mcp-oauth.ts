@@ -706,6 +706,8 @@ export interface PortalMcpOAuthDependencies {
   readonly store: PortalOAuthStore;
   /** The connector broker: liveness and the mint channel. */
   readonly port: AppRelayPort;
+  /** Server-side hosting lookup for a workspace whose connector is offline. */
+  readonly resolveCustomerWorkspaceHosting?: (customerWorkspaceId: string) => Promise<'byoc' | 'papercusp' | null>;
   /** The plane's own cookie-session resolver. */
   readonly resolvePrincipal: (headers: Headers) => Promise<PortalPrincipalResolution>;
   readonly now?: () => Date;
@@ -736,6 +738,17 @@ export async function handleHostedMcpOAuth(request: Request, deps: PortalMcpOAut
     if (method !== 'GET') return oauthErrorResponse('invalid_request', 'use GET', 405);
     const metadata = route.kind === 'resource-metadata' ? portalProtectedResourceMetadata(origin, id) : portalAuthorizationServerMetadata(origin, id);
     return Response.json(metadata, { headers: { 'cache-control': 'max-age=300' } });
+  }
+  // Metadata is public control data. Every OAuth verb can carry customer content or
+  // mint a secret, so refuse BYOC before reading a request body or touching the store.
+  const hostingConnector = deps.port.appConnector(id);
+  const hosting = hostingConnector?.binding.hosting ?? await deps.resolveCustomerWorkspaceHosting?.(id).catch(() => null);
+  if (hosting === 'byoc') {
+    return Response.json({
+      error: 'byoc_plaintext_relay_refused',
+      error_description: 'Use customer-controlled ingress or the sealed channel.',
+      alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+    }, { status: 403, headers: OAUTH_NO_STORE });
   }
   const verb = route.verb;
   const issuer = portalIssuer(origin, id);
