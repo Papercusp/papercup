@@ -36,6 +36,18 @@ vi.mock('../events/await/psu-pty-discovery', () => ({
   injectIntoHost: async () => true,
 }));
 
+// The interactive heal step repairs the session's CLAUDE_CONFIG_DIR first
+// (EI-13020). The real repair writes under ~/.papercusp/session-claude/<sid>, so
+// unmocked it (a) wrote real config dirs for these test sids into the owner's
+// HOME on every run, and (b) let real async fs I/O run inside the fake-timer
+// jitter test, where each await on real I/O lets virtual time drift past the
+// asserted send offsets (WI-10005327: [101,450,487] vs [89,427,446]). Keep the
+// heal path in-memory: the repair resolves immediately and reports no repair.
+const ensureInteractiveClaudeConfigMock = vi.fn(async () => ({ repaired: false }));
+vi.mock('../interactive-claude-config', () => ({
+  ensureInteractiveClaudeConfig: (...args: unknown[]) => ensureInteractiveClaudeConfigMock(...(args as [])),
+}));
+
 const RESTART = 1_000_000_000_000; // fixed operator-boot epoch ms
 const M = 60_000;
 const NOW = RESTART + 30 * M; // 30 min after the restart — well past the 5-min grace
@@ -621,6 +633,9 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         expect(j).toBeLessThanOrEqual(JITTER_MAX);
       }
       expect(out.healSent).toEqual(owners);
+      // The config repair ran through the in-memory mock, not the real HOME writer:
+      // if the module path drifts, vi.mock silently stops intercepting and this fails.
+      for (const owner of owners) expect(ensureInteractiveClaudeConfigMock).toHaveBeenCalledWith({ sid: owner });
       // Nothing fired immediately, and the three sends are strictly staggered.
       expect(callAtMs).toEqual([jitters[0], jitters[0] + jitters[1], jitters[0] + jitters[1] + jitters[2]]);
     } finally {
