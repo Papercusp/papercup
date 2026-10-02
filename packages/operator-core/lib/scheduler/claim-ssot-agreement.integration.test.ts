@@ -71,7 +71,7 @@ import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilitie
 import {
   ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
@@ -327,7 +327,7 @@ beforeAll(async () => {
   // EI-22040912157347872: the new SSOT/TS floor reads durable assignments and
   // adopted-name bindings. This focused DB did not previously install migration 140.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   // Every claim door asks readActiveOperationWorkerClaimBinding whether the claimant is a
   // blueprint operation worker; without adv_sessions that read is 'unavailable' and the door
   // fails CLOSED before any floor runs (WI-10003526). Present + empty => 'none', as for any
