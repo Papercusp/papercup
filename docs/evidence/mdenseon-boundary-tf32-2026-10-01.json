@@ -1513,8 +1513,8 @@
         "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
       }
     ],
-    "supersedesCurrentPins": "These six pins are current for the Node-closure unit. nativeLoaderClosurePreparation/nativeMappedObjectPreparation and earlier proofs are historical; all immutable model/export/reference/V7/V5/R4/V6/Nsight captures remain unchanged.",
-    "next": "runtime-source-v5 does not exist as of this read. Reuse the qualified completed runtime-source-v4 source/dependency baseline and copier, overlay ALL currently tested workers/builder/candidate/manifest guards/tests/CUDA fixture, pin copied Node/Python and launcher/capture recipes, qualify source paths and actual FILE worker boot before/after admission, then matched CUDA/MONOTONIC/runtime/closure preflight before fresh full-model capture.",
+    "supersedesCurrentPins": "These six pins describe the completed historical Node-closure unit. nativeObservationChildEnvRepair supersedes the worker MJS/input-trace-test pins and verifies the stronger actual Node closure control. Other four pins remain unchanged; immutable model/export/reference/V7/V5/R4/V6/Nsight captures remain unchanged.",
+    "next": "Completed R5 and fresh matched CUDA/MONOTONIC preflight are recorded in nativeRuntimeV5Preparation/nativeR5ProfilerClockQualification. Preserve this completed Node control; prepare a new immutable full-model launcher/capture recipe using R5 and complete raw stderr/actual terminal receipt, request/kernel joins and device evidence.",
     "limitations": [
       "This qualifies a model-free actual Node FILE-parent CPU fixture, not mDenseOn CUDA-model closure or GPU acceptance.",
       "Scope is file-backed glibc ELF/addons plus separately hashed kernel vDSO; arbitrary mmap/JIT and CUDA attribution remain separate.",
@@ -1526,6 +1526,405 @@
     "completeBeforeInferenceClosureVerified": false,
     "fullGpuPopulationComplete": false,
     "modelGpuCapacityBindingVerified": false
+  },
+  "nativeRuntimeV5Preparation": {
+    "status": "completed exit0; independent R5 source/dependency contents and FILE-worker paths/boot qualified without model inference",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5",
+    "workItem": "WI-10004540",
+    "completedAt": "2026-10-02T16:36:51.834074+00:00",
+    "contentReceipt": {
+      "bytes": 9720,
+      "sha256": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345"
+    },
+    "sourceReceipt": {
+      "bytes": 6306739,
+      "sha256": "964a37f5e24355d1d3db76102a6bb19ec26896509f16877658fd2daaf4bbbba7"
+    },
+    "freezeManifest": {
+      "bytes": 6647,
+      "sha256": "c598b3ae5525b0043678fbdee3cb1f054d37f93df007c7b349bf172a7c5964f3"
+    },
+    "recipe": {
+      "bytes": 14712,
+      "sha256": "285211bd4220494064761aff2a337dae8ec7c8182a14b250b34696a0390f7cb0"
+    },
+    "sourceRecordsChecked": 31405,
+    "dependencyRecordsChecked": 241451,
+    "independentRegularFilesChecked": 272472,
+    "overlays": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 30984,
+        "sha256": "14e0f79c408c8a2fb5dcad5423ada757b6778b272244e649d763ed505577e3ce"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.ts",
+        "bytes": 57686,
+        "sha256": "7c6d106c0cb3c99eb49b7ac6a3197281b721b942efdb7cb67203a22d07572817"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "bytes": 54805,
+        "sha256": "ffe65f5f2fa113171b62800e9bfe30f53093f2a040bd481bd8abcf64811607c8"
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 31953,
+        "sha256": "c6141d18129891099e719cf01f93d01cc81357c93e6591257c2ba219cb8d7d58"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "bytes": 35876,
+        "sha256": "0e59c763606be6a3e56b90ca807ddf233ea0893b514e97449c4bbe4e0b957cea"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "bytes": 30664,
+        "sha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41"
+      },
+      {
+        "path": "libs/generic/memory/src/mdenseon-embedder.ts",
+        "bytes": 3575,
+        "sha256": "b3bfc7fd1aefab3c9178eaa6d01d2fbed85a2a9b6c3fbc21626d4cfaafb2bc4b"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts",
+        "bytes": 55217,
+        "sha256": "528b712424fb3895da32e894df23017a5cff515afbbd19cb801a03b8f782b6cb"
+      },
+      {
+        "path": "libs/generic/memory/src/mdenseon-embedder.test.ts",
+        "bytes": 4057,
+        "sha256": "ceb75be956edc9fd8b7467701701a4f0b6c9d75eff1af9d5445b4eedf20f6954"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/fixtures/native-cuda-clock-preflight.py",
+        "bytes": 4479,
+        "sha256": "ad48a50b110cdec32b5d0fd78fa028a02946e0bd89872d0f0274c2013affcb30"
+      },
+      {
+        "path": "libs/generic/memory/src/embed-device.ts",
+        "bytes": 16832,
+        "sha256": "4be9125734e099f5fa50512436ef42079e083ece9a34a26bee75343f2201cc94"
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "bytes": 49773,
+        "sha256": "58ec56c40e61799ebf9f05d1ecc481818b607cdba62f46c1a7f17467b937d652"
+      }
+    ],
+    "node": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/bin/node",
+      "bytes": 129006184,
+      "sha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627"
+    },
+    "python": {
+      "actualSamplerPath": "/usr/bin/python3.12",
+      "copiedPath": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/python3-pinned",
+      "bytes": 8020928,
+      "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"
+    },
+    "pathPreflight": {
+      "bytes": 637,
+      "sha256": "998509150649a414612f614da7237a531f77737a7e1667864066570d49b96f53"
+    },
+    "workerBootPreflight": {
+      "bytes": 1380,
+      "sha256": "3748c234ad71b00ecb8f6841624b6695e320ca9842a6c61f6c8664ca9c80c022"
+    },
+    "workerBootAfterAdmission": {
+      "bytes": 1380,
+      "sha256": "ad6d71e9cf18abd3ede9fb6c73b6ad59c574cb52e0dac82bf54b4c0691232f38"
+    },
+    "nativeDriver": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/native-file-driver.mjs",
+      "bytes": 8280,
+      "sha256": "9b726d728d9473d5ad3ab56afb9f1259f73d3f64fa36a5a1e1c69658e78815f8"
+    },
+    "priorParentCheckpointArchive": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v5/parent-checkpoint-before-R5.json",
+    "priorParentCheckpointArchivePin": {
+      "bytes": 37334,
+      "sha256": "f2317186137469f4fbce6f5e2506a63a550e65de2494b5b2a48e5777dff86491"
+    },
+    "verification": "Native exec43152 terminal exit0; every source/dependency record checked for exact bytes/sha or link identity; regular files have distinct writable inode identities from R4. A separate read verified receipt/overlays/entrypoints/Node/Python/path/boots/driver pins and unchanged R4 receipts. Actual copied-Node FILE-parent worker readiness passed before and after pc-heavy admission with synthetic message suppressed; no model request forwarded. Existing tested Node fixture control reused by six identical current pins, no repeated completed control for recovery.",
+    "fileParentWorkerBootBeforeAndAfterAdmissionQualified": true,
+    "actualSamplerPythonPathPinned": true,
+    "copiedPythonActuallyUsedByClockSampler": false,
+    "freshModelCaptureRecipePrepared": false,
+    "nativeCudaModelInferencePerformed": false,
+    "nativeCudaModelClosureQualified": false,
+    "fullGpuPopulationComplete": false,
+    "reuse": "Completed qualified R4 and its pinned existing independent dependency copier; twelve tested/unchanged source overlays staged before copy. R4/V6/V7/V5 and historical model-free Nsight captures remain immutable."
+  },
+  "nativeR5ProfilerClockQualification": {
+    "status": "Fresh matched R5 model-free CUDA/MONOTONIC preflight completed exit0; three unique launch-to-call joins, RAW counterexample rejected",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/r5-cuda-clock-preflight-v1",
+    "qualification": {
+      "bytes": 2846,
+      "sha256": "b39205957ed3ccda958ead8d9dbba77485cd38ccabaaf90cbe1287cb0c374d6e"
+    },
+    "verifiedAt": "2026-10-02T16:37:59.198Z",
+    "R5Qualification": {
+      "bytes": 9720,
+      "sha256": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345"
+    },
+    "systemClockNs": "6533994075292",
+    "clockMapping": "unshifted/unnormalized session origin plus CUDA API launch nanoseconds matches CLOCK_MONOTONIC",
+    "bindings": [
+      {
+        "kernelId": "1",
+        "runTag": "cuda-clock-preflight:0"
+      },
+      {
+        "kernelId": "2",
+        "runTag": "cuda-clock-preflight:1"
+      },
+      {
+        "kernelId": "3",
+        "runTag": "cuda-clock-preflight:2"
+      }
+    ],
+    "artifacts": {
+      "recipe.sh": {
+        "bytes": 8121,
+        "sha256": "5cdbf2654eb8c461ce817b016aad0f6a4ea2f17446e122bd9de82204642b992f"
+      },
+      "operation.py": {
+        "bytes": 4479,
+        "sha256": "ad48a50b110cdec32b5d0fd78fa028a02946e0bd89872d0f0274c2013affcb30"
+      },
+      "operation.json": {
+        "bytes": 2871,
+        "sha256": "fa914ec78f035de9dd92dcea4fdcd90704b90b504266b4d53a6fdfc933cc9397"
+      },
+      "join-input.json": {
+        "bytes": 6547,
+        "sha256": "eeadb75acd1578b59febd2c0a45d6cecefef8eb2ea73a3df0fc6c084f159d30e"
+      },
+      "profile.sqlite": {
+        "bytes": 8015872,
+        "sha256": "fc44b727654fad278c57c2b3f9504c9fbd51fa3f316cd9a7f32f38b981d8c1e9"
+      },
+      "profile.nsys-rep": {
+        "bytes": 2374718,
+        "sha256": "eb4f4e4efe684c5637aeffc3936e7b9d6d448010b63958cadb8e339be1a91f52"
+      },
+      "profile.log": {
+        "bytes": 1235,
+        "sha256": "3fca922c73f151d4f629579b4e90fee851bba5e95ab980307ac8731df27f29cd"
+      },
+      "export.log": {
+        "bytes": 8126,
+        "sha256": "9dd8ca59e9bcd93efd5ed3dcd12bf8bf583de2fe6c7ecf01ce608bfa121da249"
+      },
+      "launch.json": {
+        "bytes": 1491,
+        "sha256": "55c03abfb9af759df3d6a7a43aa1d4d063a23ae7526d6e8d9111de22e9638c9f"
+      }
+    },
+    "guard": {
+      "bytes": 54805,
+      "sha256": "ffe65f5f2fa113171b62800e9bfe30f53093f2a040bd481bd8abcf64811607c8"
+    },
+    "canonicalGuardPassed": true,
+    "rawOriginControlRejected": true,
+    "modelInferencePerformed": false,
+    "limitations": "Three model-free cuBLAS calls on one process/native thread. Pretrained model request/kernel attribution, file-backed model DLL closure and actual model GPU UUID/PCI/capacity remain open. Export metadata explicitly TIME_NORMALIZE=false,TIME_SHIFT=0; ID decoder follows matched bundle cuda_kern_exec_trace.py; complete three-kernel census used."
+  },
+  "nativeCudaFullV1Attempt": {
+    "status": "failed exit1 before first retained native Run; raw target stderr/actual terminal receipt and profiler export retained",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-full-v1",
+    "workItem": "WI-10004540",
+    "defect": "WI-10005547",
+    "failedAt": "2026-10-02T16:44:43.163Z",
+    "activeCell": "single-short-query",
+    "error": "Error: native RAW clock probe failed: spawnSync /usr/bin/python3.12 ENOBUFS",
+    "modelProcessId": 4150090,
+    "R5Receipt": "a3894cdaa2ffef58fc73ffd2b0f678002d7f64ce71678dc83226aa0e241a2345",
+    "terminalReceipt": {
+      "bytes": 304,
+      "sha256": "e870d1972a9047f8931f36ed013cb28dcaf3dcdeaf20aaf074b72eb57f5f269a"
+    },
+    "stderr": {
+      "bytes": 43433,
+      "sha256": "7b3f210991c61da1f66dac97200102dfcc90a20f6ce7a955b35bcfeba1e4f683"
+    },
+    "completion": {
+      "bytes": 2966,
+      "sha256": "c6b9251e78be5d7fa2a6e6a906f6755400a23e6fb915585e508e9a032b95315f"
+    },
+    "recipe": {
+      "bytes": 7141,
+      "sha256": "4cda86e6f6ac89e8710088f9e1c7b16df85956dd3ebb2c16f0344bc72f1b7071"
+    },
+    "driverSource": {
+      "bytes": 6568,
+      "sha256": "d4ca6964728bc5ccf3d2919c68f7e1c1cae7d5859c1fc364bc487c0c603bef38"
+    },
+    "captureWrapper": {
+      "bytes": 2045,
+      "sha256": "88d65f7ce05af679b0cf97c906b55a6f202cf439326e0b41b8155f32326aad66"
+    },
+    "profileDatabase": {
+      "bytes": 8425472,
+      "sha256": "14657adc097ae2fcd5a44e6e9b9b33fec116184be15a3dbb93403ba0c4d2fde1"
+    },
+    "profileReport": {
+      "bytes": 2414711,
+      "sha256": "4c1020ca767f7f77d8c7830f52c55ffcc8465d1825306a427e441ad1c0dd3e0c"
+    },
+    "captureExitCode": 1,
+    "exportExitCode": 0,
+    "completedSingles": [],
+    "nativeRunEvidenceRetained": false,
+    "fullGpuPopulationComplete": false,
+    "completeBeforeInferenceClosureVerified": false,
+    "scope": "Fresh full-population attempt reached real source/FILE-worker preflight and input tracing but no native Run receipt. First clock sampler failed; do not attribute to CUDA allocation or mark any vectors/8192/request-kernel acceptance measured."
+  },
+  "nativeObservationChildEnvRepair": {
+    "status": "Durable observation-child environment fix verified; next fresh runtime/model capture remains open",
+    "workItem": "WI-10005547",
+    "parent": "WI-10004540",
+    "rootCause": "Native clock spawnSync inherits LD_DEBUG=files and Nsight-injected LD_PRELOAD libraries. Child loader diagnostics exceed the 4096-byte combined buffer, produce ENOBUFS/SIGTERM and prevent its bounded JSON observation before native Run. Plain LD_DEBUG alone returned3275 bytes/pass; matched-profiler injection control returned4508 stderr bytes/ENOBUFS. Same injection with only LD_DEBUG removed returned0 stderr bytes and clock JSON/exit0.",
+    "fix": "Reuse both existing observation subprocess call sites with a shared internal nativeObservationChildEnv that removes LD_DEBUG and LD_DEBUG_OUTPUT from copied child env. Keep parent model loader diagnostics/ordering and profiler environment intact; maintain bounded buffers and genuine error refusal. GPU query child uses the same isolation rule.",
+    "detectorFailure": "Existing actual FILE-worker CPU closure control enabled only files diagnostics without profiler injection and its clock child stderr fit3275B. Add real overflow-positive control using files/libs/versions, require corrected worker actual requests and complete loader closure still pass, and make existing capacity-query fixture refuse leaked diagnostic env.",
+    "distinguishingControl": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/profiler-clock-child-distinguishing-v1.json",
+      "bytes": 1939,
+      "sha256": "a680bd64c895ee157e23925231fe2807231c58b40bd4c79bfa140afb51383a5e",
+      "hypothesis": "Nsight-injected loader diagnostics overflow observation child buffer",
+      "alternativeHypothesis": "Independent Python/clock failure",
+      "actualObservation": [
+        {
+          "mode": "inherited-loader",
+          "status": null,
+          "signal": "SIGTERM",
+          "errorCode": "ENOBUFS",
+          "stdoutBytes": 0,
+          "stderrBytes": 4508,
+          "stderrHasLoaderDiagnostic": true,
+          "stdout": ""
+        },
+        {
+          "mode": "scrubbed-loader",
+          "status": 0,
+          "signal": null,
+          "errorCode": null,
+          "stdoutBytes": 62,
+          "stderrBytes": 0,
+          "stderrHasLoaderDiagnostic": false,
+          "stdout": "[\"7161390640044\", \"7160349500680\", \"7161390641827\", \"3.12.3\"]\n"
+        }
+      ]
+    },
+    "verification": {
+      "ok": true,
+      "runId": "5c1c1051-9429-4082-aa5a-e77fe5c26e14",
+      "root": "repository:papercusp",
+      "passed": 132,
+      "failed": 0,
+      "skipped": 0,
+      "files": 2,
+      "failures": [],
+      "failuresTruncated": false,
+      "durationMs": 5658,
+      "byFile": {
+        "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts": {
+          "passed": 98,
+          "failed": 0,
+          "skipped": 0,
+          "collectionFailed": false,
+          "runId": 20542857
+        },
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts": {
+          "passed": 34,
+          "failed": 0,
+          "skipped": 0,
+          "collectionFailed": false,
+          "runId": 20542855
+        }
+      },
+      "testRunIds": [
+        20542855,
+        20542857
+      ],
+      "rootSource": "requested"
+    },
+    "focusedRegression": {
+      "ok": true,
+      "runId": "7e6ea5f2-3192-41c3-8130-1272230be8b0",
+      "root": "repository:papercusp",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 33,
+      "files": 1,
+      "failures": [],
+      "failuresTruncated": false,
+      "durationMs": 1225,
+      "byFile": {
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts": {
+          "passed": 1,
+          "failed": 0,
+          "skipped": 33,
+          "collectionFailed": false,
+          "runId": 20542838
+        }
+      },
+      "testRunIds": [
+        20542838
+      ],
+      "rootSource": "requested"
+    },
+    "typecheck": {
+      "ok": true,
+      "project": "libs/generic/memory/tsconfig.json",
+      "engine": "tsc-cli",
+      "serviceFallback": "declined: declaration-emit-project (service parity unverified for declaration diagnostics)",
+      "errorCount": 0,
+      "scopedToFiles": [
+        "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts"
+      ],
+      "scopedVerdict": "requested-files-clean",
+      "scopedVerdictIncomplete": false,
+      "errorsInRequestedFiles": 0,
+      "totalErrorCount": 0,
+      "otherErrorCount": 0,
+      "otherErrors": [],
+      "otherErrorsTruncated": false,
+      "otherByFile": [],
+      "otherByFileTruncated": false,
+      "otherFilesWithErrors": 0,
+      "unattributedErrorCount": 0,
+      "compilerExitCode": 0,
+      "scopeCaveat": "SCOPED RUN — ok/errorCount/errors/exitCode describe the requested files. Other loaded import-graph diagnostics remain under otherErrorCount/otherErrors and do not fail that requested-file verdict; parser/global diagnostics or missing requested paths make scopedVerdict incomplete instead. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.",
+      "errors": [],
+      "errorsTruncated": false,
+      "byFile": [],
+      "byFileTruncated": false,
+      "filesWithErrors": 0,
+      "syntaxBroken": [],
+      "semanticCheckIncomplete": false,
+      "durationMs": 1215,
+      "exitCode": 0
+    },
+    "sources": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "bytes": 31426,
+        "sha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39"
+      }
+    ],
+    "tests": [
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts",
+        "bytes": 32651,
+        "sha256": "0337ee92b394fffd9f63eb51eb85915de52c88f0d735f79bef32e3212e231d29"
+      }
+    ],
+    "currentSourcePinSupersession": "These two new pins supersede the worker MJS/input-trace-test current-pin assertion in nativeNodeLoaderClosureQualification; other four six-unit pins remain unchanged. Full132/0/0 suite verifies actual Node closure under the stronger overflowing-loader environment. R5/R4 and every capture remain immutable.",
+    "nativeCudaModelInferenceSucceeded": false,
+    "nativeModelCompleteClosureVerified": false,
+    "next": "Prepare independent R6 from completed R5, overlay the two verified repair pins plus retained current sources/fixtures, qualify FILE-worker before/after admission, then new full capture. Preserve failed native-cuda-full-v1."
   },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
