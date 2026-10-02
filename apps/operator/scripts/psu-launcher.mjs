@@ -162,6 +162,7 @@ import { SU_TIER_ROLES } from "../../../packages/operator-core/lib/su-tier-roles
 // carry two byte-identical copies of its regex pair (cloudModelBackendHint,
 // validateModelSpec); both now call it, so the gate cannot drift from them.
 import { isLocalModelSpec } from "../../../packages/operator-core/lib/local-model-spec.mjs";
+import { isProviderCredentialEnvName } from "../../../packages/operator-core/lib/personal-vault/provider-egress.mjs";
 import { EXTERNAL_SCHEDULES } from "../../../packages/operator-core/lib/schedule-descriptors.mjs";
 import {
   SU_CONTEXT_SIZE,
@@ -11114,6 +11115,14 @@ export function sanitizeInheritedEnv(env) {
     "CLAUDE_CONFIG_DIR",
   ]) {
     delete out[key];
+  }
+  // P-007 / BAR R-11 (plan personal-data-reader-set-labels-2026-10-01): mail,
+  // chat, calendar and social provider credentials live in the sidecars only.
+  // An agent that inherited one could reach a provider around the gated verbs
+  // that check a restricted document's reader set. The strip is unconditional
+  // because a session becomes restricted mid-run, after its env is fixed.
+  for (const key of Object.keys(out)) {
+    if (isProviderCredentialEnvName(key)) delete out[key];
   }
   return out;
 }
