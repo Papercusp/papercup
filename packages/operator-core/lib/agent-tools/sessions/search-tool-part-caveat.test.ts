@@ -22,6 +22,7 @@
  *   lib/agent-tools/sessions/search-tool-part-caveat.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { deferredSqlAnswer } from '../../../test/_fake-sql';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -59,11 +60,13 @@ interface ParsedResult {
  *  a positional-ordering regression before it shipped). */
 function makeTx(results: unknown[][]) {
   let i = 0;
-  const tx = vi.fn(async (..._args: unknown[]) => {
+  // deferredSqlAnswer: a result is handed out only when a query is AWAITED
+  // (never for an interpolated fragment); D-006 ledger reads take no slot.
+  const tx = vi.fn((..._args: unknown[]) => deferredSqlAnswer(_args, () => {
     const r = results[i] ?? [];
     i += 1;
     return r;
-  });
+  }));
   return {
     tx,
     sqlTexts: () =>
@@ -184,12 +187,12 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
 
   it('is a best-effort probe — a failing query never breaks the search', async () => {
     let call = 0;
-    const tx = vi.fn(async (..._args: unknown[]) => {
+    const tx = vi.fn((..._args: unknown[]) => deferredSqlAnswer(_args, () => {
       call += 1;
       if (call === 1) return []; // main verbatim query
       if (call === 2) return [{ session_count: '1', earliest: null }]; // owner-scope aggregate
       throw new Error('session_turn_parts unavailable');
-    });
+    }));
     const res = await (
       tool as unknown as {
         handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;

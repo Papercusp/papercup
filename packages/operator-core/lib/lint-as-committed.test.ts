@@ -588,6 +588,15 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       // exact bytes the release gate itself would see. That equality is the whole
       // point of this tool.
       expect(extracted).toBe(committed);
+      // Populating a standalone clone is not enough: the parent repository must mark
+      // the submodule active or recursive Git scanners silently omit its real files.
+      const tracked = execFileSync('git', ['ls-files', '-z', '--recurse-submodules'], {
+        cwd: workRoot,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).split('\0');
+      expect(tracked).toContain(subFile);
       // WI-10004898: the extracted tree must be CLEAN to the same `git status` the test-run
       // reporter samples for worktree_dirty, or no run inside it can ever be current proof.
       // The linked node_modules are what dirtied it, so first prove the links exist (a tree

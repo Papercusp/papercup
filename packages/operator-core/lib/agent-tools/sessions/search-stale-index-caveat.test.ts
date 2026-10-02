@@ -18,6 +18,7 @@
  *   lib/agent-tools/sessions/search-stale-index-caveat.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { deferredSqlAnswer } from '../../../test/_fake-sql';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -56,11 +57,13 @@ interface ParsedResult {
 
 function makeTx(results: unknown[][]) {
   let i = 0;
-  return vi.fn(async (..._args: unknown[]) => {
+  // deferredSqlAnswer: a result is handed out only when a query is AWAITED
+  // (never for an interpolated fragment); D-006 ledger reads take no slot.
+  return vi.fn((..._args: unknown[]) => deferredSqlAnswer(_args, () => {
     const r = results[i] ?? [];
     i += 1;
     return r;
-  });
+  }));
 }
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {

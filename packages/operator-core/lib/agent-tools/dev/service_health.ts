@@ -615,7 +615,7 @@ export default defineTool({
       },
     },
     returns:
-      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
+      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision, unitStates?, unitsUnknown?, scopesUnavailable? }. The last three fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",
@@ -683,6 +683,9 @@ export default defineTool({
       services: z.unknown().optional(),
       telemetry: z.unknown().optional(),
       supervision: z.unknown().optional(),
+      unitStates: z.unknown().optional(),
+      unitsUnknown: z.unknown().optional(),
+      scopesUnavailable: z.unknown().optional(),
     })
     .passthrough(),
   async handler({ units, scope }) {
