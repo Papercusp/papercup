@@ -37,7 +37,28 @@ export function summarizeHeapRetainers(input: Uint8Array, { top, perClass, retai
         maxRetainers: number;
     };
     groups: {
-        nodes: any;
+        nodes: {
+            retainers: {
+                retainsIndex: number;
+                edgeType: string;
+                index: any;
+                id: any;
+                type: string;
+                class: string;
+                selfSizeBytes: number;
+                retainedSizeBytes: number;
+                children: any;
+            }[];
+            retainerCount: number;
+            retainersTruncated: boolean;
+            index: any;
+            id: any;
+            type: string;
+            class: string;
+            selfSizeBytes: number;
+            retainedSizeBytes: number;
+            children: any;
+        }[];
         class: string;
         count: number;
         selfSizeBytes: number;

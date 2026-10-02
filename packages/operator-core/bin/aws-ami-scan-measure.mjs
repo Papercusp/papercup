@@ -30,9 +30,10 @@ export const AWS_AMI_DESCRIPTION_PATTERN = /^papercusp-workspace-host (\S+) rele
 export const PAPERCUSP_BUNDLE_PATH = '/opt/papercusp';
 
 /**
- * Packages whose installed versions are reported as evidence. Both the Ubuntu names the
- * contract still lists and the RPM names the CentOS-Stream bootc image actually ships, so
- * the scan shows which ones are really present (reconciliation: WI-10005605).
+ * Packages whose installed versions are reported as evidence: the RPM names in
+ * AWS_AMI_REQUIRED_GUEST_TOOLS (aws-ami-release.ts), which is what the CentOS Stream 9
+ * bootc image installs (WI-10005605). Mirrored rather than imported because this bin
+ * runs without the TypeScript toolchain; the scan test pins the two lists together.
  */
 export const GUEST_PACKAGE_PROBES = Object.freeze([
   'acl',
@@ -44,8 +45,6 @@ export const GUEST_PACKAGE_PROBES = Object.freeze([
   'minisign',
   'nftables',
   'openssh-server',
-  'ufw',
-  'unattended-upgrades',
 ]);
 
 /** Validate the adapter's stdin payload; returns the exact identity fields to echo back. */

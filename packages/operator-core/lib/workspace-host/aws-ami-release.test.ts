@@ -355,7 +355,7 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
       },
       guestTools: AWS_AMI_REQUIRED_GUEST_TOOLS.filter((tool) => tool !== this.missingTool).map((name) => ({
         name,
-        version: name === 'aws-ssm-agent' ? '3.3.3050.0' : '1',
+        version: name === 'amazon-ssm-agent' ? '3.3.3050.0' : '1',
       })),
       launchAccountIds: this.permissions.get(region) ?? [],
       snapshots: [
@@ -489,8 +489,8 @@ describe('AWS workspace-host AMI release', () => {
 
   it('fails closed before publication when a required guest tool or exact KMS policy is absent', async () => {
     const missingTool = new FakeAdapter();
-    missingTool.missingTool = 'aws-ssm-agent';
-    await expect(executeAwsAmiRelease(request(), missingTool)).rejects.toThrow('missing guest tool aws-ssm-agent');
+    missingTool.missingTool = 'amazon-ssm-agent';
+    await expect(executeAwsAmiRelease(request(), missingTool)).rejects.toThrow('missing guest tool amazon-ssm-agent');
     expect(missingTool.calls).not.toContain('activate-pins');
 
     const wrongKms = new FakeAdapter();

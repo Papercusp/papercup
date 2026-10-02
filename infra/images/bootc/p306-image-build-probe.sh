@@ -210,7 +210,8 @@ sect "4. packages — the substitutions and the SONAME providers"
 # replacements are what the port claims, so assert the replacements are THERE
 # rather than that the originals are absent.
 for p in minisign nftables dnf-automatic zstd acl sudo openssh-server jq curl \
-         google-compute-engine google-compute-engine-oslogin google-guest-agent; do
+         google-compute-engine google-compute-engine-oslogin google-guest-agent \
+         amazon-ssm-agent; do
   if [[ -n "$(in_image "rpm -q --qf '%{NAME}' $p 2>/dev/null | grep -Fx $p")" ]]; then
     pass "installed: $p"
   else
@@ -304,13 +305,29 @@ else
        "loadability check above is blind, so its PASS carries no information"
 fi
 for u in papercusp-host-prepare.service nftables.service dnf-automatic.timer \
-         sshd.service google-guest-agent.service google-oslogin-cache.timer; do
+         sshd.service google-guest-agent.service google-oslogin-cache.timer \
+         amazon-ssm-agent.service; do
   if [[ -n "$(in_image "systemctl is-enabled $u 2>/dev/null | grep -Fx enabled")" ]]; then
     pass "enabled: $u"
   else
     fail "NOT enabled: $u"
   fi
 done
+# WI-10005605: one image serves every cloud, so the SSM agent must be skipped off EC2
+# (the drop-in), and its RPM-shipped /var/lib/amazon must not be baked (bootc lint).
+ssm_condition="$(in_image "systemctl show -p ConditionFirmware --value amazon-ssm-agent.service 2>/dev/null")"
+if [[ "$ssm_condition" == *'smbios-field(sys_vendor = "Amazon EC2")'* ]] \
+   || [[ "$ssm_condition" == *'smbios-field(sys_vendor = Amazon EC2)'* ]]; then
+  pass "amazon-ssm-agent.service is gated to EC2 firmware"
+else
+  fail "amazon-ssm-agent.service is NOT gated to EC2 (ConditionFirmware='$ssm_condition')"
+fi
+if [[ -z "$(in_image "test -e /var/lib/amazon && echo present")" ]] \
+   && [[ -n "$(in_image "grep -Fx 'd /var/lib/amazon/ssm 0750 root root -' /usr/lib/tmpfiles.d/papercusp-amazon-ssm-agent.conf")" ]]; then
+  pass "/var/lib/amazon/ssm comes from tmpfiles.d, not image content"
+else
+  fail "/var/lib/amazon is baked into the image or its tmpfiles.d entry is missing"
+fi
 nftables_config="$(in_image "cat /etc/sysconfig/nftables.conf")"
 if [[ "$nftables_config" == 'include "/etc/nftables/papercusp-workspace-host.nft"' ]]; then
   pass "committed nftables config loads the Papercusp ruleset"

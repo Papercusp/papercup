@@ -101,7 +101,9 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
   // "unreachable". Reduce panic output to fixed kinds and numeric evidence;
   // decoder messages can quote private input and must never be persisted.
   init_panic_hook();
-  let graph, phase = 'decode-bytes';
+  /** @type {import('@vscode/v8-heap-parser').Graph | undefined} */
+  let graph;
+  let phase = 'decode-bytes';
   const panic = { kind: 'unclassified', source: '', allocationBytes: 0, length: 0, index: 0 };
   const consoleError = console.error;
   console.error = (...args) => {
@@ -169,9 +171,11 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
     // Never include the decoder's message: it can quote private input. Phase
     // and error class are enough to distinguish decode from graph failures.
     const wasm = Object.getOwnPropertyDescriptor(heapParser.default ?? heapParser, '__wasm')?.value;
+    const wasmFrames = cause instanceof Error ? [...(cause.stack ?? '').matchAll(/wasm-function\[(\d+)\]:(0x[a-f0-9]+)/g)]
+      .slice(0, 16).map(match => ({ functionIndex: Number(match[1]), offset: match[2] })) : [];
     throw Object.assign(new Error('Heap retainer analysis failed at ' + phase + ' (' +
       (cause instanceof Error ? cause.name : 'unknown') + ')'), {
-      diagnostic: { phase, inputBytes: input.byteLength, wasmMemoryBytes: wasm?.memory?.buffer?.byteLength ?? null, panic },
+      diagnostic: { phase, inputBytes: input.byteLength, wasmMemoryBytes: wasm?.memory?.buffer?.byteLength ?? null, panic, wasmFrames },
     });
   } finally { console.error = consoleError; graph?.free(); }
 }

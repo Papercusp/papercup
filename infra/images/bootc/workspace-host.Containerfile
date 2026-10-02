@@ -103,6 +103,17 @@ ARG PAPERCUSP_RUNTIME_READ_GROUP=papercusp-runtime-read
 #     look correct inside RUN, then revert after COMMIT. Replace both with fresh
 #     inodes in this same layer; the P-306 probe checks the committed image.
 COPY papercusp-google-oslogin.conf /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf
+# AWS transport (WI-10005605): amazon-ssm-agent is the session/command channel the AWS
+# provider and its connection profile require. AWS ships it as a standalone signed RPM,
+# not from a dnf repository, so it is pinned by VERSION and by the SHA-256 of the exact
+# bytes (measured 2026-10-02 from the HTTPS endpoint below; RPM header signed with AWS
+# key id 88d19d46). Bumping the version means re-measuring the digest; a mismatch
+# fails the build instead of baking unverified bytes. The drop-in skips the unit off
+# EC2 and the tmpfiles entry replaces the RPM's /var/lib/amazon/ssm (see each file).
+ARG AMAZON_SSM_AGENT_VERSION=3.3.5390.0
+ARG AMAZON_SSM_AGENT_RPM_SHA256=85369679511b67f8f01824043ae17a679b6f21edd78229ccd1d5acd6c347f82f
+COPY papercusp-amazon-ssm-agent-ec2-only.conf /usr/lib/systemd/system/amazon-ssm-agent.service.d/papercusp-ec2-only.conf
+COPY papercusp-amazon-ssm-agent.tmpfiles.conf /usr/lib/tmpfiles.d/papercusp-amazon-ssm-agent.conf
 RUN set -eux; \
     printf '%s\n' \
       '[google-compute-engine]' \
@@ -160,6 +171,12 @@ RUN set -eux; \
          --setopt=tsflags=noscripts \
          --enablerepo=google-compute-engine \
          google-compute-engine \
+    && curl -fsSL --retry 3 -o /tmp/amazon-ssm-agent.rpm \
+         "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/${AMAZON_SSM_AGENT_VERSION}/linux_amd64/amazon-ssm-agent.rpm" \
+    && printf '%s  %s\n' "$AMAZON_SSM_AGENT_RPM_SHA256" /tmp/amazon-ssm-agent.rpm | sha256sum -c - \
+    && dnf -y install --setopt=install_weak_deps=False /tmp/amazon-ssm-agent.rpm \
+    && rm -f /tmp/amazon-ssm-agent.rpm \
+    && test "$(rpm -q --qf '%{VERSION}' amazon-ssm-agent)" = "$AMAZON_SSM_AGENT_VERSION" \
     && found_kernel=0 \
     && for modules_dir in /usr/lib/modules/*; do \
          test -d "$modules_dir" || continue; \
@@ -180,6 +197,7 @@ RUN set -eux; \
     && test "$found_kernel" -gt 0 \
     && rpm -q google-compute-engine google-compute-engine-oslogin google-guest-agent \
     && systemctl enable google-guest-agent.service google-oslogin-cache.timer \
+    && systemctl enable amazon-ssm-agent.service \
     && dnf clean all \
     `# Scrub dnf/subscription-manager residue from /var and /run.` \
     `# Not tidiness. bootc container lint fails three separate checks on it` \
@@ -188,7 +206,7 @@ RUN set -eux; \
     `# there is not image content in any useful sense — it is either discarded or` \
     `# it shadows the host's own state. A dnf repo cache baked into /var/lib/dnf is` \
     `# the "looks present, is not deployed" class this port keeps running into.` \
-    && rm -rf /var/cache/dnf /var/lib/dnf /var/google-users.d \
+    && rm -rf /var/cache/dnf /var/lib/dnf /var/google-users.d /var/lib/amazon \
               /var/log/dnf.* /var/log/hawkey.log \
               /var/log/rhsm /var/lib/rhsm /run/rhsm /var/cache/ldconfig \
     && test "$(rpm --eval '%{_dbpath}')" = /usr/share/rpm \
@@ -200,7 +218,8 @@ RUN set -eux; \
     && install -m 0644 /tmp/papercusp-rpmdb.sqlite /usr/share/rpm/rpmdb.sqlite \
     && rm -f /tmp/papercusp-rpmdb.sqlite \
     && rpm -q minisign dnf-automatic alsa-lib libatomic \
-              google-compute-engine google-compute-engine-oslogin google-guest-agent
+              google-compute-engine google-compute-engine-oslogin google-guest-agent \
+              amazon-ssm-agent
 
 # ── Layer 2: the three identities (D-043 / D-248 / D-251) ─────────────────────
 #

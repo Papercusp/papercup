@@ -436,17 +436,17 @@ cold p95 at most 1.75x + 500 ms, and throughput at 8 concurrent callers at least
 
 | Metric     | Callers | Control | Candidate | Limit   | Result |
 | ---------- | ------- | ------- | --------- | ------- | ------ |
-| warm p50   | 1       | 633 ms  | 643 ms    | 743 ms  | pass   |
-| warm p95   | 1       | 951 ms  | 1074 ms   | 1214 ms | pass   |
-| warm p99   | 1       | 1740 ms | 1428 ms   | 2660 ms | pass   |
-| cold p95   | 1       | 4159 ms | 4509 ms   | 7779 ms | pass   |
-| warm p50   | 8       | 2363 ms | 2113 ms   | 2733 ms | pass   |
-| warm p95   | 8       | 3707 ms | 3265 ms   | 4659 ms | pass   |
-| warm p99   | 8       | 4171 ms | 4148 ms   | 6307 ms | pass   |
-| cold p95   | 8       | 4494 ms | 4739 ms   | 8365 ms | pass   |
-| throughput | 8       | 2.95/s  | 3.28/s    | 2.36/s  | pass   |
+| warm p50   | 1       | 275 ms  | 275 ms    | 331 ms  | pass   |
+| warm p95   | 1       | 601 ms  | 573 ms    | 777 ms  | pass   |
+| warm p99   | 1       | 1194 ms | 1102 ms   | 1842 ms | pass   |
+| cold p95   | 1       | 4047 ms | 5146 ms   | 7582 ms | pass   |
+| warm p50   | 8       | 652 ms  | 594 ms    | 765 ms  | pass   |
+| warm p95   | 8       | 940 ms  | 876 ms    | 1200 ms | pass   |
+| warm p99   | 8       | 1080 ms | 1082 ms   | 1669 ms | pass   |
+| cold p95   | 8       | 4571 ms | 4714 ms   | 8500 ms | pass   |
+| throughput | 8       | 10.47/s | 10.50/s   | 8.37/s  | pass   |
 
-Evidence: `docs/evidence/p013-workload-a-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-a-2026-10-01.json`.
 
 Not proven by this workload:
 
@@ -474,23 +474,23 @@ Not proven by this workload:
 * Actual-model latency: this matrix uses a deterministic fixture worker only.
 * Absolute latency on an idle box: the box was shared with fleet work throughout; only the paired candidate/control ratio is graded.
 
-### C. Four-step conditional program — FAIL 6/9
+### C. Four-step conditional program — FAIL 2/9
 
 | Metric     | Callers | Control  | Candidate | Limit    | Result |
 | ---------- | ------- | -------- | --------- | -------- | ------ |
-| warm p50   | 1       | 46 ms    | 47 ms     | 80 ms    | pass   |
-| warm p95   | 1       | 52 ms    | 95 ms     | 115 ms   | pass   |
-| warm p99   | 1       | 54 ms    | 101 ms    | 182 ms   | pass   |
-| cold p95   | 1       | 83 ms    | 233 ms    | 646 ms   | pass   |
-| warm p50   | 8       | 46 ms    | 93 ms     | 80 ms    | fail   |
-| warm p95   | 8       | 54 ms    | 122 ms    | 118 ms   | fail   |
-| warm p99   | 8       | 59 ms    | 148 ms    | 188 ms   | pass   |
-| cold p95   | 8       | 82 ms    | 274 ms    | 643 ms   | pass   |
-| throughput | 8       | 149.94/s | 72.93/s   | 119.95/s | fail   |
+| warm p50   | 1       | 46 ms    | 92 ms     | 80 ms    | fail   |
+| warm p95   | 1       | 54 ms    | 104 ms    | 117 ms   | pass   |
+| warm p99   | 1       | 62 ms    | 231 ms    | 192 ms   | fail   |
+| cold p95   | 1       | 131 ms   | 1137 ms   | 730 ms   | fail   |
+| warm p50   | 8       | 46 ms    | 105 ms    | 80 ms    | fail   |
+| warm p95   | 8       | 63 ms    | 166 ms    | 128 ms   | fail   |
+| warm p99   | 8       | 82 ms    | 235 ms    | 223 ms   | fail   |
+| cold p95   | 8       | 107 ms   | 491 ms    | 687 ms   | pass   |
+| throughput | 8       | 141.43/s | 57.38/s   | 113.15/s | fail   |
 
-Evidence: `docs/evidence/p013-workload-c-final-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-c-snap-2026-10-02.json`.
 
-This workload does not meet its budget: warm p50 at 8 callers, warm p95 at 8 callers, throughput at 8 callers fail. It stays graded against the same control and limits as the other workloads (plan decision D-036). The remaining cost is in the canonical work-item write path, and it is tracked as WI-10003818.
+This workload does not meet its budget: warm p50, warm p99 and cold p95 at 1 caller, and warm p50, warm p95, warm p99 and throughput at 8 callers fail. This grade is the snapshot-runner re-measure that replaces the 2026-09-29 result (plan decisions D-051 and D-059). It stays graded against the same control and limits as the other workloads (plan decision D-036). The 2026-09-29 analysis placed the 8-caller cost in the canonical work-item write path. The 1-caller misses first appear in this re-measure and are not yet attributed. Both are tracked as WI-10003818.
 
 Not proven by this workload:
 
@@ -502,17 +502,17 @@ Not proven by this workload:
 
 | Metric     | Callers | Control | Candidate | Limit   | Result |
 | ---------- | ------- | ------- | --------- | ------- | ------ |
-| warm p50   | 1       | 81 ms   | 108 ms    | 171 ms  | pass   |
-| warm p95   | 1       | 102 ms  | 120 ms    | 279 ms  | pass   |
-| warm p99   | 1       | 132 ms  | 127 ms    | 497 ms  | pass   |
-| cold p95   | 1       | 234 ms  | 421 ms    | 1585 ms | pass   |
-| warm p50   | 8       | 205 ms  | 189 ms    | 357 ms  | pass   |
-| warm p95   | 8       | 247 ms  | 258 ms    | 533 ms  | pass   |
-| warm p99   | 8       | 299 ms  | 279 ms    | 873 ms  | pass   |
-| cold p95   | 8       | 291 ms  | 468 ms    | 1727 ms | pass   |
-| throughput | 8       | 38.63/s | 39.82/s   | 25.11/s | pass   |
+| warm p50   | 1       | 97 ms   | 115 ms    | 196 ms  | pass   |
+| warm p95   | 1       | 144 ms  | 181 ms    | 352 ms  | pass   |
+| warm p99   | 1       | 232 ms  | 218 ms    | 723 ms  | pass   |
+| cold p95   | 1       | 383 ms  | 399 ms    | 1958 ms | pass   |
+| warm p50   | 8       | 292 ms  | 241 ms    | 488 ms  | pass   |
+| warm p95   | 8       | 442 ms  | 372 ms    | 874 ms  | pass   |
+| warm p99   | 8       | 493 ms  | 503 ms    | 1309 ms | pass   |
+| cold p95   | 8       | 332 ms  | 481 ms    | 1829 ms | pass   |
+| throughput | 8       | 24.36/s | 29.92/s   | 15.84/s | pass   |
 
-Evidence: `docs/evidence/p013-workload-d-2026-09-29.json`.
+Evidence: `docs/evidence/p013-workload-d-snap-2026-10-02.json`.
 
 Not proven by this workload:
 
