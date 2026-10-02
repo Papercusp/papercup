@@ -41,7 +41,7 @@ const nonKernelNvdFinding = {
 
 const tempDirs: string[] = [];
 
-function runGate(matches: unknown[]) {
+function runGate(matches: unknown[], opts: { secretScanExit?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'release-supply-chain-gate-'));
   tempDirs.push(dir);
   const bin = join(dir, 'bin');
@@ -83,6 +83,17 @@ function runGate(matches: unknown[]) {
   );
   const podmanCallLog = join(dir, 'podman-calls.log');
   writeFileSync(podmanCallLog, '');
+  writeFileSync(
+    join(bin, 'secret-scan'),
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'printf "secret-scan %s\\n" "$*" >> "$PODMAN_CALL_LOG"',
+      'exit "$SECRET_SCAN_EXIT"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
   writeFileSync(
     join(bin, 'syft'),
     [
@@ -142,6 +153,10 @@ function runGate(matches: unknown[]) {
         GRYPE_FIXTURE: fixture,
         SYFT_BIN: join(bin, 'syft'),
         GRYPE_BIN: join(bin, 'grype'),
+        // The real scanner exports the image rootfs through `sudo -n podman`; the stub records
+        // its argv in the same call log so ordering against cosign is observable.
+        SECRET_SCAN_BIN: join(bin, 'secret-scan'),
+        SECRET_SCAN_EXIT: String(opts.secretScanExit ?? 0),
       },
       encoding: 'utf8',
       timeout: 30_000,
@@ -151,6 +166,7 @@ function runGate(matches: unknown[]) {
     status: result.status ?? -1,
     output: (result.stdout ?? '') + (result.stderr ?? ''),
     podmanCalls: readFileSync(podmanCallLog, 'utf8').split('\n').filter(Boolean),
+    out,
   };
 }
 
@@ -173,6 +189,41 @@ describe('release supply-chain cosign container identity (WI-10005606)', () => {
       expect(call).toContain(expectedUser);
       expect(call).toContain('-e HOME=/tmp');
     }
+  });
+});
+
+describe('release supply-chain secret scan runs before signing (WI-10005624)', () => {
+  const isSigningCall = (call: string) => / (sign|attest) /.test(call);
+  const scanCall = (calls: string[]) => calls.find((call) => call.startsWith('secret-scan '));
+
+  it('scans the digest-pinned image before any cosign sign or attest call', () => {
+    const result = runGate([]);
+    expect(result.status, result.output).toBe(0);
+    const scan = scanCall(result.podmanCalls);
+    expect(scan).toBe(
+      `secret-scan --image registry.example.com/papercusp/workspace-host@${DIGEST} --out ${result.out}`,
+    );
+    const scanAt = result.podmanCalls.indexOf(scan!);
+    const firstSign = result.podmanCalls.findIndex(isSigningCall);
+    expect(firstSign).toBeGreaterThan(scanAt);
+    const summary = JSON.parse(readFileSync(join(result.out, 'supply-chain-summary.json'), 'utf8'));
+    expect(summary.secretScan).toBe('clean');
+  });
+
+  it('exits 4 and signs nothing when the scan reports findings', () => {
+    const result = runGate([], { secretScanExit: 1 });
+    expect(result.status, result.output).toBe(4);
+    expect(result.output).toContain('SUPPLY_CHAIN_RESULT=SECRET_FINDINGS');
+    expect(scanCall(result.podmanCalls)).toBeDefined();
+    expect(result.podmanCalls.filter(isSigningCall)).toEqual([]);
+  });
+
+  it('fails, and signs nothing, when the scan ends without a verdict', () => {
+    const result = runGate([], { secretScanExit: 2 });
+    expect(result.status, result.output).toBe(1);
+    expect(result.output).toContain('secret scan did not complete (exit 2)');
+    expect(result.output).toContain('SUPPLY_CHAIN_RESULT=FAIL');
+    expect(result.podmanCalls.filter(isSigningCall)).toEqual([]);
   });
 });
 

@@ -37,6 +37,9 @@
 #   --insecure-registry  plain-HTTP / self-signed registry (local testing only).
 #   --fail-on-vulns      exit non-zero when Critical/High-with-a-fix is non-empty (default: report).
 #   --skip-scan          sign + attest provenance only; no SBOM, no grype.
+#   --skip-secret-scan   do not run image-secret-scan.sh before signing (SECRET_SCAN_BIN overrides
+#                        the scanner). The release gate fails closed without its record, so a
+#                        skipped image cannot be released.
 #   --min-packages N     refuse an SBOM with fewer than N packages (default 50). This is the
 #                        "the scanner read nothing" guard: an empty SBOM yields an empty CVE list,
 #                        which is indistinguishable from a clean image. 50 suits a full OS image;
@@ -44,12 +47,13 @@
 #                        a refusal you have not explained.
 #
 # Exit: 0 all steps succeeded AND verified back; 1 a step or its verification failed;
-#       2 usage/setup error; 3 the vulnerability gate refused the image (--fail-on-vulns).
+#       2 usage/setup error; 3 the vulnerability gate refused the image (--fail-on-vulns);
+#       4 the secret scan found findings, so nothing was signed.
 
 set -uo pipefail
 
 IMAGE=""; KEY=""; PUBKEY=""; OUTDIR="./.supply-chain-out"
-INSECURE=0; FAIL_ON_VULNS=0; SKIP_SCAN=0; MIN_PKGS=50
+INSECURE=0; FAIL_ON_VULNS=0; SKIP_SCAN=0; SKIP_SECRET_SCAN=0; MIN_PKGS=50
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,6 +64,7 @@ while [ $# -gt 0 ]; do
     --insecure-registry) INSECURE=1; shift;;
     --fail-on-vulns) FAIL_ON_VULNS=1; shift;;
     --skip-scan) SKIP_SCAN=1; shift;;
+    --skip-secret-scan) SKIP_SECRET_SCAN=1; shift;;
     --min-packages) MIN_PKGS="${2:-50}"; shift 2;;
     -h|--help) sed -n '2,45p' "$0"; exit 0;;
     *) echo "usage error: unknown argument $1" >&2; exit 2;;
@@ -143,6 +148,33 @@ REF="$REPO@$DIGEST"
 echo "REPO=$REPO"
 echo "DIGEST=$DIGEST"
 echo "REF=$REF   <- every cosign call below uses THIS, never the tag"
+
+# ---------------------------------------------------------------------------------------------
+# 1b. Secret scan BEFORE anything is signed (WI-10005624). A signature and a provenance
+# attestation are the publisher's statement that the image is fit to ship, so an image that
+# carries a credential is refused before that statement exists rather than reported beside it.
+# The scan is bound to $REF (the digest) and writes secret-scan.{json,log} into $OUTDIR, which
+# is where bootc-image-release-request-cli reads them; that reader fails closed on a missing
+# record, so --skip-secret-scan yields an image the release gate will refuse.
+SECRET_SCAN_BIN="${SECRET_SCAN_BIN:-$(dirname "$0")/image-secret-scan.sh}"
+if [ "$SKIP_SECRET_SCAN" -eq 1 ]; then
+  step "1b/6 secret scan SKIPPED (--skip-secret-scan) — the release gate will refuse this image"
+  SECRET_SCAN="skipped"
+else
+  step "1b/6 secret scan of the image root filesystem, bound to the DIGEST, before signing"
+  [ -x "$SECRET_SCAN_BIN" ] || die "secret scanner not executable: $SECRET_SCAN_BIN (set SECRET_SCAN_BIN)" 2
+  SS_ARGS=(--image "$REF" --out "$OUTDIR")
+  [ "$INSECURE" -eq 1 ] && SS_ARGS+=(--insecure-registry)
+  "$SECRET_SCAN_BIN" "${SS_ARGS[@]}"
+  SS_RC=$?
+  case "$SS_RC" in
+    0) SECRET_SCAN="clean" ;;
+    1) echo "SUPPLY_CHAIN_RESULT=SECRET_FINDINGS"
+       echo "  the image carries secret-scan findings (see $OUTDIR/secret-scan.log); nothing was signed."
+       exit 4 ;;
+    *) die "secret scan did not complete (exit $SS_RC); without a verdict nothing is signed" ;;
+  esac
+fi
 
 # ---------------------------------------------------------------------------------------------
 step "2/6  cosign sign (key-based, no transparency log — D-249)"
@@ -306,6 +338,7 @@ cat > "$OUTDIR/supply-chain-summary.json" <<SUM
   "sbomAttested": $( [ "$SKIP_SCAN" -eq 0 ] && echo true || echo false ),
   "sbomPackages": "$SBOM_PKGS",
   "actionableCriticalHighWithFix": "$ACTIONABLE",
+  "secretScan": "$SECRET_SCAN",
   "verifiedFromRegistry": true
 }
 SUM

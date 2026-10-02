@@ -46,6 +46,19 @@ const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 const EXCERPT_MAX = 400;
 
 /**
+ * The caller's ownerId for the D-006 reader rule. A caller with no resolvable
+ * identity is nobody: every restricted turn stays withheld (fail closed), and
+ * the digest is still served rather than refused.
+ */
+function readerOwnerOf(ctx: PapercuspUnifiedToolContext): string | null {
+  try {
+    return resolveAgentIdentity(ctx).ownerId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The row shape the digest query returns.
  *
  * EI-10968: `ctx.tx<Array<{…}>>` used to be DECORATIVE here — this handler is
@@ -200,7 +213,7 @@ export default defineTool({
            AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
            AND (${args.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${args.since ?? null}::timestamptz)
            -- D-006 reader rule (WI-10005570): another agent's disclosure-window turns never reach a digest.
-           AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', [resolveAgentIdentity(ctx).ownerId]) as never}
+           AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', [readerOwnerOf(ctx)]) as never}
       ),
       agg AS (
         SELECT source_kind, session_id, count(*)::int AS turns,
