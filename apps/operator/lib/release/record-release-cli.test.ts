@@ -867,9 +867,13 @@ describe('R-6 Android result falsifier detector', () => {
   const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
 
   it('rejects empty, skipped, failed, errored, and missing instrumentation results', () => {
+    // The maintained Android runner guard matrix takes about 47 seconds on the
+    // current mobile tree. Bound the synchronous child directly; Vitest cannot
+    // interrupt spawnSync while its event loop is blocked.
     const result = spawnSync('make', ['test-android-runner'], {
       cwd: mobileDir,
       encoding: 'utf8',
+      timeout: 90_000,
     });
     expect(
       result.status,
@@ -881,7 +885,7 @@ describe('R-6 Android result falsifier detector', () => {
     expect(result.stdout).toContain(
       'Android CI working-set guards: host refusals, four target-only cleans and pinned NDK preservation passed',
     );
-  }, 15_000);
+  }, 100_000);
 });
 
 describe('Android release producer/consumer source contract (D-004)', () => {
