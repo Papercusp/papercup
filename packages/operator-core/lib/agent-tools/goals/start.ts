@@ -516,10 +516,7 @@ export default defineTool({
     holder: goalHolderPolicySchema
       .optional()
       .describe(
-        'REQUIRED unless you opt out: does this goal need a LIVE holder to count as active, and what happens when it loses one. ' +
-          "{ requireLive: true } for a goal a session owns — the case this tool creates, since it spawns that session — so it stops reading 'active' when nobody holds it. " +
-          "{ requireLive: false } for a goal driven by routines rather than a held session. onLoss defaults to 'deactivate'; 'respawn' is opt-in per goal. " +
-          'Omitting this entirely is refused: the goal would inherit the live-holder requirement without anyone having chosen it.',
+        "REQUIRED policy: requireLive:true for session-owned goals (inactive without a holder); false for routine-driven goals. onLoss defaults to 'deactivate'; 'respawn' is opt-in. Omitting holder is refused; choose explicitly.",
       ),
     body: z.string().max(20000).optional().describe('the full statement: what winning looks like, scope, constraints'),
     tripwires: z

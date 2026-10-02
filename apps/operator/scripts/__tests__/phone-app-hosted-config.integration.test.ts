@@ -224,6 +224,8 @@ describe('Phone candidate artifact pin', () => {
     const phone = join(conf, 'phone-source');
     const worker = join(phone, 'worker'), sidecar = join(phone, 'apps', 'sidecar');
     mkdirSync(worker, { recursive: true }); mkdirSync(sidecar, { recursive: true });
+    writeFileSync(join(worker, 'entry.js'), 'old reviewed Phone worker');
+    writeFileSync(join(sidecar, 'entry.js'), 'old reviewed Phone sidecar');
     const livekit = join(conf, 'livekit-server'), sip = join(conf, 'livekit-sip');
     writeFileSync(livekit, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     writeFileSync(sip, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
@@ -232,6 +234,7 @@ case "$3:$4" in
   rev-parse:--show-toplevel) printf '%s\\n' "$PHONE_TEST_ROOT" ;;
   rev-parse:HEAD) printf '%s\\n' "$PHONE_TEST_REVISION" ;;
   status:--porcelain) [ -z "$PHONE_TEST_DIRTY" ] || printf '%s\\n' "$PHONE_TEST_DIRTY" ;;
+  archive:--format=tar) tar -C "$PHONE_TEST_ROOT" -cf - worker apps/sidecar ;;
   *) exit 2 ;;
 esac
 `, { mode: 0o700 });
@@ -251,6 +254,13 @@ esac
     expect(readFileSync(manifest, 'utf8')).toContain(`PHONE_ARTIFACT_PIN_V1 ${'a'.repeat(40)}`);
     expect(readFileSync(manifest, 'utf8')).not.toContain('private-pin-fixture-secret');
     expect(run(env, ['--verify-artifacts']).status).toBe(0);
+    const saved = run(env, ['--stage-rollback']);
+    expect(saved.status, saved.stderr).toBe(0);
+    const rollback = join(conf, 'rollback');
+    expect(statSync(rollback).mode & 0o777).toBe(0o700);
+    expect(statSync(join(rollback, 'source.tar')).mode & 0o777).toBe(0o600);
+    expect(run(env, ['--stage-rollback']).status).toBe(1);
+    expect(run(env, ['--rollback-drill']).status).toBe(0);
     expect(run({ ...env, PHONE_TEST_DIRTY: ' M apps/sidecar/src/server.ts' }, ['--verify-artifacts']).status).toBe(1);
     const completePin = readFileSync(manifest, 'utf8');
     writeFileSync(manifest, completePin.split('\n').slice(0, 3).join('\n') + '\n');
@@ -259,10 +269,21 @@ esac
     expect(run({ ...env, PHONE_TEST_REVISION: 'b'.repeat(40) }, ['--verify-artifacts']).status).toBe(1);
     writeFileSync(livekit, '#!/bin/sh\nexit 7\n', { mode: 0o700 });
     expect(run(env, ['--verify-artifacts']).status).toBe(1);
+    expect(run({ ...env, PHONE_TEST_REVISION: 'b'.repeat(40) }, ['--rollback-drill']).status).toBe(0);
+    const receipt = join(rollback, 'hashes.sha256');
+    const completeReceipt = readFileSync(receipt, 'utf8');
+    writeFileSync(receipt, completeReceipt.split('\n').slice(0, 2).join('\n') + '\n');
+    expect(run(env, ['--rollback-drill']).status).toBe(1);
+    writeFileSync(receipt, completeReceipt);
+    writeFileSync(join(rollback, 'source.tar'), 'corrupted');
+    expect(run(env, ['--rollback-drill']).status).toBe(1);
+    writeFileSync(join(rollback, 'files', '0'), 'corrupted');
+    expect(run(env, ['--rollback-drill']).status).toBe(1);
     const refused = run(env, []);
     expect(refused.status).toBe(1);
     expect(refused.stderr).toContain('artifact bytes differ from pin');
     expect(readFileSync(join(conf, 'livekit.env'), 'utf8')).toBe(original);
     expect(refused.stdout + refused.stderr).not.toContain('private-pin-fixture-secret');
+    expect(saved.stdout + saved.stderr).not.toContain('private-pin-fixture-secret');
   });
 });

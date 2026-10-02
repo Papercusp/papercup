@@ -103,6 +103,17 @@ credential or unit write. A changed binary or Phone source requires a new pin.
 the default remains `~/.local/bin`. The pin excludes secret values and does not
 itself prove a recovery drill or public calling.
 
+Before replacing a reviewed Phone candidate, run `deploy.sh --stage-rollback`
+while its artifact pin still matches. This creates a one-time, private
+`PHONE_CONFIG_DIR/rollback` point containing the pinned Phone source archive
+and deployment artifact bytes; it refuses to overwrite an existing recovery
+point. After staging the replacement, `deploy.sh --rollback-drill` verifies
+the old pin/digests and restores the previous source and binaries into a
+disposable private directory, even when the current candidate differs. It
+does not switch services, restore credentials/database contents, or prove
+public rollback; use the separate database restore drill below and retain the
+old credential record. Live service rollback and public acceptance are P-015.
+
 For the app-owned Phone Postgres database, create a logical backup outside the
 source tree and then restore it into a disposable embedded Postgres instance:
 

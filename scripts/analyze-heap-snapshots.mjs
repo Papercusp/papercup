@@ -122,10 +122,10 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
         const raw = group.name();
         const row = { class: genericLabels.has(raw) ? raw : classLabel('class', raw),
           count: group.children_len, selfSizeBytes: safeBytes(group.self_size),
-          retainedSizeBytes: safeBytes(group.retained_size), nodes: [] };
+          retainedSizeBytes: safeBytes(group.retained_size) };
         const nodes = graph.class_children(groupIndex, 0, perClass, WasmSortBy.RetainedSize);
         try {
-          row.nodes = nodes.map(node => {
+          const nodeRows = nodes.map(node => {
             const retainers = graph.get_all_retainers(node.index, retainerDepth);
             try {
               return { ...nodeRow(node), retainers: retainers.slice(0, maxRetainers).map(retainer => ({
@@ -134,8 +134,8 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
                 retainerCount: retainers.length, retainersTruncated: retainers.length > maxRetainers };
             } finally { for (const retainer of retainers) retainer.free(); }
           });
+          return { ...row, nodes: nodeRows };
         } finally { for (const node of nodes) node.free(); }
-        return row;
       });
       return { parser: '@vscode/v8-heap-parser@0.1.0', rootIndex: graph.root_index,
         limits: { top, perClass, retainerDepth, maxRetainers }, groups: rows,

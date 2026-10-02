@@ -15,6 +15,8 @@
 #   deploy.sh --status         report only, change nothing
 #   deploy.sh --pin-artifacts  pin reviewed source and binary bytes, no restart
 #   deploy.sh --verify-artifacts  check the pin without changing anything
+#   deploy.sh --stage-rollback  preserve the verified artifact before an upgrade
+#   deploy.sh --rollback-drill  restore it into a fresh private directory only
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +48,7 @@ SIDECAR_DIR="${PHONE_SIDECAR_DIR:-$HOME/.papercusp-workspaces/papercusp-workspac
 # it, but the portal DOES need this one.
 PORTAL_ENV_FILE="$CONF_DIR/portal.env"
 PIN_FILE="$CONF_DIR/artifacts.sha256"
+ROLLBACK_DIR="$CONF_DIR/rollback"
 
 # Capture caller overrides BEFORE sourcing the persisted file. `source` quite
 # correctly restores the last deployment, but without this snapshot it also
@@ -59,6 +62,7 @@ for key in "${MEDIA_KEYS[@]}"; do
 done
 
 ROTATE=0; STATUS_ONLY=0; HOSTED=0; RENDER_ONLY=0; PREFLIGHT_ONLY=0; PIN_ONLY=0; VERIFY_PIN_ONLY=0
+STAGE_ROLLBACK=0; DRILL_ROLLBACK=0
 for a in "$@"; do
   case "$a" in
     --rotate-secret) ROTATE=1 ;;
@@ -68,6 +72,8 @@ for a in "$@"; do
     --preflight) PREFLIGHT_ONLY=1 ;;
     --pin-artifacts) PIN_ONLY=1 ;;
     --verify-artifacts) VERIFY_PIN_ONLY=1 ;;
+    --stage-rollback) STAGE_ROLLBACK=1 ;;
+    --rollback-drill) DRILL_ROLLBACK=1 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
@@ -123,7 +129,7 @@ phone_source_revision() {
   printf '%s\n' "$revision"
 }
 
-artifact_files() {
+artifact_files_paths() {
   ARTIFACT_FILES=(
     "$HERE/deploy.sh" "$HERE/media-config.mjs" "$HERE/verify-media-plane.sh"
     "$HERE/phone-db-backup.mjs"
@@ -133,6 +139,10 @@ artifact_files() {
     "$HERE/systemd/$WORKER_UNIT.tmpl" "$HERE/systemd/$SIDECAR_UNIT.tmpl"
     "$LK_BIN" "$SIP_BIN" "$NODE_BIN"
   )
+}
+
+artifact_files() {
+  artifact_files_paths
   local file
   for file in "${ARTIFACT_FILES[@]}"; do
     [[ -f "$file" ]] || die "artifact missing: $file"
@@ -171,7 +181,81 @@ pin_artifacts() {
   say "pinned Phone source revision $revision and ${#ARTIFACT_FILES[@]} artifact files in $PIN_FILE"
 }
 
+# A rollback point contains the *old* reviewed bytes, including the Phone git
+# source at the pinned revision. Keep it outside the repo and private; never
+# rewrite it while preparing a new candidate. No running service is touched.
+stage_rollback() {
+  verify_artifacts
+  [[ ! -e "$ROLLBACK_DIR" && ! -L "$ROLLBACK_DIR" ]] || die "rollback point already exists; refusing to overwrite it"
+  mkdir -m 700 "$ROLLBACK_DIR" || die "cannot create a private rollback point"
+  trap 'rm -rf -- "$ROLLBACK_DIR"' EXIT
+  mkdir -m 700 "$ROLLBACK_DIR/files"
+  cp -- "$PIN_FILE" "$ROLLBACK_DIR/pin"
+  chmod 600 "$ROLLBACK_DIR/pin"
+  local marker revision i=0 file
+  read -r marker revision < "$ROLLBACK_DIR/pin"
+  git -C "$WORKER_DIR" archive --format=tar "$revision" > "$ROLLBACK_DIR/source.tar"
+  [[ -s "$ROLLBACK_DIR/source.tar" ]] || die "Phone source archive is empty"
+  chmod 600 "$ROLLBACK_DIR/source.tar"
+  for file in "${ARTIFACT_FILES[@]}"; do
+    cp -p -- "$file" "$ROLLBACK_DIR/files/$i"
+    ((i+=1))
+  done
+  (cd "$ROLLBACK_DIR"; sha256sum pin source.tar files/* > hashes.sha256)
+  chmod 600 "$ROLLBACK_DIR/hashes.sha256"
+  printf 'PHONE_ROLLBACK_V1\n' > "$ROLLBACK_DIR/.ready"
+  chmod 600 "$ROLLBACK_DIR/.ready"
+  trap - EXIT
+  say "saved private rollback point for Phone source $revision; no running service changed"
+}
+
+rollback_drill() {
+  [[ -f "$ROLLBACK_DIR/.ready" && "$(cat "$ROLLBACK_DIR/.ready")" == PHONE_ROLLBACK_V1 ]] \
+    || die "complete rollback point missing"
+  [[ "$(stat -c %a "$ROLLBACK_DIR")" == 700 ]] || die "rollback point must be private (0700)"
+  local marker revision expected actual i=0 file scratch
+  read -r marker revision < "$ROLLBACK_DIR/pin" || die "invalid rollback pin"
+  [[ "$marker" == PHONE_ARTIFACT_PIN_V1 && "$revision" =~ ^[0-9a-f]{40}$ ]] \
+    || die "invalid rollback source revision"
+  # The manifest must contain every artifact, in exactly the pinned order.
+  # Do not require current candidate binaries/source to match the old revision.
+  artifact_files_paths
+  [[ "$(wc -l < "$ROLLBACK_DIR/pin")" -eq "$((${#ARTIFACT_FILES[@]} + 1))" ]] \
+    || die "rollback pin has missing or extra artifacts"
+  for file in "${ARTIFACT_FILES[@]}"; do
+    expected="$(sed -n "$((i + 2))p" "$ROLLBACK_DIR/pin")"
+    actual="$(sha256sum -- "$ROLLBACK_DIR/files/$i")"
+    [[ "$expected" == "${actual:0:64}  $file" ]] || die "rollback artifact does not match its pin"
+    ((i+=1))
+  done
+  # Compare the complete ordered receipt, not `sha256sum -c`: a truncated
+  # receipt would otherwise pass while omitting the source archive.
+  [[ "$(cat "$ROLLBACK_DIR/hashes.sha256")" == \
+     "$(cd "$ROLLBACK_DIR"; sha256sum pin source.tar files/*)" ]] \
+    || die "rollback point digest mismatch"
+  scratch="$(mktemp -d "$CONF_DIR/.rollback-drill.XXXXXX")"
+  trap 'rm -rf -- "$scratch"' EXIT
+  mkdir -m 700 "$scratch/source" "$scratch/files"
+  tar -xf "$ROLLBACK_DIR/source.tar" -C "$scratch/source"
+  [[ -d "$scratch/source/worker" && -d "$scratch/source/apps/sidecar" ]] \
+    || die "restored Phone source lacks worker or sidecar"
+  for ((i=0; i<${#ARTIFACT_FILES[@]}; i++)); do
+    cp -p -- "$ROLLBACK_DIR/files/$i" "$scratch/files/$i"
+    [[ "$(sha256sum "$scratch/files/$i" | cut -c1-64)" == "$(sha256sum "$ROLLBACK_DIR/files/$i" | cut -c1-64)" ]] \
+      || die "isolated artifact restore differs from rollback point"
+  done
+  rm -rf -- "$scratch"
+  trap - EXIT
+  say "isolated Phone source and ${#ARTIFACT_FILES[@]} artifacts restored from $revision; no service switched or public recovery asserted"
+}
+
 if [[ $STATUS_ONLY == 1 ]]; then report_status; exit 0; fi
+if [[ $STAGE_ROLLBACK == 1 || $DRILL_ROLLBACK == 1 ]]; then
+  [[ $((STAGE_ROLLBACK + DRILL_ROLLBACK + ROTATE + RENDER_ONLY + PREFLIGHT_ONLY + STATUS_ONLY + HOSTED + PIN_ONLY + VERIFY_PIN_ONLY)) == 1 ]] \
+    || die "rollback actions cannot be combined"
+  if [[ $STAGE_ROLLBACK == 1 ]]; then stage_rollback; else rollback_drill; fi
+  exit 0
+fi
 if [[ $PIN_ONLY == 1 || $VERIFY_PIN_ONLY == 1 ]]; then
   [[ $ROTATE == 0 && $RENDER_ONLY == 0 && $PREFLIGHT_ONLY == 0 && $STATUS_ONLY == 0 && $HOSTED == 0 && $PIN_ONLY != $VERIFY_PIN_ONLY ]] || die "artifact pin actions cannot be combined"
   if [[ $PIN_ONLY == 1 ]]; then pin_artifacts; else verify_artifacts; say "Phone artifacts match pin"; fi
