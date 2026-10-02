@@ -62,6 +62,66 @@ function makeClient(responses: Map<string, unknown>, options: Record<string, unk
 }
 
 describe('PID-bound host configuration facts', () => {
+  it('opts into direct V8 allocation counters only after validating both the flag and target identity', async () => {
+    const effects: string[] = [];
+    const spaces = [{ space_name: 'old_space', space_used_size: 123 }];
+    const code = { code_and_metadata_size: 456, bytecode_and_metadata_size: 789 };
+    const client = { evaluate: async (expression: string) => ({ result: { value: runInNewContext(expression, {
+      process: { pid: 7, uptime: () => 1, memoryUsage: () => ({ heapUsed: 100 }),
+        getBuiltinModule: (name: string) => {
+          effects.push(name);
+          if (name !== 'v8') throw Error('Unexpected builtin');
+          return { getHeapStatistics: () => ({ used_heap_size: 100 }),
+            getHeapSpaceStatistics: () => { effects.push('spaces'); return spaces; },
+            getHeapCodeStatistics: () => { effects.push('code'); return code; } };
+        } },
+    }) } }) };
+    const plain = await readProcessMemory(client, { expectedPid: 7 });
+    expect(plain).not.toHaveProperty('heapSpaces');
+    expect(plain).not.toHaveProperty('heapCode');
+    expect(effects).toEqual(['v8']);
+    effects.length = 0;
+    const detailed = await readProcessMemory(client, { expectedPid: 7, allocationDetails: true });
+    expect(detailed.heapSpaces).toEqual(spaces); expect(detailed.heapCode).toEqual(code);
+    expect(effects).toEqual(['v8', 'spaces', 'code']);
+    effects.length = 0;
+    await expect(readProcessMemory(client, { expectedPid: 7, allocationDetails: 'yes' as any }))
+      .rejects.toThrow('boolean');
+    await expect(readProcessMemory(client, { expectedPid: 8, allocationDetails: true }))
+      .rejects.toThrow('PID mismatch');
+    expect(effects).toEqual([]);
+  });
+
+  it('observes a retained large allocation through real V8 heap spaces without forcing GC', async () => {
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '--input-type=module', '-e',
+      "console.log('ready'); setInterval(() => {}, 1000);"], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', client: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      client = createCdpClient(stderr.match(/ws:\/\/[^\s]+/)![0]); await client.connect();
+      const before = await readProcessMemory(client, { expectedPid: child.pid!, allocationDetails: true });
+      await client.evaluate('globalThis.retained = new Array(2_000_000).fill(1)');
+      const after = await readProcessMemory(client, { expectedPid: child.pid!, allocationDetails: true });
+      const used = (row: any) => row.heapSpaces.reduce((sum: number, space: any) => sum + space.space_used_size, 0);
+      expect(used(after) - used(before)).toBeGreaterThan(8 * 1024 * 1024);
+      expect(after.heapSpaces.every((space: any) => typeof space.space_name === 'string' &&
+        Number.isFinite(space.space_used_size) && space.space_used_size >= 0)).toBe(true);
+      for (const field of ['code_and_metadata_size', 'bytecode_and_metadata_size', 'external_script_source_size']) {
+        expect(Number.isFinite(after.heapCode[field]) && after.heapCode[field] >= 0).toBe(true);
+      }
+      expect((await client.evaluate('retained.length', { returnByValue: true })).result.value).toBe(2_000_000);
+    } finally {
+      client?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM'); await new Promise<void>(resolve => child.once('exit', () => resolve()));
+      }
+    }
+  }, 20_000);
+
   it('normalizes only fixed boot flags and observes worker state without leaking arbitrary environment', async () => {
     const effects: string[] = [];
     const inspect = async (env: Record<string, string>, cluster: object, hostFacts = true) => {
