@@ -303,6 +303,8 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
   const completed = Array.isArray(completion.completed) ? completion.completed.filter((c: any) => c.cellId === donorId) : [];
   if (completion.formatVersion !== 1 || completion.status !== 'completed'
     || completion.ownerId !== donor.ownerId || completion.manifestSha256 !== refs.reuseManifest.sha256
+    || !Number.isFinite(Date.parse(completion.completedAt))
+    || Date.parse(completion.completedAt) > Date.parse(prepared.manifest.frozenAt)
     || completed.length !== 1 || hashJson(completed[0].vectors) !== hashJson(refs.reuseVectors)) {
     throw new Error('retained relevance completed receipt mismatch');
   }
@@ -322,9 +324,11 @@ export async function loadRetainedRelevanceVectors(prepared: PreparedMeasurement
   if (raw.formatVersion !== 1 || raw.manifestSha256 !== refs.reuseManifest.sha256
     || raw.cellId !== donorId || raw.armId !== arm.id || raw.ownerId !== donor.ownerId
     || !Number.isFinite(Date.parse(raw.measuredAt)) || Date.parse(raw.measuredAt) < Date.parse(donor.frozenAt)
-    || Date.parse(raw.measuredAt) > Date.parse(prepared.manifest.frozenAt)
+    || Date.parse(raw.measuredAt) > Date.parse(completion.completedAt)
     || raw.report?.corpus !== corpus || raw.report?.corpusVersion !== previous.corpusVersion
     || raw.report?.goldSetVersion !== previous.goldVersion || !raw.report?.results?.[arm.model]
+    || raw.report.labelAuthority !== 'independent-blind-before-inference' || raw.report.scoringPartition !== 'test'
+    || raw.report.calibrationReportedSeparately !== true || raw.report.results[arm.model].dims !== arm.profile.nativeDims
     || raw.report.results[arm.model].blocked) throw new Error('retained relevance raw identity mismatch');
   const saved = await readPinned(refs.reuseVectors), vectors = saved.vectors?.[arm.model];
   if (saved.corpus !== corpus || saved.corpusVersion !== previous.corpusVersion
@@ -367,6 +371,11 @@ export async function embedIncrementalRelevanceQueries(
   if (queryTexts.length !== retained.queryVectors.length) throw new Error('incremental relevance query population mismatch');
   const newVectors = retained.missingIndexes.length ? await embedMissing(retained.missingIndexes.map((i) => queryTexts[i])) : [];
   if (newVectors.length !== retained.missingIndexes.length) throw new Error('incremental relevance new vector population mismatch');
+  if (newVectors.some((v) => !Array.isArray(v) || v.length !== retained.docVectors[0].length
+    || v.some((x) => typeof x !== 'number' || !Number.isFinite(x))
+    || Math.abs(Math.sqrt(v.reduce((s, x) => s + x * x, 0)) - 1) > 0.001)) {
+    throw new Error('incremental relevance new vector dimensions/normalization mismatch');
+  }
   const merged = [...retained.queryVectors];
   retained.missingIndexes.forEach((index, localIndex) => { merged[index] = newVectors[localIndex]; });
   return merged.map((v) => {

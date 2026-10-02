@@ -390,13 +390,15 @@ function retainedPreparedFixture() {
   const raw = { formatVersion: 1, manifestSha256: manifestRef.sha256, ownerId: donor.ownerId,
     cellId: donorCell.id, armId: p.arm.id, measuredAt: '2026-01-03T00:00:00.000Z',
     report: { corpus: 'memory', corpusVersion: oldInput.corpusVersion, goldSetVersion: oldInput.goldVersion,
+      labelAuthority: 'independent-blind-before-inference', scoringPartition: 'test', calibrationReportedSeparately: true,
       results: { mdenseon: { dims: p.arm.profile.nativeDims } } } };
-  const unit = (index: number) => Array.from({ length: p.arm.profile.nativeDims }, (_, i) => i === index ? 1 : 0);
+  const unit = (index: number): number[] => Array.from({ length: p.arm.profile.nativeDims }, (_, i) => i === index ? 1 : 0);
   const vectors = { corpus: 'memory', corpusVersion: oldInput.corpusVersion, keys: entries.map((e) => e.key),
     queryIds: queries.map((q) => q.id),
     vectors: { mdenseon: { docVectors: entries.map((_, i) => unit(i)), queryVectors: queries.map((_, i) => unit(i)) } } };
   const rawRef = pin('donor-raw', raw), vectorsRef = pin('donor-vectors', vectors);
   const completion = { formatVersion: 1, status: 'completed', ownerId: donor.ownerId, manifestSha256: manifestRef.sha256,
+    completedAt: '2026-01-03T00:00:00.000Z',
     completed: [{ cellId: donorCell.id, raw: rawRef, vectors: vectorsRef }] };
   p.manifest.inputs.reuseManifest = manifestRef;
   p.manifest.inputs.reuseCompletion = pin('donor-completion', completion);
@@ -437,6 +439,10 @@ describe('incremental relevance vector reuse', () => {
     await expect(embedIncrementalRelevanceQueries(retained, ['wrong'], embed)).rejects.toThrow('query population');
     await expect(embedIncrementalRelevanceQueries(retained, f.currentQueries.map((q) => q.query),
       async () => [f.unit(12)])).rejects.toThrow('new vector population');
+    for (const bad of [[1], [Infinity, ...f.unit(0).slice(1)], [2, ...f.unit(0).slice(1)]]) {
+      await expect(embedIncrementalRelevanceQueries(retained, f.currentQueries.map((q) => q.query),
+        async () => [bad, f.unit(13), f.unit(14), f.unit(15)])).rejects.toThrow('dimensions/normalization');
+    }
   });
   it('requires an explicit frozen reuse opt-in and each of the three declared inputs', async () => {
     const f = retainedPreparedFixture(); delete f.p.cell.parameters.reuseCellId;
@@ -445,12 +451,13 @@ describe('incremental relevance vector reuse', () => {
     f.p.cell.inputIds = f.p.cell.inputIds.filter((id) => id !== 'reuseVectors');
     await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('declared on the cell');
   });
-  it.each(['failed', 'duplicate', 'manifest', 'owner', 'vectors'])('refuses %s completion linkage', async (failure) => {
+  it.each(['failed', 'duplicate', 'manifest', 'owner', 'vectors', 'time'])('refuses %s completion linkage', async (failure) => {
     const f = retainedPreparedFixture(), c: any = f.completion;
     if (failure === 'failed') c.status = 'failed';
     if (failure === 'duplicate') c.completed.push(c.completed[0]);
     if (failure === 'manifest') c.manifestSha256 = 'b'.repeat(64);
     if (failure === 'owner') c.ownerId = 'other-owner';
+    if (failure === 'time') c.completedAt = '2026-01-05T00:00:00.000Z';
     if (failure === 'vectors') c.completed[0].vectors = { ...c.completed[0].vectors, sha256: 'b'.repeat(64) };
     f.p.manifest.inputs.reuseCompletion = f.pin('donor-completion', c);
     await expect(loadRetainedRelevanceVectors(f.p, 'memory')).rejects.toThrow('completed receipt');
