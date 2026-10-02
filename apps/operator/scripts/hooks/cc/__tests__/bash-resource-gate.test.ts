@@ -5276,6 +5276,35 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     expect(reason).toContain('node');
   });
 
+  it('allows node writes whose concatenated absolute prefix is outside the tree', () => {
+    const command =
+      "node -e \"const D='" + join(fakeHome, '.papercusp', 'scratch', 'su-4d323') + "/'; " +
+      "const fs=require('fs'); fs.writeFileSync(D+'identity-kernel-precache-ledger-2026-09-26.json','{}')\"";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows a HOME-based out-of-tree prefix concatenated with a filename', () => {
+    const command =
+      "node -e \"const D=process.env.HOME+'/.papercusp/perf-baselines/'; " +
+      "const fs=require('fs'); fs.writeFileSync(D+'identity-kernel-precache-ledger.json','{}')\"";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies an absolute in-tree prefix concatenated with a filename', () => {
+    const command =
+      "node -e \"const D='" + CANON + "/apps/operator/'; " +
+      "const fs=require('fs'); fs.writeFileSync(D+'generated.ts','x')\"";
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows path.join when its statically known absolute prefix is outside the tree', () => {
+    const command =
+      "node -e \"const D='" + join(fakeHome, '.papercusp', 'scratch', 'su-4d323') + "/'; " +
+      "const fs=require('fs'); const path=require('path'); " +
+      "fs.writeFileSync(path.join(D,'identity-kernel-precache-ledger.json'),'{}')\"";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
   it('denies `perl -i` editing a tree file in place (the in-place-flag leg, same as `sed -i`)', () => {
     const out = runGate(bashCmd("perl -i -pe 's/a/b/' apps/operator/foo.pl", { cwd: CANON }), CANON_ENV);
     const reason = denyReason(out);
