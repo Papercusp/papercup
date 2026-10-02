@@ -1,190 +1,199 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import SecretStream from '@hyperswarm/secret-stream';
-import { ByocSealedChannel, type ByocSealedPacket } from './byoc-sealed-channel';
 import {
-  createByocClientKey,
-  rotateByocClientKey,
-  withByocClientKey,
-  type RotatedByocClientKey,
-} from './byoc-client-key-custody';
+  HostedWorkspaceConnectorGateway,
+  type HostedConnectorBinding,
+  type HostedConnectorLivenessBinding,
+  type HostedConnectorTicketBinding,
+  type HostedConnectorTicketKind,
+  type HostedConnectorTransport,
+  type HostedWorkspaceConnectorStore,
+} from '../endpoint-route/hosted-workspace-connector';
+import { ByocSealedChannel, type ByocSealedPacket } from './byoc-sealed-channel';
 
-const stored = new Map<string, Buffer>();
-vi.mock('../identity/keychain', () => ({
-  keychainStore: vi.fn(async (id: string, value: Buffer, service: string) => {
-    stored.set(`${service}:${id}`, Buffer.from(value));
-  }),
-  keychainLoad: vi.fn(async (id: string, service: string) => {
-    const value = stored.get(`${service}:${id}`);
-    return value
-      ? { kind: 'ok', value: Buffer.from(value) }
-      : { kind: 'error', error: { kind: 'not_found' } };
-  }),
-  keychainDelete: vi.fn(async (id: string, service: string) => {
-    stored.delete(`${service}:${id}`);
-  }),
-}));
+class MemoryConnectorStore implements HostedWorkspaceConnectorStore {
+  binding: HostedConnectorBinding | null = null;
+  credentialHash: string | null = null;
+  tickets = new Map<string, HostedConnectorTicketBinding>();
 
-const scope = {
-  organizationId: 'org-a',
-  workspaceId: 'workspace-a',
-  hostId: 'host-a',
-  clientId: 'desktop-a',
-};
-const previousDesktop = process.env.PAPERCUSP_DESKTOP;
-
-type NoiseKeyPair = { publicKey: Buffer; secretKey: Buffer };
-
-class CustomerHostAdmission {
-  readonly hostKey = SecretStream.keyPair(Buffer.alloc(32, 91));
-  private generation = 0;
-  private readonly authorized = new Map<string, number>();
-  private readonly live = new Map<string, Set<ByocSealedChannel>>();
-
-  authorize = async (publicKeyBase64: string): Promise<void> => {
-    this.generation += 1;
-    this.authorized.set(publicKeyBase64, this.generation);
-  };
-
-  bumpGeneration = async (publicKeyBase64: string): Promise<number> => {
-    if (!this.authorized.has(publicKeyBase64)) throw new Error('client key is not authorized on the customer host');
-    this.generation += 1;
-    this.authorized.set(publicKeyBase64, this.generation);
-    for (const channel of this.live.get(publicKeyBase64) ?? []) channel.close();
-    this.live.delete(publicKeyBase64);
-    return this.generation;
-  };
-
-  revoke = async (publicKeyBase64: string): Promise<void> => {
-    this.authorized.delete(publicKeyBase64);
-    for (const channel of this.live.get(publicKeyBase64) ?? []) channel.close();
-    this.live.delete(publicKeyBase64);
-  };
-
-  async connect(claimedPublicKeyBase64: string, clientKey: NoiseKeyPair, claimedGeneration?: number) {
-    const generation = this.authorized.get(claimedPublicKeyBase64);
-    if (!generation) throw new Error('client key is not authorized on the customer host');
-    if (claimedGeneration !== undefined && claimedGeneration !== generation) {
-      throw new Error(`stale connector generation ${claimedGeneration}; current generation is ${generation}`);
-    }
-
-    const clientFrames: Record<string, unknown>[] = [];
-    const hostFrames: Record<string, unknown>[] = [];
-    let client!: ByocSealedChannel;
-    let host!: ByocSealedChannel;
-    client = new ByocSealedChannel({
-      initiator: true,
-      localKeyPair: clientKey,
-      expectedRemotePublicKey: this.hostKey.publicKey,
-      sendPacket: (packet: ByocSealedPacket) => queueMicrotask(() => host.receive(packet)),
-      onFrame: (frame) => clientFrames.push(frame),
+  createEnrollment(input: Omit<HostedConnectorBinding, 'generation' | 'state'> & { ticketHash: string; expiresAt: Date }) {
+    this.binding = { ...input, generation: (this.binding?.generation ?? 0) + 1, state: 'pending' };
+    this.credentialHash = null;
+    this.tickets.set(input.ticketHash, {
+      ...this.binding, kind: 'enrollment', audience: 'connector-register', expiresAt: input.expiresAt,
     });
-    host = new ByocSealedChannel({
-      initiator: false,
-      localKeyPair: this.hostKey,
-      expectedRemotePublicKey: Buffer.from(claimedPublicKeyBase64, 'base64'),
-      sendPacket: (packet: ByocSealedPacket) => queueMicrotask(() => client.receive(packet)),
-      onFrame: (frame) => hostFrames.push(frame),
+    return Promise.resolve(this.binding);
+  }
+
+  register(ticketHash: string, credentialHash: string, now: Date) {
+    const ticket = this.take(ticketHash, 'enrollment', now);
+    if (!ticket || !this.binding || ticket.generation !== this.binding.generation) return Promise.resolve(null);
+    this.credentialHash = credentialHash;
+    this.binding = { ...this.binding, state: 'active' };
+    return Promise.resolve(this.binding);
+  }
+
+  authenticate(credentialHash: string) {
+    return Promise.resolve(
+      this.binding?.state === 'active' && credentialHash === this.credentialHash ? this.binding : null,
+    );
+  }
+
+  heartbeat(credentialHash: string, transport: HostedConnectorTransport) {
+    return Promise.resolve(
+      this.binding?.state === 'active' && credentialHash === this.credentialHash && transport === this.binding.transport
+        ? this.binding
+        : null,
+    );
+  }
+
+  recordLiveness(_binding: HostedConnectorLivenessBinding, _alive: boolean, _at: Date) {
+    return Promise.resolve(true);
+  }
+
+  issueSessionTicket(input: HostedConnectorTicketBinding & { ticketHash: string; issuedAt: Date }) {
+    if (this.binding?.state !== 'active') return Promise.resolve(null);
+    const ticket = { ...input, ...this.binding, kind: 'session' as const };
+    this.tickets.set(input.ticketHash, ticket);
+    return Promise.resolve(ticket);
+  }
+
+  consumeTicket(ticketHash: string, kind: HostedConnectorTicketKind, now: Date) {
+    return Promise.resolve(this.take(ticketHash, kind, now));
+  }
+
+  rotate(input: Omit<HostedConnectorBinding, 'generation' | 'state'> & { ticketHash: string; expiresAt: Date }) {
+    if (this.binding?.state !== 'active') return Promise.resolve(null);
+    this.binding = { ...input, generation: this.binding.generation + 1, state: 'pending' };
+    this.credentialHash = null;
+    this.tickets.set(input.ticketHash, {
+      ...this.binding, kind: 'enrollment', audience: 'connector-register', expiresAt: input.expiresAt,
     });
-    try {
-      await Promise.all([client.opened, host.opened]);
-    } catch (error) {
-      client.close();
-      host.close();
-      throw error;
-    }
-    const channels = this.live.get(claimedPublicKeyBase64) ?? new Set<ByocSealedChannel>();
-    channels.add(client);
-    channels.add(host);
-    this.live.set(claimedPublicKeyBase64, channels);
-    return {
-      generation,
-      client,
-      host,
-      clientFrames,
-      hostFrames,
-      close: () => {
-        client.close();
-        host.close();
-        channels.delete(client);
-        channels.delete(host);
-      },
-    };
+    return Promise.resolve(this.binding);
+  }
+
+  revoke() {
+    if (!this.binding) return Promise.resolve(null);
+    this.binding = { ...this.binding, state: 'revoked' };
+    this.credentialHash = null;
+    return Promise.resolve(this.binding);
+  }
+
+  private take(ticketHash: string, kind: HostedConnectorTicketKind, now: Date) {
+    const ticket = this.tickets.get(ticketHash);
+    if (!ticket || ticket.kind !== kind || ticket.expiresAt <= now ||
+        ticket.generation !== this.binding?.generation ||
+        this.binding.state !== (kind === 'enrollment' ? 'pending' : 'active')) return null;
+    this.tickets.delete(ticketHash);
+    return ticket;
   }
 }
 
-beforeEach(() => {
-  stored.clear();
-  process.env.PAPERCUSP_DESKTOP = '1';
-});
+const binding = {
+  controlPlaneWorkspaceId: 'control',
+  organizationId: 'org-1',
+  customerWorkspaceId: 'workspace-1',
+  hostId: 'host-1',
+  routeLabel: 'alpha',
+  transport: 'websocket' as const,
+  hosting: 'byoc' as const,
+};
 
-afterEach(() => {
-  if (previousDesktop === undefined) delete process.env.PAPERCUSP_DESKTOP;
-  else process.env.PAPERCUSP_DESKTOP = previousDesktop;
-});
+function entropy() {
+  let byte = 0;
+  return (size: number) => new Uint8Array(size).fill(++byte);
+}
+
+async function openSealed(
+  gateway: HostedWorkspaceConnectorGateway,
+  connector: HostedConnectorBinding,
+  clientKey: ReturnType<typeof SecretStream.keyPair>,
+  hostKey: ReturnType<typeof SecretStream.keyPair>,
+  hostExpectedClientKey = clientKey.publicKey,
+) {
+  const hostFrames: Record<string, unknown>[] = [];
+  const closeReasons: string[] = [];
+  let client!: ByocSealedChannel;
+  let host!: ByocSealedChannel;
+  client = new ByocSealedChannel({
+    initiator: true,
+    localKeyPair: clientKey,
+    expectedRemotePublicKey: hostKey.publicKey,
+    sendPacket: (packet: ByocSealedPacket) => queueMicrotask(() => host.receive(packet)),
+    onFrame: () => {},
+  });
+  host = new ByocSealedChannel({
+    initiator: false,
+    localKeyPair: hostKey,
+    expectedRemotePublicKey: hostExpectedClientKey,
+    sendPacket: (packet: ByocSealedPacket) => queueMicrotask(() => client.receive(packet)),
+    onFrame: (frame) => hostFrames.push(frame),
+  });
+  try {
+    await Promise.all([client.opened, host.opened]);
+  } catch (error) {
+    client.close();
+    host.close();
+    throw error;
+  }
+  const untrack = gateway.track(connector, (reason) => {
+    closeReasons.push(reason);
+    client.close();
+    host.close();
+  });
+  return {
+    client,
+    hostFrames,
+    closeReasons,
+    close: () => { untrack(); client.close(); host.close(); },
+  };
+}
 
 describe('BYOC sealed-channel D-143 lifecycle (P-007)', () => {
-  it('connects, reconnects, advances generation, revokes live and future old-key sessions, and refuses key substitution', async () => {
-    const admission = new CustomerHostAdmission();
-    const first = await createByocClientKey(scope);
-    await admission.authorize(first.publicKeyBase64);
-    let rotated!: RotatedByocClientKey;
+  it('preserves connect/reconnect, fences stale generations and revocation, and refuses a substituted key', async () => {
+    const gateway = new HostedWorkspaceConnectorGateway(
+      new MemoryConnectorStore(),
+      () => new Date('2026-10-02T00:00:00Z'),
+      entropy(),
+    );
+    const clientKey = SecretStream.keyPair(Buffer.alloc(32, 81));
+    const hostKey = SecretStream.keyPair(Buffer.alloc(32, 82));
+    const first = await gateway.register((await gateway.enroll(binding)).ticket);
+    expect(first?.binding).toMatchObject({ generation: 1, state: 'active' });
 
-    await withByocClientKey(scope, first.publicKeyBase64, async (firstKey) => {
-      const initial = await admission.connect(first.publicKeyBase64, firstKey);
-      expect(initial.generation).toBe(1);
-      await initial.client.send({ type: 'pty.input', data: 'initial' });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(initial.hostFrames).toEqual([{ type: 'pty.input', data: 'initial' }]);
-      initial.close();
+    const initial = await openSealed(gateway, first!.binding, clientKey, hostKey);
+    await initial.client.send({ type: 'pty.input', data: 'initial' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(initial.hostFrames).toEqual([{ type: 'pty.input', data: 'initial' }]);
+    initial.close();
 
-      const reconnect = await admission.connect(first.publicKeyBase64, firstKey);
-      expect(reconnect.generation).toBe(1);
-      await reconnect.client.send({ type: 'file.read', path: '/workspace/reconnected.txt' });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(reconnect.hostFrames).toEqual([
-        { type: 'file.read', path: '/workspace/reconnected.txt' },
-      ]);
+    const reconnect = await openSealed(gateway, first!.binding, clientKey, hostKey);
+    await reconnect.client.send({ type: 'file.read', path: '/workspace/reconnected.txt' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(reconnect.hostFrames).toEqual([{ type: 'file.read', path: '/workspace/reconnected.txt' }]);
 
-      expect(await admission.bumpGeneration(first.publicKeyBase64)).toBe(2);
-      await expect(reconnect.client.send({ type: 'pty.input', data: 'stale-live-generation' }))
-        .rejects.toThrow(/closed/);
-      await expect(admission.connect(first.publicKeyBase64, firstKey, 1))
-        .rejects.toThrow(/stale connector generation/);
+    const rotation = await gateway.rotate({ ...binding, routeLabel: 'beta' });
+    expect(rotation?.binding.generation).toBe(2);
+    expect(reconnect.closeReasons).toEqual(['connector_rotated']);
+    await expect(reconnect.client.send({ type: 'pty.input', data: 'stale-live-generation' }))
+      .rejects.toThrow(/closed/);
+    expect(await gateway.authenticate(first!.bearer)).toBeNull();
 
-      const afterBump = await admission.connect(first.publicKeyBase64, firstKey);
-      expect(afterBump.generation).toBe(2);
-      await afterBump.client.send({ type: 'pty.input', data: 'current-generation' });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(afterBump.hostFrames).toEqual([{ type: 'pty.input', data: 'current-generation' }]);
+    const current = await gateway.register(rotation!.ticket);
+    expect(current?.binding).toMatchObject({ generation: 2, state: 'active' });
+    const afterBump = await openSealed(gateway, current!.binding, clientKey, hostKey);
+    await afterBump.client.send({ type: 'pty.input', data: 'current-generation' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(afterBump.hostFrames).toEqual([{ type: 'pty.input', data: 'current-generation' }]);
 
-      rotated = await rotateByocClientKey(
-        scope,
-        first.publicKeyBase64,
-        admission.authorize,
-        admission.revoke,
-      );
-      expect(rotated.status).toBe('complete');
-      await expect(afterBump.client.send({ type: 'pty.input', data: 'after-revocation' }))
-        .rejects.toThrow(/closed/);
-    });
+    const substituted = SecretStream.keyPair(Buffer.alloc(32, 83));
+    await expect(openSealed(gateway, current!.binding, substituted, hostKey, clientKey.publicKey))
+      .rejects.toThrow(/key|handshake|noise/i);
 
-    await withByocClientKey(scope, rotated.publicKeyBase64, async (replacementKey) => {
-      const current = await admission.connect(rotated.publicKeyBase64, replacementKey);
-      expect(current.generation).toBe(3);
-      await current.client.send({ type: 'http.request', requestId: 'generation-2' });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(current.hostFrames).toEqual([
-        { type: 'http.request', requestId: 'generation-2' },
-      ]);
-      current.close();
-
-      const substituted = SecretStream.keyPair(Buffer.alloc(32, 92));
-      await expect(admission.connect(rotated.publicKeyBase64, substituted))
-        .rejects.toThrow(/key|handshake|noise/i);
-    });
-
-    const revokedKey = SecretStream.keyPair(Buffer.from(first.recoverySeedBase64, 'base64'));
-    await expect(admission.connect(first.publicKeyBase64, revokedKey))
-      .rejects.toThrow(/not authorized/);
+    expect(await gateway.revoke(binding)).toBe(true);
+    expect(afterBump.closeReasons).toEqual(['connector_revoked']);
+    await expect(afterBump.client.send({ type: 'pty.input', data: 'after-revocation' }))
+      .rejects.toThrow(/closed/);
+    expect(await gateway.authenticate(current!.bearer)).toBeNull();
   });
 });
