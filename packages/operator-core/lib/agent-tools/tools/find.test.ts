@@ -299,6 +299,12 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit?.argSchema).toContain(
       'constraint:$ (resume or fork => non-empty top-level brief required)',
     );
+
+    const recoveryArgs = { resume: { agentId: 'su-a1a71' }, headless: true, account: 'auto' };
+    expect(launchAgent.args.safeParse(recoveryArgs).success).toBe(false);
+    expect(
+      launchAgent.args.safeParse({ ...recoveryArgs, brief: 'continue the recovery' }).success,
+    ).toBe(true);
   });
 
   it('derives return shapes from registered output schemas before authored prose', () => {
