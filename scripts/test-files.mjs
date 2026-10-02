@@ -87,6 +87,7 @@ import {
 } from './lib/test-file-exit-codes.mjs';
 import { peekFsMutexSync } from './lib/fs-mutex.mjs';
 import { formatMutationProbeWindow, readMutationProbeWindow } from './lib/mutation-probe-window.mjs';
+import { formatRestrictedHoldRefusal, runRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
 import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
 
@@ -2683,6 +2684,7 @@ export async function main(
   {
     runCapturedTestProcessImpl = runCapturedTestProcess,
     runVitestListImpl = runVitestList,
+    restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
   } = {},
 ) {
   let cleanupPreemptReadyMarker = null;
@@ -2808,6 +2810,17 @@ export async function main(
   // Diagnostic only: one stderr line, never a verdict input (see scripts/lib/mutation-probe-window.mjs).
   const probeWindowBefore = readMutationProbeWindow(REPO_ROOT);
   if (probeWindowBefore) console.error(formatMutationProbeWindow(probeWindowBefore, REPO_ROOT));
+  // WI-10005713 (D-012 / R-11): a session holding an active personal disclosure has no network,
+  // but a test or source it WROTE would run here with the network. Refuse before ANY test process
+  // starts — the same restrictedHoldRefusal testing:run applies in-process (it marks the child env
+  // so this does not run twice). Fail-closed: an unreadable census refuses too.
+  if (!dry) {
+    const restrictedHold = restrictedHoldPreflightImpl({ repoRoot: REPO_ROOT, files: routes.map((route) => route.absolute) });
+    if (restrictedHold.verdict === 'refuse') {
+      console.error(formatRestrictedHoldRefusal(restrictedHold));
+      return TEST_FILE_EXIT_NOT_MEASURED;
+    }
+  }
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
