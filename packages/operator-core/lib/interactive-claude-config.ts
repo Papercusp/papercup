@@ -96,11 +96,36 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import {
+  access as accessAsync,
+  lstat as lstatAsync,
+  mkdir as mkdirAsync,
+  readFile as readFileAsync,
+  readdir as readdirAsync,
+  rename as renameAsync,
+  rm as rmAsync,
+  symlink as symlinkAsync,
+  writeFile as writeFileAsync,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { reconcileClaudeCredentials } from './claude-credential-sync';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
+
+const interactiveMaterializationQueue = new Map<string, Promise<unknown>>();
+const claudeJsonMutationQueue = new Map<string, Promise<unknown>>();
+
+function serializeByKey<T>(queue: Map<string, Promise<unknown>>, key: string, run: () => Promise<T>): Promise<T> {
+  const previous = queue.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(run);
+  queue.set(key, next);
+  const cleanup = () => {
+    if (queue.get(key) === next) queue.delete(key);
+  };
+  void next.then(cleanup, cleanup);
+  return next;
+}
 
 export interface InteractiveClaudeConfig {
   /** Absolute path to set as the interactive session's `CLAUDE_CONFIG_DIR`. */
@@ -735,20 +760,20 @@ try {
  * still recover the correct playbook. Best-effort throughout: a failed write
  * degrades to today's behavior (argv-only delivery), never a failed launch.
  */
-function writeRecoveryArtifacts(
+async function writeRecoveryArtifacts(
   configDir: string,
   recovery?: { playbookPath?: string | null; nativeSessionId?: string | null; sid?: string },
-): void {
+): Promise<void> {
   try {
-    writeFileSync(join(configDir, RECOVER_HOOK), RECOVER_HOOK_SOURCE, { mode: 0o700 });
+    await writeFileAsync(join(configDir, RECOVER_HOOK), RECOVER_HOOK_SOURCE, { mode: 0o700 });
   } catch {
     /* hook unwritable — argv delivery still stands */
   }
   if (!recovery?.playbookPath) return;
   try {
-    const playbook = readFileSync(recovery.playbookPath, 'utf8');
-    writeFileSync(join(configDir, RECOVER_PLAYBOOK), playbook, { mode: 0o600 });
-    writeFileSync(
+    const playbook = await readFileAsync(recovery.playbookPath, 'utf8');
+    await writeFileAsync(join(configDir, RECOVER_PLAYBOOK), playbook, { mode: 0o600 });
+    await writeFileAsync(
       join(configDir, RECOVER_INTENT),
       JSON.stringify(
         {
@@ -1091,7 +1116,7 @@ export async function writeInteractiveClaudeConfig(opts: {
 
   // WI-3280: the SessionStart recovery hook (always) + the parked playbook
   // copy (when the caller supplies one) — see writeRecoveryArtifacts.
-  writeRecoveryArtifacts(configDir, { ...opts.recovery, sid: opts.sid });
+  await writeRecoveryArtifacts(configDir, { ...opts.recovery, sid: opts.sid });
 
   // The isolated conversation-transcript store — a REAL dir, never a symlink, so
   // `/resume` + `claude --resume <uuid>` see only this session's transcripts.
