@@ -481,20 +481,37 @@ export interface CompletionBlobHistoryReader {
  * range again in its own exec: 4,632 `git log --find-object` execs in 10 min
  * (2026-10-02, after WI-10005357).
  *
- * Only a NO-MATCH is kept: "no commit reachable from `searchedThrough` and not from the
+ * A NO-MATCH (`searchedThrough`) says "no commit reachable from W and not from the
  * close-time commit has this blob at this path". It stays exact for any later commit T,
  * ancestor or not, because from..T = (from..W) ∪ (T ^W ^from); the next search covers
- * only the second part. A match is never kept: whether it is still reachable depends on
- * T, so a matched pair is searched again (its row normally settles and leaves).
+ * only the second part.
+ *
+ * WI-10005524: a MATCH (`foundThrough`) is kept too. It says "the exact per-pair search
+ * over from..W found the blob". A row with one matched path and another residual path
+ * stays unsettled, so without this its match was re-proved by a per-pair `git log` on
+ * every rotation (~1,198 execs / 10 min, measured 2026-10-02). It is exact for a later T
+ * only when W is an ancestor of T (the matching commit stays reachable from T, and it is
+ * still not reachable from `from`), so the reader proves that with one `merge-base` per
+ * (repository, W, T) shared by the whole pass, and searches again when it cannot (a
+ * submodule gitlink can move to a non-descendant commit).
  */
-export type CompletionHistorySearched = {
+type CompletionHistoryAt = {
   /** Where the pair resolved at its close-time HEAD (fixed for that commit). */
   readonly repositoryRoot: string;
   readonly fromCommitSha: string;
   readonly path: string;
-  /** The commit, in that repository, through which a full-history search found no match. */
-  readonly searchedThrough: string;
 };
+export type CompletionHistorySearched =
+  | (CompletionHistoryAt & {
+      /** The commit, in that repository, through which a full-history search found no match. */
+      readonly searchedThrough: string;
+      readonly foundThrough?: undefined;
+    })
+  | (CompletionHistoryAt & {
+      /** The commit, in that repository, through which the exact per-pair search found a match. */
+      readonly foundThrough: string;
+      readonly searchedThrough?: undefined;
+    });
 
 export interface CompletionHistorySearchMemo {
   get(key: string): CompletionHistorySearched | undefined;
@@ -645,6 +662,33 @@ export function createCompletionBlobHistoryReader(
   /** Range → its batched search, kept for the pass so a member asked later reuses it. */
   const searches = new Map<string, Promise<Search>>();
   let historyReadCount = 0;
+  /**
+   * WI-10005524: (repository, W, T) → whether W is an ancestor-or-equal of T, for the pass.
+   * Every kept match moves its `foundThrough` to the commit it was last proven at, so a
+   * pass needs about one read per repository, shared by every matched pair. A failed read
+   * (null) is not kept: it measured nothing, and the pair is searched instead.
+   */
+  const descents = new Map<string, Promise<boolean | null>>();
+  let ancestryReadCount = 0;
+  const descends = (root: string, ancestor: string, descendant: string, opts: GitSpawnOptions) => {
+    const key = [root, ancestor, descendant].join('\0');
+    let pending = descents.get(key);
+    if (!pending) {
+      ancestryReadCount += 1;
+      const read = commitContains(root, descendant, ancestor, opts);
+      pending = read;
+      descents.set(key, read);
+      void read.then((answer) => {
+        if (answer === null && descents.get(key) === read) descents.delete(key);
+      });
+    }
+    return pending;
+  };
+  /** Keep an exact per-pair verdict across passes: a match through T, or a no-match through T. */
+  const remember = (pair: Pair, span: Span, found: boolean) => {
+    const at = { repositoryRoot: span.from.repositoryRoot, fromCommitSha: span.from.commitSha, path: span.from.path };
+    memo.set(pair.id, found ? { ...at, foundThrough: span.to.commitSha } : { ...at, searchedThrough: span.to.commitSha });
+  };
 
   const spanOf = async (
     pair: Pair,
@@ -672,8 +716,8 @@ export function createCompletionBlobHistoryReader(
       if (pair.id === self.pair.id || pair.root !== self.pair.root) return false;
       // A cheap pre-filter; spanOf decides. A fresh pair's range starts at its own
       // close-time commit, so only pairs closed at the same HEAD can share it.
-      const searched = memo.get(pair.id);
-      return searched ? searched.searchedThrough === self.lower : pair.fromHeadSha === self.pair.fromHeadSha;
+      const searched = memo.get(pair.id)?.searchedThrough;
+      return searched !== undefined ? searched === self.lower : pair.fromHeadSha === self.pair.fromHeadSha;
     });
     for (const span of await Promise.all(candidates.map((pair) => spanOf(pair, toCommitSha, opts)))) {
       if (span && span !== 'unmeasured' && rangeKey(span) === key) members.set(span.pair.id, span);
