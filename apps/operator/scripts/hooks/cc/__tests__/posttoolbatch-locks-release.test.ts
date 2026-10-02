@@ -532,6 +532,68 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
     }
   });
 
+  it('injects a manual lock-mode update when a Codex release cannot be confirmed', async () => {
+    const toolUseId = 'tu-unconfirmed-release';
+    primaryNoText = true;
+    fs.writeFileSync(join(cache, toolUseId + '.lock'), 'unconfirmed-lock');
+    fs.writeFileSync(join(cache, toolUseId + '.paths'), JSON.stringify(['src/first.ts']));
+    fs.writeFileSync(join(cache, toolUseId + '.domain'), '/repo');
+
+    const out = await runHook(POST_HOOK, {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'apply_patch',
+      tool_use_id: toolUseId,
+      session_id: 'codex-owner',
+      tool_response: { success: true },
+    }, {
+      PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: operatorUrl,
+    });
+
+    expect(out.status).toBe(0);
+    const hookOutput = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hookOutput.hookEventName).toBe('PostToolUse');
+    expect(hookOutput.additionalContext).toContain('LOCK MODE UPDATE');
+    expect(hookOutput.additionalContext).toContain('manual');
+    expect(hookOutput.additionalContext).toContain('src/first.ts');
+    expect(fs.existsSync(join(cache, toolUseId + '.lock'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(join(cache, 'last-error.json'), 'utf8'))).toMatchObject({
+      handler: 'posttooluse',
+      phase: 'release',
+      detail: 'response: no-text',
+    });
+  });
+
+  it('injects a manual lock-mode update when a Claude batch release cannot be confirmed', async () => {
+    const batchId = 'batch-unconfirmed-release';
+    const toolUseId = 'tu-batch-unconfirmed-release';
+    writeBatch(batchId, 'granted', [toolUseId]);
+    primaryNoText = true;
+
+    const out = await runHook(BATCH_HOOK, {
+      ...batchInput([toolUseId]),
+      tool_calls: [{
+        tool_use_id: toolUseId,
+        tool_name: 'Edit',
+        tool_response: { success: true },
+      }],
+    }, {
+      PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: operatorUrl,
+    });
+
+    expect(out.status).toBe(0);
+    const hookOutput = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hookOutput.hookEventName).toBe('PostToolBatch');
+    expect(hookOutput.additionalContext).toContain('LOCK MODE UPDATE');
+    expect(hookOutput.additionalContext).toContain('manual');
+    expect(hookOutput.additionalContext).toContain('src/first.ts');
+    expect(JSON.parse(fs.readFileSync(join(cache, 'last-error.json'), 'utf8'))).toMatchObject({
+      handler: 'posttoolbatch',
+      phase: 'release',
+      detail: 'response: no-text',
+    });
+    expectClean(batchId, [toolUseId]);
+  });
+
   it('keeps PostToolBatch attribution Claude-only when a Codex edit appears', async () => {
     writeBatch('codex-batch', 'granted', ['tu-codex']);
 

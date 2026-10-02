@@ -349,13 +349,30 @@ def release_confirmed(inner, expected_paths):
     return inner.get('ok') is True
 
 
-def mark_release_error(phase, detail):
+def mark_release_error(phase, detail, paths=None):
     value = {
         'ts': now_iso(), 'handler': 'posttoolbatch', 'phase': phase,
         'detail': str(detail)[:200], 'operator_url': operator_url, 'owner': owner,
     }
     write_marker('last-error.json', value)
     write_marker(owner_marker_name('error'), value)
+    valid_paths = [path for path in (paths or []) if isinstance(path, str) and path]
+    path_text = ', '.join(valid_paths[:6]) if valid_paths else 'the completed edit batch'
+    if len(valid_paths) > 6:
+        path_text += ', …'
+    event = payload.get('hook_event_name')
+    if event not in ('PostToolUse', 'PostToolBatch'):
+        event = 'PostToolBatch'
+    context = (
+        'LOCK MODE UPDATE: automatic file-lock release was not confirmed for '
+        + path_text
+        + '. Its lock may remain active. Treat lock handling as manual until a fresh coord:orient reports '
+        + 'automatic/verified: inspect locks:queue and explicitly acquire/release before any next file edit.'
+    )
+    json.dump({'hookSpecificOutput': {
+        'hookEventName': event,
+        'additionalContext': context,
+    }}, sys.stdout)
 
 
 def release_batch(state, proof=None):
@@ -407,7 +424,7 @@ def release_batch(state, proof=None):
                 raw_response = urllib.request.urlopen(req, timeout=10).read().decode('utf-8', errors='replace')
                 inner, rpc_error, phase = parse_mcp_response(raw_response)
                 if rpc_error is not None:
-                    mark_release_error('release', 'rpc: ' + str(rpc_error))
+                    mark_release_error('release', 'rpc: ' + str(rpc_error), release_paths)
                     return False
                 if phase in ('no-result', 'no-text'):
                     # An empty HTTP 200 is not proof that the batch lock was
@@ -418,10 +435,10 @@ def release_batch(state, proof=None):
                     all_conn_refused = False
                     continue
                 if phase != 'ok' or not isinstance(inner, dict):
-                    mark_release_error('release', 'response: ' + str(phase))
+                    mark_release_error('release', 'response: ' + str(phase), release_paths)
                     return False
                 if not release_confirmed(inner, release_paths if isinstance(release_paths, list) else []):
-                    mark_release_error('release', inner or 'release not confirmed')
+                    mark_release_error('release', inner or 'release not confirmed', release_paths)
                     return False
                 return True
             except Exception as exc:
@@ -432,7 +449,7 @@ def release_batch(state, proof=None):
             time.sleep(backoffs[attempt])
             continue
         break
-    mark_release_error(last_phase, last_detail or 'release not confirmed')
+    mark_release_error(last_phase, last_detail or 'release not confirmed', release_paths)
     return False
 
 
