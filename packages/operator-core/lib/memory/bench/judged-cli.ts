@@ -32,6 +32,16 @@ const keep = process.argv.includes('--keep');
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..', '..');
 
+// Both label collection and judged retrieval use in-process LLM calls. Apply
+// the standing gateway flag at the same seam as the maintained llm-test CLI;
+// a generic shell task need not inherit the operator's gateway environment.
+const { FLAGS } = await import('@papercusp/flags');
+const { getFlag } = await import('@papercusp/flags/server');
+if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
+  const { applyGatewayLlmEnv } = await import('../../inference-gateway/spawn-env');
+  applyGatewayLlmEnv(true);
+}
+
 if (process.argv.includes('--label-cohort')) {
   const snapshot = argValue('--snapshot'), out = argValue('--label-out');
   if (!snapshot || !out) throw new Error('--label-cohort requires --snapshot and --label-out');

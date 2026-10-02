@@ -11,7 +11,10 @@ vi.mock('./judged', () => ({
     return { labels: { path: 'fixture-labels' }, judgments: { path: 'fixture-judgments' } };
   }),
   parseBlindTargetBudget: vi.fn((value: string) => value),
-  runJudgedTier: vi.fn(), writeJudgedReport: vi.fn(),
+  runJudgedTier: vi.fn(async () => {
+    state.order.push('tier'); state.route = { sdk: process.env.PAPERCUSP_ANTHROPIC_URL, cli: process.env.ANTHROPIC_BASE_URL };
+    return { markdown: 'fixture' };
+  }), writeJudgedReport: vi.fn(() => ({ json: 'fixture', md: 'fixture' })),
 }));
 vi.mock('../../../../../scripts/lib/write-stdout-sync.mjs', () => ({ writeStdoutSync: vi.fn() }));
 
@@ -41,5 +44,12 @@ describe('blind collector CLI gateway entry (WI-10005666)', () => {
     state.enabled = false; await enter();
     expect(state.order).toEqual(['flag', 'collect']);
     expect(state.route).toEqual({ sdk: undefined, cli: undefined });
+  });
+  it('also configures the ordinary judged-tier path before its first model call', async () => {
+    process.argv = [process.execPath, 'judged-cli.ts'];
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await enter();
+    expect(state.order).toEqual(['flag', 'tier']);
+    expect(state.route).toEqual({ sdk: 'http://127.0.0.1:18788', cli: 'http://127.0.0.1:18788' });
   });
 });
