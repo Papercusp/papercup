@@ -77,7 +77,7 @@ urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHa
 
 operator_url, token_path, sid, cache_dir, workspace_root, flag_key, agent, hook_dir = sys.argv[1:9]
 sys.path.insert(0, hook_dir)
-from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_hook_payload, read_token_file, with_native_session  # noqa: E402
 raw = read_hook_payload()
 token = read_token_file(token_path)
 HTTP_TIMEOUT = 3
@@ -187,11 +187,17 @@ if not os.path.exists(edited_marker):
     sys.exit(0)              # no workspace edits this session — nothing to verify.
 
 
-def call_tool(tool, args):
+def call_tool(tool, args, native_session_id=None):
     body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                        'params': {'name': tool, 'arguments': args}}).encode()
+    url = operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client=' + urllib.parse.quote(sid, safe='')
+    if tool == 'activity:report':
+        url = with_native_session(
+            url,
+            native_session_id or args.get('session_id') or os.environ.get('PAPERCUSP_NATIVE_SESSION_ID') or '',
+        )
     req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client=' + urllib.parse.quote(sid, safe=''),
+        url,
         data=body,
         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                  'Accept': 'application/json, text/event-stream'},
@@ -342,7 +348,8 @@ if not glance_fixture:
         cwd = ev.get('cwd')
         if isinstance(cwd, str) and cwd:
             a['cwd'] = cwd
-        call_tool('activity:report', a)
+        native_session_id = sess if isinstance(sess, str) and sess else os.environ.get('PAPERCUSP_NATIVE_SESSION_ID')
+        call_tool('activity:report', a, native_session_id=native_session_id)
     except Exception:
         pass
 

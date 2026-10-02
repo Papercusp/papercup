@@ -117,7 +117,7 @@ urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHa
 
 operator_url, token_path, owner, agent, harness_slug, hook_dir = sys.argv[1:7]
 sys.path.insert(0, hook_dir)
-from mcp_response import read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_hook_payload, read_token_file, with_native_session  # noqa: E402
 raw = read_hook_payload()
 token = read_token_file(token_path)
 HTTP_TIMEOUT = 3
@@ -236,8 +236,11 @@ body = json.dumps({
     'params': {'name': 'activity:report', 'arguments': args},
 }).encode()
 req = urllib.request.Request(
-    operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
-    + urllib.parse.quote(owner, safe=''),
+    with_native_session(
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+        + urllib.parse.quote(owner, safe=''),
+        session_id or os.environ.get('PAPERCUSP_NATIVE_SESSION_ID') or '',
+    ),
     data=body,
     headers={
         'Authorization': 'Bearer ' + token,
