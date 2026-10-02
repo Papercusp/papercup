@@ -73,6 +73,9 @@ describe('linkWorkItemRefDependencies', () => {
 
     expect(res).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
     expect(res.ok === false && res.error).toMatch(/cannot depend on itself/);
+    // WI-10005197: the refusal carries a RefusalContract naming what the write observed.
+    expect(res.ok === false && res.refusal.observed).toEqual({ dependent: 'WI-1', blockers: 'wi-1' });
+    expect(res.ok === false && res.refusal.liftsWhen).toMatch(/no blocker is the dependent itself/);
     expect(m.linkWorkItem).not.toHaveBeenCalled();
   });
 
@@ -87,6 +90,7 @@ describe('linkWorkItemRefDependencies', () => {
     expect(res).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
     expect(res.ok === false && res.error).toMatch(/'WI-404' was not found/);
     // WI-2 was valid, but the refusal of WI-404 must leave NO partial edge set.
+    expect(res.ok === false && res.refusal.observed).toEqual({ dependent: 'WI-1', blockers: 'WI-404' });
     expect(m.linkWorkItem).not.toHaveBeenCalled();
   });
 
@@ -124,6 +128,8 @@ describe('linkWorkItemRefDependencies', () => {
 
     expect(res).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
     expect(res.ok === false && res.error).toBe('Edge would create a blocks cycle. No dependency was written.');
+    expect(res.ok === false && res.refusal.observed).toEqual({ dependent: 'WI-1', blockers: 'WI-3' });
+    expect(res.ok === false && res.refusal.liftsWhen).toMatch(/acyclic/);
     expect(m.linkWorkItem).not.toHaveBeenCalled();
   });
 
@@ -137,6 +143,8 @@ describe('linkWorkItemRefDependencies', () => {
 
     expect(res).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
     expect(res.ok === false && res.error).toMatch(/could not be resolved as an edge endpoint/);
+    // The refusal is about the dependent itself, so no blocker is named.
+    expect(res.ok === false && res.refusal.observed).toEqual({ dependent: 'WI-404', blockers: null });
     expect(m.guardFeatureBlockEdgeAcyclic).not.toHaveBeenCalled();
     expect(m.linkWorkItem).not.toHaveBeenCalled();
   });
@@ -156,5 +164,6 @@ describe('linkWorkItemRefDependencies', () => {
     expect(res).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
     expect(res.ok === false && res.error).toMatch(/blocks edge WI-3 → WI-1 was not written/);
     expect(res.ok === false && res.error).toMatch(/already written: WI-2/);
+    expect(res.ok === false && res.refusal.observed).toEqual({ dependent: 'WI-1', blockers: 'WI-3' });
   });
 });
