@@ -1121,16 +1121,24 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       })().catch(error => { console.error(JSON.stringify({ phase, errorClass: error.name, errorCode: error.code }));
         process.exitCode = 1; }).finally(() => fs.rmSync(snapshot, { force: true }));
     `;
-    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
-      '--isolated-runtime=operator-api', '--', process.execPath, '-e', program], {
-      cwd: root, encoding: 'utf8', timeout: 120_000, maxBuffer: 64 * 1024,
-      env: { ...process.env, TEST_NATIVE_HEAP_DECODER: process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER,
-        TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs') },
-    });
-    if (result.status !== 0) throw new Error('Native decoder boundary guard failed: ' +
-      JSON.stringify({ status: result.status, signal: result.signal, error: result.error?.code,
-        stdout: result.stdout.slice(-2000), stderr: result.stderr.slice(-2000) }));
-    const line = result.stdout.split('\n').find(line => line.startsWith('NATIVE_DECODER_CONTROL '));
+    const directory = mkdtempSync(join(tmpdir(), 'native-decoder-boundary-'));
+    const outPath = join(directory, 'stdout.log'), errPath = join(directory, 'stderr.log');
+    const out = openSync(outPath, 'w'), err = openSync(errPath, 'w');
+    let stdout: string;
+    try {
+      const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--', process.execPath, '-e', program], {
+        cwd: root, timeout: 120_000, stdio: ['ignore', out, err],
+        env: { ...process.env, TEST_NATIVE_HEAP_DECODER: process.env.PAPERCUSP_P011_NATIVE_HEAP_DECODER,
+          TEST_HEAP_ANALYZER: resolve(root, 'scripts/analyze-heap-snapshots.mjs') },
+      });
+      stdout = readFileSync(outPath, 'utf8');
+      if (result.status !== 0) throw new Error('Native decoder boundary guard failed: ' +
+        JSON.stringify({ status: result.status, signal: result.signal,
+          error: result.error && 'code' in result.error ? result.error.code : null,
+          stdout: stdout.slice(-2000), stderr: readFileSync(errPath, 'utf8').slice(-2000) }));
+    } finally { closeSync(out); closeSync(err); rmSync(directory, { recursive: true, force: true }); }
+    const line = stdout.split('\n').find(line => line.startsWith('NATIVE_DECODER_CONTROL '));
     expect(line).toBeDefined();
     const report = JSON.parse(line!.slice('NATIVE_DECODER_CONTROL '.length));
     expect(report.decoded).toBe(true);
