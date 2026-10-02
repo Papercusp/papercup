@@ -31,6 +31,7 @@ import {
   type ClaimFloorAttribution,
   type UnresolvedDepBlocker,
 } from '../../work-items';
+import { notAgentWorkClaimHint } from '../../work-nature/not-agent-work-hint';
 import { mintForceTakeoverAdmission } from '../../issues-engineer';
 import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -1120,10 +1121,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         workItem: current,
         nature: category.nature,
         audience: category.audience,
-        hint:
-          `This row is nature '${category.nature}'${category.audience ? `, audience '${category.audience}'` : ''}, ` +
-          "not agent work (nature 'work', audience 'agent'), so no agent can claim it, by id or otherwise. " +
-          'Do not retry. A human-audience item is acted on by its owner; a record, document or event is data to read, not work.',
+        hint: notAgentWorkClaimHint(category.nature, category.audience),
       };
     }
   }
