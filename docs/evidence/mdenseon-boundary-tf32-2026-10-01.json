@@ -657,7 +657,7 @@
     "nativeKernelTrace": "Input evidence alone does not establish kernel ownership; the later external V6 profile establishes process binding separately",
     "gpuAcceptanceComplete": false,
     "requestSequenceExtension": {
-      "status": "Request/attempt/thread identity and graph-call lifecycle guards verified; profiler clock calibration and unique kernel-to-request joins still open",
+      "status": "Request identity, graph and synchronous native-call lifecycle, and RAW-clock guards verified locally; profiler clock calibration and kernel-to-request joins still open",
       "reuse": "Extend the same opt-in worker protocol, pinned candidate builder and native qualifier. Ordinary calls request no trace. Retain pre-graph input JSONL and separate graph start/end JSONL; preserve concurrent single-text request-group submission.",
       "retainedV6Audit": {
         "profileDatabaseSha256": "0f163a3fa476d5013642d9e80a11dc44f99809f94adf800a8150d5108dadf74e",
@@ -698,6 +698,61 @@
         { "path": "libs/generic/memory/src/mdenseon-embedder.test.ts", "bytes": 3975, "sha256": "87e69f33d835dc0fcb955330eb4579d602162fc8ff3a8d76bb871ea6670e2f57" },
         { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "bytes": 23174, "sha256": "005aad596e8a5fac17ffe6e5f4b145d55d25e068dcfaeb1f3856afd84ada15ba" }
       ],
+      "nativeCallClockExtension": {
+        "reuse": "Extend the same opt-in worker/builder/qualifier callbacks. Wrap each existing ORT native session instance through its writable constructor export; preserve the original native receiver, installed prototype and queued request order. AsyncLocalStorage carries request identity through the SDK setImmediate queue. Ordinary calls request no native trace.",
+        "sourceFindings": {
+          "onnxruntimeNode": "1.24.3",
+          "nativePrototypeRunWritable": false,
+          "nativePrototypeRunConfigurable": false,
+          "constructorExportWritable": true,
+          "sessionInstanceExtensible": true,
+          "node": "25.9.0",
+          "libuv": "1.51.0",
+          "nodeClock": "CLOCK_MONOTONIC via uv_hrtime(UV_CLOCK_PRECISE)",
+          "sources": [
+            "https://raw.githubusercontent.com/nodejs/node/v25.9.0/src/node_process_methods.cc",
+            "https://raw.githubusercontent.com/libuv/libuv/v1.51.0/src/unix/core.c",
+            "https://raw.githubusercontent.com/libuv/libuv/v1.51.0/src/unix/linux.c",
+            "https://docs.nvidia.com/nsight-systems/AnalysisGuide/index.html"
+          ]
+        },
+        "nativeEvidence": "Private .native-inference.jsonl retains request/attempt/PID/Node worker/Linux TID, native run index/tag, start/end and success/error. Native calls must lie inside their request graph interval. A fresh worker is required before model construction; unsupported bindings or asynchronous native Run implementations fail qualification.",
+        "clockEvidence": "Each Linux native-call boundary carries isolated standard-Python CLOCK_MONOTONIC_RAW samples bracketed by CLOCK_MONOTONIC and Node hrtime. Retain exact decimal ns and executable fingerprint. These RAW samples bound the native call without an assumed offset/drift model; their mapping to the Nsight capture still requires measurement.",
+        "clockExecutable": { "path": "/usr/bin/python3.12", "bytes": 8020928, "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f" },
+        "clockCaptureCost": "Requested diagnostic native-call evidence launches two small clock probes per native call. These runs do not provide controlled performance acceptance; frozen V7 performance evidence is unchanged.",
+        "cpuFixture": {
+          "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.24.3/onnxruntime/test/testdata/mul_1.onnx",
+          "license": "MIT",
+          "bytes": 130,
+          "sha256": "71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10",
+          "scope": "Isolated fresh CPU process verifies the actual native receiver/tag, concurrent queued calls, disjoint synchronous native intervals, RAW clock brackets, successful outputs and an actual native dimension error. This is a tiny upstream fixture, not a pretrained model/reference replay."
+        },
+        "verification": {
+          "runId": "70afa6ef-f717-4e5e-9b34-bba7dd8666d7",
+          "testRunIds": [20528203, 20528204, 20528205],
+          "passed": 115, "failed": 0, "skipped": 0, "collectionFailed": false,
+          "scope": "Worker protocol/native CPU fixture, pinned builder forwarding and retained native-call/clock guards. Final maintained testing:run succeeded after direct CLI runs with changed HEAD were retained as provenance-incomplete diagnostics.",
+          "typecheck": "Six requested TypeScript source/test files and loaded imports clean; compiler exit 0",
+          "syntaxAndDiff": "Plain ESM node --check and scoped git diff --check pass"
+        },
+        "sources": [
+          { "path": "libs/generic/memory/src/local-embedder-worker.ts", "bytes": 51428, "sha256": "fd09e90f013a8e7f94e9fee20999239da76aa1c270f704d9414ff0302672d69e" },
+          { "path": "libs/generic/memory/src/local-embedder-worker.script.mjs", "bytes": 19665, "sha256": "bbb0fcae0f8e199097e6c4beb8a1659d26dbc49e0270f45eab14c656cf189fb4" },
+          { "path": "libs/generic/memory/src/mdenseon-embedder.ts", "bytes": 3575, "sha256": "b3bfc7fd1aefab3c9178eaa6d01d2fbed85a2a9b6c3fbc21626d4cfaafb2bc4b" },
+          { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.ts", "bytes": 52894, "sha256": "7bfcaf89c2f7383a799c5eb9b220abbe82265df66cecaa1be1553456d0022821" }
+        ],
+        "tests": [
+          { "path": "libs/generic/memory/src/local-embedder-worker-input-trace.test.ts", "bytes": 22598, "sha256": "aa5109329b2d3d8ba6f2dca1ab6a76def6d4c9e71f41e2fe096b9b52c89e9bb6" },
+          { "path": "libs/generic/memory/src/mdenseon-embedder.test.ts", "bytes": 4057, "sha256": "ceb75be956edc9fd8b7467701701a4f0b6c9d75eff1af9d5445b4eedf20f6954" },
+          { "path": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "bytes": 27092, "sha256": "2bccc205bf119bee8c5bdf3bf737a03d3a01679f3dd9f18ecf7341d3810aa267" }
+        ],
+        "pretrainedModelInferencePerformed": false,
+        "nativeCudaInferencePerformed": false,
+        "nsightClockCalibrationVerified": false,
+        "kernelPidAndSequenceBindingVerified": false,
+        "completeBeforeInferenceClosureVerified": false,
+        "fullGpuPopulationComplete": false
+      },
       "realModelInferencePerformed": false,
       "frozenV6RuntimeChanged": false,
       "kernelPidAndSequenceBindingVerified": false,
