@@ -19,6 +19,7 @@ function section(text: string): string {
 
 describe('disconnected Papercusp MCP recovery guidance', () => {
   const body = section(readCorpus());
+  const normalizedBody = body.replace(/\s+/g, ' ');
 
   it('uses the populated projected guide section', () => {
     expect(body.length).toBeGreaterThan(1_500);
@@ -26,7 +27,7 @@ describe('disconnected Papercusp MCP recovery guidance', () => {
   });
 
   it('retries the original operation without the stale readiness tool', () => {
-    expect(body).toContain('once its `/api/health` answers, retry the original failed Papercusp tool call.');
+    expect(normalizedBody).toContain('once its `/api/health` answers, retry the original failed Papercusp tool call.');
     expect(body).not.toMatch(STALE_TOOL);
   });
 

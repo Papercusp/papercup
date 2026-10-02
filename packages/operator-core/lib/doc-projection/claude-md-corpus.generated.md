@@ -225,9 +225,7 @@ every descendant, including ones that double-fork and reparent to init.
 live desktop window and peer agents' Xvfb instances. Use **`processes:kill { taskId }`** —
 it kills the whole cgroup subtree and cannot reach a recycled pid (PID wrap happens ~daily
 here under fleet load). An `identity_mismatch` refusal is the rail working, not a bug. To
-relieve pressure without losing work, **`processes:freeze`** beats killing — but it stops CPU, not
-the clock: a task under a wall-clock deadline (`capability:bash` timeout, an inner `timeout N`) burns
-it while frozen and is killed on thaw, so finish or kill+rerun those instead (read the result's `warnings`).
+relieve pressure without losing work, **`processes:freeze`** beats killing.
 
 | you want | use | not |
 |---|---|---|
@@ -2056,26 +2054,22 @@ a `\du`), the bash form is the right answer — the gate will not fight you on t
 - **DISCONNECTED** — tools worked, then every call says `ECONNREFUSED` or `MCP server
   papercusp-su is not connected`: the operator you dial (often a `:3170` pin) is
   restarting. Re-dial is INCONSISTENT, not never (EI-24755204180385597): once its
-  `/api/health` answers, retry, then `WaitForMcpServers` twice ~1 min apart. No human
+  `/api/health` answers, retry the original failed Papercusp tool call. No human
   `/mcp` needed (EI-24657708696146012). Still down? Flush checkpoints via
   `mcp-call.mjs` as above, then respawn YOURSELF:
   `node scripts/mcp-call.mjs session:request-compaction '{"reason":"papercusp-su MCP disconnected"}' --client <your-su-id> --port 3070`
-- **IDENTITY** — tools ARE listed, but every call refuses `Identity capability
-  (unresolved): stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one** — it is a
-  server-side kernel preflight, so every client, port and transport gets the same
-  denial (WI-10002028). `coord:orient` can be refused by it too, so read
-  `activation.status` FIRST:
+- **IDENTITY** — tools are listed, but calls refuse `Identity capability (unresolved):
+  stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one**: server-side preflight
+  rejects every client and port (WI-10002028); even `coord:orient` may be refused.
+  Read `activation.status` first:
   `sudo -n -u postgres psql -d papercusp -At -c "SELECT jsonb_pretty(control_state->'activation') FROM harness_shared.session_briefs WHERE owner_id = '<your-su-id>';"`
-  - `'desired'`/`'prepared'`, `applied` merely lagging → `coord:orient { afterCompaction: true }`
-    acknowledges but does not apply it (WI-10002717). Send one more prompt; if it
-    still reads `desired`, converge.
+  - `desired`/`prepared` with lagging `applied` → `coord:orient { afterCompaction: true }`
+    only acknowledges (WI-10002717); send another prompt, then converge if it remains `desired`.
   - `'failed'` → converge directly; there is nothing for orient to acknowledge.
-  - **Converge** only when `adv_sessions.launch_spec->>'specificationRevision'` shows
-    you ALREADY run the desired revision (that is what makes it true, not forged):
-    set `applied` and `prepared` := `desired`, `status` := `'applied'`, with a `WHERE`
-    on that exact desired revision. It is a MITIGATION — add your occurrence to
-    EI-23703586803892464 rather than filing a fresh row.
-
+  - **Converge** only if `adv_sessions.launch_spec->>'specificationRevision'` equals
+    `desired`: set `applied` and `prepared` to `desired` and
+    `status` to `'applied'`, with `WHERE` on that revision. This mitigates; add the
+    occurrence to EI-23703586803892464.
 Evidence behind the IDENTITY-refusal rule in "Reaching for bash? These reads already have a tool".
 
 **Why `mcp-call.mjs` cannot open the identity class (WI-10002028).** The `stale-artifact`

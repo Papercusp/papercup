@@ -98,6 +98,26 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     },
   );
 
+  it.each(flatAdequacyFields)(
+    'rejects flat adequacy field %s even when details.adequacy is present',
+    (field, value) => {
+      const parsed = bindingSchema.safeParse({
+        ...measuredBinding,
+        details: { adequacy: { executed: true }, [field]: value },
+      });
+      expect(parsed.success).toBe(false);
+      if (parsed.success) return;
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['details', field],
+            message: expect.stringContaining(`details.adequacy.${field}`),
+          }),
+        ]),
+      );
+    },
+  );
+
   it('continues to accept unrelated free-form details without an adequacy container', () => {
     expect(
       bindingSchema.safeParse({
