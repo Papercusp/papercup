@@ -1807,14 +1807,25 @@ export interface MergeCursorStore {
  * of those events would be the same unsafe skip the original latch avoided.
  */
 export interface PgMergeCursorSeedCache {
+  /**
+   * Seed `cursor` from progress persisted under `applyBinding`. When
+   * `fallbackApplyBinding` is given, an admitted key the primary binding left
+   * unpositioned is then seeded from progress persisted under that binding, and
+   * the keys seeded that way are returned so the caller can owe whatever the
+   * fallback binding did not apply (WI-10005575: a boot that resolves the memory
+   * flag differently from the stamp otherwise re-folds every log from 0).
+   */
   seed(
     cursor: MergeCursor,
     store: MergeCursorStore,
     applyBinding: string | null,
     admittedKeyHexes: Iterable<string>,
-  ): Promise<void>;
+    fallbackApplyBinding?: string | null,
+  ): Promise<ReadonlySet<string>>;
   invalidate(): void;
 }
+
+const NO_FALLBACK_SEEDS: ReadonlySet<string> = new Set();
 
 /** Copy safe persisted positions into a cursor, optionally filtering to keys
  * admitted RIGHT NOW. Exported for the direct one-shot helper and focused tests. */
@@ -1868,13 +1879,20 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
   let failures: ReadonlyMap<string, MergeApplyFailure> | undefined;
   let marks: ReadonlyMap<string, SnapshotApplyMark> | undefined;
   let savedApplyBinding: string | null | undefined;
+  // WI-10005575: the fallback binding's load, cached separately so a primary
+  // reload never discards it and vice versa.
+  let fallbackSaved: ReadonlyMap<string, number> | undefined;
+  let fallbackFailures: ReadonlyMap<string, MergeApplyFailure> | undefined;
+  let fallbackMarks: ReadonlyMap<string, SnapshotApplyMark> | undefined;
+  let savedFallbackBinding: string | null | undefined;
   let invalidated = false;
   let loadFailed = false;
   return {
-    async seed(cursor, store, applyBinding, admittedKeyHexes) {
+    async seed(cursor, store, applyBinding, admittedKeyHexes, fallbackApplyBinding) {
+      const admitted = [...admittedKeyHexes];
       if (invalidated) {
-        if (loadFailed) pinUnknownDurableState(cursor, admittedKeyHexes);
-        return;
+        if (loadFailed) pinUnknownDurableState(cursor, admitted);
+        return NO_FALLBACK_SEEDS;
       }
       if (!saved || savedApplyBinding !== applyBinding) {
         try {
@@ -1887,17 +1905,42 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
         } catch (error) {
           invalidated = true;
           loadFailed = true;
-          pinUnknownDurableState(cursor, admittedKeyHexes);
+          pinUnknownDurableState(cursor, admitted);
           throw error;
         }
       }
-      seedCursorFromPgCache(cursor, saved, admittedKeyHexes, failures, marks);
+      seedCursorFromPgCache(cursor, saved, admitted, failures, marks);
+      if (fallbackApplyBinding === undefined || fallbackApplyBinding === applyBinding) {
+        return NO_FALLBACK_SEEDS;
+      }
+      const unpositioned = admitted.filter((keyHex) => !cursor.positions.has(keyHex));
+      if (unpositioned.length === 0) return NO_FALLBACK_SEEDS;
+      if (!fallbackSaved || savedFallbackBinding !== fallbackApplyBinding) {
+        try {
+          [fallbackSaved, fallbackFailures, fallbackMarks] = await Promise.all([
+            store.load(fallbackApplyBinding),
+            store.loadApplyFailures?.(fallbackApplyBinding),
+            store.loadSnapshotMarks?.(fallbackApplyBinding),
+          ]);
+          savedFallbackBinding = fallbackApplyBinding;
+        } catch {
+          // The primary binding's state is known, so a failed fallback read only
+          // forfeits the shortcut: those keys fold from 0 as before.
+          return NO_FALLBACK_SEEDS;
+        }
+      }
+      seedCursorFromPgCache(cursor, fallbackSaved, unpositioned, fallbackFailures, fallbackMarks);
+      const seeded = unpositioned.filter((keyHex) => cursor.positions.has(keyHex));
+      return seeded.length === 0 ? NO_FALLBACK_SEEDS : new Set(seeded);
     },
     invalidate() {
       invalidated = true;
       saved = undefined;
       failures = undefined;
       marks = undefined;
+      fallbackSaved = undefined;
+      fallbackFailures = undefined;
+      fallbackMarks = undefined;
       savedApplyBinding = undefined;
     },
   };
