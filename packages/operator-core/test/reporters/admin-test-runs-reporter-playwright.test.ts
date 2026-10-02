@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TestCase, TestResult } from '@playwright/test/reporter';
+import type { WorktreeGitSnapshot } from '../../lib/testing-worktree';
 
 const { sql } = vi.hoisted(() => ({ sql: Object.assign(vi.fn(), { json: vi.fn((value: unknown) => value) }) }));
 const rootMocks = vi.hoisted(() => ({
   resolveAgentWorkspaceRoot: vi.fn(() => '/repo'),
-  captureWorktreeSnapshot: vi.fn(() => ({ commit: null, porcelain: null })),
+  captureWorktreeSnapshot: vi.fn<() => WorktreeGitSnapshot>(() => ({ commit: null, porcelain: null })),
 }));
 vi.mock('postgres', () => ({ default: () => sql }));
 vi.mock('@papercusp/operator-core/lib/testing-branch-resolve', () => ({
@@ -60,7 +61,7 @@ describe('Playwright execution ledger attribution', () => {
 
   it('uses the browser run checkout for both snapshots and the persisted path and commit', async () => {
     rootMocks.resolveAgentWorkspaceRoot.mockImplementation((ctx?: { projectDir?: string }) => ctx?.projectDir ? '/proof' : '/repo');
-    rootMocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'proof-sha', porcelain: '' } as never);
+    rootMocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'proof-sha', porcelain: '' });
     const reporter = new Reporter();
     reporter.onBegin({ rootDir: '/proof/packages/operator-core/e2e' });
     reporter.onTestEnd({ location: { file: '/proof/packages/operator-core/e2e/reader.spec.ts' } } as TestCase,
