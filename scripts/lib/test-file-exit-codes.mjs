@@ -31,6 +31,10 @@
  *                   nothing about the code under test. The correct response is
  *                   to fix the harness or retry — never to triage the file
  *                   named on the line.
+ *   3  FINALIZATION ERROR The child outcome was captured, but finishing its
+ *                   governor receipt failed. Preserve that outcome, diagnose
+ *                   the harness, and do not rerun the child automatically.
+ *                   This is never an overall green or a test-failure claim.
  *  75  TEMPFAIL     Also not measured, and explicitly RETRYABLE: `EX_TEMPFAIL`,
  *                   pc-heavy's preemption/undetermined convention
  *                   (`scripts/pc-heavy.sh`, `_preempt_emit_result undetermined
@@ -74,6 +78,9 @@ export const TEST_FILE_EXIT_FAILED = 1;
  */
 export const TEST_FILE_EXIT_NOT_MEASURED = 2;
 
+/** Child outcome retained; governor finalization failed. Never an overall green. */
+export const TEST_FILE_EXIT_FINALIZATION_ERROR = 3;
+
 /**
  * `EX_TEMPFAIL`. Not measured AND explicitly retryable — pc-heavy's
  * preemption/undetermined convention, returned by the router when a
@@ -91,7 +98,7 @@ export const TEST_FILE_EXIT_TEMPFAIL = 75;
  * never a safe default.
  */
 export function testFileRunWasMeasured(code) {
-  return code === TEST_FILE_EXIT_PASSED || code === TEST_FILE_EXIT_FAILED;
+  return code === TEST_FILE_EXIT_PASSED || code === TEST_FILE_EXIT_FAILED || code === TEST_FILE_EXIT_FINALIZATION_ERROR;
 }
 
 /**
@@ -131,6 +138,15 @@ export function describeTestFileExit(code) {
         'withheld --require-ran, or usage error) — fix the harness or retry; do NOT triage the named file',
     };
   }
+  if (code === TEST_FILE_EXIT_FINALIZATION_ERROR) {
+    return {
+      status: 'finalization-error',
+      measured: true,
+      blamesCodeUnderTest: false,
+      retryable: false,
+      hint: 'child outcome retained but governor receipt finalization failed — diagnose the harness; do not rerun the child automatically',
+    };
+  }
   if (code === TEST_FILE_EXIT_TEMPFAIL) {
     return {
       status: 'not-measured-retryable',
@@ -149,6 +165,6 @@ export function describeTestFileExit(code) {
     retryable: false,
     hint:
       `exit code ${String(code)} is outside the test:file contract ` +
-      '(0 passed / 1 failed / 2 not measured / 75 tempfail) — treat it as NOT MEASURED, never as a test failure',
+      '(0 passed / 1 failed / 2 not measured / 3 finalization error / 75 tempfail) — treat it as NOT MEASURED, never as a test failure',
   };
 }

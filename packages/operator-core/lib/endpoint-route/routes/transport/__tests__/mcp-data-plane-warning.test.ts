@@ -103,6 +103,44 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for a populated tools:find envelope without an ok field', () => {
+    const body = {
+      query: 'mcp-diagnostic-warnings',
+      count: 1,
+      totalMatches: 1,
+      truncated: false,
+      activated: false,
+      hits: [{ tool: 'facts:list' }],
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-02T06:26:03.371Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
+  it('keeps the warning for an empty tools:find envelope without an ok field', () => {
+    const result: McpCallResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ query: 'mcp-diagnostic-warnings', count: 0, totalMatches: 0, hits: [] }),
+      }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-02T06:26:03.371Z') }),
+    );
+
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+    expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
+  });
+
   it('keeps the proxy degradation warning on an empty facts:list key lookup', () => {
     const result: McpCallResult = {
       content: [{

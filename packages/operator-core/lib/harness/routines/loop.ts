@@ -1091,6 +1091,11 @@ export interface LoopStatus {
    *  interface): most rows genuinely have `last_withheld_at IS NULL`, so a required field would
    *  force every construction site to assert a value that does not exist. */
   lastWithheldAt?: string | null;
+  /** WI-10005352 — WHICH path withheld that fire (`autoloop_state.last_withheld_reason`):
+   *  `'fire-gate'` (backoff/circuit deny) or `'await-blocking'` (loop-fire's blocking-await
+   *  suppression, which has ALSO re-armed `next_fire_at` to the await's resume threshold).
+   *  Same optional-on-semantics reasoning as `lastWithheldAt`: null when nothing was withheld. */
+  lastWithheldReason?: string | null;
   /** EI-16210: the most recent `event_wake_deliveries` row recorded for THIS loop's own
    *  wake (`source = 'loop:<routineId>'`) — the actual delivery-ladder outcome behind a
    *  generic `lastDeliveryOutcome:'loop-stuck-backstop'`. Distinguishes "the wake was
@@ -1932,6 +1937,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     consecutiveErrors: r.consecutive_errors == null ? 0 : Number(r.consecutive_errors),
     lastWithheldAt: r.last_withheld_at ? new Date(r.last_withheld_at).toISOString() : null,
+    lastWithheldReason: r.last_withheld_reason ?? null,
     lastWakeChannel: r.last_wake_channel ?? null,
     lastWakeStatus: r.last_wake_status ?? null,
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
@@ -1990,6 +1996,7 @@ export async function getLoopStatuses(
            -- read it). Selected here because it is the ONLY signal that separates "the fire went
            -- out and reached nobody" from "the fire never went out" — see LoopStatus.lastWithheldAt.
            a.last_withheld_at    AS last_withheld_at,
+           a.last_withheld_reason AS last_withheld_reason,
            (SELECT max(ag.created_at) FROM harness_shared.agent_activity ag
              WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
                AND ag.summary = ${SESSION_END_MARKER} AND ag.created_at > r.last_fired_at) AS lifecycle_completed_at,

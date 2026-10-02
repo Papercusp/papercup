@@ -880,6 +880,7 @@ export function normalizeTestFilePaths(
  * the pin test is what keeps the two copies honest.
  */
 const ROUTER_EXIT_ROUTE_ERROR = 2;
+const ROUTER_EXIT_FINALIZATION_ERROR = 3;
 
 export type RouterNotMeasuredReason = 'admission-starved' | 'undetermined' | 'router-watchdog';
 
@@ -1241,6 +1242,8 @@ export type TestFilesCoreResult =
         failuresReturned?: number;
         failuresOmitted?: number;
         truncationNote?: string;
+        /** Captured child verdict survives a governor finalization failure. */
+        routerOutput?: string;
       })
   | {
       ok: false;
@@ -3307,7 +3310,10 @@ export async function runTestFilesCore(opts: {
         const executedNothing = zeroExecutedRefusal(routerResult, { runId, root });
         if (executedNothing) return executedNothing;
         return boundTestRunPayload(
-          { ok: routerResult.failed === 0 && outcome.code === 0, runId, root },
+          {
+            ok: routerResult.failed === 0 && outcome.code === 0, runId, root,
+            ...(outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
+          },
           routerResult,
         ) as TestFilesCoreResult;
       }
@@ -3398,7 +3404,10 @@ export async function runTestFilesCore(opts: {
     // LIST COUNT and so cannot bound bytes at all — one long assertion diff
     // outweighs fifty terse failures. Counts stay complete and a cut is stated
     // explicitly, so `failures.length` is never readable as "how many failed".
-    return boundTestRunPayload({ ok: run.failed === 0 && outcome.code === 0, runId, root }, run) as TestFilesCoreResult;
+    return boundTestRunPayload({
+      ok: run.failed === 0 && outcome.code === 0, runId, root,
+      ...(outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
+    }, run) as TestFilesCoreResult;
   } finally {
     if (!preserveRunArtifacts) {
       await rm(dir, { recursive: true, force: true }).catch(() => {

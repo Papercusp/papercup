@@ -80,6 +80,7 @@ export function classifyGovernedAdmissionFailure(error) {
 }
 import {
   TEST_FILE_EXIT_FAILED,
+  TEST_FILE_EXIT_FINALIZATION_ERROR,
   TEST_FILE_EXIT_NOT_MEASURED,
   TEST_FILE_EXIT_PASSED,
   TEST_FILE_EXIT_TEMPFAIL,
@@ -1408,6 +1409,7 @@ export function aggregateGroupResults(groupResults) {
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
   const executed = groupResults.reduce((sum, g) => sum + g.executed, 0);
   const launchError = groupResults.some((g) => g.launchError);
+  const anyFinalizationError = groupResults.some((g) => g.finalizationError);
   // A governed admission refusal is a typed NOT-MEASURED outcome, not a route
   // error. Keep the type only when every launch-error group carries it: a
   // mixture of an admission refusal and an ordinary launch failure cannot be
@@ -1463,6 +1465,7 @@ export function aggregateGroupResults(groupResults) {
     anyFailed,
     launchError,
     governedAdmissionFailureKind,
+    anyFinalizationError,
     anyTimedOut,
   };
 }
@@ -2257,6 +2260,50 @@ export function resolveTestChildLauncher({
  *
  * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
  */
+export async function runGovernedTestFileProcess(governedProcessImpl, options, runChild) {
+  let childResult;
+  let childCompleted = false;
+  try {
+    return await governedProcessImpl(options, (...args) => {
+      return Promise.resolve(runChild(...args)).then((result) => {
+        childResult = result;
+        childCompleted = true;
+        return result;
+      });
+    });
+  } catch (cause) {
+    const error = new Error(cause instanceof Error ? cause.message : String(cause), { cause });
+    // Admission, execution and receipt finalization share one promise. Once
+    // the child returned, a later rejection cannot erase its measured outcome
+    // or justify running the child again (WI-10004947).
+    if (childCompleted) {
+      error.code = 'GOVERNED_FINALIZATION_FAILED';
+      return { ...childResult, governedFinalizationError: error };
+    }
+    const kind = classifyGovernedAdmissionFailure(cause);
+    return {
+      status: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      error: Object.assign(error, { code: 'GOVERNED_ADMISSION_FAILED', governedAdmissionFailureKind: kind }),
+      timedOut: false,
+      actualDemand: options.demand,
+      governedAdmissionError: true,
+      governedAdmissionFailureKind: kind,
+    };
+  }
+}
+
+function printTestFinalizationError(result) {
+  const error = result.governedFinalizationError;
+  if (!error) return;
+  console.error(
+    `TEST_FILE_FINALIZATION_ERROR detail=${JSON.stringify(error.message)} ` +
+      `origin=${JSON.stringify(error.cause?.stack ?? error.stack)} — child outcome retained; no automatic rerun`,
+  );
+}
+
 export function runCapturedTestProcess(command, args, options = {}) {
   const {
     cwd,
@@ -2552,20 +2599,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     env,
     settle: classifyGovernedTestProcessOutcome,
   };
-  return governedProcessImpl(governedOptions, runChild).catch((error) => ({
-    status: null,
-    signal: null,
-    stdout: '',
-    stderr: '',
-    error: Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
-      code: 'GOVERNED_ADMISSION_FAILED',
-      governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
-    }),
-    timedOut: false,
-    actualDemand: plannedDemand,
-    governedAdmissionError: true,
-    governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
-  }));
+  return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild);
 }
 
 /**
@@ -2801,7 +2835,7 @@ export async function main(
         fileDescriptors: 16 + Math.max(1, exact.length),
       });
       const nodeIdentity = `${process.pid}:${randomUUID()}:${cwdLabel}:${exact.join('\0')}`;
-      const result = await runGovernedTestProcess({
+      const result = await runGovernedTestFileProcess(runGovernedTestProcess, {
         workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
         namespace: 'test-files-node-process',
         owner: `test-files:${cwdLabel}:${process.pid}`,
@@ -2820,20 +2854,10 @@ export async function main(
           maxBuffer: 256 * 1024 * 1024,
         });
         return { ...child, actualDemand: nodeDemand };
-      }).catch((error) => ({
-        status: null,
-        signal: null,
-        stdout: '',
-        stderr: '',
-        error: Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
-          code: 'GOVERNED_ADMISSION_FAILED',
-          governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
-        }),
-        governedAdmissionError: true,
-        governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
-      }));
+      });
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
+      printTestFinalizationError(result);
       if (result.error) {
         if (result.governedAdmissionError) {
           console.error(`TEST_FILE_ADMISSION_ERROR kind=${result.governedAdmissionFailureKind ?? 'undetermined'} detail=${JSON.stringify(result.error.message)} origin=${JSON.stringify(result.error.cause?.stack ?? result.error.stack)}`);
@@ -2854,6 +2878,7 @@ export async function main(
         unmatchedCount: 0,
         failed: groupFailed,
         launchError: Boolean(result.error),
+        finalizationError: Boolean(result.governedFinalizationError),
         ...(result.governedAdmissionError
           ? { governedAdmissionFailureKind: result.governedAdmissionFailureKind ?? 'undetermined' }
           : {}),
@@ -3043,6 +3068,7 @@ export async function main(
     const visibleStderr = suppressInjectedJsonReportNotice(result.stderr ?? '', injectedReportPath);
     if (visibleStdout) process.stdout.write(visibleStdout);
     if (visibleStderr) process.stderr.write(visibleStderr);
+    printTestFinalizationError(result);
     if (result.timedOut) {
       console.error(
         `TEST_FILE_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(exact)} ` +
@@ -3149,6 +3175,7 @@ export async function main(
           );
           if (detailResult.stdout) process.stdout.write(detailResult.stdout);
           if (detailResult.stderr) process.stderr.write(detailResult.stderr);
+          printTestFinalizationError(detailResult);
           if (detailResult.timedOut) {
             console.error(
               `TEST_FILE_DETAIL_RECOVERY_TIMEOUT cwd=${cwdLabel} file=${JSON.stringify(file)} ` +
@@ -3195,6 +3222,7 @@ export async function main(
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
+      finalizationError: Boolean(result.governedFinalizationError),
       // EI-21902345477441137: distinct from `failed` — a reaped run produced no verdict at all,
       // so it must never contribute to `anyFailed` (that would be the exact bug this fixes) nor
       // silently read as a clean pass (that would hide a genuine resource-limit problem).
@@ -3443,7 +3471,9 @@ export async function main(
   console.log(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
       `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)} skippedTests=${skippedField}`,
+      summary.anyFinalizationError ? 'finalizationError=true' : '',
   );
+  if (summary.anyFinalizationError) return TEST_FILE_EXIT_FINALIZATION_ERROR;
   return summary.anyFailed ? TEST_FILE_EXIT_FAILED : TEST_FILE_EXIT_PASSED;
   } finally {
     cleanupPreemptMarkers();

@@ -285,6 +285,16 @@ describe('worker transport failure handling', () => {
     expect(fallbackCalls).toBe(1);
   });
 
+  it('a request error names the transport, the phase and the code the worker caught (WI-10005372)', async () => {
+    const transport = newTransport();
+    const refused: FetchLike = (_url, init) => transport.fetch('http://127.0.0.1:1/v1/decide', init);
+    const out = await client(refused).decide(request);
+    expect(out).toMatchObject({ kind: 'inconclusive', reason: 'network-error' });
+    expect(out.kind === 'inconclusive' && out.detail).toMatch(
+      /^WorkerTransportError: phase=started after \d+ms; cause: Error \[ECONNREFUSED\]: connect ECONNREFUSED 127\.0\.0\.1:1$/,
+    );
+  });
+
   it('after close, calls fail instead of starting a new worker', async () => {
     const transport = newTransport();
     await transport.close();

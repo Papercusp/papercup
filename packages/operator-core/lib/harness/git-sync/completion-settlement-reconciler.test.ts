@@ -396,7 +396,9 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     rmSync(log, { force: true });
 
     const reader = createCompletionBlobHistoryReader();
-    reader.hint(root, emittedSha, paths);
+    // A real manifest can declare non-file refs (WI-10002141: '/reports/rpt_…'); git refuses a
+    // whole ls-tree that names one, so announcing it must not change any other path's verdict.
+    reader.hint(root, emittedSha, [...paths, '/reports/rpt_fixture', 'plan:/papercusp/fixture']);
     reader.hint(root, closeHeadSha, paths);
     const shared = await Promise.all(
       paths.map((path) => reader.contains(root, closeHeadSha, emittedSha, path, blobs.get(path)!, opts)),
@@ -434,6 +436,31 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     await Promise.all([ask('other/x.ts'), ask('other/y.ts')]);
     expect(reads.map((read) => read.sha)).toEqual([from, from, to, from, to]);
     expect(reader.gitlinkReads()).toBe(5);
+  });
+
+  // WI-10005357 regression (observed live 08:03Z): one announced path git refuses fails the
+  // WHOLE batched ls-tree. The caller's own prefixes must be re-read alone, so its verdict
+  // stays measured (false here) instead of becoming persisted `identity-unavailable` residue.
+  it('a shared reader re-reads its own prefixes when a batch carrying announced extras is refused', async () => {
+    const bin = mkdtempSync(join(tmpdir(), 'completion-history-poisoned-'));
+    TEMP_ROOTS.push(bin);
+    const emptyLogGit = join(bin, 'empty-log-git');
+    writeFileSync(emptyLogGit, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const from = 'a'.repeat(40);
+    const to = 'b'.repeat(40);
+    const reads: string[][] = [];
+    const reader = createCompletionBlobHistoryReader(async (_root, _sha, prefixes) => {
+      reads.push([...prefixes]);
+      return prefixes.includes('bad') ? undefined : new Map(prefixes.map((prefix) => [prefix, null] as const));
+    });
+    reader.hint(bin, to, ['bad/declared.ts']);
+    const ask = (path: string) => reader.contains(bin, from, to, path, 'c'.repeat(40), { gitBinary: emptyLogGit });
+
+    expect(await ask('dir/file.ts')).toBe(false);
+    expect(reads).toEqual([['dir'], ['dir', 'bad'], ['dir']]);
+    // The refused extra was never asked for on its own, so it is not kept: its own ask reads it.
+    expect(await ask('bad/declared.ts')).toBeUndefined();
+    expect(reads.at(-1)).toEqual(['bad']);
   });
 });
 

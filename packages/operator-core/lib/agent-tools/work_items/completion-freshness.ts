@@ -508,27 +508,44 @@ export function createCompletionBlobHistoryReader(
     }
     const known = table;
     if (prefixes.some((prefix) => !known.has(prefix))) {
-      const wanted = new Set(prefixes.filter((prefix) => !known.has(prefix)));
+      const own = prefixes.filter((prefix) => !known.has(prefix));
+      const ownSet = new Set(own);
+      const wanted = new Set(own);
       for (const path of announced.get(key) ?? []) {
         for (const prefix of ancestorPrefixes(path)) if (!known.has(prefix)) wanted.add(prefix);
       }
       const batch = [...wanted];
-      reads += 1;
-      const read = readGitlinks(root, commitSha, batch, opts).then(
-        (result) => {
-          if (result && result !== 'unmeasured') propagate(root, commitSha, result);
-          return result;
-        },
-        // A reader that throws measured nothing; retry rather than persist residue.
-        (): GitlinkPrefixRead => 'unmeasured',
-      );
+      const readOnce = (list: readonly string[]): Promise<GitlinkPrefixRead> => {
+        reads += 1;
+        return readGitlinks(root, commitSha, list, opts).then(
+          (result) => {
+            if (result && result !== 'unmeasured') propagate(root, commitSha, result);
+            return result;
+          },
+          // A reader that throws measured nothing; retry rather than persist residue.
+          (): GitlinkPrefixRead => 'unmeasured',
+        );
+      };
+      const batchRead = readOnce(batch);
+      // git refuses the WHOLE ls-tree when any one pathspec is bad (e.g. a declared path
+      // outside the repository exits 128), so a failed batch that carried announced extras
+      // says nothing about the caller's own prefixes: re-read those alone. Another row's
+      // bad path must never change this path's answer.
+      const ownRead =
+        batch.length > own.length
+          ? batchRead.then((result) => (result === undefined ? readOnce(own) : result))
+          : batchRead;
       for (const prefix of batch) {
-        const answer = read.then((result): Answer =>
+        const extra = !ownSet.has(prefix);
+        const answer = (extra ? batchRead : ownRead).then((result): Answer =>
           result === 'unmeasured' || result === undefined ? result : (result.get(prefix) ?? null),
         );
         known.set(prefix, answer);
         void answer.then((value) => {
-          if (value === 'unmeasured' && known.get(prefix) === answer) known.delete(prefix);
+          // Keep only measured answers. An announced extra from a failed batch was never
+          // asked for on its own, so its refusal is not kept either.
+          const keep = value !== 'unmeasured' && !(extra && value === undefined);
+          if (!keep && known.get(prefix) === answer) known.delete(prefix);
         });
       }
     }
@@ -542,7 +559,11 @@ export function createCompletionBlobHistoryReader(
     contains: (repoRoot, fromHeadSha, toCommitSha, rawPath, blobSha, opts = {}) =>
       blobHistoryContains(sharedRead, repoRoot, fromHeadSha, toCommitSha, rawPath, blobSha, opts),
     hint: (repoRoot, commitSha, paths) => {
-      if (SHA_RE.test(commitSha)) announce(nodePath.resolve(repoRoot), commitSha, paths);
+      if (!SHA_RE.test(commitSha)) return;
+      // Only paths contains() itself would accept: a declared non-file ref ('/reports/…',
+      // an absolute path) would otherwise make git refuse the batch for every row.
+      const root = nodePath.resolve(repoRoot);
+      announce(root, commitSha, paths.filter((path) => normalizedRepoPath(root, path) === path));
     },
     gitlinkReads: () => reads,
   };
