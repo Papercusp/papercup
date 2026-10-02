@@ -43,6 +43,10 @@
  * it is bound with details.evidencePlane:'deployed' only for a run against the
  * shipped build (P015_EXPECTED_SHA pins that).
  *
+ * Auth: the bearer must be the token in the TARGET host's home. A shell with a
+ * workspace-scoped PAPERCUSP_HOME reads a different token by default; pass
+ * P015_SMOKE_TOKEN_FILE=~/.papercusp/superuser-token (or unset PAPERCUSP_HOME).
+ *
  * The run writes real state to the target workspace: one local pot and one
  * harness (both reused on later runs), one work item per agent/program
  * submission, and one plan run.
@@ -179,10 +183,31 @@ function decodeMcp(raw: string, id: number): unknown {
   throw new Error(`no JSON-RPC response for id ${id} in: ${raw.slice(0, 500)}`);
 }
 
+/**
+ * The bearer the DEPLOYED host accepts is the token in ITS home, which this
+ * client cannot see. readSuperuserToken() prefers the CLIENT's
+ * $PAPERCUSP_HOME/superuser-token, so a shell with a workspace-scoped
+ * PAPERCUSP_HOME sends a token the host refuses (superuser_invalid_bearer).
+ * P015_SMOKE_TOKEN_FILE names the file explicitly; otherwise the default
+ * resolver applies and its path is reported on a refusal.
+ */
+const TOKEN_FILE = process.env.P015_SMOKE_TOKEN_FILE?.trim() || null;
+const TOKEN_SOURCE = TOKEN_FILE
+  ?? join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token');
+function smokeToken(): string | null {
+  if (!TOKEN_FILE) return readSuperuserToken();
+  try {
+    const tok = readFileSync(TOKEN_FILE, 'utf8').trim();
+    return tok.length >= 16 ? tok : null;
+  } catch {
+    return null;
+  }
+}
+
 let rpcId = 0;
 async function mcp(tool: string, args: Record<string, unknown>): Promise<unknown> {
-  const token = readSuperuserToken();
-  if (!token) throw new Error('no superuser token (~/.papercusp/superuser-token) — cannot authenticate to the deployed host');
+  const token = smokeToken();
+  if (!token) throw new Error(`no superuser token at ${TOKEN_SOURCE} — cannot authenticate to the deployed host`);
   const id = ++rpcId;
   const qs = new URLSearchParams({ superuser: '1', client: CLIENT, workspace: WORKSPACE, format: 'json' });
   const res = await fetch(`${BASE}/api/mcp?${qs}`, {
@@ -203,7 +228,15 @@ async function mcp(tool: string, args: Record<string, unknown>): Promise<unknown
     return decodeMcp(raw, id);
   } catch (err) {
     if (err instanceof ToolRefusal) throw new ToolRefusal(tool, err.body);
-    throw new Error(`${tool}: HTTP ${res.status}: ${(err as Error).message}`);
+    const message = (err as Error).message;
+    if (message.includes('superuser_invalid_bearer')) {
+      throw new Error(
+        `${tool}: the deployed host refused the bearer read from ${TOKEN_SOURCE} (superuser_invalid_bearer). ` +
+          'The host validates against the token in ITS home; set P015_SMOKE_TOKEN_FILE to that file ' +
+          '(e.g. ~/.papercusp/superuser-token) or unset a workspace-scoped PAPERCUSP_HOME.',
+      );
+    }
+    throw new Error(`${tool}: HTTP ${res.status}: ${message}`);
   }
 }
 
@@ -251,7 +284,7 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
     for (const [name, path] of Object.entries(routes)) {
       const res = await fetch(`${BASE}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${readSuperuserToken()}` },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${smokeToken()}` },
         body: '{}',
       });
       // An empty body must be refused by the tool's own schema; 404/405 means the route is not served.
