@@ -131,6 +131,18 @@
     },
     "acceptance": "Supports the pinned private HTTP baseline only. Its integration execution layer matches revision 2's layer taxonomy, but its private evidence plane does not fulfill actual live/current-build memory acceptance. The sampler test changed after R2, so R2's named-test currentness is stale."
   },
+  "passiveCurrentServiceCensus": {
+    "path": "docs/evidence/papercusp-oct1-p011-passive-current-r12-recovered-2026-10-02.json",
+    "sha256": "bce829bf016b4e86a9db796b85920b40bf03279172eecd451858d28c38d78cbd",
+    "bytes": 7240,
+    "originalToolInvocationId": 31408670,
+    "originalTaskId": "0muri59h45nd2s2bq1c",
+    "at": "2026-10-02T21:55:47.889131+00:00",
+    "coverage": "Captured cgroup membership: 22/22 release-service processes and 1/1 staging-service process sampled, zero missed reads, unchanged systemd MainPID. Serial PSS sums are 11048488960 and 715548672 bytes. Only top-five and esbuild rows were persisted.",
+    "observation": "The five persisted release top rows have the Node executable hash and candidate hono-host.mjs basename, with same-sample parent PID178515. No esbuild service was observed in either captured membership.",
+    "limits": "Single passive snapshot, not matched resource comparison. Original argv parser selects a JavaScript-looking argument, so exact entry, worker configuration, request assignment and allocation ownership remain unverified. No loaded build fingerprint or historical compiler recovery proof.",
+    "recovery": "Recovered the existing completed exit0 command's original JSON prefix from its durable log; no census replay. The prior returned string was truncated by code:run summary bounding. New artifact preserves parsed values and source hashes."
+  },
   "sourceDispositions": [
     {
       "source": "Full inbox cache keys duplicate identical raw input across display variants",
