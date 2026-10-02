@@ -5227,3 +5227,18 @@ current-build only. No shared restart, live-gate operation, acceptance binding
 or shipment is claimed. The source-level budget defect is fixed and guarded;
 the historical 1,123,628 ms UPDATE's full wait decomposition and application
 impact remain unproved, so **P-008/R-8 remains open**.
+
+Commit and loaded-build handoff at 17:24Z: staging HEAD
+`a83c8168dbcd7e18c8b53be03703fa32855124e8` contains the tested
+source and test bytes (Git blobs `b5a0317f1eba3803b975aa3ce9eef19d964146c5`
+and `6fbbd24ecbb2c5061565af8f4c5f1235a7c93e67`, respectively), matching
+the SHA-256s above; the three edited paths were clean in that read. The
+unique source marker is `a partial sweep cannot revert owners repaired by a
+full sweep` at `session-ingest.ts:2986`. The first integration run ended
+17:13:01Z with **two failures** on the new partial-map assertion against
+the old source. The post-fix run ended 17:14:45Z with **2/2 passes**; a
+second current-build run after adding the matching ordered-input-hash guard
+ended 17:17:56Z with **2/2 passes**, zero skips. This is red/green proof
+for the new fix, not a report that its final test remains red. The approved
+D-006 bg-host runtime owner received the final hashes and committed-byte
+receipt; loaded adoption of this newer map fix remains to be verified.
