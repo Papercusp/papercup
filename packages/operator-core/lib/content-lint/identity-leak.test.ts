@@ -10,6 +10,7 @@
  *      design and would be quarantined from every commit.
  */
 import { afterEach, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -78,6 +79,43 @@ describe('findIdentityLeakError', () => {
     expect(JSON.parse(serializeIdentitySafeJson(value, []))).toEqual(value);
     expect(() => serializeIdentitySafeJson({ ['build-' + 'secret-host']: 1 }, [['build-hostname', 'secret-host']]))
       .toThrow('key contains a machine identity');
+  });
+
+  it('exports public Android evidence through the maintained serializer while preserving private provenance', async () => {
+    const checkout = ['', 'home', 'somedev', 'cache', 'operator-checkout'].join('/');
+    const report = {
+      schemaVersion: 1, kind: 'operational-test-evidence',
+      command: ['bash', 'tools/run-android-checks.sh', 'isolated-native', checkout],
+      scope: 'Local debug only; signed candidate, physical phone and Play remain open',
+      exitCode: 0, testCounts: { native: { executed: 8, failed: 0, errors: 0, skipped: 0 } },
+      rawEvidence: [{ path: 'mobile/build/result.json', sha256: 'a'.repeat(64) }],
+      sourceFiles: [{ path: 'mobile/tools/run-android-checks.sh', sha256: 'b'.repeat(64) }],
+      operator: { sourceCommit: 'c'.repeat(40), bundleSha256: 'd'.repeat(64) },
+    };
+    const privateJson = JSON.stringify(report, null, 2) + '\n';
+    expect(await findIdentityLeakError('docs/evidence/android.json', privateJson, REPO_ROOT)).toBeTruthy();
+    const exported = spawnSync(process.execPath,
+      [join(REPO_ROOT, 'scripts/lib/identity-leak-patterns.mjs'), '--serialize-json'],
+      { cwd: REPO_ROOT, input: privateJson, encoding: 'utf8' });
+    expect(exported.status).toBe(0);
+    expect(exported.stderr).toBe('');
+    expect(await findIdentityLeakError('docs/evidence/android.json', exported.stdout, REPO_ROOT)).toBeNull();
+    expect(JSON.parse(exported.stdout)).toEqual({ ...report,
+      command: ['bash', 'tools/run-android-checks.sh', 'isolated-native', '/home/builduser/cache/operator-checkout'] });
+    expect(JSON.stringify(report, null, 2) + '\n').toBe(privateJson);
+    expect(report.command[3]).toBe(checkout);
+  });
+
+  it.each(['malformed', 'identity-key'])('refuses %s private input without publishing it or echoing it in errors', kind => {
+    const secretPath = ['', 'home', 'somedev', 'private', 'receipt'].join('/');
+    const input = kind === 'malformed' ? '{"receipt":' + secretPath : JSON.stringify({ [secretPath]: 1 });
+    const exported = spawnSync(process.execPath,
+      [join(REPO_ROOT, 'scripts/lib/identity-leak-patterns.mjs'), '--serialize-json'],
+      { cwd: REPO_ROOT, input, encoding: 'utf8' });
+    expect(exported.status).toBe(1);
+    expect(exported.stdout).toBe('');
+    expect(exported.stderr).toContain('Identity-safe JSON export refused');
+    expect(exported.stderr).not.toContain(secretPath);
   });
 
   it('flags a hardcoded home path and names the fix', async () => {
