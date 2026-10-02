@@ -77,6 +77,13 @@ describe('version / channel validation', () => {
 });
 
 describe('buildCutEnv — LOCAL-only enforced', () => {
+  it('passes only the explicitly supplied private seed finding proof to the detached cut', () => {
+    const source = 'a'.repeat(40);
+    expect(buildCutEnv({}, source, { ownerName: 'Avi' }))
+      .not.toHaveProperty('PAPERCUSP_RELEASE_SEED_FINDING_PROOF');
+    expect(buildCutEnv({}, source, { ownerName: 'Avi', seedFindingProof: '/private/proof.json' }))
+      .toHaveProperty('PAPERCUSP_RELEASE_SEED_FINDING_PROOF', '/private/proof.json');
+  });
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
   const runtime = { ownerName: 'Avi' };
   it('binds focused proof to the task harness and never treats all-scope as a harness', () => {
