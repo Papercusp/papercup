@@ -1,7 +1,7 @@
 /** P-011: exercise the maintained sibling builder, including its rejected-build
  * publish contract. This guard never launches a host or uses the live database. */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';

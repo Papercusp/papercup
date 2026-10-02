@@ -628,7 +628,16 @@ fi
 # the spawn resolver falls back to the full host divert.
 case "${ENTRY##*/}" in
   hono-host.ts|serve.ts)
-    bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}" || exit 1
+    if ! bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}"; then
+      node "$SCRIPT_DIR/write-bundle-stale-marker.mjs" \
+        "$STALE_MARKER" "bin/spawner-sidecar.ts" "$OUTDIR/spawner-sidecar.mjs" "$BUILD_LOG" || true
+      echo "ERROR: standalone spawner build failed; prior sibling remains unchanged, or the resolver uses the full host when absent."
+      if [[ "${PAPERCUSP_BUNDLE_ALLOW_STALE_START:-0}" == "1" && -s "$OUTFILE" ]]; then
+        echo "WARNING: supervisor starts with the existing spawner route; this is not a fresh release."
+        exit 0
+      fi
+      exit 1
+    fi
     ;;
 esac
 
