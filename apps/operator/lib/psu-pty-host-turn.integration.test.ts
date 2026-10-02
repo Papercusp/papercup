@@ -438,7 +438,7 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
 
         expect(reportedIds).toEqual([nativeId]);
         if (mappingConfirmed) {
-          expect(order).toEqual(['reanchor', 'emit']);
+          expect(order, JSON.stringify({ order, reportedIds, emitted, events })).toEqual(['reanchor', 'emit']);
           expect(emitted).toEqual([{ ownerId, focus: 'carry-respawn', nativeId }]);
           expect(events).toContainEqual(expect.objectContaining({
             kind: 'respawn-carry-delivered',
