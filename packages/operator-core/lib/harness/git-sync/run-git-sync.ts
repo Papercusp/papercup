@@ -421,7 +421,7 @@ export interface ToolCatalogGeneratorResult {
   stderr: string;
 }
 
-export type RunToolCatalogGenerator = (repoPath: string) => Promise<ToolCatalogGeneratorResult>;
+export type RunToolCatalogGenerator = (repoPath: string, dependencies?: GitSyncTsxDependencies) => Promise<ToolCatalogGeneratorResult>;
 
 export interface ToolCatalogRegeneratorContext {
   runGit: RunGit;
@@ -432,6 +432,10 @@ export interface ToolCatalogRegeneratorContext {
 export type ToolCatalogRegenerator = (context: ToolCatalogRegeneratorContext) => Promise<void>;
 
 export type GitSyncInstallBoundaryAcquirer = (repoPath: string) => Promise<InstallBoundaryLease>;
+export interface GitSyncTsxDependencies {
+  acquire?: GitSyncInstallBoundaryAcquirer;
+  spawnChild?: typeof spawn;
+}
 export type GitSyncInstallBoundaryResult<T> =
   | { status: 'launched'; value: T }
   | { status: 'refused'; lease: InstallBoundaryLease };
@@ -480,11 +484,11 @@ function gitSyncInstallBoundaryRefusal(
  * registry, so a peer's half-written tool module can make that import hang or
  * fail; neither condition may wedge the fleet-wide git-sync commit path.
  */
-const defaultRunToolCatalogGenerator: RunToolCatalogGenerator = (repoPath) =>
+export const defaultRunToolCatalogGenerator: RunToolCatalogGenerator = (repoPath, dependencies) =>
   runGitSyncUnderInstallBoundary(repoPath, () =>
     new Promise<ToolCatalogGeneratorResult>((resolve) => {
     const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_TOOL_CATALOG_TIMEOUT_MS', 60_000);
-    const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_CATALOG_GENERATOR_PATH], {
+    const child = (dependencies?.spawnChild ?? spawn)(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_CATALOG_GENERATOR_PATH], {
       cwd: repoPath,
       env: process.env,
     });
@@ -519,7 +523,7 @@ const defaultRunToolCatalogGenerator: RunToolCatalogGenerator = (repoPath) =>
     });
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
     }),
-  ).then((result) => result.status === 'launched'
+    dependencies?.acquire).then((result) => result.status === 'launched'
     ? result.value
     : gitSyncInstallBoundaryRefusal(result.lease, 'tool-catalog regeneration'));
 
@@ -628,7 +632,7 @@ export interface GeneratedDeclarationsGeneratorResult {
   stderr: string;
 }
 
-export type RunGeneratedDeclarationsGenerator = (repoPath: string) => Promise<GeneratedDeclarationsGeneratorResult>;
+export type RunGeneratedDeclarationsGenerator = (repoPath: string, dependencies?: GitSyncTsxDependencies) => Promise<GeneratedDeclarationsGeneratorResult>;
 
 export type GeneratedDeclarationsRepairResult =
   | { status: 'not-needed'; atomicPaths: string[] }
@@ -646,11 +650,11 @@ export type GeneratedDeclarationsRegenerator = (
  * failure is returned to the caller as `blocked`: committing the source without
  * its generated declaration is the exact torn-snapshot class this seam closes.
  */
-const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerator = (repoPath) =>
+export const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerator = (repoPath, dependencies) =>
   runGitSyncUnderInstallBoundary(repoPath, () =>
     new Promise<GeneratedDeclarationsGeneratorResult>((resolve) => {
     const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_DECLARATIONS_TIMEOUT_MS', 120_000);
-    const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [DECLARATIONS_GENERATOR_PATH], {
+    const child = (dependencies?.spawnChild ?? spawn)(join(repoPath, 'node_modules', '.bin', 'tsx'), [DECLARATIONS_GENERATOR_PATH], {
       cwd: repoPath,
       env: process.env,
     });
@@ -683,7 +687,7 @@ const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerato
     });
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
     }),
-  ).then((result) => result.status === 'launched'
+    dependencies?.acquire).then((result) => result.status === 'launched'
     ? result.value
     : gitSyncInstallBoundaryRefusal(result.lease, 'declaration regeneration'));
 
@@ -905,7 +909,7 @@ export interface ToolRoutingCheckResult {
   stderr: string;
 }
 
-export type RunToolRoutingCheck = (repoPath: string) => Promise<ToolRoutingCheckResult>;
+export type RunToolRoutingCheck = (repoPath: string, dependencies?: GitSyncTsxDependencies) => Promise<ToolRoutingCheckResult>;
 
 export interface ToolRoutingCheckerContext {
   runGit: RunGit;
@@ -920,11 +924,11 @@ export type ToolRoutingChecker = (context: ToolRoutingCheckerContext) => Promise
  * canonical doc-part store, so a broken DB/client or a half-written peer module
  * must be observable without allowing it to wedge the fleet-wide git-sync pass.
  */
-const defaultRunToolRoutingCheck: RunToolRoutingCheck = (repoPath) =>
+export const defaultRunToolRoutingCheck: RunToolRoutingCheck = (repoPath, dependencies) =>
   runGitSyncUnderInstallBoundary(repoPath, () =>
     new Promise<ToolRoutingCheckResult>((resolve) => {
     const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_TOOL_ROUTING_TIMEOUT_MS', 60_000);
-    const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_ROUTING_GENERATOR_PATH, '--check'], {
+    const child = (dependencies?.spawnChild ?? spawn)(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_ROUTING_GENERATOR_PATH, '--check'], {
       cwd: repoPath,
       env: process.env,
     });
@@ -959,7 +963,7 @@ const defaultRunToolRoutingCheck: RunToolRoutingCheck = (repoPath) =>
     });
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
     }),
-  ).then((result) => result.status === 'launched'
+    dependencies?.acquire).then((result) => result.status === 'launched'
     ? result.value
     : gitSyncInstallBoundaryRefusal(result.lease, 'tool-routing check'));
 

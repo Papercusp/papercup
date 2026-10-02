@@ -13,7 +13,8 @@ afterEach(() => {
   gitSyncWarnSpy?.mockRestore();
   gitSyncWarnSpy = undefined;
 });
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import {
   mkdtempSync,
   mkdirSync,
@@ -30,6 +31,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   runGitSync,
+  defaultRunToolCatalogGenerator,
+  defaultRunGeneratedDeclarationsGenerator,
+  defaultRunToolRoutingCheck,
   classifyProtectedPathExclusions,
   addFailureIgnoredPaths,
   addFailureStrayPaths,
@@ -124,7 +128,7 @@ afterAll(() => {
 const REPO_ROOT = resolve(__dirname, '../../../../..');
 
 describe('EI-24827889655898454 git-sync TSX install boundary', () => {
-  it('waits for install:safe before starting a generator and releases the reader lease afterward', async () => {
+  it('holds all three TSX generator launches behind install:safe and releases readers afterward', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'git-sync-install-boundary-repo-'));
     const lockRoot = mkdtempSync(join(tmpdir(), 'git-sync-install-boundary-locks-'));
     const savedLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
@@ -142,35 +146,52 @@ describe('EI-24827889655898454 git-sync TSX install boundary', () => {
 
     try {
       await writerHeld;
-      let signalReaderWaiting = () => {};
-      const readerWaiting = new Promise<void>((resolve) => { signalReaderWaiting = resolve; });
+      let signalReadersWaiting = () => {};
+      const readersWaiting = new Promise<void>((resolve) => { signalReadersWaiting = resolve; });
+      let waitingCount = 0;
       const acquire = (root: string) => acquireInstallBoundaryLease(root, {
         env: {},
         timeoutMs: 10_000,
         readLease: (name, fn, options) => withFsMutexRead(name, fn, {
           ...options,
           retryMs: 1,
-          onWaiting: () => signalReaderWaiting(),
+          onWaiting: () => {
+            waitingCount += 1;
+            if (waitingCount === 3) signalReadersWaiting();
+          },
         }),
       });
-      let signalLaunchStarted = () => {};
-      const launchStarted = new Promise<void>((resolve) => { signalLaunchStarted = resolve; });
-      const launch = vi.fn(async () => {
-        signalLaunchStarted();
-        return 'generator finished';
-      });
-      const running = runGitSyncUnderInstallBoundary(repoRoot, launch, acquire);
+      let signalSpawnStarted = () => {};
+      const spawnStarted = new Promise<void>((resolve) => { signalSpawnStarted = resolve; });
+      const spawnChild = vi.fn(() => {
+        signalSpawnStarted();
+        const child = Object.assign(new EventEmitter(), {
+          stdout: null,
+          stderr: null,
+          kill: vi.fn(),
+        });
+        queueMicrotask(() => child.emit('close', 0));
+        return child as unknown as ChildProcess;
+      }) as unknown as typeof spawn;
+      const dependencies = { acquire, spawnChild };
+      const running = [
+        defaultRunToolCatalogGenerator(repoRoot, dependencies),
+        defaultRunGeneratedDeclarationsGenerator(repoRoot, dependencies),
+        defaultRunToolRoutingCheck(repoRoot, dependencies),
+      ];
       const observed = await Promise.race([
-        readerWaiting.then(() => 'waiting-on-writer'),
-        launchStarted.then(() => 'launch-started'),
+        readersWaiting.then(() => 'waiting-on-writer'),
+        spawnStarted.then(() => 'spawn-started'),
+        Promise.all(running).then(() => 'finished'),
       ]);
 
       expect(observed).toBe('waiting-on-writer');
-      expect(launch).not.toHaveBeenCalled();
+      expect(spawnChild).not.toHaveBeenCalled();
       releaseWriter();
       await writer;
-      await expect(running).resolves.toEqual({ status: 'launched', value: 'generator finished' });
-      expect(launch).toHaveBeenCalledOnce();
+      const results = await Promise.all(running);
+      expect(results.map((result) => result.code)).toEqual([0, 0, 0]);
+      expect(spawnChild).toHaveBeenCalledTimes(3);
 
       let installRan = false;
       await withFsMutex(lockName, async () => { installRan = true; }, { retryMs: 1 });
@@ -193,11 +214,15 @@ describe('EI-24827889655898454 git-sync TSX install boundary', () => {
       detail: 'install writer remains active',
       release: vi.fn(),
     };
-    const launch = vi.fn(async () => 'must not run');
+    const spawnChild = vi.fn() as unknown as typeof spawn;
 
-    await expect(runGitSyncUnderInstallBoundary('/unused', launch, async () => lease))
-      .resolves.toEqual({ status: 'refused', lease });
-    expect(launch).not.toHaveBeenCalled();
+    const result = await defaultRunToolCatalogGenerator('/unused', {
+      acquire: async () => lease,
+      spawnChild,
+    });
+    expect(result.code).toBe(-1);
+    expect(result.stderr).toContain('install:safe boundary was timed-out');
+    expect(spawnChild).not.toHaveBeenCalled();
     expect(lease.release).not.toHaveBeenCalled();
   });
 });
