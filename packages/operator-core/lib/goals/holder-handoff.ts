@@ -15,6 +15,7 @@ import { deactivateLoop } from '../harness/routines/loop';
 import { notifyAgentOrdersChanged } from '../agent-orders-notify';
 import { goalPlanPlacementChangedKey, planAcceptanceChangedKey } from '../agent-obligations';
 import { cancelAwaitsForSubscribersOnKeys } from '../events/await/store';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
@@ -254,19 +255,49 @@ export async function retireSupersededGoalHolderModes(
       setBy,
     });
   }
-  // The rows were not the only thing keeping a replaced holder busy: each one had
-  // re-armed `goal:plan-placement:<goal>` (and its plans' acceptance keys) on every
-  // turn, so the next placement change resumed all of them headless at once
-  // (measured 2026-10-02 18:03Z: one fire woke six superseded 60d3a8 holders, each
-  // of which re-armed within a minute). Cancel exactly those pending registrations,
-  // for exactly the owners just retired; a refused (leftArmed) owner keeps them.
-  let awaitsCancelled = 0;
-  if (retired.length > 0) {
-    awaitsCancelled = await cancelAwaitsForSubscribersOnKeys(
-      retired,
-      await goalScopedAwaitKeys(sql, workspaceId, goalId),
-      { client: sql as unknown as NonNullable<Parameters<typeof cancelAwaitsForSubscribersOnKeys>[2]>['client'] },
-    );
-  }
+  const awaitsCancelled = await cancelFormerGoalHolderAwaits(sql, workspaceId, goalId);
   return { retired, leftArmed, awaitsCancelled };
+}
+
+/**
+ * WI-10005573: cancel the pending goal-scoped awaits of every FORMER holder of this
+ * goal — an owner the mode audit shows once held its GOAL row and who holds none now.
+ *
+ * The rows were not the only thing keeping a replaced holder busy: each one had
+ * re-armed `goal:plan-placement:<goal>` and its plans' acceptance keys on every turn,
+ * so the next change resumed all of them headless at once (measured 2026-10-02 18:03Z:
+ * one fire woke six superseded 60d3a8 holders, each re-armed within a minute; after
+ * their rows were retired at 18:12Z, 53 such registrations were still pending).
+ * Selecting by "formerly held, holds nothing now" rather than "retired this pass"
+ * also covers rows retired earlier and a retired holder that re-arms out of habit.
+ * The elected holder, a predecessor still inside its handoff window, a refused
+ * (leftArmed) owner, and a non-holder awaiting the same key (a grader) all keep theirs.
+ */
+export async function cancelFormerGoalHolderAwaits(
+  sql: Sql,
+  workspaceId: string,
+  goalId: string,
+): Promise<number> {
+  const keys = await goalScopedAwaitKeys(sql, workspaceId, goalId);
+  const rows = await sql<Array<{ subscriber_id: string }>>`
+    SELECT DISTINCT a.subscriber_id
+      FROM harness_shared.event_awaits a
+     WHERE a.workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND a.event_key = ANY(${sql.array(keys)}::text[])
+       AND a.policy <> 'announce'
+       AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+       AND EXISTS (
+         SELECT 1 FROM harness_shared.agent_mode_changes c
+          WHERE c.workspace_id = ${workspaceId} AND c.owner_id = a.subscriber_id
+            AND c.new_mode = ${GOAL_MODE} AND c.subject = ${goalId})
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.agent_modes m
+          WHERE m.workspace_id = ${workspaceId} AND m.owner_id = a.subscriber_id
+            AND m.mode = ${GOAL_MODE} AND m.subject = ${goalId})`;
+  if (rows.length === 0) return 0;
+  return await cancelAwaitsForSubscribersOnKeys(
+    rows.map((row) => row.subscriber_id),
+    keys,
+    { client: sql as unknown as NonNullable<Parameters<typeof cancelAwaitsForSubscribersOnKeys>[2]>['client'] },
+  );
 }

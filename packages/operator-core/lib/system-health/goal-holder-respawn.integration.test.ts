@@ -1184,6 +1184,21 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
     const byId = new Map(state.map((row) => [Number(row.id), row.cancelled_at]));
     for (const id of cancelled) expect(byId.get(id), `await ${id} should be cancelled`).not.toBeNull();
     for (const id of [...kept, fired]) expect(byId.get(id), `await ${id} should survive`).toBeNull();
+
+    // The live 2026-10-02 shape: rows retired in an EARLIER pass, and a retired holder
+    // that re-arms out of habit. Nothing is left to retire, yet the wake source must go.
+    const rearmed = await arm('su-first', placementKey);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 1,
+    });
+    const [after] = await rootSql<{ cancelled_at: Date | null }[]>`
+      SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${rearmed}`;
+    expect(after?.cancelled_at).not.toBeNull();
+    const [elected] = await rootSql<{ cancelled_at: Date | null }[]>`
+      SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${kept[0]!}`;
+    expect(elected?.cancelled_at, 'the elected holder keeps its wake source').toBeNull();
   }, 60_000);
 
   it('the respawner sweep retires superseded rows on a healthy goal without launching', async () => {
