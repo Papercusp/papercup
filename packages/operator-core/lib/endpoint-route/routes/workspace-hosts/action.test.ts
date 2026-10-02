@@ -8,6 +8,10 @@ import { WorkspaceHostReleaseShipmentError } from '../../../workspace-host/relea
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
 import { WorkspaceHostProvisioningRequestError } from '../../../workspace-host/provisioning-runner';
 import type { WorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
+import {
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
+  WorkspaceHostControllerFenceError,
+} from '../../../workspace-host/observability-store';
 
 const CTX: RouteContext = {
   principal: null,
@@ -423,6 +427,33 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       error: 'workspace host already has an operation in progress',
+    });
+  });
+
+  // WI-10005474: a reused operationId whose workflow already ended in a fence refusal rethrows that
+  // refusal inside the admission window; it is a conflict naming the refusal, not a generic 500.
+  it('maps a controller-fence refusal to a typed 409 for destroy and lifecycle actions', async () => {
+    const { dependencies, startDestroy, startLifecycle } = harness();
+    startDestroy.mockRejectedValueOnce(new WorkspaceHostControllerFenceError('host-1'));
+    const destroyed = await post(dependencies, destroyBody);
+    expect(destroyed.status).toBe(409);
+    await expect(destroyed.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host destroy refused: a newer operation or controller holds this host',
+      reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      hostId: 'host-1',
+    });
+
+    startLifecycle.mockRejectedValueOnce(new WorkspaceHostControllerFenceError('host-1'));
+    const upgraded = await post(dependencies, {
+      action: 'upgrade',
+      workspaceId: 'host-1',
+      operationId: 'op-upgrade-fenced-1',
+    });
+    expect(upgraded.status).toBe(409);
+    await expect(upgraded.json()).resolves.toMatchObject({
+      reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      error: 'workspace-host upgrade refused: a newer operation or controller holds this host',
     });
   });
 

@@ -23,6 +23,8 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   readWorkspaceHostConnection,
   readWorkspaceHostDestroyTarget,
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
+  WorkspaceHostControllerFenceError,
   type StoredWorkspaceHostConnection,
   type StoredWorkspaceHostDestroyTarget,
 } from '../../../workspace-host/observability-store';
@@ -608,6 +610,14 @@ export function createWorkspaceHostActionRoute(
         }
         if (error instanceof WorkspaceHostProvisioningConflictError) {
           return requestError('workspace host already has an operation in progress', 409);
+        }
+        if (error instanceof WorkspaceHostControllerFenceError) {
+          // WI-10005474: refused before it began; this operation id replays the refusal.
+          return requestError(`workspace-host ${action} refused: a newer operation or controller holds this host`, 409, {
+            reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+            hostId: error.hostId,
+            auditUrl: workspaceHostAuditUrl(error.hostId),
+          });
         }
         if (error instanceof WorkspaceHostProvisioningConnectionError) {
           return requestError('workspace-host connection validation failed', 409, { problems: error.problems });

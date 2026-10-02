@@ -19,6 +19,8 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   listLiveWorkspaceHostIdsOnConnection,
   readWorkspaceHostConnection,
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
+  WorkspaceHostControllerFenceError,
   type StoredWorkspaceHostConnection,
 } from '../../../workspace-host/observability-store';
 import {
@@ -311,6 +313,20 @@ export function createWorkspaceHostProvisionRoute(
         if (error instanceof WorkspaceHostProvisioningConflictError) {
           return Response.json(
             { ok: false, error: 'workspace host already has a provisioning operation in progress' },
+            { status: 409 },
+          );
+        }
+        if (error instanceof WorkspaceHostControllerFenceError) {
+          // WI-10005474: the operation was refused before it began (a newer operation or controller
+          // holds the host). Retrying this operation id replays the refusal; a new one is admissible.
+          return Response.json(
+            {
+              ok: false,
+              error: 'workspace-host provision refused: a newer operation or controller holds this host',
+              reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+              hostId: error.hostId,
+              auditUrl: workspaceHostAuditUrl(error.hostId),
+            },
             { status: 409 },
           );
         }
