@@ -42,7 +42,7 @@
  * default ON). Missing a tick costs nothing: the next tick recomputes from the
  * ledger — the write is idempotent state, not an event.
  */
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { goalSpend, GOAL_SPEND_SNAPSHOT_SOURCE, type GoalSpend } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
@@ -186,7 +186,7 @@ export interface GoalSpendRollup {
   spentCents: number | null;
   /** Why `spentCents` is null; null when it is measured. */
   unmeasuredReason: GoalSpendUnmeasuredReason | null;
-  /** Shared source-wide ingestion health for the usage rows behind this read. */
+  /** Goal-scoped ingestion freshness for the usage rows behind this read. */
   interactiveUsageFreshness: InteractiveUsageFreshness;
   /** The budget window every leg was judged over; null ⇒ the goal's lifetime. */
   windowSec: number | null;
@@ -416,7 +416,7 @@ export async function computeGoalSpendRollup(
     goalId: string;
     windowSec?: number | null;
     nowMs?: number;
-    /** One source-wide read can be shared by the sweep across goals. */
+    /** A goal-scoped read can be shared by this goal's snapshot and controls. */
     interactiveUsageFreshness?: InteractiveUsageFreshness;
   },
 ): Promise<GoalSpendRollup> {
@@ -432,7 +432,7 @@ export async function computeGoalSpendRollup(
     lineageSpendForGoal(sql, legOpts),
     opts.interactiveUsageFreshness
       ? Promise.resolve(opts.interactiveUsageFreshness)
-      : readInteractiveUsageFreshness(sql, { workspaceId: opts.workspaceId, nowMs: opts.nowMs }),
+      : readInteractiveUsageFreshness(sql, { workspaceId: opts.workspaceId, goalId: opts.goalId, nowMs: opts.nowMs }),
   ]);
   const potCents = Math.round(pot.costUsd * 100);
   const sessionCents = Math.round(session.costUsd * 100);
@@ -445,13 +445,9 @@ export async function computeGoalSpendRollup(
       : interactiveUsageFreshness.status === 'unavailable'
         ? 'interactive-usage-unavailable'
         : null;
-  const unmeasuredReason: GoalSpendUnmeasuredReason | null = freshnessReason ?? (
-    lineage.samples === 0
-      ? 'no-lineage-samples'
-      : lineage.unpricedSamples > 0
-        ? 'unpriced-lineage-samples'
-        : null
-  );
+  const unmeasuredReason: GoalSpendUnmeasuredReason | null = lineage.samples === 0
+    ? 'no-lineage-samples'
+    : freshnessReason ?? (lineage.unpricedSamples > 0 ? 'unpriced-lineage-samples' : null);
   // The pot/session partition is what aggregates. The lineage leg is EXCLUDED
   // from every aggregate below on purpose: it overlaps both (see
   // GOAL_SPEND_LINEAGE_SCOPE), so folding it in would double-count rather than
@@ -543,7 +539,7 @@ export async function writeGoalSpendSnapshot(
   // live: metadata became [{}, "{…}"] while the UPDATE reported count=1).
   const res = await sql`
     UPDATE harness_shared.goals
-       SET metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json(patch)}
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json(patch as unknown as JSONValue)}
      WHERE id = ${opts.goalId}
        AND workspace_id = ${opts.workspaceId}
   `;
@@ -601,7 +597,7 @@ export async function refreshGoalTripwires(
   // sql.json for the same double-encoding reason documented on the snapshot write.
   const upd = await sql`
     UPDATE harness_shared.goals
-       SET tripwires = ${sql.json(res.next)}
+       SET tripwires = ${sql.json(res.next as unknown as JSONValue)}
      WHERE id = ${opts.goalId}
        AND workspace_id = ${opts.workspaceId}
   `;
@@ -838,12 +834,11 @@ export async function runGoalSpendRollupOnce(
   let written = 0;
   let tripwiresAdvanced = 0;
   const nowMs = opts.nowMs ?? Date.now();
-  const workspaceIds = [...new Set(goals.map((goal) => goal.workspace_id))];
-  const freshnessEntries = await Promise.all(workspaceIds.map(async (workspaceId) => [
-    workspaceId,
-    await readInteractiveUsageFreshness(sql, { workspaceId, nowMs }),
+  const freshnessEntries = await Promise.all(goals.map(async (goal) => [
+    goal.id,
+    await readInteractiveUsageFreshness(sql, { workspaceId: goal.workspace_id, goalId: goal.id, nowMs }),
   ] as const));
-  const freshnessByWorkspace = new Map(freshnessEntries);
+  const freshnessByGoal = new Map(freshnessEntries);
   for (const g of goals) {
     try {
       const scope = { workspaceId: g.workspace_id, goalId: g.id };
@@ -851,7 +846,7 @@ export async function runGoalSpendRollupOnce(
         ...scope,
         windowSec: g.budget_window_sec == null ? null : Number(g.budget_window_sec),
         nowMs,
-        interactiveUsageFreshness: freshnessByWorkspace.get(g.workspace_id),
+        interactiveUsageFreshness: freshnessByGoal.get(g.id),
       });
       const count = await writeGoalSpendSnapshot(sql, scope, rollup);
       // A zero-row write means the snapshot silently went nowhere (the goal row

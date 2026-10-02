@@ -45,6 +45,7 @@ import { GOAL_MODE } from '../modes/goal-session';
 
 const WS = 'default';
 const GOAL = 'goal-rollup-1';
+const OTHER_GOAL = 'goal-rollup-2';
 const GOAL_CREATED = '2026-08-01T00:00:00Z';
 const GOAL_MS = Date.parse(GOAL_CREATED);
 const LINEAGE_SCOPE = 'attributed-by-lineage:authoritative';
@@ -194,9 +195,10 @@ async function sample(o: {
   source?: string;
   ingestedAt?: number;
 }) {
+  const eventTs = o.ts ?? Date.now();
   await rootSql`INSERT INTO harness_shared.agent_usage_samples
     (workspace_id, ts, source, ingested_at, harness_slug, session_id, goal_id, cost_usd)
-    VALUES (${WS}, ${o.ts ?? GOAL_MS + 60_000}, ${o.source ?? 'interactive'}, ${o.ingestedAt ?? Date.now()},
+    VALUES (${WS}, ${eventTs}, ${o.source ?? 'interactive'}, ${o.ingestedAt ?? eventTs},
             ${o.harness ?? null}, ${o.session ?? null}, ${o.goalId ?? null}, ${o.usd === undefined ? 0 : o.usd})`;
 }
 async function ownedSession(owner: string, sessionId: string, startedAtMs = Date.now()) {
@@ -329,7 +331,7 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     const r = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL, windowSec: 3_600, nowMs: NOW });
     expect(r).toMatchObject({ spentCents: 50, unmeasuredReason: null, windowSec: 3_600 });
     // CONTROL: over the lifetime the same ledger is unmeasurable.
-    const lifetime = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });
+    const lifetime = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL, nowMs: NOW });
     expect(lifetime).toMatchObject({ spentCents: null, unmeasuredReason: 'unpriced-lineage-samples', lineageCents: 550 });
   });
 
@@ -514,6 +516,7 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     const md = await goalMetadata();
     expect(md?.spentCents).toBeNull();
     expect(md?.spentCentsUnmeasuredReason).toBe('no-lineage-samples');
+    expect(md?.spentCentsFreshness).toMatchObject({ status: 'unavailable' });
     expect(md?.spentCentsBreakdown).toMatchObject({
       measured: false,
       lineageSamples: 0,
@@ -743,6 +746,7 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     it('CONTROL: the same spend with NO window still pauses on lifetime — the rule is unchanged for ordinary goals', async () => {
       await seedGoal({ budgetCents: 200 });
       await sample({ goalId: GOAL, usd: 5.0, ts: OLD });
+      await sample({ goalId: GOAL, usd: 0 });
 
       await runGoalSpendRollupOnce(rootSql);
       expect(await goalStatus()).toBe('paused');
@@ -930,7 +934,7 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     expect((await goalMetadata())?.autoPaused).toBeUndefined();
   });
 
-  it('leaves stale interactive usage unmeasured and skips tripwire and breach controls', async () => {
+  it('leaves over-15-minute event-to-ingest lag unmeasured and skips tripwire and breach controls', async () => {
     await seedGoal({ budgetCents: 100 });
     const authoredTripwire = { metric: 'spend_usd', label: 'freshness guard', threshold: 1, current: 0 };
     await setTripwires([authoredTripwire]);
@@ -938,8 +942,8 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     await sample({
       goalId: GOAL,
       usd: 2,
-      ts: nowMs,
-      ingestedAt: nowMs - 30 * 60_000 - 1,
+      ts: nowMs - 20 * 60_000,
+      ingestedAt: nowMs,
       source: 'interactive',
     });
 
@@ -950,7 +954,37 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     expect(await goalMetadata()).toMatchObject({
       spentCents: null,
       spentCentsUnmeasuredReason: 'interactive-usage-stale',
+      spentCentsFreshness: {
+        status: 'stale',
+        maxRecentIngestLagMs: 20 * 60_000,
+      },
+    });
+  });
+
+  it('does not let another goal’s fresh interactive samples mask this goal’s stale ingest lag', async () => {
+    await seedGoal({ id: GOAL, budgetCents: 1_000 });
+    await seedGoal({ id: OTHER_GOAL, budgetCents: 1_000 });
+    const nowMs = Date.now();
+    await sample({
+      goalId: GOAL,
+      usd: 2,
+      ts: nowMs - 20 * 60_000,
+      ingestedAt: nowMs,
+      source: 'interactive',
+    });
+    await sample({ goalId: OTHER_GOAL, usd: 5, ts: nowMs, ingestedAt: nowMs, source: 'interactive' });
+
+    const result = await runGoalSpendRollupOnce(rootSql, { nowMs });
+    expect(result).toMatchObject({ ok: true, written: 2, errors: [] });
+    expect(await goalMetadata(GOAL)).toMatchObject({
+      spentCents: null,
+      spentCentsUnmeasuredReason: 'interactive-usage-stale',
       spentCentsFreshness: { status: 'stale' },
+    });
+    expect(await goalMetadata(OTHER_GOAL)).toMatchObject({
+      spentCents: 500,
+      spentCentsUnmeasuredReason: null,
+      spentCentsFreshness: { status: 'fresh' },
     });
   });
 });
