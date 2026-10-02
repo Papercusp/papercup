@@ -17,8 +17,8 @@ import type { WorkspaceHostStandingHealthTarget } from './standing-health';
  */
 export const WORKSPACE_HOST_STANDING_HEALTH_DESIRED_STATES = ['running', 'degraded'] as const;
 
-/** Only GCP hosts have standing seams today (`resolveGcpWorkspaceHostSoakSeams`). */
-export const WORKSPACE_HOST_STANDING_HEALTH_TARGETS = ['gcp'] as const;
+/** The clouds with standing seams (`resolveWorkspaceHostSoakSeams` dispatches on the host's target). */
+export const WORKSPACE_HOST_STANDING_HEALTH_TARGETS = ['gcp', 'aws'] as const;
 
 interface TargetRow {
   workspace_id: string;

@@ -9,7 +9,7 @@
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
-import { resolveGcpWorkspaceHostSoakSeams } from '../workspace-host/soak-gcp';
+import { resolveWorkspaceHostSoakSeams } from '../workspace-host/soak-seams';
 import { recordWorkspaceHostHealth } from '../workspace-host/observability-store';
 import { DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY } from '../workspace-host/provisioning-runner';
 import { listWorkspaceHostStandingHealthTargets } from '../workspace-host/standing-health-store';
@@ -29,7 +29,7 @@ export function workspaceHostStandingHealthDbosRuntime(): WorkspaceHostStandingH
     step: (name, fn) => DBOS.runStep(fn, { name, retriesAllowed: false }),
     controllerId: DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY.controllerId,
     listTargets: (controllerId) => listWorkspaceHostStandingHealthTargets(controllerId),
-    resolveSeams: (input) => resolveGcpWorkspaceHostSoakSeams(input),
+    resolveSeams: (input) => resolveWorkspaceHostSoakSeams(input),
     recordHealth: recordWorkspaceHostHealth,
     now: () => new Date(),
   };

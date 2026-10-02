@@ -8,7 +8,7 @@
  *
  * This pass is the standing producer. It reuses the soak's seams and check builders rather than
  * forking them, so a host's health means the same thing whichever producer wrote it:
- *   - seams: `resolveGcpWorkspaceHostSoakSeams` (provider read + controller reach over IAP),
+ *   - seams: `resolveWorkspaceHostSoakSeams` (provider read + controller reach over GCP IAP or AWS SSM),
  *   - checks: `workspaceHostComputeCheck` / `workspaceHostReachCheck` from soak.ts,
  *   - writer: `recordWorkspaceHostHealth`.
  *
