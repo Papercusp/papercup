@@ -708,9 +708,11 @@ describe('runLifecycleJudgementSweep', () => {
     );
 
     const spawnId = spawn.mock.calls[0]![0].spawnId;
+    const judgeOwnerId = `system:operator/${spawnId}`;
     expect(order).toEqual(['claim', 'spawn']);
-    expect(claim).toHaveBeenCalledWith([candidate], spawnId);
-    expect(claim.mock.calls[0]![1]).toBe(spawnId);
+    expect(claim).toHaveBeenCalledWith([candidate], judgeOwnerId);
+    expect(claim.mock.calls[0]![1]).toBe(judgeOwnerId);
+    expect(spawn.mock.calls[0]![0].spawnId).toBe(spawnId);
     expect(first.openItems).toEqual(['WI-open']);
     expect(first.judge.attempted).toBe(true);
     expect(nextHour.openItems).toEqual([]);
@@ -755,12 +757,14 @@ describe('runLifecycleJudgementSweep', () => {
     );
 
     const spawnId = spawn.mock.calls[0]![0].spawnId;
+    const judgeOwnerId = `system:operator/${spawnId}`;
     expect(order).toEqual(['claim', 'spawn', 'release']);
-    expect(claim).toHaveBeenCalledWith([candidate], spawnId);
+    expect(claim).toHaveBeenCalledWith([candidate], judgeOwnerId);
     expect(release).toHaveBeenCalledWith(
-      [{ ...candidate, takenBy: spawnId, assignee: spawnId }],
-      spawnId,
+      [{ ...candidate, takenBy: judgeOwnerId, assignee: judgeOwnerId }],
+      judgeOwnerId,
     );
+    expect(spawn.mock.calls[0]![0].spawnId).toBe(spawnId);
   });
 
   it('does not launch a second judge across an interval boundary for candidates claimed in either work-item family', async () => {
