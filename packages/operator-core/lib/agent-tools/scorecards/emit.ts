@@ -70,7 +70,10 @@ import {
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
   specTestAdequacySubjectRef,
 } from '../plans/spec-test-adequacy';
-import { argsSchema as evaluatorArgsSchema } from '../plans/evaluate-spec-test-adequacy';
+import {
+  argsSchema as evaluatorArgsSchema,
+  replaySpecTestAdequacyForHistoricalAudit,
+} from '../plans/evaluate-spec-test-adequacy';
 import {
   collapseCriticsToSoleParty,
   resolveAcceptanceGraderEligibility,
@@ -957,6 +960,7 @@ export async function validateGradingAuditReplayConsistency(
   gradedObservation: NonNullable<ReturnType<typeof asStructuredObservation>>,
   auditRatings: z.infer<typeof scorecardEmitArgs>['ratings'],
   dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+  historicalContext?: { gradedCardCreatedAt?: string; workspaceId?: string },
 ): Promise<GradingAuditReplayConsistencyError | undefined> {
   if (
     gradedObservation.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF ||
@@ -1001,7 +1005,7 @@ export async function validateGradingAuditReplayConsistency(
     };
   }
 
-  const payload =
+  let payload =
     replay && typeof replay === 'object' && !Array.isArray(replay)
       ? (replay as {
           ok?: unknown;
@@ -1009,8 +1013,72 @@ export async function validateGradingAuditReplayConsistency(
           error?: unknown;
           evaluatorBuild?: unknown;
           evaluatorBuildDrift?: unknown;
+          historicalAuditOnly?: unknown;
         })
       : null;
+  if (
+    payload?.ok === false &&
+    payload.error === 'selection_empty' &&
+    parsedRecipe.data.args.bindingIds === undefined &&
+    parsedRecipe.data.selection.bindingIds === undefined &&
+    (parsedRecipe.data.args.evidenceRefs?.length ?? 0) > 0
+  ) {
+    const createdAt = historicalContext?.gradedCardCreatedAt;
+    const auditAsOf = createdAt ? new Date(createdAt) : null;
+    if (!auditAsOf || !Number.isFinite(auditAsOf.getTime()) || !historicalContext?.workspaceId) {
+      return {
+        code: 'grading_audit_replay_uncorroborated',
+        error:
+          'grading-integrity cannot use the legacy historical replay because the graded card creation time or workspace scope is unavailable; no audit card was persisted',
+      };
+    }
+    try {
+      replay = await replaySpecTestAdequacyForHistoricalAudit({
+        args: {
+          ...parsedRecipe.data.args,
+          ...(recordedEvaluatorBuild && !parsedRecipe.data.args.evaluatorBuild
+            ? { evaluatorBuild: recordedEvaluatorBuild }
+            : {}),
+        },
+        selection: parsedRecipe.data.selection,
+        workspaceId: historicalContext.workspaceId,
+        auditAsOf,
+      });
+    } catch (error) {
+      return {
+        code: 'grading_audit_replay_uncorroborated',
+        error:
+          `grading-integrity cannot replay the legacy card's historical evidence (${error instanceof Error ? error.message : String(error)}); no audit card was persisted`,
+      };
+    }
+    payload =
+      replay && typeof replay === 'object' && !Array.isArray(replay)
+        ? (replay as {
+            ok?: unknown;
+            rows?: unknown;
+            error?: unknown;
+            evaluatorBuild?: unknown;
+            evaluatorBuildDrift?: unknown;
+            historicalAuditOnly?: unknown;
+          })
+        : null;
+    const historicalMarker = payload?.historicalAuditOnly;
+    if (
+      payload?.ok === true &&
+      (!historicalMarker ||
+        typeof historicalMarker !== 'object' ||
+        Array.isArray(historicalMarker) ||
+        (historicalMarker as { provenance?: unknown }).provenance !== 'historical-audit-only' ||
+        (historicalMarker as { asOf?: unknown }).asOf !== auditAsOf.toISOString() ||
+        (historicalMarker as { freshness?: unknown }).freshness !== 'audit-only')
+    ) {
+      return {
+        code: 'grading_audit_replay_uncorroborated',
+        error:
+          'grading-integrity refused a legacy replay without matching historical audit-only provenance; no audit card was persisted',
+      };
+    }
+  }
   if (payload?.ok === false) {
     return {
       code: 'grading_audit_replay_uncorroborated',
@@ -2437,6 +2505,7 @@ export async function emitScorecard(
         gradedObservation,
         args.ratings,
         deps.dispatchTool,
+        { gradedCardCreatedAt: graded.createdAt, workspaceId: identityWorkspace },
       );
       if (replayConsistencyError) {
         if (
