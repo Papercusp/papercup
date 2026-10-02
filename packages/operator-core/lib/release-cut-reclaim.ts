@@ -38,6 +38,7 @@
  * Each removal is appended to the shared deletion-audit.tsv the release scripts write.
  */
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -53,11 +54,13 @@ const GIT_MAX_BUFFER = 64 * 1024 * 1024;
  * The authored-work read is the only git-heavy phase, and it runs inside one MCP call
  * (release:cut, ~55s request timeout). Serially it cost 54.4s of a 56.0s dry-run on
  * 2026-10-02 07:02Z: 24 trees, median 2.1s each, under load ~126/128 (EI-24849983022443070).
- * Trees and, within a tree, submodules are independent reads, so both run width-bounded.
- * At these widths at most 16 git children run at once.
+ * Trees are independent reads, so they run width-bounded. Within a tree the reads are
+ * batched into `sh` helpers (see runGitHelper): each extra submodule helper costs one more
+ * fork of the large host image, so the submodule pass defaults to a single helper and the
+ * tree width supplies the parallelism.
  */
 export const AUTHORED_TREE_CONCURRENCY = 4;
-export const AUTHORED_SUBMODULE_CONCURRENCY = 4;
+export const AUTHORED_SUBMODULE_CONCURRENCY = 1;
 
 // ---------------------------------------------------------------- parsing (pure)
 
@@ -424,6 +427,126 @@ async function git(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): Promi
   return String(stdout);
 }
 
+/**
+ * Batched git reads (EI-24849983022443070). A child_process spawn costs the operator host
+ * time SYNCHRONOUSLY on its main thread, and the cost grows with the host's RSS: libuv
+ * forks, copying the parent's page tables. Measured 2026-10-02 07:41Z: 9.45 ms per spawn at
+ * 245MB RSS, 162 ms at 1.97GB; :3170 runs at ~1.74GB. One reclaim plan used to spawn git
+ * ~1,900 times directly (24 trees x (4 + 2 per submodule x 38)). Width-bounding could not
+ * hide that, because the fork itself is synchronous, so the dry-run outran release:cut's
+ * 60s budget (83.5s on :3170 after width-bounding, 183s before).
+ *
+ * So each pass over a tree runs in ONE small `sh`: the shell forks the gits from its own
+ * ~2MB image, and the host forks once per helper. Each command's output is followed by a
+ * frame `\0<nonce> <tag> <exit>\0`. The nonce is 128 random bits, so no path or ref name
+ * can forge a frame, and the NUL-delimited porcelain -z bodies pass through unmodified.
+ * On a timeout execFile destroys the pipes before killing the shell, so a git still
+ * writing dies of SIGPIPE.
+ */
+const HELPER_FRAME_FN = "f() { printf '\\000%s %s %d\\000' \"$n\" \"$1\" \"$2\"; }";
+
+/** args: nonce tree canonicalRoot. Tags: status, head, contains, submodules. */
+export const AUTHORED_HEAD_SCRIPT = [
+  'n=$1; t=$2; c=$3',
+  HELPER_FRAME_FN,
+  'git -C "$t" status --porcelain=v2 -z --ignore-submodules=none; f status $?',
+  'h=$(git -C "$t" rev-parse HEAD); r=$?; printf %s "$h"; f head $r',
+  '[ "$r" -eq 0 ] || exit 0',
+  "git -C \"$c\" for-each-ref --count=1 \"--contains=$h\" --format='%(refname)'; f contains $?",
+  'git -C "$t" submodule status --recursive; f submodules $?',
+].join('\n');
+
+/** args: nonce tree canonicalRoot, then (sha, rel) pairs. Tags: status:<i>, present:<i>. */
+export const AUTHORED_SUBMODULES_SCRIPT = [
+  'n=$1; t=$2; c=$3; shift 3; i=0',
+  HELPER_FRAME_FN,
+  'while [ $# -ge 2 ]; do',
+  '  git -C "$t/$2" status --porcelain=v2 -z --ignore-submodules=all; f "status:$i" $?',
+  '  git -C "$c/$2" cat-file -e "$1^{commit}" 2>/dev/null; f "present:$i" $?',
+  '  i=$((i+1)); shift 2',
+  'done',
+].join('\n');
+
+export interface HelperSection {
+  tag: string;
+  exit: number;
+  out: string;
+}
+
+/** Split a helper's stdout into its framed sections, in emission order. Bytes after the
+ * last frame (a helper killed mid-command) belong to no section and are dropped. */
+export function parseHelperFrames(stdout: string, nonce: string): HelperSection[] {
+  if (!/^[0-9a-f]{16,}$/.test(nonce)) throw new Error('helper nonce must be hex');
+  const sections: HelperSection[] = [];
+  let start = 0;
+  // \x00, never \0: followed by the nonce's leading digit, \0 is a legacy octal escape (\01).
+  for (const m of stdout.matchAll(new RegExp(`\\x00${nonce} (\\S+) (\\d+)\\x00`, 'g'))) {
+    sections.push({ tag: m[1]!, exit: Number(m[2]), out: stdout.slice(start, m.index) });
+    start = m.index! + m[0].length;
+  }
+  return sections;
+}
+
+export interface HelperResult {
+  /** the section's output; throws if the section is missing or its command failed */
+  take(tag: string): string;
+  /** the section's exit status; throws only if the section is missing */
+  exitOf(tag: string): number;
+}
+
+export function helperResult(sections: HelperSection[], stderr = ''): HelperResult {
+  const byTag = new Map(sections.map((s) => [s.tag, s]));
+  const get = (tag: string) => {
+    const s = byTag.get(tag);
+    if (!s) throw new Error(`git helper output has no '${tag}' section (helper died early)`);
+    return s;
+  };
+  return {
+    take(tag) {
+      const s = get(tag);
+      if (s.exit !== 0) {
+        const why = stderr.split('\n').find((l) => l.trim()) ?? '';
+        throw new Error(`git ${tag} failed (exit ${s.exit})${why ? `: ${why}` : ''}`);
+      }
+      return s.out;
+    },
+    exitOf: (tag) => get(tag).exit,
+  };
+}
+
+/**
+ * One host fork per event-loop turn. Concurrent tree workers otherwise fork back-to-back in
+ * a single tick: 4 x ~160ms at 2GB RSS held the loop 565ms (measured 07:53Z). Each slot opens
+ * one setImmediate after the previous one, and an immediate queued while the check phase runs
+ * waits for the NEXT turn, so timers and I/O run between consecutive forks.
+ */
+let forkGate: Promise<void> = Promise.resolve();
+export function nextForkSlot(): Promise<void> {
+  const slot = forkGate.then(() => new Promise<void>((resolve) => setImmediate(resolve)));
+  forkGate = slot;
+  return slot;
+}
+
+async function runGitHelper(script: string, args: string[], timeout = GIT_TIMEOUT_MS): Promise<HelperResult> {
+  await nextForkSlot();
+  const nonce = randomBytes(16).toString('hex');
+  const { stdout, stderr } = await execFileAsync('sh', ['-c', script, 'release-cut-reclaim', nonce, ...args], {
+    encoding: 'utf8',
+    maxBuffer: GIT_MAX_BUFFER,
+    timeout,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+  });
+  return helperResult(parseHelperFrames(String(stdout), nonce), String(stderr));
+}
+
+/** Split into at most `parts` contiguous, near-equal chunks, preserving order. */
+export function contiguousChunks<T>(items: readonly T[], parts: number): T[][] {
+  const size = Math.ceil(items.length / Math.max(1, Math.floor(parts)));
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 const errText = (e: unknown) => (e instanceof Error ? e.message.split('\n')[0] ?? e.message : String(e)).slice(0, 160);
 
 export function readRetentionLeases(dir: string): { leases: RetentionLease[]; errors: string[] } {
@@ -639,42 +762,51 @@ export async function inspectAuthoredWork(
         else authored.push(e.path);
       }
     };
-    judge(parsePorcelainV2(await git(tree, ['status', '--porcelain=v2', '-z', '--ignore-submodules=none'])));
-    const head = (await git(tree, ['rev-parse', 'HEAD'])).trim();
-    const containing = (
-      await git(canonicalRoot, ['for-each-ref', '--count=1', `--contains=${head}`, '--format=%(refname)'])
-    ).trim();
+    // Pass 1, one helper: the tree's own status, its HEAD, whether a canonical ref contains
+    // that HEAD, and the submodule list (parsed here, so the shell never parses anything).
+    const top = await runGitHelper(AUTHORED_HEAD_SCRIPT, [tree, canonicalRoot]);
+    judge(parsePorcelainV2(top.take('status')));
+    const head = top.take('head').trim();
+    const containing = top.take('contains').trim();
     if (!containing) authored.push(`HEAD ${head.slice(0, 10)} (no ref contains it)`);
     const subs: Array<{ sha: string; rel: string }> = [];
-    for (const line of (await git(tree, ['submodule', 'status', '--recursive'])).split('\n')) {
+    for (const line of top.take('submodules').split('\n')) {
       const m = /^([ +\-U])([0-9a-f]{40}) (.+?)(?: \(.*\))?$/.exec(line);
       if (!m || m[1] === '-') continue;
       const [, , sha, rel] = m as unknown as [string, string, string, string];
       subs.push({ sha, rel });
     }
-    // Submodules are independent reads: run them width-bounded, then judge in submodule
-    // order so the result is deterministic. A git failure is RETURNED, not thrown, so no
-    // sibling read is left running after this call has already decided ok:false.
-    const reads = await mapWithConcurrency(
-      subs,
-      opts.submoduleConcurrency ?? AUTHORED_SUBMODULE_CONCURRENCY,
-      async ({ sha, rel }) => {
+    // Pass 2: every submodule's status plus whether its commit exists in the canonical
+    // checkout, in contiguous chunks with one helper each (default one chunk). Results are
+    // judged in submodule order so the outcome is deterministic. A failure is RETURNED, not
+    // thrown, so no sibling helper is left running after this call has decided ok:false.
+    const chunks = contiguousChunks(subs, opts.submoduleConcurrency ?? AUTHORED_SUBMODULE_CONCURRENCY);
+    const reads = await Promise.all(
+      chunks.map(async (chunk) => {
         try {
-          const status = await git(path.join(tree, rel), ['status', '--porcelain=v2', '-z', '--ignore-submodules=all']);
-          const present = await git(path.join(canonicalRoot, rel), ['cat-file', '-e', `${sha}^{commit}`], 30_000).then(
-            () => true,
-            () => false,
-          );
-          return { rel, sha, status, present, error: null as unknown };
+          const r = await runGitHelper(AUTHORED_SUBMODULES_SCRIPT, [
+            tree,
+            canonicalRoot,
+            ...chunk.flatMap(({ sha, rel }) => [sha, rel]),
+          ]);
+          const rows = chunk.map(({ sha, rel }, i) => ({
+            sha,
+            rel,
+            status: r.take(`status:${i}`),
+            present: r.exitOf(`present:${i}`) === 0,
+          }));
+          return { rows, error: null as unknown };
         } catch (e) {
-          return { rel, sha, status: '', present: false, error: e };
+          return { rows: [], error: e };
         }
-      },
+      }),
     );
-    for (const r of reads) {
-      if (r.error !== null) throw r.error;
-      judge(parsePorcelainV2(r.status, r.rel));
-      if (!r.present) authored.push(`${r.rel}@${r.sha.slice(0, 10)} (commit absent from canonical checkout)`);
+    for (const { rows, error } of reads) {
+      if (error !== null) throw error;
+      for (const r of rows) {
+        judge(parsePorcelainV2(r.status, r.rel));
+        if (!r.present) authored.push(`${r.rel}@${r.sha.slice(0, 10)} (commit absent from canonical checkout)`);
+      }
     }
     return { ok: true, authored, machineWritten };
   } catch (e) {

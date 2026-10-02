@@ -11,7 +11,11 @@ import * as path from 'node:path';
 import {
   AUTHORED_UNCHECKED,
   archiveTreeDiffs,
+  contiguousChunks,
   executeCutReclaim,
+  helperResult,
+  nextForkSlot,
+  parseHelperFrames,
   gatherCutReclaimPlan,
   inspectAuthoredWork,
   isLeaseLive,
@@ -656,5 +660,147 @@ describe('scanProcHolders (async /proc walk) against a fabricated proc root', ()
     const scan = await scanProcHolders([{ key: held, prefixes: [held] }], proc);
     expect(scan.verified).toBe(false);
     expect(scan.verified === false && scan.reason).toMatch(/nested-pid-namespace/);
+  });
+});
+
+describe('batched git helpers (EI-24849983022443070)', () => {
+  const N = '0123456789abcdef0123456789abcdef';
+  const frame = (tag: string, exit: number) => `\0${N} ${tag} ${exit}\0`;
+
+  it('splits framed output in order, keeps NUL-delimited bodies intact, drops unframed tail bytes', () => {
+    const body = '1 .M N... 100644 100644 100644 a b x.ts\0? we ird\nname\0';
+    const out = body + frame('status', 0) + 'abc' + frame('head', 0) + frame('contains', 1) + 'partial';
+    expect(parseHelperFrames(out, N)).toEqual([
+      { tag: 'status', exit: 0, out: body },
+      { tag: 'head', exit: 0, out: 'abc' },
+      { tag: 'contains', exit: 1, out: '' },
+    ]);
+  });
+
+  it('a frame forged with a different nonce stays inside the body', () => {
+    const forged = `? \0${'f'.repeat(32)} head 0\0\0`;
+    expect(parseHelperFrames(forged + frame('status', 0), N)).toEqual([{ tag: 'status', exit: 0, out: forged }]);
+    expect(() => parseHelperFrames('', 'not-hex(.*)')).toThrow(/hex/);
+  });
+
+  it('take() fails on a failed or missing section; exitOf() reports a failure without throwing', () => {
+    const r = helperResult(
+      [
+        { tag: 'a', exit: 0, out: 'ok' },
+        { tag: 'b', exit: 128, out: '' },
+      ],
+      '\nfatal: not a git repository\n',
+    );
+    expect(r.take('a')).toBe('ok');
+    expect(() => r.take('b')).toThrow('git b failed (exit 128): fatal: not a git repository');
+    expect(r.exitOf('b')).toBe(128);
+    expect(() => r.exitOf('c')).toThrow(/no 'c' section/);
+  });
+
+  it('nextForkSlot gives each fork its own event-loop turn: work queued after slot A runs before slot B', async () => {
+    const order: string[] = [];
+    const a = nextForkSlot().then(() => {
+      order.push('a');
+      setImmediate(() => order.push('turn-after-a'));
+    });
+    const b = nextForkSlot().then(() => order.push('b'));
+    await Promise.all([a, b]);
+    // independent setImmediate slots would run a and b in the same check phase: [a, b, turn-after-a]
+    expect(order).toEqual(['a', 'turn-after-a', 'b']);
+  });
+
+  it('contiguousChunks keeps order, never exceeds the part count, and handles empty input', () => {
+    expect(contiguousChunks([1, 2, 3, 4, 5, 6], 3)).toEqual([[1, 2], [3, 4], [5, 6]]);
+    expect(contiguousChunks([1, 2, 3, 4, 5], 2)).toEqual([[1, 2, 3], [4, 5]]);
+    expect(contiguousChunks([1, 2], 4)).toEqual([[1], [2]]);
+    expect(contiguousChunks([], 4)).toEqual([]);
+    expect(contiguousChunks([1, 2], 0)).toEqual([[1, 2]]);
+  });
+
+  describe('host spawn count', () => {
+    const SHA = 'b'.repeat(40);
+    let binDir: string;
+    let savedPath: string | undefined;
+    beforeEach(() => {
+      binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-spawns-'));
+      const subs = Array.from({ length: 30 }, (_, i) => ` ${SHA} sub/s${i} (heads/main)`).join('\n');
+      fs.writeFileSync(path.join(binDir, 'subs.txt'), subs + '\n');
+      // `sh` on PATH logs every HOST spawn of a helper, then hands over to the real shell.
+      fs.writeFileSync(
+        path.join(binDir, 'sh'),
+        `#!/bin/sh\necho sh >> '${path.join(binDir, 'host.log')}'\nexec /bin/sh "$@"\n`,
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(
+        path.join(binDir, 'git'),
+        [
+          '#!/bin/sh',
+          `echo git >> '${path.join(binDir, 'git.log')}'`,
+          'case "$*" in',
+          `  *"submodule status"*) cat '${path.join(binDir, 'subs.txt')}' ;;`,
+          `  *"rev-parse HEAD"*) echo ${SHA} ;;`,
+          '  *"for-each-ref"*) echo refs/heads/staging ;;',
+          '  *"--ignore-submodules=all"*) case "$*" in *"/s7 "*) printf "? new.ts\\000" ;; esac ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      savedPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+    });
+    afterEach(() => {
+      process.env.PATH = savedPath;
+      fs.rmSync(binDir, { recursive: true, force: true });
+    });
+    const lines = (f: string) => fs.readFileSync(path.join(binDir, f), 'utf8').split('\n').filter(Boolean).length;
+
+    it('forks the host once per helper, not once per git call: 30 submodules cost 2 host spawns', async () => {
+      const result = await inspectAuthoredWork(path.join(binDir, 'tree'), path.join(binDir, 'canon'), VERSION_PATHS);
+      expect(result).toEqual({ ok: true, authored: ['sub/s7/new.ts'], machineWritten: 0 });
+      // positive control: the git work itself still happened, 4 top-level + 2 per submodule
+      expect(lines('git.log')).toBe(4 + 2 * 30);
+      expect(lines('host.log')).toBe(2);
+    });
+
+    it('a width of 3 costs exactly 3 submodule helpers', async () => {
+      await inspectAuthoredWork(path.join(binDir, 'tree'), path.join(binDir, 'canon'), VERSION_PATHS, {
+        submoduleConcurrency: 3,
+      });
+      expect(lines('host.log')).toBe(1 + 3);
+    });
+  });
+
+  it('reads a REAL submodule through the helper, including a path with a newline in it', async () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-realsub-')));
+    try {
+      const lib = path.join(tmp, 'lib');
+      const canon = path.join(tmp, 'canon');
+      const commit = (cwd: string, m: string) =>
+        g(cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', m);
+      for (const r of [lib, canon]) {
+        fs.mkdirSync(r);
+        g(r, 'init', '-q', '-b', 'staging');
+      }
+      commit(lib, 'lib root');
+      g(canon, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libs/x');
+      commit(canon, 'add sub');
+      const tree = path.join(tmp, 'tree');
+      g(canon, 'worktree', 'add', '-q', '--detach', tree);
+      g(tree, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init');
+      fs.writeFileSync(path.join(tree, 'libs/x', 'we ird\nname.ts'), 'x');
+      const clean = await inspectAuthoredWork(canon, canon, VERSION_PATHS);
+      expect(clean).toEqual({ ok: true, authored: [], machineWritten: 0 });
+      const dirty = await inspectAuthoredWork(tree, canon, VERSION_PATHS);
+      expect(dirty).toEqual({ ok: true, authored: ['libs/x/we ird\nname.ts'], machineWritten: 0 });
+      // a submodule commit the canonical checkout lacks is authored work
+      commit(path.join(tree, 'libs/x'), 'local only');
+      const local = g(path.join(tree, 'libs/x'), 'rev-parse', 'HEAD');
+      const ahead = await inspectAuthoredWork(tree, canon, VERSION_PATHS);
+      expect(ahead.ok && ahead.authored).toContain(`libs/x@${local.slice(0, 10)} (commit absent from canonical checkout)`);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
