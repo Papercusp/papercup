@@ -14,6 +14,15 @@ import { createCdpClient, readProcessMemory, withFunctionCallTrace } from '../..
 
 const root = resolve(__dirname, '../../..');
 
+// The canonical runner changes cwd to the test's package. Evidence paths are
+// repository-relative; reject a missing parent before starting a private host.
+function evidenceDestination(destination: string | undefined) {
+  if (!destination) return null;
+  const path = resolve(root, destination);
+  if (!existsSync(dirname(path))) throw new Error('Evidence destination parent must exist: ' + dirname(path));
+  return path;
+}
+
 // Buffer complete startup lines: stderr chunks can split an endpoint, and an
 // in-place exec keeps the PID while replacing its ephemeral inspector listener.
 function inspectorEndpoints(output: string): string[] {
@@ -126,6 +135,13 @@ async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
 }
 
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
+  it('resolves evidence destinations before runtime preparation independently of runner cwd', () => {
+    expect(evidenceDestination('docs/evidence/p011-relative-report.json')).toBe(join(root, 'docs/evidence/p011-relative-report.json'));
+    expect(evidenceDestination(join(tmpdir(), 'p011-absolute-report.json'))).toBe(join(tmpdir(), 'p011-absolute-report.json'));
+    expect(evidenceDestination(undefined)).toBeNull();
+    expect(() => evidenceDestination('missing-p011-evidence-parent/report.json')).toThrow('Evidence destination parent must exist');
+  });
+
   it('preserves source bytes when request chunks split a UTF-8 character', async () => {
     const text = 'export const label = "A→🙂éZ";';
     const body = Buffer.from(JSON.stringify({ path: 'unicode.ts', text }));
@@ -149,6 +165,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
   });
 
   it('attributes exercised content-lint transforms to matched request-host and executable descendant samples', async () => {
+    const reportPath = evidenceDestination(process.env.PAPERCUSP_P011_CALLER_REPORT);
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-content-lint-cohort-'));
     const sourcePath = 'packages/operator-core/lib/content-lint/esbuild-transform.ts';
     const sourceHash = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
@@ -168,8 +185,6 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     const reports: any[] = [];
     let completeReport: any;
     let failure: unknown;
-    const reportPath = process.env.PAPERCUSP_P011_CALLER_REPORT ? resolve(root, process.env.PAPERCUSP_P011_CALLER_REPORT) : null;
-    if (reportPath) expect(existsSync(dirname(reportPath)), 'Evidence destination must exist before starting a host.').toBe(true);
     writeFileSync(entry, `
       import { createServer } from 'node:http';
       import { findEsbuildTransformError } from ${JSON.stringify(join(root, sourcePath))};
@@ -345,6 +360,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
   }, 90_000);
 
   it('compares real closure and transform services in isolated processes and reaps their descendants', () => {
+    const reportPath = evidenceDestination(process.env.PAPERCUSP_P011_ESBUILD_REPORT);
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-esbuild-census-'));
     const script = String.raw`
       import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -430,7 +446,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       }
       // Report measured costs without turning fluctuating PSS into a leak assertion.
       const report = { schemaVersion: 1, definition: 'Isolated real closure versus transforms; one-second idle is not a production idle baseline.', reports };
-      if (process.env.PAPERCUSP_P011_ESBUILD_REPORT) writeFileSync(process.env.PAPERCUSP_P011_ESBUILD_REPORT, JSON.stringify(report, null, 2) + '\n');
+      if (reportPath) writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
       console.log('P011_ESBUILD_CENSUS ' + JSON.stringify(reports.map(r => ({ mode: r.mode,
         pssKb: r.samples.map((s: any) => s.services[0].pssKb), unreaped: r.unreaped }))));
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -530,13 +546,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
   }, 30_000);
 
   it('attributes the serving HTTP mutation-fence compiler to independent preflight resource cohorts', async () => {
+    const destination = evidenceDestination(process.env.PAPERCUSP_P011_SERVING_COMPILER_REPORT);
     const directory = mkdtempSync(join(tmpdir(), 'papercusp-serving-compiler-'));
     const hostDirectory = join(directory, 'host');
     const bundle = join(hostDirectory, 'hono-host.mjs');
     const reportPath = join(directory, 'report.json');
     const sourceDirectory = process.env.PAPERCUSP_P011_SERVING_HOST_DIRECTORY;
-    const destination = process.env.PAPERCUSP_P011_SERVING_COMPILER_REPORT;
-    if (destination) expect(existsSync(dirname(resolve(root, destination)))).toBe(true);
     const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
     try {
       if (sourceDirectory) {
@@ -752,6 +767,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
   }, 500_000);
 
   it.each(['diagnostic', 'ordinary'] as const)('binds %s PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it', async mode => {
+    const destination = evidenceDestination(process.env.PAPERCUSP_P011_REPORT);
     // Read the maintained desktop transport contract before bundle/DB work.
     // The separate device route supports only its curated mobile query names.
     const queryRoute = (await import('./endpoint-route/routes/zero-harness/rest-query')).default;
@@ -1022,7 +1038,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           TEST_MALLOC_ARENA_MAX: HOST_MALLOC_ARENA_MAX, TEST_QUERY_ROUTE: queryPath, TEST_REPORT_PATH: reportPath },
       });
       const report = readCohortReport(reportPath, result);
-      if (process.env.PAPERCUSP_P011_REPORT) writeFileSync(process.env.PAPERCUSP_P011_REPORT, JSON.stringify(report, null, 2) + '\n');
+      if (destination) writeFileSync(destination, JSON.stringify(report, null, 2) + '\n');
       expect(result.status, report.phase + ': ' + (report.error ?? report.runner.error ?? result.stderr.slice(-3000))).toBe(0);
       expect(report.incomplete).toBe(false);
       expect(report.mode).toBe(mode);
