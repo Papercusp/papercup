@@ -72,11 +72,15 @@ export function preregHash(caseIds: readonly string[], warmSamples: number): str
  * `aggregate` used to stamp `runId`/`createdAt` from `new Date()`, so re-aggregating the very same
  * `report-*.json` files on another day rewrote every evidence file that embeds them (the markdown
  * header, task-runs.json, fairness-audit.json) while verdict.json — which does not — stayed identical.
- * The newest report's mtime is stable across re-aggregation and moves only when an arm run rewrites a
- * report, which is exactly when the output SHOULD change. No usable report → a fixed epoch, never "now".
+ * The first fix read each report's FILE MTIME — wrong: an mtime is a filesystem property, so a `cp`, a fresh
+ * clone or the gate's checkpoint checkout all reset it and the bytes then depended on checkout time, not
+ * content (measured by su-d51b5df2: re-aggregating a copied evidence dir moved createdAt 16:37Z → 18:18Z in
+ * two files). The newest `measuredAt` — written INTO each report when its arm run finishes — travels with the
+ * file, so it is stable across copy/clone/re-aggregation and moves only when an arm run rewrites a report,
+ * which is exactly when the output SHOULD change. No usable `measuredAt` → a fixed epoch, never "now".
  */
-export function deriveRunMeta(reportMtimesMs: readonly number[], prereg: string): EngineRunMeta {
-  const usable = reportMtimesMs.filter((t) => Number.isFinite(t) && t > 0);
+export function deriveRunMeta(measuredAts: readonly (string | undefined)[], prereg: string): EngineRunMeta {
+  const usable = measuredAts.map((s) => (s === undefined ? Number.NaN : Date.parse(s))).filter((t) => Number.isFinite(t) && t > 0);
   const createdAt = new Date(usable.length === 0 ? 0 : Math.max(...usable)).toISOString();
   return { runId: `engine-comparison-${createdAt.slice(0, 10)}`, seed: 0, createdAt, preregHash: prereg };
 }
