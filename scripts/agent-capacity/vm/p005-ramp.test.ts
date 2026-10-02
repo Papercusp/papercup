@@ -145,4 +145,45 @@ printf '{"runs":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"a
     expect(readFileSync(path.join(home, 'check.log'), 'utf8')).toContain('--check --tasks-file /corpus/tasks.json --workdir overlay');
     expect(readFileSync(path.join(home, 'npx.log'), 'utf8')).toContain('--duration-sec 600 --stagger-ms 1000 --tasks-file /corpus/tasks.json --run-id p005-p529-a-n12');
   });
+
+  const parkedArgs = () =>
+    readFileSync(path.join(home, 'npx.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => l.match(/--parked (\S+) --park-at-request (\S+) --release-at-sec (\S+)/)?.slice(1) ?? null);
+
+  it('a fixed PARKED reaches every step as --parked, released at 60% of the step by default', () => {
+    const r = run({ PARKED: '16' }, 'p015-none', 'all', '12 24', '600');
+    expect(r.status, r.stderr).toBe(0);
+    expect(parkedArgs()).toEqual([
+      ['16', '4', '360'],
+      ['16', '4', '360'],
+    ]);
+    expect(r.stdout).toMatch(/^RAMP_STEP_PARKED p005-p015-none-n24 parked=16 release_at_sec=360$/m);
+  });
+
+  it('PARKED_PER_ACTIVE scales the parked sessions with each step (rounded) and overrides PARKED', () => {
+    const r = run({ PARKED: '16', PARKED_PER_ACTIVE: '1.9', PARK_RELEASE_SEC: '570' }, 'p016-mix', 'all', '1 2 4 10', '600');
+    expect(r.status, r.stderr).toBe(0);
+    // 1.9 x n rounded: 1.9 -> 2, 3.8 -> 4, 7.6 -> 8, 19 -> 19.
+    expect(parkedArgs().map((a) => a?.[0])).toEqual(['2', '4', '8', '19']);
+    expect(parkedArgs().every((a) => a?.[2] === '570')).toBe(true);
+    expect(r.stdout).toMatch(/^RAMP_STEP_PARKED p005-p016-mix-n10 parked=19 release_at_sec=570$/m);
+  });
+
+  it('a ratio that rounds to zero parks nothing for that step', () => {
+    const r = run({ PARKED_PER_ACTIVE: '0.3' }, 'p016-low', 'all', '1 4');
+    expect(r.status, r.stderr).toBe(0);
+    // 0.3 -> 0 (no --parked at all), 1.2 -> 1.
+    expect(parkedArgs().map((a) => a?.[0] ?? null)).toEqual([null, '1']);
+    expect(r.stdout).not.toMatch(/RAMP_STEP_PARKED p005-p016-low-n1 /);
+  });
+
+  it('a non-numeric PARKED_PER_ACTIVE is refused before the preflight or any step', () => {
+    const r = run({ PARKED_PER_ACTIVE: 'two' }, 'p016-bad', 'all', '4');
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain("RAMP_ERROR PARKED_PER_ACTIVE must be a non-negative number, got 'two'");
+    expect(() => readFileSync(path.join(home, 'check.log'), 'utf8')).toThrow();
+    expect(() => readFileSync(path.join(home, 'npx.log'), 'utf8')).toThrow();
+  });
 });
