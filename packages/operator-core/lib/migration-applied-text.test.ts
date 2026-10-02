@@ -47,28 +47,28 @@ describe('recoverAppliedMigrationText', () => {
     return sqlDir;
   }
 
-  it('recovers the exact bytes that ran, from a historical commit', () => {
+  it('recovers the exact bytes that ran, from a historical commit', async () => {
     const applied = 'ALTER TABLE t ADD COLUMN c int;\n';
     const edited = `-- FORWARD-COMPAT: benign.\n${applied}`;
     const sqlDir = makeRepo('727-widen.sql', [applied, edited]);
 
-    const got = recoverAppliedMigrationText(sqlDir, '727-widen.sql', sha256(applied));
+    const got = await recoverAppliedMigrationText(sqlDir, '727-widen.sql', sha256(applied));
     expect(got.ok).toBe(true);
     expect(got.ok === true && got.text).toBe(applied);
     expect(got.ok === true && got.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 
-  it('matches the CURRENT version when it is still the applied one (no drift)', () => {
+  it('matches the CURRENT version when it is still the applied one (no drift)', async () => {
     const applied = 'SELECT 1;\n';
     const sqlDir = makeRepo('700-a.sql', [applied]);
-    const got = recoverAppliedMigrationText(sqlDir, '700-a.sql', sha256(applied));
+    const got = await recoverAppliedMigrationText(sqlDir, '700-a.sql', sha256(applied));
     expect(got.ok === true && got.text).toBe(applied);
   });
 
-  it('walks past several intervening commits to find the match', () => {
+  it('walks past several intervening commits to find the match', async () => {
     const v = ['a;\n', 'b;\n', 'c;\n', 'd;\n'];
     const sqlDir = makeRepo('701-b.sql', v);
-    const got = recoverAppliedMigrationText(sqlDir, '701-b.sql', sha256(v[0]));
+    const got = await recoverAppliedMigrationText(sqlDir, '701-b.sql', sha256(v[0]));
     expect(got.ok === true && got.text).toBe(v[0]);
   });
 
@@ -93,66 +93,66 @@ describe('recoverAppliedMigrationText', () => {
     expect(timerRanDuringRecovery).toBe(true);
   });
 
-  it('fails (never guesses) when no version matches the recorded hash', () => {
+  it('fails (never guesses) when no version matches the recorded hash', async () => {
     // The real "edited inside the git-sync window" case: the applied bytes were
     // never committed, so they are simply not recoverable.
     const sqlDir = makeRepo('702-c.sql', ['a;\n', 'b;\n']);
-    const got = recoverAppliedMigrationText(sqlDir, '702-c.sql', sha256('never-committed;\n'));
+    const got = await recoverAppliedMigrationText(sqlDir, '702-c.sql', sha256('never-committed;\n'));
     expect(got.ok).toBe(false);
     expect(got.ok === false && got.reason).toMatch(/no blob in the last/);
   });
 
-  it('fails cleanly when the directory is not a git repo at all (packaged install)', () => {
+  it('fails cleanly when the directory is not a git repo at all (packaged install)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'applied-text-nogit-'));
     tmpRoots.push(dir);
     fs.writeFileSync(path.join(dir, '703-d.sql'), 'SELECT 1;\n');
-    const got = recoverAppliedMigrationText(dir, '703-d.sql', sha256('SELECT 1;\n'));
+    const got = await recoverAppliedMigrationText(dir, '703-d.sql', sha256('SELECT 1;\n'));
     expect(got.ok).toBe(false);
     expect(got.ok === false && got.reason).toMatch(/git log failed|no git history/);
   });
 
-  it('fails when the file has no history in the tree', () => {
+  it('fails when the file has no history in the tree', async () => {
     const sqlDir = makeRepo('704-e.sql', ['SELECT 1;\n']);
-    const got = recoverAppliedMigrationText(sqlDir, '999-absent.sql', sha256('x'));
+    const got = await recoverAppliedMigrationText(sqlDir, '999-absent.sql', sha256('x'));
     expect(got.ok).toBe(false);
     expect(got.ok === false && got.reason).toMatch(/no git history/);
   });
 
-  it('respects maxCommits, so the walk is bounded', () => {
+  it('respects maxCommits, so the walk is bounded', async () => {
     const versions = Array.from({ length: 6 }, (_, i) => `v${i};\n`);
     const sqlDir = makeRepo('705-f.sql', versions);
     // The oldest version is 6 commits back; a 2-commit budget must not find it.
-    const bounded = recoverAppliedMigrationText(sqlDir, '705-f.sql', sha256(versions[0]), {
+    const bounded = await recoverAppliedMigrationText(sqlDir, '705-f.sql', sha256(versions[0]), {
       maxCommits: 2,
     });
     expect(bounded.ok).toBe(false);
     // ...and with the full budget it does.
-    const full = recoverAppliedMigrationText(sqlDir, '705-f.sql', sha256(versions[0]));
+    const full = await recoverAppliedMigrationText(sqlDir, '705-f.sql', sha256(versions[0]));
     expect(full.ok).toBe(true);
   });
 
-  it('rejects an unsafe filename before it can reach git argv', () => {
+  it('rejects an unsafe filename before it can reach git argv', async () => {
     const sqlDir = makeRepo('706-g.sql', ['SELECT 1;\n']);
     for (const bad of ['../escape.sql', 'sub/dir.sql', '--upload-pack=evil.sql', 'notsql.txt']) {
-      const got = recoverAppliedMigrationText(sqlDir, bad, sha256('x'));
+      const got = await recoverAppliedMigrationText(sqlDir, bad, sha256('x'));
       expect(got.ok).toBe(false);
       expect(got.ok === false && got.reason).toMatch(/unsafe migration filename|64-hex/);
     }
   });
 
-  it('rejects a malformed recorded sha256 rather than walking history for it', () => {
+  it('rejects a malformed recorded sha256 rather than walking history for it', async () => {
     const sqlDir = makeRepo('707-h.sql', ['SELECT 1;\n']);
     for (const bad of ['', 'not-a-hash', 'ABCDEF']) {
-      const got = recoverAppliedMigrationText(sqlDir, '707-h.sql', bad);
+      const got = await recoverAppliedMigrationText(sqlDir, '707-h.sql', bad);
       expect(got.ok).toBe(false);
       expect(got.ok === false && got.reason).toMatch(/64-hex digest/);
     }
   });
 
-  it('accepts an upper-case recorded digest (normalized before comparison)', () => {
+  it('accepts an upper-case recorded digest (normalized before comparison)', async () => {
     const applied = 'SELECT 42;\n';
     const sqlDir = makeRepo('708-i.sql', [applied]);
-    const got = recoverAppliedMigrationText(sqlDir, '708-i.sql', sha256(applied).toUpperCase());
+    const got = await recoverAppliedMigrationText(sqlDir, '708-i.sql', sha256(applied).toUpperCase());
     expect(got.ok).toBe(true);
   });
 });
