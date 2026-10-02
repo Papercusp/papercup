@@ -473,7 +473,14 @@ export const CompletionSettlementManifestSchema = z.object({
      * it, so no sweep can land it. Settles only on a re-sent close. A reason missing
      * here would fail `safeParse` and turn every such row into an unreadable one.
      */
-    reason: z.enum(['identity-unavailable', 'missing-from-commit', 'content-mismatch', 'superseded-before-commit']),
+    reason: z.enum([
+      'identity-unavailable',
+      'missing-from-commit',
+      'content-mismatch',
+      'superseded-before-commit',
+      /** WI-10005343: absolute / `..`-escaping / pathspec-magic path; no commit can hold it. */
+      'not-a-repository-path',
+    ]),
   })).max(60).optional(),
 });
 export type CompletionSettlementManifest = z.infer<typeof CompletionSettlementManifestSchema>;
