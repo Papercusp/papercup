@@ -65,7 +65,7 @@ async function target(config) {
     });
     await initial.release();
   }
-  if (config.terminal !== undefined && !['settled', 'uncaught', 'exit-code'].includes(config.terminal)) {
+  if (config.terminal !== undefined && !['settled', 'uncaught', 'exit-code', 'abort-control'].includes(config.terminal)) {
     throw new Error('invalid native teardown terminal mode');
   }
   const worker = new Worker(new URL(import.meta.url), { workerData: config, execArgv: [] });
@@ -81,6 +81,8 @@ async function target(config) {
     if (!result) await worker.terminate();
   }
   process.stdout.write(JSON.stringify(result) + '\n');
+  // Positive debugger-protocol control, confined to this 130-byte fixture.
+  if (config.terminal === 'abort-control') process.abort();
   if (['uncaught', 'exit-code'].includes(config.terminal)) {
     if (!result.expectedError) throw new Error('uncaught control requires the retained shape error');
     if (config.terminal === 'uncaught') throw new Error(result.expectedError);
@@ -112,11 +114,70 @@ async function capture(root, config) {
   process.exitCode = terminal.exitCode ?? 1;
 }
 
+export function inspectHostDebuggerCapture(stdout, debuggerTerminal) {
+  const records = stdout.split('\n').filter(line => line.startsWith('PC_NATIVE_DEBUGGER\t'))
+    .map(line => JSON.parse(line.slice('PC_NATIVE_DEBUGGER\t'.length)));
+  const starts = records.filter(row => row.event === 'start');
+  const exits = records.filter(row => row.event === 'exit');
+  const stops = records.filter(row => row.event === 'signal');
+  if (debuggerTerminal.eof !== true || debuggerTerminal.exitCode !== 0 || debuggerTerminal.signal !== null
+    || starts.length !== 1 || exits.length !== 1 || records.some(row => row.event === 'error')
+    || !Number.isSafeInteger(starts[0].processId) || starts[0].processId <= 0
+    || exits[0].processId !== starts[0].processId || exits[0].signalDelivered !== true) {
+    throw new Error('incomplete native debugger process evidence');
+  }
+  const exit = exits[0];
+  if (exit.exitCode === null) {
+    const fatal = stops.at(-1);
+    if (!fatal || fatal.processId !== starts[0].processId || fatal.signal !== 'SIGABRT'
+      || exit.signal !== fatal.signal || !stdout.includes('PC_NATIVE_BACKTRACE_BEGIN\n')
+      || !stdout.includes('PC_NATIVE_BACKTRACE_END\n')) throw new Error('unbound native debugger abort evidence');
+  } else if (!Number.isInteger(exit.exitCode) || exit.signal !== null) {
+    throw new Error('invalid native debugger exit evidence');
+  }
+  return { processId: starts[0].processId, source: 'gdb-events', exitCode: exit.exitCode,
+    signal: exit.signal, signalDelivered: true, debuggerPipeEof: true,
+    hostBacktraceCaptured: exit.signal === 'SIGABRT', embeddingModelInferencePerformed: false };
+}
+
+async function debugCapture(root, config, debuggerConfig) {
+  if (!isAbsolute(debuggerConfig.binary) || !isAbsolute(debuggerConfig.commands)) {
+    throw new Error('native debugger requires absolute binary and command paths');
+  }
+  const invocation = { binary: fingerprint(debuggerConfig.binary), commands: fingerprint(debuggerConfig.commands),
+    source: fingerprint(file), node: fingerprint(process.execPath), configuration: config,
+    scope: 'small native teardown control only; debugger changes observation', embeddingModelInferencePerformed: false };
+  writeFileSync(join(root, 'debugger-invocation.json'), JSON.stringify(invocation, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  const stdoutFd = openSync(join(root, 'debugger.stdout.log'), 'wx', 0o600);
+  const stderrFd = openSync(join(root, 'debugger.stderr.log'), 'wx', 0o600);
+  const child = spawn(debuggerConfig.binary, ['-q', '-nx', '-batch', '-x', debuggerConfig.commands,
+    '--args', process.execPath, file, 'target', JSON.stringify(config)], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', data => {
+    if (writeSync(stdoutFd, data) !== data.length) throw new Error('short debugger stdout write');
+  });
+  child.stderr.on('data', data => {
+    if (writeSync(stderrFd, data) !== data.length) throw new Error('short debugger stderr write');
+  });
+  child.once('error', error => { throw error; });
+  const terminal = await new Promise(resolve => child.once('close', (exitCode, signal) => resolve({
+    processId: child.pid, source: 'spawn-pipe-debugger', eof: true, exitCode, signal,
+  })));
+  closeSync(stdoutFd); closeSync(stderrFd);
+  terminal.stdout = fingerprint(join(root, 'debugger.stdout.log'));
+  terminal.stderr = fingerprint(join(root, 'debugger.stderr.log'));
+  writeFileSync(join(root, 'debugger-terminal.json'), JSON.stringify(terminal, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  const receipt = inspectHostDebuggerCapture(readFileSync(join(root, 'debugger.stdout.log'), 'utf8'), terminal);
+  writeFileSync(join(root, 'native-debugger-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  process.stdout.write(JSON.stringify(receipt) + '\n');
+  process.exitCode = receipt.exitCode ?? 1;
+}
+
 if (!isMainThread) {
   try { parentPort.postMessage(await run(workerData)); }
   catch (error) { parentPort.postMessage({ error: String(error) }); }
 } else if (process.argv[1] === file) {
   if (process.argv[2] === 'target') await target(JSON.parse(process.argv[3]));
   else if (process.argv[2] === 'capture') await capture(process.argv[3], JSON.parse(process.argv[4]));
+  else if (process.argv[2] === 'debug-capture') await debugCapture(process.argv[3], JSON.parse(process.argv[4]), JSON.parse(process.argv[5]));
   else throw new Error('expected native teardown control target or capture mode');
 }

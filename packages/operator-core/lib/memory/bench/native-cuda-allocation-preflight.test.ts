@@ -150,6 +150,32 @@ describe('small native ORT teardown control', () => {
   const fromTransformers = createRequire(createRequire(import.meta.url).resolve('@huggingface/transformers'));
   const ortEntry = fromTransformers.resolve('onnxruntime-node');
 
+  it('binds native abort evidence to the inferior process rather than the debugger exit', async () => {
+    // GDB is an opt-in diagnostic dependency. Exercise the actual evidence
+    // reader without making ordinary CI depend on a system debugger or CUDA.
+    const { inspectHostDebuggerCapture } = await import('./fixtures/native-ort-teardown-control.mjs');
+    const record = (row: object) => 'PC_NATIVE_DEBUGGER\t' + JSON.stringify(row) + '\n';
+    const start = record({ event: 'start', processId: 123 });
+    const signal = record({ event: 'signal', processId: 123, signal: 'SIGABRT' });
+    const backtrace = 'PC_NATIVE_BACKTRACE_BEGIN\n#0 abort\nPC_NATIVE_BACKTRACE_END\n';
+    const exit = record({ event: 'exit', processId: 123, exitCode: null, signal: 'SIGABRT', signalDelivered: true });
+    const terminal = { eof: true, exitCode: 0, signal: null };
+    expect(inspectHostDebuggerCapture(start + signal + backtrace + exit, terminal)).toMatchObject({
+      processId: 123, source: 'gdb-events', exitCode: null, signal: 'SIGABRT', hostBacktraceCaptured: true,
+    });
+    for (const stdout of [start, start + exit, start + signal + exit,
+      start + signal + backtrace + exit.replace('123', '124'),
+      start + signal + backtrace + exit.replace('true', 'false'),
+      start + signal + backtrace + exit + exit,
+      start + signal + backtrace + exit + record({ event: 'error', message: 'lost inferior' })]) {
+      expect(() => inspectHostDebuggerCapture(stdout, terminal)).toThrow(/native debugger/);
+    }
+    expect(() => inspectHostDebuggerCapture(start + signal + backtrace + exit, { ...terminal, eof: false })).toThrow();
+    expect(() => inspectHostDebuggerCapture(start + signal + backtrace + exit, { ...terminal, exitCode: 1 })).toThrow();
+    expect(inspectHostDebuggerCapture(start + record({ event: 'exit', processId: 123, exitCode: 1,
+      signal: null, signalDelivered: true }), terminal)).toMatchObject({ exitCode: 1, signal: null, hostBacktraceCaptured: false });
+  });
+
   it.each(['success', 'shape-error'] as const)('captures exact FILE-worker %s and process EOF after explicit release', outcome => {
     const root = mkdtempSync(join(tmpdir(), 'native-ort-teardown-')); roots.push(root);
     const child = spawnSync(process.execPath, [controlFixture, 'capture', root,
