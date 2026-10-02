@@ -12,6 +12,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/improvements/learning-loops.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const h = vi.hoisted(() => ({ rows: [] as unknown[] }));
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -51,6 +52,10 @@ const tool = (await import('./learning-loops')).default;
 
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const context = (workspaceId?: string): UnifiedToolContext => ({
+  log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
+  workspaceId, harnessSlug: 'acme-home', role: 'operator', runId: 'test-run', spawnId: 'test-spawn',
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -61,7 +66,7 @@ beforeEach(() => {
 
 describe('improvements:learning_loops handler', () => {
   it('maps routine rows (snake→camel, Date→ISO|null) and projects the health', async () => {
-    const b = body(await tool.handler({} as never, { workspaceId: 'ws-1' } as never) as Out);
+    const b = body(await tool.handler({}, context('ws-1')) as Out);
     expect(b).toMatchObject({
       ok: true,
       workspaceId: 'ws-1',
@@ -88,7 +93,7 @@ describe('improvements:learning_loops handler', () => {
 
   it('coerces a null/absent active and falls back to the active workspace', async () => {
     h.rows = [{ install_slug: 'acme-home', name: 'calib-legacy', active: null, last_fired_at: null, next_fire_at: new Date('2026-02-01T00:00:00Z') }];
-    const b = body(await tool.handler({} as never, {} as never) as Out);
+    const b = body(await tool.handler({}, context()) as Out);
     expect(b.workspaceId).toBe('default'); // no ctx workspace → activeWorkspaceId()
     const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
     expect(routines[0]).toMatchObject({ active: false, lastFiredAt: null, nextFireAt: '2026-02-01T00:00:00.000Z' });
@@ -99,7 +104,7 @@ describe('improvements:learning_loops handler', () => {
       install_slug: '@singleton', name: 'sg:calibration', active: true,
       last_fired_at: null, next_fire_at: null, last_pause_resumed_at_ms: '1767225600000',
     }];
-    await tool.handler({} as never, { workspaceId: 'ws-1' } as never);
+    await tool.handler({}, context('ws-1'));
     expect(computeM.mock.calls[0]![1][0]).toMatchObject({ lastPauseResumedAtMs: 1767225600000 });
   });
 
@@ -113,14 +118,14 @@ describe('improvements:learning_loops handler', () => {
       last_fired_at: new Date('2026-01-01T00:00:00Z'), next_fire_at: null,
       last_routed_at: new Date().toISOString(),
     }];
-    const b = body(await tool.handler({} as never, { workspaceId: 'ws-1' } as never) as Out);
+    const b = body(await tool.handler({}, context('ws-1')) as Out);
     const su = (b.loops as Array<Record<string, unknown>>).find((l) => l.blueprintId === 'su-ideation');
     expect(su).toMatchObject({ status: 'firing', source: 'su-ideate-routing+ticks+ungraded-watchdog' });
   });
 
   it('WI-5322: su-ideation stays dark-by-design when no source (routing/ticks/watchdog) has activity', async () => {
     // Default h.rows carries none of last_routed_at / last_tick_at / last_fire_at → all null.
-    const b = body(await tool.handler({} as never, { workspaceId: 'ws-1' } as never) as Out);
+    const b = body(await tool.handler({}, context('ws-1')) as Out);
     const su = (b.loops as Array<Record<string, unknown>>).find((l) => l.blueprintId === 'su-ideation');
     expect(su).toMatchObject({ status: 'dark-by-design' });
   });
