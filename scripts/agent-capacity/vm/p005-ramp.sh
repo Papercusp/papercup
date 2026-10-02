@@ -146,9 +146,14 @@ if s.get("failed"):
     why.append(f"failed={s['failed']}")
 if oom > 0:
     why.append(f"oom_kill={oom}")
-slow = s.get("wallSlowdown") or 0
-if slow > limit:
-    why.append(f"wallSlowdown={slow:.2f}")
+# load-driver computes wallSlowdown over CLEAN, non-diverged runs only, and emits null when there
+# are none (routine in shared-tree mode, where nearly every run diverges). null is "not measured",
+# never 0: print it as `na` so it cannot read as "no slowdown", and always print clean=<n> so a
+# slowdown resting on a handful of runs is visibly thin (WI-10005448).
+slow = s.get("wallSlowdown")
+slow_txt = "na" if slow is None else f"{slow:.2f}"
+if slow is not None and slow > limit:
+    why.append(f"wallSlowdown={slow_txt}")
 ac = s.get("achievedConcurrency") or {}
 achieved = f"{ac.get('mean')}/{ac.get('target')}" if ac else "unknown"
 # A saturation is a real signal even if fewer than N ran; otherwise a step that never held N is no verdict.
@@ -158,7 +163,7 @@ elif not ac or ac.get("fraction", 0) < min_driven:
     head = f"UNDERDRIVEN achieved={achieved}"
 else:
     head = "OK"
-print(f"{head} runs={s.get('runs')} wallSlowdown={slow:.2f} diverged={s.get('diverged')} toolDiverged={s.get('toolDiverged')} achieved={achieved} setupMsP50={(s.get('setupMs') or {}).get('p50')}")
+print(f"{head} runs={s.get('runs')} clean={s.get('clean', 'na')} wallSlowdown={slow_txt} diverged={s.get('diverged')} toolDiverged={s.get('toolDiverged')} achieved={achieved} setupMsP50={(s.get('setupMs') or {}).get('p50')}")
 PY
 )
   echo "RAMP_STEP_END $run n=$n rc=$rc $verdict $(ts)"

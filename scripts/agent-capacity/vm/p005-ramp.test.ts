@@ -41,11 +41,13 @@ echo "$@" >> "${home}/npx.log"
 [ -n "\${FAKE_DRIVER_SLEEP:-}" ] && sleep "\${FAKE_DRIVER_SLEEP}"
 n=""; run=""
 while [ $# -gt 0 ]; do case "$1" in --agents) n=$2; shift;; --run-id) run=$2; shift;; esac; shift; done
-slow=1.05
+slow=1.05; clean=$n
 [ -n "\${FAKE_SLOW_AT:-}" ] && [ "$n" -ge "$FAKE_SLOW_AT" ] && slow=2.4
+# load-driver's real shape when every run diverged (shared tree): no clean run, wallSlowdown null.
+[ -n "\${FAKE_UNMEASURED_AT:-}" ] && [ "$n" -ge "$FAKE_UNMEASURED_AT" ] && { slow=null; clean=0; }
 [ -n "\${FAKE_OOM_AT:-}" ] && [ "$n" -ge "$FAKE_OOM_AT" ] && printf 'oom 1\\noom_kill 1\\n' > "${slice()}/memory.events"
 d="$HOME/.cache/agent-capacity/runs/$run"; mkdir -p "$d"
-printf '{"runs":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"achievedConcurrency":{"mean":%s,"target":%s,"fraction":1}}' "$n" "$slow" "$n" "$n" > "$d/summary.json"`,
+printf '{"runs":%s,"clean":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"achievedConcurrency":{"mean":%s,"target":%s,"fraction":1}}' "$n" "$clean" "$slow" "$n" "$n" > "$d/summary.json"`,
     );
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
@@ -72,7 +74,7 @@ printf '{"runs":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"a
       'tsx scripts/agent-capacity/load-driver.ts --check --select cli=claude,profile=light --workdir overlay',
     ]);
     expect(r.stdout).toMatch(/RAMP_PREFLIGHT_OK claude-normal DRIVER_CHECK_OK sessions=6/);
-    expect(r.stdout).toMatch(/RAMP_STEP_END p005-claude-normal-n4 n=4 rc=0 OK runs=4 wallSlowdown=1.05/);
+    expect(r.stdout).toMatch(/RAMP_STEP_END p005-claude-normal-n4 n=4 rc=0 OK runs=4 clean=4 wallSlowdown=1.05/);
     expect(r.stdout).not.toMatch(/RAMP_SATURATED/);
     expect(r.stdout).toMatch(/RAMP_DONE claude-normal/);
   });
@@ -86,6 +88,25 @@ printf '{"runs":%s,"failed":0,"diverged":0,"toolDiverged":0,"wallSlowdown":%s,"a
     expect(calls[0]).toMatch(/--duration-sec 600 /);
     expect(r.stdout).toMatch(/RAMP_STEP_END p005-mixed-n4 n=4 rc=0 SATURATED reason=wallSlowdown=2.40/);
     expect(r.stdout).toMatch(/RAMP_SATURATED mixed n=4/);
+  });
+
+  it('an unmeasured wallSlowdown (null: no clean, non-diverged run) prints as na with clean=0, never as 0.00', () => {
+    // WI-10005448: `or 0` used to print null as wallSlowdown=0.00, which reads as "no slowdown".
+    const r = run({ FAKE_UNMEASURED_AT: '2' }, 'shared', 'all', '1 2 4');
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/RAMP_STEP_END p005-shared-n1 n=1 rc=0 OK runs=1 clean=1 wallSlowdown=1.05 /);
+    expect(r.stdout).toMatch(/RAMP_STEP_END p005-shared-n2 n=2 rc=0 OK runs=2 clean=0 wallSlowdown=na /);
+    expect(r.stdout).toMatch(/RAMP_STEP_END p005-shared-n4 n=4 rc=0 OK runs=4 clean=0 wallSlowdown=na /);
+    expect(r.stdout).not.toMatch(/wallSlowdown=0\.00/);
+    // The other saturation criteria still decide; an unmeasured slowdown alone neither saturates nor stops the ramp.
+    expect(r.stdout).toMatch(/RAMP_DONE shared/);
+  });
+
+  it('an unmeasured wallSlowdown does not mask another saturation criterion', () => {
+    const r = run({ FAKE_UNMEASURED_AT: '2', FAKE_OOM_AT: '2' }, 'shared', 'all', '1 2 4');
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/RAMP_STEP_END p005-shared-n2 n=2 rc=0 SATURATED reason=oom_kill=1 runs=2 clean=0 wallSlowdown=na /);
+    expect(r.stdout).toMatch(/RAMP_SATURATED shared n=2/);
   });
 
   it('an OOM kill in the slice during a step saturates it', () => {
