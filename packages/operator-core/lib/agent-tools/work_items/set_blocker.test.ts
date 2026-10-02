@@ -1314,15 +1314,23 @@ describe('work_items:set_blocker', () => {
 
     it('refuses without writing a row when the dependency cannot be recorded', async () => {
       getWorkItem.mockResolvedValue(openItem);
+      const refusal = {
+        observed: { dependent: 'WI-1', blockers: 'WI-404' },
+        liftsWhen: 'the blocker resolves to an existing work-item',
+        whoCanMakeItTrue: ['self'],
+      };
       linkWorkItemRefDependencies.mockResolvedValue({
         ok: false,
         code: 'work_item_ref_dependency_refused',
         error: "blocker work_item 'WI-404' was not found",
+        refusal,
       });
 
       const out = await one({ id: 'WI-1', kind: 'event', ref: 'work-item:done:WI-404' });
 
       expect(out).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
+      // WI-10005197: the single-ref path forwards the edge writer's RefusalContract untouched.
+      expect(out.refusal).toEqual(refusal);
       expect(mergeWorkItemPayload).not.toHaveBeenCalled();
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
@@ -1563,6 +1571,10 @@ describe('work_items:set_blocker', () => {
       const out = await one({ id: 'WI-10002828', migrateWorkItemRefs: true });
 
       expect(out).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused', changed: false });
+      // WI-10005197: the migration summary states the same contract, built from the dependent and
+      // the refused refs (this module does not mock the pure builder, so it is the real one).
+      expect(out.refusal).toMatchObject({ observed: { dependent: 'WI-10002828', blockers: 'work-item:done:WI-404' } });
+      expect(typeof out.refusal.liftsWhen).toBe('string');
       expect(out.migration.refused).toEqual([
         { kind: 'event', ref: 'work-item:done:WI-404', error: "blocker work_item 'WI-404' was not found" },
       ]);
