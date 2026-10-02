@@ -1438,6 +1438,9 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           const started = Date.now();
           report.profilerOperations.push('v8.writeHeapSnapshot (forced GC/synchronous pause)');
           try {
+            if (report.mode === 'retainers' && e.TEST_NATIVE_HEAP_ADAPTER) {
+              await cdp.send('HeapProfiler.enable'); report.profilerOperations.push('HeapProfiler.enable (object IDs)');
+            }
             const captured = (await cdp.evaluate('process.getBuiltinModule("v8").writeHeapSnapshot(' +
               JSON.stringify(snapshotPath) + ')', { returnByValue: true }, 120000)).result.value;
             if (captured !== snapshotPath) throw Error('Private snapshot destination mismatch');
@@ -1446,12 +1449,33 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             report.heapSnapshot = { ...summary, durationMs: Date.now() - started, pid: host.pid };
             if (report.mode === 'retainers') {
               phase('private-heap-retainer-analysis');
+              let objectIds;
+              if (e.TEST_NATIVE_HEAP_ADAPTER) {
+                const { readPinnedHeapObjectIds } = await import(pathToFileURL(path.join(process.cwd(), 'scripts/cdp-inspector.mjs')));
+                report.heapOwnerBinding = await readPinnedHeapObjectIds(cdp, { expectedPid: host.pid, owners: [
+                  '@papercusp/memory:host', '@papercusp/memory.local-embedder-worker',
+                  '@papercusp/operator-core.harnessCoreCaches', '@papercusp/operator-core.operatorCache',
+                  '@papercusp/operator-core.snapshot-fold-slots', '@papercusp/lexicon:host',
+                  '@papercusp/operator-core.repoCitationTrackingCache', '@papercusp/operator-core.agentsAcrossWorkspaceCache',
+                  '@papercusp/operator-core.midTurnMemoryAdmission',
+                ] });
+                objectIds = [...new Set(report.heapOwnerBinding.roots.filter(root => root.status === 'found').map(root => root.id))];
+                if (!objectIds.length) throw Error('No singleton snapshot object IDs observed');
+                if (!report.heapOwnerBinding.roots.some(root => root.owner === '@papercusp/operator-core.operatorCache' && root.status === 'found'))
+                  throw Error('Operator cache snapshot binding unobserved');
+                await cdp.send('HeapProfiler.disable'); report.profilerOperations.push('HeapProfiler.disable (object IDs)');
+                publish();
+              }
               const analysisStarted = Date.now();
               report.heapRetainers = { ...(await summarizeHeapRetainers(readFileSync(snapshotPath),
                 { top: 20, perClass: 3, retainerDepth: 1, maxRetainers: 32,
                   decoderControl: e.TEST_NATIVE_HEAP_DECODER || undefined,
-                  nativeExecutable: e.TEST_NATIVE_HEAP_ADAPTER || undefined })),
+                  nativeExecutable: e.TEST_NATIVE_HEAP_ADAPTER || undefined, objectIds })),
                 durationMs: Date.now() - analysisStarted, pid: host.pid };
+              if (objectIds && (report.heapRetainers.requestedNodes.length !== objectIds.length ||
+                  report.heapRetainers.requestedNodes.some(row => row.status !== 'found') ||
+                  report.heapRetainers.requestedNodes.some((row, index) => row.id !== objectIds[index])))
+                throw Error('Exact singleton IDs missing from captured graph');
               publish();
             }
           } finally {
@@ -1469,6 +1493,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         report.startupTail = startup.slice(-3000); process.exitCode = 1; publish(); })
       .finally(async () => {
         if (sampling && cdp) { try { await cdp.send('HeapProfiler.stopSampling'); } catch {} }
+        if (cdp && report.profilerOperations.includes('HeapProfiler.enable (object IDs)') &&
+            !report.profilerOperations.includes('HeapProfiler.disable (object IDs)')) {
+          try { await cdp.send('HeapProfiler.disable'); report.profilerOperations.push('HeapProfiler.disable (object IDs)'); } catch {}
+        }
         cdp?.close();
         if (host && host.exitCode === null && host.signalCode === null) {
           const exited = new Promise(resolve => host.once('exit', resolve));
