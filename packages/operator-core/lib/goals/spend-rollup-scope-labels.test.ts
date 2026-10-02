@@ -52,11 +52,19 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
   // These are query results, not a substitute SQL implementation. The real-PG
   // companion suite verifies which samples each query selects; these cases
   // isolate the arithmetic and authority decision with distinct populations.
-  function ledgerSql(potUsd: string | null, sessionUsd: string, lineageUsd: string, lineageSamples: number): Sql {
-    const query = async (strings: TemplateStringsArray) => {
+  function ledgerSql(
+    potUsd: string | null, sessionUsd: string, lineageUsd: string, lineageSamples: number,
+    observed?: Array<{ leg: string; numericParameters: unknown[] }>,
+  ): Sql {
+    const query = async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join('?');
-      if (statement.includes('AS inside_pot_cost')) return [aggregate(lineageUsd, lineageSamples)];
-      if (statement.includes('WITH goal_owners AS')) return [aggregate(sessionUsd, Number(sessionUsd) === 0 ? 0 : 1)];
+      const leg = statement.includes('AS inside_pot_cost') ? 'lineage'
+        : statement.includes('WITH goal_owners AS') ? 'session'
+          : statement.includes('GROUP BY s.harness_slug') ? 'pot' : null;
+      if (leg === null) throw new Error('Unexpected query in numerator fixture');
+      observed?.push({ leg, numericParameters: values.filter(value => typeof value === 'number') });
+      if (leg === 'lineage') return [aggregate(lineageUsd, lineageSamples)];
+      if (leg === 'session') return [aggregate(sessionUsd, Number(sessionUsd) === 0 ? 0 : 1)];
       if (statement.includes('GROUP BY s.harness_slug')) {
         return potUsd === null ? [] : [{ harness_slug: 'diagnostic-pot', ...aggregate(potUsd, 1) }];
       }
@@ -86,6 +94,33 @@ describe('goal spend numerator — isolated ledger arithmetic', () => {
     expect(result.unmeasuredReason).toBeNull();
     expect(result.potCents).toBe(0);
     expect(result.pot.measured).toBe(false);
+  });
+
+  it('declared-window: sends the same clock-derived lower bound to all three ledger queries', async () => {
+    const observed: Array<{ leg: string; numericParameters: unknown[] }> = [];
+    const nowMs = 10_000_000;
+    const result = await computeGoalSpendRollup(ledgerSql('1.50', '0.55', '1.05', 3, observed), {
+      ...opts, windowSec: 3_600, nowMs,
+    });
+    expect(result.windowSec).toBe(3_600);
+    expect(observed.sort((a, b) => a.leg.localeCompare(b.leg))).toEqual([
+      { leg: 'lineage', numericParameters: [6_400_000] },
+      { leg: 'pot', numericParameters: [6_400_000] },
+      { leg: 'session', numericParameters: [6_400_000] },
+    ]);
+  });
+
+  it.each([undefined, null])('lifetime-fallback: no declared window (%s) sends zero to each lifetime-clamped query', async windowSec => {
+    const observed: Array<{ leg: string; numericParameters: unknown[] }> = [];
+    const result = await computeGoalSpendRollup(ledgerSql('1.50', '0.55', '1.05', 3, observed), {
+      ...opts, windowSec, nowMs: 10_000_000,
+    });
+    expect(result.windowSec).toBeNull();
+    expect(observed.sort((a, b) => a.leg.localeCompare(b.leg))).toEqual([
+      { leg: 'lineage', numericParameters: [0] },
+      { leg: 'pot', numericParameters: [0] },
+      { leg: 'session', numericParameters: [0] },
+    ]);
   });
 
   it('CALIBRATION: the fixture supplies three independently distinguishable query results', async () => {

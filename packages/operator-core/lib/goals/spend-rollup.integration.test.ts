@@ -761,6 +761,34 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     const OLD = GOAL_MS + 60_000;
     const RECENT = () => Date.now() - 60_000;
 
+    it.each([50, 200])('display-admission-breach-parity: %i cents in the window, despite 500 older cents', async cents => {
+      await seedGoal({ budgetCents: 200, budgetWindowSec: 3_600 });
+      await sample({ goalId: GOAL, usd: 5.0, ts: OLD });
+      await sample({ goalId: GOAL, usd: cents / 100, ts: RECENT() });
+
+      // No snapshot: compose the admission reader with the actual windowed SQL.
+      const launch = await resolveGoalLaunchForGoal({
+        workspaceId: WS, goalId: GOAL, sql: rootSql, launcherOwnerId: 'su-budget-test',
+      });
+      if (cents < 200) expect(launch.refusal).toBeNull();
+      else expect(launch.refusal).toMatchObject({ reason: 'goal_budget_exceeded', current: cents, limit: 200 });
+
+      const sweep = await runGoalSpendRollupOnce(rootSql);
+      expect(sweep).toMatchObject({ ok: true, written: 1, errors: [] });
+      const metadata = await goalMetadata();
+      expect(metadata).toMatchObject({ spentCents: cents, spentCentsWindowSec: 3_600 });
+      expect(await goalStatus()).toBe(cents < 200 ? 'active' : 'paused');
+      if (cents < 200) {
+        // The persisted display snapshot and the next admission use that figure.
+        const snapshotLaunch = await resolveGoalLaunchForGoal({
+          workspaceId: WS, goalId: GOAL, sql: rootSql, launcherOwnerId: 'su-budget-test',
+        });
+        expect(snapshotLaunch.refusal).toBeNull();
+      } else {
+        expect(metadata?.autoPaused).toMatchObject({ spentCents: cents, judgedWindowSec: 3_600 });
+      }
+    });
+
     it('SURVIVES: lifetime spend is over the ceiling but the trailing window is not', async () => {
       await seedGoal({ budgetCents: 200, budgetWindowSec: 3_600 });
       await sample({ goalId: GOAL, usd: 5.0, ts: OLD }); // 500c, long ago
