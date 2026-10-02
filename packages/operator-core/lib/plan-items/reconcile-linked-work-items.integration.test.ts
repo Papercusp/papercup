@@ -1558,13 +1558,19 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     });
     setWorkItemStateWithAliasInfo.mockRejectedValueOnce(new Error('concurrent lifecycle guard'));
 
-    const failed = await resyncPlanItemLaneNow('pretry', 'P-011', null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const failed = await resyncPlanItemLaneNow('pretry', 'P-011', null);
 
-    expect(failed).not.toBeNull();
-    expect(failed!.ungated).toEqual([]);
-    expect(failed!.failures).toEqual([
-      { stage: 'apply-gate', workItemId: 'WI-retry', message: 'concurrent lifecycle guard' },
-    ]);
+      expect(failed).not.toBeNull();
+      expect(failed!.ungated).toEqual([]);
+      expect(failed!.failures).toEqual([
+        { stage: 'apply-gate', workItemId: 'WI-retry', message: 'concurrent lifecycle guard' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"stage":"apply-gate"'));
+    } finally {
+      warn.mockRestore();
+    }
     expect((row.payload?.externalBlockers as Array<{ status: string }>).some((b) => b.status === 'active')).toBe(true);
     expect(h4.mergeWorkItemPayload).not.toHaveBeenCalled();
 
