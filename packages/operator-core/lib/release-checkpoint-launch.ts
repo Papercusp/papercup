@@ -32,6 +32,7 @@ import { readFile as readFileAsync, readdir as readdirAsync } from 'node:fs/prom
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
+import { CHECKPOINT_RUN_LOCK_STALE_MS } from './release-checkpoint-lock';
 import { greenCheckpointDbPoolSetenvArgs } from './release/checkpoint-db-pool';
 import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './release/checkpoint-log-tags';
 import {
@@ -976,11 +977,11 @@ function defaultReadProcessStartMs(pid: number): number | null {
   }
 }
 
-/** Keep this in sync with green-checkpoint.ts's CHECKPOINT_LOCK_STALE_MS. The writer
- * reclaims a lock at this age even when its recorded PID still appears alive; the reader
- * must not continue presenting that same over-age lock as a measured in-flight run when no
- * contender has arrived to trigger the writer-side cleanup. */
-export const CHECKPOINT_RUN_LOCK_STALE_MS = 190 * 60_000;
+/** Defined in the dependency-free leaf ./release-checkpoint-lock (WI-10005170) and
+ * re-exported here so existing importers keep working. New importers that need only
+ * this number should import the leaf: importing this module drags its whole static
+ * graph, including release-checkpoint-config.ts's module-scope database read. */
+export { CHECKPOINT_RUN_LOCK_STALE_MS };
 
 /** Procfs start times and lock timestamps use different clocks/precision on some hosts. A
  * small allowance avoids rejecting the genuine owner when it acquired the lock immediately

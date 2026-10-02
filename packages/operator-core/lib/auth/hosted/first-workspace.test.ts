@@ -6,12 +6,17 @@ import {
   type HostedProviderDelegationRecord,
 } from '../../workspace-host/hosted-provider-delegation';
 import {
+  awsFirstWorkspaceDesiredSpec,
   createHostedFirstWorkspace,
   firstWorkspaceIdentity,
   gcpFirstWorkspaceDesiredSpec,
   type HostedFirstWorkspaceDependencies,
   type HostedFirstWorkspaceRequest,
 } from './first-workspace';
+import {
+  HostedAwsHostInfrastructurePendingError,
+  type HostedAwsHostInfrastructure,
+} from '../../workspace-host/hosted-aws-host-stack';
 import { HostedGcpNotReadyError } from '../../workspace-host/hosted-gcp-hosting';
 import { HostedWorkspaceAdmissionError } from './workspace-admission';
 
@@ -44,6 +49,26 @@ const REQUEST: HostedFirstWorkspaceRequest = {
 };
 
 const PAPERCUSP_REQUEST: HostedFirstWorkspaceRequest = { ...REQUEST, hosting: 'papercusp', configuration: undefined };
+
+const AWS_ACCOUNT = '413781344298';
+/** What the customer's stack built (D-009), as the verified role reads it back. */
+const AWS_INFRA: HostedAwsHostInfrastructure = {
+  region: 'eu-west-1',
+  zone: 'eu-west-1a',
+  vpcId: 'vpc-0aaa',
+  subnetId: 'subnet-0private',
+  securityGroupId: 'sg-0noinbound',
+  instanceProfileArn: `arn:aws:iam::${AWS_ACCOUNT}:instance-profile/PapercuspWorkspaceHostInstance-${AWS_ACCOUNT}`,
+  launchTemplateId: 'lt-0abc',
+  kmsKeyArn: `arn:aws:kms:eu-west-1:${AWS_ACCOUNT}:key/1234`,
+  image: { id: 'ami-0ubuntu2404', version: 'ubuntu-noble-24.04-amd64-server-20260918' },
+};
+/** The browser names only the account and region; everything else is server-derived (D-008). */
+const AWS_REQUEST: HostedFirstWorkspaceRequest = {
+  ...REQUEST,
+  label: 'My AWS account',
+  configuration: { provider: 'aws', accountId: AWS_ACCOUNT, region: 'eu-west-1' } as never,
+};
 
 function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
   const records = new Map<string, HostedProviderDelegationRecord>();
@@ -108,6 +133,10 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
       resolveSelectable: async () => true,
     }),
     selectWorkspace: vi.fn(async () => ({ sessionId: 'session-rotated', expiresAt: new Date('2030-01-01T00:00:00Z') })),
+    discoverAwsHostInfrastructure: vi.fn(async (record: HostedProviderDelegationRecord) => ({
+      ...AWS_INFRA,
+      region: record.configuration.provider === 'aws' ? record.configuration.region ?? 'us-east-1' : 'none',
+    })),
     ...overrides,
   };
   return { deps, records, ensureProvisioned, resolvedSpecs, admissionOptions, reserved };
@@ -281,13 +310,17 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     logged.mockRestore();
   });
 
-  it('rejects a malformed attempt key and non-GCP providers', async () => {
+  it('rejects a malformed attempt key, an unsupported provider, and an AWS request without a real account', async () => {
     const { deps } = harness();
     const bootstrap = createHostedFirstWorkspace(deps);
     expect(await bootstrap.run({ ...REQUEST, attemptKey: 'short' })).toMatchObject({ code: 'invalid_request' });
     expect(
-      await bootstrap.run({ ...REQUEST, configuration: { provider: 'aws' } as never }),
+      await bootstrap.run({ ...REQUEST, configuration: { provider: 'azure' } as never }),
     ).toMatchObject({ code: 'provider_not_supported' });
+    expect(
+      await bootstrap.run({ ...REQUEST, configuration: { provider: 'aws' } as never }),
+    ).toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
   });
 
   it('builds a GCP spec only from a GCP delegation', () => {
@@ -309,6 +342,186 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     expect(await bootstrap.run({ ...REQUEST, hosting: 'someone-else' as never })).toMatchObject({ code: 'invalid_request' });
     expect(await bootstrap.run({ ...REQUEST, configuration: undefined })).toMatchObject({ code: 'invalid_request' });
     expect(deps.onboardDelegation).not.toHaveBeenCalled();
+  });
+});
+
+describe('hosted first-workspace in the customer\'s own AWS account (aws-byoc-gcp-parity D-008/D-009)', () => {
+  it('builds the delegation from the account and region alone, discarding any role, principal or ExternalId the browser sent', async () => {
+    const { deps, ensureProvisioned, resolvedSpecs } = harness();
+    const result = await createHostedFirstWorkspace(deps).run({
+      ...AWS_REQUEST,
+      configuration: {
+        provider: 'aws',
+        accountId: AWS_ACCOUNT,
+        region: 'eu-west-1',
+        source: {
+          environment: 'hosted',
+          method: 'customer-role',
+          roleArn: 'arn:aws:iam::111111111111:role/attacker',
+          trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-b',
+          externalIdRef: 'resolver://aws-external-id/org-b',
+        },
+      } as never,
+    });
+    expect(result).toMatchObject({ ok: true, sessionId: 'session-rotated' });
+    const onboarded = vi.mocked(deps.onboardDelegation).mock.calls[0]![0];
+    expect(onboarded.configuration).toEqual({
+      provider: 'aws',
+      accountId: AWS_ACCOUNT,
+      region: 'eu-west-1',
+      source: {
+        environment: 'hosted',
+        method: 'customer-role',
+        roleArn: `arn:aws:iam::${AWS_ACCOUNT}:role/PapercuspWorkspaceHost-${AWS_ACCOUNT}`,
+        trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-a',
+        externalIdRef: 'resolver://aws-external-id/org-a',
+      },
+    });
+    // The stack is read back only through the VERIFIED delegation.
+    expect(vi.mocked(deps.discoverAwsHostInfrastructure).mock.calls[0]![0]).toMatchObject({ status: 'verified' });
+    expect(ensureProvisioned).toHaveBeenCalledWith(expect.objectContaining({ provider: 'aws' }));
+    const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
+    expect(resolvedSpecs[0]).toEqual({
+      hostId: identity.hostId,
+      target: 'aws',
+      scope: { kind: 'account', id: AWS_ACCOUNT },
+      region: 'eu-west-1',
+      zone: 'eu-west-1a',
+      size: 'm6i.xlarge',
+      image: AWS_INFRA.image,
+      data: { encrypted: true, volumeGiB: 100 },
+      credentials: { cloudCredentialRef: { kind: 'cloud', ref: identity.credentialRef } },
+      provider: {
+        vpcId: 'vpc-0aaa',
+        subnetId: 'subnet-0private',
+        securityGroupIds: ['sg-0noinbound'],
+        instanceProfileArn: AWS_INFRA.instanceProfileArn,
+        launchTemplateId: 'lt-0abc',
+        kmsKeyArn: AWS_INFRA.kmsKeyArn,
+      },
+    });
+  });
+
+  it('defaults the region to us-east-1 and refuses an account or region it cannot use', async () => {
+    const { deps } = harness();
+    const bootstrap = createHostedFirstWorkspace(deps);
+    expect(
+      await bootstrap.run({ ...AWS_REQUEST, configuration: { provider: 'aws', accountId: AWS_ACCOUNT } as never }),
+    ).toMatchObject({ ok: true });
+    expect(vi.mocked(deps.onboardDelegation).mock.calls[0]![0].configuration).toMatchObject({ region: 'us-east-1' });
+    for (const configuration of [
+      { provider: 'aws', accountId: '12345', region: 'eu-west-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 'us-gov-west-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 'cn-north-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 'EU-WEST-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 7 },
+    ]) {
+      expect(await bootstrap.run({ ...AWS_REQUEST, configuration: configuration as never })).toMatchObject({
+        ok: false,
+        code: 'invalid_request',
+        status: 400,
+      });
+    }
+    expect(deps.onboardDelegation).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses OIDC, which every organization would share', async () => {
+    const { deps } = harness();
+    const result = await createHostedFirstWorkspace(deps).run({
+      ...AWS_REQUEST,
+      configuration: { provider: 'aws', accountId: AWS_ACCOUNT, source: { environment: 'hosted', method: 'oidc' } } as never,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'provider_not_supported', status: 422 });
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
+  });
+
+  it('returns the stack template, pinned to the chosen region, until the role can be verified', async () => {
+    const { deps } = harness({
+      verifyDelegation: vi.fn(async () => {
+        throw new Error('not yet');
+      }),
+    });
+    const result = await createHostedFirstWorkspace(deps).run(AWS_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_pending', status: 409, retryable: true });
+    const template = (result as { template?: { format: string; document: Record<string, any> } }).template!;
+    expect(template.format).toBe('aws-cloudformation-json');
+    expect(template.document.Rules.PapercuspRegion.Assertions[0].Assert).toEqual({
+      'Fn::Equals': [{ Ref: 'AWS::Region' }, 'eu-west-1'],
+    });
+    expect(template.document.Resources.HostLaunchTemplate.Type).toBe('AWS::EC2::LaunchTemplate');
+    expect(deps.discoverAwsHostInfrastructure).not.toHaveBeenCalled();
+  });
+
+  it('treats a replay naming another region as a different grant, never a silent move', async () => {
+    const { deps } = harness();
+    const bootstrap = createHostedFirstWorkspace(deps);
+    expect(await bootstrap.run(AWS_REQUEST)).toMatchObject({ ok: true });
+    const moved = await bootstrap.run({
+      ...AWS_REQUEST,
+      configuration: { provider: 'aws', accountId: AWS_ACCOUNT, region: 'us-west-2' } as never,
+    });
+    expect(moved).toMatchObject({ ok: false, code: 'delegation_conflict' });
+  });
+
+  it('keeps answering with the same steps while the customer\'s stack is still building, admitting nothing', async () => {
+    const { deps, ensureProvisioned } = harness({
+      discoverAwsHostInfrastructure: vi.fn(async () => {
+        throw new HostedAwsHostInfrastructurePendingError('launch-template');
+      }),
+    });
+    const result = await createHostedFirstWorkspace(deps).run(AWS_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_pending', status: 409, retryable: true });
+    expect((result as { template?: { format: string } }).template?.format).toBe('aws-cloudformation-json');
+    expect(ensureProvisioned).not.toHaveBeenCalled();
+    expect(deps.selectWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('fails retryably, admitting nothing, when the stack cannot be read', async () => {
+    const { deps, ensureProvisioned } = harness({
+      discoverAwsHostInfrastructure: vi.fn(async () => {
+        throw new Error('hosted_aws_host_infrastructure_ambiguous:private-subnet');
+      }),
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await createHostedFirstWorkspace(deps).run(AWS_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
+    expect(ensureProvisioned).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('AWS host infrastructure lookup failed'), expect.any(Error));
+    logged.mockRestore();
+  });
+
+  it('builds an AWS spec only from an AWS delegation whose stack is in the same region', () => {
+    const configuration: HostedProviderDelegationConfiguration = {
+      provider: 'aws',
+      accountId: AWS_ACCOUNT,
+      region: 'eu-west-1',
+      source: {
+        environment: 'hosted',
+        method: 'customer-role',
+        roleArn: `arn:aws:iam::${AWS_ACCOUNT}:role/PapercuspWorkspaceHost-${AWS_ACCOUNT}`,
+        trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-a',
+        externalIdRef: 'resolver://aws-external-id/org-a',
+      },
+    };
+    const base = {
+      organizationId: 'org-a',
+      workspaceId: 'ws-1',
+      connectionId: 'conn-1',
+      label: 'x',
+      credentialRef: 'delegation://ws-1/conn-1',
+    };
+    const aws = buildHostedProviderDelegationOnboarding({ ...base, configuration }).record;
+    expect(awsFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: aws, infrastructure: AWS_INFRA })).toMatchObject({
+      target: 'aws',
+      region: 'eu-west-1',
+    });
+    expect(() =>
+      awsFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: aws, infrastructure: { ...AWS_INFRA, region: 'us-east-1' } }),
+    ).toThrow(HostedWorkspaceAdmissionError);
+    const gcp = buildHostedProviderDelegationOnboarding({ ...base, configuration: GCP }).record;
+    expect(() => awsFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcp, infrastructure: AWS_INFRA })).toThrow(
+      HostedWorkspaceAdmissionError,
+    );
   });
 });
 

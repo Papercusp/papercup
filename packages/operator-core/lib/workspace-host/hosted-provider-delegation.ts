@@ -18,6 +18,12 @@ import {
   externalIdRefOrganization,
   organizationExternalId,
 } from './hosted-aws-identity';
+import {
+  HOSTED_AWS_DEFAULT_REGION,
+  HOSTED_AWS_REGION,
+  HOSTED_AWS_WORKSPACE_HOST_ROLE_LOGICAL_ID,
+  hostedAwsHostStackFragment,
+} from './hosted-aws-host-stack';
 
 export const HOSTED_PROVIDER_DELEGATION_VERSION = 'hosted-provider-delegation-v1';
 
@@ -64,7 +70,11 @@ export type GcpHostedCredentialSource =
 
 export type HostedProviderDelegationConfiguration =
   | { provider: 'gcp'; source: GcpHostedCredentialSource }
-  | { provider: 'aws'; accountId: string; source: HostedAwsCredentialSource }
+  /**
+   * `region` is where the customer's stack builds the host's network (D-009); a hosted
+   * customer role defaults it to {@link HOSTED_AWS_DEFAULT_REGION}.
+   */
+  | { provider: 'aws'; accountId: string; region?: string; source: HostedAwsCredentialSource }
   | { provider: 'azure'; cloud?: AzureCloudEnvironment; source: HostedAzureCredentialSource };
 
 export interface HostedProviderDelegationOnboardingInput {
@@ -250,7 +260,9 @@ function connectionProviderConfig(record: HostedProviderDelegationRecord): Recor
     ...(gcp ? { projectId: gcp.projectId, serviceAccountEmail: gcp.serviceAccountEmail } : {}),
     // The AWS provider composes from `credentialSource`; it refuses a hosted source unless this
     // delegation is verified (aws-configured-provider), which is where a revocation takes effect.
-    ...(aws ? { accountId: aws.accountId, credentialSource: aws.source } : {}),
+    ...(aws
+      ? { accountId: aws.accountId, credentialSource: aws.source, ...(aws.region ? { region: aws.region } : {}) }
+      : {}),
   };
   assertWorkspaceHostSecretIsolation(config, 'hostedProviderDelegation.providerConfig');
   return config;
@@ -398,7 +410,12 @@ function normalizeConfiguration(
       const plan = planAwsSdkCredentialProvider(value.source);
       const roleAccount = plan.roleArn?.split(':')[4];
       if (roleAccount !== accountId) throw new Error('AWS role account must match accountId');
-      return { provider: value.provider, accountId, source: value.source };
+      // D-009: a customer role's stack builds the host's network in this region, so it is
+      // part of the delegation (and of the template's region Rule, hence its digest).
+      const region = value.source.method === 'customer-role'
+        ? requirePattern(value.region ?? HOSTED_AWS_DEFAULT_REGION, HOSTED_AWS_REGION, 'region')
+        : value.region === undefined ? undefined : requirePattern(value.region, HOSTED_AWS_REGION, 'region');
+      return { provider: value.provider, accountId, ...(region ? { region } : {}), source: value.source };
     }
     case 'azure':
       if (value.source.environment !== 'hosted') throw new Error('Azure hosted onboarding requires a hosted source');
@@ -464,7 +481,11 @@ function gcpTemplate(source: GcpHostedCredentialSource): HostedProviderDelegatio
 function awsTemplate(
   accountId: string,
   source: HostedAwsCredentialSource,
+  region: string | undefined,
 ): HostedProviderDelegationTemplate {
+  // D-009: a customer role's stack also builds the host's network, instance profile, KMS key
+  // and launch template in `region`, the AWS twin of the GCP managed network.
+  const host = source.method === 'customer-role' && region ? hostedAwsHostStackFragment(accountId, region) : null;
   const trust = source.method === 'customer-role'
     ? {
         Effect: 'Allow',
@@ -487,7 +508,9 @@ function awsTemplate(
     format: 'aws-cloudformation-json',
     document: {
       AWSTemplateFormatVersion: '2010-09-09',
-      Description: 'Papercusp workspace-host least-privilege delegated role',
+      Description: host
+        ? 'Papercusp workspace host: least-privilege delegated role and the network it launches into'
+        : 'Papercusp workspace-host least-privilege delegated role',
       ...(source.method === 'customer-role'
         ? {
             Parameters: {
@@ -502,8 +525,9 @@ function awsTemplate(
             },
           }
         : {}),
+      ...(host ? { Rules: host.Rules } : {}),
       Resources: {
-        WorkspaceHostRole: {
+        [HOSTED_AWS_WORKSPACE_HOST_ROLE_LOGICAL_ID]: {
           Type: 'AWS::IAM::Role',
           Properties: {
             RoleName: `${HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX}${accountId}`,
@@ -519,7 +543,9 @@ function awsTemplate(
             ],
           },
         },
+        ...(host ? host.Resources : {}),
       },
+      ...(host ? { Outputs: host.Outputs } : {}),
     },
   };
 }
@@ -572,7 +598,7 @@ export function buildHostedProviderDelegationOnboarding(
   const template = configuration.provider === 'gcp'
     ? gcpTemplate(configuration.source)
     : configuration.provider === 'aws'
-      ? awsTemplate(configuration.accountId, configuration.source)
+      ? awsTemplate(configuration.accountId, configuration.source, configuration.region)
       : azureTemplate(configuration.source);
   assertWorkspaceHostSecretIsolation(template, 'hostedProviderDelegation.template');
   const timestamp = now(input.now);

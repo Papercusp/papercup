@@ -432,12 +432,34 @@ describe('resolveDeployedSqlDir', () => {
 
   beforeEach(() => {
     delete process.env.PAPERCUSP_RELEASE_ROOT;
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
   });
 
   afterEach(() => {
     for (const p of tmpRoots.splice(0)) fs.rmSync(p, { recursive: true, force: true });
     if (savedReleaseRootEnv === undefined) delete process.env.PAPERCUSP_RELEASE_ROOT;
     else process.env.PAPERCUSP_RELEASE_ROOT = savedReleaseRootEnv;
+    if (savedCanonicalTreeEnv === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+    else process.env.PAPERCUSP_CANONICAL_TREE = savedCanonicalTreeEnv;
+  });
+
+  it('WI-10005161: a staging-generation serving tree finds the release checkout beside the canonical tree', () => {
+    // :3170 serves <ws>/papercusp-staging.generations/.candidate-<sha>.<rand>/checkout
+    // (95-bundled-entry exports it via `pwd -P`). Its parent holds no release checkout;
+    // the box's release checkout sits beside the canonical edit tree.
+    const ws = makeTree('papercusp', false);
+    fs.mkdirSync(path.join(ws, 'papercup-release/libs/papercusp/libs/db/sql'), { recursive: true });
+    const generationSqlDir = path.join(
+      ws,
+      'papercusp-staging.generations/.candidate-ab679a25a55f.LcugsF/checkout/libs/papercusp/libs/db/sql',
+    );
+    fs.mkdirSync(generationSqlDir, { recursive: true });
+    // Without the declared edit tree the generation's sibling is all there is → null.
+    expect(resolveDeployedSqlDir(generationSqlDir)).toBeNull();
+    process.env.PAPERCUSP_CANONICAL_TREE = path.join(ws, 'papercusp');
+    expect(resolveDeployedSqlDir(generationSqlDir)).toBe(
+      path.join(ws, 'papercup-release/libs/papercusp/libs/db/sql'),
+    );
   });
 
   it('returns null for a bogus sqlDir (no such tree)', () => {

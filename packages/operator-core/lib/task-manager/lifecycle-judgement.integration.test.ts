@@ -123,3 +123,53 @@ describe('nodeLifecycleJudgementDeps.listOpenCandidateItems against the real mig
     expect(baseColumns.map((row) => row.column_name)).toEqual(['taken_by']);
   });
 });
+
+describe('nodeLifecycleJudgementDeps.readLatestVerdicts against the real migrated schema', () => {
+  it('uses decision time when a stale candidate row was refreshed after the latest verdict', async () => {
+    const taskId = 'task-stale-verdict-order';
+    const earlier = {
+      taskId,
+      decision: 'keep',
+      reason: 'earlier decision',
+      keepCount: 1,
+      recheckAt: '2026-09-30T08:00:00.000Z',
+      decidedAt: '2026-09-29T20:08:00.000Z',
+    };
+    const latest = {
+      taskId,
+      decision: 'keep',
+      reason: 'latest decision',
+      keepCount: 2,
+      recheckAt: '2026-10-01T08:00:00.000Z',
+      decidedAt: '2026-09-30T08:06:00.000Z',
+    };
+    const earlierUpdatedTs = Date.parse('2026-10-02T00:00:00.000Z');
+    const latestUpdatedTs = Date.parse('2026-10-01T00:00:00.000Z');
+
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (feature_id, workspace_id, harness_slug, nature, item_kind, status, payload, updated_ts)
+      VALUES
+        ('WI-earlier-verdict', ${WS}, 'papercusp', 'work', 'task', 'done',
+         ${sql.json({ processLifecycleCandidate: { taskId }, out: { processLifecycleVerdict: earlier } })},
+         ${earlierUpdatedTs}),
+        ('WI-latest-verdict', ${WS}, 'papercusp', 'work', 'task', 'done',
+         ${sql.json({ processLifecycleCandidate: { taskId }, out: { processLifecycleVerdict: latest } })},
+         ${latestUpdatedTs})
+    `;
+
+    const refreshedRows = await sql<Array<{ id: string }>>`
+      SELECT feature_id AS id
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS}
+         AND feature_id IN ('WI-earlier-verdict', 'WI-latest-verdict')
+       ORDER BY updated_ts DESC
+    `;
+    expect(refreshedRows.map((row) => row.id)).toEqual(['WI-earlier-verdict', 'WI-latest-verdict']);
+
+    const { nodeLifecycleJudgementDeps } = await import('./lifecycle-judgement');
+    const verdicts = await nodeLifecycleJudgementDeps.readLatestVerdicts(WS, [taskId]);
+
+    expect(verdicts.get(taskId)).toMatchObject({ keepCount: 2, decidedAt: latest.decidedAt });
+  });
+});

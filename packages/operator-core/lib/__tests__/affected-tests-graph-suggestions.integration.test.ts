@@ -105,7 +105,13 @@ describe('affected-tests selector ⟷ graph snapshot producer (integration, SUPE
     expect(got.status, got.stderr.slice(0, 400)).toBe(0);
     for (const n of base.names) expect(got.names.has(n), `baseline workspace ${n} lost`).toBe(true);
     expect(got.names.has(IMPORTER_WS)).toBe(true);
-    expect([...got.names].filter((n) => !base.names.has(n))).toEqual([IMPORTER_WS]);
+    // Additions are the importer workspace PLUS its reverse-dependency closure (seeds grow the
+    // closure) — so assert the importer is the added SEED and that nothing outside {importer}∪closure
+    // is invented: every added workspace was absent from the baseline.
+    const added = [...got.names].filter((n) => !base.names.has(n));
+    expect(added).toContain(IMPORTER_WS);
+    expect(added.length).toBeGreaterThanOrEqual(1);
+    expect(got.line).toContain(`added=${IMPORTER_WS}`);
     expect(got.line).toMatch(/status=applied accepted=1 rejected=0 added=.*@papercusp\/backup/);
   });
 

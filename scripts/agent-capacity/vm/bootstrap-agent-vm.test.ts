@@ -81,7 +81,7 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
   it('without CACHE_XFS_GB, leaves the cache on the boot disk (no xfsprogs, no mount)', () => {
     const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2' });
     expect(r.status).toBe(0);
-    expect(r.stdout).not.toMatch(/xfsprogs|mkfs\.xfs|mount -o loop|fallocate/);
+    expect(r.stdout).not.toMatch(/xfsprogs|mkfs\.xfs|mount -o loop|fallocate|\/etc\/fstab/);
   });
 
   it('with CACHE_XFS_GB, mounts a reflink XFS volume at the cache before anything is cloned into it', () => {
@@ -107,6 +107,12 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
     expect(owned).toBeGreaterThan(mounted);
     expect(owned).toBeLessThan(at(`mkdir -p ${cache}/prepared`));
     expect(owned).toBeLessThan(at('git clone'));
+    // P-007: the mount must survive a restart (a spot reclaim), so it is persisted in fstab with
+    // nofail, idempotently, after the mount it describes.
+    const fstab = at('/etc/fstab');
+    expect(runs[fstab]).toContain(`grep -qsF '${img} ${cache} ' /etc/fstab ||`);
+    expect(runs[fstab]).toContain(`echo '${img} ${cache} xfs loop,nofail 0 0' >> /etc/fstab`);
+    expect(fstab).toBeGreaterThan(mounted);
   });
 
   it.each(['abc', '0', '-5', '1.5'])('refuses CACHE_XFS_GB=%s before running anything', (gb) => {

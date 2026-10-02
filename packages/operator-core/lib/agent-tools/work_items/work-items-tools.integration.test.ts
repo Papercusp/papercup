@@ -188,6 +188,23 @@ vi.mock('../../blueprint/operation-worker-binding', async (orig) => ({
   ...(await orig<typeof import('../../blueprint/operation-worker-binding')>()),
   readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' as const }),
 }));
+// work_items:claim resolves an explicit assignee against the live agent roster and
+// refuses an off-roster id with assignee_unknown (claim.ts → resolveExplicitAgentOwnerId).
+// This fixture has no roster, so the lifecycle test's claim-for-a-peer id is declared a
+// known agent here. Every other id still goes through the real resolver, so the refusal
+// contract is not weakened; it is covered by claim.test.ts and recipient-resolve.test.ts
+// (WI-10005219). The id set lives inside the factory because vi.mock is hoisted.
+vi.mock('../coordination/recipient-resolve', async (orig) => {
+  const real = await orig<typeof import('../coordination/recipient-resolve')>();
+  const FIXTURE_PEER_AGENT_IDS = new Set(['agent-b']);
+  return {
+    ...real,
+    resolveExplicitAgentOwnerId: async (raw: string, callerOwnerId: string, workspaceId?: string | null) =>
+      FIXTURE_PEER_AGENT_IDS.has(raw.trim())
+        ? { ok: true as const, ownerId: raw.trim() }
+        : real.resolveExplicitAgentOwnerId(raw, callerOwnerId, workspaceId),
+  };
+});
 
 const { default: createTool } = await import('./create');
 const { default: getTool } = await import('./get');
@@ -570,9 +587,13 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const featId = (feat.workItem as Record<string, unknown>).id as string;
 
     const claimed = await claimOne({ id: bugId, assignee: 'agent-b' });
+    // A refused claim returns no workItem; print the payload so the refusal reason is the
+    // failure message instead of an opaque "cannot read 'assignee' of undefined" (WI-10005219).
+    expect(claimed.workItem, `bug claim refused: ${JSON.stringify(claimed)}`).toBeDefined();
     expect((claimed.workItem as Record<string, unknown>).assignee).toBe('agent-b');
     // default assignee = the caller's ownerId
     const claimedFeat = await claimOne({ id: featId, harness: 'papercup' });
+    expect(claimedFeat.workItem, `feature claim refused: ${JSON.stringify(claimedFeat)}`).toBeDefined();
     expect((claimedFeat.workItem as Record<string, unknown>).assignee).toBe('su-tester');
 
     // 'closed' is a terminal issue-family state → the completion-integrity gate

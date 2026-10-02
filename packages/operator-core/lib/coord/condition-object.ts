@@ -54,7 +54,10 @@ import {
   assessCriticalClaimProgressLease,
   CRITICAL_CLAIM_PROGRESS_LEASE_MS,
 } from '../agent-tools/work_items/release-force-guard';
-import { CHECKPOINT_RUN_LOCK_STALE_MS } from '../release-checkpoint-launch';
+// The dependency-free leaf, NOT ../release-checkpoint-launch: that module's static graph
+// reaches release-checkpoint-config.ts's module-scope SELECT, and this file is imported by
+// pot tool modules that must load without database I/O (WI-10005170).
+import { CHECKPOINT_RUN_LOCK_STALE_MS } from '../release-checkpoint-lock';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { linkWorkItem, readWorkItemClaimHoldProvenance, unlinkWorkItem } from '../work-items';
 import {
@@ -355,7 +358,7 @@ export async function findConditionObjects(
             FROM harness_shared.event_awaits_effective a
            WHERE a.subscriber_id = w.taken_by
              AND (
-               a.event_key = ANY(${CHECKPOINT_AWAIT_GLOBAL_EVENT_KEYS as string[]}::text[])
+               a.event_key = ANY(${[...CHECKPOINT_AWAIT_GLOBAL_EVENT_KEYS]}::text[])
                OR a.event_key = ANY(ARRAY[
                  'release:green:' || split_part(l.dst_ref, ':', 2),
                  'green-checkpoint:red:' || split_part(l.dst_ref, ':', 2),

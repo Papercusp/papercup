@@ -135,6 +135,10 @@ if [ "$mount_cache" = 1 ]; then
   run mkfs.xfs -q -m reflink=1 "$CACHE_XFS_IMAGE"
   run sudo mount -o loop "$CACHE_XFS_IMAGE" "$CACHE"
   run sudo chown "$(id -u):$(id -g)" "$CACHE"
+  # Persist the mount, or the first restart (a spot reclaim, P-007) hides the corpus, the prepared
+  # repos and every run's output under an empty boot-disk dir: measured on cap-p007, 2026-10-02.
+  # nofail: a missing image must not stop the VM from booting. Idempotent on a re-run.
+  run sudo sh -c "grep -qsF '$CACHE_XFS_IMAGE $CACHE ' /etc/fstab || echo '$CACHE_XFS_IMAGE $CACHE xfs loop,nofail 0 0' >> /etc/fstab"
 fi
 if [ -n "$CACHE_XFS_GB" ] && [ "${DRY_RUN:-0}" != 1 ]; then
   # Prove the property the ramps depend on, not just the filesystem type.

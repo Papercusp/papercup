@@ -29,6 +29,10 @@ import {
   type HostedProviderDelegationAdapter,
 } from '../../workspace-host/hosted-provider-delegation';
 import { hostedDelegationOrganization } from '../../workspace-host/hosted-delegation-organization';
+import {
+  discoverHostedAwsHostInfrastructure,
+  type HostedAwsHostDiscoveryDependencies,
+} from '../../workspace-host/hosted-aws-host-discovery';
 import type { HostedFirstWorkspaceDependencies } from './first-workspace';
 import { createHostedWorkspaceAdmission } from './workspace-admission';
 import { createDefaultHostedWorkspaceAdmissionDependencies } from './workspace-admission-dependencies';
@@ -69,6 +73,8 @@ export interface HostedFirstWorkspaceRuntimeOptions {
    * AWS role in the control-plane account (aws-byoc-gcp-parity D-001).
    */
   readonly delegationOrganization?: (organizationId: string) => HostedDelegationOrganization;
+  /** AWS SDK seams for reading the customer's host stack (D-009); production omits them. */
+  readonly awsHostDiscovery?: HostedAwsHostDiscoveryDependencies;
 }
 
 export function createHostedFirstWorkspaceDependencies(
@@ -113,6 +119,7 @@ export function createHostedFirstWorkspaceDependencies(
       manager(organizationId).onboardPapercuspHosted(input, hostId),
     verifyDelegation: (organizationId, workspaceId, connectionId) =>
       manager(organizationId).verify(workspaceId, connectionId),
+    discoverAwsHostInfrastructure: (record) => discoverHostedAwsHostInfrastructure(record, options.awsHostDiscovery),
 
     createAdmission: (resolveDesiredSpec, admissionOptions) =>
       createHostedWorkspaceAdmission({

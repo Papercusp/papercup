@@ -37,7 +37,10 @@
  * TWO WAYS TO HOST IT (D-399). `papercusp`: the host runs in Papercusp's own cloud and the
  * request carries no cloud configuration at all — the delegation reserves the derived host for
  * the organization, and the browser's configuration, if any, is ignored. `byoc`: the customer's
- * own GCP project, granted as above.
+ * own GCP project, granted as above, or their own AWS account (aws-byoc-gcp-parity D-008/D-009):
+ * the browser names only the account and region; the role, its trusted principal and ExternalId
+ * are server-derived, and the customer's CloudFormation stack builds the host's network, which
+ * the server reads back through the verified role before admitting the workspace.
  */
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import {
@@ -52,6 +55,13 @@ import {
   type HostedProviderDelegationTemplate,
 } from '../../workspace-host/hosted-provider-delegation';
 import { HostedGcpNotReadyError, PAPERCUSP_HOSTED_GCP_LOCATION } from '../../workspace-host/hosted-gcp-hosting';
+import {
+  HOSTED_AWS_DEFAULT_REGION,
+  HOSTED_AWS_REGION,
+  HostedAwsHostInfrastructurePendingError,
+  type HostedAwsHostInfrastructure,
+} from '../../workspace-host/hosted-aws-host-stack';
+import { HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX } from '../../workspace-host/hosted-aws-identity';
 import {
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
   type WorkspaceHostBringUp,
@@ -104,6 +114,12 @@ export interface HostedFirstWorkspaceDependencies {
     hostId: string,
   ): Promise<HostedProviderDelegationOnboarding>;
   verifyDelegation(organizationId: string, workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord>;
+  /**
+   * AWS only (D-009): read the host's network, instance profile, KMS key and launch template
+   * back from the customer's stack through the VERIFIED role, plus the Ubuntu image to run.
+   * Throws {@link HostedAwsHostInfrastructurePendingError} while the stack is still building.
+   */
+  discoverAwsHostInfrastructure(record: HostedProviderDelegationRecord): Promise<HostedAwsHostInfrastructure>;
   /**
    * Builds the admission port around a spec resolver bound to THIS verified delegation. A
    * `bringUp` sets the machine up once it is built (D-401); only Papercusp hosting passes one.
@@ -249,6 +265,85 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
   } as WorkspaceHostDesiredSpec;
 }
 
+/** D-008/D-009: the e2-standard-4 equivalent (4 vCPU, 16 GiB) and the same data volume. */
+export const AWS_FIRST_WORKSPACE_DEFAULTS = {
+  size: 'm6i.xlarge',
+  volumeGiB: GCP_FIRST_WORKSPACE_DEFAULTS.volumeGiB,
+} as const;
+
+/**
+ * Default spec for a first AWS workspace. The account and credential come from the VERIFIED
+ * delegation; the network, instance profile, KMS key, launch template and image come from the
+ * customer's own stack, read back through that delegation (D-009).
+ */
+export function awsFirstWorkspaceDesiredSpec(input: {
+  hostId: string;
+  record: HostedProviderDelegationRecord;
+  infrastructure: HostedAwsHostInfrastructure;
+}): WorkspaceHostDesiredSpec {
+  const configuration = input.record.configuration;
+  if (configuration.provider !== 'aws') {
+    throw new HostedWorkspaceAdmissionError('AWS first-workspace spec needs an AWS delegation', 'invalid_input');
+  }
+  const infra = input.infrastructure;
+  if (infra.region !== (configuration.region ?? HOSTED_AWS_DEFAULT_REGION)) {
+    throw new HostedWorkspaceAdmissionError('AWS host infrastructure is in a different region', 'invalid_input');
+  }
+  return {
+    hostId: input.hostId,
+    target: 'aws',
+    scope: { kind: 'account', id: configuration.accountId },
+    region: infra.region,
+    zone: infra.zone,
+    size: AWS_FIRST_WORKSPACE_DEFAULTS.size,
+    image: { ...infra.image },
+    data: { encrypted: true, volumeGiB: AWS_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
+    credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
+    provider: {
+      vpcId: infra.vpcId,
+      subnetId: infra.subnetId,
+      securityGroupIds: [infra.securityGroupId],
+      instanceProfileArn: infra.instanceProfileArn,
+      launchTemplateId: infra.launchTemplateId,
+      kmsKeyArn: infra.kmsKeyArn,
+    },
+  } as WorkspaceHostDesiredSpec;
+}
+
+const AWS_ACCOUNT_ID = /^\d{12}$/;
+
+/**
+ * The AWS bring-your-own-cloud configuration, built from the account and region alone (D-008).
+ * The role is the one the served template creates; its trusted principal and ExternalId are
+ * filled from the organization by `bindDelegationToOrganization`, so whatever the browser sent
+ * for any of them is discarded. Only a customer role is accepted: OIDC would federate every
+ * organization as the same Papercusp subject.
+ */
+function awsByocConfiguration(
+  configuration: Record<string, unknown>,
+): HostedProviderDelegationConfiguration | 'invalid' | 'unsupported' {
+  const source = configuration.source as { environment?: unknown; method?: unknown } | undefined;
+  if (source !== undefined && (source === null || typeof source !== 'object')) return 'invalid';
+  if (source && (source.method !== 'customer-role' || (source.environment ?? 'hosted') !== 'hosted')) return 'unsupported';
+  const accountId = configuration.accountId;
+  if (typeof accountId !== 'string' || !AWS_ACCOUNT_ID.test(accountId)) return 'invalid';
+  const region = configuration.region ?? HOSTED_AWS_DEFAULT_REGION;
+  if (typeof region !== 'string' || !HOSTED_AWS_REGION.test(region)) return 'invalid';
+  return {
+    provider: 'aws',
+    accountId,
+    region,
+    source: {
+      environment: 'hosted',
+      method: 'customer-role',
+      roleArn: `arn:aws:iam::${accountId}:role/${HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX}${accountId}`,
+      // Placeholders: bindDelegationToOrganization replaces both with the organization's own.
+      trustedPrincipalArn: '',
+      externalIdRef: '',
+    },
+  };
+}
+
 function boundedText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
@@ -316,11 +411,21 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         return failure('invalid_request', 400, false);
       }
       if (!deps.isEnabledFor(organizationId)) return failure('first_workspace_not_enabled', 403, false);
+      let byocConfiguration: HostedProviderDelegationConfiguration | undefined;
       if (hosting === 'byoc') {
-        if (configuration!.provider !== 'gcp') return failure('provider_not_supported', 422, false);
-        // Only impersonation chains through the organization's own account (D-397).
-        const method = (configuration!.source as { method?: unknown } | undefined)?.method;
-        if (method !== 'service-account-impersonation') return failure('provider_not_supported', 422, false);
+        if (configuration!.provider === 'gcp') {
+          // Only impersonation chains through the organization's own account (D-397).
+          const method = (configuration!.source as { method?: unknown } | undefined)?.method;
+          if (method !== 'service-account-impersonation') return failure('provider_not_supported', 422, false);
+          byocConfiguration = configuration!;
+        } else if (configuration!.provider === 'aws') {
+          const aws = awsByocConfiguration(configuration as unknown as Record<string, unknown>);
+          if (aws === 'invalid') return failure('invalid_request', 400, false);
+          if (aws === 'unsupported') return failure('provider_not_supported', 422, false);
+          byocConfiguration = aws;
+        } else {
+          return failure('provider_not_supported', 422, false);
+        }
       }
       const identity = firstWorkspaceIdentity(organizationId, request.attemptKey);
       // "First" is per organization. The workspace THIS attempt derives is not a conflict:
@@ -346,7 +451,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         onboardingInput = hosting === 'papercusp'
           ? await bindPapercuspHostedDelegation(delegationBase, organization, identity.hostId)
           : await bindDelegationToOrganization(
-            { ...delegationBase, organizationId, configuration: configuration! },
+            { ...delegationBase, organizationId, configuration: byocConfiguration! },
             organization,
           );
       } catch (error) {
@@ -395,10 +500,35 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         });
       }
 
+      // D-009: an AWS host launches into the network the customer's stack built, so read it back
+      // (as the verified role) before admitting anything. Until the stack finishes, the customer
+      // is still mid-setup: answer with the same steps again rather than failing.
+      const provider = verified.configuration.provider === 'aws' ? 'aws' : 'gcp';
+      let resolveSpec: ResolveFirstWorkspaceSpec;
+      if (provider === 'aws') {
+        let infrastructure: HostedAwsHostInfrastructure;
+        try {
+          infrastructure = await deps.discoverAwsHostInfrastructure(verified);
+        } catch (error) {
+          if (error instanceof HostedAwsHostInfrastructurePendingError) {
+            return failure('delegation_pending', 409, true, {
+              template: planned.template,
+              connectionId: identity.connectionId,
+            });
+          }
+          console.error(`[hosted-first-workspace] AWS host infrastructure lookup failed for host ${identity.hostId}`, error);
+          return failure('delegation_source_unavailable', 503, true, { connectionId: identity.connectionId });
+        }
+        resolveSpec = async (spec) =>
+          awsFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified, infrastructure });
+      } else {
+        resolveSpec = async (spec) => gcpFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified });
+      }
+
       // D-401: a Papercusp-hosted machine is set up right after it is built; the customer's own
       // cloud is left as they provisioned it.
       const admission = deps.createAdmission(
-        async (spec) => gcpFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified }),
+        resolveSpec,
         hosting === 'papercusp' ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } } : {},
       );
       let admitted: { workspaceId: string; provisionOperationId: string };
@@ -406,7 +536,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         admitted = await admission.ensureProvisioned({
           organizationId,
           userId,
-          provider: 'gcp',
+          provider,
           connectionId: identity.connectionId,
           displayName,
           requestedWorkspaceId: identity.workspaceId,

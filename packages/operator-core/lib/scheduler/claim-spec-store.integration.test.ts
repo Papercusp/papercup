@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyClaimPathReadDeps } from '../../test/_work-items-schema';
 
 // Keep the import chain (claim-spec-store → get-next → work-items) safe at module load.
 const h = vi.hoisted(() => ({
@@ -108,6 +109,12 @@ beforeAll(async () => {
     redundancy integer,
     expected_cost_cents bigint,
     workspace_id text NOT NULL,
+    -- WI-10005209: work_item_claim_floors (migration 1101, LANGUAGE sql, created by
+    -- applyClaimPathReadDeps) resolves blockers via 'work_items bf ... bf.harness_slug',
+    -- and a sql function body is validated at CREATE time, so every bf./bi. column it
+    -- names must exist here: harness_slug and authority (both text, as live).
+    harness_slug text,
+    authority text,
     feature_id text PRIMARY KEY,
     admission text, admitted_at timestamptz, admitted_by text,
     taken_by text,
@@ -115,6 +122,10 @@ beforeAll(async () => {
     item_kind text NOT NULL DEFAULT 'change',
     payload jsonb
   )`);
+  // WI-10005130: getNextForBee reaches the claim path, so apply the shared claim-path
+  // read deps LAST (all IF NOT EXISTS) over the hand-built tables above. The recovery
+  // database in the 389 test only replays claim-spec migrations and calls no claim door.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup?.();

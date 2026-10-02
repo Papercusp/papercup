@@ -2588,7 +2588,11 @@ describe('launch result after the dispatch deadline', () => {
     capabilities: [],
     expose: { mcp: { name: 'capability:launch-agent' } },
     timeoutSec: 0.05,
-    abortCompletionReceipt: launchAgent.abortCompletionReceipt,
+    // WI-10005222: the resolver is typed for launch-agent's concrete args; the
+    // projected fixture erases args to `unknown`, and a function parameter is
+    // contravariant, so the bare assignment is TS2322. Same erasure as the
+    // handler cast below.
+    abortCompletionReceipt: launchAgent.abortCompletionReceipt as ProjectedTool['abortCompletionReceipt'],
     fn: async (input, dispatchContext) => {
       const response = await (launchAgent.handler as unknown as (
         args: unknown,
