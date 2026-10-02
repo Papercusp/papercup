@@ -4108,6 +4108,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   let oversized: OversizedFile[] = [];
   let contentErrors: ContentOffender[] = [];
   let skippedPaths: GitSyncSkippedPath[] = [];
+  let migrationQuarantinedPaths: string[] = [];
   // A torn index makes `git status` report an empty census and would therefore
   // strand every working-tree edit. Preflight before the first status call for
   // both the superproject and each submodule. The helper is idempotent, so the
@@ -4143,28 +4144,40 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   noteSlowPhase('dirty census');
   const dirtyPathCount = dirty.length;
   const migrationCandidates = migrationPaths(dirty);
-  const preStageMigrationError = await checkMigrationReservations(o, migrationCandidates);
+  const preStageMigrationCheck = await checkMigrationReservations(o, migrationCandidates);
   noteSlowPhase('migration reservation');
-  if (preStageMigrationError) {
-    // A migration may have been staged by an earlier process before this tick's
-    // reservation check. Remove only the refused migration paths; leave every
-    // unrelated index entry and every working-tree byte recoverable for the next
-    // tick.
-    const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, migrationCandidates, o.log);
-    const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
+  const preStageMigrationRefusals = preStageMigrationCheck.ok
+    ? preStageMigrationCheck.refusals
+    : migrationCandidates.map((path) => ({
+        path,
+        reason: `reservation check failed; deferring fail-closed: ${preStageMigrationCheck.error}`,
+      }));
+  if (!preStageMigrationCheck.ok) {
     o.log(
-      `[git-sync] ${o.scope}: migration reservation preflight refused ${migrationCandidates.join(', ')}: ` +
-        `${preStageMigrationError}${unstageError}`,
+      `[git-sync] ${o.scope}: migration reservation check failed; deferring candidate migrations fail-closed: ` +
+        `${preStageMigrationCheck.error}`,
     );
-    return {
-      committedLocal: false,
-      dirtyPathCount,
-      committedCount,
-      error: `migration reservation preflight failed: ${preStageMigrationError}${unstageError}`,
-      oversized,
-      contentErrors,
-      skippedPaths,
-    };
+  }
+  if (preStageMigrationRefusals.length > 0) {
+    // A migration may have been staged by an earlier process before this tick's
+    // reservation check. Quarantine only refused paths; leave unrelated staged
+    // entries and every working-tree byte recoverable while the rest of the repo
+    // continues through this tick.
+    migrationQuarantinedPaths = migrationReservationSkips(o.scope, preStageMigrationRefusals, skippedPaths, o.log);
+    const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, migrationQuarantinedPaths, o.log);
+    const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
+    if (!unstage.ok) {
+      o.log(`[git-sync] ${o.scope}: migration quarantine could not remove refused paths from the index${unstageError}`);
+      return {
+        committedLocal: false,
+        dirtyPathCount,
+        committedCount,
+        error: `migration reservation quarantine failed${unstageError}`,
+        oversized,
+        contentErrors,
+        skippedPaths,
+      };
+    }
   }
   const hasDirtyFiles = await isDirty(runGit, repoPath);
   noteSlowPhase('dirty check');
@@ -4281,7 +4294,9 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // attribution add or catch-all staging command, and fail closed if the
     // lock plane cannot be read.
     let protectedHoldings = o.protectedHoldings;
-    let effectiveExcludePaths = [...o.excludePaths, ...protectedHoldings.map((holding) => holding.path)];
+    let effectiveExcludePaths = [
+      ...new Set([...o.excludePaths, ...protectedHoldings.map((holding) => holding.path), ...migrationQuarantinedPaths]),
+    ];
     if (o.refreshLiveLockHoldings) {
       let refreshedHoldings: GitSyncLockHolding[];
       try {
@@ -4310,23 +4325,28 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       }
       protectedHoldings = [...byPath.values()];
       effectiveExcludePaths = [
-        ...new Set([...o.excludePaths, ...refreshedHoldings.map((holding) => holding.path.trim()).filter(Boolean)]),
+        ...new Set([
+          ...o.excludePaths,
+          ...refreshedHoldings.map((holding) => holding.path.trim()).filter(Boolean),
+          ...migrationQuarantinedPaths,
+        ]),
       ];
     }
     const directSkippedHoldings = protectedHoldings.filter((holding) =>
       dirty.some((file) => gitSyncPathsOverlap(file, holding.path)),
     );
     const atomicExclusions = expandAtomicLiveLockExclusions(dirty, protectedHoldings, o.attribution);
-    skippedPaths = directSkippedHoldings.map((holding) => ({
+    const directSkippedPaths = directSkippedHoldings.map((holding) => ({
       scope: o.scope,
       path: holding.path,
       owner: holding.owner,
       intent: holding.intent,
     }));
-    if (skippedPaths.length > 0) {
+    skippedPaths.push(...directSkippedPaths);
+    if (directSkippedPaths.length > 0) {
       o.log(
         `[git-sync] ${o.scope}: excluding live-locked dirty path(s) while committing the unlocked remainder: ` +
-          skippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
+          directSkippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
       );
       if (atomicExclusions.groups.some((group) => group.paths.length > 1)) {
         o.log(
@@ -4417,7 +4437,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     const ignoredUntrackedExcludes = protectedPathPreflight.ignoredUntracked;
     const beyondSymlinkExcludes = protectedPathPreflight.beyondSymlink;
     const omittedPreflightExcludes = new Set([...ignoredUntrackedExcludes, ...beyondSymlinkExcludes]);
-    const stagingExcludePaths = excludePaths.filter((path) => !omittedPreflightExcludes.has(path));
+    let stagingExcludePaths = excludePaths.filter((path) => !omittedPreflightExcludes.has(path));
     if (ignoredUntrackedExcludes.size > 0) {
       o.log(
         `[git-sync] ${repoPath}: pre-filtering ignored untracked protected path(s) ` +
@@ -4561,29 +4581,42 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         };
       }
     }
-    // Keep migration files out of any commit whose reservation changed or became
-    // unreadable after the pre-stage check. Only the migration paths are unstaged;
-    // unrelated work remains staged and can be committed on the next tick.
+    // Recheck after staging to catch a reservation removed during the add. A
+    // known conflict defers only that migration; a failed/invalid read defers all
+    // staged migration candidates fail-closed while unrelated staged work commits.
     if (o.migrationReservationChecker) {
       const stagedMigrationPaths = await stagedFiles(runGit, repoPath);
-      const postStageMigrationError = await checkMigrationReservations(o, stagedMigrationPaths);
-      if (postStageMigrationError) {
-        const refused = migrationPaths(stagedMigrationPaths);
+      const postStageMigrationCheck = await checkMigrationReservations(o, stagedMigrationPaths);
+      const postStageMigrationRefusals = postStageMigrationCheck.ok
+        ? postStageMigrationCheck.refusals
+        : migrationPaths(stagedMigrationPaths).map((path) => ({
+            path,
+            reason: `reservation check failed; deferring fail-closed: ${postStageMigrationCheck.error}`,
+          }));
+      if (!postStageMigrationCheck.ok) {
+        o.log(
+          `[git-sync] ${o.scope}: post-stage migration reservation check failed; deferring staged migrations fail-closed: ` +
+            `${postStageMigrationCheck.error}`,
+        );
+      }
+      if (postStageMigrationRefusals.length > 0) {
+        const refused = migrationReservationSkips(o.scope, postStageMigrationRefusals, skippedPaths, o.log);
+        migrationQuarantinedPaths = [...new Set([...migrationQuarantinedPaths, ...refused])];
+        stagingExcludePaths = [...new Set([...stagingExcludePaths, ...refused])];
         const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, refused, o.log);
         const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
-        o.log(
-          `[git-sync] ${o.scope}: post-stage migration reservation check refused ${refused.join(', ')}: ` +
-            `${postStageMigrationError}${unstageError}`,
-        );
-        return {
-          committedLocal: committedAny,
-          dirtyPathCount,
-          committedCount,
-          error: `migration reservation check after staging failed: ${postStageMigrationError}${unstageError}`,
-          oversized,
-          contentErrors,
-          skippedPaths,
-        };
+        if (!unstage.ok) {
+          o.log(`[git-sync] ${o.scope}: post-stage migration quarantine could not remove refused paths${unstageError}`);
+          return {
+            committedLocal: committedAny,
+            dirtyPathCount,
+            committedCount,
+            error: `migration reservation quarantine after staging failed${unstageError}`,
+            oversized,
+            contentErrors,
+            skippedPaths,
+          };
+        }
       }
     }
     // EI-24712906810240170: a lock taken, or a transient edit made and undone, after the
@@ -5810,10 +5843,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       strandedSubmodules,
     };
   // A live lock is a partial exclusion, not a fleet-wide stop. Report the legacy
-  // skipped verdict only when every visible dirty path was protected and the pass
-  // made no progress anywhere. A pass that committed/pushed an unlocked sibling is
-  // `synced` and still carries skippedPaths for observability + the next retry.
-  if (skippedPaths.length > 0 && !didSomething)
+  // skipped verdict only when a live-lock path prevented progress. Migration-only
+  // deferrals remain visible in skippedPaths without being mislabeled as locks.
+  if (skippedPaths.some((path) => path.reason === undefined) && !didSomething)
     return {
       status: 'skipped-locked',
       dirtyPathCount,
