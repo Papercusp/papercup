@@ -2487,7 +2487,7 @@ describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821
 // hourly cap. A loss must persist for GOAL_HOLDER_LOSS_CONFIRM_MS first.
 describe('runGoalHolderRespawnOnce — loss confirmation window (WI-10005559)', () => {
   const sql = {} as never;
-  let info: ReturnType<typeof vi.spyOn>;
+  let info: ReturnType<typeof vi.spyOn<Console, 'info'>>;
   beforeEach(() => {
     info = vi.spyOn(console, 'info').mockImplementation(() => {});
   });
@@ -2530,7 +2530,7 @@ describe('runGoalHolderRespawnOnce — loss confirmation window (WI-10005559)', 
     expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, lossUnconfirmed: 0 });
     expect(launch).toHaveBeenCalledOnce();
     // The reason trail: each loss episode is logged once, when it starts.
-    expect(info.mock.calls.filter((c) => String(c[0]).includes('judged lost'))).toHaveLength(2);
+    expect(info.mock.calls.filter((c: unknown[]) => String(c[0]).includes('judged lost'))).toHaveLength(2);
   });
 
   it('restarts the window when a different holder is elected', async () => {

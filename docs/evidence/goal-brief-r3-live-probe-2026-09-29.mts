@@ -236,7 +236,7 @@ if (censoredIds.length > 0) residualUnknowns.push(`CENSORED (${CENSORED_BY}): ${
 process.stdout.write(`${JSON.stringify({
   schemaVersion: 1, kind: 'operational-test-evidence',
   name: COUNTEREXAMPLE ? `goal-brief R-3 live chain probe — counterexample ${COUNTEREXAMPLE}` : 'goal-brief R-3 live chain probe',
-  framework: 'read-only-sql-probe',
+  framework: 'operational', // testing:record-run accepts playwright|node|shell|cargo|operational; this is a read-only SQL probe
   command: [...(COUNTEREXAMPLE ? ['env', `R3_COUNTEREXAMPLE=${COUNTEREXAMPLE}`] : []),
     ...(CENSORED_BY ? ['env', `R3_CENSORED_BY=${CENSORED_BY}`] : []),
     'npx', 'tsx', 'docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts'],
