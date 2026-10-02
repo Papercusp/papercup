@@ -187,8 +187,33 @@ describe('small native ORT teardown control', () => {
     expect(receipt).toMatchObject({ processId: terminal.processId, outcome, device: 'cpu', disposed: true,
       embeddingModelInferencePerformed: false, graph: { bytes: 130,
         sha256: '71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10' } });
+    expect(receipt.observation.serializedAdmissionContext).toBe(process.env.PAPERCUSP_ADMISSION_CONTEXT ?? null);
     if (outcome === 'success') expect(receipt.output).toEqual([1, 2, 3, 4, 5, 6]);
     else expect(receipt.expectedError).toContain('Got invalid dimensions for input');
+  });
+
+  it('retains actual allocator settings and loaded libc separately from admission evidence', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-ort-allocator-environment-')); roots.push(root);
+    const env: NodeJS.ProcessEnv = { ...process.env, GLIBC_TUNABLES: 'glibc.malloc.tcache_count=0:glibc.malloc.perturb=165',
+      MALLOC_PERTURB_: '165' };
+    const child = spawnSync(process.execPath, [controlFixture, 'capture', root,
+      JSON.stringify({ ortEntry, device: 'cpu', outcome: 'success', release: 'dispose' })],
+    { env, encoding: 'utf8', timeout: 15000 });
+    expect(child.status, child.stderr).toBe(0);
+    const receipt = JSON.parse(readFileSync(join(root, 'target.stdout.log'), 'utf8'));
+    expect(receipt.observation).toMatchObject({
+      serializedAdmissionContext: env.PAPERCUSP_ADMISSION_CONTEXT ?? null,
+      allocator: { GLIBC_TUNABLES: env.GLIBC_TUNABLES, MALLOC_PERTURB_: '165',
+        MALLOC_CHECK_: env.MALLOC_CHECK_ ?? null, LD_PRELOAD: env.LD_PRELOAD ?? null },
+    });
+    if (process.platform === 'linux') {
+      expect(receipt.observation.libraries.some((row: { path: string }) => row.path.endsWith('/libc.so.6'))).toBe(true);
+      for (const row of receipt.observation.libraries) {
+        expect(row.bytes).toBeGreaterThan(0);
+        expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
+      }
+    }
+    expect(receipt.embeddingModelInferencePerformed).toBe(false);
   });
 
   it('captures environment finalization separately from explicit session release', () => {
