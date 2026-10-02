@@ -65,7 +65,7 @@ const readArgsSchema = z
       .min(1)
       .max(SESSION_TURN_TEXT_CHUNK_MAX)
       .optional()
-      .describe(`Maximum characters per returned turn text chunk (default ${SESSION_TURN_TEXT_CHUNK_CAP}); clipped turns include a readMore continuation.`),
+      .describe(`Maximum ${SESSION_TURN_TEXT_CHUNK_MAX} characters per returned turn text chunk (default ${SESSION_TURN_TEXT_CHUNK_CAP}); clipped turns include a readMore continuation.`),
     tail: z
       .number()
       .int()

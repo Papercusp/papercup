@@ -50,7 +50,10 @@ const readModule = await import('./read');
 type ReadArgsParseResult =
   | { success: true; data: unknown }
   | { success: false; error: { issues: unknown[] } };
-const readArgsSchema = readModule.default.args as { safeParse: (value: unknown) => ReadArgsParseResult };
+const readArgsSchema = readModule.default.args as {
+  safeParse: (value: unknown) => ReadArgsParseResult;
+  shape: { text_limit: { description?: string } };
+};
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
 
@@ -400,6 +403,12 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3, tail: 4 }).success).toBe(true);
     expect(readArgsSchema.safeParse({ session: 'sess', tail: 30, limit: 30 }).success).toBe(false);
     expect(readArgsSchema.safeParse({ session: 'sess', tail: 30, order: 'desc' }).success).toBe(false);
+  });
+
+  it('advertises the enforced per-turn text chunk maximum', () => {
+    expect(readArgsSchema.safeParse({ session: 'sess', text_limit: 4_000 }).success).toBe(true);
+    expect(readArgsSchema.safeParse({ session: 'sess', text_limit: 4_001 }).success).toBe(false);
+    expect(readArgsSchema.shape.text_limit.description).toContain('Maximum 4000');
   });
 
   it('rejects stale search-only mode/query arguments instead of silently accepting them', () => {
