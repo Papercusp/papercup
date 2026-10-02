@@ -100,6 +100,20 @@ function preparePairCache(state: any) {
   return { enabled: state.cacheLayerOn, entries: cache.l1.map.size };
 }
 
+// cachedRead writes tool|args inside Cache's workspace + NUL envelope. Match
+// that exact namespace, never a substring inside private argument payloads.
+// The same closed selector runs in the real-cache guard and private inspector.
+function inboxPairEntries(state: any) {
+  const map = state?.cache?.l1?.map;
+  if (!(map instanceof Map)) throw Error('Private pair cache entry map missing');
+  return [...map].filter(([key]) => {
+    if (typeof key !== 'string') return false;
+    const nul = key.indexOf('\u0000');
+    const pipe = nul > 0 ? key.indexOf('|', nul + 1) : -1;
+    return pipe > nul + 1 && key.slice(nul + 1, pipe) === 'coord:inbox';
+  }).map(([, entry]) => entry);
+}
+
 // queryObjects triggers GC and enumerates survivors. Its aggregate sizes are
 // container entries, not retained bytes; bound inspection and release the CDP
 // handles so the diagnostic cannot become a new retainer itself.
@@ -194,6 +208,19 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     expect(() => preparePairCache({ cache, cacheLayerOn: false })).toThrow('API/owner');
   });
 
+  it('selects only the real cachedRead inbox namespace before a paired runtime', async () => {
+    const cache = createCache();
+    const useful = [{ msg_id: 'useful', body: 'preserved context' }];
+    await cache.getOrSet('private', 'coord:inbox|{"limit":1}', async () => useful);
+    await cache.getOrSet('private', 'coord:inbox-other|{}', async () => ['other tool']);
+    await cache.getOrSet('private', 'plans:get|{"arg":"coord:inbox:"}', async () => ['private decoy']);
+    await cache.getOrSet('private', 'coord:inbox:direct', async () => ['different writer']);
+    expect(inboxPairEntries({ cache }).map(entry => entry.value)).toEqual([useful]);
+    expect(() => inboxPairEntries({ cache: {} })).toThrow('entry map');
+    cache.clearL1();
+    expect(inboxPairEntries({ cache })).toEqual([]);
+  });
+
   it.runIf(Boolean(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT))('compares same-input full inbox keys on independent private HTTP hosts', async () => {
     const destination = evidenceDestination(process.env.PAPERCUSP_P011_INBOX_PAIR_REPORT)!;
     const directory = mkdtempSync(join(tmpdir(), 'papercusp-inbox-pair-'));
@@ -219,6 +246,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const { pathToFileURL } = require('node:url');
       const postgres = require('postgres');
       const preparePairCache = ${preparePairCache.toString()};
+      const inboxPairEntries = ${inboxPairEntries.toString()};
       const e = process.env, wait = ms => new Promise(r => setTimeout(r, ms));
       const hash = value => createHash('sha256').update(value).digest('hex');
       const report = { schemaVersion: 1, plane: 'isolated-current-build-operator-api', incomplete: true,
@@ -310,13 +338,16 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             // Warm dispatch/readiness before the resource baseline, then discard
             // that private cache. Counters/PSS are sampled before reading content.
             await call('coord:inbox', { directed: true, limit: 1, max_body_chars: 1 });
+            const warmEntries = (await client.evaluate('(' + inboxPairEntries.toString() + ") (globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value).length", { returnByValue: true })).result.value;
+            if (warmEntries !== 1) throw Error('Private pair warm cache namespace preflight failed: ' + warmEntries);
+            cohort.warmCacheEntries = warmEntries;
             cohort.cachePreflight = (await client.evaluate('(' + preparePairCache.toString() + ") (globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value)", { returnByValue: true })).result.value;
             const sample = async phase => {
               const started = performance.now();
               const memory = await readProcessMemory(client, { expectedPid: host.pid });
               const os = osMemory(host.pid); if (os.startTicks !== cohort.identity.startTicks) throw Error('PID identity changed');
               const children = descendants(host.pid); for (const row of children) seen.set(row.pid + ':' + row.startTicks, row);
-              const cache = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; const rows=[...s.cache.l1.map].filter(([key])=>key.includes('coord:inbox:')); return {enabled:s.cacheLayerOn, entries:rows.length, rows:rows.map(([,entry])=>entry.value.length)}; })()", { returnByValue: true })).result.value;
+              const cache = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; const rows=(" + inboxPairEntries.toString() + ")(s); return {enabled:s.cacheLayerOn, entries:rows.length, rows:rows.map(entry=>entry.value.length)}; })()", { returnByValue: true })).result.value;
               cohort.samples.push({ phase, ...memory, os, descendants: children, cache, observerMs: performance.now() - started }); publish();
             };
             await sample('before');
@@ -333,7 +364,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
               await sample('workload-' + window + '-end');
             }
             await wait(1000); await sample('completion-idle');
-            const content = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; return [...s.cache.l1.map].filter(([key])=>key.includes('coord:inbox:')).map(([,entry])=>{ const h=process.getBuiltinModule('crypto').createHash('sha256'); const rows=entry.value.slice().sort((a,b)=>a.msg_id.localeCompare(b.msg_id)); for(const row of rows) h.update(JSON.stringify([row.msg_id,row.body])); return {rows:rows.length,sha256:h.digest('hex'),stringCodeUnits:rows.reduce((n,row)=>n+row.body.length,0)}; }); })()", { returnByValue: true })).result.value;
+            const content = (await client.evaluate("(() => { const s=globalThis[Symbol.for('@papercusp/module-singleton.slots')].get('@papercusp/operator-core.operatorCache').value; return (" + inboxPairEntries.toString() + ")(s).map(entry=>{ const h=process.getBuiltinModule('crypto').createHash('sha256'); const rows=entry.value.slice().sort((a,b)=>a.msg_id.localeCompare(b.msg_id)); for(const row of rows) h.update(JSON.stringify([row.msg_id,row.body])); return {rows:rows.length,sha256:h.digest('hex'),stringCodeUnits:rows.reduce((n,row)=>n+row.body.length,0)}; }); })()", { returnByValue: true })).result.value;
             cohort.content = content;
             if (content.length !== (mode === 'baseline' ? 8 : 1) || content.some(row =>
                 row.rows !== cohort.fixture.rows || row.sha256 !== cohort.fixture.sha256 || row.stringCodeUnits !== cohort.fixture.stringCodeUnits))
