@@ -109,7 +109,11 @@ describe("staging lock attribution", () => {
       rmSync(join(fixture.binDir, "git"));
       rmSync(join(fixture.repo, "scripts/npm-install-safe.mjs"));
       rmSync(join(fixture.operator, "bin/bundle-host-freshness.mjs"));
-      symlinkSync(join(REPO_ROOT, "scripts/npm-install-safe.mjs"), join(fixture.repo, "scripts/npm-install-safe.mjs"));
+      // This CLI's direct-entry guard compares argv[1] with import.meta.url.
+      // Copy its entry file, as a real generation does, and link library imports.
+      writeFileSync(join(fixture.repo, "scripts/npm-install-safe.mjs"), readFileSync(join(REPO_ROOT, "scripts/npm-install-safe.mjs")));
+      symlinkSync(join(REPO_ROOT, "scripts/lib"), join(fixture.repo, "scripts/lib"), "dir");
+      symlinkSync(join(REPO_ROOT, "scripts/check-declared-deps-extracted.mjs"), join(fixture.repo, "scripts/check-declared-deps-extracted.mjs"));
       symlinkSync(join(REPO_ROOT, "apps/operator/bin/bundle-host-freshness.mjs"), join(fixture.operator, "bin/bundle-host-freshness.mjs"));
       writeFileSync(join(fixture.repo, ".gitignore"), "apps/operator/dist-host/\n");
       // These commits belong only to the temporary fixture, as in the existing
@@ -392,7 +396,8 @@ describe("staging lock attribution", () => {
       const command = line!
         .slice("ExecStartPre=".length)
         .replaceAll("%h", home)
-        .replaceAll("$$", "$");
+        .replaceAll("$$", "$")
+        .replaceAll("/tmp/papercup-staging-sync.lock", join(home, "fixture-sync.lock"));
       // systemd hands the quoted argument to bash -c; reproduce that split exactly.
       const match = /^\/usr\/bin\/bash -c '(.*)'$/.exec(command);
       expect(match).not.toBeNull();
