@@ -82,10 +82,205 @@ export function embedSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boole
   return env[EMBED_SIDECAR_ENABLE_ENV] === '1';
 }
 
-/** The loopback base URL of the host-local sidecar (port env-overridable). */
-export function embedSidecarLocalUrl(env: NodeJS.ProcessEnv = process.env): string {
-  const port = Number(env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
+function loopbackUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
+}
+
+/**
+ * P-530 (plan agent-capacity-and-cost-gcp-2026-09-30, WI-10005523): an explicit
+ * PAPERCUSP_EMBED_SIDECAR_PORT keeps the single host-wide port this spawner
+ * used before (EMBED_SIDECAR_DEFAULT_PORT is that historical value). Without it,
+ * each Server spawns its OWN sidecar on an ephemeral port and records where in
+ * its own data dir, so two tenants on one host never share a sidecar and one
+ * tenant's text is never embedded by another tenant's process (WI-10005481
+ * class). Null = ephemeral mode.
+ */
+export function embedSidecarFixedPort(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env[EMBED_SIDECAR_PORT_ENV]?.trim();
+  if (!raw) return null;
+  const port = Number(raw);
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+}
+
+/** P-530: what a Server records about the sidecar it spawned on an ephemeral port. */
+export interface EmbedSidecarRecord {
+  pid: number;
+  port: number;
+  /** process.getuid() of the Server that spawned it; null where the OS has no uids. */
+  uid: number | null;
+  startedAt: number;
+}
+
+export const EMBED_SIDECAR_RECORD_FILE = 'embed-sidecar.json';
+
+/** The record lives in the tenant's own data dir (PAPERCUSP_HOME, else
+ *  ~/.papercusp), which no other tenant can write. */
+export function embedSidecarRecordPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(papercuspDataDir(env), 'run', EMBED_SIDECAR_RECORD_FILE);
+}
+
+const isPort = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0 && (n as number) < 65536;
+
+/** Pure: parse a record file's text; null for anything malformed. */
+export function parseEmbedSidecarRecord(text: string): EmbedSidecarRecord | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (!Number.isInteger(r.pid) || (r.pid as number) <= 0 || !isPort(r.port)) return null;
+  if (r.uid !== null && !Number.isInteger(r.uid)) return null;
+  if (typeof r.startedAt !== 'number') return null;
+  return { pid: r.pid as number, port: r.port as number, uid: r.uid as number | null, startedAt: r.startedAt };
+}
+
+export function readEmbedSidecarRecord(env: NodeJS.ProcessEnv = process.env): EmbedSidecarRecord | null {
+  try {
+    return parseEmbedSidecarRecord(readFileSync(embedSidecarRecordPath(env), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Atomic 0600 write (tmp + rename) into a 0700 dir. A failure is logged, not
+ *  thrown: this Server still uses the child it holds; only sibling adoption is lost. */
+function writeEmbedSidecarRecord(rec: EmbedSidecarRecord, env: NodeJS.ProcessEnv = process.env): void {
+  const file = embedSidecarRecordPath(env);
+  try {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(rec), { mode: 0o600 });
+    renameSync(tmp, file);
+  } catch (err) {
+    console.warn('[embed-sidecar] could not record the sidecar address:', err instanceof Error ? err.message : err);
+  }
+}
+
+/** Remove the record only when it still names `pid` (a sibling may have replaced it). */
+function removeEmbedSidecarRecord(pid: number, env: NodeJS.ProcessEnv = process.env): void {
+  if (readEmbedSidecarRecord(env)?.pid !== pid) return;
+  try {
+    unlinkSync(embedSidecarRecordPath(env));
+  } catch {
+    // already gone
+  }
+}
+
+function ownUid(): number | null {
+  return typeof process.getuid === 'function' ? process.getuid() : null;
+}
+
+/** Is `pid` alive AND signalable by this process? EPERM means it belongs to
+ *  another uid, which for adoption is the same as gone. */
+function pidIsOurs(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Pure: the pid a /healthz payload reports, or null. */
+export function healthzPid(health: unknown): number | null {
+  const pid = health && typeof health === 'object' ? (health as { pid?: unknown }).pid : undefined;
+  return Number.isInteger(pid) ? (pid as number) : null;
+}
+
+/** Pure: the bound port a READY line announces (`… port=<n>`), or null. */
+export function parseEmbedSidecarReadyPort(line: string): number | null {
+  const m = /\bport=(\d+)\b/.exec(line);
+  const port = m ? Number(m[1]) : NaN;
+  return isPort(port) ? port : null;
+}
+
+export type EmbedSidecarAdoptVerdict = { adopt: true } | { adopt: false; reason: string };
+
+/**
+ * P-530, pure: may THIS process use the sidecar `record` names? Every check
+ * must pass: the record was written by this uid; its pid is alive and ours;
+ * on a host with a socket table, every listener on the port belongs to this
+ * uid (a stale record whose port another tenant has since bound is refused);
+ * and, when probed, /healthz reports the recorded pid. A host with no socket
+ * table (`listenerUids` null, not Linux) relies on the pid checks.
+ */
+export function judgeRecordedEmbedSidecar(input: {
+  record: EmbedSidecarRecord;
+  uid: number | null;
+  pidAlive: boolean;
+  listenerUids: number[] | null;
+  /** undefined = not probed (the sync address read); null = probed, no pid. */
+  healthPid?: number | null;
+}): EmbedSidecarAdoptVerdict {
+  const { record, uid } = input;
+  if (record.uid !== uid) return { adopt: false, reason: `recorded by uid ${record.uid}, this process is uid ${uid}` };
+  if (!input.pidAlive) return { adopt: false, reason: `recorded pid ${record.pid} is not running as this uid` };
+  if (input.listenerUids !== null && uid !== null) {
+    if (input.listenerUids.length === 0) return { adopt: false, reason: `nothing listens on port ${record.port}` };
+    if (!loopbackListenerOwnedBy(input.listenerUids, uid)) {
+      return { adopt: false, reason: `port ${record.port} is held by uid(s) ${input.listenerUids.join(',')}` };
+    }
+  }
+  if (input.healthPid !== undefined && input.healthPid !== record.pid) {
+    return { adopt: false, reason: `/healthz on port ${record.port} reports pid ${input.healthPid}, not ${record.pid}` };
+  }
+  return { adopt: true };
+}
+
+function judgeRecordNow(record: EmbedSidecarRecord, healthPid?: number | null): EmbedSidecarAdoptVerdict {
+  return judgeRecordedEmbedSidecar({
+    record,
+    uid: ownUid(),
+    pidAlive: pidIsOurs(record.pid),
+    listenerUids: loopbackListenerUids(record.port),
+    healthPid,
+  });
+}
+
+/** The URL of the child this process holds, once it has announced its port. */
+function childUrl(): string | null {
+  return spawnedPort !== null && isEmbedSidecarRunning() ? loopbackUrl(spawnedPort) : null;
+}
+
+/**
+ * The loopback base URL of THIS tenant's sidecar, or null when none is known.
+ * Fixed-port mode: always that port. Ephemeral mode (P-530): the child this
+ * process spawned, else a sibling's recorded sidecar that passes the
+ * synchronous ownership checks, else null (a lazily spawned sidecar that is
+ * not running now, e.g. after an idle exit). Read-only: never spawns.
+ */
+export function embedSidecarLocalUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const fixed = embedSidecarFixedPort(env);
+  if (fixed !== null) return loopbackUrl(fixed);
+  const own = childUrl();
+  if (own) return own;
+  const rec = readEmbedSidecarRecord(env);
+  return rec && judgeRecordNow(rec).adopt ? loopbackUrl(rec.port) : null;
+}
+
+/** P-530: a sibling Server of this tenant already runs a sidecar? Adopt it only
+ *  after the full check, /healthz pid included, and only when it is fit. */
+async function adoptRecordedEmbedSidecar(requiredCapabilities: readonly string[]): Promise<string | null> {
+  const rec = readEmbedSidecarRecord();
+  if (!rec) return null;
+  const url = loopbackUrl(rec.port);
+  const health = await probeSidecarHealth(url);
+  const verdict = judgeRecordNow(rec, healthzPid(health));
+  if (!verdict.adopt) {
+    console.log(`[embed-sidecar] not adopting the recorded sidecar at ${url}: ${verdict.reason}`);
+    return null;
+  }
+  const fitness = verifySidecarFitness(health, requiredCapabilities, EMBED_SIDECAR_LEGACY_CAPABILITIES);
+  if (!fitness.fit) {
+    // Unlike the fixed port, an unfit sibling does not block this Server: its
+    // own sidecar gets a port of its own.
+    console.error(describeUnfitSidecar(url, fitness));
+    return null;
+  }
+  return url;
 }
 
 /** Fetch and parse /healthz at `url`, or null if nothing healthy answers.
@@ -170,11 +365,16 @@ function scheduleRespawn(): void {
   respawnTimer = setTimeout(() => {
     respawnTimer = null;
     void (async () => {
-      // A likely reason OUR child died with the port contested: a sibling
-      // process's sidecar owns it. If something healthy answers, adopt it —
-      // respawning would just EADDRINUSE-crash into the circuit breaker.
-      if (await healthzAnswers(embedSidecarLocalUrl())) {
-        console.log('[embed-sidecar] port already served by a sibling process — adopting, not respawning');
+      // Fixed port: a likely reason OUR child died with the port contested is
+      // that a sibling process's sidecar owns it. If something healthy answers,
+      // adopt it — respawning would just EADDRINUSE-crash into the circuit
+      // breaker. Ephemeral port (P-530): nothing to contest; only a verified
+      // sibling of this tenant is a reason not to respawn.
+      const fixed = embedSidecarFixedPort();
+      const sibling =
+        fixed !== null ? ((await healthzAnswers(loopbackUrl(fixed))) ? loopbackUrl(fixed) : null) : await adoptRecordedEmbedSidecar([]);
+      if (sibling) {
+        console.log(`[embed-sidecar] ${sibling} already served by a sibling process — adopting, not respawning`);
         return;
       }
       await spawnEmbedSidecar().catch((err) => {
@@ -247,10 +447,13 @@ export async function spawnEmbedSidecar(): Promise<void> {
     spawnerPid: process.pid,
   });
 
+  const fixedPort = embedSidecarFixedPort();
   return new Promise<void>((resolve, reject) => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...plan.env,
+      // P-530: no explicit port → bind an ephemeral one; the READY line says which.
+      ...(fixedPort === null ? { [EMBED_SIDECAR_PORT_ENV]: '0' } : {}),
       // EI-8810 belt: the sidecar serves its OWN loopback port only — never the
       // parent's HTTP port or the background-worker role. A mode-divert miss in
       // the re-exec'd entry otherwise boots a full host on the PARENT's port
@@ -261,11 +464,17 @@ export async function spawnEmbedSidecar(): Promise<void> {
       PAPERCUSP_BACKGROUND_WORKERS: '0',
     };
 
-    sidecarProcess = spawn(plan.cmd, plan.args, {
+    const child = spawn(plan.cmd, plan.args, {
       env,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       detached: false,
     });
+    sidecarProcess = child;
+    /** P-530: the child is gone — forget its port and drop its record. */
+    const forgetChild = (): void => {
+      spawnedPort = null;
+      if (fixedPort === null && typeof child.pid === 'number') removeEmbedSidecarRecord(child.pid);
+    };
 
     const timeout = setTimeout(() => {
       if (!sidecarReady && sidecarProcess) {
@@ -297,6 +506,19 @@ export async function spawnEmbedSidecar(): Promise<void> {
         }
 
         if (line.includes(EMBED_SIDECAR_READY_LINE)) {
+          const port = parseEmbedSidecarReadyPort(line) ?? fixedPort;
+          if (port === null) {
+            // Ephemeral mode cannot address a child that did not say where it
+            // listens; a ready-but-unaddressable child is a failed spawn.
+            clearTimeout(timeout);
+            child.kill();
+            reject(new Error(`Embed sidecar READY line carried no port: ${line}`));
+            continue;
+          }
+          spawnedPort = port;
+          if (fixedPort === null && typeof child.pid === 'number') {
+            writeEmbedSidecarRecord({ pid: child.pid, port, uid: ownUid(), startedAt: Date.now() });
+          }
           sidecarReady = true;
           clearTimeout(timeout);
           resolve();
@@ -318,6 +540,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
       sidecarProcess = null;
       sidecarReady = false;
       idleExitPending = false;
+      forgetChild();
       reject(err);
     });
 
@@ -325,6 +548,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
       sidecarProcess = null;
       sidecarReady = false;
       idleExitPending = false;
+      forgetChild();
       if (classifyEmbedSidecarExit({ idleExitAnnounced, code }) === 'idle-exit') {
         console.log('[embed-sidecar] exited idle; the next embed re-launches it');
         // A caller that arrived during the idle shutdown is parked on
@@ -332,6 +556,11 @@ export async function spawnEmbedSidecar(): Promise<void> {
         if (readyWaiters.length > 0) void spawnEmbedSidecar().catch(() => undefined);
         return;
       }
+      // A caller parked on readyWaiters must not wait on a child that died
+      // before its READY line: wake it so it re-decides (P-530 parks callers
+      // until an ephemeral child announces its port).
+      for (const waiter of readyWaiters) waiter();
+      readyWaiters.length = 0;
       const msg = code !== null ? `exit code ${code}` : 'killed';
       if (!deliberateStop) {
         console.warn(`[embed-sidecar] died (${msg})`);
@@ -380,10 +609,16 @@ export function _setNoSidecarWarnUnderTest(enabled: boolean): void {
  * mirrors spawnInvokeOnceWithFallback's shape: failure returns null (caller
  * stays on its in-process path), never throws.
  *
- * Shared-fixed-port semantics: the port is ONE per host, so if ANY process
+ * Default (P-530, no PAPERCUSP_EMBED_SIDECAR_PORT): the sidecar binds an
+ * ephemeral port and this Server records it in its own data dir. A sibling
+ * process of the same tenant adopts it only after embedSidecarRecord checks
+ * (same uid, live pid, port held by this uid, /healthz pid matches); anything
+ * else gets this Server its own sidecar.
+ *
+ * Explicit fixed port: the port is ONE per host, so if a process of THIS uid
  * already serves it (this one earlier, or a sibling operator process), adopt
  * that instance instead of spawning a second child that would EADDRINUSE-die.
- * First process to need the sidecar spawns it; everyone else rides along.
+ * A port held by another uid is refused, never adopted.
  */
 export async function ensureEmbedSidecar(
   requiredCapabilities: readonly string[] = [],
@@ -419,31 +654,50 @@ export async function ensureEmbedSidecar(
     }
     return null;
   }
-  const url = embedSidecarLocalUrl();
+  const fixed = embedSidecarFixedPort();
   if (isEmbedSidecarRunning()) {
     // P-531: a child that announced an idle exit is still alive but shutting
     // down, so handing out its URL now would send the caller to a closing
     // server. spawnEmbedSidecar() parks this caller on readyWaiters, and the
     // exit handler re-launches immediately because a waiter is parked.
-    if (idleExitPending) await spawnEmbedSidecar();
-    return url;
+    // P-530: an ephemeral-port child has no address until its READY line, so
+    // a caller that arrives mid-startup waits for it the same way.
+    if (idleExitPending || (fixed === null && spawnedPort === null)) await spawnEmbedSidecar();
+    const own = childUrl() ?? (fixed !== null ? loopbackUrl(fixed) : null);
+    if (own) return own;
   }
-  // Sibling-owned? Liveness alone is NOT enough to adopt: the sibling may be a
-  // long-running bundle that predates the routes this caller needs, in which
-  // case adopting it means 404-forever (EI-19314150478401738).
-  const health = await probeSidecarHealth(url);
-  if (health !== null) {
-    const fitness = verifySidecarFitness(health, requiredCapabilities, EMBED_SIDECAR_LEGACY_CAPABILITIES);
-    if (fitness.fit) return url; // sibling-owned and capable — adopt
-    console.error(describeUnfitSidecar(url, fitness));
-    // The port is BOUND by that unfit sibling, so spawning here would just
-    // EADDRINUSE-crash into the circuit breaker. Refuse honestly instead.
-    return null;
+  if (fixed !== null) {
+    const url = loopbackUrl(fixed);
+    // Sibling-owned? Liveness alone is NOT enough to adopt: the sibling may be a
+    // long-running bundle that predates the routes this caller needs, in which
+    // case adopting it means 404-forever (EI-19314150478401738).
+    const health = await probeSidecarHealth(url);
+    if (health !== null) {
+      // P-530: and never another uid's (another tenant's) process, wherever
+      // the host can say who owns the port.
+      const uid = ownUid();
+      if (uid !== null && loopbackListenerOwnedBy(loopbackListenerUids(fixed), uid) === false) {
+        console.error(
+          `[embed-sidecar] ${url} is served by another user's process — not adopting it. ` +
+            `Unset ${EMBED_SIDECAR_PORT_ENV} so this Server spawns its own sidecar on a port of its own.`,
+        );
+        return null;
+      }
+      const fitness = verifySidecarFitness(health, requiredCapabilities, EMBED_SIDECAR_LEGACY_CAPABILITIES);
+      if (fitness.fit) return url; // sibling-owned and capable — adopt
+      console.error(describeUnfitSidecar(url, fitness));
+      // The port is BOUND by that unfit sibling, so spawning here would just
+      // EADDRINUSE-crash into the circuit breaker. Refuse honestly instead.
+      return null;
+    }
+  } else {
+    const sibling = await adoptRecordedEmbedSidecar(requiredCapabilities);
+    if (sibling) return sibling;
   }
   try {
     await spawnEmbedSidecar();
     registerEmbedSidecarShutdownHooks();
-    return url;
+    return childUrl() ?? (fixed !== null ? loopbackUrl(fixed) : null);
   } catch (err) {
     console.warn('[embed-sidecar] ensure failed (no sidecar → pure in-process engine):', err instanceof Error ? err.message : err);
     return null;
@@ -525,6 +779,7 @@ export function _resetEmbedSidecarSpawnStateForTests(): void {
   sidecarProcess = null;
   sidecarReady = false;
   idleExitPending = false;
+  spawnedPort = null;
   readyWaiters.length = 0;
 }
 
