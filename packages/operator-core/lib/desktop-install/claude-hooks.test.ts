@@ -58,6 +58,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/guard-operator-desktop.mjs`,
       `${DEST}/pretooluse-content-lint.mjs`,
       `${DEST}/pretooluse-secrets-guard.mjs`,
+      `${DEST}/pretooluse-restricted-egress-guard.mjs`,
       `${DEST}/pretooluse-nul-byte-edit-guard.mjs`,
       `${DEST}/pretooluse-control-bytes-content-guard.mjs`,
       `${DEST}/pretooluse-tool-prompt-weight-guard.mjs`,
@@ -72,6 +73,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // wrong matcher rides in unnoticed. (The `toEqual` above still pins install ORDER, which
     // is the part that carries meaning: hooks fire in registration order.)
     const matcherOf = (name: string): string | undefined => hookMatcherOf(cfg, 'PreToolUse', name);
+    // P-007 / BAR R-11: the client-native egress tools only — capability:bash is gated server-side.
+    expect(matcherOf('pretooluse-restricted-egress-guard.mjs')).toBe('Bash|WebFetch');
 
     expect(matcherOf('pretooluse-locks-acquire.sh')).toBe(FILE_WRITE_MATCHER);
     expect(matcherOf('pretooluse-activity-report.sh')).toBe('*');

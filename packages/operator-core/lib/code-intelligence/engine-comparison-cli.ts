@@ -123,7 +123,9 @@ async function runArms(ids: readonly CliArmId[], warmSamples: number, evidenceDi
     const started = Date.now();
     process.stdout.write(`[${new Date().toISOString()}] arm ${id}: start (load1=${os.loadavg()[0]?.toFixed(1)})\n`);
     const arm = await buildArm(id);
-    const report = await runEngineArm(arm, { warmSamples, cases: SELECTIVE_ACCEPTANCE_CORPUS }, deps);
+    // measuredAt is stamped HERE, at arm-run time, and persisted inside the report so aggregate() can derive a
+    // copy/clone-stable run identity from content (EI-24858052475884275); aggregate() itself never reads a clock.
+    const report: ArmReport = { ...(await runEngineArm(arm, { warmSamples, cases: SELECTIVE_ACCEPTANCE_CORPUS }, deps)), measuredAt: new Date().toISOString() };
     await fs.writeFile(path.join(evidenceDir, `report-${id}.json`), JSON.stringify(report, null, 2));
     const ok = report.cases.filter((c) => c.correct).length;
     process.stdout.write(`[${new Date().toISOString()}] arm ${id}: done in ${((Date.now() - started) / 1000).toFixed(0)}s — correct ${ok}/${report.cases.length}, fixtures ${report.fixtures.filter((f) => f.pass).length}/${report.fixtures.length}${report.error ? `, ERROR ${report.error}` : ''}\n`);
@@ -137,15 +139,16 @@ const nodeCounts = (out: string): string | null => {
 
 async function aggregate(evidenceDir: string): Promise<void> {
   const reports: ArmReport[] = [];
-  const reportMtimesMs: number[] = []; // run identity comes from the INPUT reports, never the clock (deriveRunMeta)
+  const measuredAts: (string | undefined)[] = []; // run identity comes from the INPUT reports' own measuredAt — never the clock, never file mtimes (deriveRunMeta)
   for (const id of ARM_ORDER) {
     const file = path.join(evidenceDir, `report-${id}.json`);
     const raw = await fs.readFile(file, 'utf8').catch(() => null);
-    if (raw !== null) reportMtimesMs.push((await fs.stat(file)).mtimeMs);
+    const parsed = raw === null ? null : (JSON.parse(raw) as ArmReport);
+    if (parsed !== null) measuredAts.push(parsed.measuredAt);
     reports.push(
       raw === null
         ? { armId: id, version: 'n/a', unavailable: `no report-${id}.json — arm was not run`, treeFingerprint: null, coldIndex: null, indexBytes: null, cases: [], fixtures: [], error: null }
-        : (JSON.parse(raw) as ArmReport),
+        : (parsed as ArmReport),
     );
   }
   const notes: string[] = [
@@ -166,7 +169,7 @@ async function aggregate(evidenceDir: string): Promise<void> {
     if (counts) notes.push(`${id} graph size from its cold analyze: ${counts}.`);
   }
   const caseIds = SELECTIVE_ACCEPTANCE_CORPUS.map((c) => c.id);
-  const meta: EngineRunMeta = deriveRunMeta(reportMtimesMs, preregHash(caseIds, 3));
+  const meta: EngineRunMeta = deriveRunMeta(measuredAts, preregHash(caseIds, 3));
   const bundle = renderEvidence(orderReports(reports), meta, notes);
   await fs.writeFile(path.join(evidenceDir, 'engine-comparison.md'), bundle.markdown);
   await fs.writeFile(path.join(evidenceDir, 'verdict.json'), bundle.verdictJson);

@@ -230,5 +230,6 @@
       "faultSurfaced": false
     }
   ],
-  "error": null
+  "error": null,
+  "measuredAt": "2026-10-01T21:05:36.226Z"
 }
