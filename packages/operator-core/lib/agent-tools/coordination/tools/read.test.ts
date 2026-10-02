@@ -15,9 +15,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../messages', () => ({ getMessageById: vi.fn(), resolveMessageRef: vi.fn() }));
+// WI-10005375: coord:read folds an escalation's sibling resolve/reopen events through this seam.
+vi.mock('../escalations', () => ({
+  foldEscalationResolution: vi.fn(async (record: unknown) => record),
+}));
 
 import { resolveMessageRef } from '../messages';
+import { foldEscalationResolution } from '../escalations';
+import { mockResolvedOnceTyped } from '../../../testing/typed-mock';
 const resolveRef = vi.mocked(resolveMessageRef);
+const foldEscalation = vi.mocked(foldEscalationResolution);
+type EscalationFixture = Parameters<typeof foldEscalationResolution>[0];
 const tool = (await import('./read')).default;
 
 const envelope = (msgId: string, body = 'x'.repeat(2615)) => ({
@@ -122,6 +130,43 @@ describe('coord:read', () => {
 
     expect(out).toMatchObject({ ok: true, found: false, message: null });
     expect(out.detail).toContain('NOT a full msg_id');
+  });
+
+  it('WI-10005375: an escalation is returned with its sibling resolution FOLDED in', async () => {
+    // The stored escalation record says resolved:null forever (resolution is a sibling
+    // event). Returning it raw made a withdrawn ask read as still open.
+    const raw: EscalationFixture = {
+      ...envelope('muqn4z3z'),
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'question',
+      resolved: null,
+    };
+    mockResolvedOnceTyped(resolveRef, { status: 'found', msgId: 'muqn4z3z', message: raw, resolvedFrom: 'exact' });
+    const resolved: NonNullable<EscalationFixture['resolved']> = {
+      by: 'su-4d390264',
+      choice: 'superseded',
+      ts: '2026-10-02T07:54:42Z',
+    };
+    mockResolvedOnceTyped(foldEscalation, { ...raw, resolved });
+
+    const out = await run({ msg_id: 'muqn4z3z' });
+
+    expect(foldEscalation).toHaveBeenCalledTimes(1);
+    expect(foldEscalation).toHaveBeenCalledWith(raw);
+    expect(out).toMatchObject({ ok: true, found: true });
+    expect(out.message.resolved).toEqual(resolved);
+  });
+
+  it('WI-10005375: a non-escalation message is never routed through the escalation fold', async () => {
+    mockResolvedOnceTyped(resolveRef, {
+      status: 'found',
+      msgId: 'mrh4rf15',
+      message: { ...envelope('mrh4rf15'), kind: 'message' },
+      resolvedFrom: 'exact',
+    });
+    await run({ msg_id: 'mrh4rf15' });
+    expect(foldEscalation).not.toHaveBeenCalled();
   });
 });
 

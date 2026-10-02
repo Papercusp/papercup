@@ -92,11 +92,16 @@ beforeEach(() => {
 describe('plans:evaluate-spec-test-adequacy handler', () => {
   it('replays only the legacy supersession cohort as of card creation and labels freshness audit-only', async () => {
     const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
-    const historicalBinding = {
+    const historicalBinding: Awaited<ReturnType<typeof listSpecEvidence>>[number] = {
       id: 19999,
       workItemId: 'WI-10005377',
       planSlug: 'plan-a',
       specId: 'SPEC-001',
+      sourceValId: null,
+      coverageEvidenceRef: null,
+      testRunProvenance: null,
+      bindingFingerprint: 'sha256:binding-19999',
+      createdBy: 'su-test',
       specRevision: 1,
       currentRevision: 2,
       specFingerprint: 'sha256:spec-001',
@@ -121,7 +126,17 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       currentness: {
         overall: 'current',
         provenance: 'server-measured',
-        dimensions: { spec: 'current', source: 'current', test: 'current' },
+        comparisonSupplied: true,
+        dimensions: {
+          spec: 'current',
+          source: 'current',
+          test: 'current',
+          fixture: 'current',
+          rubric: 'current',
+          environment: 'current',
+          coverageEvidence: 'current',
+          testRun: 'current',
+        },
         staleReasons: [],
         unknownReasons: [],
       },
@@ -133,7 +148,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       createdAt: '2026-10-02T01:02:00.000Z',
       withdrawal: null,
     };
-    listEvidence.mockResolvedValue([historicalBinding] as never);
+    mockResolvedTyped(listEvidence, [historicalBinding]);
     listClauses.mockResolvedValue([clause('active')]);
 
     const result = await replaySpecTestAdequacyForHistoricalAudit({

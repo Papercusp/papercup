@@ -17,9 +17,10 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_bas
 import type { AgentIdentity } from './identity';
 import { sendMessage, resolveMessageRef, getMessageById } from './messages';
 import { openHandoff } from './handoffs';
-import { openEscalation, resolveEscalation } from './escalations';
-import { coordWorkspaceId } from './log';
+import { openEscalation, reopenEscalation, resolveEscalation } from './escalations';
+import { coordHasPgFastPath, coordWorkspaceId } from './log';
 import ackTool from './tools/ack';
+import readTool from './tools/read';
 
 let fx: BaselineCoordFixture;
 
@@ -264,5 +265,37 @@ describe('resolveMessageRef (WI-6725)', () => {
 
     const res = await resolveMessageRef(middle);
     expect(res.status).toBe('not-found');
+  });
+});
+
+/**
+ * WI-10005375 — coord:read returned the stored escalation record, which says resolved:null by
+ * construction (the resolution is a sibling `escalation_resolved` event). On PG the fold now
+ * reads ONLY that escalation's resolve/reopen rows (coord_event_log_related_msg_id_idx), so this
+ * pins the new targeted SQL against real Postgres through the real coord:read handler.
+ */
+describe('coord:read folds an escalation resolution on Postgres (WI-10005375)', () => {
+  async function coordRead(msgId: string): Promise<{ found: boolean; message: { resolved?: { choice?: string } | null } | null }> {
+    const result = await readTool.handler({ msg_id: msgId }, {} as never);
+    return (result as { data?: unknown }).data as never;
+  }
+
+  it('a resolved escalation reads resolved, an unrelated one stays open, and a reopen reads open again', async () => {
+    // Positive control: this must drive the targeted PG read, not the in-memory replay.
+    expect(coordHasPgFastPath()).toBe(true);
+    const target = await openEscalation(ASKER, { severity: 'question', summary: 'withdrawn ask' });
+    const other = await openEscalation(ASKER, { severity: 'question', summary: 'still-open ask' });
+    expect(target.msg_id).not.toBe(other.msg_id);
+
+    const resolved = await resolveEscalation({ msg_id: target.msg_id, choice: 'superseded', resolver: ASKER.ownerId });
+    expect(typeof resolved).not.toBe('string');
+
+    const before = await coordRead(target.msg_id);
+    expect(before.found).toBe(true);
+    expect(before.message?.resolved?.choice).toBe('superseded');
+    expect((await coordRead(other.msg_id)).message?.resolved ?? null).toBeNull();
+
+    await reopenEscalation({ msg_id: target.msg_id, by: 'owner', note: 'not withdrawn after all' });
+    expect((await coordRead(target.msg_id)).message?.resolved ?? null).toBeNull();
   });
 });

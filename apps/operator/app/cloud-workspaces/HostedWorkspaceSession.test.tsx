@@ -21,6 +21,7 @@ const M = vi.hoisted(() => {
     writeln = vi.fn();
     getSelection = vi.fn(() => "");
     onData = vi.fn();
+    attachCustomKeyEventHandler = vi.fn<(handler: (event: KeyboardEvent) => boolean) => void>();
 
     constructor() {
       M.terminals.push(this);
@@ -147,6 +148,21 @@ async function connected() {
 }
 
 describe("tutorial host binding receipts", () => {
+  it("lets observers navigate with Tab and keeps a controller's terminal completion with a backward exit", async () => {
+    render(<HostedWorkspaceSession hostId="host" routeLabel="route" workspaceName="Workspace" />);
+    const socket = await connected();
+    const handler = M.terminals[0].attachCustomKeyEventHandler.mock.calls[0][0];
+    const tab = (shiftKey = false) => new KeyboardEvent("keydown", { key: "Tab", shiftKey });
+    expect(handler(tab())).toBe(false);
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "observer", binding: { generation: 1, hostedSessionId: "session" } }) }));
+    expect(handler(tab())).toBe(false);
+    expect(handler(tab(true))).toBe(false);
+    expect(handler(new KeyboardEvent("keydown", { key: "ArrowUp" }))).toBe(true);
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) }));
+    expect(handler(tab())).toBe(true);
+    expect(handler(tab(true))).toBe(false);
+  });
+
   it("waits for an authorized ticket and validated session.bound; sign-in, PTY output and stale sockets cannot certify a host", async () => {
     const onWorkspaceBound = vi.fn();
     const onWorkspaceIdChange = vi.fn();

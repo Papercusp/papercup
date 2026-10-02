@@ -408,6 +408,12 @@ export function HostedWorkspaceSession({
       new WebLinksAddon((_, url) => window.open(url, "_blank", "noopener")),
     );
     terminal.open(terminalContainerRef.current);
+    // Read-only viewers have no PTY input to send. Preserve browser focus
+    // navigation, and give controllers a backward exit from the terminal.
+    terminal.attachCustomKeyEventHandler((event) =>
+      event.key !== "Tab" ||
+      (roleRef.current === "controller" && !event.shiftKey),
+    );
     try {
       fit.fit();
     } catch {
@@ -1009,6 +1015,7 @@ export function HostedWorkspaceSession({
             ) : null}
           </div>
           <div className={styles.toolbar} aria-label="Terminal actions">
+            <p>Tab moves between controls while observing. Shift+Tab returns to the session controls.</p>
             <button type="button" onClick={() => void copy()} disabled={!live}>
               <Clipboard size={12} aria-hidden="true" /> Copy
             </button>

@@ -1201,35 +1201,33 @@ export async function resolveEscalationsBatch(
  * The resolve/reopen events of ONE escalation. WI-10005375: the PG path reads only rows whose
  * `related_msg_id` names it (coord_event_log_related_msg_id_idx), never the whole surface, so a
  * single-record read (coord:read) can afford to fold. Non-PG seams keep the full replay.
+ * On PG a query error PROPAGATES (as findMessageIdsByPrefix, D-011): falling back to the replay
+ * would hide a broken query behind a correct-looking answer, and its own tests could not tell.
  */
 async function loadResolutionEventsFor(msgId: string): Promise<{
   resolves: EscalationResolvedEvent[];
   reopens: EscalationReopenedEvent[];
 }> {
   if (coordHasPgFastPath()) {
-    try {
-      const sql = coordSql();
-      const rows = await sql<{ body: unknown }[]>`
-        SELECT body
-          FROM harness_shared.coord_event_log
-         WHERE body ? 'related_msg_id'
-           AND body->>'related_msg_id' = ${msgId}
-           AND workspace_id = ${coordWorkspaceId()}
-           AND surface = 'escalations'
-           AND body->>'kind' IN ('escalation_resolved', 'escalation_reopened')
-         ORDER BY id
-      `;
-      const resolves: EscalationResolvedEvent[] = [];
-      const reopens: EscalationReopenedEvent[] = [];
-      for (const row of rows) {
-        const event = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
-        if (event?.kind === 'escalation_resolved') resolves.push(event as EscalationResolvedEvent);
-        else if (event?.kind === 'escalation_reopened') reopens.push(event as EscalationReopenedEvent);
-      }
-      return { resolves, reopens };
-    } catch {
-      // Fall through to the replay: a failed targeted read must not report "unresolved".
+    const sql = coordSql();
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE body ? 'related_msg_id'
+         AND body->>'related_msg_id' = ${msgId}
+         AND workspace_id = ${coordWorkspaceId()}
+         AND surface = 'escalations'
+         AND body->>'kind' IN ('escalation_resolved', 'escalation_reopened')
+       ORDER BY id
+    `;
+    const resolves: EscalationResolvedEvent[] = [];
+    const reopens: EscalationReopenedEvent[] = [];
+    for (const row of rows) {
+      const event = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as { kind?: unknown } | null;
+      if (event?.kind === 'escalation_resolved') resolves.push(event as EscalationResolvedEvent);
+      else if (event?.kind === 'escalation_reopened') reopens.push(event as EscalationReopenedEvent);
     }
+    return { resolves, reopens };
   }
   const { resolves, reopens } = await loadEscalations();
   return {
