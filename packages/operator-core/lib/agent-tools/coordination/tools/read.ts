@@ -28,6 +28,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { resolveMessageRef } from '../messages';
+import { foldEscalationResolution } from '../escalations';
+import type { EscalationRecord } from '@papercusp/coordination/core';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_READ_ROLES } from '../roles';
 import { disclosureSubject } from '../../_disclosure-subject';
@@ -83,6 +85,11 @@ export default defineTool({
     // ambiguous one says so with candidates; only a genuine miss is found:false.
     const resolution = await resolveMessageRef(args.msg_id);
     let message = resolution.status === 'found' ? resolution.message : null;
+    // WI-10005375: an escalation resolves by a SIBLING event, so the original record always says
+    // resolved:null. Fold the sibling in, or a withdrawn ask reads as still open.
+    if (message?.kind === 'escalation') {
+      message = (await foldEscalationResolution(message as EscalationRecord)) as typeof message;
+    }
     // personal-data-reader-set-labels P-006 / D-006: the stub is all a plain read
     // returns. Opening records the sender's label snapshot on this reader in the
     // same transaction that returns the content.
