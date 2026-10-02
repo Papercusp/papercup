@@ -2013,7 +2013,11 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       // broad 900-second default until its caller kills the wrapper.
       expect(r.stderr).toContain('waiting up to 1s');
       expect(r.stderr).toContain('[pc-heavy] slot acquired — starting real work');
-      expect(waited).toBeLessThan(5000);
+      // Upper bound = just under runSync's 30s spawn kill (see the sibling
+      // EI-20223367668302814 test): load can stretch the 1s path to ~23s, but a
+      // broad 900s wait is killed before the landmark above prints.
+      expect(r.error).toBeUndefined();
+      expect(waited).toBeLessThan(29_000);
     } finally {
       killGroup(holder);
     }
