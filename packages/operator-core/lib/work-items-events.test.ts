@@ -1064,6 +1064,8 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
       harness: 'email',
       summary: `${dependent.id} became actionable after WI-ROOT settled`,
       source: 'system:plan-run-successor-dispatch',
+      // WI-10004815: the lane restore may have claimed it since the snapshot.
+      wakeRetained: false,
     });
     const keys = emit.mock.calls.map((call) => call[0].key);
     expect(keys).toContain(`work-item:unblocked:${dependent.id}`);

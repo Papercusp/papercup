@@ -164,7 +164,11 @@ describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family 
     await blockByIssue('F-blocked', 'EI-1');
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
 
-    await wi.setWorkItemState('EI-1', 'resolved', { by: 'integration-test', completionRef: 'readiness' });
+    const __probeSet = await wi.setWorkItemState('EI-1', 'resolved', { by: 'integration-test', completionRef: 'readiness' }).catch((e: unknown) => ({ __err: String(e) }));
+    // WI5224-PROBE (temporary)
+    console.log('WI5224-PROBE set=', JSON.stringify(__probeSet)?.slice(0, 600));
+    console.log('WI5224-PROBE rows=', JSON.stringify(await db.sql`SELECT feature_id, item_kind, status, terminal_reason, taken_by, workspace_id, harness_slug FROM harness_shared.work_items`));
+    console.log('WI5224-PROBE deps=', JSON.stringify(await db.sql`SELECT * FROM harness_shared.work_item_deps`));
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
   });
 

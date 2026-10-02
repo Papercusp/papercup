@@ -3457,6 +3457,12 @@ export interface StrandedRepairQueueSnapshot {
   fixerAlive: boolean | null;
   /** Independent gate-owner oracle; null means ownership could not be measured. */
   gateOwnership: GateOwnershipAssessment | null;
+  /**
+   * The gate holder's session state from the same ownership read (WI-10005262). Only consulted
+   * for `lease-expired`: a lapsed claim lease does not mean the holder left — a live holder
+   * waiting on a long verify run lets its lease lapse while still driving the gate.
+   */
+  gateHolderSessionState?: SessionState | null;
   /** The queue policy's own current decision kind (e.g. 'wait-for-fixer', 'hold-exhausted'). */
   decision: string;
   manifest: { legs: number; red: number; admitted: number; green: number; pathless: number } | null;
@@ -3476,8 +3482,12 @@ export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | nul
   if (!s || !Number.isFinite(s.ageEscalationRung) || s.ageEscalationRung < 1) {
     return { alarm: false, rung: 0, stranded: false, reason: null };
   }
+  // A lapsed lease is an absent owner only when the holder is not positively present — the
+  // same present set assessGateOwnership uses for a held claim (live | parked | recorded).
+  const holderPresent = s.gateHolderSessionState === 'live' || s.gateHolderSessionState === 'parked' ||
+    s.gateHolderSessionState === 'recorded';
   const ownerAbsent = s.gateOwnership === 'unowned' || s.gateOwnership === 'claimable' ||
-    s.gateOwnership === 'lease-expired' || s.gateOwnership === 'held-by-ended-session';
+    (s.gateOwnership === 'lease-expired' && !holderPresent) || s.gateOwnership === 'held-by-ended-session';
   const fixerAbsent = !s.fixerSpawnId || s.fixerAlive === false;
   const stranded = s.phase === 'awaiting-fixer' && fixerAbsent && ownerAbsent;
   const hours = Math.round(s.ageMs / 3_600_000);
@@ -3499,7 +3509,9 @@ export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | nul
     reason:
       `Frozen candidate ${s.candidate.slice(0, 12)} has held main for ~${hours}h in phase '${s.phase}' ` +
       `(age rung ${s.ageEscalationRung}, ${s.attempts} fixer attempt(s); ${fixer}; ` +
-      `gate ownership ${s.gateOwnership ?? 'UNKNOWN'}; queue decision '${s.decision}').` +
+      `gate ownership ${s.gateOwnership ?? 'UNKNOWN'}` +
+      `${s.gateOwnership === 'lease-expired' ? ` (holder ${s.gateHolderSessionState ?? 'UNKNOWN'})` : ''}; ` +
+      `queue decision '${s.decision}').` +
       m +
       (stranded
         ? ' STRANDED SHAPE: awaiting a fixer with none live — the queue cannot leave awaiting-fixer until one ' +

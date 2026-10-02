@@ -50,11 +50,12 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { setMode } from '../modes/store';
 import { getOrgPg } from '@papercusp/db-org';
 import { readGoalHistoryContext } from '../prior-attempt-context';
+import { isHarnessInScope } from '../work-scope-policy';
 
 export interface AutoStartGoalInput {
   /** Workspace to file the goal under (default: the active workspace). */
   workspaceId?: string;
-  /** Concrete harness, or Scout's workspace sentinel (resolved to its registered home Pot). */
+  /** Scout source harness, or its workspace sentinel; an out-of-scope hive is re-homed for execution. */
   harnessSlug: string;
   /** The outcome, stated so its achievement is checkable. */
   title: string;
@@ -112,19 +113,37 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   const sourceScope = input.harnessSlug?.trim();
   if (!sourceScope) throw new Error('no harness in scope — goals are filed against an install_slug');
   let installSlug = sourceScope;
-  if (sourceScope === workspaceId) {
-    // EI-22762141222831537: Scout's install key can be a workspace sentinel,
-    // but a GOAL's install_slug must remain a real Pot for subsequent restarts.
-    // Resolve through the existing home-Pot policy BEFORE any goal/mode writes,
-    // validating even an env-selected home against this workspace's registry.
-    // A genuinely registered same-named harness is not a sentinel.
+  const sourceInScope = isHarnessInScope(sourceScope);
+  if (sourceScope === workspaceId || !sourceInScope) {
     const { loadHarnessRegistry } = await import('../harness-registry');
     const registry = await loadHarnessRegistry(workspaceId);
-    if (!registry.projects.some((project) => project.slug === sourceScope)) {
+    const sourceProject = registry.projects.find((project) => project.slug === sourceScope);
+    const workspaceSentinel = sourceScope === workspaceId && !sourceProject;
+    const outOfScopeHive = !sourceInScope && sourceProject?.harness_kind === 'hive';
+
+    // EI-22762141222831537: Scout's install key can be a workspace sentinel,
+    // but a GOAL's install_slug must remain a real Pot for subsequent restarts.
+    // Also re-home a registered source hive outside work-scope: its spawned
+    // holder is confined to that hive and cannot later place work or launch a
+    // fleet into the workspace's allowed home Pot. Keep registered, in-scope
+    // harnesses concrete; do not silently broaden those caller choices.
+    if (!workspaceSentinel && !outOfScopeHive && !sourceInScope) {
+      throw new Error(
+        `out-of-scope Scout source '${sourceScope}' is not a registered hive — nothing created or launched`,
+      );
+    }
+    if (workspaceSentinel || outOfScopeHive) {
+      // Resolve through the existing home-Pot policy BEFORE any goal/mode
+      // writes, validating even an env-selected home against this workspace's
+      // registry and active execution scope.
       const { resolveHomePotSlug } = await import('../agent-tools/pot/_resolve');
       const home = await resolveHomePotSlug(workspaceId);
-      if (!home || !registry.projects.some((project) => project.slug === home && project.harness_kind === 'hive')) {
-        throw new Error('workspace Scout goal has no registered home Pot — nothing created or launched');
+      if (
+        !home ||
+        !registry.projects.some((project) => project.slug === home && project.harness_kind === 'hive') ||
+        !isHarnessInScope(home)
+      ) {
+        throw new Error('workspace Scout goal has no registered home Pot in work-scope — nothing created or launched');
       }
       installSlug = home;
     }

@@ -72,6 +72,17 @@ vi.mock('../harness-registry', () => ({
 vi.mock('../agent-tools/pot/_resolve', () => ({
   resolveHomePotSlug: vi.fn(async () => 'home-pot'),
 }));
+vi.mock('../work-scope-policy', async (orig) => {
+  const actual = await orig<typeof import('../work-scope-policy')>();
+  return {
+    ...actual,
+    isHarnessInScope: (slug: string | null | undefined) =>
+      actual.isHarnessInScope(
+        slug,
+        workScopePolicyMock.policy as Parameters<typeof actual.isHarnessInScope>[1],
+      ),
+  };
+});
 vi.mock('../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
 vi.mock('../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3070' }));
 vi.mock('../console-launcher', () => ({
@@ -99,6 +110,9 @@ const goalLaunchMocks = vi.hoisted(() => ({
   ),
 }));
 const goalHistoryMocks = vi.hoisted(() => ({ read: vi.fn() }));
+const workScopePolicyMock = vi.hoisted(() => ({
+  policy: null as { mode: 'enforce' | 'off'; allowHarnesses: string[] } | null,
+}));
 
 // The brief's own content is pinned in ../agent-tools/goals/start.test.ts;
 // mocking it here keeps this file off the whole tool-module graph.
@@ -209,6 +223,7 @@ beforeEach(() => {
     projects: [{ slug: 'home-pot', harness_kind: 'hive' }],
   } as Awaited<ReturnType<typeof loadHarnessRegistry>>);
   vi.mocked(resolveHomePotSlug).mockResolvedValue('home-pot');
+  workScopePolicyMock.policy = null;
   goalLaunchMocks.buildBrief.mockImplementation(
     (o: { goalId: string; portfolio?: unknown }) => `kickoff for ${o.goalId}`,
   );
@@ -304,6 +319,51 @@ describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', 
     expect(spawn.envelope.greetingCmd).toContain('--harness=home-pot');
     expect(spawn.envelope.greetingCmd).toContain(`--goal-bootstrap-subject=${result.goalId}`);
     expect(spawn.envelope.greetingCmd).not.toContain('--harness=ws-test');
+  });
+
+  it('re-homes a registered source hive outside work-scope to the executable home Pot', async () => {
+    workScopePolicyMock.policy = {
+      mode: 'enforce',
+      allowHarnesses: ['home-pot', 'papercusp', 'portal'],
+    };
+    vi.mocked(loadHarnessRegistry).mockResolvedValue({
+      projects: [
+        { slug: 'home-pot', harness_kind: 'hive' },
+        { slug: 'sb-devboard-hive', harness_kind: 'hive' },
+      ],
+    } as Awaited<ReturnType<typeof loadHarnessRegistry>>);
+
+    const result = await call({ workspaceId: 'ws-test', harnessSlug: 'sb-devboard-hive' });
+
+    const values = sqlLog.find((entry) => /INSERT/i.test(entry.text))!.values;
+    expect(values[1]).toBe('home-pot');
+    expect(values.some((value) => typeof value === 'string' && value.includes('"scoutSourceScope":"sb-devboard-hive"'))).toBe(true);
+    expect(resolveHomePotSlug).toHaveBeenCalledWith('ws-test');
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-test', slug: 'home-pot' }),
+    );
+    const spawn = spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } };
+    expect(spawn.envelope.greetingCmd).toContain('--harness=home-pot');
+    expect(spawn.envelope.greetingCmd).not.toContain('--harness=sb-devboard-hive');
+    expect(result.reusedExistingGoal).toBe(false);
+  });
+
+  it('refuses an out-of-scope source before writes when its home Pot is not allowed', async () => {
+    workScopePolicyMock.policy = { mode: 'enforce', allowHarnesses: ['portal'] };
+    vi.mocked(loadHarnessRegistry).mockResolvedValue({
+      projects: [
+        { slug: 'home-pot', harness_kind: 'hive' },
+        { slug: 'sb-devboard-hive', harness_kind: 'hive' },
+      ],
+    } as Awaited<ReturnType<typeof loadHarnessRegistry>>);
+
+    await expect(call({ workspaceId: 'ws-test', harnessSlug: 'sb-devboard-hive' })).rejects.toThrow(
+      /no registered home Pot in work-scope/,
+    );
+    expect(order).toEqual([]);
+    expect(sqlTag.reserve).not.toHaveBeenCalled();
+    expect(buildConsoleEnvelope).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('preserves a concrete per-harness launch instead of broadening every Scout goal', async () => {

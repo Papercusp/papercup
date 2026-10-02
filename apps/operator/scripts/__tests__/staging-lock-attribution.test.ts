@@ -231,14 +231,58 @@ describe("staging lock attribution", () => {
     }
   });
 
+  // WI-10005259: the drop-in is symlinked live from the canonical tree but reads the
+  // helper from papercusp-staging.current, one generation behind. A generation without
+  // the helper crash-looped :3170 (status 127). Run the REAL ExecStartPre the way systemd
+  // would (expand %h and $$) against a generation that lacks the helper.
+  it("ExecStartPre still bundles under the shared flock when the generation lacks the helper", () => {
+    const line = readFileSync(DROPIN, "utf8")
+      .split("\n")
+      .find((l) => l.startsWith("ExecStartPre="));
+    expect(line).toBeDefined();
+    const home = makeTempDir("staging-dropin-home-");
+    try {
+      const root = join(home, "papercupai-workspace/papercusp-staging.current");
+      const bin = join(root, "apps/operator/bin");
+      mkdirSync(bin, { recursive: true });
+      const marker = join(home, "bundled");
+      writeFileSync(join(bin, "bundle-host.sh"), `#!/usr/bin/env bash\necho ran > "${marker}"\n`, {
+        mode: 0o755,
+      });
+      expect(existsSync(join(root, "apps/operator/scripts/systemd/staging-lock-attribution.sh"))).toBe(
+        false,
+      );
+      const command = line!
+        .slice("ExecStartPre=".length)
+        .replaceAll("%h", home)
+        .replaceAll("$$", "$");
+      // systemd hands the quoted argument to bash -c; reproduce that split exactly.
+      const match = /^\/usr\/bin\/bash -c '(.*)'$/.exec(command);
+      expect(match).not.toBeNull();
+      const result = spawnSync("/usr/bin/bash", ["-c", match![1]], {
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      expect(result.status).toBe(0);
+      expect(readFileSync(marker, "utf8").trim()).toBe("ran");
+      expect(result.stderr).toContain("is absent from this staging generation");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("wires the API start/post records and staging-sync lock transitions", () => {
     const dropin = readFileSync(DROPIN, "utf8");
     const sync = readFileSync(SYNC, "utf8");
     expect(dropin).toContain(
-      "ExecStartPre=/usr/bin/bash %h/papercupai-workspace/papercusp-staging.current/apps/operator/scripts/systemd/staging-lock-attribution.sh api-pre",
+      'helper="$$root/apps/operator/scripts/systemd/staging-lock-attribution.sh"',
     );
     expect(dropin).toContain(
-      "ExecStartPost=/usr/bin/bash %h/papercupai-workspace/papercusp-staging.current/apps/operator/scripts/systemd/staging-lock-attribution.sh api-post",
+      'exec /usr/bin/bash "$$helper" api-pre /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"',
+    );
+    // Best-effort ('-'): a missing or failing post hook must not fail the unit.
+    expect(dropin).toContain(
+      "ExecStartPost=-/usr/bin/bash %h/papercupai-workspace/papercusp-staging.current/apps/operator/scripts/systemd/staging-lock-attribution.sh api-post",
     );
     const attempt = sync.indexOf(
       "state=wait_start lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=exclusive",

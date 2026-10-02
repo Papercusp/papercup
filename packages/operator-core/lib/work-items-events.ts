@@ -857,6 +857,12 @@ async function emitUnblockedForClearedEdges(
           harness: execution.appHarnessSlug,
           summary: `${dependent.id} became actionable after ${clearedById} settled`,
           source: 'system:plan-run-successor-dispatch',
+          // WI-10004815: `dependent` is a snapshot read before this call. The
+          // plan-lane restore (system:plan-run-lane-dispatch) can assign and
+          // wake the same stable agent inside that window. The claim inside the
+          // dispatch is the real check, so only the writer whose claim actually
+          // assigns the row spends the wake; a retained row is not woken twice.
+          wakeRetained: false,
         });
         if (!dispatched.ok) {
           dispatchFailure = new Error(

@@ -50,6 +50,12 @@ import { getFlag } from '@papercusp/flags/server';
 import { GOAL_MODE } from '../modes/goal-session';
 import { getGoalTransitionExecutor } from '@papercusp/agent-mcp';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
+import {
+  isInteractiveUsageUnmeasuredReason,
+  readInteractiveUsageFreshness,
+  type InteractiveUsageFreshness,
+  type InteractiveUsageUnmeasuredReason,
+} from '../interactive-usage/freshness';
 import { appendGoalWriteAudit } from './write-audit';
 import {
   breachedTripwires,
@@ -134,7 +140,10 @@ export const GOAL_SPEND_SCOPE_RELATIONS = {
 } as const;
 
 /** Why `spentCents` is null. Only `unpriced-lineage-samples` means spend exists. */
-export type GoalSpendUnmeasuredReason = 'no-lineage-samples' | 'unpriced-lineage-samples';
+export type GoalSpendUnmeasuredReason =
+  | 'no-lineage-samples'
+  | 'unpriced-lineage-samples'
+  | InteractiveUsageUnmeasuredReason;
 
 /** The SESSION leg's contribution — samples the pot leg cannot see. */
 export interface GoalSessionSpend {
@@ -177,6 +186,8 @@ export interface GoalSpendRollup {
   spentCents: number | null;
   /** Why `spentCents` is null; null when it is measured. */
   unmeasuredReason: GoalSpendUnmeasuredReason | null;
+  /** Shared source-wide ingestion health for the usage rows behind this read. */
+  interactiveUsageFreshness: InteractiveUsageFreshness;
   /** The budget window every leg was judged over; null ⇒ the goal's lifetime. */
   windowSec: number | null;
   /** POT leg + diagnostic SESSION leg, in integer cents. Never authoritative. */
@@ -400,7 +411,14 @@ export async function lineageSpendForGoal(
  */
 export async function computeGoalSpendRollup(
   sql: Sql,
-  opts: { workspaceId: string; goalId: string; windowSec?: number | null; nowMs?: number },
+  opts: {
+    workspaceId: string;
+    goalId: string;
+    windowSec?: number | null;
+    nowMs?: number;
+    /** One source-wide read can be shared by the sweep across goals. */
+    interactiveUsageFreshness?: InteractiveUsageFreshness;
+  },
 ): Promise<GoalSpendRollup> {
   const windowSec = opts.windowSec ?? null;
   const legOpts = {
@@ -408,22 +426,32 @@ export async function computeGoalSpendRollup(
     goalId: opts.goalId,
     ...(windowSec === null ? {} : { sinceMs: (opts.nowMs ?? Date.now()) - windowSec * 1000 }),
   };
-  const [pot, session, lineage] = await Promise.all([
+  const [pot, session, lineage, interactiveUsageFreshness] = await Promise.all([
     goalSpend(sql, legOpts),
     sessionSpendForGoal(sql, legOpts),
     lineageSpendForGoal(sql, legOpts),
+    opts.interactiveUsageFreshness
+      ? Promise.resolve(opts.interactiveUsageFreshness)
+      : readInteractiveUsageFreshness(sql, { workspaceId: opts.workspaceId, nowMs: opts.nowMs }),
   ]);
   const potCents = Math.round(pot.costUsd * 100);
   const sessionCents = Math.round(session.costUsd * 100);
   const lineageCents = Math.round(lineage.costUsd * 100);
   // D-011 clause 3: unmeasured stays unmeasured. No attributed samples is not
   // a measured zero, and a window with an unpriced sample has only a floor.
-  const unmeasuredReason: GoalSpendUnmeasuredReason | null =
+  const freshnessReason: GoalSpendUnmeasuredReason | null =
+    interactiveUsageFreshness.status === 'stale'
+      ? 'interactive-usage-stale'
+      : interactiveUsageFreshness.status === 'unavailable'
+        ? 'interactive-usage-unavailable'
+        : null;
+  const unmeasuredReason: GoalSpendUnmeasuredReason | null = freshnessReason ?? (
     lineage.samples === 0
       ? 'no-lineage-samples'
       : lineage.unpricedSamples > 0
         ? 'unpriced-lineage-samples'
-        : null;
+        : null
+  );
   // The pot/session partition is what aggregates. The lineage leg is EXCLUDED
   // from every aggregate below on purpose: it overlaps both (see
   // GOAL_SPEND_LINEAGE_SCOPE), so folding it in would double-count rather than
@@ -435,6 +463,7 @@ export async function computeGoalSpendRollup(
     goalId: opts.goalId,
     spentCents: unmeasuredReason === null ? lineageCents : null,
     unmeasuredReason,
+    interactiveUsageFreshness,
     windowSec,
     totalCents: potCents + sessionCents,
     potCents,
@@ -473,6 +502,7 @@ export async function writeGoalSpendSnapshot(
     spentCentsAt: nowIso,
     spentCentsWindowSec: rollup.windowSec,
     spentCentsUnmeasuredReason: rollup.unmeasuredReason,
+    spentCentsFreshness: rollup.interactiveUsageFreshness,
     spentCentsBreakdown: {
       measured: rollup.spentCents !== null,
       lineageScope: GOAL_SPEND_LINEAGE_SCOPE,
@@ -540,6 +570,9 @@ export async function refreshGoalTripwires(
   rollup: GoalSpendRollup,
   nowMs: number = Date.now(),
 ): Promise<{ advanced: number; written: boolean; breached: ReturnType<typeof breachedTripwires> }> {
+  if (isInteractiveUsageUnmeasuredReason(rollup.unmeasuredReason)) {
+    return { advanced: 0, written: false, breached: [] };
+  }
   const res = refreshTripwireCurrents(goal.tripwires, {
     measuredSpentCents: rollup.spentCents,
     // The window the cents were summed over, so a window-suffixed metric
@@ -606,6 +639,7 @@ async function enforceGoalBreaches(
   budgetCents: number | null,
   nowMs: number = Date.now(),
 ): Promise<void> {
+  if (isInteractiveUsageUnmeasuredReason(rollup.unmeasuredReason)) return;
   // A complete measurement is judged as is. An unpriced window still carries a
   // priced FLOOR, and a floor that already reaches the ceiling breaches it
   // whatever the unpriced samples cost.
@@ -803,14 +837,21 @@ export async function runGoalSpendRollupOnce(
   const errors: Array<{ goalId: string; error: string }> = [];
   let written = 0;
   let tripwiresAdvanced = 0;
+  const nowMs = opts.nowMs ?? Date.now();
+  const workspaceIds = [...new Set(goals.map((goal) => goal.workspace_id))];
+  const freshnessEntries = await Promise.all(workspaceIds.map(async (workspaceId) => [
+    workspaceId,
+    await readInteractiveUsageFreshness(sql, { workspaceId, nowMs }),
+  ] as const));
+  const freshnessByWorkspace = new Map(freshnessEntries);
   for (const g of goals) {
     try {
-      const nowMs = opts.nowMs ?? Date.now();
       const scope = { workspaceId: g.workspace_id, goalId: g.id };
       const rollup = await computeGoalSpendRollup(sql, {
         ...scope,
         windowSec: g.budget_window_sec == null ? null : Number(g.budget_window_sec),
         nowMs,
+        interactiveUsageFreshness: freshnessByWorkspace.get(g.workspace_id),
       });
       const count = await writeGoalSpendSnapshot(sql, scope, rollup);
       // A zero-row write means the snapshot silently went nowhere (the goal row
