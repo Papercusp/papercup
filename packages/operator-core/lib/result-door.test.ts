@@ -1144,13 +1144,17 @@ describe('applyResultDoor', () => {
   });
 
   it("an unscoped caller ('*' workspace) spills under 'unscoped'; a non-UUID runId gets a fresh UUID", () => {
+    const reportedRunId = 'bbc9c2b7-872b-496a-b3f4-4127e25c8e868d';
     const doored = applyResultDoor(
       { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
-      { toolName: 'plans:get', workspaceId: '*', runId: 'not-a-uuid' },
+      { toolName: 'plans:get', workspaceId: '*', runId: reportedRunId },
     );
     const pointer = (doored.content.at(-1) as { text: string }).text;
     expect(pointer).toContain('papercusp://scratch/unscoped/plans:get/');
-    expect(pointer).not.toContain('not-a-uuid');
+    expect(pointer).not.toContain(reportedRunId);
+    expect(pointer).toMatch(
+      /papercusp:\/\/scratch\/unscoped\/plans:get\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\//i,
+    );
   });
 
   it('P-023: a per-session override widens the door — the same over-baked result passes through', () => {
