@@ -212,6 +212,7 @@ describe('fail open with a typed reason', () => {
 
   it.each([
     [401, 'unauthorized'],
+    [402, 'payment-required'],
     [422, 'rejected'],
     [500, 'http-error'],
   ] as const)('HTTP %i ⇒ %s on the first attempt, no retry', async (status, reason) => {
@@ -221,6 +222,48 @@ describe('fail open with a typed reason', () => {
     expect(out).toMatchObject({ kind: 'inconclusive', reason, status, attempts: 1 });
     expect(calls).toHaveLength(1);
     expect(sleeps).toHaveLength(0);
+  });
+
+  it('after a 402, sends nothing for the cooldown, then probes the provider again (WI-10005692)', async () => {
+    const billing = { detail: { error_type: 'billing_error', message: 'no available credits' } };
+    const { fn, calls } = scriptedFetch([
+      { status: 402, body: billing },
+      { status: 402, body: billing },
+      { status: 200, body: CHOICE_OK },
+    ]);
+    let clock = 1_000_000;
+    const { c } = client(fn, { now: () => clock, paymentRequiredCooldownMs: 60_000 });
+
+    expect(await c.decide(choiceRequest)).toMatchObject({ kind: 'inconclusive', reason: 'payment-required', status: 402, attempts: 1 });
+    expect(calls).toHaveLength(1);
+
+    // Inside the window: answered at once, nothing sent, no status.
+    clock += 59_999;
+    const suspended = await c.decide(choiceRequest);
+    expect(suspended).toMatchObject({ kind: 'inconclusive', reason: 'payment-required', attempts: 0 });
+    expect(suspended.kind === 'inconclusive' && suspended.status).toBeUndefined();
+    expect(calls).toHaveLength(1);
+
+    // Window over: one probe. Still 402, so the window re-arms from now.
+    clock += 1;
+    expect(await c.decide(choiceRequest)).toMatchObject({ reason: 'payment-required', status: 402, attempts: 1 });
+    expect(calls).toHaveLength(2);
+    clock += 30_000;
+    expect(await c.decide(choiceRequest)).toMatchObject({ reason: 'payment-required', attempts: 0 });
+    expect(calls).toHaveLength(2);
+
+    // Credits back: the next probe after the window answers.
+    clock += 30_000;
+    expect(await c.decide(choiceRequest)).toMatchObject({ kind: 'answered' });
+    expect(calls).toHaveLength(3);
+  });
+
+  it('paymentRequiredCooldownMs: 0 turns the 402 suspension off', async () => {
+    const { fn, calls } = scriptedFetch([{ status: 402, body: { detail: 'billing' } }]);
+    const { c } = client(fn, { paymentRequiredCooldownMs: 0 });
+    await c.decide(choiceRequest);
+    await c.decide(choiceRequest);
+    expect(calls).toHaveLength(2);
   });
 
   it('keeps the 422 body as the detail so the offending field is visible, and never leaks the key', async () => {
