@@ -1945,6 +1945,8 @@ export function fleetScopedMiss(
      *  ignored while paused (the pause message already fully explains the miss), and only ever
      *  surfaced alongside (not instead of) the cooldown-only message when both are present. */
     issueBreakdown?: import('./get-next').IssueClaimExclusionBreakdown | null;
+    /** Includes matches before claim floors, so a held feature cannot look like an empty spec. */
+    featureBreakdown?: FeatureFamilyClaimExclusionBreakdown | null;
     /**
      * WI-7151 (EI-19318364531323846): the TIER-1 (feature-family) candidate count from
      * {@link diagnoseFleetScopeFeatureFamilyMatch}, computed by the caller ONLY when
@@ -2021,6 +2023,10 @@ export function fleetScopedMiss(
   // WI-5561: surfaced alongside the generic/cooldown message (never while paused — the pause
   // message already fully explains the miss).
   const breakdown = !paused ? (opts?.issueBreakdown ?? null) : null;
+  const featureBreakdown = !paused ? (opts?.featureBreakdown ?? null) : null;
+  const featureClaimable = featureBreakdown?.claimable ?? opts?.featureFamilyMatched ?? null;
+  const featureFloorGated = featureBreakdown != null &&
+    featureBreakdown.matchedByFilter > 0 && featureBreakdown.claimable === 0;
   // EI-18666093519248020: the INVARIANT this whole diagnosis rests on — `breakdown.claimable`
   // is, per its own contract (see IssueClaimExclusionBreakdown.claimable), "the count a
   // self-selecting caller would actually see as claimable RIGHT NOW ... the ONE number the
@@ -2078,7 +2084,7 @@ export function fleetScopedMiss(
   // nothing" — see diagnoseFleetScopeFeatureFamilyMatch's doc comment. Mutually exclusive
   // with `specEmpty` by construction (both require the same `matchedByFilter === 0` base).
   const featureFamilyMiss =
-    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && featureClaimable != null && featureClaimable > 0;
   // WI-7316: rows bounced this pull by a plan item stuck on a STALE block. Ranked below the
   // claim-path signals above (divergence/unconfirmed survivors are statements about the claim
   // path itself and must keep precedence) but ABOVE every "your spec is done/broken/gated"
@@ -2107,6 +2113,7 @@ export function fleetScopedMiss(
   const planComplete =
     !paused &&
     !featureFamilyMiss &&
+    !featureFloorGated &&
     (breakdown == null || breakdown.matchedByFilter === 0) &&
     opts?.planTerminality?.allTerminal === true;
   // EI-20186990913643457: terminal rows leave the claimable-state universe before the issue
@@ -2117,6 +2124,7 @@ export function fleetScopedMiss(
   const specExhausted =
     !paused &&
     !featureFamilyMiss &&
+    !featureFloorGated &&
     !planComplete &&
     breakdown != null &&
     breakdown.matchedByFilter === 0 &&
@@ -2147,6 +2155,7 @@ export function fleetScopedMiss(
     breakdown != null &&
     breakdown.matchedByFilter === 0 &&
     !featureFamilyMiss &&
+    !featureFloorGated &&
     !specExhausted &&
     !planComplete &&
     specPlanScoped;
@@ -2155,6 +2164,7 @@ export function fleetScopedMiss(
     breakdown != null &&
     breakdown.matchedByFilter === 0 &&
     !featureFamilyMiss &&
+    !featureFloorGated &&
     !specExhausted &&
     !planComplete &&
     !specPlanScoped;
@@ -2176,10 +2186,11 @@ export function fleetScopedMiss(
     !cooldown &&
     !divergent &&
     !unconfirmedSurvivors &&
+    !featureFamilyMiss &&
     !specEmpty &&
     breakdown != null &&
-    breakdown.matchedByFilter > 0 &&
-    breakdown.claimable === 0;
+    breakdown.claimable === 0 &&
+    (breakdown.matchedByFilter > 0 || featureFloorGated);
   // WI-10004358: a floor-gated lane whose spec rows are pending PEER REVIEW is not idle — that
   // floor never self-clears, and this member is exactly who can review them. Only computed for a
   // floor-gated miss (0 claimable, not paused/cooldown/divergent/spec-empty), so every other miss
@@ -2230,12 +2241,19 @@ export function fleetScopedMiss(
   // for compatibility, but add one bounded aggregate whose state is explicit and
   // whose exactness says when the issue-family diagnostic is only a lower bound.
   const statusFreeEmpty = opts?.terminalExhaustion?.matchedByFilter === 0;
-  const evidenceComplete = specIssueOnly || statusFreeEmpty;
+  const evidenceComplete = specIssueOnly || statusFreeEmpty || (breakdown != null && featureBreakdown != null);
   const claimableValue = breakdown
-    ? breakdown.claimable + (opts?.featureFamilyMatched ?? 0)
+    ? breakdown.claimable + (featureClaimable ?? 0)
     : null;
-  const matchedByFilter = breakdown?.matchedByFilter ?? null;
-  const excluded = breakdown?.excluded as Record<string, number> | null ?? null;
+  const matchedByFilter = breakdown
+    ? breakdown.matchedByFilter + (featureBreakdown?.matchedByFilter ?? 0)
+    : null;
+  const excluded: Record<string, number> | null = breakdown
+    ? { ...breakdown.excluded, ...(featureBreakdown ? {
+        featureClaimFloors: featureBreakdown.excluded.claimFloors,
+        featureReservedPlanLane: featureBreakdown.excluded.reservedPlanLane,
+      } : {}) }
+    : null;
   const claimabilityInterpretation = interpretFleetClaimability({
     claimable: claimableValue,
     matchedByFilter,
@@ -2268,13 +2286,13 @@ export function fleetScopedMiss(
               excluded: breakdown.excluded,
             }
           : null,
-        feature: opts?.featureFamilyMatched == null
+        feature: featureBreakdown ?? (featureClaimable == null
           ? null
           : {
-              claimable: opts.featureFamilyMatched,
+              claimable: featureClaimable,
               matchedByFilter: statusFreeEmpty ? 0 : null,
               excluded: statusFreeEmpty ? { claimFloors: 0, reservedPlanLane: 0 } : null,
-            },
+            }),
       },
     },
     interpretation: claimabilityInterpretation,
@@ -2300,7 +2318,7 @@ export function fleetScopedMiss(
           '(WI-5947). windDown is NOT set: there may well be work — just pull again.'
         : featureFamilyMiss
           ? `ISSUE-FAMILY DIAGNOSIS BLIND SPOT (WI-7151 / EI-19318364531323846): the claim path selected nothing, and the ` +
-            `issue-family-only breakdown reports 0 matching row(s) — but ${opts?.featureFamilyMatched} FEATURE-family row(s) ` +
+            `issue-family-only breakdown reports 0 matching row(s) — but ${featureClaimable} FEATURE-family row(s) ` +
             `(the family every plans:start promotion mints) match claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             'view.filter and pass every claim floor. The issue-family breakdown is STRUCTURALLY blind to the feature family ' +
             '(it only ever queries bug/change/task rows), so its `matchedByFilter: 0` is NOT evidence your spec matches ' +
@@ -2357,7 +2375,7 @@ export function fleetScopedMiss(
         : floorGated
           ? (reviewable ? `${reviewable.message} ` : '') +
             `POOL BLOCKED, NOT SPEC-BROKEN (EI-18741523426513509): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
-            `view.filter matched ${breakdown!.matchedByFilter} issue-family row(s), but every one is presently excluded by a claim floor ` +
+            `view.filter matched ${matchedByFilter} ${featureBreakdown ? 'issue/feature' : 'issue'}-family row(s), but every one is presently excluded by a claim floor ` +
             '(see `excludedBreakdownSummary`) — an uncleared plan-lane blocker, a peer\'s claim-hold, needs-human, or similar. This is an ' +
             'EFFECT (the pool is momentarily gated), not a CAUSE (a wrong/over-narrow spec) — the two have opposite remedies (await/re-poll ' +
             'vs. rewrite the spec), so do NOT treat this as a spec-authoring problem: it very likely self-clears once the gating condition ' +
@@ -2424,7 +2442,7 @@ export function fleetScopedMiss(
     // blind spot — a caller (or a leader reading a relayed report) can branch on this WITHOUT
     // digging into excludedBreakdown, and it is DELIBERATELY DISTINCT from `spec_matches_nothing`
     // (opposite remedy: this one means real work exists, do not touch the spec).
-    ...(featureFamilyMiss ? { reason: 'issue_family_diagnosis_blind_spot' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? 0 } : {}),
+    ...(featureFamilyMiss ? { reason: 'issue_family_diagnosis_blind_spot' as const, featureFamilyMatched: featureClaimable ?? 0 } : {}),
     // EI-19393442073558754: named, top-level reason for the non-issue-only-spec empty case —
     // deliberately distinct from `spec_matches_nothing` (opposite framing: this one means the
     // spec was never broken, only structurally incapable of matching the family it was judged
@@ -2436,6 +2454,7 @@ export function fleetScopedMiss(
     // a relayed report) can branch on this WITHOUT digging into excludedBreakdown to tell "your
     // spec is wrong, fix it" apart from "your spec is fine, the pool is momentarily gated, wait".
     ...(floorGated ? { reason: 'all_matches_gated' as const } : {}),
+    ...(featureBreakdown ? { featureBreakdown } : {}),
     // WI-5947: quotable provenance for the survivor reading — 'confirmed-twice' is what makes a
     // divergence report credible, and its ABSENCE is what tells a reader (or a leader receiving a
     // relayed report) that the claim was never confirmed. Present whenever survivors were seen.
@@ -2449,8 +2468,13 @@ export function fleetScopedMiss(
     ...(breakdown
       ? {
           excludedBreakdown: breakdown,
-          excludedBreakdownSummary: featureFamilyMiss
-            ? `Your spec's filter matches 0 issue-family row(s), but ${opts?.featureFamilyMatched} FEATURE-family row(s) match it and ` +
+          excludedBreakdownSummary: featureFloorGated
+            ? `Your spec's filter matches ${breakdown.matchedByFilter} issue-family and ${featureBreakdown!.matchedByFilter} feature-family row(s); ` +
+              `feature claim floors exclude ${featureBreakdown!.excluded.claimFloors} unique row(s), including ` +
+              `${featureBreakdown!.excluded.reservedPlanLane} reserved plan-lane row(s) (an overlapping subset). ` +
+              'These are real pre-floor matches, not an empty spec; see featureBreakdown and claimability.population.families.'
+            : featureFamilyMiss
+            ? `Your spec's filter matches 0 issue-family row(s), but ${featureClaimable} FEATURE-family row(s) match it and ` +
               "pass every claim floor — this breakdown only ever queries bug/change/task rows, so its 0 says nothing about your " +
               'spec\'s feature-family matches. Do NOT treat this as a spec-authoring problem; see the top-level error/advice.'
             : nonIssueSpecEmpty
@@ -2507,7 +2531,7 @@ export function fleetScopedMiss(
             'if a row really did free up you will simply get it. Only a miss carrying divergenceRecheck:"confirmed-twice" — two claim ' +
             'attempts against two readings that both showed survivors — is worth escalating.'
           : featureFamilyMiss
-          ? `PULL AGAIN, and do NOT re-author the claim spec: ${opts?.featureFamilyMatched} feature-family row(s) match your spec and pass ` +
+          ? `PULL AGAIN, and do NOT re-author the claim spec: ${featureClaimable} feature-family row(s) match your spec and pass ` +
             'every claim floor (WI-7151 / EI-19318364531323846) — the issue-family-only breakdown above cannot see them, so its ' +
             '`matchedByFilter: 0` is not proof of a spec bug. This claim already retried once against the real tier-1 pool; if it ' +
             'still misses after a couple more pulls, report it to your fleet leader as a possible claim-path defect in the tier-1 ' +
@@ -2561,7 +2585,7 @@ export function fleetScopedMiss(
           '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
         : breakdown
           ? (reviewable ? `${reviewable.advice} ` : '') +
-            'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. Checkpoint, release, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
+            'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). Do NOT re-author the claim spec. See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. Checkpoint, release, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
             (claimablePayloadFilter
               ? 'You may still park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` in case a floor lifts (a claim-hold or owner-action gate clears) and end your turn — do not pass targetKind with wake:true; its wake is a HINT and the watch remains armed.'
               : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')
