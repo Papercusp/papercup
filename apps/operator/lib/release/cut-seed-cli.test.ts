@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chmod } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   parseGitDepth,
   parseHeadSnapshotTimeoutMs,
@@ -68,6 +70,27 @@ describe('exact private finding redaction input', () => {
       expect(await readSeedFindingRedactions(f.report, [f.digest], f.config)).toEqual([f.secret]);
       await expect(readSeedFindingRedactions(f.report, ['0'.repeat(64)], f.config)).rejects.toThrow('evidence invalid');
       await expect(readSeedFindingRedactions(f.report, [f.digest, f.digest], f.config)).rejects.toThrow('evidence invalid');
+    } finally { await rm(f.dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses export redaction before reading the report, opening a store or touching prior seed output', async () => {
+    const f = await fixture();
+    try {
+      const out = join(f.dir, 'prior-seed');
+      await mkdir(out);
+      await writeFile(join(out, 'manifest.json'), 'prior seed bytes');
+      const result = spawnSync(process.execPath, [
+        '--import', 'tsx', fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)),
+        '--out', out, '--store-dir', join(f.dir, 'absent-store'),
+        '--redact-findings', join(f.dir, 'absent-report.json'),
+        '--redact-finding-digests', f.digest,
+      ], { encoding: 'utf8', timeout: 30_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('export redaction is unsupported for sealed content');
+      expect(result.stdout + result.stderr).not.toContain(f.secret);
+      expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior seed bytes');
+      expect(await readdir(f.dir)).not.toContain('absent-store');
     } finally { await rm(f.dir, { recursive: true, force: true }); }
   });
 

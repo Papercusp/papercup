@@ -81,9 +81,9 @@
  *                          epoch key still in the keychain (load-only — a missing one is warned, never
  *                          minted), so ops sealed under past epochs decrypt too. Ships the hive READABLE
  *                          — deliberate, flag-gated. Needs an epoch context (--workspace-id or --epoch).
- *   --redact-findings <file> --redact-finding-digests <sha256,...>
- *                          reviewed private gitleaks report: exclude exact credential literals through
- *                          the existing seed projection. Requires a fresh corestore; never logs values.
+ *   --redact-findings / --redact-finding-digests
+ *                          refused: the projection sees sealed content, not plaintext credentials.
+ *                          Use an authorized source correction, then cut a fresh corestore.
  *   --json                 print the manifest + size report as JSON
  */
 
@@ -1434,6 +1434,12 @@ export function parseHeadSnapshotTimeoutMs(args: Args, env: NodeJS.ProcessEnv = 
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  // WI-10005568: a validated plaintext finding does not make the projection able
+  // to inspect its source envelope. Refuse before opening/refreshing any store;
+  // otherwise the cut can appear successful while carrying the same credential.
+  if ('redact-findings' in args || 'redact-finding-digests' in args) {
+    throw new Error('seed finding export redaction is unsupported for sealed content; correct the authorized source and cut a fresh corestore');
+  }
   const root = resolveWorkspaceRoot();
   const hive = str(args, 'hive') ?? DEFAULT_HIVE;
   const repo = str(args, 'repo') ?? root;
@@ -1456,18 +1462,6 @@ async function main(): Promise<void> {
     ...(reuseCorestoreDir ? { reuseCorestoreDir } : {}),
     load: () => releaseSeedRedactionValues(root),
   })];
-  const redactReport = str(args, 'redact-findings');
-  const redactDigests = str(args, 'redact-finding-digests');
-  if (redactReport || redactDigests) {
-    if (!redactReport || !redactDigests || !wantCorestore) {
-      throw new Error('exact finding redaction requires report, digests and a fresh corestore');
-    }
-    const literals = await readSeedFindingRedactions(
-      resolve(redactReport), redactDigests.split(','),
-      join(root, 'papercusp-desktop', 'bin', 'release-gitleaks.toml'),
-    );
-    releaseRedactionValues.push(...literals);
-  }
   const asJson = args['json'] === true;
 
   // P-004 sparse cut: ship only [snapshotIndex,len) of each core (drops the ~2GB history
