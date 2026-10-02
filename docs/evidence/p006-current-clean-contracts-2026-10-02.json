@@ -3209,5 +3209,290 @@
     "callerCorrections": "Generic derived positive first refused before mutation: measurement.schemaVersion1 omitted; exact receipt metadata restored it. Initial whole census limit100 refused evidence_selection_hit_limit; limit1000 returned accepted28. Large second receipt was projected; complete body recovered from its manifest offset before the census claim. No incidental DRAIN issue filed.",
     "nextPreparation": "Read BREACH/UNMEASURED canonical scenarios/layers. Both legacy17382/17380 are dirty/source-test-stale with missing unit and causal pairs; current clean44 integration may be reusable after fingerprint verification. BREACH requiresl4 and UNMEASUREDl3. Do not withdraw before selectedCURRENT replacements. D014 versus UNMEASURED-ADMISSION remains leader-dependent; no owner wall."
   },
-  "next": "NUMERATOR@3 now governs PASS at stagingb3eba6e78e with current21999-22004. Fresh accepted28 census15PASS13FAIL0UNKNOWN. Do not replay unchanged positive tests or the completed controls/withdrawals. Continue BREACH/UNMEASURED canonical scenarios/layers and maintained unit/PG proof; retained fresh cleanf95526 clone in p003NumeratorRenewalFire197. Preserve D003/D013FAIL/D014/D016, independent rubric ratification, successful real-goal card, closure audit and shipment. P007/P008 remain separate; no unchanged native/P001/P002 or LIVE_GATE_OPS."
+  "p003UnmeasuredFire199": {
+    "recordedAt": "2026-10-02T15:45:25.920131+00:00",
+    "scope": "UNMEASURED@3 governing PASS/l3; WINDOW and NUMERATOR renewed after the maintained unit-file extension. P006 acceptance and shipment remain open.",
+    "commit": "751656a9bb8bac2ae6580cfe6effcbed776f94ff",
+    "cloneRoot": "/tmp/papercusp-lint-as-committed-751656a9bb-hAprca",
+    "sourceChange": "No production source change. Extended the maintained spend-rollup-scope-labels unit fixture with calibrated absence, observed zero and partial-pricing behavioral oracles.",
+    "positiveRuns": {
+      "local": {
+        "id": 20541348,
+        "passed": 27,
+        "skipped": 0,
+        "worktreeDirty": true
+      },
+      "cleanUnit": {
+        "id": 20541357,
+        "passed": 27,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      },
+      "reusedIntegration": {
+        "id": 20534918,
+        "passed": 44,
+        "skipped": 0,
+        "reason": "Exact unchanged spend-rollup, integration and goal-pots bytes match the dated clean run. Private cleanup remains its original receipt, not a fresh execution."
+      }
+    },
+    "calibratedMutants": {
+      "no-samples-null": 20541376,
+      "priced-zero-measured": 20541378,
+      "unpriced-null": 20541377,
+      "attributed-authoritative": 20541388,
+      "diagnostic-excluded": 20541387,
+      "declared-window": 20541386,
+      "lifetime-fallback": 20541390
+    },
+    "controlSummary": "Six mutants each1intendedFAIL+1calibrationPASS with25filtered. Lifetime mutant2intendedFAIL (undefined/null)+1calibrationPASS with24filtered. Each baseline and unmutated overlay passed selected assertions; overlay caught exit0 and original bytes unchanged.",
+    "bindings": {
+      "unmeasured": [
+        22005,
+        22006,
+        22007,
+        22040,
+        22041,
+        22042,
+        22047
+      ],
+      "numerator": [
+        22008,
+        22009,
+        22043,
+        22044,
+        22000,
+        22004
+      ],
+      "window": [
+        22010,
+        22011,
+        22045,
+        22046,
+        21854,
+        21855,
+        21856,
+        21858
+      ]
+    },
+    "currentness": {
+      "checked": [
+        22005,
+        22006,
+        22007,
+        22008,
+        22009,
+        22010,
+        22011,
+        22040,
+        22041,
+        22042,
+        22043,
+        22044,
+        22045,
+        22046,
+        22047,
+        22000,
+        22004,
+        21854,
+        21855,
+        21856,
+        21858
+      ],
+      "overall": "current",
+      "provenance": "server-measured",
+      "bounded": {
+        "limit": 100,
+        "truncatedByLimit": false
+      }
+    },
+    "selected": {
+      "governing": false,
+      "verdicts": {
+        "pass": 3,
+        "fail": 0,
+        "unknown": 0
+      },
+      "sourceReceipt": ".papercusp/scratch/p006-unmeasured199/selected.json"
+    },
+    "withdrawal": {
+      "bindingIds": [
+        17380,
+        21851,
+        21852,
+        21853,
+        21857,
+        21999,
+        22001,
+        22002,
+        22003
+      ],
+      "result": {
+        "ok": 9,
+        "failed": 0
+      },
+      "preserved": "Immutable historical tests/audits, D003 baseline, D013 completedFAIL, D014 bootstrap-versus-refusal boundary and D016."
+    },
+    "governing": {
+      "ok": true,
+      "count": 3,
+      "governing": true,
+      "evaluatorBuild": {
+        "sha": "0e0589da83",
+        "version": "0.0.0"
+      },
+      "excludedDraftCount": 0,
+      "verdicts": {
+        "pass": 3,
+        "fail": 0,
+        "unknown": 0
+      },
+      "wouldBlock": [],
+      "rows": [
+        {
+          "specId": "WOE-P003-NUMERATOR",
+          "specRevision": 3,
+          "specFingerprint": "2f7cd66811ac2c062a655e8905b8a0ef15ab2b5ec89d389e45b67058f056c71d",
+          "verdict": "pass",
+          "requiredProofFloor": "l3",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P003-UNMEASURED",
+          "specRevision": 3,
+          "specFingerprint": "e896cd0d35db1e2e8f90f6f92fdf528c5ac696263940df654b1b46429ed63293",
+          "verdict": "pass",
+          "requiredProofFloor": "l3",
+          "wouldBlock": []
+        },
+        {
+          "specId": "WOE-P003-WINDOW",
+          "specRevision": 3,
+          "specFingerprint": "6c5fd6a232a99abf42be5eeb8b3060d2260e1caea61269985bc76f0b9a30b281",
+          "verdict": "pass",
+          "requiredProofFloor": "l3",
+          "wouldBlock": []
+        }
+      ]
+    },
+    "acceptedClauseCensus": {
+      "population": [
+        "WOE-P001-BLOCKER",
+        "WOE-P001-CLAIM",
+        "WOE-P001-EXCLUSIONS",
+        "WOE-P001-IDEMPOTENCE",
+        "WOE-P001-ORDER",
+        "WOE-P001-TERMINAL",
+        "WOE-P002-AUTHORITY",
+        "WOE-P002-ELECTION",
+        "WOE-P002-HANDOFF",
+        "WOE-P002-RESPAWN",
+        "WOE-P002-STALE-RESPAWN",
+        "WOE-P002-UNKNOWN",
+        "WOE-P003-BREACH",
+        "WOE-P003-MEASURED-ADMISSION",
+        "WOE-P003-NUMERATOR",
+        "WOE-P003-UNMEASURED",
+        "WOE-P003-UNMEASURED-ADMISSION",
+        "WOE-P003-WINDOW",
+        "WOE-P004-CUSTODY",
+        "WOE-P004-REAL-CALL",
+        "WOE-P004-SCHEDULER-DIAGNOSIS",
+        "WOE-P004-SLOW-BOOT",
+        "WOE-P004-WAKE",
+        "WOE-P005-HAND-DISPATCH",
+        "WOE-P005-MATERIALIZATION",
+        "WOE-P005-SOVEREIGNTY",
+        "WOE-P006-REAL-CARD",
+        "WOE-P006-SHIPMENT"
+      ],
+      "checkedPass": [
+        "WOE-P001-BLOCKER",
+        "WOE-P001-CLAIM",
+        "WOE-P001-EXCLUSIONS",
+        "WOE-P001-IDEMPOTENCE",
+        "WOE-P001-ORDER",
+        "WOE-P001-TERMINAL",
+        "WOE-P002-AUTHORITY",
+        "WOE-P002-ELECTION",
+        "WOE-P002-HANDOFF",
+        "WOE-P002-RESPAWN",
+        "WOE-P002-STALE-RESPAWN",
+        "WOE-P002-UNKNOWN",
+        "WOE-P003-MEASURED-ADMISSION",
+        "WOE-P003-NUMERATOR",
+        "WOE-P003-UNMEASURED",
+        "WOE-P003-WINDOW"
+      ],
+      "checkedFail": [
+        "WOE-P003-BREACH",
+        "WOE-P003-UNMEASURED-ADMISSION",
+        "WOE-P004-CUSTODY",
+        "WOE-P004-REAL-CALL",
+        "WOE-P004-SCHEDULER-DIAGNOSIS",
+        "WOE-P004-SLOW-BOOT",
+        "WOE-P004-WAKE",
+        "WOE-P005-HAND-DISPATCH",
+        "WOE-P005-MATERIALIZATION",
+        "WOE-P005-SOVEREIGNTY",
+        "WOE-P006-REAL-CARD",
+        "WOE-P006-SHIPMENT"
+      ],
+      "notChecked": [],
+      "notApplicable": [],
+      "residue": [
+        "BREACH@3/l4",
+        "UNMEASURED-ADMISSION/D014 boundary",
+        "P004/P005 proof",
+        "independent rubric review and ratification",
+        "D013 successful real-goal scorecard",
+        "closure audit",
+        "shipment"
+      ],
+      "verdicts": {
+        "pass": 16,
+        "fail": 12,
+        "unknown": 0
+      },
+      "governing": true,
+      "excludedDraftCount": 25,
+      "evaluatorBuild": {
+        "sha": "0e0589da83",
+        "version": "0.0.0"
+      }
+    },
+    "fingerprints": {
+      "packages/operator-core/lib/goals/spend-rollup.ts": "a042501109d1c1111d6fcc6824c8e667357255f93ea8f56650e923d5b91131f1",
+      "packages/operator-core/lib/goals/spend-rollup-scope-labels.test.ts": "56932e69ee31e81824cfa9980ddc926595c30538ced000289f76e1b80e362330",
+      "packages/operator-core/lib/goals/spend-rollup.integration.test.ts": "b01dd12cb540349894c2a61b61d262b303f08faa0953c8aab8f892a5b032f8ad",
+      "libs/papercusp/libs/db/src/goal-pots.ts": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+    },
+    "logs": {
+      ".papercusp/scratch/p006-unmeasured199/attributed-authoritative.log": "f36f666b6d2e863319025512aed21cad74a4a17cc848d63be142f9c0217b1ef5",
+      ".papercusp/scratch/p006-unmeasured199/clean-unit.log": "db0306b35f24e318f47dd1e63600c5d912b8de08b34cc3aa5c1625e0ee48ac4f",
+      ".papercusp/scratch/p006-unmeasured199/declared-window.log": "bae5bbd2dab1182b9ca7bb3a79a5b71d38762c5810d0ca21b816b800129d1760",
+      ".papercusp/scratch/p006-unmeasured199/diagnostic-excluded.log": "c91513b7a3c547b696344da5c7ccc3dbae751af33a49c2db424cf8c07925dc34",
+      ".papercusp/scratch/p006-unmeasured199/lifetime-fallback.log": "e1d6e473ee091664346a68f9913a0296669f42f9909d018d2fc4df01a6223670",
+      ".papercusp/scratch/p006-unmeasured199/no-samples-null-historical-flag-refused.log": "bfe6c76df81766fb4f26df756940b081475f67f3574144d6861e41b5f7e222b8",
+      ".papercusp/scratch/p006-unmeasured199/no-samples-null.log": "a8f33ac8f3eaa5695173204d7b8fdb8baa638191338ab3f27e56cc93c8a82a1b",
+      ".papercusp/scratch/p006-unmeasured199/priced-zero-measured-historical-flag-refused.log": "bfe6c76df81766fb4f26df756940b081475f67f3574144d6861e41b5f7e222b8",
+      ".papercusp/scratch/p006-unmeasured199/priced-zero-measured.log": "8d1d0ac9c5b0006a938e83a5bcdd81bba0486a9b552715e8f02ee0e509a42c47",
+      ".papercusp/scratch/p006-unmeasured199/unpriced-null-historical-flag-refused.log": "bfe6c76df81766fb4f26df756940b081475f67f3574144d6861e41b5f7e222b8",
+      ".papercusp/scratch/p006-unmeasured199/unpriced-null.log": "322258c6ab829cb8007f0558f6431e28ae7de429328c6aabf1f0a1e93b8afd95"
+    },
+    "receipts": [
+      ".papercusp/scratch/p006-unmeasured199/bind.json",
+      ".papercusp/scratch/p006-unmeasured199/current-full.json",
+      ".papercusp/scratch/p006-unmeasured199/current.json",
+      ".papercusp/scratch/p006-unmeasured199/governing.json",
+      ".papercusp/scratch/p006-unmeasured199/positive-bind.json",
+      ".papercusp/scratch/p006-unmeasured199/selected.json",
+      ".papercusp/scratch/p006-unmeasured199/whole-census-full.json",
+      ".papercusp/scratch/p006-unmeasured199/whole-census.json",
+      ".papercusp/scratch/p006-unmeasured199/withdraw.json"
+    ],
+    "callerCorrections": "Initial positive-control flag selected historical mode and refused before mutation; removed. Generic positive bindings used after canonicalTestPath refused eight local-run mappings; seven mutation writes had already succeeded and were not retried. CTE ledger read refused tenant classification; direct bounded exact-file read succeeded. Both explicit-full spill and result-door manifest encodings decoded at their recorded boundary. No incidental DRAIN issue filed.",
+    "next": "Continue BREACH@3 required unit+integration/l4 and three calibrated scenarios. Legacy17382 remains binding-only retained pending verified replacements. D014 remains leader-dependent. Preserve P007/P008 independent12WIchecks each plus12loopchecks, all source/runtime limits. No sharedrestart, unchanged native/P001/P002 rerun, P2P or LIVE_GATE_OPS."
+  },
+  "next": "UNMEASURED@3 governs PASS/l3; WINDOW and NUMERATOR renewed on current maintained unit27/clean PG44 proof. Fresh accepted28 census16PASS12FAIL0UNKNOWN at staging0e0589da83. See p003UnmeasuredFire199. Continue BREACH@3 required unit+integration/l4, retained legacy17382 and calibrated three scenarios; do not replay completed unchanged controls. D014 versus UNMEASURED-ADMISSION remains leader-dependent. Preserve D003/D013FAIL/D014/D016, independent rubric ratification, successful real-goal card, closure audit and shipment. P007/P008 remain independently OPEN; no unchanged native/P001/P002 or LIVE_GATE_OPS."
 }
