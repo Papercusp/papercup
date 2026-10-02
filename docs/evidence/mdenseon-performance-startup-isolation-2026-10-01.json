@@ -37,7 +37,7 @@
         "serializedLaunchVerified": true
       }
     },
-    "lastVerifiedProgress": {
+    "historicalPartialProgress": {
       "observedAt": "2026-10-02T04:16:55Z",
       "completedCells": 13,
       "completeBlocks": 4,
