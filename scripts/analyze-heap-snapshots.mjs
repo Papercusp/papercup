@@ -95,8 +95,11 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
     ['retainerDepth', retainerDepth, 3], ['maxRetainers', maxRetainers, 100]]) {
     if (!Number.isInteger(value) || value < 1 || value > maximum) throw new TypeError('Invalid heap graph ' + name);
   }
-  const { decode_bytes, NodeType, EdgeType, WasmSortBy } = await import('@vscode/v8-heap-parser');
-  const graph = decode_bytes(input);
+  const { decode_bytes, init_panic_hook, NodeType, EdgeType, WasmSortBy } = await import('@vscode/v8-heap-parser');
+  // Without the upstream hook, a Rust panic loses its origin and becomes only
+  // "unreachable". Keep its diagnostics in the private runner's stderr.
+  init_panic_hook();
+  let graph, phase = 'decode-bytes';
   const safeBytes = value => {
     const number = Number(value);
     if (!Number.isSafeInteger(number) || number < 0) throw new TypeError('Unsafe heap graph byte count');
@@ -116,6 +119,8 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
     '(closure)', '(regexp)', '(number)', '(native)', '(synthetic)', '(concatenated string)',
     '(sliced string)', '(bigint)', '(unknown)']);
   try {
+    graph = decode_bytes(input);
+    phase = 'class-dominators';
     const groups = graph.get_class_groups(0, top, false);
     try {
       const rows = groups.map((group, groupIndex) => {
@@ -123,9 +128,11 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
         const row = { class: genericLabels.has(raw) ? raw : classLabel('class', raw),
           count: group.children_len, selfSizeBytes: safeBytes(group.self_size),
           retainedSizeBytes: safeBytes(group.retained_size) };
+        phase = 'class-children';
         const nodes = graph.class_children(groupIndex, 0, perClass, WasmSortBy.RetainedSize);
         try {
           const nodeRows = nodes.map(node => {
+            phase = 'direct-retainers';
             const retainers = graph.get_all_retainers(node.index, retainerDepth);
             try {
               return { ...nodeRow(node), retainers: retainers.slice(0, maxRetainers).map(retainer => ({
@@ -142,7 +149,12 @@ export async function summarizeHeapRetainers(input, { top = 10, perClass = 3, re
         definition: 'Node retained_size is dominator-owned V8 self_size; class retained sizes overlap. Not total native memory or production savings.',
         privacy: 'String payloads, source text, filesystem names and edge/property names are omitted.' };
     } finally { for (const group of groups) group.free(); }
-  } finally { graph.free(); }
+  } catch (cause) {
+    // Never include the decoder's message: it can quote private input. Phase
+    // and error class are enough to distinguish decode from graph failures.
+    throw new Error('Heap retainer analysis failed at ' + phase + ' (' +
+      (cause instanceof Error ? cause.name : 'unknown') + ')', { cause });
+  } finally { graph?.free(); }
 }
 
 /** Stream even multi-GB snapshots. Never pack a payload string or node array.
