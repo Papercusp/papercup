@@ -67,6 +67,7 @@ import {
 } from '../../activation-item-provenance';
 import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
 import { detectUnderReadFromSource } from '../../activation-under-read';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import { assertSourceSpan } from '../../activation-source-span';
 import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
@@ -941,6 +942,9 @@ export default defineTool({
                  )
                  AND turns.turn_idx BETWEEN ${Math.min(...ranges.map((r) => r.fromTurn))}
                                         AND ${Math.max(...ranges.map((r) => r.toTurn))}
+                 -- D-006: the detector echoes uncited turn text back to the auditor, so a
+                 -- turn another agent recorded inside its disclosure window never enters it.
+                 AND NOT ${restrictedTurnSql(sql, 'turns', [resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId])}
                ORDER BY turns.source_kind, turns.session_id, turns.turn_idx
                LIMIT ${cap}`;
             // Over-fetches across gaps between ranges of the SAME session; detectUnderRead

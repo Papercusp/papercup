@@ -9,7 +9,7 @@ import {
   confirmGoalPlacementDelivery, deliveredGoalPlacementRows, prepareGoalPlacementDelivery,
   type GoalPlacementTurnReceiptDeps,
   recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps, GOAL_PLACEMENT_TURN_END_SETTLE_POLLS,
-  recordGoalPlacementTurnEndOutcome,
+  recordGoalPlacementTurnEndOutcome, recordGoalPlacementDeliveryOutcome,
   observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
   type GoalPlacementAdmissionObservation, noProgressAge, placementSelection,
 } from './goal-placement-turn-receipts';
@@ -24,6 +24,54 @@ const row = defineAgentObligation({ ruleId: 'placement', ruleRevision: 'v1', fam
   sourceGeneration: 'generation-1', episode: 'fixture-episode', applicableDemand: 1,
   clearsWhen: { id: 'claimed', summary: 'A verified member claim exists.', evidenceKind: 'state', sourceRef: 'fixture:claims' },
   action: { kind: 'delegate', summary: 'Staff the eligible plan.', targetRef: 'plan:harness/plan', tool: 'fleet:launch-on-plan' },
+});
+
+describe('goal placement delivery drop outcomes (WI-10005636)', () => {
+  it('persists the drop stage and reason under a key separate from goalPlacementTurn receipts', async () => {
+    const append = vi.fn(async () => ({ id: 'diagnostic' }));
+    const persisted = await recordGoalPlacementDeliveryOutcome({
+      ownerId: 'holder', workspaceId: 'workspace', stage: 'confirm', reason: 'native-window-incomplete',
+      candidate: { version: 1, token: 'tok-1', nativeSessionId: 'native-1', sourceKind: 'claude',
+        rows: [{ planSlug: 'plan-a' }, { planSlug: 'plan-b' }] },
+    }, { append, now: () => at(5).getTime() });
+
+    expect(persisted).toBe(true);
+    expect(append).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'workspace', owner: 'holder', agent: 'claude', sessionId: 'native-1', scope: 'plan-a',
+      kind: 'lifecycle', toolName: null, phase: null,
+      toolUseId: `goal-placement-delivery-outcome:confirm:tok-1:${at(5).toISOString()}`,
+      summary: 'Goal placement delivery produced no receipt', status: null, cwd: null,
+      detail: { goalPlacementDeliveryOutcome: {
+        version: 1, stage: 'confirm', recorded: false, reason: 'native-window-incomplete',
+        observedAt: at(5).toISOString(), token: 'tok-1', unavailable: false, candidateReason: null,
+        planSlugs: ['plan-a', 'plan-b'],
+      } },
+    });
+  });
+
+  it('keeps the staged fallback reason of an unavailable candidate and tolerates a malformed one', async () => {
+    const append = vi.fn(async (_record: { detail: unknown }) => ({ id: 'diagnostic' }));
+    const deps = { append, now: () => at(6).getTime() };
+    await recordGoalPlacementDeliveryOutcome({ ownerId: 'holder', workspaceId: 'workspace', stage: 'late-upgrade',
+      reason: 'late-prepare-timeout', candidate: { version: 1, unavailable: true, token: 'tok-2', reason: 'timeout',
+        rows: [{ planSlug: 'plan-a' }] } }, deps);
+    await recordGoalPlacementDeliveryOutcome({ ownerId: 'holder', workspaceId: 'workspace', stage: 'confirm',
+      reason: 'no-exact-proof-candidate', candidate: 'not-an-object' }, deps);
+
+    const details = append.mock.calls.map(([record]) => record.detail);
+    expect(details).toEqual([
+      { goalPlacementDeliveryOutcome: expect.objectContaining({ stage: 'late-upgrade', unavailable: true,
+        candidateReason: 'timeout', token: 'tok-2', planSlugs: ['plan-a'] }) },
+      { goalPlacementDeliveryOutcome: expect.objectContaining({ stage: 'confirm', unavailable: false,
+        candidateReason: null, token: null, planSlugs: [] }) },
+    ]);
+  });
+
+  it('reports a failed append instead of throwing into the detached turn-start path', async () => {
+    const append = vi.fn(async () => { throw new Error('pg down'); });
+    await expect(recordGoalPlacementDeliveryOutcome({ ownerId: 'holder', workspaceId: 'workspace',
+      stage: 'confirm', reason: 'x', candidate: null }, { append, now: () => at(7).getTime() })).resolves.toBe(false);
+  });
 });
 
 const admission = (minute: number, overrides: Partial<GoalPlacementAdmissionObservation> = {}): GoalPlacementAdmissionObservation => ({
