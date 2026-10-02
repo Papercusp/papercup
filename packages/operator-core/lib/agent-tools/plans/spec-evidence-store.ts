@@ -1634,7 +1634,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const currentByKey = new Map((options.current ?? []).map((c) => [evidenceCurrentInputKey(c), c]));
   // The server-measured replay opt-out is explained at its use in the loop below.
   const recipes = rows.map((row) =>
-    options.replaySnapshot && options.currentProvenance === 'server-measured'
+    options.auditAsOf || (options.replaySnapshot && options.currentProvenance === 'server-measured')
       ? null
       : measurementFromDetails(row.details),
   );
@@ -1866,6 +1866,22 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       currentness,
     };
   });
+  // An audit-as-of read reconstructs what was bound at a historical instant. It is
+  // never evidence that the same binding is fresh now, even if the saved caller tuple
+  // or a live repository measurement happens to match. Keep that distinction at the
+  // store boundary so an audit caller cannot accidentally promote history to current.
+  const auditOnly = options.auditAsOf
+    ? classified.map((row) => ({
+        ...row,
+        currentness: {
+          ...row.currentness,
+          overall: 'unknown' as const,
+          provenance: 'replayed-snapshot' as const,
+          staleReasons: [],
+          unknownReasons: [...new Set([...row.currentness.unknownReasons, 'historical-audit-only'])],
+        },
+      }))
+    : classified;
   const allowed = options.currentness ? new Set(options.currentness) : null;
-  return allowed ? classified.filter((row) => allowed.has(row.currentness.overall)) : classified;
+  return allowed ? auditOnly.filter((row) => allowed.has(row.currentness.overall)) : auditOnly;
 }
