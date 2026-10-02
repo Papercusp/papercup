@@ -302,6 +302,8 @@ import './search/fulltext';
 import './search/semantic';
 // personal-vault-2026-08-22: default-deny owner-local recall + owner-only purge.
 import './personal/search';
+// P-007 / R-12: hidden-delegate read — an answer without restricted content leaves the caller unlabelled.
+import './personal/ask';
 import './personal/purge';
 import './personal/privacy-rules';
 import './personal/declassify';

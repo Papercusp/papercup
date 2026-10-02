@@ -246,6 +246,23 @@ function reportSidecarTransition(subject: string) {
  * `buildHarrierEmbedder({kind})` calls at the cascade seams — same EmbedFn
  * shape, same vectors, same dims.
  */
+/**
+ * P-531: the per-attempt ensure hook for a sidecar THIS process spawns (or
+ * adopts on the shared local port). Such a sidecar may exit after an idle
+ * period, and the client calls this before each attempt to re-launch it.
+ * Returns undefined when no local sidecar is in play: an explicit URL points
+ * at a sidecar another process supervises (e.g. a systemd unit), and a null
+ * URL means pure in-process.
+ */
+export function localSidecarEnsure(
+  deps: SidecarWiringDeps,
+  url: string | null,
+  capability: string,
+): (() => Promise<unknown>) | undefined {
+  if (url === null || deps.resolveUrl()) return undefined;
+  return () => deps.ensure([capability]);
+}
+
 export async function buildSidecarAwareEmbedder(
   model: 'gemma' | 'local' | 'harrier',
   kind: GemmaEmbedKind,
@@ -259,6 +276,7 @@ export async function buildSidecarAwareEmbedder(
     model,
     kind,
     url,
+    ensure: localSidecarEnsure(deps, url, EMBED_SIDECAR_CAP_EMBED),
     // Same text the lib's own default emits — only the channel differs, and
     // only under a test runner. See reportSidecarTransition.
     onTransition: reportSidecarTransition(`[sidecar-embedder] ${model}:${kind}`),
@@ -308,6 +326,7 @@ export async function buildSidecarAwareReranker(
   return buildSidecarFirstReranker({
     model,
     url,
+    ensure: localSidecarEnsure(deps, url, EMBED_SIDECAR_CAP_RERANK),
     onTransition: reportSidecarTransition(`[sidecar-reranker] ${model}`),
   });
 }
