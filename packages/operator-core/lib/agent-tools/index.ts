@@ -336,6 +336,7 @@ import './memory/get';
 // (deterministic scoped conclusions folded verbatim into briefs/dossiers/orients)
 import './facts/assert';
 import './facts/retract';
+import './claims/retract';
 import './facts/list';
 // unified-agent-state-plane-2026-07-27 P-011 — assumptions in tension over the
 // same typed referent. A read, never a push: see the file header for why.
