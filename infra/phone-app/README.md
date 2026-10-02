@@ -77,6 +77,14 @@ certificate renewal; those remain separate operational acceptance checks.
 `infra/phone-app/deploy.sh --status` reads the existing external configuration
 and returns that same JSON verdict with a nonzero exit status when not ready;
 it installs nothing, restarts nothing, and never prints credential values.
+When hosted coordinates are present, the same status also fails closed on
+missing, mismatched or less-than-seven-days-remaining TURN certificate/key
+material, returning a `turn-certificate` check without exposing file paths or
+secrets. Run this read-only status on a recurring operator check and alert its
+owner on a nonzero exit before the certificate expires. A LAN-only status does
+not imply any hosted certificate was checked (`turnCertificateVerified: false`);
+frontend WSS renewal still requires its own public preflight and deployment
+proof. This check does not renew certificates or prove public media.
 The sidecar unit supervises the HTTP process directly and restarts it on failure.
 After changing the out-of-repo sidecar source, converge through `deploy.sh`;
 the unit does not use Node's watcher, which can stay active after its child dies.

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync, execFile } from 'node:child_process';
@@ -177,7 +177,41 @@ describe('Phone deployer read-only local status', () => {
       const stopped = await runStatus({ ...env, PHONE_WORKER_DOWN: '1' });
       expect(stopped.status).toBe(1);
       expect(JSON.parse(stopped.stdout).checks).toContainEqual({ component: 'worker', ready: false });
-      expect(ready.stdout + ready.stderr + stopped.stdout + stopped.stderr).not.toContain('private-fixture-secret');
+      const rotatingCert = join(conf, 'rotation certificate.pem');
+      const rotatingKey = join(conf, 'rotation private.pem');
+      copyFileSync(certPath, rotatingCert); copyFileSync(keyPath, rotatingKey);
+      const hosted = `PHONE_LIVEKIT_PUBLIC_URL=wss://voice.example.com\nPHONE_TURN_DOMAIN=turn.example.com\n` +
+        `PHONE_TURN_CERT_FILE=${rotatingCert.replaceAll(' ', '\\ ')}\n` +
+        `PHONE_TURN_KEY_FILE=${rotatingKey.replaceAll(' ', '\\ ')}\n`;
+      const localEnv = readFileSync(join(conf, 'livekit.env'), 'utf8');
+      writeFileSync(join(conf, 'livekit.env'), localEnv + hosted, { mode: 0o600 });
+      const validCertificate = await runStatus(env);
+      expect(validCertificate.status, validCertificate.stderr).toBe(0);
+      expect(JSON.parse(validCertificate.stdout)).toMatchObject({
+        ok: true, turnCertificateVerified: true,
+        checks: expect.arrayContaining([{ component: 'turn-certificate', ready: true }]),
+        publicPhoneVerified: false,
+      });
+      copyFileSync(shortCert, rotatingCert); copyFileSync(otherKey, rotatingKey);
+      const renewalDue = await runStatus(env);
+      expect(renewalDue.status).toBe(1);
+      expect(JSON.parse(renewalDue.stdout)).toMatchObject({
+        ok: false, turnCertificateVerified: false,
+        checks: expect.arrayContaining([{ component: 'turn-certificate', ready: false }]),
+      });
+      copyFileSync(certPath, rotatingCert); copyFileSync(keyPath, rotatingKey);
+      const renewed = await runStatus(env);
+      expect(renewed.status, renewed.stderr).toBe(0);
+      expect(JSON.parse(renewed.stdout)).toMatchObject({ ok: true, turnCertificateVerified: true });
+      writeFileSync(join(conf, 'livekit.env'), localEnv + 'PHONE_LIVEKIT_PUBLIC_URL=wss://voice.example.com\n', { mode: 0o600 });
+      const missingTurn = await runStatus(env);
+      expect(missingTurn.status).toBe(1);
+      expect(JSON.parse(missingTurn.stdout).checks).toContainEqual({ component: 'turn-certificate', ready: false });
+      const outputs = [ready, stopped, validCertificate, renewalDue, renewed, missingTurn]
+        .map(result => result.stdout + result.stderr).join('\n');
+      expect(outputs).not.toContain('private-fixture-secret');
+      expect(outputs).not.toContain(rotatingKey);
+      expect(outputs).not.toContain(rotatingCert);
     } finally {
       await Promise.all([media, sidecar].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
     }
