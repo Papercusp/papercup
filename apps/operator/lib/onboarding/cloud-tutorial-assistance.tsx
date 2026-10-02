@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Button } from "@/app/harness/Button";
 import { OperatorChat } from "@/app/_components/OperatorChat";
 import type { ChatMessage } from "@/app/_components/chat/chat-types";
@@ -71,7 +71,14 @@ export function CloudTutorialAssistance({ scope, step, status, onShowStep }: {
     </div>
     <p role="status" data-tutorial-speech-status={speechStatus}>{muted ? 'Guide speech is muted.' : speechStatus === 'loading' ? 'Preparing speech…' : speechStatus === 'playing' ? 'Speaking the lesson.' : speechStatus === 'unavailable' ? 'Speech could not be played. The text remains available; use Replay speech to try again.' : 'Speech is ready.'}</p>
     <p>Ask about this step. Keep credentials in the app’s connection form.</p>
-    <div style={{ height: 320 }}><OperatorChat messages={messages} busy={busy} passive={false} onSend={question => void ask(question)}
+    <div style={{ height: 320,
+      // Bind the existing shared-chat theme seam in this dark host, including
+      // empty-state text that otherwise inherits the light-host fallback.
+      '--pc-chat-fg': 'var(--fg)', '--pc-chat-fg-mute': 'var(--fg-dim)',
+      '--pc-chat-border': 'var(--border)',
+      '--pc-chat-bubble-assistant': 'var(--bg-2)', '--pc-chat-bubble-assistant-fg': 'var(--fg)',
+      '--pc-chat-bubble-user': 'var(--bg-popover, var(--bg))', '--pc-chat-bubble-user-fg': 'var(--fg)',
+    } as CSSProperties}><OperatorChat messages={messages} busy={busy} passive={false} onSend={question => void ask(question)}
       showQuickDraftPrompts={false} agentName="Lesson guide" emptyStateBody="Ask a question about the current lesson step." error={error} /></div>
   </section>;
 }

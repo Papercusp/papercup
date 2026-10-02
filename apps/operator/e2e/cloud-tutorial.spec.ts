@@ -146,6 +146,22 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
     get prompt() { return sentPrompt; } };
 }
 
+test('lesson help chat text passes axe when its empty state is in the viewport', async ({ page }) => {
+  const fixture = await setupJourney(page, false);
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  const help = page.getByRole('region', { name: 'Lesson help and speech' });
+  const prompt = help.getByText('Ask a question about the current lesson step.', { exact: true });
+  await prompt.scrollIntoViewIfNeeded();
+  await expect(prompt).toBeInViewport({ ratio: 1 });
+  const result = await new AxeBuilder({ page }).include('[aria-label="Lesson help and speech"]')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+  const path = test.info().outputPath('lesson-help-axe.json');
+  await writeFile(path, JSON.stringify(result));
+  await test.info().attach('lesson-help-axe', { contentType: 'application/json', path });
+  expect(result.violations).toEqual([]);
+});
+
 test('guide remains keyboard operable with reduced motion and passes axe in active and paused states', async ({ page }) => {
   const fixture = await setupJourney(page, false);
   await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -169,6 +185,26 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
     };
     if (captureOrder || explicitReveal || frameReveal) {
       const focus = HTMLElement.prototype.focus;
+      if (captureOrder) {
+        const scrollWindow = window.scrollTo;
+        window.scrollTo = function (...args: Parameters<typeof window.scrollTo>) {
+          recordOrder('window.scrollTo', undefined, { args, stack: new Error().stack });
+          scrollWindow.apply(window, args);
+        };
+        // Browser-produced rectangles identify layout shifts without forcing
+        // geometry on the focus path (which can hide the original failure).
+        const shifts = new PerformanceObserver(entries => {
+          for (const entry of entries.getEntries()) {
+            const shift = entry as PerformanceEntry & { value: number; sources?: Array<{
+              node: Element | null; previousRect: DOMRectReadOnly; currentRect: DOMRectReadOnly;
+            }> };
+            recordOrder('layout-shift', undefined, { at: shift.startTime, value: shift.value,
+              sources: shift.sources?.map(source => ({ node: identify(source.node),
+                previousRect: source.previousRect.toJSON(), currentRect: source.currentRect.toJSON() })) });
+          }
+        });
+        shifts.observe({ type: 'layout-shift', buffered: true });
+      }
       HTMLElement.prototype.focus = function (options) {
         recordOrder('focus:before', this, options);
         focus.call(this, options);
@@ -178,7 +214,8 @@ test('guide remains keyboard operable with reduced motion and passes axe in acti
         if (frameReveal && this.getAttribute('aria-label') === 'Connection label' && options?.preventScroll === false)
           requestAnimationFrame(() => this.scrollIntoView({ behavior: 'instant', block: 'nearest' }));
       };
-      document.addEventListener('scroll', event => recordOrder('scroll', event.target instanceof Element ? event.target : undefined), true);
+      document.addEventListener('scroll', event => recordOrder('scroll', event.target instanceof Element ? event.target : undefined,
+        { scrollY: window.scrollY }), true);
     }
     const snapshot = (event: string, stack?: string) => {
       if (snapshots.length >= 80) return;
