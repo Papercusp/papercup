@@ -9621,7 +9621,7 @@ export function hostThroughPty(o) {
             report: onRespawn,
             emit: emitCompacted,
             timeoutMs: respawnReportTimeoutMs,
-            isCurrent: () => child === adoptedCarryChild && !recycling && !shuttingDown && !cleaned,
+            isCurrent: () => child === adoptedCarryChild && !recycling && !shuttingDown && !hostCleanedUp,
           });
           const adoptedNativeId = adoptedAnnouncement.nativeId ?? adoptedCarryRespawn.nativeId ?? null;
           appendHostEvent(ownerId, 'respawn-carry-delivered', {
