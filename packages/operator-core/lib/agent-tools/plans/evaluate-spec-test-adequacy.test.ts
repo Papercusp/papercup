@@ -312,23 +312,45 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
 
   it('records exact binding ids in the replay recipe, including repeated evidence refs', async () => {
     const evidenceRef = 'packages/operator-core/lib/reconnect.test.ts#reconnect';
+    // A repeated reference can name separate active bindings when their evidence kinds differ.
     const evidence = [
       { id: 18924, evidenceKind: 'test', evidenceRef },
-      { id: 18874, evidenceKind: 'test', evidenceRef },
-      { id: 18875, evidenceKind: 'test', evidenceRef },
+      { id: 18874, evidenceKind: 'fixture', evidenceRef },
+      { id: 18875, evidenceKind: 'coverage-census', evidenceRef },
     ].map((row) => ({
       ...row,
       workItemId: 'WI-123',
       planSlug: 'plan-a',
       specId: 'SPEC-001',
       specRevision: 1,
-      specFingerprint: 'sha256:spec-v1',
-      sourceFingerprint: 'git:abc',
-      testFingerprint: 'sha256:test',
-      fixtureFingerprint: null,
-      rubricFingerprint: null,
-      environmentFingerprint: null,
+      specFingerprint: 'sha256:spec-001',
+      fingerprints: {
+        sourceFingerprint: 'git:abc',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: null,
       details: {},
+      currentness: {
+        comparisonSupplied: true,
+        provenance: 'server-measured',
+        overall: 'current',
+        dimensions: {
+          spec: 'current',
+          source: 'current',
+          test: 'current',
+          fixture: 'current',
+          rubric: 'current',
+          environment: 'current',
+          coverageEvidence: 'current',
+          testRun: 'current',
+        },
+        staleReasons: [],
+        unknownReasons: [],
+      },
     }));
     listClauses.mockResolvedValue([clause('active')]);
     listEvidence.mockResolvedValue(evidence as never);

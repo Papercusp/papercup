@@ -1771,8 +1771,8 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
   it.each(['emitted', 'persisted'] as const)(
     '%s recipe preserves the full evidence population when current fingerprints are partial',
     (surface) => {
-      const selected = evidence({ evidenceRef: 'surface:replacement' });
-      const legacy = evidence({ evidenceRef: 'surface:rejected-legacy' });
+      const selected = evidence({ id: 18874, evidenceRef: 'surface:replacement' });
+      const legacy = evidence({ id: 18924, evidenceRef: 'surface:rejected-legacy' });
       const current: EvidenceCurrentInput[] = [
         {
           evidenceKind: selected.evidenceKind,
@@ -1816,6 +1816,8 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       const args = evaluatorArgsSchema.parse(recipe!.args);
       expect(args.harness).toBe('papercusp');
       expect(args.evidenceRefs).toEqual([legacy.evidenceRef, selected.evidenceRef].sort());
+      expect(args.bindingIds).toEqual([18874, 18924]);
+      expect(recipe!.selection.bindingIds).toEqual([18874, 18924]);
       const rerunCurrent = Array.isArray(args.current)
         ? args.current
         : args.current?.supplied
@@ -1869,6 +1871,23 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(
       asStructuredObservation({ rerunRecipe: omitted.scorecardDraft.rerunRecipe })?.rerunRecipe?.args,
     ).not.toHaveProperty('current');
+  });
+
+  it('preserves an explicitly empty binding-id selector through recipe readback', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [],
+      harness: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+      rerunSelection: { bindingIds: [] },
+    });
+    const recipe = result.scorecardDraft.rerunRecipe;
+    expect(recipe.args.bindingIds).toEqual([]);
+    expect(recipe.selection.bindingIds).toEqual([]);
+    expect(evaluatorArgsSchema.parse(recipe.args).bindingIds).toEqual([]);
+    const readback = asStructuredObservation({ rerunRecipe: recipe })?.rerunRecipe;
+    expect(readback?.args.bindingIds).toEqual([]);
+    expect(readback?.selection.bindingIds).toEqual([]);
   });
 
   function recipeFor(classRef: 'plan-class-feature-ship' | 'plan-class-bugfix' = 'plan-class-feature-ship') {
