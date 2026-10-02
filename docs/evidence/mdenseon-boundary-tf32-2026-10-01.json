@@ -658,7 +658,7 @@
     "gpuAcceptanceComplete": false
   },
   "nativeRuntimeKernelPreparation": {
-    "status": "fresh native source/runtime content and profiler import/export preparation verified; actual GPU request-group/kernel run not yet launched",
+    "status": "fresh native source/runtime content and profiler import/export preparation verified; separate guarded GPU diagnostic submitted with terminal outcome pending",
     "runtimeArtifact": {
       "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/runtime-source-v2",
       "receiptSha256": "d4162dd6d89b317d832254c97fe1bcefb2abb65cede82526dfa59b64955f05c1",
@@ -701,6 +701,20 @@
       "fullGpuPopulationComplete": false,
       "inferencePerformed": false
     }
+  },
+  "nativeCudaPaddedV3Launch": {
+    "taskId": "0muqjswwy1c3hcid3qf",
+    "bashId": "c2958ac7-ec7",
+    "deadline": "2026-10-02T06:24:22.532Z",
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-cuda-padded-v3",
+    "recipeSha256": "74d8c73a0c7408f771b7dedca63a6a30d6262c31d1d012960aa1a23ed664bee0",
+    "launchPreflightVerified": true,
+    "launchRecordedAt": "2026-10-02T05:54:23.544Z",
+    "status": "submitted; terminal model/input/kernel results pending",
+    "historicalFirstRead": "Task running; latest wrapper output queued for a heavy slot at 45 seconds. Launch receipt present and payload driver absent at that read. This snapshot never authorizes cancellation or a duplicate launch.",
+    "fullGpuPopulationComplete": false,
+    "kernelPidAndSequenceBindingVerified": false,
+    "next": "Attach only this exact durable task id, then inspect actual payload driver, retained vectors/input trace, profiler database and completion. Do not infer CUDA computation from construction or wrapper CPU use."
   },
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }

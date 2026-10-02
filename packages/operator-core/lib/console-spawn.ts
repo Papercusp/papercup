@@ -60,7 +60,7 @@ import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 // task-manager P-009 follow-up: the HEADLESS path enrols (see
 // buildHeadlessSpawnCommand's doc for why this file's windowed path does not).
-import { scrubTerminalContextEnv } from './terminal-spawn';
+import { agentInheritedOperatorEnv, scrubTerminalContextEnv } from './terminal-spawn';
 import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-terminals';
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
 import { killTask } from './task-manager/control';
@@ -1856,7 +1856,7 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
   // The WAYLAND_DISPLAY line below is the same lesson learned once before
   // (WI-4272) and never generalised — this is that generalisation.
   const spawnEnv: NodeJS.ProcessEnv = scrubTerminalContextEnv({
-    ...process.env,
+    ...agentInheritedOperatorEnv(process.env),
     ...desktopEnv,
     ...envelope.env,
   });
@@ -2111,7 +2111,7 @@ async function spawnMacConsole(
       // involved here, so the zero-window failure cannot occur — but
       // ITERM_SESSION_ID / TERM_SESSION_ID / the multiplexer vars are still this
       // process's terminal identity, and a new window is not in it.
-      env: scrubTerminalContextEnv({ ...process.env, ...envelope.env }),
+      env: scrubTerminalContextEnv({ ...agentInheritedOperatorEnv(process.env), ...envelope.env }),
     });
     child.unref();
     if (stderrFd != null) {
@@ -2699,7 +2699,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // and mints the ledger row that makes the member visible in /admin/tasks with
     // its fleet, its log, and its live cost.
     installLease = await (opts.installBoundary ?? ((root) => acquireInstallBoundaryLease(root)))(
-      installBoundaryRoot({ ...process.env, ...launchEnv }),
+      installBoundaryRoot({ ...agentInheritedOperatorEnv(process.env), ...launchEnv }),
     );
     const memoryMaxBytes = agentSpawnScopeMemoryMaxG() * 1024 ** 3;
     const enrolment = beginSyncEnrolment({ class: 'agent-session', memoryMaxBytes });
@@ -2732,7 +2732,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       // would tell the psu it is running inside the OPERATOR's multiplexer pane,
       // which it is not. pui and `psu --brain` both drive zellij, so that is a
       // live wrong-answer, not a hypothetical one.
-      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({ ...process.env, ...launchEnv })),
+      env: normalizeHeadlessAgentTerm(scrubTerminalContextEnv({ ...agentInheritedOperatorEnv(process.env), ...launchEnv })),
     });
     // Keep a second, persistent observer before the bounded boot probes remove
     // their own listeners. The consult reviver consumes this promise to turn a

@@ -21,7 +21,10 @@ const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
 const connection: CloudWorkspacesControlRow = { kind: "connection", id: "gcp", target: "gcp", label: "My GCP", status: "connected", credentialRef: "env:CREDENTIAL", scopes: [], regions: [], sizes: [], images: [], networks: [] };
 const workspace: CloudWorkspacesControlRow = { kind: "workspace", id: "customer", name: "My workspace", connectionId: "gcp", target: "gcp", scopeLabel: "project", region: "us-central1", size: "small", image: "ubuntu", diskGiB: 100, network: "private", desiredState: "running", observedState: "running", recoverability: { kind: "none", label: "No backup" }, capabilities: { stop: true, repair: true, snapshot: true, destroy: true } };
 function mount(initial = "/cloud-workspaces") {
-  const root = createRootRoute({ component: () => <NuqsAdapter><main><Outlet /></main></NuqsAdapter> });
+  const root = createRootRoute({
+    component: () => <NuqsAdapter><main><Outlet /></main></NuqsAdapter>,
+    errorComponent: ({ error }) => <pre data-testid="cloud-route-error">{error.stack ?? error.message}</pre>,
+  });
   const cloud = createRoute({ getParentRoute: () => root, path: "/cloud-workspaces", component: CloudWorkspacesPage });
   const other = createRoute({ getParentRoute: () => root, path: "/other", component: () => <h1>Other view</h1> });
   const router = createRouter({ routeTree: root.addChildren([cloud, other]), history: createMemoryHistory({ initialEntries: [initial] }) });
@@ -43,7 +46,12 @@ beforeEach(() => {
       progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version: CLOUD_TUTORIAL_VERSION, disposition: patch?.disposition ?? "active" } } }));
   }));
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__PAPERCUSP_HOSTED_BROWSER__; });
+afterEach(() => {
+  const routeError = screen.queryByTestId("cloud-route-error")?.textContent;
+  cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__PAPERCUSP_HOSTED_BROWSER__;
+  // A routed render failure must remain visible even if an earlier assertion passed.
+  expect(routeError).toBeUndefined();
+});
 describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
   it("discloses cost before the user provisions and leaves the real provision action untouched by guide controls", async () => {
     data.rows = [{ ...connection,

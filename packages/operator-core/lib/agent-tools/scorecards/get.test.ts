@@ -257,10 +257,14 @@ describe('scorecards:get evidence-first projection', () => {
     }
   });
 
-  it('guides oversized audits to parallelize independent criteria while preserving page order', () => {
+  it('bounds parallel criterion reads and explains how to recover output-door envelopes', () => {
     const tool = lookupByMcpName('scorecards:get');
     const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
     expect(chaining).toContain('Promise.all');
+    expect(chaining).toContain('small bounded');
+    expect(chaining).toContain('papercusp.output-envelope/v1');
+    expect(chaining).toContain('follow its content reference with capability:read');
+    expect(chaining).toContain('Inspect the outer shape before reading scorecard.criteria');
     expect(chaining).toContain('each criterion’s evidenceRead.next page loop sequential');
   });
 

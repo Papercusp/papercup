@@ -240,8 +240,15 @@ export const PAPERCUSP_HOSTED_GCP_PROVISIONING_MODEL = 'spot' as const;
 
 /**
  * Default spec for a first GCP workspace. Everything tenant-specific comes from the VERIFIED
- * delegation. A Papercusp-hosted host (D-399) runs where its grant's name conditions point and
- * holds NO service account: nothing on the machine can act in Papercusp's project.
+ * delegation. A Papercusp-hosted host (D-399) runs where its grant's name conditions point.
+ *
+ * NO hosted host holds a service account, whoever's project it runs in. The delegation's
+ * `serviceAccountEmail` is the CONTROLLER identity Papercusp acts as; attaching it to the VM would
+ * hand every agent on the machine the controller's power over the project through the metadata
+ * server. It would also need `iam.serviceAccounts.actAs` on that account, which no delegation
+ * grants, so GCP refused every customer-project create with SERVICE_ACCOUNT_ACCESS_DENIED
+ * (measured 2026-10-02, WI-10005297). The controller identity travels only as the credential
+ * reference.
  */
 export function gcpFirstWorkspaceDesiredSpec(input: {
   hostId: string;
@@ -268,7 +275,6 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
     provider: {
       projectId: source.projectId,
-      ...(papercuspHosted ? {} : { serviceAccountEmail: source.serviceAccountEmail }),
       network: { mode: 'managed' },
       ...(papercuspHosted ? { provisioningModel: PAPERCUSP_HOSTED_GCP_PROVISIONING_MODEL } : {}),
     },

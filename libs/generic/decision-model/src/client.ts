@@ -73,6 +73,21 @@ export interface DeadlineHook {
   readonly expiresAt: number;
   /** Run `fn` when the deadline timer fires, before the abort. Returns an unregister function. */
   onExpiring(fn: () => void): () => void;
+  /**
+   * An off-thread transport reports how far a call got when it did not complete
+   * (its own deadline passed, or the caller's did first). The client records the
+   * last report on the timeout's ledger row, so a timeout can be attributed to the
+   * provider (request sent, no answer) or to the transport (call never started).
+   */
+  reportIncomplete(timing: TransportTiming): void;
+}
+
+/** What an off-thread transport knew about a call that did not complete. */
+export interface TransportTiming {
+  /** Time the transport spent on the call before it stopped, ms; null when it never replied. */
+  readonly elapsedMs: number | null;
+  /** Short transport-written description: which deadline fired and how far the request got. */
+  readonly detail: string;
 }
 
 export type FetchLike = (
@@ -181,9 +196,15 @@ const DETAIL_MAX_CHARS = 300;
  * promise they resolve settles in that callback's microtasks, before the
  * deferred abort (P-008).
  */
-export function createDeadline(timeoutMs: number): { signal: AbortSignal; hook: DeadlineHook } {
+export function createDeadline(timeoutMs: number): {
+  signal: AbortSignal;
+  hook: DeadlineHook;
+  /** The transport's last {@link DeadlineHook.reportIncomplete} report, if any. */
+  incomplete(): TransportTiming | null;
+} {
   const controller = new AbortController();
   const hooks = new Set<() => void>();
+  let lastIncomplete: TransportTiming | null = null;
   const expiresAt = performance.timeOrigin + performance.now() + timeoutMs;
   const timer = setTimeout(() => {
     for (const fn of [...hooks]) {
@@ -209,7 +230,11 @@ export function createDeadline(timeoutMs: number): { signal: AbortSignal; hook: 
           hooks.delete(fn);
         };
       },
+      reportIncomplete(timing) {
+        lastIncomplete = timing;
+      },
     },
+    incomplete: () => lastIncomplete,
   };
 }
 
@@ -378,7 +403,15 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
         ({ status, retryAfter, text, transportMs } = await Promise.race([attempt, abort.promise]));
         meta.transportLatencyMs = transportMs;
       } catch (err) {
-        if (signal.aborted || isTimeoutError(err)) return inconclusive(whyAborted());
+        if (signal.aborted || isTimeoutError(err)) {
+          const why = whyAborted();
+          // An off-thread transport says how far the call got; without it a timeout
+          // cannot be told apart as a slow provider or a transport that never ran it.
+          const timing = why === 'timeout' ? deadline.incomplete() : null;
+          if (!timing) return inconclusive(why);
+          meta.transportLatencyMs = timing.elapsedMs;
+          return inconclusive(why, timing.detail);
+        }
         return inconclusive('network-error', err instanceof Error ? err.message : String(err));
       } finally {
         abort.dispose();

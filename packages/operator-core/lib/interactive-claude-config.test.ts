@@ -26,6 +26,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
+import ts from 'typescript';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -231,6 +232,41 @@ describe('ensureProjectTrust (EI-16574: a brand-new cwd wedges a headless launch
   it('fails open on an unparseable config — a launch never dies here', async () => {
     writeFileSync(join(home, '.claude.json'), '{ not json');
     expect(await ensureProjectTrust(home, cwd)).toBe(false);
+  });
+
+  it('preserves every project when launches update trust concurrently', async () => {
+    const cwdPaths = [
+      '/workspaces/clone-a',
+      '/workspaces/clone-b',
+      '/workspaces/clone-c',
+      '/workspaces/clone-d',
+    ];
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({
+        mcpServers: { 'papercusp-su': {} },
+        projects: { '/workspaces/existing': { marker: 'preserve' } },
+      }),
+    );
+
+    await expect(Promise.all(cwdPaths.map((path) => ensureProjectTrust(home, path)))).resolves.toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+
+    const cfg = read();
+    expect(cfg.mcpServers).toEqual({ 'papercusp-su': {} });
+    expect(cfg.projects['/workspaces/existing']).toEqual({ marker: 'preserve' });
+    for (const path of cwdPaths) {
+      expect(cfg.projects[path]).toEqual({
+        hasTrustDialogAccepted: true,
+        hasClaudeMdExternalIncludesApproved: true,
+        hasClaudeMdExternalIncludesWarningShown: true,
+        hasCompletedProjectOnboarding: true,
+      });
+    }
   });
 });
 
@@ -1295,6 +1331,90 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     const remat = readFileSync(join(LIB, 'session-transcript-remat.ts'), 'utf8');
     expect(remat).toMatch(/export async function rematerializeTranscript/);
     expect(remat).not.toMatch(/\b(spawn|execFile|console-launcher|writeInteractiveClaudeConfig)\b/);
+  });
+});
+
+describe('WI-10005232: bootstrap/resume config filesystem calls stay asynchronous', () => {
+  it('has no synchronous node:fs calls reachable from the launch and resume entrypoints', () => {
+    const sourcePath = join(__dirname, 'interactive-claude-config.ts');
+    const source = readFileSync(sourcePath, 'utf8');
+    const sourceFile = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const syncFsLocals = new Set<string>();
+    const syncFsNamespaces = new Set<string>();
+
+    for (const statement of sourceFile.statements) {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !ts.isStringLiteral(statement.moduleSpecifier) ||
+        !['fs', 'node:fs'].includes(statement.moduleSpecifier.text)
+      ) {
+        continue;
+      }
+      const clause = statement.importClause;
+      if (!clause) continue;
+      if (clause.name) syncFsNamespaces.add(clause.name.text);
+      if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        syncFsNamespaces.add(clause.namedBindings.name.text);
+      }
+      if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const specifier of clause.namedBindings.elements) {
+          const imported = specifier.propertyName?.text ?? specifier.name.text;
+          if (imported.endsWith('Sync')) syncFsLocals.add(specifier.name.text);
+        }
+      }
+    }
+
+    const functions = new Map<string, ts.FunctionDeclaration>();
+    for (const statement of sourceFile.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+        functions.set(statement.name.text, statement);
+      }
+    }
+
+    const reachable = new Set<string>();
+    const syncCalls: string[] = [];
+    const visitFunction = (name: string): void => {
+      const declaration = functions.get(name);
+      if (!declaration?.body || reachable.has(name)) return;
+      reachable.add(name);
+
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          if (ts.isIdentifier(callee)) {
+            if (syncFsLocals.has(callee.text)) syncCalls.push(`${name} -> ${callee.text}`);
+            if (functions.has(callee.text)) visitFunction(callee.text);
+          } else if (
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            syncFsNamespaces.has(callee.expression.text) &&
+            callee.name.text.endsWith('Sync')
+          ) {
+            syncCalls.push(`${name} -> ${callee.expression.text}.${callee.name.text}`);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(declaration.body);
+    };
+
+    visitFunction('writeInteractiveClaudeConfig');
+    visitFunction('ensureInteractiveClaudeConfig');
+
+    expect([...reachable]).toEqual(
+      expect.arrayContaining([
+        'materializeInteractiveClaudeConfig',
+        'isInteractiveClaudeConfigReady',
+        'ensureOnboardingComplete',
+        'ensureProjectTrust',
+        'writeRecoveryArtifacts',
+        'writeSessionSettings',
+        'writePrunedPluginsDir',
+        'writePrunedClaudeJson',
+        'linkIntoAsync',
+      ]),
+    );
+    expect(syncCalls).toEqual([]);
   });
 });
 

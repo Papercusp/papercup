@@ -72,21 +72,39 @@ function flattenHeaders(raw) {
 parentPort.on('message', (call) => {
   const port = call.port;
   const started = performance.now();
+  // Time the call waited between the calling thread posting it and this worker taking it.
+  const queuedMs = typeof call.postedAt === 'number' ? Math.max(0, clock() - call.postedAt) : null;
   const controller = new AbortController();
   let done = false;
   let timer = null;
+  let phase = 'started';
+
+  // Tell the calling side how far the request got, so a deadline that passes on the
+  // calling side before this worker replies still knows where the call was.
+  function progress(next) {
+    if (done) return;
+    phase = next;
+    try {
+      port.postMessage({ progress: next, atMs: performance.now() - started, queuedMs });
+    } catch {
+      // The calling side already closed the port: nobody is waiting.
+    }
+  }
 
   function reply(message) {
     if (done) return;
     done = true;
     if (timer) clearTimeout(timer);
     message.transportMs = performance.now() - started;
+    message.phase = phase;
+    message.queuedMs = queuedMs;
     try {
       port.postMessage(message);
     } catch {
       // The calling side already closed the port: nobody is waiting.
     }
   }
+  progress('started');
 
   // The calling side closes the port once it has an outcome. If that happened before
   // the response completed (it gave up), stop the request. After a reply there is
@@ -127,6 +145,7 @@ parentPort.on('message', (call) => {
     url,
     { method: call.method, headers, agent: agents[url.protocol], signal: controller.signal },
     (res) => {
+      progress('headers');
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
@@ -144,6 +163,7 @@ parentPort.on('message', (call) => {
     },
   );
   req.on('error', (err) => reply({ ok: false, error: err.message }));
+  req.on('finish', () => progress('sent'));
   req.end(body);
 });
 `;

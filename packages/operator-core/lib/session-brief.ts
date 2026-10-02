@@ -24,6 +24,7 @@
  * the bootstrap-su adv row that records the Claude session UUID).
  */
 
+import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
@@ -106,6 +107,147 @@ export interface SessionBriefRecord {
   controlState?: unknown | null;
   firstSeenAt: string;
   updatedAt: string;
+}
+
+/** One-shot payload used when a queued compaction respawn opens a fresh bootstrap. */
+export interface PendingCarryRespawn {
+  nonce: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  firstPrompt: string;
+  systemPromptAddendum: string;
+}
+
+export const PENDING_CARRY_RESPAWN_TTL_MS = 15 * 60_000;
+
+type PendingCarryRespawnSqlOptions = { sql?: Sql; nowMs?: number };
+
+function parsePendingCarryRespawn(value: unknown, nowMs: number): PendingCarryRespawn | null {
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const row = parsed as Record<string, unknown>;
+  if (
+    typeof row.nonce !== 'string' || !row.nonce.trim() ||
+    typeof row.createdAtMs !== 'number' || !Number.isSafeInteger(row.createdAtMs) ||
+    typeof row.expiresAtMs !== 'number' || !Number.isSafeInteger(row.expiresAtMs) ||
+    row.expiresAtMs <= row.createdAtMs || row.expiresAtMs <= nowMs ||
+    typeof row.firstPrompt !== 'string' || !row.firstPrompt.trim() ||
+    typeof row.systemPromptAddendum !== 'string' || !row.systemPromptAddendum.trim()
+  ) return null;
+  return {
+    nonce: row.nonce,
+    createdAtMs: row.createdAtMs,
+    expiresAtMs: row.expiresAtMs,
+    firstPrompt: row.firstPrompt,
+    systemPromptAddendum: row.systemPromptAddendum,
+  };
+}
+
+/**
+ * Persist before the host socket accepts a carry-respawn. A missing brief row is
+ * created without overwriting its lane/control fields; a newer request replaces
+ * the prior slot and receives a distinct nonce for conditional cleanup.
+ */
+export async function savePendingCarryRespawn(
+  identity: Pick<AgentIdentity, 'ownerId' | 'workspaceId'>,
+  input: { firstPrompt: string; systemPromptAddendum: string },
+  options: PendingCarryRespawnSqlOptions & { nonce?: string } = {},
+): Promise<PendingCarryRespawn | null> {
+  const ownerId = identity?.ownerId?.trim();
+  if (!ownerId || !input.firstPrompt.trim() || !input.systemPromptAddendum.trim()) return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const slot: PendingCarryRespawn = {
+    nonce: options.nonce ?? randomUUID(),
+    createdAtMs: nowMs,
+    expiresAtMs: nowMs + PENDING_CARRY_RESPAWN_TTL_MS,
+    firstPrompt: input.firstPrompt,
+    systemPromptAddendum: input.systemPromptAddendum,
+  };
+  const workspaceId = identity.workspaceId?.trim() || 'default';
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
+    INSERT INTO harness_shared.session_briefs
+      (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
+    VALUES (\${ownerId}, \${workspaceId}, \${JSON.stringify(slot)}::text::jsonb, now(), now())
+    ON CONFLICT (owner_id) DO UPDATE SET
+      pending_carry_respawn = EXCLUDED.pending_carry_respawn,
+      updated_at = now()
+    RETURNING pending_carry_respawn
+  `;
+  return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs);
+}
+
+/** Clear only the exact request that a host refused, preserving a newer retry. */
+export async function clearPendingCarryRespawn(
+  ownerId: string,
+  nonce: string,
+  options: PendingCarryRespawnSqlOptions = {},
+): Promise<boolean> {
+  if (!ownerId.trim() || !nonce.trim()) return false;
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ owner_id: string }>>`
+    UPDATE harness_shared.session_briefs
+       SET pending_carry_respawn = NULL, updated_at = now()
+     WHERE owner_id = \${ownerId}
+       AND pending_carry_respawn->>'nonce' = \${nonce}
+    RETURNING owner_id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Atomically consume the slot with UPDATE ... RETURNING. Concurrent bootstrap
+ * workers cannot both receive the same payload; expired or malformed payloads
+ * are still cleared so they cannot leak into a later ordinary launch.
+ */
+export async function consumePendingCarryRespawn(
+  ownerId: string,
+  options: PendingCarryRespawnSqlOptions = {},
+): Promise<PendingCarryRespawn | null> {
+  if (!ownerId.trim()) return null;
+  const nowMs = options.nowMs ?? Date.now();
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
+    UPDATE harness_shared.session_briefs
+       SET pending_carry_respawn = NULL, updated_at = now()
+     WHERE owner_id = \${ownerId}
+       AND pending_carry_respawn IS NOT NULL
+    RETURNING pending_carry_respawn
+  `;
+  return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs);
+}
+
+/** Restore a consumed slot if bootstrap fails; never overwrite a newer request. */
+export async function restorePendingCarryRespawn(
+  ownerId: string,
+  workspaceId: string,
+  slot: PendingCarryRespawn,
+  options: PendingCarryRespawnSqlOptions = {},
+): Promise<boolean> {
+  const nowMs = options.nowMs ?? Date.now();
+  const valid = parsePendingCarryRespawn(slot, nowMs);
+  if (!ownerId.trim() || !workspaceId.trim() || !valid) return false;
+  const sql = options.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ pending_carry_respawn: unknown }>>`
+    INSERT INTO harness_shared.session_briefs
+      (owner_id, workspace_id, pending_carry_respawn, first_seen_at, updated_at)
+    VALUES (\${ownerId}, \${workspaceId}, \${JSON.stringify(valid)}::text::jsonb, now(), now())
+    ON CONFLICT (owner_id) DO UPDATE SET
+      pending_carry_respawn = COALESCE(
+        harness_shared.session_briefs.pending_carry_respawn,
+        EXCLUDED.pending_carry_respawn
+      ),
+      updated_at = now()
+    RETURNING pending_carry_respawn
+  `;
+  return parsePendingCarryRespawn(rows[0]?.pending_carry_respawn, nowMs)?.nonce === valid.nonce;
 }
 
 /**

@@ -1,4 +1,43 @@
 {
+  "measurePersistenceIsolationFire152": {
+    "scope": "Maintained WDIO collection writer and actual launcher/worker process boundary only. No native performance rerun, product latency repair, cause attribution, R7 or shipment acceptance.",
+    "recovery": "Fresh managed context recovered newer Fire149 terminal checkpoint instead of trusting stale pending-run wake note. Exact r170 summary28c1a7b8506e and cleanup124f075e6967 match. No native relaunch or carried exec handle used.",
+    "rootCause": "perf-report.ts used one fixed results/measures.jsonl across launcher lifetimes. Each onPrepare and successful publication reset deleted that same file; append-safe JSONL did not isolate concurrent runs. PAPERCUSP_PERF_RUN_ID identifies a reusable build profile, not a collection lifetime.",
+    "distinguishingTest": "Canonical Node suite copies the dependency-free writer into a private fixture and keeps two launcher processes alive. A forks a worker that records its over-budget receipt; B prepares/resets, then forks its own worker. Inspect both reads and A completion cleanup while B remains alive. Distinct and same named profiles both fail on the original writer: A's stored receipt becomes an empty array immediately after B prepares.",
+    "alternativeHypothesis": "A named launcher already owns an independent collection and B reset cannot affect A's recorded outcome.",
+    "predictions": {
+      "sharedFile": "A reads [] after B reset and launcher paths coincide.",
+      "independentFile": "A keeps its exact failing receipt, B keeps its own successful receipt, and neither reset removes the other's outcome. Workers inherit their launcher path."
+    },
+    "durableFix": "Extend existing JSONL writer: launcher prepareMeasures allocates an exclusive fresh measures-UUID.jsonl, replaces any inherited collection path before preflight, and passes the selected path through PAPERCUSP_PERF_MEASURES_PATH to actual forked workers. Read/reset/write have no legacy shared-file fallback. A failed publish retains only its own file. No receipt/table/service change.",
+    "reuseRationale": "Reused existing collection file, reset/read/write functions, onPrepare/onComplete lifecycle and Node regression suite. Existing runId is a reusable profile and driver ports are transport identities, so neither can bind collection lifetimes. The internal inherited path extends the existing cross-process environment seam.",
+    "verification": {
+      "red": "Canonical npm unit script ran all80 tests:78PASS2FAIL0skip exit1. Both new concurrent launcher cases observed actual[] versus expected failing run-A receipt after B reset.",
+      "initialGreen": "80PASS0skip exit0; separate package typecheck exit0.",
+      "finalGreen": "83PASS0fail0skip exit0; separate package typecheck exit0. Includes distinct/same/unnamed overlapping launchers, inherited prior collection replacement, exact worker path/receipt identity, per-run read/reset isolation, legacy-file refusal and retained unpublished/crashed receipt. Fixture roots and launcher children are cleaned in each test's finally.",
+      "commands": [
+        "npm --prefix tools/perf-test/wdio run test:unit",
+        "npm --prefix tools/perf-test/wdio run typecheck",
+        "git diff --check -- tools/perf-test/wdio/perf-report.ts tools/perf-test/wdio/perf-report.node-test.ts tools/perf-test/wdio/wdio.conf.ts"
+      ],
+      "sourceHashes": {
+        "tools/perf-test/wdio/perf-report.ts": "a476c06fb67a8bd75fd2be24b6c7b070f298a7ff51d05d05ee1c7b9de08c7891",
+        "tools/perf-test/wdio/perf-report.node-test.ts": "b7bca67653e2ddbafdf4b7063b2e02505c7eb7d2ac2256b0adb1910b19026872",
+        "tools/perf-test/wdio/wdio.conf.ts": "98022d5ea6f120b531ab0e2a6c202d0bfcd104f03fac10b4660ecb32a353ad70",
+        "tools/perf-test/wdio/package.json": "d135380869d1d4063d2cfc8f9ff978a88de0f75b80bbab62614c02c68053457b",
+        "tools/perf-test/wdio/tsconfig.json": "6877007d5b926ffd8f76196a43df5209e584eccc7f084bbf17da965b51d88511"
+      },
+      "logHashes": {
+        "/tmp/p007-measure-isolation-red-fire152.log": "684b11ea895f043b70846118771779c17bfc4512c26819b3e7bacf7edcc50a74",
+        "/tmp/p007-measure-isolation-green-fire152.log": "fcce586ed80c2c052d5d158ca1e2769a0793086de53bedb4a9f4ddd8439b9d92",
+        "/tmp/p007-measure-isolation-tsc-fire152.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+        "/tmp/p007-measure-isolation-final-fire152.log": "14e9aaa3eed691653868ffd779b8dc5f9261b8db1eeedcf483ad687e7532fc4e",
+        "/tmp/p007-measure-isolation-final-tsc-fire152.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+      }
+    },
+    "limits": "The controlled reproduction establishes the measurement-persistence defect class, not that a historical native r170/r169 receipt was contaminated. Native adoption of the new collection path is not yet measured. Three r170 source bindings are now historical; native preparation must bind the revised writer, config and Node guards. The popup/LCP budgets still failed in r170; geometry observer cost134ms, media/API/clock/original-SPA limits remain.",
+    "next": "Audit bounded geometry observer calls and their timing before any justified changed native run. New assertions must recover the logged per-run collection path instead of the old shared measures.jsonl. Preserve P007 root/product/R7/frozen5cold5warm and separate P006/P008 acceptance as OPEN. No unchanged native replay, P2P, shared restart or LIVE_GATE_OPS."
+  },
   "r170LifecycleTerminalFire149": {
     "scope": "ONE changed r170 diagnostic completed FAIL. Native v5 lifecycle detector adoption only; no performance repair, cause, R7 or shipment acceptance.",
     "managedTask": "0muqithvq6lk7ndmy4e",

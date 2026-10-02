@@ -391,7 +391,7 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
       // the window owns those.
       stdio: ['ignore', 'ignore', 'pipe'],
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
-      env: scrubTerminalContextEnv(opts.env ?? process.env),
+      env: scrubTerminalContextEnv(opts.env ?? agentInheritedOperatorEnv(process.env)),
     });
     child.unref();
     const pid = child.pid;

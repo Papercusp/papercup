@@ -4,6 +4,35 @@ Plan: `papercusp-log-performance-remediation-2026-09-23`.
 Driving work: WI-10002801. Measurement/producer work: WI-10002823 (P-001).
 This is current-build implementation evidence, not final shipment acceptance.
 
+## Isolated WDIO measure persistence — 2026-10-02, Fire152
+
+The controlled launcher/worker regression confirmed the shared-file defect:
+after launcher A recorded a failing interaction, launcher B's preparation reset
+erased it. Both distinct and reused profile names reproduced the loss. JSONL
+append safety protects simultaneous writes; it did not isolate separate runs.
+
+The existing writer now allocates a fresh exclusive collection file before
+preflight. Workers inherit its exact path; new launchers replace an inherited
+prior-run path. Read, reset and publication operate only on that collection,
+with no fallback to the former shared file. Failed publications retain their
+own file. The runner logs the selected path so native evidence recovery can
+bind it. Existing receipt schema and profile identity are unchanged.
+
+The canonical Node suite went from **78 pass / 2 fail** to **83/83 pass**, zero
+skips, exit 0. Separate package typechecking passed. Guards exercise overlapping
+distinct, reused and unnamed profiles with actual worker forks, inherited-path
+replacement, reset/read isolation, refusal of a stale legacy file and retention
+of an unpublished prior receipt. Exact source and log fingerprints are under
+`measurePersistenceIsolationFire152` in the native source/output audit JSON.
+
+This establishes a persistence defect class and its guarded fix. It does not
+establish historical receipt contamination or native adoption. No new native
+run occurred. r170's terminal summary and cleanup hashes were recovered and
+matched; its popup and LCP budgets remain failed. Its writer/config/test source
+bindings are now historical. A later justified native preparation must bind
+the new files and recover the logged collection path. P-007 cause, product,
+R-7 and the cold/warm cohort remain open, as do separate P-006/P-008 acceptance.
+
 ## Fresh lifecycle diagnostic preparation — 2026-10-02, Fire149
 
 Prepared r170 from an independent copy of the preserved app and raw baseline,
