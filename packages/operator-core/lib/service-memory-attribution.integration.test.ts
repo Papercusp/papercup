@@ -1546,7 +1546,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(report.windows).toHaveLength(3);
       expect(report.samples).toHaveLength(mode === 'ordinary' ? 13 : mode === 'diagnostic' ? 16 : 14);
       expect(report.retainedContainers).toHaveLength(mode === 'diagnostic' ? 3 : 0);
-      expect(report.profilerOperations).toHaveLength(mode === 'ordinary' ? 0 : mode === 'diagnostic' ? 15 : 1);
+      expect(report.profilerOperations).toHaveLength(mode === 'ordinary' ? 0 : mode === 'diagnostic' ? 15 : nativeAdapter ? 3 : 1);
       if (mode === 'snapshot' || mode === 'retainers') {
         expect(report.snapshotRemoved).toBe(true); expect(report.postSnapshotRowsPreserved).toBe(true);
         expect(report.heapSnapshot.pid).toBe(report.pid);
@@ -1560,6 +1560,12 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             expect(report.heapRetainers.native.inputSha256).toBe(report.heapSnapshot.sha256);
             expect(report.heapRetainers.native.inputBytes).toBe(report.heapSnapshot.bytes);
             expect(report.heapRetainers.limits.retainerDepth).toBe(1);
+            expect(report.heapOwnerBinding.pid).toBe(report.pid);
+            expect(report.heapOwnerBinding.roots).toHaveLength(9);
+            expect(report.heapRetainers.requestedNodes.length).toBeGreaterThan(0);
+            expect(report.heapRetainers.requestedNodes.every((row: any) => row.status === 'found' && row.node.id === row.id)).toBe(true);
+            const ids = new Set(report.heapRetainers.requestedNodes.map((row: any) => row.id));
+            expect(report.heapOwnerBinding.roots.filter((row: any) => row.status === 'found').every((row: any) => ids.has(row.id))).toBe(true);
           }
         }
         expect(report.heapSnapshot.census.nodeCount).toBeGreaterThan(0);
