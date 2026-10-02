@@ -62,7 +62,7 @@ import {
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — the plain-node Worker requires an explicit .ts specifier; apps/operator does not enable allowImportingTsExtensions.
-import { hotStackFields, shouldCaptureStallProfile, summarizeHotStacks, type CpuProfileLike, type StallProfileConfig } from './event-loop-stall-profile.ts';
+import { hotStackFields, shouldCaptureStallProfile, summarizeHotStacks, syncSpawnProducer, type CpuProfileLike, type StallProfileConfig } from './event-loop-stall-profile.ts';
 // EXPLICIT `.ts` EXTENSION IS LOAD-BEARING for the same reason as the import
 // below — this is a worker ENTRY, loaded by Node's native type stripping, which
 // has no extensionless lookup. `proc-thread-cpu.ts` is dependency-free and
@@ -467,6 +467,8 @@ async function captureStallProfile(
     writeFileSync(`${file}.tmp`, JSON.stringify(stopped.profile));
     renameSync(`${file}.tmp`, file);
     stallProfileState = 'captured';
+    const summary = summarizeHotStacks(stopped.profile, { top: 3, depth: 6 });
+    const spawn = syncSpawnProducer(summary);
     emit('main event loop STALL profiled — hot stacks of the blocked main thread', {
       pid,
       stalenessAtStartMs,
@@ -474,8 +476,21 @@ async function captureStallProfile(
       mainThreadActivity: cpuKind,
       stallEndedDuringCapture,
       file,
-      ...hotStackFields(summarizeHotStacks(stopped.profile, { top: 3, depth: 6 })),
+      ...hotStackFields(summary),
+      ...(spawn ? { syncSpawnProducer: spawn.producer } : {}),
     });
+    // WI-10005253: hand a sync child-process producer to the main thread, which files it once its
+    // loop turns again (event-loop-sync-spawn-report.ts). The worker itself has no DB access.
+    if (spawn) {
+      parentPort?.postMessage({
+        kind: 'sync-spawn-stall',
+        pid,
+        file,
+        stalenessAtStartMs,
+        mainThreadActivity: cpuKind,
+        ...spawn,
+      });
+    }
   } catch (err) {
     stallProfileState = 'failed';
     emit('STALL profile capture failed — sentinel unaffected', {
