@@ -489,7 +489,7 @@ describe('pending carry-respawn session-brief helpers', () => {
     fakeSql = rec.sql;
 
     await expect(
-      restorePendingCarryRespawn(identity.ownerId, identity.workspaceId, slot, { nowMs: slot.createdAtMs }),
+      restorePendingCarryRespawn(identity.ownerId, identity.workspaceId!, slot, { nowMs: slot.createdAtMs }),
     ).resolves.toBe(false);
     expect(rec.calls[0]).toContain(JSON.stringify(slot));
     expect(rec.statements[0]).toContain('COALESCE(');
